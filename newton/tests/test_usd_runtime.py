@@ -229,11 +229,12 @@ class TestUsdRuntime(unittest.TestCase):
         model = builder.finalize()
         solver = newton.solvers.SolverXPBD(model, iterations=4)
         state = model.state()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         dt = sim.dt
         for _ in range(20):
             runtime.step(sim)
-            model.collide(state, contacts)
+            collision_pipeline.collide(state, contacts)
             solver.step(state, state, None, contacts, dt)
             state.clear_forces()
         assert_np_equal(sim.state.body_q.numpy(), state.body_q.numpy(), tol=1e-6)
@@ -255,7 +256,7 @@ class TestUsdRuntime(unittest.TestCase):
 
         stage = _make_stage(scene_attrs={"newton:collisionInterval": (Sdf.ValueTypeNames.Int, 4)})
         sim = runtime.load_usd(stage, use_graph=False)
-        with mock.patch.object(sim.model, "collide", wraps=sim.model.collide) as spy:
+        with mock.patch.object(sim.collision_pipeline, "collide", wraps=sim.collision_pipeline.collide) as spy:
             for _ in range(8):
                 runtime.step(sim)
         self.assertEqual(spy.call_count, 2)  # steps 0 and 4

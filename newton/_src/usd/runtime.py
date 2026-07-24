@@ -13,19 +13,25 @@ import warp as wp
 
 import newton
 import newton.usd
-from newton._src.solvers import SolverBase, SolverFeatherstone, SolverMuJoCo, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton._src.usd.utils import _get_raw_api_schemas, get_attribute
 
 if TYPE_CHECKING:
     from pxr import Usd
 
+    from newton._src.solvers import SolverBase
+
 
 @dataclass
 class _SolverEntry:
     schema: str
-    cls: type
+    cls_name: str
     param_attrs: dict[str, str]
     uses_newton_contacts: bool = True
+
+    @property
+    def cls(self) -> type:
+        # Resolved lazily so importing newton.usd does not import solver backends.
+        return getattr(newton.solvers, self.cls_name)
 
 
 _SOLVER_REGISTRY: dict[str, _SolverEntry] = {
@@ -33,7 +39,7 @@ _SOLVER_REGISTRY: dict[str, _SolverEntry] = {
     for e in [
         _SolverEntry(
             schema="NewtonSolverXpbdAPI",
-            cls=SolverXPBD,
+            cls_name="SolverXPBD",
             param_attrs={
                 "newton:xpbd:iterations": "iterations",
                 "newton:xpbd:angularDamping": "angular_damping",
@@ -42,7 +48,7 @@ _SOLVER_REGISTRY: dict[str, _SolverEntry] = {
         ),
         _SolverEntry(
             schema="NewtonSolverMujocoAPI",
-            cls=SolverMuJoCo,
+            cls_name="SolverMuJoCo",
             # MuJoCo solver options (iterations, tolerances, ...) are authored
             # as mjc:option:* custom attributes; the registry only exposes
             # params that have no existing USD channel.
@@ -55,7 +61,7 @@ _SOLVER_REGISTRY: dict[str, _SolverEntry] = {
         ),
         _SolverEntry(
             schema="NewtonSolverFeatherstoneAPI",
-            cls=SolverFeatherstone,
+            cls_name="SolverFeatherstone",
             param_attrs={
                 "newton:featherstone:angularDamping": "angular_damping",
                 "newton:featherstone:updateMassMatrixInterval": "update_mass_matrix_interval",
@@ -64,7 +70,7 @@ _SOLVER_REGISTRY: dict[str, _SolverEntry] = {
         ),
         _SolverEntry(
             schema="NewtonSolverSemiImplicitAPI",
-            cls=SolverSemiImplicit,
+            cls_name="SolverSemiImplicit",
             param_attrs={
                 "newton:semiImplicit:angularDamping": "angular_damping",
                 "newton:semiImplicit:frictionSmoothing": "friction_smoothing",
@@ -74,7 +80,7 @@ _SOLVER_REGISTRY: dict[str, _SolverEntry] = {
         ),
         _SolverEntry(
             schema="NewtonSolverVbdAPI",
-            cls=SolverVBD,
+            cls_name="SolverVBD",
             param_attrs={
                 "newton:vbd:iterations": "iterations",
                 "newton:vbd:frictionEpsilon": "friction_epsilon",
@@ -143,6 +149,8 @@ class Simulation:
     """Current simulation state, updated in place by :func:`step`."""
     control: newton.Control
     """Control inputs applied on the next :func:`step`."""
+    collision_pipeline: newton.CollisionPipeline | None
+    """Collision pipeline producing :attr:`contacts`, or ``None`` when the solver handles collision internally."""
     contacts: newton.Contacts | None
     """Contacts used by Newton's collision pipeline, or ``None`` when the solver handles collision internally."""
     dt: float
@@ -188,7 +196,7 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
     entry = _resolve_solver_entry(scene_prim)
 
     builder = newton.ModelBuilder()
-    if entry.cls is SolverVBD:
+    if entry.cls_name == "SolverVBD":
         # Dahl cable friction stays off unless the stage authors positive values.
         entry.cls.register_custom_attributes(builder, dahl_defaults_enabled=False)
     else:
@@ -202,7 +210,7 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
         ],
         apply_up_axis_from_stage=True,
     )
-    if entry.cls is SolverVBD:
+    if entry.cls_name == "SolverVBD":
         builder.color()
     model = builder.finalize(requires_grad=requires_grad)
 
@@ -211,7 +219,8 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
 
     state = model.state()
     control = model.control()
-    contacts = model.contacts() if entry.uses_newton_contacts else None
+    collision_pipeline = newton.CollisionPipeline(model) if entry.uses_newton_contacts else None
+    contacts = collision_pipeline.contacts() if collision_pipeline is not None else None
     if model.joint_count:
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
@@ -225,6 +234,7 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
         solvers=[solver],
         state=state,
         control=control,
+        collision_pipeline=collision_pipeline,
         contacts=contacts,
         dt=usd_info["physics_dt"],
         collision_interval=collision_interval,
@@ -256,8 +266,8 @@ def _maybe_capture(sim: Simulation, use_graph: bool | None) -> None:
 
 def _step_device_ops(sim: Simulation, collide: bool) -> None:
     """Device work for one step; contains no Python bookkeeping so it can be graph-captured."""
-    if collide and sim.contacts is not None:
-        sim.model.collide(sim.state, sim.contacts)
+    if collide and sim.collision_pipeline is not None:
+        sim.collision_pipeline.collide(sim.state, sim.contacts)
     sim.solver.step(sim.state, sim.state, sim.control, sim.contacts, sim.dt)
     # Clear after the solve: forces written between steps act for exactly one step.
     sim.state.clear_forces()
