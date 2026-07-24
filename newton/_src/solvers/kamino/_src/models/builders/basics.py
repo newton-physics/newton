@@ -20,7 +20,7 @@ import warp as wp
 
 from ......core.types import Axis
 from ...core import ModelBuilderKamino, inertia
-from ...core.joints import JointActuationType, JointDoFType
+from ...core.joints import JOINT_TAUMAX, JointActuationType, JointDoFType
 from ...core.math import FLOAT32_MAX, FLOAT32_MIN, I_3, axis_to_mat33
 from ...core.shapes import BoxShape, PlaneShape, SphereShape
 
@@ -174,6 +174,7 @@ def build_box_pendulum(
         B_r_Bj=wp.vec3f(0.0, 0.0, 0.5 * h + z_0),
         F_r_Fj=wp.vec3f(-0.5 * d, 0.0, 0.0),
         X_Bj=axis_to_mat33(Axis.Y),
+        tau_j_max=math.inf,  # Setting effort limit to match USD convention (`inf` for active joints)
         a_j=1.0 if dynamic_joints else None,
         b_j=0.1 if dynamic_joints else None,
         k_p_j=100.0 if implicit_pd else None,
@@ -513,6 +514,7 @@ def build_boxes_hinged(
         B_r_Bj=wp.vec3f(0.25, 0.05, 0.0),
         F_r_Fj=wp.vec3f(-0.25, -0.05, 0.0),
         X_Bj=axis_to_mat33(Axis.Y),
+        tau_j_max=math.inf,  # Setting effort limit to match USD convention (`inf` for active joints)
         a_j=1.0 if dynamic_joints else None,
         b_j=0.1 if dynamic_joints else None,
         k_p_j=100.0 if implicit_pd else None,
@@ -1085,6 +1087,9 @@ def build_boxes_fourbar(
         X_Bj=X_j,
         q_j_min=[qmin],
         q_j_max=[qmax],
+        # Setting effort limit to match USD convention (`inf` sentinel for
+        # active joints, `JOINT_TAUMAX` for passive joints).
+        tau_j_max=math.inf if 1 in actuator_ids else JOINT_TAUMAX,
         a_j=0.1 if dynamic_joints else None,
         b_j=0.001 if dynamic_joints else None,
         k_p_j=1000.0 if implicit_pd else None,
@@ -1103,6 +1108,9 @@ def build_boxes_fourbar(
         X_Bj=X_j,
         q_j_min=[qmin],
         q_j_max=[qmax],
+        # Setting effort limit to match USD convention (`inf` sentinel for
+        # active joints, `JOINT_TAUMAX` for passive joints).
+        tau_j_max=math.inf if 2 in actuator_ids else JOINT_TAUMAX,
         world_index=world_index,
     )
 
@@ -1117,6 +1125,9 @@ def build_boxes_fourbar(
         X_Bj=X_j,
         q_j_min=[qmin],
         q_j_max=[qmax],
+        # Setting effort limit to match USD convention (`inf` sentinel for
+        # active joints, `JOINT_TAUMAX` for passive joints).
+        tau_j_max=math.inf if 3 in actuator_ids else JOINT_TAUMAX,
         world_index=world_index,
     )
 
@@ -1131,6 +1142,9 @@ def build_boxes_fourbar(
         X_Bj=X_j,
         q_j_min=[qmin],
         q_j_max=[qmax],
+        # Setting effort limit to match USD convention (`inf` sentinel for
+        # active joints, `JOINT_TAUMAX` for passive joints).
+        tau_j_max=math.inf if 4 in actuator_ids else JOINT_TAUMAX,
         world_index=world_index,
     )
 

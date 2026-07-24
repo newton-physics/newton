@@ -56,15 +56,19 @@ DEFAULT_LIMIT_V7F = vec7f(FLOAT32_MAX)
 
 
 @wp.func
-def correct_rotational_coord(
-    q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0, q_j_limit: wp.float32 = FLOAT32_MAX
-) -> wp.float32:
+def correct_rotational_coord(q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0) -> wp.float32:
     """
     Corrects a rotational joint coordinate to be as close as possible to a reference coordinate.
     """
-    q_j_in += wp.round((q_j_ref - q_j_in) / wp.tau) * wp.tau  # Note: wp.tau is 2 * pi
-    q_j_in = wp.mod(q_j_in, q_j_limit)
-    return q_j_in
+    return q_j_in + wp.round((q_j_ref - q_j_in) / wp.tau) * wp.tau  # Note: wp.tau is 2 * pi
+
+
+@wp.func
+def correct_rotational_coord_with_limit(
+    q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0, q_j_limit: wp.float32 = FLOAT32_MAX
+) -> wp.float32:
+    """Corrects a rotational coordinate relative to a reference and wraps it within a limit."""
+    return wp.mod(correct_rotational_coord(q_j_in, q_j_ref), q_j_limit)
 
 
 @wp.func
@@ -91,7 +95,7 @@ def correct_joint_coord_free(q_j_in: vec7f, q_j_ref: vec7f, q_j_limit: vec7f = D
 @wp.func
 def correct_joint_coord_revolute(q_j_in: vec1f, q_j_ref: vec1f, q_j_limit: vec1f = DEFAULT_LIMIT_V1F) -> vec1f:
     """Corrects the rotational joint coordinate."""
-    q_j_in[0] = correct_rotational_coord(q_j_in[0], q_j_ref[0], q_j_limit[0])
+    q_j_in[0] = correct_rotational_coord_with_limit(q_j_in[0], q_j_ref[0], q_j_limit[0])
     return q_j_in
 
 
@@ -106,7 +110,7 @@ def correct_joint_coord_cylindrical(
     q_j_in: wp.vec2f, q_j_ref: wp.vec2f, q_j_limit: wp.vec2f = DEFAULT_LIMIT_V2F
 ) -> wp.vec2f:
     """Corrects only the rotational joint coordinate."""
-    q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
+    q_j_in[1] = correct_rotational_coord_with_limit(q_j_in[1], q_j_ref[1], q_j_limit[1])
     return q_j_in
 
 
@@ -115,8 +119,8 @@ def correct_joint_coord_universal(
     q_j_in: wp.vec2f, q_j_ref: wp.vec2f, q_j_limit: wp.vec2f = DEFAULT_LIMIT_V2F
 ) -> wp.vec2f:
     """Corrects each of the two rotational joint coordinates individually."""
-    q_j_in[0] = correct_rotational_coord(q_j_in[0], q_j_ref[0], q_j_limit[0])
-    q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
+    q_j_in[0] = correct_rotational_coord_with_limit(q_j_in[0], q_j_ref[0], q_j_limit[0])
+    q_j_in[1] = correct_rotational_coord_with_limit(q_j_in[1], q_j_ref[1], q_j_limit[1])
     return q_j_in
 
 
