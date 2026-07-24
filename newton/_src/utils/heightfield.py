@@ -110,6 +110,8 @@ def rasterize_mesh_to_heightfield(
     """
     if resolution <= 0.0:
         raise ValueError(f"resolution must be positive, got {resolution}")
+    if max_cells_per_axis < 2:
+        raise ValueError(f"max_cells_per_axis must be at least 2, got {max_cells_per_axis}")
 
     points = mesh.points.numpy()
     x_min, y_min, z_min = (float(v) for v in points.min(axis=0))

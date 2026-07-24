@@ -2212,7 +2212,7 @@ class Heightfield:
         self.com = wp.vec3()
 
     @staticmethod
-    def from_mesh(
+    def create_from_mesh(
         mesh: "wp.Mesh",
         resolution: float,
         *,
@@ -2221,10 +2221,12 @@ class Heightfield:
         """Create a heightfield by rasterizing a triangle mesh.
 
         Rays are cast straight down onto the mesh on a regular grid to sample its
-        elevation (see :func:`~newton.utils.rasterize_mesh_to_heightfield`). This method is intended for terrain with a single, constant elevation value per cell.
+        elevation (see :func:`~newton.utils.rasterize_mesh_to_heightfield`). This
+        method supports terrain that is single-valued in Z, including sloped planes.
 
         Args:
-            mesh: Triangle mesh to rasterize, in the frame it should be placed in.
+            mesh: Triangle mesh to rasterize, with vertex coordinates [m] in the
+                frame where it should be placed.
             resolution: Horizontal grid spacing [m]. Smaller values preserve more
                 detail at the cost of a larger grid.
             max_cells_per_axis: Upper bound on grid rows/columns. If the mesh extent
@@ -2232,8 +2234,8 @@ class Heightfield:
 
         Returns:
             A tuple ``(heightfield, xform)`` where ``heightfield`` is the sampled
-            :class:`Heightfield` and ``xform`` places its (origin-centered) grid at
-            the mesh's XY center. Pass both to
+            :class:`Heightfield` and ``xform`` has a translation [m] that places its
+            (origin-centered) grid at the mesh's XY center. Pass both to
             :meth:`~newton.ModelBuilder.add_shape_heightfield`.
         """
         from ..utils.heightfield import rasterize_mesh_to_heightfield  # noqa: PLC0415

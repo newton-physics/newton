@@ -532,7 +532,7 @@ class TestHeightfield(unittest.TestCase):
         self.assertGreater(soft_count, 0)
         self.assertEqual(int(contacts.soft_contact_shape.numpy()[0]), hfield_shape)
 
-    def test_from_mesh_sloped_plane(self):
+    def test_create_from_mesh_sloped_plane(self):
         """Rasterize a sloped plane mesh and verify sampled heights and placement."""
         # A single-valued surface z = 0.5*x + 0.25*y over [0, 4] x [0, 8].
         xs = np.linspace(0.0, 4.0, 9, dtype=np.float32)
@@ -555,7 +555,7 @@ class TestHeightfield(unittest.TestCase):
             indices=wp.array(np.array(faces, dtype=np.int32), dtype=wp.int32),
         )
 
-        hfield, xform = newton.Heightfield.from_mesh(mesh, resolution=0.5)
+        hfield, xform = newton.Heightfield.create_from_mesh(mesh, resolution=0.5)
 
         # Grid dimensions: col -> x (extent 4), row -> y (extent 8) at 0.5 m spacing.
         self.assertEqual(hfield.ncol, 9)
@@ -572,6 +572,19 @@ class TestHeightfield(unittest.TestCase):
         world = hfield.min_z + hfield.data * (hfield.max_z - hfield.min_z)
         expected = 0.5 * gx + 0.25 * gy
         assert_np_equal(world, expected.astype(np.float32), tol=1e-3)
+
+    def test_rasterize_mesh_rejects_small_max_cells_per_axis(self):
+        """Reject a maximum grid dimension smaller than two."""
+        mesh = wp.Mesh(
+            points=wp.array(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                dtype=wp.vec3,
+            ),
+            indices=wp.array([0, 1, 2], dtype=wp.int32),
+        )
+
+        with self.assertRaisesRegex(ValueError, "max_cells_per_axis must be at least 2"):
+            newton.utils.rasterize_mesh_to_heightfield(mesh, resolution=0.5, max_cells_per_axis=1)
 
     def test_rasterize_mesh_missed_rays_use_floor(self):
         """Rasterize a mesh with a hole and verify missed rays fall back to min Z."""
