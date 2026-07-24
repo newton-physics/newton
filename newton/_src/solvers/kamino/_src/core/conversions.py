@@ -1378,7 +1378,7 @@ def convert_joints(
                 continue
             base_body_idx_np[wid] = body_world_start_np[wid]
 
-    # Only warn for worlds where a skipped root left the world without a base
+    # Warn user if an articulation root couldn't be used as base because it is not a free joint
     if np.any(world_has_non_floating_root & (base_body_idx_np == -1)):
         msg.warning(
             "Model has articulations whose root is not a free joint attached to the world, "
