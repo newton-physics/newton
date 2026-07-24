@@ -130,14 +130,16 @@ jobs:
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: warp-kernels-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-${{ runner.os }}-${{ runner.arch }}-
+            warp-kernels-v2-${{ runner.os }}-${{ runner.arch }}-
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
+          # Warp names lambda-generated kernels via Python's salted hash(); fix the seed so kernel caches are reusable across processes
+          PYTHONHASHSEED: "0"
         run: >
           uv run --extra dev -m newton.tests
           --strict-warnings
