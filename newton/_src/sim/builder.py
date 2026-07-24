@@ -11054,6 +11054,7 @@ class ModelBuilder:
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             heightfield_meshes = []
+            mesh_keep_alive = []
             for geo in generated_shape_sources:
                 if not geo:
                     geo_sources.append(0)
@@ -11091,6 +11092,11 @@ class ModelBuilder:
                             device=device,
                             bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                         )
+                        # keep mesh alive for the model's lifetime: geometry objects
+                        # can be shared with other builders (see replicate() and
+                        # add_builder()), so the model must not rely on the geometry
+                        # object keeping the finalized wp.Mesh alive
+                        mesh_keep_alive.append(geo.mesh)
                     elif isinstance(geo, Gaussian):
                         finalized_geos[geo_hash] = len(gaussians)
                         gaussians.append(
@@ -11124,6 +11130,7 @@ class ModelBuilder:
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
+            m._mesh_keep_alive = mesh_keep_alive
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)

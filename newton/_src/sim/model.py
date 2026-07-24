@@ -924,6 +924,9 @@ class Model:
         self.heightfield_meshes: list[wp.Mesh] = []
         """wp.Mesh objects built from heightfield shapes, kept alive for the model's lifetime."""
 
+        self._mesh_keep_alive: list[wp.Mesh] = []
+        """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
+
         # Mesh edge data (packed array + per-shape slice)
         self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
