@@ -81,6 +81,10 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
         allegro_hand.default_shape_cfg.ke = 1.0e3
         allegro_hand.default_shape_cfg.kd = 1.0e2
+        # kf = 0 keeps MuJoCo's near-rigid contact friction; a finite kf maps to
+        # viscous friction whose slope saturates far too low for these light
+        # bodies, letting the grasped cubes creep out of the hand.
+        allegro_hand.default_shape_cfg.kf = 0.0
         allegro_hand.default_shape_cfg.margin = 0.005
         allegro_hand.default_shape_cfg.gap = 0.015
 

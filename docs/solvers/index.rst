@@ -176,7 +176,9 @@ formulation.
   :class:`~newton.solvers.SolverMuJoCo`, and
   :class:`~newton.solvers.SolverVBD`.
 - ``kf`` / ``ka``: :class:`~newton.solvers.SolverFeatherstone` and
-  :class:`~newton.solvers.SolverSemiImplicit`.
+  :class:`~newton.solvers.SolverSemiImplicit`; ``kf`` also
+  :class:`~newton.solvers.SolverMuJoCo`
+  (see :ref:`mujoco-contact-friction-solreffriction`).
 - ``restitution``: :class:`~newton.solvers.SolverXPBD` when
   ``enable_restitution=True``, and :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and

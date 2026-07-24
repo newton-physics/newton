@@ -4658,6 +4658,163 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             )
 
 
+class TestMuJoCoSolverContactKf(unittest.TestCase):
+    """shape_material_kf -> per-contact solreffriction (elliptic cones, Newton contacts)."""
+
+    def _make_sphere_scene(self, kf_sphere, kf_plane, impratio=None):
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1.0e4
+        builder.default_shape_cfg.kd = 100.0
+        builder.default_shape_cfg.kf = kf_plane
+        builder.add_ground_plane()
+        # start slightly penetrating so the first collide() yields an active contact
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.45), wp.quat_identity()))
+        cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e4, kd=100.0, kf=kf_sphere)
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
+        model = builder.finalize()
+        try:
+            solver = SolverMuJoCo(
+                model, use_mujoco_contacts=False, cone="elliptic", nconmax=32, njmax=128, impratio=impratio
+            )
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+        return model, solver
+
+    def _step_and_read_solreffriction(self, model, solver):
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        nacon = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertGreater(nacon, 0)
+        return nacon, (collision_pipeline, contacts), (state_0, state_1, control)
+
+    def _expected_solreffriction(self, solver, nacon, kf_pair, impratio=1.0):
+        solimp = solver.mjw_data.contact.solimp.numpy()[:nacon]
+        geom = solver.mjw_data.contact.geom.numpy()[:nacon]
+        geom_bodyid = solver.mjw_model.geom_bodyid.numpy()
+        body_invweight0 = solver.mjw_model.body_invweight0.numpy()[0]
+        ir = 1.0 / math.sqrt(impratio)
+        expected = []
+        for i in range(nacon):
+            invw = body_invweight0[geom_bodyid[geom[i][0]]][0] + body_invweight0[geom_bodyid[geom[i][1]]][0]
+            dmax = solimp[i][1]
+            # beta = kf*(1/D + A) with A ~= invw; timeconst = 2/(dmax*beta)
+            expected.append(2.0 / (kf_pair * invw * ((1.0 - dmax) * ir * ir + dmax)))
+        return expected
+
+    def test_kf_sets_contact_solreffriction(self):
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        # equal solmix/priority -> mix = 0.5
+        expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0)
+        for i in range(nacon):
+            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+            self.assertEqual(float(solreffriction[i][1]), 1.0)
+
+    def test_kf_zero_leaves_solreffriction_unset(self):
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=0.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        for i in range(nacon):
+            self.assertEqual(float(solreffriction[i][0]), 0.0)
+            self.assertEqual(float(solreffriction[i][1]), 0.0)
+
+    def test_kf_runtime_update(self):
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
+        nacon, (collision_pipeline, contacts), (state_0, state_1, control) = self._step_and_read_solreffriction(
+            model, solver
+        )
+        model.shape_material_kf.fill_(400.0)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        nacon = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertGreater(nacon, 0)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        expected = self._expected_solreffriction(solver, nacon, kf_pair=400.0)
+        for i in range(nacon):
+            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+
+    def test_kf_impratio_scaling(self):
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0, impratio=4.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0, impratio=4.0)
+        for i in range(nacon):
+            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+
+    def _slide_sphere_prismatic(self, kf, density, num_steps=60):
+        """Single contact, rotation locked by a prismatic joint: pure force-space viscous friction."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        builder.default_shape_cfg.ke = 1.0e5
+        builder.default_shape_cfg.kd = 1.0e3
+        builder.default_shape_cfg.kf = kf
+        builder.default_shape_cfg.mu = 2.0
+        builder.add_ground_plane()
+        radius = 0.1
+        # add_body() would auto-create a free joint; add_link()+add_articulation()
+        # keeps the prismatic joint as the body's sole (tree) connection, and the
+        # joint's parent_xform (not the link xform) is what places the body.
+        body = builder.add_link()
+        cfg = newton.ModelBuilder.ShapeConfig(density=density, ke=1.0e5, kd=1.0e3, kf=kf, mu=2.0)
+        builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+        joint = builder.add_joint_prismatic(
+            parent=-1,
+            child=body,
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, radius - 0.02), wp.quat_identity()),
+            axis=(1.0, 0.0, 0.0),
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize()
+        try:
+            solver = SolverMuJoCo(
+                model,
+                use_mujoco_contacts=False,
+                cone="elliptic",
+                solver="newton",
+                integrator="implicitfast",
+                iterations=50,
+                ls_iterations=20,
+                nconmax=32,
+                njmax=256,
+            )
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        joint_qd = state_0.joint_qd.numpy()
+        joint_qd[0] = 0.05
+        state_0.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        for _ in range(num_steps):
+            state_0.clear_forces()
+            collision_pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        # step() only auto-syncs body_qd for free-joint bodies; read the DOF velocity
+        return float(state_0.joint_qd.numpy()[0])
+
+    def test_kf_force_space_mass_dependence(self):
+        """Same kf, 8x mass -> 8x slower velocity decay (f = -kf*v is a force, not a rate)."""
+        v_light = self._slide_sphere_prismatic(kf=120.0, density=1000.0)  # ~4.2 kg,  rate ~9.9/s, analytic ~0.0042
+        v_heavy = self._slide_sphere_prismatic(kf=120.0, density=8000.0)  # ~33.5 kg, rate ~1.2/s, analytic ~0.037
+        self.assertLess(v_light, 0.01)
+        self.assertGreater(v_heavy, 0.02)
+
+    def test_kf_scales_viscous_friction(self):
+        v_soft = self._slide_sphere_prismatic(kf=30.0, density=1000.0)  # rate ~2.5/s, analytic ~0.027
+        v_hard = self._slide_sphere_prismatic(kf=3000.0, density=1000.0)  # rate ~247/s, analytic ~0
+        self.assertGreater(v_soft, 0.015)
+        self.assertLess(v_soft, 0.04)
+        self.assertGreater(v_soft, 3.0 * max(v_hard, 1.0e-6))
+
+
 class TestFrictionPriority(unittest.TestCase):
     """Verify that contact friction respects geom priority.
 
