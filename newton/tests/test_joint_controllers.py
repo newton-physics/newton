@@ -84,19 +84,22 @@ def test_revolute_controller(
         test.assertAlmostEqual(joint_qd[0], expected_vel, delta=1e-2)
 
 
-def test_ball_controller_coord_layout(
+def test_ball_controller(
     test: TestJointController,
     device,
     solver_fn,
     target_axis_angle,
+    vel_target_vals,
     expected_quat,
+    expected_vel,
     target_ke,
     target_kd,
 ):
-    """Ball-joint position target under the coord layout: the user writes a
-    target quaternion and the MuJoCo solver must convert it to the matching
-    axis-angle component before feeding it to per-axis position actuators.
-    Without the conversion the equilibrium for a 90° setpoint sits at ~40.5°.
+    """Ball-joint position and velocity targets under the coord layout: the
+    user writes a target quaternion and the MuJoCo solver must convert it to
+    the matching axis-angle component before feeding it to per-axis position
+    actuators. Without the conversion the equilibrium for a 90° setpoint sits
+    at ~40.5°. Velocity targets stay per-axis 3-vectors in both layouts.
     """
     prev_flag = newton.use_coord_layout_targets
     newton.use_coord_layout_targets = True
@@ -111,7 +114,7 @@ def test_ball_controller_coord_layout(
             parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
             armature=0.0,
-            actuator_mode=newton.JointTargetMode.POSITION,
+            actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
         )
         builder.add_articulation([j])
         qd_start = builder.joint_qd_start[j]
@@ -135,6 +138,7 @@ def test_ball_controller_coord_layout(
             target_quat = [0.0, 0.0, 0.0, 1.0]
         control = model.control()
         control.joint_target_q = wp.array(target_quat, dtype=wp.float32, device=device)
+        control.joint_target_qd = wp.array(vel_target_vals, dtype=wp.float32, device=device)
 
         sim_dt = 1.0 / 60.0
         for _ in range(100):
@@ -143,13 +147,20 @@ def test_ball_controller_coord_layout(
             state_0, state_1 = state_1, state_0
 
         joint_q = state_0.joint_q.numpy()
-        dot = abs(
-            joint_q[0] * expected_quat[0]
-            + joint_q[1] * expected_quat[1]
-            + joint_q[2] * expected_quat[2]
-            + joint_q[3] * expected_quat[3]
-        )
-        test.assertAlmostEqual(dot, 1.0, delta=1e-2)
+        joint_qd = state_0.joint_qd.numpy()
+
+        if expected_quat is not None:
+            dot = abs(
+                joint_q[0] * expected_quat[0]
+                + joint_q[1] * expected_quat[1]
+                + joint_q[2] * expected_quat[2]
+                + joint_q[3] * expected_quat[3]
+            )
+            test.assertAlmostEqual(dot, 1.0, delta=1e-2)
+
+        if expected_vel is not None:
+            for i in range(3):
+                test.assertAlmostEqual(joint_qd[i], expected_vel[i], delta=1e-2)
     finally:
         newton.use_coord_layout_targets = prev_flag
 
@@ -671,13 +682,35 @@ for device in devices:
             ):
                 add_function_test(
                     TestJointController,
-                    f"test_ball_joint_controller_coord_layout_{axis_name}_{solver_name}",
-                    test_ball_controller_coord_layout,
+                    f"test_ball_joint_controller_position_target_{axis_name}_{solver_name}",
+                    test_ball_controller,
                     devices=[device],
                     solver_fn=solver_fn,
                     target_axis_angle=axis_angle,
+                    vel_target_vals=[0.0, 0.0, 0.0],
                     expected_quat=quat,
+                    expected_vel=[0.0, 0.0, 0.0],
                     target_ke=2000.0,
+                    target_kd=500.0,
+                )
+
+            # Velocity control: per-axis angular velocity targets.
+            for axis_name, vel in (
+                ("z", [0.0, 0.0, wp.pi / 2.0]),
+                ("x", [wp.pi / 2.0, 0.0, 0.0]),
+                ("y", [0.0, wp.pi / 2.0, 0.0]),
+            ):
+                add_function_test(
+                    TestJointController,
+                    f"test_ball_joint_controller_velocity_target_{axis_name}_{solver_name}",
+                    test_ball_controller,
+                    devices=[device],
+                    solver_fn=solver_fn,
+                    target_axis_angle=[0.0, 0.0, 0.0],
+                    vel_target_vals=vel,
+                    expected_quat=None,
+                    expected_vel=vel,
+                    target_ke=0.0,
                     target_kd=500.0,
                 )
 

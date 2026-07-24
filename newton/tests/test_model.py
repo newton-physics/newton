@@ -1619,15 +1619,11 @@ class TestModelJoints(unittest.TestCase):
 
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
-        into ``joint_target_q`` under both flag values.
-
-        - Flag=False (legacy DOF): the 3 angular scalars are projected verbatim
-          into the DOF slice (matching the pre-coord-layout behavior).
-        - Flag=True (coord): the 3 angular scalars are interpreted as extrinsic
-          ZYX Euler angles and converted to a unit quaternion via
-          :meth:`ModelBuilder._quat_from_euler_zyx`, matching kamino's
-          DOF→coord conversion.
-        """
+        into the ``joint_target_q`` coord slice: the 3 angular scalars are
+        interpreted as extrinsic ZYX Euler angles and converted to a unit
+        quaternion via :meth:`ModelBuilder._quat_from_euler_zyx`, matching
+        kamino's DOF→coord conversion. FREE linear targets fill the position
+        slice verbatim."""
         ang_targets = (0.1, 0.2, -0.3)
 
         def _make_axes():
