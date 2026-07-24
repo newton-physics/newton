@@ -7861,6 +7861,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mujoco_attrs = getattr(self.model, "mujoco", None)
         shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
         shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
+        geom_dataid = self.mjw_model.geom_dataid
+        # The kernel indexes geom_dataid as [world, geom]. Keep that rank intact and
+        # normalize 1D backends to a single-world 2D array.
+        if hasattr(geom_dataid, "shape") and len(geom_dataid.shape) == 1:
+            geom_dataid = wp.array(geom_dataid.numpy()[None, :], dtype=wp.int32, device=self.model.device)
         shape_mjc_solref = getattr(mujoco_attrs, "solref", None) if mujoco_attrs is not None else None
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
 
@@ -7883,7 +7888,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjc_geom_to_newton_shape,
                 self.mjw_model.geom_type,
                 self._mujoco.mjtGeom.mjGEOM_MESH,
-                self.mjw_model.geom_dataid,
+                geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
                 self.model.shape_material_mu_torsional,
