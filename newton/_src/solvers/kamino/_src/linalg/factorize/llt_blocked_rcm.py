@@ -36,11 +36,9 @@ import warp as wp
 
 from ._tile_builtins import (
     HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
-    HAS_NATIVE_TILE_MATMUL_TRANSPOSE_UPDATE,
     HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
     HAS_TILE_MATMUL_TRANSPOSE_UPDATE,
     make_tile_matmul_left_transpose_update_func,
-    make_tile_matmul_transpose_update_func,
 )
 
 ###
@@ -56,6 +54,7 @@ __all__ = [
     "llt_blocked_rcm_symbolic_fill_in",
     "make_llt_blocked_rcm_factorize_kernel",
     "make_llt_blocked_rcm_fused_permute_and_tp_kernel",
+    "make_llt_blocked_rcm_parallel_factorize_kernels",
     "make_llt_blocked_rcm_permute_vector_kernel",
     "make_llt_blocked_rcm_solve_inplace_kernel",
     "make_llt_blocked_rcm_solve_kernel",
@@ -132,7 +131,8 @@ def make_llt_blocked_rcm_fused_permute_and_tp_kernel(block_size: int, max_dim: i
     """Fused kernel: builds ``inv_P``, permutes ``A -> A_hat``, and reduces
     ``|A_hat|`` into the tile pattern in a single launch.
 
-    Launch dims: ``(num_blocks, max_dim, max_dim)``. Each thread ``(b, r, c)``:
+    Launch dims: ``(num_blocks, max_dim * (max_dim + 1) // 2)``. Each thread
+    processes one element of the lower triangle:
 
     1. If ``c == 0``: writes ``inv_P[P[r]] = r`` for block ``b``.
     2. Computes ``v = A[P[r], P[c]]`` and writes it into ``A_hat[r, c]``.
@@ -162,10 +162,21 @@ def make_llt_blocked_rcm_fused_permute_and_tp_kernel(block_size: int, max_dim: i
         inv_P: wp.array[wp.int32],
         tile_pattern: wp.array[wp.int32],
     ):
-        b, r, c = wp.tid()
+        b, triangular_index = wp.tid()
         n_i = dim[b]
-        if r >= n_i or c >= n_i:
+        triangular_size = n_i * (n_i + 1) // 2
+        if triangular_index >= triangular_size:
             return
+
+        r = int((wp.sqrt(float(8 * triangular_index + 1)) - float(1)) * float(0.5))
+        row_start = r * (r + 1) // 2
+        if row_start > triangular_index:
+            r -= 1
+            row_start = r * (r + 1) // 2
+        elif (r + 1) * (r + 2) // 2 <= triangular_index:
+            r += 1
+            row_start = r * (r + 1) // 2
+        c = triangular_index - row_start
         mat_off = mio[b]
         vec_off = vio[b]
         tp_off = tpo[b]
@@ -320,10 +331,6 @@ def make_llt_blocked_rcm_factorize_kernel(block_size: int):
                     L_block = wp.tile_load(L_i, shape=(block_size, block_size), offset=(k, j))
                     if wp.static(HAS_TILE_MATMUL_TRANSPOSE_UPDATE):
                         wp.tile_matmul_transpose_update(A_kk_tile, L_block, L_block, alpha=-1.0)
-                    elif wp.static(HAS_NATIVE_TILE_MATMUL_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_transpose_update_func(block_size, "shared", "register"))(
-                            A_kk_tile, L_block, L_block, -1.0
-                        )
                     else:
                         L_block_T = wp.tile_transpose(L_block)
                         wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
@@ -365,10 +372,6 @@ def make_llt_blocked_rcm_factorize_kernel(block_size: int):
                         L_2_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(k, j))
                         if wp.static(HAS_TILE_MATMUL_TRANSPOSE_UPDATE):
                             wp.tile_matmul_transpose_update(A_ik_tile, L_tile, L_2_tile, alpha=-1.0)
-                        elif wp.static(HAS_NATIVE_TILE_MATMUL_TRANSPOSE_UPDATE):
-                            wp.static(make_tile_matmul_transpose_update_func(block_size, "shared", "register"))(
-                                A_ik_tile, L_tile, L_2_tile, -1.0
-                            )
                         else:
                             L_T_tile = wp.tile_transpose(L_2_tile)
                             wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
@@ -382,11 +385,134 @@ def make_llt_blocked_rcm_factorize_kernel(block_size: int):
 
 
 @cache
+def make_llt_blocked_rcm_parallel_factorize_kernels(block_size: int):
+    """Create panel-parallel blocked Cholesky kernels.
+
+    Each diagonal tile remains sequential, but the off-diagonal tiles in a
+    panel are solved by independent CUDA blocks. This exposes parallelism for
+    a single large matrix while preserving the same factor and tile mask.
+    """
+
+    @wp.kernel(enable_backward=False)
+    def factorize_diagonal_kernel(
+        tile_k: int,
+        dim: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        tpo: wp.array[wp.int32],
+        A: wp.array[wp.float32],
+        tile_pattern: wp.array[wp.int32],
+        L: wp.array[wp.float32],
+    ):
+        bid, tid_block = wp.tid()
+        block_dim = wp.block_dim()
+        n = dim[bid]
+        k = tile_k * block_size
+        if k >= n:
+            return
+
+        mat_offset = mio[bid]
+        pattern_offset = tpo[bid]
+        A_i = wp.array(ptr=get_float32_array_offset_ptr(A, mat_offset), shape=(n, n), dtype=wp.float32)
+        L_i = wp.array(ptr=get_float32_array_offset_ptr(L, mat_offset), shape=(n, n), dtype=wp.float32)
+        n_tiles = (n + block_size - 1) // block_size
+        TP_i = wp.array(
+            ptr=get_int32_array_offset_ptr(tile_pattern, pattern_offset),
+            shape=(n_tiles, n_tiles),
+            dtype=wp.int32,
+        )
+
+        diagonal = wp.tile_load(A_i, shape=(block_size, block_size), offset=(k, k), storage="shared")
+        if k + block_size > n:
+            for q in range((block_size * block_size + block_dim - 1) // block_dim):
+                index = (tid_block + q * block_dim) % (block_size * block_size)
+                row = index // block_size
+                col = index % block_size
+                # Preserve a collective full-tile write before the next Tile operation.
+                value = diagonal[row, col]
+                if k + row >= n or k + col >= n:
+                    value = wp.where(row == col, wp.float32(1), wp.float32(0))
+                diagonal[row, col] = value
+
+        for tile_j in range(tile_k):
+            if TP_i[tile_k, tile_j] == int(0):
+                continue
+            j = tile_j * block_size
+            previous = wp.tile_load(L_i, shape=(block_size, block_size), offset=(k, j))
+            wp.tile_matmul(previous, wp.tile_transpose(previous), diagonal, alpha=-1.0)
+
+        wp.tile_cholesky_inplace(diagonal)
+        wp.tile_store(L_i, diagonal, offset=(k, k))
+
+    @wp.kernel(enable_backward=False)
+    def factorize_panel_kernel(
+        tile_k: int,
+        dim: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        tpo: wp.array[wp.int32],
+        A: wp.array[wp.float32],
+        tile_pattern: wp.array[wp.int32],
+        L: wp.array[wp.float32],
+    ):
+        bid, panel_tile_i, tid_block = wp.tid()
+        tile_i = panel_tile_i + tile_k + 1
+        block_dim = wp.block_dim()
+        n = dim[bid]
+        n_tiles = (n + block_size - 1) // block_size
+        if tile_i >= n_tiles:
+            return
+
+        mat_offset = mio[bid]
+        pattern_offset = tpo[bid]
+        A_i = wp.array(ptr=get_float32_array_offset_ptr(A, mat_offset), shape=(n, n), dtype=wp.float32)
+        L_i = wp.array(ptr=get_float32_array_offset_ptr(L, mat_offset), shape=(n, n), dtype=wp.float32)
+        TP_i = wp.array(
+            ptr=get_int32_array_offset_ptr(tile_pattern, pattern_offset),
+            shape=(n_tiles, n_tiles),
+            dtype=wp.int32,
+        )
+        if TP_i[tile_i, tile_k] == int(0):
+            return
+
+        i = tile_i * block_size
+        k = tile_k * block_size
+        panel = wp.tile_load(A_i, shape=(block_size, block_size), offset=(i, k), storage="shared")
+        diagonal = wp.tile_load(L_i, shape=(block_size, block_size), offset=(k, k), storage="shared")
+        if i + block_size > n or k + block_size > n:
+            for q in range((block_size * block_size + block_dim - 1) // block_dim):
+                index = (tid_block + q * block_dim) % (block_size * block_size)
+                row = index // block_size
+                col = index % block_size
+                # Preserve collective full-tile writes before the next Tile operations.
+                panel_value = panel[row, col]
+                if i + row >= n or k + col >= n:
+                    panel_value = wp.where(i + row == k + col, wp.float32(1), wp.float32(0))
+                panel[row, col] = panel_value
+                diagonal_value = diagonal[row, col]
+                if k + row >= n or k + col >= n:
+                    diagonal_value = wp.where(row == col, wp.float32(1), wp.float32(0))
+                diagonal[row, col] = diagonal_value
+
+        for tile_j in range(tile_k):
+            if TP_i[tile_i, tile_j] == int(0) or TP_i[tile_k, tile_j] == int(0):
+                continue
+            j = tile_j * block_size
+            left = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, j))
+            right = wp.tile_load(L_i, shape=(block_size, block_size), offset=(k, j))
+            wp.tile_matmul(left, wp.tile_transpose(right), panel, alpha=-1.0)
+
+        transposed = wp.tile_transpose(panel)
+        wp.tile_lower_solve_inplace(diagonal, transposed)
+        wp.tile_store(L_i, wp.tile_transpose(transposed), offset=(i, k))
+
+    return factorize_diagonal_kernel, factorize_panel_kernel
+
+
+@cache
 def make_llt_blocked_rcm_solve_kernel(block_size: int):
     """RCM solve with tile skipping and fused output un-permutation.
 
-    The RHS is already in permuted coordinates. The solve writes ``x_hat`` in
-    permuted coordinates for backward-substitution dependencies and scatters
+    The solve gathers the RHS into permuted coordinates, writes ``x_hat`` in
+    permuted coordinates for backward-substitution dependencies, and scatters
     each solved tile directly to the original-coordinate output ``x``.
     """
 
@@ -436,7 +562,15 @@ def make_llt_blocked_rcm_solve_kernel(block_size: int):
         # Forward substitution: solve L y = b.
         for i in range(0, n_i_padded, block_size):
             tile_i = i // block_size
-            rhs_tile = wp.tile_load(b_i, shape=(block_size, 1), offset=(i, 0))
+            rhs_tile = wp.tile_zeros(shape=(block_size, 1), dtype=wp.float32, storage="shared")
+            num_row_iterations = (block_size + num_threads_per_block - 1) // num_threads_per_block
+            for ii in range(num_row_iterations):
+                row = tid_block + ii * num_threads_per_block
+                active = row < block_size and i + row < n_i
+                value = wp.float32(0.0)
+                if active:
+                    value = b_i[P_i[i + row], 0]
+                wp.tile_scatter_masked(rhs_tile, row, 0, value, active)
             L_diag = wp.tile_load(L_i, shape=(block_size, block_size), offset=(i, i))
             if i > 0:
                 for j in range(0, i, block_size):
@@ -479,7 +613,7 @@ def make_llt_blocked_rcm_solve_kernel(block_size: int):
                     if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
                         wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
                     elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_left_transpose_update_func(block_size, "generic", "register"))(
+                        wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
                             rhs_tile, L_tile, x_tile, -1.0
                         )
                     else:
@@ -587,7 +721,7 @@ def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
                     if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
                         wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
                     elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_left_transpose_update_func(block_size, "generic", "register"))(
+                        wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
                             rhs_tile, L_tile, x_tile, -1.0
                         )
                     else:
@@ -648,7 +782,7 @@ def llt_blocked_rcm_fused_permute_and_tp(
     """
     wp.launch(
         kernel=kernel,
-        dim=(num_blocks, max_dim, max_dim),
+        dim=(num_blocks, max_dim * (max_dim + 1) // 2),
         inputs=[dim, mio, vio, tpo, float(tol), P, A, A_hat, inv_P, tile_pattern],
         device=device,
     )
@@ -692,6 +826,40 @@ def llt_blocked_rcm_factorize(
         block_dim=block_dim,
         device=device,
     )
+
+
+def llt_blocked_rcm_factorize_parallel(
+    kernels,
+    dim: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    tpo: wp.array[wp.int32],
+    A: wp.array[wp.float32],
+    tile_pattern: wp.array[wp.int32],
+    L: wp.array[wp.float32],
+    num_blocks: int,
+    max_tiles: int,
+    block_dim: int = 128,
+    device: wp.DeviceLike = None,
+):
+    """Launch the panel-parallel semi-sparse blocked Cholesky factorization."""
+    diagonal_kernel, panel_kernel = kernels
+    for tile_k in range(max_tiles):
+        wp.launch_tiled(
+            kernel=diagonal_kernel,
+            dim=num_blocks,
+            inputs=[tile_k, dim, mio, tpo, A, tile_pattern, L],
+            block_dim=block_dim,
+            device=device,
+        )
+        panel_tiles = max_tiles - tile_k - 1
+        if panel_tiles > 0:
+            wp.launch_tiled(
+                kernel=panel_kernel,
+                dim=(num_blocks, panel_tiles),
+                inputs=[tile_k, dim, mio, tpo, A, tile_pattern, L],
+                block_dim=block_dim,
+                device=device,
+            )
 
 
 def llt_blocked_rcm_solve(

@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
+from newton._src.solvers.kamino._src.linalg.factorize import rcm_batch
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
@@ -50,6 +51,231 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         self.assertIsNone(llt._operator)
         self.assertEqual(llt.dtype, wp.float32)
         self.assertEqual(llt.device, self.default_device)
+        self.assertTrue(llt._reuse_permutation)
+
+    @staticmethod
+    def _run_rcm(matrix: np.ndarray, device, use_cuda_graph: bool = False) -> np.ndarray:
+        n = matrix.shape[0]
+        matrix_wp = wp.array(matrix.reshape(-1), dtype=wp.float32, device=device)
+        dims = wp.array([n], dtype=wp.int32, device=device)
+        offsets = wp.array([0], dtype=wp.int32, device=device)
+        permutation = wp.zeros(n, dtype=wp.int32, device=device)
+        scratch = rcm_batch.allocate_rcm_batch_scratch(n, 1, device)
+        reorder = rcm_batch.create_rcm_batch_launch(
+            A_flat=matrix_wp,
+            perm_flat=permutation,
+            dims=dims,
+            mio=offsets,
+            vio=offsets,
+            scratch=scratch,
+            num_blocks=1,
+            max_dim=n,
+            use_cuda_graph=use_cuda_graph,
+            device=device,
+        )
+        reorder()
+        return permutation.numpy()
+
+    @staticmethod
+    def _path_bandwidth(permutation: np.ndarray, paths: tuple[np.ndarray, ...]) -> int:
+        positions = np.empty(permutation.size, dtype=np.int64)
+        positions[permutation] = np.arange(permutation.size)
+        return max(int(np.max(np.abs(positions[path[:-1]] - positions[path[1:]]))) for path in paths)
+
+    def test_complete_rcm_across_legacy_boundary(self):
+        """Traverse long paths completely across the former 1024-row boundary."""
+        if not self.default_device.is_cuda:
+            self.skipTest("The legacy boundary applied only to the CUDA fast path")
+
+        for n in (1024, 1025):
+            with self.subTest(n=n):
+                rng = np.random.default_rng(self.seed + n)
+                path = rng.permutation(n)
+                matrix = np.eye(n, dtype=np.float32) * 2.0
+                matrix[path[:-1], path[1:]] = -0.25
+                matrix[path[1:], path[:-1]] = -0.25
+
+                permutation = self._run_rcm(matrix, self.default_device, use_cuda_graph=True)
+
+                np.testing.assert_array_equal(np.sort(permutation), np.arange(n))
+                self.assertEqual(self._path_bandwidth(permutation, (path,)), 1)
+
+    def test_complete_rcm_on_disconnected_components(self):
+        """Traverse every disconnected path component on each backend."""
+        devices = [wp.get_device("cpu")]
+        if self.default_device.is_cuda:
+            devices.append(self.default_device)
+
+        n = 96
+        rng = np.random.default_rng(self.seed)
+        labels = rng.permutation(n)
+        paths = (labels[: n // 2], labels[n // 2 :])
+        matrix = np.eye(n, dtype=np.float32) * 2.0
+        for path in paths:
+            matrix[path[:-1], path[1:]] = -0.25
+            matrix[path[1:], path[:-1]] = -0.25
+
+        for device in devices:
+            with self.subTest(device=device):
+                permutation = self._run_rcm(matrix, device, use_cuda_graph=device.is_cuda)
+
+                np.testing.assert_array_equal(np.sort(permutation), np.arange(n))
+                self.assertEqual(self._path_bandwidth(permutation, paths), 1)
+
+    def test_cached_permutation_with_changed_sparsity(self):
+        """Verify cached RCM remains correct when numeric sparsity changes."""
+        n = 96
+        rng = np.random.default_rng(self.seed)
+
+        def make_banded_spd(width):
+            matrix = np.zeros((n, n), dtype=np.float32)
+            for offset in range(1, width + 1):
+                values = rng.uniform(-0.2, 0.2, n - offset).astype(np.float32)
+                rows = np.arange(n - offset)
+                matrix[rows, rows + offset] = values
+                matrix[rows + offset, rows] = values
+            matrix[np.diag_indices(n)] = np.sum(np.abs(matrix), axis=1) + 1.0
+            return matrix
+
+        matrix_1 = make_banded_spd(2)
+        matrix_2 = make_banded_spd(9)
+        rhs_np = rng.standard_normal(n).astype(np.float32)
+
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=[n], dtype=wp.float32, device=self.default_device)
+        matrix_wp = wp.array(matrix_1.reshape(-1), dtype=wp.float32, device=self.default_device)
+        rhs_wp = wp.array(rhs_np, dtype=wp.float32, device=self.default_device)
+        result_wp = wp.zeros(n, dtype=wp.float32, device=self.default_device)
+        operator = DenseLinearOperatorData(info=info, mat=matrix_wp)
+        solver = LLTBlockedRCMSolver(
+            operator=operator,
+            block_size=32,
+            factorize_block_dim=256,
+            reuse_permutation=True,
+            parallel_factorization=True,
+            device=self.default_device,
+        )
+
+        solver.compute(matrix_wp)
+        permutation_1 = solver.P.numpy()
+        matrix_wp.assign(matrix_2.reshape(-1))
+        solver.compute(matrix_wp)
+        solver.solve(rhs_wp, result_wp)
+
+        np.testing.assert_array_equal(solver.P.numpy(), permutation_1)
+        expected = np.linalg.solve(matrix_2, rhs_np)
+        np.testing.assert_allclose(result_wp.numpy(), expected, rtol=1.0e-3, atol=1.0e-4)
+
+    def test_parallel_factorization_with_partial_tile(self):
+        """Factorize and solve a system whose final tile is partial."""
+        n = 33
+        matrix = np.eye(n, dtype=np.float32) * 2.0
+        indices = np.arange(n - 1)
+        matrix[indices, indices + 1] = -0.25
+        matrix[indices + 1, indices] = -0.25
+        rhs = np.ones(n, dtype=np.float32)
+
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=[n], dtype=wp.float32, device=self.default_device)
+        matrix_wp = wp.array(matrix.reshape(-1), dtype=wp.float32, device=self.default_device)
+        rhs_wp = wp.array(rhs, dtype=wp.float32, device=self.default_device)
+        result_wp = wp.zeros(n, dtype=wp.float32, device=self.default_device)
+        solver = LLTBlockedRCMSolver(
+            operator=DenseLinearOperatorData(info=info, mat=matrix_wp),
+            block_size=32,
+            reuse_permutation=True,
+            parallel_factorization=True,
+            device=self.default_device,
+        )
+
+        solver.compute(matrix_wp)
+        solver.solve(rhs_wp, result_wp)
+
+        expected = np.linalg.solve(matrix, rhs)
+        np.testing.assert_allclose(result_wp.numpy(), expected, rtol=1.0e-4, atol=1.0e-5)
+
+    def test_cached_permutation_on_cpu_fallback(self):
+        """Verify the CPU fallback reuses a cached permutation."""
+        device = wp.get_device("cpu")
+        n = 8
+
+        def make_spd(edges):
+            matrix = np.zeros((n, n), dtype=np.float32)
+            for row, col in edges:
+                matrix[row, col] = -0.2
+                matrix[col, row] = -0.2
+            matrix[np.diag_indices(n)] = np.sum(np.abs(matrix), axis=1) + 1.0
+            return matrix
+
+        path_matrix = make_spd([(i, i + 1) for i in range(n - 1)])
+        star_matrix = make_spd([(0, i) for i in range(1, n)])
+        matrix_wp = wp.array(path_matrix.reshape(-1), dtype=wp.float32, device=device)
+        dims = wp.array([n], dtype=wp.int32, device=device)
+        offsets = wp.array([0], dtype=wp.int32, device=device)
+        permutation = wp.zeros(n, dtype=wp.int32, device=device)
+        scratch = rcm_batch.allocate_rcm_batch_scratch(n, 1, device)
+        reorder = rcm_batch.create_rcm_batch_launch(
+            A_flat=matrix_wp,
+            perm_flat=permutation,
+            dims=dims,
+            mio=offsets,
+            vio=offsets,
+            scratch=scratch,
+            num_blocks=1,
+            max_dim=n,
+            use_cuda_graph=False,
+            reuse_permutation=True,
+            device=device,
+        )
+
+        reorder()
+        cached = permutation.numpy()
+        matrix_wp.assign(star_matrix.reshape(-1))
+        reorder()
+        np.testing.assert_array_equal(permutation.numpy(), cached)
+
+        recomputed = wp.zeros_like(permutation)
+        fresh_scratch = rcm_batch.allocate_rcm_batch_scratch(n, 1, device)
+        recompute = rcm_batch.create_rcm_batch_launch(
+            A_flat=matrix_wp,
+            perm_flat=recomputed,
+            dims=dims,
+            mio=offsets,
+            vio=offsets,
+            scratch=fresh_scratch,
+            num_blocks=1,
+            max_dim=n,
+            use_cuda_graph=False,
+            device=device,
+        )
+        recompute()
+        self.assertFalse(np.array_equal(recomputed.numpy(), cached))
+
+    def test_solve_with_fewer_threads_than_tile_rows(self):
+        """Verify the solve gathers every right-hand-side row."""
+        n = 65
+        rng = np.random.default_rng(self.seed)
+        dense = rng.standard_normal((n, n)).astype(np.float32)
+        matrix = dense @ dense.T + np.eye(n, dtype=np.float32)
+        rhs = rng.standard_normal(n).astype(np.float32)
+
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=[n], dtype=wp.float32, device=self.default_device)
+        matrix_wp = wp.array(matrix.reshape(-1), dtype=wp.float32, device=self.default_device)
+        rhs_wp = wp.array(rhs, dtype=wp.float32, device=self.default_device)
+        result_wp = wp.zeros(n, dtype=wp.float32, device=self.default_device)
+        solver = LLTBlockedRCMSolver(
+            operator=DenseLinearOperatorData(info=info, mat=matrix_wp),
+            block_size=64,
+            solve_block_dim=32,
+            device=self.default_device,
+        )
+
+        solver.compute(matrix_wp)
+        solver.solve(rhs_wp, result_wp)
+
+        expected = np.linalg.solve(matrix, rhs)
+        np.testing.assert_allclose(result_wp.numpy(), expected, rtol=1.0e-3, atol=1.0e-4)
 
     def test_01_single_problem_dims_all_active(self):
         """
