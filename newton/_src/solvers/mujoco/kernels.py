@@ -37,11 +37,19 @@ def _import_contact_force_fn():
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
 vec11 = wp.types.vector(length=11, dtype=wp.float32)
 
+CONTACT_TYPE_CONSTRAINT = 1
+
 
 # Utility functions
 @wp.func
 def safe_div(x: float, y: float) -> float:
     return x / wp.where(y != 0.0, y, MJ_MINVAL)
+
+
+@wp.func
+def upper_tri_index(n: int, i: int, j: int) -> int:
+    """Return the index of ``(i, j)`` in an upper triangle without its diagonal."""
+    return (i * (2 * n - i - 3)) // 2 + j - 1
 
 
 @wp.func
@@ -101,6 +109,8 @@ def write_contact(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
+    contact_geomcollisionid_out: wp.array[int],
 ):
     # See function write_contact in mujoco_warp, file collision_primitive.py
 
@@ -110,6 +120,9 @@ def write_contact(
     contact_frame_out[cid] = frame_in
     contact_geom_out[cid] = geoms_in
     contact_worldid_out[cid] = worldid_in
+    contact_type_out[cid] = CONTACT_TYPE_CONSTRAINT
+    # Injected Newton contacts do not carry MuJoCo collision-sensor metadata.
+    contact_geomcollisionid_out[cid] = 0
     contact_includemargin_out[cid] = margin_in
     contact_dim_out[cid] = condim_in
     contact_friction_out[cid] = friction_in
@@ -132,7 +145,15 @@ def contact_params(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    pair_dim: wp.array[int],
+    pair_solref: wp.array2d[wp.vec2],
+    pair_solreffriction: wp.array2d[wp.vec2],
+    pair_solimp: wp.array2d[vec5],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
+    pair_friction: wp.array2d[vec5],
     geoms: wp.vec2i,
+    pairid: int,
     worldid: int,
 ):
     # See function contact_params in mujoco_warp, file collision_core.py
@@ -140,50 +161,68 @@ def contact_params(
     g1 = geoms[0]
     g2 = geoms[1]
 
-    p1 = geom_priority[g1]
-    p2 = geom_priority[g2]
-
-    condim1 = geom_condim[g1]
-    condim2 = geom_condim[g2]
-
-    if p1 > p2:
-        mix = 1.0
-        condim = condim1
-        resolved_friction = geom_friction[worldid, g1]
-    elif p2 > p1:
-        mix = 0.0
-        condim = condim2
-        resolved_friction = geom_friction[worldid, g2]
+    if pairid >= 0:
+        pair_worldid = worldid % pair_solref.shape[0]
+        margin = pair_margin[pair_worldid, pairid]
+        gap = pair_gap[pair_worldid, pairid]
+        condim = pair_dim[pairid]
+        friction = pair_friction[pair_worldid, pairid]
+        solref = pair_solref[pair_worldid, pairid]
+        solreffriction = pair_solreffriction[pair_worldid, pairid]
+        solimp = pair_solimp[pair_worldid, pairid]
+        mix = 0.5
     else:
-        solmix1 = geom_solmix[worldid, g1]
-        solmix2 = geom_solmix[worldid, g2]
-        mix = safe_div(solmix1, solmix1 + solmix2)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
-        mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
-        mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
-        condim = wp.max(condim1, condim2)
-        resolved_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
+        p1 = geom_priority[g1]
+        p2 = geom_priority[g2]
+
+        condim1 = geom_condim[g1]
+        condim2 = geom_condim[g2]
+
+        if p1 > p2:
+            mix = 1.0
+            condim = condim1
+            resolved_friction = geom_friction[worldid, g1]
+        elif p2 > p1:
+            mix = 0.0
+            condim = condim2
+            resolved_friction = geom_friction[worldid, g2]
+        else:
+            solmix1 = geom_solmix[worldid, g1]
+            solmix2 = geom_solmix[worldid, g2]
+            mix = safe_div(solmix1, solmix1 + solmix2)
+            mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
+            mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
+            mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
+            condim = wp.max(condim1, condim2)
+            resolved_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
+
+        friction = vec5(
+            resolved_friction[0],
+            resolved_friction[0],
+            resolved_friction[1],
+            resolved_friction[2],
+            resolved_friction[2],
+        )
+
+        # Sum margins for consistency with thickness summing
+        margin = geom_margin[worldid, g1] + geom_margin[worldid, g2]
+        gap = geom_gap[worldid, g1] + geom_gap[worldid, g2]
+
+        if geom_solref[worldid, g1].x > 0.0 and geom_solref[worldid, g2].x > 0.0:
+            solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
+        else:
+            solref = wp.min(geom_solref[worldid, g1], geom_solref[worldid, g2])
+
+        solreffriction = wp.vec2(0.0, 0.0)
+        solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
 
     friction = vec5(
-        wp.max(MJ_MINMU, resolved_friction[0]),
-        wp.max(MJ_MINMU, resolved_friction[0]),
-        wp.max(MJ_MINMU, resolved_friction[1]),
-        wp.max(MJ_MINMU, resolved_friction[2]),
-        wp.max(MJ_MINMU, resolved_friction[2]),
+        wp.max(MJ_MINMU, friction[0]),
+        wp.max(MJ_MINMU, friction[1]),
+        wp.max(MJ_MINMU, friction[2]),
+        wp.max(MJ_MINMU, friction[3]),
+        wp.max(MJ_MINMU, friction[4]),
     )
-
-    # Sum margins for consistency with thickness summing
-    margin = geom_margin[worldid, g1] + geom_margin[worldid, g2]
-    gap = geom_gap[worldid, g1] + geom_gap[worldid, g2]
-
-    if geom_solref[worldid, g1].x > 0.0 and geom_solref[worldid, g2].x > 0.0:
-        solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
-    else:
-        solref = wp.min(geom_solref[worldid, g1], geom_solref[worldid, g2])
-
-    solreffriction = wp.vec2(0.0, 0.0)
-
-    solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
 
     return margin, gap, condim, friction, solref, solreffriction, solimp, mix
 
@@ -399,6 +438,15 @@ def convert_newton_contacts_to_mjwarp_kernel(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    ngeom: int,
+    nxn_pairid: wp.array[wp.vec2i],
+    pair_dim: wp.array[int],
+    pair_solref: wp.array2d[wp.vec2],
+    pair_solreffriction: wp.array2d[wp.vec2],
+    pair_solimp: wp.array2d[vec5],
+    pair_margin: wp.array2d[float],
+    pair_gap: wp.array2d[float],
+    pair_friction: wp.array2d[vec5],
     # Newton shape-material force-space inputs (issue #2009)
     shape_material_ke: wp.array[float],
     shape_material_kd: wp.array[float],
@@ -435,6 +483,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
     contact_worldid_out: wp.array[int],
+    contact_type_out: wp.array[int],
+    contact_geomcollisionid_out: wp.array[int],
     # Values to clear - see _zero_collision_arrays kernel from mujoco_warp
     nworld_in: int,
     ncollision_out: wp.array[int],
@@ -544,12 +594,21 @@ def convert_newton_contacts_to_mjwarp_kernel(
         frame = make_frame(n)
 
         geoms = wp.vec2i(geom_a, geom_b)
+        geom_lo = wp.min(geom_a, geom_b)
+        geom_hi = wp.max(geom_a, geom_b)
+        if geom_lo == geom_hi:
+            tid_to_cid[tid] = -1
+            return
+        pairid = nxn_pairid[upper_tri_index(ngeom, geom_lo, geom_hi)][0]
+        if pairid == -2:
+            tid_to_cid[tid] = -1
+            return
 
         worldid = body_a // bodies_per_world
         if body_a < 0:
             worldid = body_b // bodies_per_world
 
-        margin, _gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
+        margin, gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
             geom_condim,
             geom_priority,
             geom_solmix,
@@ -558,15 +617,27 @@ def convert_newton_contacts_to_mjwarp_kernel(
             geom_friction,
             geom_margin,
             geom_gap,
+            pair_dim,
+            pair_solref,
+            pair_solreffriction,
+            pair_solimp,
+            pair_margin,
+            pair_gap,
+            pair_friction,
             geoms,
+            pairid,
             worldid,
         )
+
+        if pairid >= 0 and dist >= margin + gap:
+            tid_to_cid[tid] = -1
+            return
 
         # FORCE_SPACE per-contact override: bypass contact_params' per-geom
         # solref averaging and recompute the solref from the combined
         # two-body factor. See docs/solvers/mujoco.rst > "Shape-material
         # contact stiffness and damping" for the mechanism.
-        if shape_mjc_solref_mode:
+        if pairid < 0 and shape_mjc_solref_mode:
             mode_a = shape_mjc_solref_mode[shape_a]
             mode_b = shape_mjc_solref_mode[shape_b]
             if mode_a == SOLREF_MODE_FORCE_SPACE and mode_b == SOLREF_MODE_FORCE_SPACE:
@@ -658,6 +729,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
             contact_geom_out=contact_geom_out,
             contact_efc_address_out=contact_efc_address_out,
             contact_worldid_out=contact_worldid_out,
+            contact_type_out=contact_type_out,
+            contact_geomcollisionid_out=contact_geomcollisionid_out,
         )
     else:
         # ── FAST PATH ────────────────────────────────────────────────────
@@ -3087,7 +3160,7 @@ def convert_qfrc_actuator_from_mj_kernel(
 
 @wp.kernel
 def update_pair_properties_kernel(
-    pairs_per_world: int,
+    mjc_pair_to_newton_pair: wp.array2d[int],
     pair_solref_in: wp.array[wp.vec2],
     pair_solreffriction_in: wp.array[wp.vec2],
     pair_solimp_in: wp.array[vec5],
@@ -3108,7 +3181,9 @@ def update_pair_properties_kernel(
     (solref, solimp, margin, gap, friction) from Newton custom attributes.
     """
     world, mjc_pair = wp.tid()
-    newton_pair = world * pairs_per_world + mjc_pair
+    newton_pair = mjc_pair_to_newton_pair[world, mjc_pair]
+    if newton_pair < 0:
+        return
 
     if pair_solref_in:
         pair_solref_out[world, mjc_pair] = pair_solref_in[newton_pair]

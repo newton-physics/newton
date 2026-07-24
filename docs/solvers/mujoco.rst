@@ -488,6 +488,17 @@ contact overrides. They are implemented through the MuJoCo
 parsed into MuJoCo's geom-pair contact structures by
 ``SolverMuJoCo._init_pairs``.
 
+With ``use_mujoco_contacts=False``, an explicit pair overrides the
+contact's ``condim``, friction, ``solref``, ``solreffriction``, ``solimp``,
+margin, and gap. Newton's per-contact stiffness, damping, and friction
+scale still take precedence.
+
+This only changes contacts that Newton's collision pipeline already
+emits. An explicit MuJoCo pair does not create a Newton collision
+candidate, so pair-only contacts and pair margins wider than Newton's
+detection range still require matching Newton collision configuration.
+MuJoCo collision sensors do not consume these injected contacts.
+
 
 Multi-world support
 -------------------
