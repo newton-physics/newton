@@ -1291,8 +1291,15 @@ void main() {
         else:
             # Render phase: flat arrays (built at end of build phase) handle all shape
             # transform updates in a single kernel launch — no per-batch work needed here.
+            show_ground = self.show_ground
+            show_ground_changed = show_ground != self._last_show_ground
             for shapes in self._shape_instances.values():
                 shapes.colors_changed = False
+                if show_ground_changed and int(shapes.geo_type) == int(newton.GeoType.PLANE):
+                    qualified = self._qualify(shapes.name)
+                    self._pending_instance_visibility[qualified] = show_ground
+            if show_ground_changed:
+                self._last_show_ground = show_ground
 
             self._log_gaussian_shapes(state)
             self._log_non_shape_state(state)
@@ -2063,6 +2070,7 @@ void main() {
 
         self._last_state = None
         self._last_control = None
+        self._last_show_ground = True
 
         # reset camera
         self.camera = Camera(width=self._render_width, height=self._render_height, up_axis=self._up_axis)
