@@ -230,14 +230,10 @@ Cover:
 - `gap=None` inheriting `builder.rigid_gap`;
 - stationary, separating, and rapidly closing velocities where supported.
 
-Add adversarial reduction cases in which:
-
-- a moved representative remains speculative and is retained with its
-  recomputed separation;
-- a moved representative would enter the margin regime and therefore falls
-  back to a valid raw point or is omitted;
-- a rotated normal remains normalized and consistently oriented;
-- a synthetic point exceeds `gap_sum` and is omitted.
+Add adversarial reduction cases in which speculative and penetrating faces
+share a reduction bin. Verify that speculative output retains the selected raw
+face's position, normal, pair separation, geometric area, and activation
+stiffness while penetrating force and wrench matching remain unchanged.
 
 Directly assert that:
 
@@ -249,14 +245,11 @@ Directly assert that:
 - speculative faces contribute no pressure force;
 - damping and friction remain inactive before normal activation;
 - reduced and unreduced paths keep the same band;
-- speculative reduction may change a representative's position or normal, but
-  re-samples both SDFs at the final position before export;
-- every changed representative remains provably outside the penetrating
-  margin regime and inside the speculative band;
-- a proposed representative that crosses either band boundary falls back to a
-  valid raw candidate or is omitted; its separation is never clamped;
-- normal matching and other reduction steps may change speculative geometry,
-  but penetrating force/wrench values never classify or assign depth to it;
+- speculative reduction retains raw speculative positions and normals, so
+  reduction cannot move a speculative representative across either boundary;
+- normal matching and synthetic-anchor generation remain penetrating-only;
+- penetrating force/wrench values never classify or assign depth to a
+  speculative representative;
 - local activation stiffness remains associated with the selected raw face
   and is not summed or redistributed as a speculative patch stiffness;
 - MuJoCo Warp stores the speculative contact but does not allocate an active
@@ -392,64 +385,19 @@ Do not let speculative candidates contribute current force, moment, or
 penetrating tangent-stiffness to reduction totals.
 
 Their current force and wrench are both zero, so ordinary force matching and
-wrench matching contain no force information about how to reduce them. The
-reducer may still use geometric clustering, normal matching, or a synthetic
-representative, subject to the final band check below. It must not manufacture
-a speculative force or copy an aggregate penetrating depth onto that
-representative.
+wrench matching contain no meaningful information for relocating them. Keep
+the implementation simple: a reduced speculative contact must retain the
+selected raw face's position, normal, pair separation, geometric area, and
+local activation stiffness. Normal matching and synthetic center-of-pressure
+anchors apply only to penetrating contacts.
 
-The current penetrating reducer generally keeps selected face positions, but
-it can rotate normals and add a synthetic center-of-pressure anchor with an
-assigned depth. Speculative reduction may likewise select a raw face, move a
-representative, synthesize a representative position, or rotate its normal.
-The hard constraint is that reduction must never turn a speculative candidate
-into a penetrating contact.
-
-After every position change, and immediately before export:
-
-1. Re-sample both raw SDFs at the representative's final world-space position.
-2. Convert the samples to the common world-space distance convention.
-3. Subtract each shape's margin.
-4. Recompute `pair_effective_separation` from those two adjusted values.
-5. Rebuild `contact_distance` from that final value rather than carrying or
-   reconstructing an old depth.
-
-The exported representative must still satisfy:
-
-```python
-0.0 <= pair_effective_separation <= gap_sum
-```
-
-Account explicitly for SDF sampling and interpolation error. For a moved or
-synthetic representative, compute a conservative lower bound using the same
-voxel-scale error model as contact generation, and accept it only when:
-
-```python
-pair_effective_separation - sdf_error_bound >= 0.0
-```
-
-This guard is intentionally one-sided: its purpose is to prove that a moved
-speculative representative has not crossed into the margin regime. The normal
-outer-boundary tolerance may still be used at `gap_sum`. An unchanged raw
-candidate exactly on the margin boundary follows the ordinary band rule and
-remains speculative.
-
-Do not clamp a negative or uncertain value to zero. If a proposed changed
-representative fails either boundary check, fall back to an unchanged valid
-raw candidate from the same reduction region; if none exists, omit that
-speculative representative. The penetrating generation path, not speculative
-reduction, owns contacts whose recomputed separation is negative.
-
-Normalize every changed normal and keep it consistently oriented with the
-selected contact-surface normal. Normal rotation does not determine the band,
-but it must not invert the exported solver geometry.
-
-Do not assign a penetrating aggregate or reconstructed negative depth to a
-speculative representative. A synthetic representative is allowed only if it
-passes the final two-SDF band check and exports nonnegative
-`contact_distance`. Keep its geometric area and local activation stiffness
-associated with the selected raw face; do not sum or redistribute activation
-stiffness through penetrating force or wrench matching.
+This stronger invariant makes it impossible for reduction to move a
+speculative representative into the margin regime. Do not clamp its
+separation, copy an aggregate penetrating depth onto it, rotate its normal, or
+manufacture speculative force. If a future change wants to relocate or rotate
+speculative representatives, it must first add a final two-SDF band check and
+tests proving the representative still satisfies
+`0.0 <= pair_effective_separation <= gap_sum`.
 
 When speculative and penetrating faces coexist, account for their bands
 independently. They may share geometric clustering machinery, but speculative
@@ -458,9 +406,8 @@ penetrating contacts, or matched penetrating stiffness.
 
 This deliberately does not preserve the stiffness or future wrench of the
 entire discarded speculative patch. Such a wrench is not a current physical
-quantity. Relocation is safe only while the final representative remains
-provably speculative. The local activation stiffness is only a short-lived
-transition parameter until collision geometry is rebuilt.
+quantity. The local activation stiffness is only a short-lived transition
+parameter until collision geometry is rebuilt.
 
 Reduction must not cause a contact to change bands within one collision pass.
 Later body motion may legitimately move a cached speculative contact into the
@@ -667,13 +614,11 @@ The work is complete when:
 - exact helper boundaries and tolerance-aware SDF boundaries are covered;
 - pair separation uses both adjusted world-space SDF values;
 - reduced and unreduced output follows the same bands;
-- speculative reduction may change representative positions and normals, but
-  re-samples both SDFs and recomputes separation at every final position;
-- every moved or synthetic speculative representative has a conservative
-  nonnegative separation lower bound and remains within `gap_sum`;
-- invalid changed representatives fall back to a valid raw candidate or are
-  omitted, never clamped or exported with an aggregate penetrating depth;
-- changed normals remain normalized and consistently oriented;
+- speculative reduction retains the selected raw speculative position, normal,
+  separation, geometric area, and activation stiffness;
+- normal matching and synthetic anchors apply only to penetrating contacts;
+- reduction never clamps speculative separation or exports it with an
+  aggregate penetrating depth;
 - speculative reduction does not change penetrating force/wrench matching or
   redistribute local activation stiffness as a speculative patch stiffness;
 - speculative contacts appear in public and optional surface output;
