@@ -240,7 +240,7 @@ class Example:
         builder: newton.ModelBuilder,
         args,
     ) -> tuple[list[int], list[int], int, int]:
-        tray_body = builder.add_body(
+        tray_body = builder.add_link(
             xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             mass=args.tray_mass,
             inertia=wp.mat33(np.eye(3) * args.tray_inertia),

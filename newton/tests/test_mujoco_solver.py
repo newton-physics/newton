@@ -7429,7 +7429,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         root_joint = builder.add_joint_free(body)
         builder.add_articulation([root_joint])
-        loop_joint = builder.add_joint_fixed(parent=-1, child=body)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*FREE joint parallel.*", category=UserWarning)
+            loop_joint = builder.add_joint_fixed(parent=-1, child=body)
 
         self.assertEqual(builder.joint_articulation[loop_joint], -1)
 
@@ -7446,12 +7448,14 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         builder = newton.ModelBuilder()
         b0 = builder.add_link(mass=0.01)
         b1 = builder.add_link(mass=0.01)
+        b2 = builder.add_link(mass=0.01)
         j0 = builder.add_joint_revolute(-1, b0)
         j1 = builder.add_joint_revolute(b0, b1)
-        builder.add_articulation([j0, j1])
+        j2 = builder.add_joint_revolute(b1, b2)
+        builder.add_articulation([j0, j1, j2])
         # add a loop joint with asymmetric xforms to exercise relpose computation
         builder.add_joint_fixed(
-            b1,
+            b2,
             b0,
             parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.1, -0.3), wp.quat_identity()),
@@ -7464,7 +7468,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.replicate(builder, world_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
-        self.assertEqual(solver.mj_model.nv, 2)
+        self.assertEqual(solver.mj_model.nv, 3)
         # Fixed loop joint → 1 weld constraint
         self.assertEqual(solver.mj_model.neq, 1)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_WELD))
@@ -7550,10 +7554,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         inertia = wp.mat33(np.eye(3))
         b0 = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
         j0 = builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0))
         j1 = builder.add_joint_revolute(b0, b1, axis=(0.0, 1.0, 0.0))
-        builder.add_articulation([j0, j1])
-        builder.add_joint_revolute(b1, b0, axis=(0.0, 0.0, 1.0))
+        j2 = builder.add_joint_revolute(b1, b2, axis=(1.0, 0.0, 0.0))
+        builder.add_articulation([j0, j1, j2])
+        builder.add_joint_revolute(b2, b0, axis=(0.0, 0.0, 1.0))
 
         world_count = 3
         world_builder = newton.ModelBuilder()
@@ -7562,7 +7568,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
 
         self.assertEqual(solver.mj_model.neq, 2)
-        expected = np.array([[2, 2], [5, 5], [8, 8]], dtype=np.int32)
+        expected = np.array([[3, 3], [7, 7], [11, 11]], dtype=np.int32)
         np.testing.assert_array_equal(solver.mjc_eq_to_newton_jnt.numpy(), expected)
 
     def test_mjc_equality_target_remaps_in_add_builder(self):
@@ -7687,11 +7693,13 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             builder.add_shape_box(body=tip, hx=0.1, hy=0.1, hz=0.1)
             builder.add_articulation([j0, j1, j2])
 
-            connect_joint = builder.add_joint_ball(
-                parent=root,
-                child=mid,
-                enabled=bool(connect_enabled[world]),
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+                connect_joint = builder.add_joint_ball(
+                    parent=root,
+                    child=mid,
+                    enabled=bool(connect_enabled[world]),
+                )
             _add_equality_constraint(
                 builder,
                 constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
@@ -7707,11 +7715,13 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                     "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
                 },
             )
-            weld_joint = builder.add_joint_fixed(
-                parent=mid,
-                child=tip,
-                enabled=bool(weld_enabled[world]),
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+                weld_joint = builder.add_joint_fixed(
+                    parent=mid,
+                    child=tip,
+                    enabled=bool(weld_enabled[world]),
+                )
             _add_equality_constraint(
                 builder,
                 constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD,
@@ -7778,10 +7788,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         """
         builder = newton.ModelBuilder()
 
-        # 2-link articulation: b1 offset from b0 by (0, 0, 1) so the loop
+        # 3-link articulation: b1 offset from b0 by (0, 0, 1), with b2
+        # colocated with b1, so the loop
         # joint can use asymmetric local anchors that coincide in world space.
         b0 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j0 = builder.add_joint_revolute(-1, b0, axis=(0, 0, 1))
         j1 = builder.add_joint_revolute(
             b0,
@@ -7789,13 +7801,14 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             axis=(0, 0, 1),
             parent_xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()),
         )
-        builder.add_articulation([j0, j1])
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0, 1, 0))
+        builder.add_articulation([j0, j1, j2])
 
         # Revolute loop joint BEFORE the free body — creates q_start offset.
-        # Asymmetric anchors: (0, 0, -0.5) on b1 at (0,0,1) → world (0, 0, 0.5)
+        # Asymmetric anchors: (0, 0, -0.5) on b2 at (0,0,1) → world (0, 0, 0.5)
         #                     (0, 0,  0.5) on b0 at origin   → world (0, 0, 0.5)
         loop_j = builder.add_joint_revolute(
-            b1,
+            b2,
             b0,
             parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0, 0, 0.5), wp.quat_identity()),
@@ -7822,10 +7835,10 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.neq, 2)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
         self.assertEqual(int(solver.mj_model.eq_type[1]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
-        # First CONNECT: parent anchor on b1 at (0, 0, -0.5)
+        # First CONNECT: parent anchor on b2 at (0, 0, -0.5)
         assert np.allclose(solver.mj_model.eq_data[0, 0:3], [0, 0, -0.5], atol=1e-6)
         # MuJoCo auto-computes child anchor from body positions at compile time:
-        # world point = b1_pos + (0,0,-0.5) = (0,0,1) + (0,0,-0.5) = (0,0,0.5)
+        # world point = b2_pos + (0,0,-0.5) = (0,0,1) + (0,0,-0.5) = (0,0,0.5)
         # in b0 frame: (0,0,0.5) - b0_pos = (0,0,0.5)
         assert np.allclose(solver.mj_model.eq_data[0, 3:6], [0, 0, 0.5], atol=1e-6)
         # Second CONNECT: offset along hinge axis (0, 0, 1) by 0.1
@@ -7869,16 +7882,18 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         """
         builder = newton.ModelBuilder()
 
-        # 2-link articulation
+        # 3-link articulation
         b0 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j0 = builder.add_joint_revolute(-1, b0, axis=(0, 0, 1))
         j1 = builder.add_joint_revolute(b0, b1, axis=(0, 0, 1))
-        builder.add_articulation([j0, j1])
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0, 1, 0))
+        builder.add_articulation([j0, j1, j2])
 
         # Ball loop joint BEFORE the free body — creates 4q/3qd offset
         loop_j = builder.add_joint_ball(
-            b1,
+            b2,
             b0,
             parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),

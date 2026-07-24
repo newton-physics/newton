@@ -317,7 +317,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
     def test_zero_spacing_replication_copies_joint_q_exactly(self):
         source = ModelBuilder()
-        body = source.add_body()
+        body = source.add_link()
         source.add_joint_free(
             parent=-1, child=body, parent_xform=wp.transform((0.2, 0.3, 0.4), wp.quat_rpy(0.123, 0.456, 0.789))
         )

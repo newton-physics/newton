@@ -6118,12 +6118,20 @@ class TestImportSampleAssetsParsing(unittest.TestCase):
                     SolverMuJoCo.register_custom_attributes(builder)
 
                 optional_runtime_imports.clear()
-                with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
-                    builder.add_usd(
-                        asset_path,
-                        convert_mjc_equality_constraints=convert_equalities,
-                        schema_resolvers=[usd.SchemaResolverMjc()],
-                    )
+                with warnings.catch_warnings():
+                    if convert_equalities:
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"Adding a BALL joint between parent \d+ and child \d+ "
+                            r"\(label: '/World/Articulation/Link2'\).*undefined semantics",
+                            category=UserWarning,
+                        )
+                    with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
+                        builder.add_usd(
+                            asset_path,
+                            convert_mjc_equality_constraints=convert_equalities,
+                            schema_resolvers=[usd.SchemaResolverMjc()],
+                        )
                 self.assertEqual(optional_runtime_imports, [])
 
                 model = builder.finalize()
