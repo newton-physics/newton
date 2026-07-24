@@ -37,6 +37,9 @@ _SMALL_ANGLE_EPS = wp.constant(1.0e-4)
 _NULL_COLLIDER_ID = -1
 """Indicator for no collider"""
 
+_ALL_COLLIDER_WORLDS = -2
+"""Environment sentinel that queries every collider in stable order."""
+
 
 @wp.struct
 class Collider:
@@ -56,6 +59,18 @@ class Collider:
 
     collider_particle_ids: wp.array[int]
     """Model particle index for each deformable collider mesh vertex. Shape (sum(deformable mesh vertex counts),)"""
+
+    collider_world: wp.array[int]
+    """Newton world ID of each stable collider. Shape (collider_count,)."""
+
+    collider_face_offset: wp.array[int]
+    """Start of each stable collider's faces in ``face_material_index``. Shape (collider_count,)."""
+
+    world_collider_ids: wp.array[int]
+    """Stable collider IDs affecting each world, grouped by world."""
+
+    world_collider_offsets: wp.array[int]
+    """Offsets into ``world_collider_ids`` for each world. Shape (world_count + 1,)."""
 
     face_material_index: wp.array[int]
     """Material index for each collider mesh face. Shape (sum(mesh.face_count for mesh in meshes),)"""
@@ -159,8 +174,70 @@ def get_average_face_normal(
 
 
 @wp.func
+def _query_collider_sdf(
+    x: wp.vec3,
+    collider: Collider,
+    body_q: wp.array[wp.transform],
+    stable_collider_id: int,
+):
+    mesh = collider.collider_mesh[stable_collider_id]
+    thickness = collider.collider_max_thickness[stable_collider_id]
+    body_id = collider.collider_body_index[stable_collider_id]
+
+    if body_id >= 0:
+        b_pos = wp.transform_get_translation(body_q[body_id])
+        b_rot = wp.transform_get_rotation(body_q[body_id])
+        x_local = wp.quat_rotate_inv(b_rot, x - b_pos)
+    else:
+        x_local = x
+
+    max_dist = collider.query_max_dist + thickness
+
+    if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
+        query = wp.mesh_query_point_no_sign(mesh, x_local, max_dist)
+    else:
+        query = wp.mesh_query_point(mesh, x_local, max_dist)
+
+    query_result = query.result
+    sdf = float(_INFINITY)
+    sdf_grad = wp.vec3(0.0)
+    sdf_vel = wp.vec3(0.0)
+    closest_point = wp.vec3(0.0)
+    material_id = int(0)  # default material, always valid
+
+    if query_result:
+        cp = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
+
+        if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
+            face_normal = get_average_face_normal(mesh, cp)
+            sign = wp.where(wp.dot(face_normal, x_local - cp) > 0.0, 1.0, -1.0)
+        else:
+            face_normal = wp.mesh_eval_face_normal(mesh, query.face)
+            sign = query.sign
+
+        mesh_material_id = collider.face_material_index[collider.collider_face_offset[stable_collider_id] + query.face]
+        thickness = collider.material_thickness[mesh_material_id]
+
+        offset = x_local - cp
+        d = wp.length(offset) * sign
+        sdf = d - thickness
+
+        if wp.abs(d) < _CLOSEST_POINT_NORMAL_EPSILON:
+            sdf_grad = face_normal
+        else:
+            sdf_grad = wp.normalize(offset) * sign
+
+        sdf_vel = wp.mesh_eval_velocity(mesh, query.face, query.u, query.v)
+        closest_point = cp
+        material_id = mesh_material_id
+
+    return query_result, sdf, sdf_grad, sdf_vel, closest_point, material_id
+
+
+@wp.func
 def collision_sdf(
     x: wp.vec3,
+    environment_index: int,
     collider: Collider,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -174,57 +251,29 @@ def collision_sdf(
     collider_id = int(_NULL_COLLIDER_ID)
     material_id = int(0)  # default material, always valid
 
-    # Find closest collider
-    global_face_id = int(0)
-    for m in range(collider.collider_mesh.shape[0]):
-        mesh = collider.collider_mesh[m]
-        thickness = collider.collider_max_thickness[m]
-        body_id = collider.collider_body_index[m]
+    shared_worlds = environment_index == _ALL_COLLIDER_WORLDS
+    query_begin = int(0)
+    query_count = collider.collider_mesh.shape[0]
 
-        if body_id >= 0:
-            b_pos = wp.transform_get_translation(body_q[body_id])
-            b_rot = wp.transform_get_rotation(body_q[body_id])
-            x_local = wp.quat_rotate_inv(b_rot, x - b_pos)
-        else:
-            x_local = x
+    if not shared_worlds:
+        query_begin = collider.world_collider_offsets[environment_index]
+        query_count = collider.world_collider_offsets[environment_index + 1] - query_begin
 
-        max_dist = collider.query_max_dist + thickness
+    for query_offset in range(query_count):
+        stable_collider_id = query_offset
+        if not shared_worlds:
+            stable_collider_id = collider.world_collider_ids[query_begin + query_offset]
 
-        if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
-            query = wp.mesh_query_point_no_sign(mesh, x_local, max_dist)
-        else:
-            query = wp.mesh_query_point(mesh, x_local, max_dist)
-
-        if query.result:
-            cp = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
-
-            if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
-                face_normal = get_average_face_normal(mesh, cp)
-                sign = wp.where(wp.dot(face_normal, x_local - cp) > 0.0, 1.0, -1.0)
-            else:
-                face_normal = wp.mesh_eval_face_normal(mesh, query.face)
-                sign = query.sign
-
-            mesh_material_id = collider.face_material_index[global_face_id + query.face]
-            thickness = collider.material_thickness[mesh_material_id]
-
-            offset = x_local - cp
-            d = wp.length(offset) * sign
-            sdf = d - thickness
-
-            if sdf < min_sdf:
-                min_sdf = sdf
-                if wp.abs(d) < _CLOSEST_POINT_NORMAL_EPSILON:
-                    sdf_grad = face_normal
-                else:
-                    sdf_grad = wp.normalize(offset) * sign
-
-                sdf_vel = wp.mesh_eval_velocity(mesh, query.face, query.u, query.v)
-                closest_point = cp
-                collider_id = m
-                material_id = mesh_material_id
-
-        global_face_id += wp.mesh_get(mesh).indices.shape[0] // 3
+        query_result, sdf, query_grad, query_vel, query_closest_point, query_material_id = _query_collider_sdf(
+            x, collider, body_q, stable_collider_id
+        )
+        if query_result and sdf < min_sdf:
+            min_sdf = sdf
+            sdf_grad = query_grad
+            sdf_vel = query_vel
+            closest_point = query_closest_point
+            collider_id = stable_collider_id
+            material_id = query_material_id
 
     # If closest collider has rigid motion, transform back to world frame
     # Do that as a second step to avoid requiring more registers inside bvh query loop
@@ -265,6 +314,12 @@ def collision_sdf(
     return min_sdf, sdf_grad, sdf_vel, collider_id, material_id
 
 
+@wp.func
+def environment_from_offsets(index: int, offsets: wp.array[int]):
+    """Return the environment containing a packed-array index."""
+    return wp.lower_bound(offsets, index + 1) - 1
+
+
 @wp.kernel
 def collider_volumes_kernel(
     cell_volume: float,
@@ -295,6 +350,7 @@ def project_outside_collider(
     velocity_gradients: wp.array[wp.mat33],
     particle_flags: wp.array[wp.int32],
     particle_mass: wp.array[float],
+    particle_environment: wp.array[int],
     collider: Collider,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -318,6 +374,7 @@ def project_outside_collider(
         velocity_gradients: Current particle velocity gradients.
         particle_flags: Per-particle flags; particles without :attr:`ACTIVE` are skipped.
         particle_mass: Per-particle mass; zero-mass (kinematic) particles are skipped.
+        particle_environment: Per-particle world IDs, or null to query every collider.
         collider: Collider description and geometry.
         body_q: Rigid body transforms.
         body_qd: Rigid body velocities.
@@ -339,9 +396,13 @@ def project_outside_collider(
         velocity_gradients_out[i] = vel_grad
         return
 
+    environment_index = int(_ALL_COLLIDER_WORLDS)
+    if particle_environment:
+        environment_index = particle_environment[i]
+
     # project outside of collider
     sdf, sdf_gradient, sdf_vel, _collider_id, material_id = collision_sdf(
-        pos_adv, collider, body_q, body_qd, body_q_prev, dt
+        pos_adv, environment_index, collider, body_q, body_qd, body_q_prev, dt
     )
 
     sdf_end = sdf - wp.dot(sdf_vel, sdf_gradient) * dt + collider.material_projection_threshold[material_id]
@@ -374,6 +435,7 @@ def rasterize_collider_kernel(
     activation_distance: float,
     dt: float,
     node_positions: wp.array[wp.vec3],
+    node_environment_offsets: wp.array[int],
     node_volumes: wp.array[float],
     collider_sdf: wp.array[float],
     collider_velocity: wp.array[wp.vec3],
@@ -399,6 +461,7 @@ def rasterize_collider_kernel(
         activation_distance: Distance (in voxels) below which to activate the collider.
         dt: Timestep length (used to scale adhesion and finite-difference velocity).
         node_positions: Grid node positions to sample at.
+        node_environment_offsets: Packed node offsets by world, or null to query every collider.
         node_volumes: Per-node integration volumes.
         collider_sdf: Output signed distance per node.
         collider_velocity: Output collider velocity per node.
@@ -414,8 +477,11 @@ def rasterize_collider_kernel(
         bc_active = False
         sdf = _INFINITY
     else:
+        environment_index = int(_ALL_COLLIDER_WORLDS)
+        if node_environment_offsets:
+            environment_index = environment_from_offsets(i, node_environment_offsets)
         sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(
-            x, collider, body_q, body_qd, body_q_prev, dt
+            x, environment_index, collider, body_q, body_qd, body_q_prev, dt
         )
         bc_active = sdf < activation_distance * voxel_size
 
@@ -618,6 +684,7 @@ def rasterize_collider(
     collider_adhesion: wp.array[float],
     collider_ids: wp.array[int],
     temporary_store: fem.TemporaryStore,
+    node_environment_offsets: wp.array | None = None,
 ):
     """Rasterize collider signed-distance, normals, velocity, and material onto grid nodes.
 
@@ -642,6 +709,8 @@ def rasterize_collider(
         collider_adhesion: Output adhesion per node [Pa].
         collider_ids: Output collider index per node, or ``_NULL_COLLIDER_ID``.
         temporary_store: Temporary storage for intermediate buffers.
+        node_environment_offsets: Packed collision-node offsets by world. If ``None``, every node
+            queries every collider in stable order.
     """
     collision_node_count = collider_position_field.dof_values.shape[0]
 
@@ -670,6 +739,7 @@ def rasterize_collider(
             activation_distance,
             dt,
             collider_position_field.dof_values,
+            node_environment_offsets,
             collider_node_volume,
             collider_distance_field.dof_values,
             collider_velocity,

@@ -188,6 +188,12 @@ def build_dynamic_static_sphere_scene(
 
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Kernels
 ###
 
@@ -652,7 +658,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         return model, state, contacts
 
     @staticmethod
@@ -1128,13 +1136,15 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         nc_orig = int(contacts.rigid_contact_count.numpy()[0])
         self.assertEqual(nc_orig, 9 + 9 + 4, f"Expected 22 contacts (9+9+4), got {nc_orig}")
 
         self._seed_constant_linear_force(contacts, f_world)
 
-        kamino_out = ContactsKamino(capacity=nc_orig + 32, device=self.default_device)
+        kamino_out = ContactsKamino(capacity=[9 + 10, 9 + 10, 4 + 10], device=self.default_device)
         convert_contacts_newton_to_kamino(model, state, contacts, kamino_out, convert_forces=True)
         nc_kamino = int(kamino_out.model_active_contacts.numpy()[0])
         self.assertGreater(nc_kamino, 0)
@@ -1223,7 +1233,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
                 state = model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                contacts = model.collide(state)
+                collision_pipeline = newton.CollisionPipeline(model)
+                contacts = collision_pipeline.contacts()
+                collision_pipeline.collide(state, contacts)
                 contact_count = int(contacts.rigid_contact_count.numpy()[0])
                 self.assertEqual(contact_count, 1)
 

@@ -197,12 +197,46 @@ class TestUSDDeformableCable(unittest.TestCase):
             model = builder.finalize()
             self.assertEqual(model.body_count, 5)
 
-    def test_cable_material_maps_to_rod_stiffness(self):
-        """Bound curve-deformable material -> radius + per-joint stretch/bend stiffness.
+    def test_welded_cable_material_maps_to_rod_graph_stiffness(self):
+        """Verify a welded cable graph imports all four stiffness moduli from its representative material."""
+        stage = self._author_attached_cable_pair(gap=0.0)
+        thickness, stretch_mod, shear_mod, bend_mod, twist_mod = 0.02, 2.0e6, 3.0, 3.0e5, 4.0
+        for suffix in ("A", "B"):
+            _bind_deformable_material(
+                stage,
+                stage.GetPrimAtPath(f"/World/Cable{suffix}"),
+                f"/World/CableMat{suffix}",
+                thickness=thickness,
+                stretchStiffness=stretch_mod,
+                shearStiffness=shear_mod,
+                bendStiffness=bend_mod,
+                twistStiffness=twist_mod,
+            )
 
-        Authored zero stiffness (range [0, inf)) is preserved, not replaced by add_rod's
-        default, and the shear/twist moduli the rod cannot express warn and surface as-authored
-        in path_cable_attrs for solvers with richer cable models.
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        radius = 0.5 * thickness
+        segment_length = 0.1
+        area = math.pi * radius**2
+        area_moment = 0.25 * math.pi * radius**4
+        polar_moment = 0.5 * math.pi * radius**4
+        expected = (
+            stretch_mod * area / segment_length,
+            shear_mod * area / segment_length,
+            bend_mod * area_moment / segment_length,
+            twist_mod * polar_moment / segment_length,
+        )
+        self.assertGreater(builder.joint_count, 0)
+        for joint_idx in range(builder.joint_count):
+            dof_start = builder.joint_qd_start[joint_idx]
+            np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 4], expected, rtol=1.0e-3)
+
+    def test_cable_material_maps_to_rod_stiffness(self):
+        """Verify a bound curve-deformable material maps to radius and four per-joint stiffnesses.
+
+        Authored zero stiffness (range [0, inf)) is preserved rather than replaced by
+        ``add_rod`` defaults, and all four moduli remain available in ``path_cable_attrs``.
         """
         # 3 segments of length 0.1 along x.
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
@@ -210,7 +244,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         with self.subTest(material="full_moduli"):
             stage = _deformable_stage(up_axis="y")
             curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
-            thickness, stretch_mod, bend_mod = 0.02, 2.0e6, 3.0e5
+            thickness, stretch_mod, shear_mod, bend_mod, twist_mod = 0.02, 2.0e6, 3.0, 3.0e5, 4.0
             _bind_deformable_material(
                 stage,
                 curves.GetPrim(),
@@ -219,37 +253,40 @@ class TestUSDDeformableCable(unittest.TestCase):
                 density=1000.0,
                 stretchStiffness=stretch_mod,
                 bendStiffness=bend_mod,
-                shearStiffness=3.0,
-                twistStiffness=4.0,
+                shearStiffness=shear_mod,
+                twistStiffness=twist_mod,
             )
 
             builder = newton.ModelBuilder()
-            # shear / twist are preserved in the attrs but cannot be expressed by the rod, so the importer warns.
-            with self.assertWarnsRegex(UserWarning, "cannot be expressed"):
-                result = builder.add_usd(stage, return_deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
             b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
             j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
             self.assertEqual(b1 - b0, 3)
 
-            # radius = thickness / 2; stretch/bend converted with A/L, I/L.
+            # radius = thickness / 2; moduli use A/L, I/L, or J/L for the corresponding mode.
             r = 0.5 * thickness
             seg_len = 0.3 / 3
             area = math.pi * r * r
             inertia = 0.25 * math.pi * r**4
+            polar_moment = 0.5 * math.pi * r**4
             expected_stretch = stretch_mod * area / seg_len
+            expected_shear = shear_mod * area / seg_len
             expected_bend = bend_mod * inertia / seg_len
+            expected_twist = twist_mod * polar_moment / seg_len
 
-            # Cable joints store stretch in the linear DOF target_ke, bend in the angular.
+            # Split cable joints store target_ke as stretch, shear, bend, twist.
             dof0 = builder.joint_qd_start[j0]
             ke = builder.joint_target_ke
             self.assertAlmostEqual(ke[dof0], expected_stretch, delta=expected_stretch * 1e-3)
-            self.assertAlmostEqual(ke[dof0 + 1], expected_bend, delta=expected_bend * 1e-3)
+            self.assertAlmostEqual(ke[dof0 + 1], expected_shear, delta=expected_shear * 1e-3)
+            self.assertAlmostEqual(ke[dof0 + 2], expected_bend, delta=expected_bend * 1e-3)
+            self.assertAlmostEqual(ke[dof0 + 3], expected_twist, delta=expected_twist * 1e-3)
 
-            # The as-authored material - including the dropped shear/twist moduli - is preserved.
+            # The as-authored material is also preserved in the import metadata.
             attrs = result["path_cable_attrs"]["/World/Cable"]
             mat = attrs["material"]
-            self.assertAlmostEqual(mat["shearStiffness"], 3.0, places=5)
-            self.assertAlmostEqual(mat["twistStiffness"], 4.0, places=5)
+            self.assertAlmostEqual(mat["shearStiffness"], shear_mod, places=5)
+            self.assertAlmostEqual(mat["twistStiffness"], twist_mod, places=5)
             self.assertAlmostEqual(mat["bendStiffness"], bend_mod, places=2)
             self.assertFalse(attrs["closed"])
             self.assertIsNotNone(attrs["resolved_density"])

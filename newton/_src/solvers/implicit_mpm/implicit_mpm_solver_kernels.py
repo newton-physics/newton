@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 from typing import Any
 
+import numpy as np
 import warp as wp
 import warp.fem as fem
 import warp.sparse as wps
@@ -882,6 +884,120 @@ def clamp_coordinates(
 
 
 @wp.kernel
+def build_active_particle_mask(
+    particle_q: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    point_mask: wp.array[wp.int32],
+):
+    particle_index = wp.tid()
+    position = particle_q[particle_index]
+    position_is_finite = wp.isfinite(position[0]) and wp.isfinite(position[1]) and wp.isfinite(position[2])
+    point_mask[particle_index] = wp.where(
+        (particle_flags[particle_index] & newton.ParticleFlags.ACTIVE) != 0 and position_is_finite,
+        wp.int32(1),
+        wp.int32(0),
+    )
+
+
+@wp.kernel
+def record_volume_rebuild_status(status: wp.array[wp.uint32], accumulated_status: wp.array[wp.uint32]):
+    """Retain and report rebuild failures without a host synchronization."""
+    rebuild_status = status[0]
+    new_status = rebuild_status & ~accumulated_status[0]
+    if new_status != wp.uint32(0):
+        accumulated_status[0] = accumulated_status[0] | rebuild_status
+        wp.printf("Warning: Implicit MPM sparse grid rebuild failed with status %u.\n", rebuild_status)
+
+
+@wp.func
+def reset_mpm_world_is_selected(world: int, world_mask: wp.array[wp.bool]):
+    selected = bool(False)
+    global_world_index = world_mask.shape[0] - 1
+    if world >= 0 and world < global_world_index:
+        selected = world_mask[world]
+    elif world == -1:
+        selected = world_mask[global_world_index]
+    return selected
+
+
+@wp.kernel
+def reset_mpm_particle_history(
+    particle_world: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
+    particle_elastic_strain: wp.array[wp.mat33],
+    particle_transform: wp.array[wp.mat33],
+    particle_qd_grad: wp.array[wp.mat33],
+    particle_stress: wp.array[wp.mat33],
+    particle_Jp: wp.array[float],
+):
+    """Reset implicit MPM history for selected local or shared particles."""
+    particle_index = wp.tid()
+    world = particle_world[particle_index]
+    if reset_mpm_world_is_selected(world, world_mask):
+        identity = wp.identity(n=3, dtype=float)
+        particle_elastic_strain[particle_index] = identity
+        particle_transform[particle_index] = identity
+        particle_qd_grad[particle_index] = wp.mat33(0.0)
+        particle_stress[particle_index] = wp.mat33(0.0)
+        particle_Jp[particle_index] = 1.0
+
+
+@wp.kernel
+def reset_mpm_collider_history(
+    body_world: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+):
+    """Refresh previous collider poses for selected local or shared bodies."""
+    body_index = wp.tid()
+    world = body_world[body_index]
+    if reset_mpm_world_is_selected(world, world_mask):
+        body_q_prev[body_index] = body_q[body_index]
+
+
+@wp.kernel(module="unique")
+def reset_mpm_point_warmstart(
+    particle_world: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
+    values: wp.array[Any],
+):
+    """Clear particle-backed warm starts for selected local or shared particles."""
+    particle_index = wp.tid()
+    world = particle_world[particle_index]
+    if reset_mpm_world_is_selected(world, world_mask):
+        values[particle_index] = values.dtype(0.0)
+
+
+wp.overload(reset_mpm_point_warmstart, {"values": wp.array[wp.vec3]})
+wp.overload(reset_mpm_point_warmstart, {"values": wp.array[vec6]})
+
+
+@wp.kernel(module="unique")
+def reset_mpm_grid_warmstart(
+    world_mask: wp.array[wp.bool],
+    environment_offsets: wp.array[int],
+    environment_node_indices: wp.array[int],
+    values: wp.array[Any],
+):
+    """Clear whole-space warm-start values for selected environments."""
+    partition_index = wp.tid()
+    environment_count = world_mask.shape[0] - 1
+    if partition_index >= environment_offsets[environment_count]:
+        return
+
+    environment = wp.lower_bound(environment_offsets, partition_index + 1) - 1
+    if environment >= 0 and environment < environment_count and world_mask[environment]:
+        space_node_index = environment_node_indices[partition_index]
+        if space_node_index >= 0 and space_node_index < values.shape[0]:
+            values[space_node_index] = values.dtype(0.0)
+
+
+wp.overload(reset_mpm_grid_warmstart, {"values": wp.array[wp.vec3]})
+wp.overload(reset_mpm_grid_warmstart, {"values": wp.array[vec6]})
+
+
+@wp.kernel
 def pad_voxels(particle_q: wp.array[wp.vec3i], padded_q: wp.array4d[wp.vec3i]):
     pid = wp.tid()
 
@@ -896,7 +1012,120 @@ def positive_modn(x: int, n: int):
     return (x % n + n) % n
 
 
-def allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
+def _rebuild_capacity(
+    particle_q,
+    voxel_size,
+    ratio: float,
+    max_active_voxels: int,
+    point_mask=None,
+    *,
+    point_environment=None,
+    environment_count: int | None = None,
+    guard_cells: int = 3,
+    temporary_store=None,
+    max_leaf_node_count: int = -1,
+    max_lower_node_count: int = -1,
+    max_upper_node_count: int = -1,
+) -> dict[str, int]:
+    """Estimate rebuildable-volume capacities (active voxels + NanoVDB node counts).
+
+    Automatic leaf-node storage reserves ``max_active_voxels`` entries. The
+    lower/upper internal nodes each span 16x and 32x more cells, so their counts
+    are typically small; automatic capacities are estimated from one throwaway
+    build of the current particles scaled by ``ratio`` for spreading headroom.
+    Explicit node capacities allow applications with known spatial bounds to
+    budget each NanoVDB hierarchy level independently. Rebuild status reports
+    when any reserved capacity is exceeded.
+    """
+    if point_environment is None:
+        initial = wp.Volume.allocate_by_voxels(
+            voxel_points=particle_q,
+            voxel_size=voxel_size,
+            point_mask=point_mask,
+        )
+        ijk = initial.get_voxels().numpy()
+    else:
+        if environment_count is None:
+            raise ValueError("environment_count is required with point_environment")
+        initial = fem.Nanogrid.from_environment_voxels(
+            particle_q,
+            point_environment,
+            environment_count,
+            point_mask=point_mask,
+            guard_cells=guard_cells,
+            voxel_size=voxel_size,
+            temporary_store=temporary_store,
+            device=particle_q.device,
+        )
+        ijk = initial.cell_grid.get_voxels().numpy()
+
+    if ijk.shape[0] == 0:
+        automatic_lower = min(max_active_voxels, 8)
+        automatic_upper = min(max_active_voxels, 4)
+    else:
+        lower = np.unique(np.floor_divide(ijk, 8 * 16), axis=0).shape[0]
+        upper = np.unique(np.floor_divide(ijk, 8 * 16 * 32), axis=0).shape[0]
+        automatic_lower = min(max_active_voxels, max(8, math.ceil(lower * ratio)))
+        automatic_upper = min(max_active_voxels, max(4, math.ceil(upper * ratio)))
+
+    leaf_capacity = max_active_voxels if max_leaf_node_count == -1 else max_leaf_node_count
+    lower_capacity = min(automatic_lower, leaf_capacity) if max_lower_node_count == -1 else max_lower_node_count
+    upper_capacity = min(automatic_upper, lower_capacity) if max_upper_node_count == -1 else max_upper_node_count
+
+    if not upper_capacity <= lower_capacity <= leaf_capacity <= max_active_voxels:
+        raise ValueError(
+            "Implicit MPM sparse-grid capacity hierarchy must satisfy "
+            "max_upper_node_count <= max_lower_node_count <= max_leaf_node_count "
+            "<= max_active_cell_count after resolving automatic values; got "
+            f"{upper_capacity} <= {lower_capacity} <= {leaf_capacity} <= {max_active_voxels}."
+        )
+
+    return {
+        "max_active_voxels": max_active_voxels,
+        "max_leaf_nodes": leaf_capacity,
+        "max_lower_nodes": lower_capacity,
+        "max_upper_nodes": upper_capacity,
+    }
+
+
+def allocate_by_voxels(
+    particle_q,
+    voxel_size,
+    padding_voxels: int = 0,
+    rebuildable: bool = False,
+    max_active_voxels: int | None = None,
+    capacity_ratio: float = 16.0,
+    status=None,
+    point_mask=None,
+    max_leaf_node_count: int = -1,
+    max_lower_node_count: int = -1,
+    max_upper_node_count: int = -1,
+):
+    if rebuildable:
+        # Persistent capacity-sized volume refreshed in place each step so the sparse
+        # grid build is CUDA-graph-capturable. Padding is unsupported here.
+        capacity = max_active_voxels if max_active_voxels and max_active_voxels > 0 else particle_q.shape[0]
+        kwargs = _rebuild_capacity(
+            particle_q,
+            voxel_size,
+            capacity_ratio,
+            capacity,
+            point_mask=point_mask,
+            max_leaf_node_count=max_leaf_node_count,
+            max_lower_node_count=max_lower_node_count,
+            max_upper_node_count=max_upper_node_count,
+        )
+        if status is not None:
+            kwargs["status"] = status
+        if point_mask is not None:
+            kwargs["point_mask"] = point_mask
+        return wp.Volume.allocate_by_voxels(
+            voxel_points=particle_q,
+            voxel_size=voxel_size,
+            rebuildable=True,
+            **kwargs,
+        )
+
     volume = wp.Volume.allocate_by_voxels(
         voxel_points=particle_q.flatten(),
         voxel_size=voxel_size,
@@ -915,6 +1144,16 @@ def allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
         )
 
     return volume
+
+
+def voxel_coordinates(particle_q: wp.array[wp.vec3], voxel_size: float, padding_voxels: int = 0) -> wp.array[wp.vec3i]:
+    if particle_q.shape[0] == 0:
+        return wp.empty(0, dtype=wp.vec3i, device=particle_q.device)
+
+    volume = allocate_by_voxels(particle_q, voxel_size, padding_voxels=padding_voxels)
+    voxels = wp.empty(volume.get_voxel_count(), dtype=wp.vec3i, device=particle_q.device)
+    volume.get_voxels(voxels)
+    return voxels
 
 
 @wp.kernel
@@ -1048,6 +1287,25 @@ def mark_active_cells(
 
     x = positions[s.qp_index]
     s_grid = fem.lookup(domain, x)
+
+    if s_grid.element_index != fem.NULL_ELEMENT_INDEX:
+        active_cells[s_grid.element_index] = 1
+
+
+@fem.integrand
+def mark_active_cells_by_environment(
+    s: fem.Sample,
+    domain: fem.Domain,
+    positions: wp.array[wp.vec3],
+    particle_flags: wp.array[int],
+    particle_environment: wp.array[int],
+    active_cells: wp.array[int],
+):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return
+
+    x = positions[s.qp_index]
+    s_grid = fem.lookup(domain, x, int(particle_environment[s.qp_index]))
 
     if s_grid.element_index != fem.NULL_ELEMENT_INDEX:
         active_cells[s_grid.element_index] = 1
