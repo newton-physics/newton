@@ -44,6 +44,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.current_path = None
+        self._pending_path = None
         self.status = ""
 
         # A path is required for CLI usage (enforced in __main__), but the example
@@ -159,6 +160,12 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
+        # Load between frames rather than during one. render() runs every
+        # iteration, so a file picked while the sim is paused still loads.
+        if self._pending_path is not None:
+            path, self._pending_path = self._pending_path, None
+            self._reload(path)
+
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
@@ -186,7 +193,10 @@ class Example:
         if ui is not None:
             picked = ui.consume_file_dialog_result()
             if picked:
-                self._reload(picked)
+                # Applied in render(), not here: gui() is invoked from inside the
+                # viewer's render pass, and rebuilding the scene releases renderer
+                # resources that pass is still using.
+                self._pending_path = picked
 
         imgui.text("Current file:")
         imgui.text(os.path.basename(self.current_path) if self.current_path else "(none)")
