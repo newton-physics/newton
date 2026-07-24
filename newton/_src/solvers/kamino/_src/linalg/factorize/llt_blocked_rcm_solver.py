@@ -107,9 +107,9 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         # Threshold below which ``|A[i,j]|`` is treated as a non-edge by the
         # RCM adjacency scan and by the tile-pattern builder.
         reorder_tol: float = 0.0,
-        # Cap on BFS steps per block. None => auto (``2*ceil(sqrt(n)) + 4``).
+        # Optional approximate traversal cap. None completes every component.
         rcm_max_bfs_iters: int | None = None,
-        reuse_permutation: bool = False,
+        reuse_permutation: bool = True,
         parallel_factorization: bool = False,
         dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
@@ -124,10 +124,11 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             reorder_tol: threshold below which an off-diagonal entry is
                 treated as a non-edge by the RCM adjacency scan and by the
                 tile-pattern builder.
-            rcm_max_bfs_iters: BFS depth cap for the batched RCM pass.
+            rcm_max_bfs_iters: optional BFS step cap. By default every connected
+                component is traversed completely.
             reuse_permutation: whether to compute RCM once and reuse that
                 permutation for later numeric factorizations. The numeric tile
-                pattern is still rebuilt each time. Defaults to ``False``.
+                pattern is still rebuilt each time. Defaults to ``True``.
             parallel_factorization: whether to solve off-diagonal tiles of
                 each Cholesky panel in parallel. Defaults to ``False``.
         """
