@@ -7,7 +7,9 @@ import collections
 import ctypes
 import re
 import time
+import weakref
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from importlib import metadata
 from typing import Any, Literal
 
@@ -194,6 +196,79 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
+    @dataclass(frozen=True, slots=True)
+    class CameraSnapshot:
+        """Camera values used to render a post-processed frame.
+
+        Field of view is measured in degrees and clipping distances in meters.
+        Matrices are immutable float32 arrays with shape ``(16,)`` in the
+        column-major order uploaded to OpenGL. ``up_axis`` uses ``0``, ``1``,
+        and ``2`` for the X, Y, and Z axes.
+        """
+
+        position: tuple[float, float, float]
+        right: tuple[float, float, float]
+        up: tuple[float, float, float]
+        forward: tuple[float, float, float]
+        fov_y: float
+        near: float
+        far: float
+        up_axis: int
+        view_matrix: np.ndarray
+        projection_matrix: np.ndarray
+
+    @dataclass(frozen=True, slots=True)
+    class PostProcessContext:
+        """Resolved scene resources supplied to a post-process callback.
+
+        Texture and framebuffer identifiers are valid only for the current
+        callback. Input attachments are read-only and never alias the output
+        attachments. The callback must write both color and depth across the
+        full viewport.
+        """
+
+        width: int
+        height: int
+        viewport: tuple[int, int, int, int]
+        input_framebuffer_id: int
+        input_color_texture_id: int
+        input_depth_texture_id: int
+        output_framebuffer_id: int
+        output_color_texture_id: int
+        output_depth_texture_id: int
+        camera: ViewerGL.CameraSnapshot
+
+    class PostProcessRegistration:
+        """Handle for a callback registered with :meth:`register_post_process`."""
+
+        def __init__(
+            self,
+            viewer: ViewerGL,
+            callback: Callable[[ViewerGL.PostProcessContext], None],
+            cleanup: Callable[[], None] | None,
+        ):
+            self._viewer = weakref.ref(viewer)
+            self._callback: Callable[[ViewerGL.PostProcessContext], None] | None = callback
+            self._cleanup = cleanup
+            self._closed = False
+
+        @property
+        def closed(self) -> bool:
+            """Whether the callback has been unregistered."""
+            return self._closed
+
+        def close(self) -> None:
+            """Unregister the callback and run its cleanup once."""
+            if self._closed:
+                return
+            viewer = self._viewer()
+            if viewer is None:
+                self._closed = True
+                self._callback = None
+                self._cleanup = None
+                return
+            viewer._close_post_process_registration(self)
+
     def __init__(
         self,
         width: int = 1920,
@@ -236,6 +311,8 @@ class ViewerGL(ViewerBase):
         # Initialized below once self.device is available; declared here so
         # close() can safely run if __init__ raises before that point.
         self._image_logger: ImageLogger | None = None
+        self._post_process_registrations: list[ViewerGL.PostProcessRegistration] = []
+        self._post_process_closed = False
 
         super().__init__()
 
@@ -300,6 +377,7 @@ class ViewerGL(ViewerBase):
         self._pbo = None
         self._wp_pbo = None
         self._pbo_host_buffer = None
+        self.renderer.register_close(self._cleanup_gl_resources)
 
     @override
     def _init_extra_layer_state(self, layer):
@@ -367,6 +445,164 @@ class ViewerGL(ViewerBase):
         for name in list(self._array_textures.keys()):
             if owns(name):
                 self._delete_array_texture(name)
+
+    def register_post_process(
+        self,
+        callback: Callable[[ViewerGL.PostProcessContext], None],
+        *,
+        cleanup: Callable[[], None] | None = None,
+    ) -> ViewerGL.PostProcessRegistration:
+        """Register a post-process callback for resolved scene color and depth.
+
+        Callbacks run in registration order after MSAA resolve and before UI
+        rendering. The OpenGL context is current and the callback's output
+        framebuffer and physical-pixel viewport are bound on entry. Callbacks
+        must restore every other OpenGL state they modify before returning.
+
+        Args:
+            callback: Function that writes the context output color and depth.
+            cleanup: Optional function run when the registration or viewer closes.
+
+        Returns:
+            A handle that can unregister the callback.
+
+        Raises:
+            RuntimeError: If the viewer is closing or closed.
+            TypeError: If either callback is not callable.
+        """
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        if cleanup is not None and not callable(cleanup):
+            raise TypeError("cleanup must be callable or None")
+        if self._post_process_closed:
+            raise RuntimeError("Cannot register post-processing on a closed ViewerGL")
+
+        self.renderer._ensure_post_process_target()
+        registration = self.PostProcessRegistration(self, callback, cleanup)
+        self._post_process_registrations.append(registration)
+        return registration
+
+    def _close_post_process_registration(self, registration: ViewerGL.PostProcessRegistration) -> None:
+        if registration._closed:
+            return
+        registration._closed = True
+        try:
+            self._post_process_registrations.remove(registration)
+        except ValueError:
+            pass
+
+        cleanup = registration._cleanup
+        registration._cleanup = None
+        try:
+            if cleanup is not None:
+                self.renderer._make_current()
+                cleanup()
+        finally:
+            registration._callback = None
+
+    def _close_post_processes(self) -> None:
+        if self._post_process_closed:
+            return
+        self._post_process_closed = True
+        first_error = None
+        for registration in reversed(tuple(self._post_process_registrations)):
+            try:
+                registration.close()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
+
+    def _cleanup_gl_resources(self) -> None:
+        first_error = None
+        cleanup_operations = [self._close_post_processes, self._clear_array_textures, self._invalidate_pbo]
+        if self._image_logger is not None:
+            cleanup_operations.append(self._image_logger.clear)
+        for cleanup in cleanup_operations:
+            try:
+                cleanup()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
+
+    @staticmethod
+    def _gl_id(value) -> int:
+        return int(value.value) if hasattr(value, "value") else int(value)
+
+    def _camera_snapshot(self) -> ViewerGL.CameraSnapshot:
+        view_matrix = np.array(self.renderer._view_matrix, dtype=np.float32, copy=True)
+        projection_matrix = np.array(self.renderer._projection_matrix, dtype=np.float32, copy=True)
+        view_matrix.setflags(write=False)
+        projection_matrix.setflags(write=False)
+
+        def vec3_tuple(value) -> tuple[float, float, float]:
+            return (float(value[0]), float(value[1]), float(value[2]))
+
+        return self.CameraSnapshot(
+            position=vec3_tuple(self.camera.pos),
+            right=vec3_tuple(self.camera.get_right()),
+            up=vec3_tuple(self.camera.get_up()),
+            forward=vec3_tuple(self.camera.get_front()),
+            fov_y=float(self.camera.fov),
+            near=float(self.camera.near),
+            far=float(self.camera.far),
+            up_axis=int(self.camera.up_axis),
+            view_matrix=view_matrix,
+            projection_matrix=projection_matrix,
+        )
+
+    def _render_post_processes(self) -> tuple[int, int, int]:
+        renderer = self.renderer
+        input_target = (
+            self._gl_id(renderer._frame_fbo),
+            self._gl_id(renderer._frame_texture),
+            self._gl_id(renderer._frame_depth_texture),
+        )
+        if not self._post_process_registrations:
+            return input_target
+
+        renderer._ensure_post_process_target()
+        output_target = (
+            self._gl_id(renderer._post_process_fbo),
+            self._gl_id(renderer._post_process_texture),
+            self._gl_id(renderer._post_process_depth_texture),
+        )
+        camera = self._camera_snapshot()
+        width = int(renderer._screen_width)
+        height = int(renderer._screen_height)
+        viewport = (0, 0, width, height)
+        gl = RendererGL.gl
+
+        for registration in tuple(self._post_process_registrations):
+            if registration.closed:
+                continue
+            callback = registration._callback
+            if callback is None:
+                continue
+            context = self.PostProcessContext(
+                width=width,
+                height=height,
+                viewport=viewport,
+                input_framebuffer_id=input_target[0],
+                input_color_texture_id=input_target[1],
+                input_depth_texture_id=input_target[2],
+                output_framebuffer_id=output_target[0],
+                output_color_texture_id=output_target[1],
+                output_depth_texture_id=output_target[2],
+                camera=camera,
+            )
+            gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, input_target[0])
+            gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
+            gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, output_target[0])
+            gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
+            gl.glViewport(*viewport)
+            callback(context)
+            input_target, output_target = output_target, input_target
+
+        return input_target
 
     def register_ui_callback(
         self,
@@ -1729,7 +1965,15 @@ class ViewerGL(ViewerBase):
             return
 
         # Render the scene and present it
-        self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
+        post_process = self._render_post_processes if self._post_process_registrations else None
+        self.renderer.render(
+            self.camera,
+            self.objects,
+            self.lines,
+            self.wireframe_shapes,
+            self.arrows,
+            post_process=post_process,
+        )
 
         if self.gui:
             self.gui.render_frame(update_fps=True)
@@ -1781,8 +2025,9 @@ class ViewerGL(ViewerBase):
             gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
 
         # GPU-to-GPU readback into PBO.
-        assert self.renderer._frame_fbo is not None
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.renderer._frame_fbo)
+        assert self.renderer._last_frame_fbo is not None
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.renderer._last_frame_fbo)
+        gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self._pbo)
 
         if render_ui and self.gui:
@@ -1884,10 +2129,6 @@ class ViewerGL(ViewerBase):
         """
         Close the viewer and clean up resources.
         """
-        self._clear_array_textures()
-        self._invalidate_pbo()
-        if self._image_logger is not None:
-            self._image_logger.clear()
         self.renderer.close()
 
     @property

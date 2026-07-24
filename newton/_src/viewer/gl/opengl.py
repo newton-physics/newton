@@ -1102,6 +1102,8 @@ class RendererGL:
         self._mouse_motion_callbacks = []
         self._mouse_scroll_callbacks = []
         self._resize_callbacks = []
+        self._close_callbacks = []
+        self._closed = False
 
         # Initialize device and shape lookup
         self._device = device if device is not None else wp.get_device()
@@ -1117,6 +1119,12 @@ class RendererGL:
         self._frame_texture = None
         self._frame_depth_texture = None
         self._frame_fbo = None
+        self._post_process_texture = None
+        self._post_process_depth_texture = None
+        self._post_process_fbo = None
+        self._last_frame_texture = None
+        self._last_frame_depth_texture = None
+        self._last_frame_fbo = None
         self._frame_pbo = None
 
         self._sun_direction = None  # set on first render based on camera up_axis
@@ -1214,7 +1222,7 @@ class RendererGL:
                 # This is a non-fatal error that can be safely ignored
                 pass
 
-    def render(self, camera, objects, lines=None, wireframe_shapes=None, arrows=None):
+    def render(self, camera, objects, lines=None, wireframe_shapes=None, arrows=None, post_process=None):
         gl = RendererGL.gl
         self._make_current()
 
@@ -1307,6 +1315,11 @@ class RendererGL:
                 gl.GL_NEAREST,
             )
 
+        final_target = (self._frame_fbo, self._frame_texture, self._frame_depth_texture)
+        if post_process is not None:
+            final_target = post_process()
+        self._last_frame_fbo, self._last_frame_texture, self._last_frame_depth_texture = final_target
+
         # ------------------------------------------------------------------
         # Draw resolved texture to the screen
         # ------------------------------------------------------------------
@@ -1315,10 +1328,10 @@ class RendererGL:
         gl.glViewport(0, 0, self._screen_width, self._screen_height)
 
         # render frame buffer texture to screen
-        if self._frame_fbo is not None:
+        if self._last_frame_fbo is not None:
             with self._frame_shader:
                 gl.glActiveTexture(gl.GL_TEXTURE0)
-                gl.glBindTexture(gl.GL_TEXTURE_2D, self._frame_texture)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, self._last_frame_texture)
                 self._frame_shader.update(0)
 
                 gl.glBindVertexArray(self._frame_vao)
@@ -1367,14 +1380,36 @@ class RendererGL:
         return self.app.event_loop.has_exit
 
     def close(self):
-        self._make_current()
+        if self._closed:
+            return
+        self._closed = True
+        first_error = None
+
+        def run_cleanup(operation):
+            nonlocal first_error
+            try:
+                operation()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+
+        try:
+            self._make_current()
+        except Exception as error:
+            first_error = error
+        else:
+            callbacks = tuple(reversed(self._close_callbacks))
+            self._close_callbacks.clear()
+            for callback in callbacks:
+                run_cleanup(callback)
 
         if not self.headless:
-            self.app.event_loop.dispatch_event("on_exit")
-            self.app.platform_event_loop.stop()
-
+            run_cleanup(lambda: self.app.event_loop.dispatch_event("on_exit"))
+            run_cleanup(self.app.platform_event_loop.stop)
         RendererGL._fallback_texture = None
-        self.window.close()
+        run_cleanup(self.window.close)
+        if first_error is not None:
+            raise first_error
 
     def _setup_window_callbacks(self):
         """Set up the basic window event handlers."""
@@ -1459,6 +1494,14 @@ class RendererGL:
             callback: Function that takes (width, height) parameters
         """
         self._resize_callbacks.append(callback)
+
+    def register_close(self, callback):
+        """Register a callback that runs before the OpenGL context closes.
+
+        Args:
+            callback: Function to invoke during renderer shutdown.
+        """
+        self._close_callbacks.append(callback)
 
     def register_update(self, callback):
         """Register a per-frame update callback receiving dt (seconds)."""
@@ -1566,6 +1609,87 @@ class RendererGL:
 
         check_gl_error()
 
+    def _setup_color_depth_target(self, color_texture, depth_texture, framebuffer):
+        gl = RendererGL.gl
+        created_color = color_texture is None
+        created_depth = depth_texture is None
+        created_framebuffer = framebuffer is None
+        try:
+            if created_color:
+                color_texture = gl.GLuint()
+                gl.glGenTextures(1, color_texture)
+            if created_depth:
+                depth_texture = gl.GLuint()
+                gl.glGenTextures(1, depth_texture)
+
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+            gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, color_texture)
+            gl.glTexImage2D(
+                gl.GL_TEXTURE_2D,
+                0,
+                gl.GL_RGB8,
+                self._screen_width,
+                self._screen_height,
+                0,
+                gl.GL_RGB,
+                gl.GL_UNSIGNED_BYTE,
+                None,
+            )
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+
+            gl.glBindTexture(gl.GL_TEXTURE_2D, depth_texture)
+            gl.glTexImage2D(
+                gl.GL_TEXTURE_2D,
+                0,
+                gl.GL_DEPTH_COMPONENT32,
+                self._screen_width,
+                self._screen_height,
+                0,
+                gl.GL_DEPTH_COMPONENT,
+                gl.GL_FLOAT,
+                None,
+            )
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+            if created_framebuffer:
+                framebuffer = gl.GLuint()
+                gl.glGenFramebuffers(1, framebuffer)
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, framebuffer)
+            gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, color_texture, 0)
+            gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT, gl.GL_TEXTURE_2D, depth_texture, 0)
+            if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
+                raise RuntimeError("ViewerGL framebuffer is incomplete")
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+            return color_texture, depth_texture, framebuffer
+        except Exception:
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            if created_framebuffer and framebuffer is not None:
+                gl.glDeleteFramebuffers(1, framebuffer)
+            if created_depth and depth_texture is not None:
+                gl.glDeleteTextures(1, depth_texture)
+            if created_color and color_texture is not None:
+                gl.glDeleteTextures(1, color_texture)
+            raise
+
+    def _ensure_post_process_target(self):
+        if self._post_process_fbo is not None:
+            return
+        self._make_current()
+        (
+            self._post_process_texture,
+            self._post_process_depth_texture,
+            self._post_process_fbo,
+        ) = self._setup_color_depth_target(
+            self._post_process_texture,
+            self._post_process_depth_texture,
+            self._post_process_fbo,
+        )
+
     def _setup_frame_buffer(self):
         gl = RendererGL.gl
 
@@ -1578,71 +1702,24 @@ class RendererGL:
             self._frame_msaa_fbo = None
 
         self._make_current()
-
-        if self._frame_texture is None:
-            self._frame_texture = gl.GLuint()
-            gl.glGenTextures(1, self._frame_texture)
-        if self._frame_depth_texture is None:
-            self._frame_depth_texture = gl.GLuint()
-            gl.glGenTextures(1, self._frame_depth_texture)
-
-        # set up RGB texture
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
-        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self._frame_texture)
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            gl.GL_RGB,
-            self._screen_width,
-            self._screen_height,
-            0,
-            gl.GL_RGB,
-            gl.GL_UNSIGNED_BYTE,
-            None,
+        self._frame_texture, self._frame_depth_texture, self._frame_fbo = self._setup_color_depth_target(
+            self._frame_texture,
+            self._frame_depth_texture,
+            self._frame_fbo,
         )
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-
-        # set up depth texture
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self._frame_depth_texture)
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            gl.GL_DEPTH_COMPONENT32,
-            self._screen_width,
-            self._screen_height,
-            0,
-            gl.GL_DEPTH_COMPONENT,
-            gl.GL_FLOAT,
-            None,
-        )
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-
-        # create a framebuffer object (FBO)
-        if self._frame_fbo is None:
-            self._frame_fbo = gl.GLuint()
-            gl.glGenFramebuffers(1, self._frame_fbo)
-            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
-
-            # attach the texture to the FBO as its color attachment
-            gl.glFramebufferTexture2D(
-                gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, self._frame_texture, 0
+        if self._post_process_fbo is not None:
+            (
+                self._post_process_texture,
+                self._post_process_depth_texture,
+                self._post_process_fbo,
+            ) = self._setup_color_depth_target(
+                self._post_process_texture,
+                self._post_process_depth_texture,
+                self._post_process_fbo,
             )
-            # attach the depth texture to the FBO as its depth attachment
-            gl.glFramebufferTexture2D(
-                gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT, gl.GL_TEXTURE_2D, self._frame_depth_texture, 0
-            )
-
-            if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-                print("Framebuffer is not complete!", flush=True)
-                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
-                sys.exit(1)
-
-        # unbind the FBO (switch back to the default framebuffer)
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        self._last_frame_texture = self._frame_texture
+        self._last_frame_depth_texture = self._frame_depth_texture
+        self._last_frame_fbo = self._frame_fbo
 
         if self._frame_pbo is None:
             self._frame_pbo = gl.GLuint()

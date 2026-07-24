@@ -385,6 +385,7 @@ class TestViewerGLInitialization(unittest.TestCase):
             def __init__(self, *args, **kwargs):
                 self.window = _FakeWindow()
                 self.closed = False
+                self.close_callbacks = []
 
             def set_title(self, title):
                 self.title = title
@@ -410,7 +411,12 @@ class TestViewerGLInitialization(unittest.TestCase):
             def register_resize(self, callback):
                 pass
 
+            def register_close(self, callback):
+                self.close_callbacks.append(callback)
+
             def close(self):
+                for callback in reversed(self.close_callbacks):
+                    callback()
                 self.closed = True
 
         class _FakeImageLogger:
