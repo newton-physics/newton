@@ -1350,7 +1350,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 name="pair_solreffriction",
                 frequency="mujoco:pair",
                 dtype=wp.vec2,
-                default=wp.vec2(0.02, 1.0),
+                default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="solreffriction",
             )
@@ -3387,6 +3387,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
         self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
+        self.mjc_pair_to_newton_pair: wp.array2d[wp.int32] | None = None
+        """Mapping from MuJoCo [world, pair] to Newton pair index. Shape [nworld, npair], dtype int32."""
         # Template-relative for per-world sites and absolute for global sites.
         self._mjc_site_shape_index: wp.array[wp.int32] | None = None
         self._mjc_site_is_global: wp.array[bool] | None = None
@@ -3995,6 +3997,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.geom_friction,
                 self.mjw_model.geom_margin,
                 self.mjw_model.geom_gap,
+                self.mj_model.ngeom,
+                self.mjw_model.nxn_pairid,
+                self.mjw_model.pair_dim,
+                self.mjw_model.pair_solref,
+                self.mjw_model.pair_solreffriction,
+                self.mjw_model.pair_solimp,
+                self.mjw_model.pair_margin,
+                self.mjw_model.pair_gap,
+                self.mjw_model.pair_friction,
                 # Newton shape-material force-space inputs (issue #2009)
                 model.shape_material_ke,
                 model.shape_material_kd,
@@ -4031,6 +4042,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_data.contact.geom,
                 self.mjw_data.contact.efc_address,
                 self.mjw_data.contact.worldid,
+                self.mjw_data.contact.type,
+                self.mjw_data.contact.geomcollisionid,
                 # Data to clear
                 self.mjw_data.nworld,
                 self.mjw_data.ncollision,
@@ -6669,6 +6682,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
+            self._create_pair_mapping(
+                geom_to_shape_idx_np,
+                geom_is_static_np,
+                shape_world,
+                nworld,
+            )
+
             site_to_shape_idx_np = np.full((self.mj_model.nsite,), -1, dtype=np.int32)
             site_is_global_np = np.zeros((self.mj_model.nsite,), dtype=bool)
             for site_idx, abs_shape_idx in site_to_shape_idx.items():
@@ -8114,6 +8134,133 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         self.mj_model.jnt_solref[:] = self.mjw_model.jnt_solref.numpy()[0]
 
+    def _create_pair_mapping(
+        self,
+        geom_to_shape: np.ndarray,
+        geom_is_static: np.ndarray,
+        shape_world: np.ndarray,
+        nworld: int,
+    ) -> None:
+        """Map compiled MuJoCo pairs to their exact Newton pair records."""
+        npair = self.mj_model.npair
+        pair_mapping = np.full((nworld, npair), -1, dtype=np.int32)
+        if npair == 0:
+            self.mjc_pair_to_newton_pair = wp.array(pair_mapping, dtype=wp.int32, device=self.model.device)
+            return
+
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        pair_count = self.model.custom_frequency_counts.get("mujoco:pair", 0)
+        required_names = ("pair_world", "pair_geom1", "pair_geom2", "pair_condim")
+        if (
+            mujoco_attrs is None
+            or pair_count == 0
+            or any(getattr(mujoco_attrs, name, None) is None for name in required_names)
+        ):
+            raise ValueError("MuJoCo contact pairs require Newton pair topology attributes.")
+
+        pair_world = mujoco_attrs.pair_world.numpy()
+        pair_geom1 = mujoco_attrs.pair_geom1.numpy()
+        pair_geom2 = mujoco_attrs.pair_geom2.numpy()
+        pair_condim = mujoco_attrs.pair_condim.numpy()
+        if any(len(values) < pair_count for values in (pair_world, pair_geom1, pair_geom2, pair_condim)):
+            raise ValueError("MuJoCo pair topology attributes have inconsistent lengths.")
+
+        def shape_key(shape: int) -> tuple[int, int]:
+            if shape < 0 or shape >= self.model.shape_count:
+                raise ValueError(f"MuJoCo pair references invalid Newton shape {shape}.")
+            world = int(shape_world[shape])
+            if world < 0:
+                return (0, shape)
+            shape_local = shape - (self._first_env_shape_base + world * self._shapes_per_world)
+            if shape_local < 0 or shape_local >= self._shapes_per_world:
+                raise ValueError(f"Newton shape {shape} is outside the regular per-world layout.")
+            return (1, shape_local)
+
+        def topology_key(shape1: int, shape2: int) -> tuple[tuple[int, int], tuple[int, int]]:
+            key1 = shape_key(shape1)
+            key2 = shape_key(shape2)
+            return (key1, key2) if key1 <= key2 else (key2, key1)
+
+        pair_by_world = {}
+        pair_global = {}
+        for pair in range(pair_count):
+            shape1 = int(pair_geom1[pair])
+            shape2 = int(pair_geom2[pair])
+            key = topology_key(shape1, shape2)
+            world = int(pair_world[pair])
+            if world < 0:
+                if key in pair_global:
+                    raise ValueError(
+                        f"Duplicate MuJoCo pair topology for Newton pair records {pair_global[key]} and {pair}."
+                    )
+                pair_global[key] = pair
+            else:
+                lookup_key = (world, key)
+                if lookup_key in pair_by_world:
+                    raise ValueError(
+                        "Duplicate MuJoCo pair topology for Newton pair records "
+                        f"{pair_by_world[lookup_key]} and {pair}."
+                    )
+                pair_by_world[lookup_key] = pair
+
+            endpoint_worlds = {int(shape_world[shape]) for shape in (shape1, shape2) if int(shape_world[shape]) >= 0}
+            if len(endpoint_worlds) > 1 or (world >= 0 and endpoint_worlds and endpoint_worlds != {world}):
+                raise ValueError(f"Newton pair record {pair} has endpoints from the wrong world.")
+
+        geom1 = self.mj_model.pair_geom1
+        geom2 = self.mj_model.pair_geom2
+        compiled_condim = self.mj_model.pair_dim
+
+        def mapped_shape(world: int, geom: int) -> int:
+            template_or_static_shape = int(geom_to_shape[geom])
+            if template_or_static_shape < 0:
+                raise ValueError(f"MuJoCo pair references unmapped geom {geom}.")
+            if geom_is_static[geom]:
+                return template_or_static_shape
+            return self._first_env_shape_base + template_or_static_shape + world * self._shapes_per_world
+
+        used_pairs = set()
+        for world in range(nworld):
+            for mjc_pair in range(npair):
+                shape1 = mapped_shape(world, int(geom1[mjc_pair]))
+                shape2 = mapped_shape(world, int(geom2[mjc_pair]))
+                key = topology_key(shape1, shape2)
+                endpoint_worlds = {
+                    int(shape_world[shape]) for shape in (shape1, shape2) if int(shape_world[shape]) >= 0
+                }
+                if len(endpoint_worlds) > 1:
+                    raise ValueError(f"MuJoCo pair {mjc_pair} maps across Newton worlds.")
+
+                pair = -1
+                if endpoint_worlds:
+                    pair_world_id = next(iter(endpoint_worlds))
+                    pair = pair_by_world.get((pair_world_id, key), -1)
+                if pair < 0:
+                    pair = pair_global.get(key, -1)
+                if pair < 0 and not endpoint_worlds:
+                    matching_pairs = [
+                        candidate
+                        for (_candidate_world, candidate_key), candidate in pair_by_world.items()
+                        if candidate_key == key
+                    ]
+                    if len(matching_pairs) == 1:
+                        pair = matching_pairs[0]
+                if pair < 0:
+                    raise ValueError(f"MuJoCo pair {mjc_pair} has no matching Newton pair record in world {world}.")
+                if int(pair_condim[pair]) != int(compiled_condim[mjc_pair]):
+                    raise ValueError(
+                        f"MuJoCo pair {mjc_pair} condim is {int(compiled_condim[mjc_pair])}, "
+                        f"but Newton pair record {pair} has {int(pair_condim[pair])}."
+                    )
+                pair_mapping[world, mjc_pair] = pair
+                used_pairs.add(pair)
+
+        if nworld == self.model.world_count and len(used_pairs) != pair_count:
+            unused_pairs = sorted(set(range(pair_count)) - used_pairs)
+            raise ValueError(f"MuJoCo pair records {unused_pairs} do not match the compiled pair topology.")
+
+        self.mjc_pair_to_newton_pair = wp.array(pair_mapping, dtype=wp.int32, device=self.model.device)
+
     def _update_pair_properties(self):
         """Update MuJoCo contact pair properties from Newton custom attributes.
 
@@ -8151,21 +8298,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             attr is not None
             for attr in [pair_solref, pair_solreffriction, pair_solimp, pair_margin, pair_gap, pair_friction]
         ):
-            # Compute pairs_per_world from Newton custom attributes
-            pair_world_attr = getattr(mujoco_attrs, "pair_world", None)
-            if pair_world_attr is not None:
-                total_pairs = len(pair_world_attr)
-                pairs_per_world = total_pairs // self.model.world_count
-            else:
-                pairs_per_world = npair
-
             world_count = self.mjw_data.nworld
 
             wp.launch(
                 update_pair_properties_kernel,
                 dim=(world_count, npair),
                 inputs=[
-                    pairs_per_world,
+                    self.mjc_pair_to_newton_pair,
                     pair_solref,
                     pair_solreffriction,
                     pair_solimp,
