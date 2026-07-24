@@ -1719,12 +1719,13 @@ add_function_test(
 
 
 def test_no_degenerate_triangles_deep_penetration(test, device):
-    """Verify marching cubes produces no zero-area triangles and fewer than 2% near-degenerate triangles under deep interpenetration.
+    """Verify deep-penetration contact surfaces are repeatable and non-degenerate.
 
     Two hydroelastic boxes with controlled overlap are tested at multiple
     penetration depths and stiffness ratios.  The isosurface should be free
     of degenerate (zero-area) triangles that arise from vertex collapse at
-    SDF ridge boundaries.
+    SDF ridge boundaries. The deepest-penetration case is rebuilt repeatedly
+    to verify primitive SDF construction produces the same tessellation.
 
     The edge-interpolation clamp
     (:attr:`HydroelasticSDF.Config.mc_edge_clamp_min`) is the mechanism that
@@ -1750,73 +1751,83 @@ def test_no_degenerate_triangles_deep_penetration(test, device):
         )
 
     configs = [
-        # (overlap, kh_a, kh_b, label)
-        (0.05, 1e10, 1e10, "equal stiffness 25% overlap"),
-        (0.10, 1e10, 1e10, "equal stiffness 50% overlap"),
-        (0.15, 1e10, 1e10, "equal stiffness 75% overlap"),
-        (0.19, 1e10, 1e10, "equal stiffness 95% overlap"),
-        (0.10, 1e10, 1e8, "asymmetric stiffness 50% overlap"),
+        # (overlap, kh_a, kh_b, repeats, label)
+        (0.05, 1e10, 1e10, 1, "equal stiffness 25% overlap"),
+        (0.10, 1e10, 1e10, 1, "equal stiffness 50% overlap"),
+        (0.15, 1e10, 1e10, 1, "equal stiffness 75% overlap"),
+        (0.19, 1e10, 1e10, 3, "equal stiffness 95% overlap"),
+        (0.10, 1e10, 1e8, 1, "asymmetric stiffness 50% overlap"),
     ]
 
-    for overlap, kh_a, kh_b, label in configs:
-        builder = newton.ModelBuilder()
-        body_a = builder.add_body(
-            xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()),
-        )
-        builder.add_shape_box(body=body_a, hx=box_half, hy=box_half, hz=box_half, cfg=make_cfg(kh_a))
+    for overlap, kh_a, kh_b, repeats, label in configs:
+        face_counts = []
+        for repeat in range(repeats):
+            run_label = f"{label}, run {repeat + 1}/{repeats}"
+            builder = newton.ModelBuilder()
+            body_a = builder.add_body(
+                xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()),
+            )
+            builder.add_shape_box(body=body_a, hx=box_half, hy=box_half, hz=box_half, cfg=make_cfg(kh_a))
 
-        z_b = box_half + 2.0 * box_half - overlap
-        body_b = builder.add_body(
-            xform=wp.transform(wp.vec3(0.0, 0.0, z_b), wp.quat_identity()),
-        )
-        builder.add_shape_box(body=body_b, hx=box_half, hy=box_half, hz=box_half, cfg=make_cfg(kh_b))
+            z_b = box_half + 2.0 * box_half - overlap
+            body_b = builder.add_body(
+                xform=wp.transform(wp.vec3(0.0, 0.0, z_b), wp.quat_identity()),
+            )
+            builder.add_shape_box(body=body_b, hx=box_half, hy=box_half, hz=box_half, cfg=make_cfg(kh_b))
 
-        model = builder.finalize(device=device)
-        state = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            model = builder.finalize(device=device)
+            state = model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-        hydro_config = HydroelasticSDF.Config(
-            output_contact_surface=True,
-            reduce_contacts=False,
-            buffer_mult_iso=4,
-            buffer_mult_contact=4,
-            mc_edge_clamp_min=0.02,
-        )
-        collision_pipeline = newton.CollisionPipeline(
-            model,
-            rigid_contact_max=100000,
-            broad_phase="explicit",
-            sdf_hydroelastic_config=hydro_config,
-        )
-        contacts = collision_pipeline.contacts()
-        collision_pipeline.collide(state, contacts)
+            hydro_config = HydroelasticSDF.Config(
+                output_contact_surface=True,
+                reduce_contacts=False,
+                buffer_mult_iso=4,
+                buffer_mult_contact=4,
+                mc_edge_clamp_min=0.02,
+            )
+            collision_pipeline = newton.CollisionPipeline(
+                model,
+                rigid_contact_max=200000,
+                broad_phase="explicit",
+                sdf_hydroelastic_config=hydro_config,
+            )
+            contacts = collision_pipeline.contacts()
+            collision_pipeline.collide(state, contacts)
 
-        cs = collision_pipeline.hydroelastic_sdf.get_contact_surface()
-        test.assertIsNotNone(cs, f"[{label}] Expected contact surface")
+            cs = collision_pipeline.hydroelastic_sdf.get_contact_surface()
+            test.assertIsNotNone(cs, f"[{run_label}] Expected contact surface")
 
-        num_faces = int(cs.face_contact_count.numpy()[0])
-        test.assertGreater(num_faces, 0, f"[{label}] Expected non-zero face count")
+            num_faces = int(cs.face_contact_count.numpy()[0])
+            test.assertGreater(num_faces, 0, f"[{run_label}] Expected non-zero face count")
+            face_counts.append(num_faces)
 
-        vertices = cs.contact_surface_point.numpy()
-        v = vertices[: num_faces * 3].reshape(num_faces, 3, 3)
-        e1 = v[:, 1] - v[:, 0]
-        e2 = v[:, 2] - v[:, 0]
-        areas = 0.5 * np.linalg.norm(np.cross(e1, e2), axis=1)
+            vertices = cs.contact_surface_point.numpy()
+            v = vertices[: num_faces * 3].reshape(num_faces, 3, 3)
+            e1 = v[:, 1] - v[:, 0]
+            e2 = v[:, 2] - v[:, 0]
+            areas = 0.5 * np.linalg.norm(np.cross(e1, e2), axis=1)
 
-        num_zero = int((areas < 1e-20).sum())
+            num_zero = int((areas < 1e-20).sum())
+            test.assertEqual(
+                num_zero,
+                0,
+                (f"[{run_label}] Found {num_zero}/{num_faces} zero-area triangles ({num_zero / num_faces * 100:.1f}%)"),
+            )
+
+            median_area = np.median(areas)
+            num_degen = int((areas < 0.01 * median_area).sum())
+            degen_pct = num_degen / num_faces * 100
+            test.assertLess(
+                degen_pct,
+                2.0,
+                f"[{run_label}] {degen_pct:.1f}% degenerate triangles (< 1% median area); expected < 2%",
+            )
+
         test.assertEqual(
-            num_zero,
-            0,
-            f"[{label}] Found {num_zero}/{num_faces} zero-area triangles ({num_zero / num_faces * 100:.1f}%)",
-        )
-
-        median_area = np.median(areas)
-        num_degen = int((areas < 0.01 * median_area).sum())
-        degen_pct = num_degen / num_faces * 100
-        test.assertLess(
-            degen_pct,
-            2.0,
-            f"[{label}] {degen_pct:.1f}% degenerate triangles (< 1% median area); expected < 2%",
+            len(set(face_counts)),
+            1,
+            f"[{label}] Contact-surface face count changed across SDF rebuilds: {face_counts}",
         )
 
 

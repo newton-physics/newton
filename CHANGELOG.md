@@ -81,6 +81,7 @@
 - Fix USD plane visual width and length to scale along the axes defined by the `UsdGeomPlane` schema, and orient X- and Y-axis plane visuals along the authored axis.
 - Validate `ArticulationView` mask shapes and devices before launching selection kernels. (#3448)
 - Exclude active particles with non-finite positions from rebuildable `SolverImplicitMPM` sparse-grid packing.
+- Fix hydroelastic primitive texture SDF generation to sample analytic primitive distances instead of temporary tessellated meshes. (#3150, #3239)
 - Fix masked `SolverCoupledProxy.reset()` calls clearing proxy feedback history for unselected worlds.
 - Fix hydroelastic primitive texture SDF generation to sample analytic primitive distances instead of temporary tessellated meshes. (#3239)
 - Fix MJCF, URDF, and USD imports rendering collision-only bodies as visuals when the asset authors visual geometry elsewhere. (#3291)

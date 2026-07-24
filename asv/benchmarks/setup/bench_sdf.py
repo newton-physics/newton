@@ -47,13 +47,13 @@ _SPHERE_SUBDIVISIONS = 4
 # Number of SDFs built per timing sample, keyed by ``max_resolution``.
 # Measuring a batch rather than a single build amortizes GPU boost-clock and
 # thermal transients that otherwise make this benchmark bimodal across AWS CI
-# runs (see #2534).  Counts decrease with resolution so each sample takes
-# roughly the same wall time (~0.5 s); each SDF is released immediately after
-# construction so peak GPU memory stays bounded to one SDF at a time.
+# runs (see #2534).  Resolutions of 128 and above remain bimodal despite
+# batching, so the gating benchmark is limited to the stable lower resolutions.
+# Each SDF is released immediately after construction so peak GPU memory stays
+# bounded to one SDF at a time.
 _BUILDS_PER_SAMPLE = {
     32: 20,
     64: 20,
-    128: 10,
 }
 
 # Number of untimed warm-up builds in ``setup`` to push the GPU into a stable
@@ -151,14 +151,13 @@ class FastBuildSdf:
     typical collision meshes used with Newton's SDF contact path.
 
     Each timed call builds :data:`_BUILDS_PER_SAMPLE` SDFs in a loop and
-    releases each immediately, reporting the total wall time.  The batch size
-    is scaled down at higher resolutions so every sample takes roughly the
-    same wall time.  This amortizes GPU boost-clock/thermal transients on AWS
-    CI runners that previously made single-build measurements bimodal across
-    runs (see #2534).
+    releases each immediately, reporting the total wall time.  This amortizes
+    GPU boost-clock and thermal transients on AWS CI runners.  Resolutions of
+    128 and above are excluded because they remain bimodal despite batching
+    (see #2534).
     """
 
-    params = ([32, 64, 128],)
+    params = ([32, 64],)
     param_names = ["max_resolution"]
 
     rounds = 2
