@@ -860,6 +860,73 @@ def test_rigid_restitution_elastic_box_on_plane(test, device):
     )
 
 
+def test_rigid_restitution_multi_manifold_energy(test, device):
+    """An elastic body impacting two supports simultaneously (two manifolds
+    sharing it) must roughly conserve kinetic energy at the default outer
+    iteration count. Regression: re-freezing the restitution impulse lower
+    bound on every outer iteration let iteration 2 claw back iteration 1's
+    cross-manifold impulses (adhesive; ~23% KE loss in this scenario)."""
+    radius = 0.35
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    # heavy support / light support / falling body: strongly asymmetric masses
+    # maximize the cross-manifold coupling through the shared middle body
+    cfg_a = newton.ModelBuilder.ShapeConfig(restitution=1.0, mu=0.0, density=191.0)
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.4, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_sphere(body_a, radius=radius, cfg=cfg_a)
+    cfg_b = newton.ModelBuilder.ShapeConfig(restitution=1.0, mu=0.0, density=0.0191)
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.4, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_sphere(body_b, radius=radius, cfg=cfg_b)
+    # touching both supports with a 2 mm overlap
+    drop_y = float(np.sqrt((2.0 * radius) ** 2 - 0.4**2)) - 0.002
+    cfg_m = newton.ModelBuilder.ShapeConfig(restitution=1.0, mu=0.0, density=1.91)
+    body_m = builder.add_body(xform=wp.transform(wp.vec3(0.0, drop_y, 0.0), wp.quat_identity()))
+    builder.add_shape_sphere(body_m, radius=radius, cfg=cfg_m)
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverXPBD(model, iterations=10, angular_damping=0.0, enable_restitution=True)
+    state_0 = model.state()
+    state_1 = model.state()
+    contacts = model.contacts()
+
+    qd = state_0.body_qd.numpy()
+    qd[body_m, :3] = [0.0, -2.0, 0.0]
+    state_0.body_qd.assign(qd)
+
+    masses = model.body_mass.numpy()
+    inertia = 0.4 * masses * radius * radius  # solid spheres
+
+    def kinetic_energy(state):
+        qd = state.body_qd.numpy()
+        v2 = np.sum(qd[:, :3] ** 2, axis=1)
+        w2 = np.sum(qd[:, 3:] ** 2, axis=1)
+        return float(np.sum(0.5 * masses * v2) + np.sum(0.5 * inertia * w2))
+
+    ke_before = kinetic_energy(state_0)
+    state_0.clear_forces()
+    model.collide(state_0, contacts)
+    solver.step(state_0, state_1, None, contacts, 1.0 / 60.0)
+    ke_after = kinetic_energy(state_1)
+
+    ratio = ke_after / ke_before
+    test.assertGreater(
+        ratio,
+        0.9,
+        msg=(
+            f"Elastic two-support impact lost kinetic energy: KE ratio {ratio:.4f} "
+            f"(before {ke_before:.4f}, after {ke_after:.4f})."
+        ),
+    )
+    test.assertLess(
+        ratio,
+        1.1,
+        msg=(
+            f"Elastic two-support impact gained kinetic energy: KE ratio {ratio:.4f} "
+            f"(before {ke_before:.4f}, after {ke_after:.4f})."
+        ),
+    )
+
+
 def test_rigid_restitution_skips_inactive_contact(test, device):
     """Rigid restitution must ignore contacts inactive in the positional solve."""
     body_q = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
@@ -2041,6 +2108,14 @@ add_function_test(
     TestSolverXPBD,
     "test_rigid_restitution_elastic_box_on_plane",
     test_rigid_restitution_elastic_box_on_plane,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_multi_manifold_energy",
+    test_rigid_restitution_multi_manifold_energy,
     devices=devices,
     check_output=False,
 )
