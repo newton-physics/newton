@@ -1476,8 +1476,27 @@ def get_mesh(
                 cos_thresh = np.cos(np.deg2rad(vertex_splitting_angle_threshold_deg))
 
                 # For each original vertex v, we'll keep a list of clusters:
-                # each cluster stores (sum_dir, count, new_vid)
+                # each cluster stores (sum_dir, count, new_vid, uv)
                 clusters_per_v = [[] for _ in range(V)]
+
+                # faceVarying UVs carry one value per corner; if the count does
+                # not match, they can't be indexed per-corner, so drop them
+                # (matching the non-splitting UV path below).
+                uvs_facevarying = uvs is not None and uvs_interpolation == UsdGeom.Tokens.faceVarying
+                if uvs_facevarying and len(uvs) != C:
+                    logger.info(
+                        "Mesh %s: UV primvar length (%d) does not match corner count (%d); dropping UVs.",
+                        prim.GetPath(),
+                        len(uvs),
+                        C,
+                    )
+                    uvs = None
+                    uvs_facevarying = False
+
+                def _corner_uv(v, corner_idx):
+                    if uvs is None:
+                        return None
+                    return uvs[corner_idx] if uvs_facevarying else uvs[v]
 
                 new_points = []
                 new_norm_sums = []  # accumulate directions per new vertex id
@@ -1485,42 +1504,45 @@ def get_mesh(
                 new_uvs = [] if uvs is not None else None
 
                 # Helper to create a new vertex clone from original v
-                def _new_vertex_from(v, n_dir, corner_idx):
+                def _new_vertex_from(v, n_dir, corner_uv):
                     new_vid = len(new_points)
                     new_points.append(points[v])
                     new_norm_sums.append(n_dir.copy())
-                    clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
+                    clusters_per_v[v].append([n_dir.copy(), 1, new_vid, corner_uv])
                     if new_uvs is not None:
-                        # Use corner UV if faceVarying, otherwise use vertex UV
-                        if uvs_interpolation == UsdGeom.Tokens.faceVarying:
-                            new_uvs.append(uvs[corner_idx])
-                        else:
-                            new_uvs.append(uvs[v])
+                        new_uvs.append(corner_uv)
                     return new_vid
 
-                # Assign each corner to a cluster (new vertex) based on angular proximity
+                # Assign each corner to a cluster (new vertex) based on angular
+                # proximity. Corners that share a smooth normal but carry
+                # different faceVarying UVs lie on a texture seam and must not be
+                # merged, or the seam's UVs would collapse onto one value.
                 for c in range(C):
                     v = int(indices[c])
                     n_dir = Ndir[c]
+                    corner_uv = _corner_uv(v, c)
 
                     clusters = clusters_per_v[v]
                     assigned = False
                     # try to match an existing cluster
                     for cl in clusters:
-                        sum_dir, cnt, new_vid = cl
+                        sum_dir, cnt, new_vid, cluster_uv = cl
                         # compare with current mean direction (sum_dir normalized)
                         mean_dir = sum_dir / max(np.linalg.norm(sum_dir), 1e-30)
-                        if float(np.dot(mean_dir, n_dir)) >= cos_thresh:
-                            # assign to this cluster
-                            cl[0] = sum_dir + n_dir
-                            cl[1] = cnt + 1
-                            new_norm_sums[new_vid] += n_dir
-                            new_indices[c] = new_vid
-                            assigned = True
-                            break
+                        if float(np.dot(mean_dir, n_dir)) < cos_thresh:
+                            continue
+                        if corner_uv is not None and not np.array_equal(cluster_uv, corner_uv):
+                            continue
+                        # assign to this cluster
+                        cl[0] = sum_dir + n_dir
+                        cl[1] = cnt + 1
+                        new_norm_sums[new_vid] += n_dir
+                        new_indices[c] = new_vid
+                        assigned = True
+                        break
 
                     if not assigned:
-                        new_vid = _new_vertex_from(v, n_dir, c)
+                        new_vid = _new_vertex_from(v, n_dir, corner_uv)
                         new_indices[c] = new_vid
 
                 new_points = np.asarray(new_points, dtype=np.float64)
@@ -2572,10 +2594,10 @@ def _output_channel_count(type_name: Sdf.ValueTypeName) -> int:
     return 1
 
 
-# Base-color input name fragments. Only used to identify a direct-asset color
-# parameter (e.g. an MDL ``diffuse_texture``), where — unlike a connected
-# UsdUVTexture — USD exposes no output type to distinguish it from a normal or
-# roughness map.
+# Base-color input name fragments used to identify the diffuse/albedo parameter
+# feeding a surface shader. A texture connection's shape alone is ambiguous
+# (a normal map is a 3-channel ``rgb`` connection like a diffuse map), so the
+# input name is the disambiguator for both connected and direct-asset textures.
 _COLOR_TEXTURE_INPUT_NAMES = ("diffuse", "albedo", "basecolor", "base_color", "displaycolor")
 
 
@@ -2588,17 +2610,20 @@ def _is_color_texture_input_name(base_name: str) -> bool:
 def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> str | np.ndarray | None:
     """Return the base-color texture feeding a surface shader input, if any.
 
-    Two shapes are supported:
+    The input must be a base-color/albedo parameter by name: a normal map is
+    conventionally wired as ``UsdUVTexture.outputs:rgb`` too, so its 3-channel
+    connection is indistinguishable from a diffuse map by shape alone. Two
+    shapes are then supported:
 
     - A connected ``UsdUVTexture``: accepted only when the connected output is a
       multi-channel color output (``rgb`` / ``rgba``). Single-channel outputs
       (``r``/``g``/``b``/``a``) are scalar data maps (roughness, metallic, ...)
-      and are ignored, so a data map is never mistaken for the diffuse texture —
-      independent of input naming.
+      and are ignored.
     - A direct asset value (e.g. an MDL ``diffuse_texture`` parameter): there is
-      no texture node to inspect, so the base-color input is identified by its
-      (well-known) name.
+      no texture node to inspect, so the base-color input is identified by name.
     """
+    if not _is_color_texture_input_name(surface_input.GetBaseName()):
+        return None
     try:
         producing = UsdShade.Utils.GetValueProducingAttributes(surface_input)
     except Exception:
@@ -2620,7 +2645,7 @@ def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> 
         connected = surface_input.HasConnectedSource()
     except Exception:
         connected = False
-    if not connected and _is_color_texture_input_name(surface_input.GetBaseName()):
+    if not connected:
         asset = surface_input.Get()
         if asset:
             return _resolve_color_texture_asset(asset, prim, surface_input.GetAttr())
