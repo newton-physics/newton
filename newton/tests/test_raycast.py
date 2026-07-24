@@ -790,7 +790,10 @@ def test_intersect_ray_includes_collision_shapes_on_request(test: TestRaycast, d
     test.assertEqual(model.bvh_shape_count_enabled, 1)
     np.testing.assert_array_equal(model.bvh_shape_enabled.numpy()[:1], np.array([visible_shape]))
 
-    model.bvh_build_shapes(model, include_collision_shapes=True)
+    model.bvh_build_shapes(
+        model,
+        shape_flags=newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES | newton.ShapeFlags.COLLIDE_PARTICLES,
+    )
 
     test.assertEqual(model.bvh_shape_count_enabled, 3)
     np.testing.assert_array_equal(

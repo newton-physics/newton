@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..core import MAXVAL
-from .flags import ShapeFlags
 from .types import Gaussian, GeoType
 
 if TYPE_CHECKING:
@@ -169,15 +168,13 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
 def compute_enabled_shapes(
     shape_type: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
-    include_collision_shapes: wp.bool,
+    shape_flags_mask: wp.int32,
     out_shape_enabled: wp.array[wp.uint32],
     out_shape_enabled_count: wp.array[wp.int32],
 ):
     tid = wp.tid()
 
-    is_visible = bool(shape_flags[tid] & ShapeFlags.VISIBLE)
-    is_collision = bool(shape_flags[tid] & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
-    if not is_visible and not (include_collision_shapes and is_collision):
+    if not bool(shape_flags[tid] & shape_flags_mask):
         return
 
     if not is_supported_shape_type(shape_type[tid]):

@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, override
+from ..geometry.flags import ShapeFlags
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
@@ -1865,7 +1866,7 @@ class Model:
         state: State,
         *,
         bvh_constructor: str | None = None,
-        include_collision_shapes: bool = False,
+        shape_flags: ShapeFlags = ShapeFlags.VISIBLE,
     ) -> None:
         """Build or rebuild the shape BVH stored on this model.
 
@@ -1873,16 +1874,15 @@ class Model:
         shape data and *state*. :meth:`ModelBuilder.finalize` calls this for
         the initial model state. Call it again to rebuild with a custom
         ``bvh_constructor`` or after structural changes. For ordinary state
-        changes, use :meth:`bvh_refit_shapes`. By default, only visible shapes
-        are included.
+        changes, use :meth:`bvh_refit_shapes`.
 
         Args:
             state: Current simulation state with body transforms.
             bvh_constructor: Warp BVH construction algorithm. Valid choices
                 are ``"sah"``, ``"median"``, ``"lbvh"``, or ``None`` to use
                 Warp's device-dependent default.
-            include_collision_shapes: Whether to include shapes marked for
-                shape or particle collisions in addition to visible shapes.
+            shape_flags: Mask of :class:`~newton.ShapeFlags`; a shape is
+                included in the BVH if any of its flags are set in the mask.
         """
         from ..geometry.bvh import (  # noqa: PLC0415
             compute_bvh_group_roots,
@@ -1920,7 +1920,7 @@ class Model:
             inputs=[
                 self.shape_type,
                 self.shape_flags,
-                include_collision_shapes,
+                int(shape_flags),
                 self.bvh_shape_enabled,
                 num_enabled,
             ],
@@ -1930,6 +1930,9 @@ class Model:
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
 
         if self.bvh_shape_count_enabled == 0:
+            # drop any BVH from a previous build, it would index stale shapes
+            self.bvh_shapes = None
+            self.bvh_shapes_group_roots = None
             return
 
         compute_shape_world_transforms_launch(self, state)

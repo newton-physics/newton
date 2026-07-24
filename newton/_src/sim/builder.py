@@ -424,8 +424,8 @@ class ModelBuilder:
         shape_constructor: str | None = None
         """Warp model shape BVH constructor backend. If ``None``, Warp's default is used."""
 
-        include_collision_shapes: bool = False
-        """Whether model shape BVHs include collision shapes in addition to visible shapes."""
+        shape_flags: ShapeFlags = ShapeFlags.VISIBLE
+        """Mask of :class:`~newton.ShapeFlags`; a shape is included in the model shape BVH if any of its flags are set in the mask."""
 
     @dataclass
     class MeshApproximationConfig:
@@ -12092,7 +12092,7 @@ class ModelBuilder:
                 m.bvh_build_shapes(
                     m,
                     bvh_constructor=self.default_bvh_cfg.shape_constructor,
-                    include_collision_shapes=self.default_bvh_cfg.include_collision_shapes,
+                    shape_flags=self.default_bvh_cfg.shape_flags,
                 )
                 m.bvh_build_particles(m)
                 return m
@@ -12203,7 +12203,7 @@ class ModelBuilder:
             m.bvh_build_shapes(
                 m,
                 bvh_constructor=self.default_bvh_cfg.shape_constructor,
-                include_collision_shapes=self.default_bvh_cfg.include_collision_shapes,
+                shape_flags=self.default_bvh_cfg.shape_flags,
             )
             m.bvh_build_particles(m)
             return m
