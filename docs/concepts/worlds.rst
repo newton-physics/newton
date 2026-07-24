@@ -266,6 +266,33 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
    world_count: 4
 
 
+.. _implicit-mpm-worlds:
+
+Implicit MPM world isolation
+----------------------------
+
+.. experimental::
+
+    Independent per-world Implicit MPM simulation and collider filtering may
+    change without prior notice.
+
+A multi-world :class:`~newton.solvers.SolverImplicitMPM` uses one shared FEM
+topology by default, so world assignment alone does not isolate overlapping MPM
+particles. Set :attr:`~newton.solvers.SolverImplicitMPM.Config.separate_worlds`
+to create one FEM environment per world and isolate grid mass, momentum,
+stress, and collider response.
+
+Isolated MPM requires every particle to belong to a local world. World-local
+colliders affect only that world, while global static colliders and global
+colliders backed by kinematic bodies affect every world. In isolated mode,
+global colliders backed by dynamic bodies are rejected.
+
+See :class:`~newton.solvers.SolverImplicitMPM` for sparse-grid capacity and
+CUDA graph-capture requirements. See
+:meth:`~newton.solvers.SolverImplicitMPM.setup_collider` and
+:meth:`~newton.solvers.SolverImplicitMPM.reset` for collider configuration and
+selective reset behavior.
+
 .. _Per-world gravity:
 
 Per-World Gravity

@@ -56,15 +56,19 @@ DEFAULT_LIMIT_V7F = vec7f(FLOAT32_MAX)
 
 
 @wp.func
-def correct_rotational_coord(
-    q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0, q_j_limit: wp.float32 = FLOAT32_MAX
-) -> wp.float32:
+def correct_rotational_coord(q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0) -> wp.float32:
     """
     Corrects a rotational joint coordinate to be as close as possible to a reference coordinate.
     """
-    q_j_in += wp.round((q_j_ref - q_j_in) / wp.tau) * wp.tau  # Note: wp.tau is 2 * pi
-    q_j_in = wp.mod(q_j_in, q_j_limit)
-    return q_j_in
+    return q_j_in + wp.round((q_j_ref - q_j_in) / wp.tau) * wp.tau  # Note: wp.tau is 2 * pi
+
+
+@wp.func
+def correct_rotational_coord_with_limit(
+    q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0, q_j_limit: wp.float32 = FLOAT32_MAX
+) -> wp.float32:
+    """Corrects a rotational coordinate relative to a reference and wraps it within a limit."""
+    return wp.mod(correct_rotational_coord(q_j_in, q_j_ref), q_j_limit)
 
 
 @wp.func
@@ -91,7 +95,7 @@ def correct_joint_coord_free(q_j_in: vec7f, q_j_ref: vec7f, q_j_limit: vec7f = D
 @wp.func
 def correct_joint_coord_revolute(q_j_in: vec1f, q_j_ref: vec1f, q_j_limit: vec1f = DEFAULT_LIMIT_V1F) -> vec1f:
     """Corrects the rotational joint coordinate."""
-    q_j_in[0] = correct_rotational_coord(q_j_in[0], q_j_ref[0], q_j_limit[0])
+    q_j_in[0] = correct_rotational_coord_with_limit(q_j_in[0], q_j_ref[0], q_j_limit[0])
     return q_j_in
 
 
@@ -106,7 +110,7 @@ def correct_joint_coord_cylindrical(
     q_j_in: wp.vec2f, q_j_ref: wp.vec2f, q_j_limit: wp.vec2f = DEFAULT_LIMIT_V2F
 ) -> wp.vec2f:
     """Corrects only the rotational joint coordinate."""
-    q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
+    q_j_in[1] = correct_rotational_coord_with_limit(q_j_in[1], q_j_ref[1], q_j_limit[1])
     return q_j_in
 
 
@@ -115,8 +119,8 @@ def correct_joint_coord_universal(
     q_j_in: wp.vec2f, q_j_ref: wp.vec2f, q_j_limit: wp.vec2f = DEFAULT_LIMIT_V2F
 ) -> wp.vec2f:
     """Corrects each of the two rotational joint coordinates individually."""
-    q_j_in[0] = correct_rotational_coord(q_j_in[0], q_j_ref[0], q_j_limit[0])
-    q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
+    q_j_in[0] = correct_rotational_coord_with_limit(q_j_in[0], q_j_ref[0], q_j_limit[0])
+    q_j_in[1] = correct_rotational_coord_with_limit(q_j_in[1], q_j_ref[1], q_j_limit[1])
     return q_j_in
 
 
@@ -887,7 +891,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
 @wp.kernel
 def _extract_actuators_state_from_joints(
     # Inputs:
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     model_joint_wid: wp.array[wp.int32],
     model_joint_act_type: wp.array[wp.int32],
     model_joint_coords_offset: wp.array[wp.int32],
@@ -908,7 +912,7 @@ def _extract_actuators_state_from_joints(
     act_type = model_joint_act_type[jid]
 
     # Early exit the operation if the joint's world is flagged as skipped or if the joint is not actuated
-    if not world_mask[wid] or act_type == JointActuationType.PASSIVE:
+    if (world_mask and not world_mask[wid]) or act_type == JointActuationType.PASSIVE:
         return
 
     # Retrieve the joint model data
@@ -1055,11 +1059,11 @@ def compute_joints_data(
 
 def extract_actuators_state_from_joints(
     model: ModelKamino,
-    world_mask: wp.array[wp.bool],
     joint_q: wp.array[wp.float32],
     joint_u: wp.array[wp.float32],
     actuator_q: wp.array[wp.float32],
     actuator_u: wp.array[wp.float32],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Extracts the states of the actuated joints from the full joint state arrays.
@@ -1077,7 +1081,7 @@ def extract_actuators_state_from_joints(
             Shape of ``(sum_of_num_actuated_joint_coords,)``.
         actuator_u: The output array to store the actuated joint velocities.
             Shape of ``(sum_of_actuated_joint_dofs,)``.
-        world_mask: An array indicating which worlds are active (True) or skipped (False).
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
             Shape of ``(num_worlds,)``.
     """
     wp.launch(
