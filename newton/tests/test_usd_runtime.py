@@ -176,7 +176,7 @@ class TestUsdRuntime(unittest.TestCase):
         sim = runtime.load_usd(_make_stage(), use_graph=False)
         z0 = sim.state.body_q.numpy()[0, 2]
         for _ in range(50):
-            runtime.step(sim)
+            sim.step()
         z1 = sim.state.body_q.numpy()[0, 2]
         self.assertLess(z1, z0)  # gravity acted
         self.assertTrue(np.isfinite(sim.state.body_q.numpy()).all())
@@ -190,7 +190,7 @@ class TestUsdRuntime(unittest.TestCase):
         state_ref = sim.state
         body_q_ref = sim.state.body_q
         for _ in range(3):
-            runtime.step(sim)
+            sim.step()
         self.assertIs(sim.state, state_ref)
         self.assertIs(sim.state.body_q, body_q_ref)
 
@@ -201,7 +201,7 @@ class TestUsdRuntime(unittest.TestCase):
         force = np.zeros((1, 6), dtype=np.float32)
         force[0, 3] = 1.0e4  # linear force +x; spatial vector layout [ang, lin]
         sim.state.body_f.assign(force)
-        runtime.step(sim)
+        sim.step()
         vx_after_one = sim.state.body_qd.numpy()[0, 3]
         self.assertGreater(vx_after_one, 0.0)  # force was consumed
         assert_np_equal(sim.state.body_f.numpy(), np.zeros((1, 6), dtype=np.float32))  # and cleared
@@ -233,7 +233,7 @@ class TestUsdRuntime(unittest.TestCase):
         contacts = collision_pipeline.contacts()
         dt = sim.dt
         for _ in range(20):
-            runtime.step(sim)
+            sim.step()
             collision_pipeline.collide(state, contacts)
             solver.step(state, state, None, contacts, dt)
             state.clear_forces()
@@ -244,7 +244,7 @@ class TestUsdRuntime(unittest.TestCase):
 
         sim = runtime.load_usd(_make_stage(num_bodies=0), use_graph=False)
         for _ in range(5):
-            runtime.step(sim)
+            sim.step()
         self.assertEqual(sim.step_count, 5)
 
     def test_collision_interval_skips_collide(self):
@@ -258,7 +258,7 @@ class TestUsdRuntime(unittest.TestCase):
         sim = runtime.load_usd(stage, use_graph=False)
         with mock.patch.object(sim.collision_pipeline, "collide", wraps=sim.collision_pipeline.collide) as spy:
             for _ in range(8):
-                runtime.step(sim)
+                sim.step()
         self.assertEqual(spy.call_count, 2)  # steps 0 and 4
 
     def test_invalid_collision_interval_errors_at_load(self):
@@ -291,7 +291,7 @@ class TestUsdRuntime(unittest.TestCase):
                 sim = runtime.load_usd(_make_stage(solver_api=schema), use_graph=False)
                 self.assertIsInstance(sim.solver, entry.cls)
                 for _ in range(10):
-                    runtime.step(sim)
+                    sim.step()
                 self.assertTrue(np.isfinite(sim.state.body_q.numpy()).all())
                 self.assertEqual(sim.step_count, 10)
 
@@ -321,8 +321,8 @@ class TestUsdRuntime(unittest.TestCase):
         sim_graph = self._load_with_capture(runtime, _make_stage())
         sim_plain = runtime.load_usd(_make_stage(), use_graph=False)
         for _ in range(50):
-            runtime.step(sim_graph)
-            runtime.step(sim_plain)
+            sim_graph.step()
+            sim_plain.step()
         assert_np_equal(sim_graph.state.body_q.numpy(), sim_plain.state.body_q.numpy(), tol=1e-6)
 
     def test_collision_interval_graph_pair(self):
@@ -338,8 +338,8 @@ class TestUsdRuntime(unittest.TestCase):
         self.assertIsNotNone(sim_graph._graphs[1])
         self.assertIsNot(sim_graph._graphs[0], sim_graph._graphs[1])
         for _ in range(10):
-            runtime.step(sim_graph)
-            runtime.step(sim_plain)
+            sim_graph.step()
+            sim_plain.step()
         assert_np_equal(sim_graph.state.body_q.numpy(), sim_plain.state.body_q.numpy(), tol=1e-6)
 
     def test_cli_runs_headless(self):

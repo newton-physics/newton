@@ -27,7 +27,7 @@ class Example:
 
     def step(self):
         for _ in range(self.steps_per_frame):
-            newton.usd.runtime.step(self.sim)
+            self.sim.step()
 
     def render(self):
         self.viewer.begin_frame(self.sim.time)

@@ -24,4 +24,3 @@ Stage-driven simulation runtime: derive a Newton simulation from USD.
    :signatures: long
 
    load_usd
-   step
