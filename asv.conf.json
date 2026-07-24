@@ -16,7 +16,7 @@
   "build_command": ["python -m build --wheel -o {build_cache_dir} {build_dir}"],
   "install_command": [
     "in-dir={env_dir} python -m pip install {wheel_file}[dev] --extra-index-url=https://pypi.nvidia.com/",
-    "in-dir={env_dir} python -m pip install {wheel_file}[sim] warp-lang==1.16.0.dev20260716 mujoco==3.10.0 mujoco-warp==3.10.0.2 --extra-index-url=https://pypi.nvidia.com/",
+    "in-dir={env_dir} python -m pip install {wheel_file}[sim] warp-lang==1.16.0.dev20260716 mujoco==3.10.0 mujoco-warp==3.10.0.3 --extra-index-url=https://pypi.nvidia.com/",
     "python -m pip install torch==2.10.0+cu130 --index-url https://download.pytorch.org/whl/cu130"
   ]
 }
