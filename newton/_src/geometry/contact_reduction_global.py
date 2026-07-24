@@ -605,8 +605,12 @@ class GlobalContactReducerData:
     contact_fingerprints: wp.array[wp.int32]
 
     # Optional hydroelastic data
-    # contact_area: area of contact surface element (per contact)
+    # contact_area: force-bearing area of the contact surface element
     contact_area: wp.array[wp.float32]
+    # contact_geometric_area: full geometric area of the contact surface element
+    contact_geometric_area: wp.array[wp.float32]
+    # contact_pressure: current pressure evaluated at the contact surface element
+    contact_pressure: wp.array[wp.float32]
 
     # Cached normal-bin hashtable entry index per contact
     contact_nbin_entry: wp.array[wp.int32]
@@ -785,7 +789,9 @@ class GlobalContactReducer:
     - position_depth: vec4(position.x, position.y, position.z, depth)
     - normal: vec2(octahedral-encoded unit normal)
     - shape_pairs: vec2i(shape_a, shape_b)
-    - contact_area: float (optional, per contact, for hydroelastic contacts)
+    - contact_area: force-bearing area (optional, per hydroelastic contact)
+    - contact_geometric_area: full face area (optional, per hydroelastic contact)
+    - contact_pressure: current face pressure (optional, per hydroelastic contact)
 
     Attributes:
         capacity: Maximum number of contacts that can be stored
@@ -793,7 +799,9 @@ class GlobalContactReducer:
         position_depth: vec4 array storing position.xyz and depth
         normal: vec2 array storing octahedral-encoded contact normal
         shape_pairs: vec2i array storing (shape_a, shape_b) per contact
-        contact_area: float array storing contact area per contact (for hydroelastic)
+        contact_area: float array storing force-bearing area per contact (for hydroelastic)
+        contact_geometric_area: float array storing full face area per contact (for hydroelastic)
+        contact_pressure: float array storing current face pressure per contact (for hydroelastic)
         entry_k_eff: float array storing effective stiffness per hashtable entry (for hydroelastic)
         contact_count: Atomic counter for allocated contacts
         hashtable: HashTable for tracking best contacts (keys only)
@@ -852,9 +860,13 @@ class GlobalContactReducer:
         # Optional hydroelastic data arrays
         if store_hydroelastic_data:
             self.contact_area = wp.zeros(capacity, dtype=wp.float32, device=device)
+            self.contact_geometric_area = wp.zeros(capacity, dtype=wp.float32, device=device)
+            self.contact_pressure = wp.zeros(capacity, dtype=wp.float32, device=device)
             self.contact_nbin_entry = wp.zeros(capacity, dtype=wp.int32, device=device)
         else:
             self.contact_area = wp.zeros(0, dtype=wp.float32, device=device)
+            self.contact_geometric_area = wp.zeros(0, dtype=wp.float32, device=device)
+            self.contact_pressure = wp.zeros(0, dtype=wp.float32, device=device)
             self.contact_nbin_entry = wp.zeros(0, dtype=wp.int32, device=device)
 
         # Per-contact dedup flags for cross-entry deduplication during export
@@ -985,6 +997,8 @@ class GlobalContactReducer:
         data.capacity = self.capacity
         data.contact_fingerprints = self.contact_fingerprints
         data.contact_area = self.contact_area
+        data.contact_geometric_area = self.contact_geometric_area
+        data.contact_pressure = self.contact_pressure
         data.contact_nbin_entry = self.contact_nbin_entry
         data.entry_k_eff = self.entry_k_eff
         data.agg_force = self.agg_force

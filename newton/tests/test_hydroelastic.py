@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.sdf_hydroelastic import classify_hydroelastic_contact
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -56,6 +57,48 @@ solvers = {
 
 
 # --- Helper functions ---
+
+
+@wp.kernel
+def _classify_hydroelastic_contacts_kernel(
+    pair_separations: wp.array[wp.float32],
+    gap_sum: float,
+    contact_bands: wp.array[wp.int32],
+):
+    tid = wp.tid()
+    contact_bands[tid] = classify_hydroelastic_contact(pair_separations[tid], gap_sum)
+
+
+def test_hydroelastic_contact_band_boundaries(test, device):
+    """Classify exact hydroelastic margin and gap boundaries."""
+    pair_separations = wp.array([-0.01, 0.0, 0.05, 0.1, 0.1001], dtype=wp.float32, device=device)
+    contact_bands = wp.empty(5, dtype=wp.int32, device=device)
+
+    wp.launch(
+        kernel=_classify_hydroelastic_contacts_kernel,
+        dim=5,
+        inputs=[pair_separations, 0.1],
+        outputs=[contact_bands],
+        device=device,
+    )
+
+    np.testing.assert_array_equal(contact_bands.numpy(), np.array([-1, 0, 0, 0, 1], dtype=np.int32))
+
+
+def test_hydroelastic_sdf_padding_covers_margin_and_gap(test, device):
+    """Reject hydroelastic SDF padding that cannot cover margin and gap."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+        is_hydroelastic=True,
+        margin=0.2,
+        gap=0.1,
+        sdf_max_resolution=32,
+        sdf_padding=0.25,
+    )
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+
+    with test.assertRaisesRegex(ValueError, r"sdf_padding >= margin \+ gap"):
+        builder.finalize(device=device)
 
 
 def simulate(solver, model, state_0, state_1, control, contacts, collision_pipeline, sim_dt, substeps):
@@ -428,7 +471,7 @@ def _extract_contact_forces(contacts, model, state, shape_pair=None):
     off1 = np.where((b1 != -1)[:, None], body_q[np.maximum(b1, 0), :3], 0.0)
     p0w = p0 + off0
     p1w = p1 + off1
-    depth = np.einsum("ij,ij->i", p0w - p1w, -normals) / 2.0
+    depth = np.einsum("ij,ij->i", p0w - p1w, -normals)
     mask = (stiffness > 0) & (depth < 0)
     if shape_pair is not None:
         pair_mask = (shape0 == shape_pair[0]) & (shape1 == shape_pair[1])
@@ -525,6 +568,102 @@ def _make_pipelines(model, configs, rigid_contact_maxes=None):
         pipe = newton.CollisionPipeline(model, rigid_contact_max=rcm, sdf_hydroelastic_config=cfg)
         result.append((pipe, pipe.contacts()))
     return result
+
+
+def _build_margin_gap_boxes(device):
+    """Build two hydroelastic boxes with asymmetric margins and gaps."""
+    builder = newton.ModelBuilder()
+    common = {
+        "is_hydroelastic": True,
+        "kh": 1.0e8,
+        "sdf_max_resolution": 64,
+        "sdf_narrow_band_range": (-0.25, 0.25),
+    }
+    cfg_a = newton.ModelBuilder.ShapeConfig(margin=0.05, gap=0.03, **common)
+    cfg_b = newton.ModelBuilder.ShapeConfig(
+        margin=0.07, gap=0.05, kh=2.0e8, **{k: v for k, v in common.items() if k != "kh"}
+    )
+
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.16), wp.quat_identity()))
+    builder.add_shape_box(body=body_a, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_a)
+    builder.add_shape_box(body=body_b, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_b)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    return model, state, body_b
+
+
+def _get_contact_distances(contacts, model, state):
+    """Return public contact distances reconstructed in world space."""
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    if count == 0:
+        return np.empty(0)
+
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    shape_body = model.shape_body.numpy()
+    body_q = state.body_q.numpy()
+    point0 = contacts.rigid_contact_point0.numpy()[:count]
+    point1 = contacts.rigid_contact_point1.numpy()[:count]
+    normal = contacts.rigid_contact_normal.numpy()[:count]
+    body0 = shape_body[shape0]
+    body1 = shape_body[shape1]
+    offset0 = np.where((body0 != -1)[:, None], body_q[np.maximum(body0, 0), :3], 0.0)
+    offset1 = np.where((body1 != -1)[:, None], body_q[np.maximum(body1, 0), :3], 0.0)
+    return np.einsum("ij,ij->i", point1 + offset1 - point0 - offset0, normal)
+
+
+def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
+    """Generate penetrating, speculative, and absent hydroelastic contacts."""
+    model, state, body_b = _build_margin_gap_boxes(device)
+    config = HydroelasticSDF.Config(
+        reduce_contacts=reduce_contacts,
+        pre_prune_contacts=reduce_contacts,
+        output_contact_surface=True,
+        buffer_fraction=1.0,
+    )
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=config,
+    )
+    contacts = pipeline.contacts()
+
+    margin_sum = 0.12
+    gap_sum = 0.08
+    voxel_size = max(model._texture_sdf_data.numpy()["voxel_size"][0])
+    tolerance = 2.0 * voxel_size
+
+    cases = (
+        (0.08, -0.04, True),
+        (margin_sum, 0.0, True),
+        (0.16, 0.04, True),
+        (margin_sum + gap_sum, gap_sum, True),
+        (0.22, 0.10, False),
+    )
+    for real_surface_separation, expected_distance, expect_contacts in cases:
+        wp.launch(
+            kernel=_set_body_z_kernel,
+            dim=1,
+            inputs=[state.body_q, body_b, 1.0 + real_surface_separation],
+            device=device,
+        )
+        pipeline.collide(state, contacts)
+        distances = _get_contact_distances(contacts, model, state)
+
+        if not expect_contacts:
+            test.assertEqual(len(distances), 0)
+            continue
+
+        test.assertGreater(len(distances), 0)
+        test.assertTrue(np.all(np.abs(distances - expected_distance) <= tolerance))
+        stiffness = contacts.rigid_contact_stiffness.numpy()[: len(distances)]
+        test.assertTrue(np.all(stiffness > 0.0))
+        if expected_distance >= 0.0:
+            test.assertTrue(np.all(distances >= -tolerance))
 
 
 def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False):
@@ -1424,8 +1563,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
         test.assertGreater(len(instance_depths), 0, f"Case {i} should have penetrating contacts (negative depth)")
 
-        # x2 because depth is distance to isosurface; use |depth| for magnitude
-        measured = 2.0 * np.mean(-instance_depths)
+        measured = np.mean(-instance_depths)
         ratio = measured / expected
 
         # We expect a ratio > 1 due to non-uniform pressure distribution.
@@ -1551,6 +1689,36 @@ class TestHydroelastic(unittest.TestCase):
 
 
 # --- Register tests ---
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_contact_band_boundaries",
+    test_hydroelastic_contact_band_boundaries,
+    devices=["cpu"],
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_sdf_padding_covers_margin_and_gap",
+    test_hydroelastic_sdf_padding_covers_margin_and_gap,
+    devices=["cpu"],
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_margin_gap_bands_reduced",
+    test_hydroelastic_margin_gap_bands,
+    devices=cuda_devices,
+    reduce_contacts=True,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_margin_gap_bands_unreduced",
+    test_hydroelastic_margin_gap_bands,
+    devices=cuda_devices,
+    reduce_contacts=False,
+)
 
 add_function_test(
     TestHydroelastic,

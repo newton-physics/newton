@@ -2181,6 +2181,7 @@ class NarrowPhase:
             self.hydroelastic_sdf.launch(
                 texture_sdf_data,
                 shape_sdf_index,
+                shape_data,
                 shape_transform,
                 shape_gap,
                 shape_collision_aabb_lower,
