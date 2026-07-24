@@ -227,6 +227,29 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertIsInstance(resolved.resolver, SentinelResolver)
         self.assertFalse(resolved.authored)
 
+        collider.CreateAttribute("newton:contactGap", Sdf.ValueTypeNames.Float).Set(float("-inf"))
+        resolved = resolver._resolve_value(collider, PrimType.SHAPE, "gap")
+
+        self.assertIsNone(resolved.value)
+        self.assertIsInstance(resolved.resolver, SentinelResolver)
+        self.assertTrue(resolved.authored)
+
+    def test_composed_value_block_suppresses_schema_fallback(self):
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("NewtonJointAPI")
+        joint.GetAttribute("newton:armature").Block()
+        joint.CreateAttribute("mjc:armature", Sdf.ValueTypeNames.Float).Set(3.0)
+
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton(), SchemaResolverMjc()],
+            use_applied_schema_fallbacks=True,
+        )
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 3.0)
+
+        joint.GetAttribute("mjc:armature").Clear()
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 12.0)
+
     def test_composed_physx_engine_default_margin_uses_builder_default(self):
         stage = Usd.Stage.CreateInMemory()
         UsdPhysics.Scene.Define(stage, "/scene")

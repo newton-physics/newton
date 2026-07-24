@@ -29,6 +29,13 @@ if TYPE_CHECKING:
 _MISSING_FALLBACK = object()
 
 
+@dataclass(frozen=True)
+class _ResolverValue:
+    value: Any
+    authored: bool
+    blocked: bool = False
+
+
 class _SchemaFallbackError(Exception):
     """Base class for expected composed-fallback audit failures."""
 
@@ -148,6 +155,41 @@ class SchemaResolver:
             key,
             legacy_prim=prim,
         )
+
+    def _get_value_state(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> _ResolverValue:
+        if prim is None:
+            return _ResolverValue(None, False)
+
+        spec = self.mapping.get(prim_type, {}).get(key)
+        if spec is None or type(self).get_value is not SchemaResolver.get_value:
+            value = self.get_value(prim, prim_type, key)
+            return _ResolverValue(value, value is not None)
+
+        names = spec.attribute_names or (spec.name,)
+        states: dict[str, tuple[bool, bool]] = {}
+
+        def read_attribute(name: str) -> Any | None:
+            attribute = prim.GetAttribute(name)
+            authored = bool(attribute and attribute.HasAuthoredValue())
+            blocked = bool(attribute and not authored and attribute.GetResolveInfo().ValueIsBlocked())
+            states[name] = (authored, blocked)
+            return attribute.Get() if authored else None
+
+        value = self._get_value_with_reader(read_attribute, prim_type, key, legacy_prim=prim)
+        if value is not None:
+            return _ResolverValue(value, True)
+
+        for name in names:
+            if name not in states:
+                read_attribute(name)
+
+        if any(blocked for _, blocked in states.values()):
+            return _ResolverValue(None, False, True)
+        if spec._reader_value_getter is not None:
+            authored = all(authored for authored, _ in states.values())
+        else:
+            authored = states[spec.name][0]
+        return _ResolverValue(None, authored)
 
     def _schema_name(self, prim_type: PrimType, key: str) -> str | None:
         schema_names = self._schema_names.get(prim_type)
@@ -305,7 +347,7 @@ class _SchemaResolution:
 
     def _resolve_value(
         self,
-        read_value: Callable[[SchemaResolver, str], Any | None],
+        read_value: Callable[[SchemaResolver, str], _ResolverValue],
         schema_is_applied: Callable[[SchemaResolver, str], bool],
         read_fallback: Callable[[SchemaResolver, str], Any],
         prim_type: PrimType,
@@ -319,15 +361,15 @@ class _SchemaResolution:
             if spec is None:
                 continue
             value = read_value(resolver, key)
-            if value is not None:
-                return _ResolvedValue(value, resolver, True)
+            if value.authored:
+                return _ResolvedValue(value.value, resolver, True)
 
-            if schema_is_applied(resolver, key):
-                value = read_fallback(resolver, key)
-                if value is _MISSING_FALLBACK:
+            if not value.blocked and schema_is_applied(resolver, key):
+                fallback = read_fallback(resolver, key)
+                if fallback is _MISSING_FALLBACK:
                     compatibility_fallbacks.add(id(resolver))
                 else:
-                    return _ResolvedValue(value, resolver, False)
+                    return _ResolvedValue(fallback, resolver, False)
 
         if default is not None:
             return _ResolvedValue(default, None, False)
@@ -468,12 +510,12 @@ class SchemaResolverManager:
         compare_resolver: bool,
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None,
     ) -> tuple[Any, SchemaResolver | None]:
-        value_cache: dict[tuple[int, str], Any | None] = {}
+        value_cache: dict[tuple[int, str], _ResolverValue] = {}
 
-        def read_value(resolver: SchemaResolver, key: str) -> Any | None:
+        def read_value(resolver: SchemaResolver, key: str) -> _ResolverValue:
             cache_key = (id(resolver), key)
             if cache_key not in value_cache:
-                value_cache[cache_key] = resolver.get_value(prim, prim_type, key)
+                value_cache[cache_key] = resolver._get_value_state(prim, prim_type, key)
             return value_cache[cache_key]
 
         if self._uses_composed_fallbacks:
@@ -503,10 +545,10 @@ class SchemaResolverManager:
         key: str,
         default: Any,
         *,
-        read_value: Callable[[SchemaResolver, str], Any | None],
+        read_value: Callable[[SchemaResolver, str], _ResolverValue],
     ) -> tuple[Any, SchemaResolver | None]:
         for resolver in self.resolvers:
-            value = read_value(resolver, key)
+            value = read_value(resolver, key).value
             if value is None:
                 continue
             self._collect_on_first_use(resolver, prim)
@@ -559,7 +601,7 @@ class SchemaResolverManager:
         *,
         compare_resolver: bool,
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
-        read_value: Callable[[SchemaResolver, str], Any | None] | None = None,
+        read_value: Callable[[SchemaResolver, str], _ResolverValue] | None = None,
     ) -> None:
         """Record properties whose legacy and composed resolution diverge."""
         if self._uses_composed_fallbacks:
@@ -619,12 +661,12 @@ class SchemaResolverManager:
         key: str,
         *,
         default: Any = None,
-        read_value: Callable[[SchemaResolver, str], Any | None] | None = None,
+        read_value: Callable[[SchemaResolver, str], _ResolverValue] | None = None,
     ) -> _ResolvedValue:
         """Resolve a value while retaining source provenance."""
 
-        def read_from_prim(resolver: SchemaResolver, key: str) -> Any | None:
-            return resolver.get_value(prim, prim_type, key)
+        def read_from_prim(resolver: SchemaResolver, key: str) -> _ResolverValue:
+            return resolver._get_value_state(prim, prim_type, key)
 
         return self._resolution._resolve_value(
             read_from_prim if read_value is None else read_value,

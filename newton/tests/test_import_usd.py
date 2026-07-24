@@ -1712,6 +1712,15 @@ def Xform "Articulation" (
         self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
         self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
 
+        joint.GetPrim().GetAttribute("newton:armature").Block()
+        blocked_builder = newton.ModelBuilder()
+        blocked_builder.default_joint_cfg.armature = 0.7
+        blocked_builder.add_usd(stage, use_applied_schema_fallbacks=True)
+        blocked_model = blocked_builder.finalize()
+        dof = int(blocked_model.joint_qd_start.numpy()[blocked_model.joint_label.index("/World/Joint")])
+
+        self.assertAlmostEqual(float(blocked_model.joint_armature.numpy()[dof]), 0.7)
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_merged_joint_warns_before_velocity_fallback_change(self):
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -3535,6 +3544,8 @@ def Xform "Articulation" (
 
         # Joint4: authored raw [0, 0] remains raw even though it cannot be converted to gains.
         dof4 = joint_qd_start[joint4_idx]
+        self.assertAlmostEqual(float(limit_ke[dof4]), 2500.0, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof4]), 100.0, places=4)
         np.testing.assert_array_equal(raw_solreflimit[dof4], [0.0, 0.0])
         self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
 
@@ -3572,6 +3583,39 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
 
         self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 0.0)
         self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 0.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unregistered_physx_joint_api_uses_velocity_default(self):
+        from pxr import Usd
+
+        from newton._src.usd.schemas import SchemaResolverPhysx  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
+    def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def PhysicsPrismaticJoint "Joint" (prepend apiSchemas = ["PhysxJointAPI"]) {
+        rel physics:body1 = </World/Body>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.velocity_limit = 123.0
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverPhysx()],
+            use_applied_schema_fallbacks=True,
+        )
+        model = builder.finalize()
+        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
+
+        self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), float("inf"))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_mode_respects_resolver_priority(self):

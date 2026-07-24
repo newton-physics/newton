@@ -774,12 +774,12 @@ def parse_usd(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
-        value_cache: dict[int, Any | None] = {}
+        value_cache: dict[int, Any] = {}
 
-        def read_value(resolver: SchemaResolver, _key: str) -> Any | None:
+        def read_value(resolver: SchemaResolver, _key: str) -> Any:
             resolver_id = id(resolver)
             if resolver_id not in value_cache:
-                value_cache[resolver_id] = resolver.get_value(prim, PrimType.JOINT, key)
+                value_cache[resolver_id] = resolver._get_value_state(prim, PrimType.JOINT, key)
             return value_cache[resolver_id]
 
         if R._uses_composed_fallbacks:
@@ -793,12 +793,12 @@ def parse_usd(
             if resolved.resolver is None or resolved.resolver.name != "mjc":
                 return resolved.value, "force"
             R._collect_on_first_use(resolved.resolver, prim)
-            if not resolved.authored:
-                spec = resolved.resolver.mapping[PrimType.JOINT][key]
-                if usd.get_attribute(prim, spec.name) is not None:
-                    return builder_default, "mjc_authored"
-            source = "mjc_authored" if resolved.authored else "mjc_default"
-            return builder_default if resolved.value is None else resolved.value, source
+            if resolved.authored:
+                value = resolved.value
+                if value is None:
+                    value = _get_mjc_joint_limit_default(prim, key)
+                return builder_default if value is None else value, "mjc_authored"
+            return builder_default if resolved.value is None else resolved.value, "mjc_default"
 
         def finish(
             value: float,
@@ -827,7 +827,7 @@ def parse_usd(
                 if raw_value is None:
                     continue
                 R._collect_on_first_use(resolver, prim)
-                authored_value = read_value(resolver, key)
+                authored_value = read_value(resolver, key).value
                 if authored_value is not None:
                     return finish(authored_value, "mjc_authored", resolver)
                 mjc_default = _get_mjc_joint_limit_default(prim, key)
@@ -835,7 +835,7 @@ def parse_usd(
                     return finish(mjc_default, "mjc_authored", resolver)
                 return finish(builder_default, "mjc_authored", resolver)
 
-            authored_value = read_value(resolver, key)
+            authored_value = read_value(resolver, key).value
             if authored_value is not None:
                 R._collect_on_first_use(resolver, prim)
                 return finish(authored_value, "force", resolver)
