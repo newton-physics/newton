@@ -1646,6 +1646,42 @@ class TestShapeConfigValidation(unittest.TestCase):
 
 
 class TestModelJoints(unittest.TestCase):
+    def test_add_builder_xform_updates_root_free_joint_target(self):
+        """Transformed root free-joint targets preserve authored targets."""
+        prev = newton.use_coord_layout_targets
+        newton.use_coord_layout_targets = True
+        try:
+            parent_xform = wp.transform(wp.vec3(0.4, -0.2, 0.1), wp.quat_rpy(0.3, -0.4, 0.2))
+            body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_rpy(0.1, 0.2, -0.3))
+            offset = wp.transform(wp.vec3(-0.5, 0.7, 1.2), wp.quat_rpy(-0.3, 0.2, 0.1))
+            source_target = wp.transform(wp.vec3(0.2, -0.6, 0.9), wp.quat_rpy(0.4, -0.1, 0.2))
+
+            source = ModelBuilder()
+            body = source.add_link(xform=body_xform)
+            joint = source.add_joint_free(child=body, parent_xform=parent_xform)
+            source.add_articulation([joint])
+            q_start = source.joint_q_start[joint]
+            source.joint_target_q[q_start : q_start + 7] = list(source_target)
+
+            builder = ModelBuilder()
+            builder.add_builder(source, xform=offset)
+
+            xform_local = wp.transform_inverse(parent_xform) * offset * parent_xform
+            expected_target = xform_local * source_target
+            q_start = builder.joint_q_start[joint]
+            assert_np_equal(
+                np.array(builder.joint_target_q[q_start : q_start + 7]),
+                np.array(expected_target),
+                tol=1.0e-6,
+            )
+
+            model = builder.finalize()
+            control = model.control()
+            assert_np_equal(model.joint_target_q.numpy(), np.array(expected_target), tol=1.0e-6)
+            assert_np_equal(control.joint_target_q.numpy(), np.array(expected_target), tol=1.0e-6)
+        finally:
+            newton.use_coord_layout_targets = prev
+
     def test_add_builder_xform_updates_root_free_joint_coordinates(self):
         parent_xform = wp.transform(wp.vec3(0.4, -0.2, 0.1), wp.quat_rpy(0.3, -0.4, 0.2))
         child_xform = wp.transform(wp.vec3(-0.1, 0.3, 0.2), wp.quat_rpy(-0.2, 0.1, 0.4))
@@ -1745,6 +1781,59 @@ class TestModelJoints(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
         assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-5)
+
+    def test_add_joint_free_initializes_target_from_relative_transform(self):
+        """Coordinate-layout targets start at the authored free-joint pose.
+
+        The legacy DOF layout cannot represent the free-joint quaternion and
+        retains its historical zero target.
+        """
+        parent_body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_rpy(0.2, -0.3, 0.4))
+        child_body_xform = wp.transform(wp.vec3(-0.5, 1.5, 2.0), wp.quat_rpy(-0.4, 0.1, 0.3))
+        parent_xform = wp.transform(wp.vec3(0.3, -0.2, 0.1), wp.quat_rpy(0.1, 0.2, -0.1))
+        child_xform = wp.transform(wp.vec3(-0.1, 0.4, 0.2), wp.quat_rpy(-0.2, 0.3, 0.1))
+
+        for use_coord in (False, True):
+            with self.subTest(use_coord_layout_targets=use_coord):
+                prev = newton.use_coord_layout_targets
+                newton.use_coord_layout_targets = use_coord
+                try:
+                    builder = ModelBuilder()
+                    parent = builder.add_link(xform=parent_body_xform)
+                    child = builder.add_link(xform=child_body_xform)
+                    joint = builder.add_joint_free(
+                        parent=parent,
+                        child=child,
+                        parent_xform=parent_xform,
+                        child_xform=child_xform,
+                    )
+                    builder.add_articulation([joint])
+
+                    q_start = builder.joint_q_start[joint]
+                    expected_joint_q = np.array(builder.joint_q[q_start : q_start + 7])
+                    identity = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+                    self.assertFalse(np.allclose(expected_joint_q, identity))
+
+                    if use_coord:
+                        assert_np_equal(
+                            np.array(builder.joint_target_q[q_start : q_start + 7]),
+                            expected_joint_q,
+                            tol=1.0e-6,
+                        )
+                    else:
+                        assert_np_equal(
+                            np.array(builder.joint_target_q[q_start : q_start + 7]),
+                            identity,
+                            tol=1.0e-6,
+                        )
+
+                    model = builder.finalize()
+                    control = model.control()
+                    expected_target = expected_joint_q if use_coord else np.zeros(6)
+                    assert_np_equal(model.joint_target_q.numpy(), expected_target, tol=1.0e-6)
+                    assert_np_equal(control.joint_target_q.numpy(), expected_target, tol=1.0e-6)
+                finally:
+                    newton.use_coord_layout_targets = prev
 
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
         """``joint_target_q`` follows ``joint_q`` (coord) under

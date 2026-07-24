@@ -1021,6 +1021,29 @@ class TestImportUrdfBasic(unittest.TestCase):
 
 
 class TestImportUrdfBaseJoints(unittest.TestCase):
+    def test_floating_true_initializes_coord_target_from_xform(self):
+        """Floating URDF root targets start from the imported root transform."""
+        urdf_content = """
+<robot name="test_floating_target">
+    <link name="base_link"/>
+</robot>
+"""
+        xform = wp.transform(wp.vec3(1.0, -2.0, 3.0), wp.quat_rpy(0.2, -0.3, 0.4))
+
+        prev = newton.use_coord_layout_targets
+        newton.use_coord_layout_targets = True
+        try:
+            builder = newton.ModelBuilder()
+            parse_urdf(urdf_content, builder, floating=True, xform=xform, up_axis="Z")
+            model = builder.finalize()
+            control = model.control()
+
+            assert_np_equal(model.joint_q.numpy(), np.array(xform), tol=1.0e-6)
+            assert_np_equal(model.joint_target_q.numpy(), np.array(xform), tol=1.0e-6)
+            assert_np_equal(control.joint_target_q.numpy(), np.array(xform), tol=1.0e-6)
+        finally:
+            newton.use_coord_layout_targets = prev
+
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
         urdf_content = """<?xml version="1.0" encoding="utf-8"?>

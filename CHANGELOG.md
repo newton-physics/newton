@@ -100,6 +100,8 @@
 - Reject invalid hollow primitive shell thickness before computing inertia.
 - Fix `ModelBuilder.add_mjcf()` ignoring positive explicit mass on mesh geoms. (#3595)
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
+- Initialize free-joint coordinate-layout position targets from the authored pose. (#3380)
+- Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
 - Reject incompatible custom attribute and frequency definitions before composing `ModelBuilder` instances.
