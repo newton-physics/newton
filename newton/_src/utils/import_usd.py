@@ -1869,6 +1869,17 @@ def parse_usd(
             limit_solref_mode=_joint_limit_solref_mode(jp_prim, limit_ke_source, limit_kd_source),
         )
 
+    def shift_joint_reference(dof: _DofParams, joint_custom_attrs: dict[str, Any]) -> None:
+        """Convert MuJoCo-reference limits and targets to Newton displacements."""
+        ref_key = "mujoco:dof_ref"
+        if ref_key not in joint_custom_attrs:
+            return
+        ref = float(joint_custom_attrs[ref_key])
+        dof.limit_lower -= ref
+        dof.limit_upper -= ref
+        if dof.has_drive:
+            dof.target_pos -= ref
+
     def parse_joint(
         joint_desc: UsdPhysics.JointDesc,
         incoming_xform: wp.transform | None = None,
@@ -1891,7 +1902,9 @@ def parse_usd(
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
-            joint_prim, builder_custom_attr_joint, context={"builder": builder}
+            joint_prim,
+            builder_custom_attr_joint,
+            context={"builder": builder, "physics_scene_prim": physics_scene_prim},
         )
         joint_params = {
             "parent": parent_id,
@@ -1910,6 +1923,7 @@ def parse_usd(
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
             is_revolute = key == UsdPhysics.ObjectType.RevoluteJoint
             dof = resolve_dof_params(joint_prim, joint_desc, is_revolute)
+            shift_joint_reference(dof, joint_custom_attrs)
             if _should_write_solreflimit_mode():
                 joint_custom_attrs[solreflimit_mode_key] = dof.limit_solref_mode
             if _should_write_solreflimit_gain_baseline():
@@ -1944,6 +1958,19 @@ def parse_usd(
             joint_params["damping"] = joint_damping
             joint_index = builder.add_joint_ball(**joint_params)
         elif key == UsdPhysics.ObjectType.D6Joint:
+            unsupported_ref_keys = ("mujoco:dof_ref", "mujoco:dof_springref")
+            unsupported_ref_attrs = [key for key in unsupported_ref_keys if key in joint_custom_attrs]
+            if unsupported_ref_attrs:
+                usd_attrs = ", ".join(
+                    "mjc:ref" if key == "mujoco:dof_ref" else "mjc:springref" for key in unsupported_ref_attrs
+                )
+                warnings.warn(
+                    f"Ignoring {usd_attrs} on native D6 joint {joint_path}: "
+                    "MuJoCo has no D6 joint or corresponding reference-coordinate semantics.",
+                    stacklevel=2,
+                )
+                for key in unsupported_ref_attrs:
+                    del joint_custom_attrs[key]
             joint_armature = R.get_value(
                 joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
             )
@@ -2317,7 +2344,11 @@ def parse_usd(
             for a in builder_custom_attr_joint
             if a.frequency in (AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD)
         ]
-        joint_custom_attrs = usd.get_custom_attribute_values(first_prim, joint_freq_attrs, context={"builder": builder})
+        joint_custom_attrs = usd.get_custom_attribute_values(
+            first_prim,
+            joint_freq_attrs,
+            context={"builder": builder, "physics_scene_prim": physics_scene_prim},
+        )
         # Per-DOF custom attributes accumulated separately for linear / angular
         # so we can reorder to D6 DOF order (linear first, then angular).
         linear_dof_custom: list[dict[str, Any]] = []
@@ -2346,6 +2377,19 @@ def parse_usd(
             dof = resolve_dof_params(jp_prim, jd, is_revolute)
             initial_position = dof.initial_position
             initial_velocity = dof.initial_velocity
+
+            # Collect per-DOF custom attributes before constructing the D6
+            # axis so MuJoCo reference offsets can be applied to its limits.
+            sibling_dof_attrs = usd.get_custom_attribute_values(
+                jp_prim,
+                dof_freq_attrs,
+                context={"builder": builder, "physics_scene_prim": physics_scene_prim},
+            )
+            shift_joint_reference(dof, sibling_dof_attrs)
+            if _should_write_solreflimit_mode():
+                sibling_dof_attrs[solreflimit_mode_key] = dof.limit_solref_mode
+            if _should_write_solreflimit_gain_baseline():
+                sibling_dof_attrs[solreflimit_gain_baseline_key] = wp.vec2(dof.limit_ke, dof.limit_kd)
 
             # Compute the DOF axis in the representative joint's frame.
             # Each USD joint may have a different localRot that orients its fixed axis
@@ -2387,13 +2431,6 @@ def parse_usd(
                 velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
                 actuator_mode=dof.actuator_mode,
             )
-
-            # Collect per-DOF custom attributes from this sibling prim
-            sibling_dof_attrs = usd.get_custom_attribute_values(jp_prim, dof_freq_attrs, context={"builder": builder})
-            if _should_write_solreflimit_mode():
-                sibling_dof_attrs[solreflimit_mode_key] = dof.limit_solref_mode
-            if _should_write_solreflimit_gain_baseline():
-                sibling_dof_attrs[solreflimit_gain_baseline_key] = wp.vec2(dof.limit_ke, dof.limit_kd)
 
             if is_revolute:
                 angular_axes.append(ax)

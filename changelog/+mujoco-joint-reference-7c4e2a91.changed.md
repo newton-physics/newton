@@ -1,0 +1,1 @@
+Interpret Newton joint limits and position targets as displacements from the authored pose for MuJoCo joints with a nonzero reference value (MJCF `ref` / `mujoco.dof_ref`). When assigning `joint_limit_lower`, `joint_limit_upper`, or `joint_target_q` programmatically for these models, subtract the reference value from absolute MuJoCo coordinates.
