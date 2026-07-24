@@ -603,8 +603,6 @@ goes through :class:`~newton.usd.SchemaResolverMjc`
 (:github:`newton/_src/usd/schemas.py`).
 
 MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
-The old ``model.mujoco.dof_passive_damping`` custom attribute remains
-a deprecated alias and emits a ``DeprecationWarning`` when accessed.
 
 
 Unsupported MuJoCo features

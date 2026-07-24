@@ -37,6 +37,7 @@
 
 ### Changed
 
+- Resolve USD `mjc:damping` through `SchemaResolverMjc` into `Model.joint_damping` like the other direct-mapped MuJoCo attributes; importing it no longer happens implicitly when MuJoCo custom attributes are registered, so pass `schema_resolvers=[..., SchemaResolverMjc()]` to `ModelBuilder.add_usd()` when reading MuJoCo-authored USD.
 - Compile tiled camera render kernels with CUDA fast math by default for faster rendering; set `SensorTiledCamera.render_config.enable_fast_math = False` for bit-exact, IEEE-precise output.
 - Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).
 - Change experimental `SolverVBD` cable constraint slots from `[STRETCH=0, BEND=1]` to `[STRETCH=0, SHEAR=1, BEND=2, TWIST=3]`, allowing each stiffness and constraint mode to be configured independently. Existing cable calls using raw `slot=1` or `JointSlot.ANGULAR` now select shear; use `JointSlot.BEND` (now slot 2) to select bending.
@@ -68,6 +69,7 @@
 
 ### Removed
 
+- Remove the deprecated `Model.mujoco.dof_passive_damping` alias and its `mujoco:dof_passive_damping` custom attribute (deprecated in 1.3.0); use `Model.joint_damping` instead. USD `mjc:damping` is now resolved natively by `SchemaResolverMjc`, and MJCF `damping` continues to be parsed directly into `joint_damping`.
 - Remove the deprecated SDF compatibility attributes `Model.shape_sdf_index`, `Model.texture_sdf_data`, `Model.texture_sdf_coarse_textures`, `Model.texture_sdf_subgrid_textures`, `Model.texture_sdf_subgrid_start_slots`, `Model.sdf_block_coords`, `Model.sdf_index2blocks`, and `SDF.texture_block_coords` (deprecated in 1.3.0); the hydroelastic broadphase derives block coordinates arithmetically and the remaining storage is internal.
 - Remove the deprecated `newton.geometry.build_bvh_shape()`, `refit_bvh_shape()`, `build_bvh_particle()`, and `refit_bvh_particle()` helpers (deprecated in 1.3.0); use `Model.bvh_build_shapes()`, `Model.bvh_refit_shapes()`, `Model.bvh_build_particles()`, and `Model.bvh_refit_particles()` instead.
 - Remove the deprecated `Model.has_heightfields` property (deprecated in 1.3.0); use `Model.heightfield_count`, or `model.heightfield_count > 0` for boolean checks, instead.

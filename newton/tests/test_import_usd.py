@@ -5922,9 +5922,13 @@ def Xform "Articulation" (
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
 
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
+
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        # mjc:damping resolves through SchemaResolverMjc into joint_damping;
+        # mjc:stiffness stays a namespaced custom attribute.
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))

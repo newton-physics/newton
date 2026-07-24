@@ -119,60 +119,41 @@ else:
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
-_DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
-    "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
-    "Use Model.joint_damping instead."
-)
 
-
-def _finalize_deprecated_dof_passive_damping(
+def _finalize_dof_passive_damping(
     builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
 ) -> None:
-    if custom_attr.values:
-        updated_joint_damping = None
-        if isinstance(custom_attr.values, dict):
-            damping_items = custom_attr.values.items()
-        else:
-            damping_items = enumerate(custom_attr.values)
+    """Copy mjc:damping values parsed from USD into model.joint_damping."""
+    if not custom_attr.values:
+        return
 
-        for index, value in damping_items:
-            if value is None:
-                continue
-            damping_index = int(index)
-            canonical_value = builder.joint_damping[damping_index]
-            if canonical_value == value:
-                continue
+    updated_joint_damping = None
+    if isinstance(custom_attr.values, dict):
+        damping_items = custom_attr.values.items()
+    else:
+        damping_items = enumerate(custom_attr.values)
 
-            alias_value = float(value)
-            canonical_value = float(canonical_value)
-            if canonical_value != 0.0 and not math.isclose(canonical_value, alias_value, rel_tol=1e-05, abs_tol=1e-08):
-                raise ValueError(
-                    "Model.mujoco.dof_passive_damping conflicts with Model.joint_damping "
-                    f"at DOF {damping_index}: {alias_value} != {canonical_value}."
-                )
-            if updated_joint_damping is None:
-                updated_joint_damping = list(builder.joint_damping)
-            updated_joint_damping[damping_index] = alias_value
+    for index, value in damping_items:
+        if value is None:
+            continue
+        damping_index = int(index)
+        canonical_value = builder.joint_damping[damping_index]
+        if canonical_value == value:
+            continue
 
-        if updated_joint_damping is not None:
-            model.joint_damping.assign(np.asarray(updated_joint_damping, dtype=np.float32))
+        alias_value = float(value)
+        canonical_value = float(canonical_value)
+        if canonical_value != 0.0 and not math.isclose(canonical_value, alias_value, rel_tol=1e-05, abs_tol=1e-08):
+            raise ValueError(
+                "mjc:damping conflicts with an existing joint_damping value "
+                f"at DOF {damping_index}: {alias_value} != {canonical_value}."
+            )
+        if updated_joint_damping is None:
+            updated_joint_damping = list(builder.joint_damping)
+        updated_joint_damping[damping_index] = alias_value
 
-    if custom_attr.namespace is None:
-        raise ValueError(f"Deprecated attribute alias '{custom_attr.name}' requires a namespace")
-
-    if not hasattr(model, custom_attr.namespace):
-        setattr(model, custom_attr.namespace, Model.AttributeNamespace(custom_attr.namespace))
-
-    ns_obj = getattr(model, custom_attr.namespace)
-    ns_obj.add_deprecated_alias(
-        custom_attr.name,
-        lambda model=model: model.joint_damping,
-        _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE,
-    )
-    model._set_attribute_spec(
-        custom_attr.key,
-        Model.AttributeSpec(custom_attr.frequency, assignment=custom_attr.assignment),
-    )
+    if updated_joint_damping is not None:
+        model.joint_damping.assign(np.asarray(updated_joint_damping, dtype=np.float32))
 
 
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
@@ -1012,8 +993,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                # Deprecated alias for Model.joint_damping. Kept registered so
-                # legacy MJCF/USD parsing and model access continue to work.
+                # mjc:damping is authored in SI units (N·m·s/rad for angular joints).
+                # The finalizer copies parsed values directly into model.joint_damping.
                 name="dof_passive_damping",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
@@ -1021,12 +1002,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 default=0.0,
                 namespace="mujoco",
                 usd_attribute_name="mjc:damping",
-                mjcf_attribute_name="damping",
             )
         )
         builder._add_custom_attribute_model_finalizer(
             "mujoco:dof_passive_damping",
-            _finalize_deprecated_dof_passive_damping,
+            _finalize_dof_passive_damping,
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
