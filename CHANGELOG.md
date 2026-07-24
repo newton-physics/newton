@@ -100,6 +100,7 @@
 - Reject invalid hollow primitive shell thickness before computing inertia.
 - Fix `ModelBuilder.add_mjcf()` ignoring positive explicit mass on mesh geoms. (#3595)
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
+- Infer omitted custom-frequency world owners from `ModelBuilder.current_world`. (#3476)
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
 - Reject incompatible custom attribute and frequency definitions before composing `ModelBuilder` instances.
