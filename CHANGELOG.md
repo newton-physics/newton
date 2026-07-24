@@ -81,6 +81,7 @@
 - Fix `ModelBuilder.add_usd()` raising `ValueError` when importing a mesh whose material subset binds a texture that decodes to an image array.
 - Fix textured USD visual meshes rendering tinted by the default per-shape palette color; a textured mesh without an authored scalar color now imports with a white base color so its texture is shown untinted.
 - Fix `ModelBuilder.add_usd()` selecting a non-color map (e.g. a roughness, metallic, or normal map) as a mesh's base-color texture. A connected `UsdUVTexture` is now accepted only through its multi-channel color output, and a shader's direct-asset color parameter (e.g. an MDL `diffuse_texture`) is identified by name.
+- Fix scrambled textures on USD meshes whose texture-coordinate primvar is not named `st` (e.g. `st_0`). The texcoord set is now resolved from the bound material's shader network (the `UsdPreviewSurface` texture reader's `varname` or an MDL/OmniPBR `uv_space_index`), and textured material subsets slice real per-corner UVs and authored normals instead of collapsing faceVarying data per vertex.
 - Fix builder merging (`ModelBuilder.add_builder()`, `add_world()`, `replicate()`) offsetting negative reference sentinels in custom attribute values stored as NumPy or Warp integer scalars.
 - Fix `ModelBuilder.add_usd()` requiring the optional `mujoco` package when handling `MjcActuator` prims, including during default MJC equality conversion.
 - Report malformed MJCF free-joint and inertial inputs with deterministic validation errors, and ignore MJCF mesh geom `size` lengths consistently.

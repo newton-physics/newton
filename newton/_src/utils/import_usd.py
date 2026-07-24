@@ -1065,7 +1065,11 @@ def parse_usd(
             return []
 
         subset_props = [(str(subset.GetPath()), usd.resolve_material_properties_for_prim(subset)) for subset in subsets]
-        mesh = _get_mesh_cached(prim)
+        # Load UVs (and matching authored normals) so each submesh slices real
+        # per-corner texture coordinates instead of recovering per-vertex UVs,
+        # which scrambles faceVarying UV sets. UV loading unwelds vertices while
+        # preserving triangle order, so the per-face subset selection still aligns.
+        mesh = _get_mesh_cached(prim, load_uvs=True, load_normals=True)
         triangle_face_indices = np.repeat(np.arange(len(face_counts), dtype=np.int32), face_counts - 2)
         covered_faces = np.zeros(len(face_counts), dtype=bool)
 

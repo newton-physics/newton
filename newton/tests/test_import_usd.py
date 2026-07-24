@@ -7133,6 +7133,72 @@ def Xform "Articulation" (
         self.assertIsNone(src.texture)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_loads_alternate_texcoord_set(self):
+        """``get_mesh`` loads UVs from an alternate texcoord set name (``st_0``), not just ``st``.
+
+        Regression test: assets exported from DCC tools often name their UV set
+        ``st_0`` rather than ``st``, and only looking for ``st`` drops the UVs
+        entirely (scrambling any texture mapping).
+        """
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([4])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+        # No "st"; the only texcoord set is "st_0" (faceVarying float2), as authored by many DCC exporters.
+        uv = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st_0", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.faceVarying)
+        uv.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        result = usd.get_mesh(mesh.GetPrim(), load_uvs=True)
+        self.assertIsNotNone(result.uvs, "UVs from the st_0 set should be loaded")
+        self.assertEqual(len(result.uvs), len(result.vertices))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_uses_material_texcoord_set(self):
+        """``get_mesh`` loads the texcoord set the bound material references, not just the first ``st*``.
+
+        A ``UsdUVTexture`` names its primvar via a connected ``UsdPrimvarReader_float2``'s
+        ``varname``; ``get_mesh`` must honor that over the conventional ``st`` set when a
+        mesh carries several UV sets.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([4])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+        api = UsdGeom.PrimvarsAPI(mesh)
+        # Decoy "st" (all zeros) and the real set "st_1" (distinct, non-zero values).
+        decoy = api.CreatePrimvar("st", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.faceVarying)
+        decoy.Set([(0.0, 0.0)] * 4)
+        st1 = api.CreatePrimvar("st_1", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.faceVarying)
+        st1.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        material = UsdShade.Material.Define(stage, "/Mat")
+        shader = UsdShade.Shader.Define(stage, "/Mat/Surface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        texture = UsdShade.Shader.Define(stage, "/Mat/Tex")
+        texture.CreateIdAttr("UsdUVTexture")
+        texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("a.png"))
+        texture.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        reader = UsdShade.Shader.Define(stage, "/Mat/Reader")
+        reader.CreateIdAttr("UsdPrimvarReader_float2")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st_1")
+        reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+        texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(reader.ConnectableAPI(), "result")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(texture.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+        result = usd.get_mesh(mesh.GetPrim(), load_uvs=True)
+        self.assertIsNotNone(result.uvs)
+        # Must load st_1 (has non-zero corners), not the all-zero "st" decoy the naive path would pick.
+        self.assertGreater(float(np.asarray(result.uvs).max()), 0.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_subset_splitting_is_independent_of_material_vocabulary(self):
         """Subsets binding unrecognized materials split identically to recognized ones.
 

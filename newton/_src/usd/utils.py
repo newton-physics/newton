@@ -1065,6 +1065,121 @@ def _get_mesh_from_source(
     )
 
 
+def _material_surface_shader(material: UsdShade.Material | None) -> UsdShade.Shader | None:
+    """Return the surface shader driving a material (UsdPreviewSurface or MDL)."""
+    if not material:
+        return None
+    surface_output = material.GetSurfaceOutput() or material.GetOutput("surface") or material.GetOutput("mdl:surface")
+    if surface_output:
+        source = surface_output.GetConnectedSource()
+        if source:
+            return UsdShade.Shader(source[0].GetPrim())
+    for child in material.GetPrim().GetChildren():
+        if child.IsA(UsdShade.Shader):
+            return UsdShade.Shader(child)
+    return None
+
+
+def _uvtexture_reader_varname(texture_shader: UsdShade.Shader) -> str | None:
+    """Return the primvar name a ``UsdUVTexture`` reads via its ``st`` -> ``UsdPrimvarReader_float2``."""
+    st_input = texture_shader.GetInput("st")
+    source = st_input.GetConnectedSource() if st_input else None
+    if not source:
+        return None
+    reader = UsdShade.Shader(source[0].GetPrim())
+    varname = reader.GetInput("varname")
+    if not varname:
+        return None
+    value = varname.Get()
+    if value is None:
+        try:
+            attrs = UsdShade.Utils.GetValueProducingAttributes(varname)
+        except Exception:
+            attrs = ()
+        value = attrs[0].Get() if attrs else None
+    return str(value) if value else None
+
+
+def _uv_primvar_name_from_shader(shader: UsdShade.Shader | None) -> str | None:
+    """Resolve the texcoord primvar name a shader's base-color texture reads, or ``None``.
+
+    - ``UsdPreviewSurface``: follow the base-color ``UsdUVTexture``'s ``st`` input to its
+      ``UsdPrimvarReader_float2`` and read ``inputs:varname``.
+    - ``OmniPBR`` and other MDL shaders: ``st_<inputs:uv_space_index>``.
+    """
+    if shader is None:
+        return None
+    try:
+        shader_id = shader.GetIdAttr().Get()
+    except Exception:
+        shader_id = None
+    if shader_id == "UsdPreviewSurface":
+        for color_name in ("baseColor", "diffuseColor"):
+            color_input = shader.GetInput(color_name)
+            source = color_input.GetConnectedSource() if color_input else None
+            if not source:
+                continue
+            texture = UsdShade.Shader(source[0].GetPrim())
+            if texture.GetIdAttr().Get() == "UsdUVTexture":
+                name = _uvtexture_reader_varname(texture)
+                if name:
+                    return name
+    uv_index_input = shader.GetInput("uv_space_index")
+    if uv_index_input:
+        value = uv_index_input.Get()
+        if value is not None:
+            return f"st_{int(value)}"
+    return None
+
+
+def _resolve_material_uv_primvar_name(prim: Usd.Prim) -> str | None:
+    """Resolve the texcoord primvar name from the material(s) bound to a mesh or its subsets."""
+    candidate_prims = [prim]
+    try:
+        subsets = UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+        candidate_prims += [subset.GetPrim() for subset in subsets]
+    except Exception:
+        pass
+    for candidate in candidate_prims:
+        name = _uv_primvar_name_from_shader(_material_surface_shader(_get_bound_material(candidate)))
+        if name:
+            return name
+    return None
+
+
+def _find_uv_primvar(prim: Usd.Prim):
+    """Return a mesh's texture-coordinate primvar, or ``None``.
+
+    The primvar name is resolved from the bound material's shader network — the
+    ``UsdPreviewSurface`` texture reader's ``varname`` or an MDL/OmniPBR
+    ``uv_space_index`` — because a mesh may carry several UV sets and only the
+    material identifies the correct one. Falls back to the conventional ``st``
+    primvar, then to the first ``float2``/``texCoord2f`` primvar named ``st*``/``uv*``.
+    """
+    api = UsdGeom.PrimvarsAPI(prim)
+
+    resolved = _resolve_material_uv_primvar_name(prim)
+    if resolved:
+        primvar = api.GetPrimvar(resolved)
+        if primvar and primvar.HasValue():
+            return primvar
+
+    primvar = api.GetPrimvar("st")
+    if primvar and primvar.HasValue():
+        return primvar
+
+    fallback = None
+    for candidate in api.GetPrimvarsWithValues():
+        if candidate.GetTypeName() not in (Sdf.ValueTypeNames.TexCoord2fArray, Sdf.ValueTypeNames.Float2Array):
+            continue
+        name = candidate.GetPrimvarName().lower()
+        if name.startswith("st"):
+            return candidate
+        if (name.startswith("uv") or name == "map1") and fallback is None:
+            fallback = candidate
+    return fallback
+
+
 @overload
 def get_mesh(
     source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
@@ -1288,7 +1403,7 @@ def get_mesh(
     # faceVarying normal conversion, so we don't split again in the UV pass.
     did_split_vertices = False
     if load_uvs:
-        uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
+        uv_primvar = _find_uv_primvar(prim)
         if uv_primvar:
             uvs = uv_primvar.Get()
             if uvs is not None:
