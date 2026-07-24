@@ -19,7 +19,7 @@ import warp as wp
 from ......core.types import Axis
 from ...core import ModelBuilderKamino
 from ...core.joints import JointActuationType, JointDoFType
-from ...core.math import I_3, axis_to_mat33, quat_from_euler_xyz
+from ...core.math import I_3, axis_to_mat33
 from ...core.shapes import (
     BoxShape,
     CapsuleShape,
@@ -1392,10 +1392,7 @@ def build_all_joints_test_model(
             geom_.shape = builder.shapes[geom.uid]
             geom_.body = geom.body - 1
             if geom_.body == -1:
-                # wp.transform_set_translation(geom_.offset, body_0_offset)
-                geom_.offset[0] = body_0_offset[0]
-                geom_.offset[1] = body_0_offset[1]
-                geom_.offset[2] = body_0_offset[2]
+                wp.transform_set_translation(geom_.offset, body_0_offset)
             builder_unary.add_geometry_descriptor(geom_)
         return builder_unary
 
@@ -1631,11 +1628,11 @@ def make_single_shape_pair_builder(
 
     # Compute bottom box position and orientation
     r_b = wp.vec3f(bottom_xyz) - r_dz
-    q_b = quat_from_euler_xyz(wp.vec3f(*bottom_rpy))
+    q_b = wp.quat_from_euler(wp.vec3f(*bottom_rpy), 0, 1, 2)
 
     # Compute top sphere position and orientation
     r_t = wp.vec3f(top_xyz) + r_dz
-    q_t = quat_from_euler_xyz(wp.vec3f(*top_rpy))
+    q_t = wp.quat_from_euler(wp.vec3f(*top_rpy), 0, 1, 2)
 
     # Create the shape descriptors for bottom and top shapes
     # with special handling for PlaneShape

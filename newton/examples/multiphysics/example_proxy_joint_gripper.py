@@ -85,7 +85,8 @@ class Example:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
@@ -299,7 +300,7 @@ class Example:
         return np.min(particle_q, axis=0), np.max(particle_q, axis=0)
 
     def simulate(self) -> None:
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)

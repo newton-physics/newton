@@ -51,7 +51,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -1700,6 +1700,21 @@ class SparseSystemJacobians:
             )
             self._J_dofs_joint_nzb_offsets = to_warp_int32_array(J_dofs_joint_nzb_offsets, device=device)
             self._J_cts_num_joint_nzb = to_warp_int32_array(J_cts_nnzb_min, device=device)
+
+    @property
+    def joint_constraint_nzb_count(self) -> wp.array[wp.int32]:
+        """Number of joint-constraint blocks in each world."""
+        return self._J_cts_num_joint_nzb
+
+    @property
+    def limit_constraint_nzb_offsets(self) -> wp.array[wp.int32]:
+        """Global sparse-block offsets for each limit constraint."""
+        return self._J_cts_limit_nzb_offsets
+
+    @property
+    def contact_constraint_nzb_offsets(self) -> wp.array[wp.int32]:
+        """Global sparse-block offsets for each contact constraint."""
+        return self._J_cts_contact_nzb_offsets
 
     def build(
         self,
