@@ -83,7 +83,39 @@ _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
     (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
+_SENSOR_CONTACT_OUTPUT_RE = (
+    r"SensorContact initialized:\n"
+    r"  Sensing objects: 1 \(shapes\)\n"
+    r"  Counterpart columns: 0\n"
+    r"  total_force: yes, force_matrix: no\n"
+    r"SensorContact initialized:\n"
+    r"  Sensing objects: 2 \(shapes\)\n"
+    r"  Counterpart columns: 2 \(shapes\)\n"
+    r"  total_force: no, force_matrix: yes\n"
+    r"Resetting\n?"
+)
+_MPM_SNOW_BALL_OUTPUT_RE = r"Generating 76032 particles\.\.\.\n?"
 _OutputRegexSpec = str | tuple[str, str]
+
+
+def _selection_articulation_summary_output_re(name: str, count: int) -> str:
+    return (
+        rf"Articulation '{re.escape(name)}': {count}\n"
+        r"  Link count:     \d+ \(contiguous\)\n"
+        r"  Shape count:    \d+ \(contiguous\)\n"
+        r"  Joint count:    \d+ \(contiguous\)\n"
+        r"  DOF count:      \d+ \(contiguous\)\n"
+        r"  Fixed base\?     (?:True|False)\n"
+        r"  Floating base\?  (?:True|False)\n"
+        r"Link names:\n"
+        r"  \[[^\n]*\]\n"
+        r"Joint names:\n"
+        r"  \[[^\n]*\]\n"
+        r"Joint DOF names:\n"
+        r"  \[[^\n]*\]\n"
+        r"Shapes:\n"
+        r"(?:  Link '[^'\n]+': \[[^\n]*\]\n)+"
+    )
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -280,6 +312,12 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
         add_regex(regex, stream=stream)
 
 
+def add_strict_example_test(cls, **kwargs):
+    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
+    allow_output_regexes = [*_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
+    add_example_test(cls, allow_output_regexes=allow_output_regexes, **kwargs)
+
+
 class TestExampleOutputRegexes(unittest.TestCase):
     def test_warp_cuda_unavailable_output_is_allowed(self):
         outputs = (
@@ -304,6 +342,42 @@ class TestExampleOutputRegexes(unittest.TestCase):
         )
 
         unmatched_output = re.sub(_BASIC_PLOTTING_OUTPUT_RE, "", output, flags=re.MULTILINE)
+
+        self.assertEqual(unmatched_output, unexpected_output)
+
+    def test_newton_asset_download_output_does_not_consume_trailing_output(self):
+        unexpected_output = "unexpected output\n"
+        output = (
+            "Cloning https://github.com/newton-physics/newton-assets.git "
+            "(ref: 261cd1f429619d8ef4f546bd788ab9dea906b5e1)...\n"
+            "Successfully downloaded folder to: /tmp/newton-assets/anybotics_anymal_c\n" + unexpected_output
+        )
+
+        unmatched_output = re.sub(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
+
+        self.assertEqual(unmatched_output, unexpected_output)
+
+    def test_selection_summary_output_does_not_consume_trailing_output(self):
+        unexpected_output = "unexpected output\n"
+        output = (
+            "Articulation 'robot': 1\n"
+            "  Link count:     1 (contiguous)\n"
+            "  Shape count:    1 (contiguous)\n"
+            "  Joint count:    1 (contiguous)\n"
+            "  DOF count:      1 (contiguous)\n"
+            "  Fixed base?     True\n"
+            "  Floating base?  False\n"
+            "Link names:\n"
+            "  ['link']\n"
+            "Joint names:\n"
+            "  ['joint']\n"
+            "Joint DOF names:\n"
+            "  ['joint']\n"
+            "Shapes:\n"
+            "  Link 'link': ['shape']\n" + unexpected_output
+        )
+
+        unmatched_output = re.sub(_selection_articulation_summary_output_re("robot", 1), "", output, flags=re.MULTILINE)
 
         self.assertEqual(unmatched_output, unexpected_output)
 
@@ -740,41 +814,48 @@ add_example_test(
 )
 
 
-class TestSelectionAPIExamples(unittest.TestCase):
+class TestSelectionAPIExamples(NewtonTestCase):
     pass
 
 
-add_example_test(
+add_strict_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_articulations",
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expect_output_regexes=[
+        (_selection_articulation_summary_output_re("ant", 16), "stdout"),
+        (_selection_articulation_summary_output_re("humanoid", 16), "stdout"),
+    ],
 )
-add_example_test(
+add_strict_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_cartpole",
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expect_output_regexes=[(_selection_articulation_summary_output_re("/cartPole", 16), "stdout")],
 )
-add_example_test(
+add_strict_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_materials",
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expect_output_regexes=[(_selection_articulation_summary_output_re("ant", 16), "stdout")],
 )
-add_example_test(
+add_strict_example_test(
     TestSelectionAPIExamples,
     name="selection.example_selection_multiple",
     devices=test_devices,
     test_options={"num-frames": 100},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expect_output_regexes=[(_selection_articulation_summary_output_re("ant", 48), "stdout")],
 )
 
 
@@ -843,19 +924,20 @@ add_diffsim_example_test(
 )
 
 
-class TestSensorExamples(unittest.TestCase):
+class TestSensorExamples(NewtonTestCase):
     pass
 
 
-add_example_test(
+add_strict_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_contact",
     devices=test_devices,
     test_options={"num-frames": 160},  # required for ball to reach plate
     use_viewer=True,
+    expect_output_regexes=[(_SENSOR_CONTACT_OUTPUT_RE, "stdout")],
 )
 
-add_example_test(
+add_strict_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_tiled_camera",
     devices=cuda_test_devices,
@@ -863,7 +945,7 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
+add_strict_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_imu",
     devices=test_devices,
@@ -872,11 +954,11 @@ add_example_test(
 )
 
 
-class TestMPMExamples(unittest.TestCase):
+class TestMPMExamples(NewtonTestCase):
     pass
 
 
-add_example_test(
+add_strict_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_granular",
     devices=cuda_test_devices,
@@ -884,7 +966,7 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
+add_strict_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_multi_material",
     devices=cuda_test_devices,
@@ -892,7 +974,7 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
+add_strict_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_grain_rendering",
     devices=cuda_test_devices,
@@ -900,7 +982,7 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
+add_strict_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_twoway_coupling",
     devices=cuda_test_devices,
@@ -908,7 +990,7 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
+add_strict_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_beam_twist",
     devices=cuda_test_devices,
@@ -916,15 +998,16 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
+add_strict_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_snow_ball",
     devices=cuda_test_devices,
     test_options={"num-frames": 30, "voxel-size": 0.2},
     use_viewer=True,
+    expect_output_regexes=[(_MPM_SNOW_BALL_OUTPUT_RE, "stdout")],
 )
 
-add_example_test(
+add_strict_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_viscous",
     devices=cuda_test_devices,
