@@ -130,9 +130,9 @@ jobs:
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-v2-${{ runner.os }}-${{ runner.arch }}-
+            warp-kernels-${{ runner.os }}-${{ runner.arch }}-
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"

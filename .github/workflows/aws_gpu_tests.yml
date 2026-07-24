@@ -149,9 +149,9 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
-          key: warp-kernels-gpu-v2-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: warp-kernels-gpu-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-gpu-v2-
+            warp-kernels-gpu-
 
       - name: Check disk space
         run: df -h
