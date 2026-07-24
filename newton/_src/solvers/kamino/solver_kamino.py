@@ -959,6 +959,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which properties changed.
         """
         self._validate_structural_invariants(flags)
+        self._solver_kamino.validate_model_changed(flags)
 
         if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
             # The documentation is unclear about which flag should trigger this update, so we update on both flags.
@@ -988,6 +989,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             # When using a coupled solver environment, these flags are meant for one of the other solvers.
             # No warning is emitted for compatibility with such an environment.
             pass
+
+        self._solver_kamino.notify_model_changed(flags)
 
         handled = (
             ModelFlags.MODEL_PROPERTIES
