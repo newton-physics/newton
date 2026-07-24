@@ -168,6 +168,144 @@ def test_optional_control_and_contacts(test, device):
     test.assertLess(float(state_out.particle_q.numpy()[0, 1]), 1.0)
 
 
+def test_elastic_spring_compliance_is_iteration_independent(test, device):
+    """Verify nonlinear iterations preserve finite spring compliance."""
+
+    def solve(iterations: int) -> float:
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.0)
+        builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
+        builder.add_spring(0, 1, ke=10.0, kd=0.0, control=0.0)
+
+        model = builder.finalize(device=device)
+        model.set_gravity((0.0, 0.0, 0.0))
+        state_in = model.state()
+        state_out = model.state()
+        state_in.particle_q.assign([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)])
+
+        solver = newton.solvers.SolverXPBD(model, iterations=iterations)
+        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+        return float(state_out.particle_q.numpy()[1, 0])
+
+    one_iteration = solve(iterations=1)
+    eight_iterations = solve(iterations=8)
+
+    for value in (one_iteration, eight_iterations):
+        test.assertGreater(value, 1.0)
+        test.assertLess(value, 2.0)
+    test.assertAlmostEqual(
+        eight_iterations,
+        one_iteration,
+        places=5,
+        msg="More nonlinear iterations must not make a compliant spring artificially rigid.",
+    )
+
+
+def test_elastic_spring_multiplier_autodiff(test, device):
+    """Verify multi-iteration multiplier accumulation preserves reverse-mode history."""
+    builder = newton.ModelBuilder()
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.0)
+    builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
+    builder.add_spring(0, 1, ke=10.0, kd=0.0, control=0.0)
+
+    model = builder.finalize(device=device, requires_grad=True)
+    model.set_gravity((0.0, 0.0, 0.0))
+    state_in = model.state(requires_grad=True)
+    state_out = model.state(requires_grad=True)
+    state_in.particle_q.assign([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)])
+    solver = newton.solvers.SolverXPBD(model, iterations=4)
+
+    verify_array_access = wp.config.verify_autograd_array_access
+    wp.config.verify_autograd_array_access = True
+    try:
+        with wp.Tape() as tape:
+            solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+        output_grad = wp.array([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        tape.backward(grads={state_out.particle_q: output_grad})
+    finally:
+        wp.config.verify_autograd_array_access = verify_array_access
+
+    gradient = float(model.spring_stiffness.grad.numpy()[0])
+    test.assertTrue(np.isfinite(gradient))
+    test.assertAlmostEqual(gradient, -1.0 / 121.0, places=5)
+
+
+def test_elastic_bending_compliance_is_iteration_independent(test, device):
+    """Verify converged bending constraints preserve finite compliance."""
+
+    def solve(iterations: int) -> float:
+        builder = newton.ModelBuilder()
+        for position, mass in (
+            ((0.0, 1.0, 0.0), 0.0),
+            ((0.0, -1.0, 0.0), 1.0),
+            ((0.0, 0.0, 0.0), 0.0),
+            ((1.0, 0.0, 0.0), 0.0),
+        ):
+            builder.add_particle(pos=wp.vec3(*position), vel=wp.vec3(0.0), mass=mass, radius=0.0)
+        builder.add_edge(0, 1, 2, 3, edge_ke=10.0, edge_kd=0.0)
+
+        model = builder.finalize(device=device)
+        model.set_gravity((0.0, 0.0, 0.0))
+        state_in = model.state()
+        state_out = model.state()
+        state_in.particle_q.assign([(0.0, 1.0, 0.0), (0.0, -1.0, 1.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)])
+
+        solver = newton.solvers.SolverXPBD(model, iterations=iterations)
+        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+        return float(state_out.particle_q.numpy()[1, 2])
+
+    four_iterations = solve(iterations=4)
+    sixteen_iterations = solve(iterations=16)
+
+    for value in (four_iterations, sixteen_iterations):
+        test.assertGreater(value, 0.0)
+        test.assertLess(value, 1.0)
+    test.assertAlmostEqual(
+        sixteen_iterations,
+        four_iterations,
+        places=5,
+        msg="Converged nonlinear iterations must not make a compliant bending edge artificially rigid.",
+    )
+
+
+def test_elastic_tet_compliance_is_iteration_independent(test, device):
+    """Verify converged tetrahedral constraints preserve finite compliance."""
+
+    def solve(iterations: int) -> float:
+        builder = newton.ModelBuilder()
+        for position, mass in (
+            ((0.0, 0.0, 0.0), 0.0),
+            ((1.0, 0.0, 0.0), 0.0),
+            ((0.0, 1.0, 0.0), 0.0),
+            ((0.0, 0.0, 1.0), 1.0),
+        ):
+            builder.add_particle(pos=position, vel=(0.0, 0.0, 0.0), mass=mass, radius=0.0)
+        builder.add_tetrahedron(0, 1, 2, 3, k_mu=10.0, k_lambda=10.0, k_damp=0.0)
+
+        model = builder.finalize(device=device)
+        model.set_gravity((0.0, 0.0, 0.0))
+        state_in = model.state()
+        state_out = model.state()
+        state_in.particle_q.assign([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 2.0)])
+
+        solver = newton.solvers.SolverXPBD(model, iterations=iterations, soft_body_relaxation=1.0)
+        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+        return float(state_out.particle_q.numpy()[3, 2])
+
+    four_iterations = solve(iterations=4)
+    sixteen_iterations = solve(iterations=16)
+
+    for value in (four_iterations, sixteen_iterations):
+        test.assertGreater(value, 1.0)
+        test.assertLess(value, 2.0)
+    test.assertAlmostEqual(
+        sixteen_iterations,
+        four_iterations,
+        places=5,
+        msg="Converged nonlinear iterations must not make a compliant tetrahedron artificially rigid.",
+    )
+
+
 def test_particle_particle_friction_with_relative_motion(test, device):
     """
     Test that friction DOES affect particles with different tangential velocities.
@@ -1592,6 +1730,38 @@ add_function_test(
     TestSolverXPBD,
     "test_optional_control_and_contacts",
     test_optional_control_and_contacts,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_spring_compliance_is_iteration_independent",
+    test_elastic_spring_compliance_is_iteration_independent,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_spring_multiplier_autodiff",
+    test_elastic_spring_multiplier_autodiff,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_bending_compliance_is_iteration_independent",
+    test_elastic_bending_compliance_is_iteration_independent,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_tet_compliance_is_iteration_independent",
+    test_elastic_tet_compliance_is_iteration_independent,
     devices=devices,
     check_output=False,
 )
