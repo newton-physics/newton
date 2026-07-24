@@ -6238,6 +6238,69 @@ class TestMuJoCoConversion(unittest.TestCase):
             world1_mesh_x, 2.5, places=3, msg="World 1 mesh should have local x=2.5 (local offset + mesh_pos)"
         )
 
+    def test_per_world_mesh_selection_drives_contacts(self):
+        """Select precompiled mesh geometry independently in each MuJoCo-Warp world."""
+        small_mesh = newton.Mesh.create_box(0.2, 0.2, 0.2)
+        large_mesh = newton.Mesh.create_box(0.8, 0.8, 0.8)
+
+        world = newton.ModelBuilder()
+        world.add_shape_box(
+            body=-1,
+            xform=wp.transform(wp.vec3(0.7, 0.0, 0.0), wp.quat_identity()),
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
+        )
+        body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = world.add_joint_free(child=body)
+        world.add_articulation([joint])
+        active_shape = world.add_shape_mesh(
+            body=body,
+            mesh=small_mesh,
+            cfg=newton.ModelBuilder.ShapeConfig(density=0.0),
+        )
+        carrier_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, collision_group=0)
+        small_carrier = world.add_shape_mesh(body=body, mesh=small_mesh, cfg=carrier_cfg)
+        large_carrier = world.add_shape_mesh(body=body, mesh=large_mesh, cfg=carrier_cfg)
+
+        builder = newton.ModelBuilder()
+        builder.replicate(world, 2)
+        model = builder.finalize()
+        model.set_gravity((0.0, 0.0, 0.0))
+        solver = SolverMuJoCo(
+            model,
+            separate_worlds=True,
+            use_mujoco_contacts=True,
+            nconmax=16,
+            njmax=64,
+            iterations=1,
+        )
+
+        self.assertEqual(solver.mjw_model.geom_dataid.shape[0], 2)
+        self.assertEqual(solver.mjw_model.geom_aabb.shape[0], 2)
+        shape_mapping = solver.mjc_geom_to_newton_shape.numpy()
+        for world_id, carrier_shape in ((0, small_carrier), (1, large_carrier)):
+            shape_offset = world_id * world.shape_count
+            active_geom = int(np.flatnonzero(shape_mapping[world_id] == active_shape + shape_offset)[0])
+            carrier_geom = int(np.flatnonzero(shape_mapping[world_id] == carrier_shape + shape_offset)[0])
+            for field in ("geom_dataid", "geom_size", "geom_aabb", "geom_rbound", "geom_pos", "geom_quat"):
+                target = getattr(solver.mjw_model, field)
+                values = target.numpy()
+                values[world_id, active_geom] = values[world_id, carrier_geom]
+                target.assign(values)
+
+        state_in = model.state()
+        state_out = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        solver.step(state_in, state_out, model.control(), None, 0.005)
+
+        contact_count = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertEqual(contact_count, 1)
+        np.testing.assert_array_equal(
+            solver.mjw_data.contact.worldid.numpy()[:contact_count],
+            np.array([1], dtype=np.int32),
+        )
+
 
 class TestMuJoCoAttributes(unittest.TestCase):
     def test_custom_attributes_from_code(self):
