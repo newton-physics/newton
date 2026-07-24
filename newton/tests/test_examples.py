@@ -1116,7 +1116,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_proxy_joint_gripper",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
 )

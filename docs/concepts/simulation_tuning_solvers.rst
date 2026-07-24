@@ -157,15 +157,21 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
      - Contact history requires matched contacts, for example
-       ``CollisionPipeline(contact_matching="latest")``. When recording VBD
-       steps in a CUDA graph, construct :class:`~newton.CollisionPipeline`
-       before :class:`~newton.solvers.SolverVBD` so contact history is
-       pre-allocated, or run one uncaptured solver step before capture. Buffer
-       sizes that are too small can drop contacts; sizes that are too large cost
-       memory and performance. Examples commonly tune ``iterations``, particle
-       self-contact radius and margin, particle contact buffers and filters,
-       ``particle_collision_detection_interval``, ``particle_enable_tile_solve``,
-       ``rigid_body_contact_buffer_size``,
+       ``CollisionPipeline(contact_matching="latest")``. Contact history is
+       cross-replay-persistent state, so it must always be pre-allocated
+       before graph capture on any device: allocating it inside a graph
+       records a ``wp.zeros`` fill that wipes the warm-start buffers on every
+       replay. Construct :class:`~newton.CollisionPipeline` before
+       :class:`~newton.solvers.SolverVBD` so contact history is pre-allocated,
+       or run one uncaptured solver step before capture. Ordinary contact
+       buffers can still grow on demand during graph capture on CPU and on
+       CUDA with the memory pool enabled; only CUDA capture without a memory
+       pool requires that they also be pre-allocated. Buffer sizes that are
+       too small can drop contacts; sizes that are too large cost memory and
+       performance. Examples commonly tune
+       ``iterations``, particle self-contact radius and margin, particle
+       contact buffers and filters, ``particle_collision_detection_interval``,
+       ``particle_enable_tile_solve``, ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``, ``rigid_contact_hard``,
        ``rigid_contact_history``, and ``rigid_avbd_contact_alpha``.
    * - :class:`~newton.solvers.SolverFeatherstone`
