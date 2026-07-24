@@ -764,6 +764,59 @@ def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: 
     np.testing.assert_array_equal(out_shape_id.numpy(), np.array([shape_id], dtype=np.int32))
 
 
+def test_intersect_ray_includes_collision_shapes_on_request(test: TestRaycast, device: str):
+    """Include collision-only shapes in the shape BVH when requested."""
+    builder = newton.ModelBuilder()
+    visible_cfg = newton.ModelBuilder.ShapeConfig(
+        is_visible=True, has_shape_collision=False, has_particle_collision=False
+    )
+    shape_collision_cfg = newton.ModelBuilder.ShapeConfig(
+        is_visible=False, has_shape_collision=True, has_particle_collision=False
+    )
+    particle_collision_cfg = newton.ModelBuilder.ShapeConfig(
+        is_visible=False, has_shape_collision=False, has_particle_collision=True
+    )
+    visible_shape = builder.add_shape_sphere(
+        body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), cfg=visible_cfg
+    )
+    shape_collision = builder.add_shape_sphere(
+        body=-1, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), cfg=shape_collision_cfg
+    )
+    particle_collision = builder.add_shape_sphere(
+        body=-1, xform=wp.transform(wp.vec3(4.0, 0.0, 0.0), wp.quat_identity()), cfg=particle_collision_cfg
+    )
+    model = builder.finalize(device=device)
+
+    test.assertEqual(model.bvh_shape_count_enabled, 1)
+    np.testing.assert_array_equal(model.bvh_shape_enabled.numpy()[:1], np.array([visible_shape]))
+
+    model.bvh_build_shapes(model, include_collision_shapes=True)
+
+    test.assertEqual(model.bvh_shape_count_enabled, 3)
+    np.testing.assert_array_equal(
+        np.sort(model.bvh_shape_enabled.numpy()[:3]),
+        np.array([visible_shape, shape_collision, particle_collision]),
+    )
+
+    origins = wp.array(
+        np.array([[0.0, 0.0, 2.0], [2.0, 0.0, 2.0], [4.0, 0.0, 2.0]], dtype=np.float32),
+        dtype=wp.vec3,
+        device=device,
+    )
+    directions = wp.array(np.tile(np.array([0.0, 0.0, -1.0], dtype=np.float32), (3, 1)), dtype=wp.vec3, device=device)
+    worlds = wp.array(np.full(3, -1, dtype=np.int32), dtype=wp.int32, device=device)
+    out_shape_id = wp.empty(shape=3, dtype=wp.int32, device=device)
+    newton.intersect_ray(
+        model,
+        ray_origins=origins,
+        ray_directions=directions,
+        ray_worlds=worlds,
+        out_shape_id=out_shape_id,
+    )
+
+    np.testing.assert_array_equal(out_shape_id.numpy(), np.array([visible_shape, shape_collision, particle_collision]))
+
+
 devices = get_test_devices()
 add_function_test(TestRaycast, "test_ray_intersect_plane", test_ray_intersect_plane, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_sphere", test_ray_intersect_sphere, devices=devices)
@@ -797,6 +850,12 @@ add_function_test(
 )
 add_function_test(TestRaycast, "test_intersect_ray", test_intersect_ray, devices=devices)
 add_function_test(TestRaycast, "test_intersect_ray_global_world", test_intersect_ray_global_world, devices=devices)
+add_function_test(
+    TestRaycast,
+    "test_intersect_ray_includes_collision_shapes_on_request",
+    test_intersect_ray_includes_collision_shapes_on_request,
+    devices=devices,
+)
 add_function_test(
     TestRaycast,
     "test_intersect_ray_heightfield_uses_finalize_bvh",

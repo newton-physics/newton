@@ -424,6 +424,9 @@ class ModelBuilder:
         shape_constructor: str | None = None
         """Warp model shape BVH constructor backend. If ``None``, Warp's default is used."""
 
+        include_collision_shapes: bool = False
+        """Whether model shape BVHs include collision shapes in addition to visible shapes."""
+
     @dataclass
     class MeshApproximationConfig:
         """Default settings for mesh approximation.
@@ -11984,7 +11987,11 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
-                m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
+                m.bvh_build_shapes(
+                    m,
+                    bvh_constructor=self.default_bvh_cfg.shape_constructor,
+                    include_collision_shapes=self.default_bvh_cfg.include_collision_shapes,
+                )
                 m.bvh_build_particles(m)
                 return m
 
@@ -12091,7 +12098,11 @@ class ModelBuilder:
                     custom_attr.references,
                 )
 
-            m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
+            m.bvh_build_shapes(
+                m,
+                bvh_constructor=self.default_bvh_cfg.shape_constructor,
+                include_collision_shapes=self.default_bvh_cfg.include_collision_shapes,
+            )
             m.bvh_build_particles(m)
             return m
 

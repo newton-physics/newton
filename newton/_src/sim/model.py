@@ -900,7 +900,7 @@ class Model:
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
-        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
+        """BVH over selected shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
@@ -1885,20 +1885,29 @@ class Model:
         )
         self.joint_target_qd = value
 
-    def bvh_build_shapes(self, state: State, *, bvh_constructor: str | None = None) -> None:
+    def bvh_build_shapes(
+        self,
+        state: State,
+        *,
+        bvh_constructor: str | None = None,
+        include_collision_shapes: bool = False,
+    ) -> None:
         """Build or rebuild the shape BVH stored on this model.
 
         Allocates :attr:`bvh_shapes` and related fields from the current
         shape data and *state*. :meth:`ModelBuilder.finalize` calls this for
         the initial model state. Call it again to rebuild with a custom
         ``bvh_constructor`` or after structural changes. For ordinary state
-        changes, use :meth:`bvh_refit_shapes`.
+        changes, use :meth:`bvh_refit_shapes`. By default, only visible shapes
+        are included.
 
         Args:
             state: Current simulation state with body transforms.
             bvh_constructor: Warp BVH construction algorithm. Valid choices
                 are ``"sah"``, ``"median"``, ``"lbvh"``, or ``None`` to use
                 Warp's device-dependent default.
+            include_collision_shapes: Whether to include shapes marked for
+                shape or particle collisions in addition to visible shapes.
         """
         from ..geometry.bvh import (  # noqa: PLC0415
             compute_bvh_group_roots,
@@ -1936,6 +1945,7 @@ class Model:
             inputs=[
                 self.shape_type,
                 self.shape_flags,
+                include_collision_shapes,
                 self.bvh_shape_enabled,
                 num_enabled,
             ],

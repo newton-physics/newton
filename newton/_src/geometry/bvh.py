@@ -170,12 +170,15 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
 def compute_enabled_shapes(
     shape_type: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
+    include_collision_shapes: wp.bool,
     out_shape_enabled: wp.array[wp.uint32],
     out_shape_enabled_count: wp.array[wp.int32],
 ):
     tid = wp.tid()
 
-    if not bool(shape_flags[tid] & ShapeFlags.VISIBLE):
+    is_visible = bool(shape_flags[tid] & ShapeFlags.VISIBLE)
+    is_collision = bool(shape_flags[tid] & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
+    if not is_visible and not (include_collision_shapes and is_collision):
         return
 
     if not is_supported_shape_type(shape_type[tid]):
@@ -393,7 +396,13 @@ def compute_shape_world_transforms_launch(model: Model, state: State) -> None:
     )
 
 
-def build_bvh_shape(model: Model, state: State, *, bvh_constructor: str | None = None) -> None:
+def build_bvh_shape(
+    model: Model,
+    state: State,
+    *,
+    bvh_constructor: str | None = None,
+    include_collision_shapes: bool = False,
+) -> None:
     """Deprecated alias for :meth:`newton.Model.bvh_build_shapes`.
 
     .. deprecated:: 1.3
@@ -404,13 +413,19 @@ def build_bvh_shape(model: Model, state: State, *, bvh_constructor: str | None =
         state: Current simulation state with body transforms.
         bvh_constructor: Warp BVH construction algorithm forwarded to
             :meth:`newton.Model.bvh_build_shapes`.
+        include_collision_shapes: Whether to include shapes marked for shape
+            or particle collisions in addition to visible shapes.
     """
     warnings.warn(
         "newton.geometry.build_bvh_shape(model, state) is deprecated; use model.bvh_build_shapes(state) instead.",
         DeprecationWarning,
         stacklevel=2,
     )
-    model.bvh_build_shapes(state, bvh_constructor=bvh_constructor)
+    model.bvh_build_shapes(
+        state,
+        bvh_constructor=bvh_constructor,
+        include_collision_shapes=include_collision_shapes,
+    )
 
 
 def refit_bvh_shape(model: Model, state: State) -> None:
