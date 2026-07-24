@@ -2089,6 +2089,9 @@ class ViewerBase(ABC):
                 and geo_scale[0] * geo_scale[1] * geo_scale[2] < 0.0
             )
 
+            if geo_type == newton.GeoType.CAMERA:
+                continue
+
             # Gaussians bypass the mesh instancing pipeline; render as point clouds.
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):

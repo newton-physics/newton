@@ -49,6 +49,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
+from ..sensors.camera_sensor import CameraSensor
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import deprecate_nonkeyword_arguments
@@ -3399,6 +3400,7 @@ class ModelBuilder:
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
+        load_cameras: bool = True,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -3496,6 +3498,7 @@ class ModelBuilder:
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+            load_cameras: If True, perspective ``UsdGeom.Camera`` prims are loaded as shape-backed camera sensors. Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
                 have visual-only geometry are hidden unconditionally, regardless of
                 whether the collider has authored PBR material data. Default is False.
@@ -3572,6 +3575,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of a joint prim (e.g. that implements the PhysicsJointAPI) to the respective joint index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_map"``
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
+                * - ``"path_camera_map"``
+                  - Mapping from prim path (str) of a perspective ``UsdGeom.Camera`` prim to its camera shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
                 * - ``"path_cable_map"``
@@ -3643,6 +3648,7 @@ class ModelBuilder:
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
+            load_cameras=load_cameras,
             return_deformable_results=return_deformable_results,
         )
 
@@ -6387,6 +6393,7 @@ class ModelBuilder:
             GeoType.ELLIPSOID,
             GeoType.PLANE,
             GeoType.GAUSSIAN,
+            GeoType.CAMERA,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
         elif type == GeoType.CONE:
@@ -6431,6 +6438,9 @@ class ModelBuilder:
                     f"Sites do not participate in collision detection. "
                     f"Got collision_group={cfg.collision_group}"
                 )
+
+        if type == GeoType.CAMERA and (cfg.has_shape_collision or cfg.has_particle_collision or cfg.density != 0.0):
+            raise ValueError("Camera shapes must be non-colliding and have zero density.")
 
         self.shape_body.append(body)
         shape = self.shape_count
@@ -7167,6 +7177,59 @@ class ModelBuilder:
             cfg=cfg,
             scale=scale,
             src=gaussian,
+            is_static=True,
+            label=label,
+            custom_attributes=custom_attributes,
+            color=color,
+        )
+
+    @deprecate_nonkeyword_arguments
+    def add_shape_camera(
+        self,
+        body: int = -1,
+        *,
+        xform: Transform | None = None,
+        camera: CameraSensor | None = None,
+        cfg: ShapeConfig | None = None,
+        color: Vec3 | None = None,
+        label: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a camera sensor shape to a body.
+
+        Args:
+            body: The index of the parent body this camera belongs to. Use
+                ``-1`` for a world-fixed camera.
+            xform: Camera transform in the parent body's local frame.
+            camera: The :class:`~newton.CameraSensor` ray bundle asset.
+            cfg: Shape configuration. If ``None``, a non-colliding,
+                invisible, zero-density site configuration is used.
+            color: Optional display RGB color with values in [0, 1].
+            label: Optional unique label for identifying the shape.
+            custom_attributes: Dictionary of custom attribute values for SHAPE
+                frequency attributes.
+
+        Returns:
+            The index of the camera shape.
+        """
+        if camera is None:
+            raise TypeError("'camera' is required when adding a camera sensor shape.")
+
+        if cfg is None:
+            cfg = self.default_site_cfg.copy()
+            cfg.is_visible = False
+        else:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
+            cfg.is_visible = False
+
+        return self.add_shape(
+            body=body,
+            type=GeoType.CAMERA,
+            xform=xform,
+            cfg=cfg,
+            scale=(0.0, 0.0, 0.0),
+            src=camera,
             is_static=True,
             label=label,
             custom_attributes=custom_attributes,
@@ -11054,6 +11117,11 @@ class ModelBuilder:
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             heightfield_meshes = []
+            camera_shape_indices = {}
+            for shape_index, geo in enumerate(generated_shape_sources):
+                if isinstance(geo, CameraSensor):
+                    camera_shape_indices.setdefault(id(geo), []).append(shape_index)
+
             for geo in generated_shape_sources:
                 if not geo:
                     geo_sources.append(0)
@@ -11096,6 +11164,10 @@ class ModelBuilder:
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
                         )
+                    elif isinstance(geo, CameraSensor):
+                        finalized_geos[geo_hash] = geo.finalize(
+                            device=device, shape_indices=camera_shape_indices[id(geo)]
+                        )
                     else:
                         finalized_geos[geo_hash] = geo.finalize()
 
@@ -11136,6 +11208,8 @@ class ModelBuilder:
             m.shape_world = wp.array(self.shape_world, dtype=wp.int32)
 
             m.shape_source = self.shape_source  # used for rendering
+            for geo in {geo for geo in m.shape_source if isinstance(geo, CameraSensor)}:
+                geo._bind_model(m)
             m.shape_color = wp.array(self.shape_color, dtype=wp.vec3)
 
             m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)

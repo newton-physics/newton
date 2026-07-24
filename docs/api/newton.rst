@@ -28,6 +28,7 @@ newton
 
    Axis
    BodyFlags
+   CameraSensor
    CollisionPipeline
    Contacts
    Control

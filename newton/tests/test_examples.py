@@ -865,6 +865,14 @@ add_example_test(
 
 add_example_test(
     TestSensorExamples,
+    name="sensors.example_camera_sensor",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
+    use_viewer=True,
+)
+
+add_example_test(
+    TestSensorExamples,
     name="sensors.example_sensor_imu",
     devices=test_devices,
     test_options={"num-frames": 200},  # allow cubes to settle
