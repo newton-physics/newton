@@ -947,6 +947,22 @@ class TestContactsExamples(unittest.TestCase):
     pass
 
 
+for example_name in (
+    "contacts.example_balance_bird",
+    "contacts.example_domino_spiral",
+    "contacts.example_newton_cradle",
+):
+    for solver in ("xpbd", "vbd"):
+        add_example_test(
+            TestContactsExamples,
+            name=example_name,
+            devices=cuda_test_devices,
+            test_options={"num-frames": 60, "solver": solver},
+            use_viewer=True,
+            test_suffix=solver,
+        )
+
+
 add_example_test(
     TestContactsExamples,
     name="contacts.example_nut_bolt_sdf",

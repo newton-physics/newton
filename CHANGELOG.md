@@ -13,6 +13,7 @@
 - Add CUDA-graph-capturable rebuildable sparse grids to `SolverImplicitMPM` when `max_active_cell_count` is positive, with optional `max_leaf_node_count`, `max_lower_node_count`, and `max_upper_node_count` hierarchy capacities.
 - Add opt-in isolated multi-world implicit MPM with capacity-bounded rebuildable sparse grids, selective world resets, outer graph capture, and asynchronous overflow reporting; legacy shared topology remains the default.
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
+- Add contact examples for Newton's cradle, a balance bird, and a domino spiral
 - Add `ViewerUSD(points_as_spheres=...)` to render `log_points` particles as a `UsdGeom.PointInstancer` of sphere prototypes; enabled by default (opt out with `points_as_spheres=False` for flat `UsdGeom.Points` splats)
 - Add list-of-pattern and explicit-index selectors to `ArticulationView`.
 - Add `newton[onnx]` for ONNX policy inference through Warp-NN; `ControllerNeuralMLP`, `ControllerNeuralLSTM`, and RL policy examples can run exported `.onnx` policies without requiring PyTorch for ONNX execution.
