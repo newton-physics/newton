@@ -22,7 +22,7 @@ from newton.tests import get_kamino_basics_asset
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -59,7 +59,7 @@ def _control_callback(
     # Apply a time-dependent external force
     if t > t_start and t < t_end and wnc > 0:
         m = wp.float32(1.0)  # Mass of the box
-        g = wp.float32(9.8067)  # Gravitational acceleration
+        g = wp.float32(9.81)  # Gravitational acceleration
         mu = wp.float32(0.9)  # Friction coefficient
         f_ext = 1.1 * m * g * mu  # Magnitude of the external force
         state_w_i_e[bid] = wp.spatial_vectorf(f_ext, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -140,8 +140,9 @@ class Example:
             )
 
         # Set gravity
-        for w in range(self.builder.num_worlds):
-            self.builder.gravity[w].enabled = gravity
+        if not gravity:
+            for w in range(self.builder.num_worlds):
+                self.builder.set_gravity(wp.vec3f(0.0), w)
 
         # Set solver config
         config = Simulator.Config()
@@ -342,7 +343,7 @@ if __name__ == "__main__":
         device = wp.get_preferred_device()
 
     # Determine if CUDA graphs should be used for execution
-    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device) and not wp.config.verify_cuda
     use_cuda_graph = can_use_cuda_graph and args.cuda_graph
     msg.info(f"can_use_cuda_graph: {can_use_cuda_graph}")
     msg.info(f"use_cuda_graph: {use_cuda_graph}")

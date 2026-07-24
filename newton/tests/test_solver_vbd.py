@@ -297,8 +297,6 @@ def _eval_directional_joint_projection_kernel(
         True,
         2.0,
         P,
-        wp.vec3(0.0),
-        wp.vec3(0.0),
         wp.vec3(5.0, 7.0, 11.0),
         wp.vec3(0.0),
         0.0,
@@ -1031,40 +1029,40 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
         pipeline = contacts = None
         if pipeline_first:
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_contact_max, contact_matching="latest")
-            contacts = model.contacts(collision_pipeline=pipeline)
+            contacts = pipeline.contacts()
 
         solver = newton.solvers.SolverVBD(model, iterations=1, rigid_contact_history=True)
 
         if not pipeline_first:
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_contact_max, contact_matching="latest")
-            contacts = model.contacts(collision_pipeline=pipeline)
+            contacts = pipeline.contacts()
 
         state_in = model.state()
         state_out = model.state()
         control = model.control()
         if rigid_contact_max > 0:
-            model.collide(state_in, contacts)
-        return model, solver, contacts, state_in, state_out, control
+            pipeline.collide(state_in, contacts)
+        return pipeline, solver, contacts, state_in, state_out, control
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
     with test.assertRaisesRegex(RuntimeError, "contact history must be allocated before CUDA graph capture"):
         with wp.ScopedCapture(device=device):
             solver.step(state_in, state_out, control, contacts, 1.0e-3)
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True)
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_in, state_out, control, contacts, 1.0e-3)
     test.assertIsNotNone(capture.graph)
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True, rigid_contact_max=0)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True, rigid_contact_max=0)
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_in, state_out, control, contacts, 1.0e-3)
     test.assertIsNotNone(capture.graph)
     test.assertIsNone(solver._prev_contact_lambda)
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
     solver.step(state_in, state_out, control, contacts, 1.0e-3)
-    model.collide(state_out, contacts)
+    pipeline.collide(state_out, contacts)
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_out, state_in, control, contacts, 1.0e-3)
     test.assertIsNotNone(capture.graph)
@@ -1181,6 +1179,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         joint_x_p = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_x_c = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_axis = wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+        joint_cable_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_cable_rest_twist = wp.zeros(1, dtype=float, device=device)
         joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
         joint_target_q_start = wp.array([0], dtype=wp.int32, device=device)
         joint_constraint_start = wp.array([0], dtype=wp.int32, device=device)
@@ -1212,6 +1212,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_x_p,
                 joint_x_c,
                 joint_axis,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
                 joint_qd_start,
                 joint_target_q_start,
                 joint_constraint_start,
@@ -1237,6 +1239,83 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         )
 
         np.testing.assert_allclose(lambda_ang.numpy(), [[0.0, 2.0, 3.0]])
+
+
+def _cable_soft_dual_slots_clear_preserved_lambda(test, device):
+    """Soft cable slots should not preserve stale lambda components when recombined."""
+    with wp.ScopedDevice(device):
+        joint_type = wp.array([int(newton.JointType.CABLE)], dtype=wp.int32, device=device)
+        joint_enabled = wp.array([True], dtype=bool, device=device)
+        joint_parent = wp.array([-1], dtype=wp.int32, device=device)
+        joint_child = wp.array([0], dtype=wp.int32, device=device)
+        joint_x_p = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        joint_x_c = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        joint_axis = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
+        joint_cable_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_cable_rest_twist = wp.zeros(1, dtype=float, device=device)
+        joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
+        joint_target_q_start = wp.array([0], dtype=wp.int32, device=device)
+        joint_constraint_start = wp.array([0], dtype=wp.int32, device=device)
+        body_q = wp.array(
+            [wp.transform(wp.vec3(0.2, 0.3, 0.4), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3))],
+            dtype=wp.transform,
+            device=device,
+        )
+        body_q_rest = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        joint_dof_dim = wp.array([[0, 0]], dtype=wp.int32, device=device)
+        joint_c0_lin = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_c0_ang = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_is_hard = wp.array([0, 0, 0, 0], dtype=wp.int32, device=device)
+        joint_penalty_k_max = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        joint_target_ke = wp.array([0.0], dtype=float, device=device)
+        joint_target_pos = wp.array([0.0], dtype=float, device=device)
+        joint_limit_lower = wp.array([-1.0], dtype=float, device=device)
+        joint_limit_upper = wp.array([1.0], dtype=float, device=device)
+        joint_limit_ke = wp.array([0.0], dtype=float, device=device)
+        joint_rest_angle = wp.array([0.0], dtype=float, device=device)
+        joint_penalty_k = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        lambda_lin = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3, device=device)
+        lambda_ang = wp.array([[4.0, 5.0, 6.0]], dtype=wp.vec3, device=device)
+
+        wp.launch(
+            update_duals_joint,
+            dim=1,
+            inputs=[
+                joint_type,
+                joint_enabled,
+                joint_parent,
+                joint_child,
+                joint_x_p,
+                joint_x_c,
+                joint_axis,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
+                joint_qd_start,
+                joint_target_q_start,
+                joint_constraint_start,
+                body_q,
+                body_q_rest,
+                joint_dof_dim,
+                joint_c0_lin,
+                joint_c0_ang,
+                joint_is_hard,
+                0.0,
+                joint_penalty_k_max,
+                0.0,
+                0.0,
+                joint_target_ke,
+                joint_target_pos,
+                joint_limit_lower,
+                joint_limit_upper,
+                joint_limit_ke,
+                joint_rest_angle,
+            ],
+            outputs=[joint_penalty_k, lambda_lin, lambda_ang],
+            device=device,
+        )
+
+        np.testing.assert_allclose(lambda_lin.numpy(), [[0.0, 0.0, 0.0]])
+        np.testing.assert_allclose(lambda_ang.numpy(), [[0.0, 0.0, 0.0]])
 
 
 def _joint_force_projection_filters_free_direction(test, device):
@@ -2455,7 +2534,8 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         init_qd = state_0.body_qd.numpy().copy()
         init_qd[0] = [0.0, 0.0, 0.0, omega_init, 0.0, 0.0]
@@ -2464,7 +2544,7 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True)
         sim_dt = 1.0e-3
         for _ in range(500):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
 
@@ -2534,7 +2614,8 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         masses = model.body_mass.numpy()
         inertias = model.body_inertia.numpy()
@@ -2554,7 +2635,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
         for frame in range(num_frames):
             for _ in range(substeps):
                 state_0.clear_forces()
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
                 solver.step(state_0, state_1, control, contacts, sim_dt)
                 state_0, state_1 = state_1, state_0
             if frame >= settle_frames:
@@ -2590,9 +2671,10 @@ def _collect_rigid_contact_forces_reports_surface_points(test, device):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         body_q_prev_snapshot = wp.clone(solver.body_q_prev)
         solver.step(state_0, state_1, control, contacts, 1.0e-3)
 
@@ -2750,6 +2832,12 @@ add_function_test(
     TestSolverVBD,
     "test_joint_angular_dual_projects_free_axis_lambda",
     _joint_angular_dual_projects_free_axis_lambda,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_soft_dual_slots_clear_preserved_lambda",
+    _cable_soft_dual_slots_clear_preserved_lambda,
     devices=devices,
 )
 add_function_test(

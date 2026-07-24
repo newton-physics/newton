@@ -105,7 +105,7 @@ def _run_particle_rollout(device, solver_name):
     solver = _make_particle_solver(model, solver_name)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    contacts = model.contacts()
+    contacts = newton.CollisionPipeline(model).contacts()
 
     for _ in range(20):
         state_0.clear_forces()

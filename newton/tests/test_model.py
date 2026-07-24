@@ -1579,6 +1579,72 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn("999", error_msg)
 
 
+class TestShapeConfigValidation(unittest.TestCase):
+    def test_shape_config_rejects_invalid_density(self):
+        """Reject negative and non-finite density values."""
+        for density in (-1.0, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(density=density):
+                cfg = newton.ModelBuilder.ShapeConfig(density=density)
+
+                with self.assertRaisesRegex(ValueError, "density must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
+        """Reject non-positive and non-finite target voxel sizes."""
+        for target_voxel_size in (0.0, -0.01, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(target_voxel_size=target_voxel_size):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_target_voxel_size=target_voxel_size)
+
+                with self.assertRaisesRegex(ValueError, "sdf_target_voxel_size must be finite and > 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_padding(self):
+        """Reject negative and non-finite SDF padding values."""
+        for padding in (-0.1, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(padding=padding):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_padding=padding)
+
+                with self.assertRaisesRegex(ValueError, "sdf_padding must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_narrow_band_range(self):
+        """Reject malformed and non-finite SDF narrow-band ranges."""
+        cases = [
+            (0.1, 0.2),
+            (-0.1, -0.01),
+            (0.1, -0.1),
+            (-0.1,),
+            (float("nan"), 0.1),
+            (-0.1, float("nan")),
+            (float("-inf"), 0.1),
+            (-0.1, float("inf")),
+        ]
+
+        for narrow_band_range in cases:
+            with self.subTest(narrow_band_range=narrow_band_range):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=narrow_band_range)
+
+                with self.assertRaisesRegex(ValueError, "sdf_narrow_band_range"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_accepts_list_sdf_narrow_band_range(self):
+        """Accept list-based SDF narrow-band ranges."""
+        cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=[-0.1, 0.1])
+
+        cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_max_resolution(self):
+        """Reject invalid SDF maximum resolutions."""
+        cases = [0, -8, 10, 1 << 16]
+
+        for max_resolution in cases:
+            with self.subTest(max_resolution=max_resolution):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=max_resolution)
+
+                with self.assertRaisesRegex(ValueError, "sdf_max_resolution"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+
 class TestModelJoints(unittest.TestCase):
     def test_add_builder_xform_updates_root_free_joint_coordinates(self):
         parent_xform = wp.transform(wp.vec3(0.4, -0.2, 0.1), wp.quat_rpy(0.3, -0.4, 0.2))
@@ -2023,6 +2089,39 @@ class TestModelJoints(unittest.TestCase):
         builder2.add_builder(builder)
         assert builder2.articulation_count == 2 * builder.articulation_count
         assert builder2.articulation_start == [0, 1, 2, 3]
+
+    def test_collapse_fixed_joints_transports_body_velocity(self):
+        for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
+            with self.subTest(joint_type=joint_type):
+                builder = ModelBuilder()
+                root = builder.add_link(mass=1.0, inertia=wp.mat33(1.0))
+                child = builder.add_link(mass=1.0, inertia=wp.mat33(1.0), com=wp.vec3(0.5, 0.0, 0.0))
+                if joint_type == newton.JointType.FREE:
+                    root_joint = builder.add_joint_free(parent=-1, child=root)
+                else:
+                    root_joint = builder.add_joint_distance(parent=-1, child=root)
+                fixed_joint = builder.add_joint_fixed(
+                    parent=root,
+                    child=child,
+                    parent_xform=wp.transform(wp.vec3(2.0, 0.0, 0.0)),
+                )
+                builder.add_articulation([root_joint, fixed_joint])
+                builder.body_qd[root] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+                builder.body_qd[child] = wp.spatial_vector(0.0, 2.5, 0.0, 0.0, 0.0, 1.0)
+
+                builder.collapse_fixed_joints()
+
+                expected = np.asarray((0.0, 1.25, 0.0, 0.0, 0.0, 1.0))
+                assert_np_equal(builder.body_com[0], np.asarray((1.25, 0.0, 0.0)))
+                assert_np_equal(builder.body_qd[0], expected)
+                assert_np_equal(builder.joint_qd, expected)
+
+                model = builder.finalize()
+                assert_np_equal(model.joint_qd.numpy(), expected)
+
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                assert_np_equal(state.body_qd.numpy()[0], expected)
 
     def test_collapse_fixed_joints_remaps_custom_body_and_joint_references(self):
         # A custom attribute declaring references="body"/"joint" must have its indices remapped
@@ -3308,6 +3407,111 @@ class TestModelWorld(unittest.TestCase):
 
 
 class TestModelValidation(unittest.TestCase):
+    def test_add_particles_rejects_mismatched_lengths(self):
+        valid = {
+            "pos": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
+            "vel": [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
+            "mass": [1.0, 1.0],
+            "radius": [0.1, 0.1],
+            "flags": [newton.ParticleFlags.ACTIVE, newton.ParticleFlags.ACTIVE],
+        }
+
+        for name in ("vel", "mass", "radius", "flags"):
+            with self.subTest(name=name):
+                builder = ModelBuilder()
+                values = dict(valid)
+                values[name] = values[name][:-1]
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*2.*1"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        for name in ("vel", "mass"):
+            with self.subTest(name=name, value=None):
+                builder = ModelBuilder()
+                values = dict(valid)
+                values[name] = None
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*2.*None"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        for name, value in (("vel", (0.0, 0.0, 0.0)), ("mass", 1.0)):
+            with self.subTest(name=name, empty_pos=True):
+                builder = ModelBuilder()
+                values = {"pos": [], "vel": [], "mass": []}
+                values[name] = [value]
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*0.*1"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        builder = ModelBuilder()
+        builder.add_particle((2.0, 0.0, 0.0), (0.0, 0.0, 0.0), 2.0)
+        expected_arrays = (
+            list(builder.particle_q),
+            list(builder.particle_qd),
+            list(builder.particle_mass),
+            list(builder.particle_radius),
+            list(builder.particle_flags),
+            list(builder.particle_world),
+        )
+        with self.assertRaisesRegex(ValueError, r"vel.*2.*1"):
+            builder.add_particles(
+                pos=valid["pos"],
+                vel=valid["vel"][:-1],
+                mass=valid["mass"],
+            )
+        actual_arrays = (
+            builder.particle_q,
+            builder.particle_qd,
+            builder.particle_mass,
+            builder.particle_radius,
+            builder.particle_flags,
+            builder.particle_world,
+        )
+        for actual, expected in zip(actual_arrays, expected_arrays, strict=True):
+            self.assertEqual(actual, expected)
+
+        builder.add_particles(pos=valid["pos"], vel=valid["vel"], mass=valid["mass"])
+        self.assertEqual(len(builder.particle_radius), 3)
+        self.assertEqual(len(builder.particle_flags), 3)
+
+    def test_finalize_rejects_mismatched_particle_arrays(self):
+        for name in ("particle_qd", "particle_mass", "particle_radius", "particle_flags", "particle_world"):
+            with self.subTest(name=name):
+                builder = ModelBuilder()
+                builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+                getattr(builder, name).clear()
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*particle_count"):
+                    builder.finalize(device="cpu")
+
+        builder = ModelBuilder()
+        builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+        builder.particle_qd.clear()
+        model = builder.finalize(device="cpu", skip_validation_structure=True)
+        self.assertEqual(model.particle_count, 1)
+        self.assertEqual(model.particle_qd.shape, (0,))
+
     def test_lock_inertia_on_shape_addition(self):
         builder = ModelBuilder()
         shape_cfg = ModelBuilder.ShapeConfig(density=1000.0)

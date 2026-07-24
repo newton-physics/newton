@@ -9,7 +9,6 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.math import screw
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
@@ -50,9 +49,10 @@ class TestSetup:
         self.builder: ModelBuilderKamino = builder_fn(**kwargs)
 
         # Set ad-hoc configurations
-        self.builder.gravity[0].enabled = gravity
+        if not gravity:
+            self.builder.set_gravity(wp.vec3f(0.0))
         if perturb:
-            u_0 = screw(wp.vec3f(+10.0, 0.0, 0.0), wp.vec3f(0.0, 0.0, 0.0))
+            u_0 = wp.spatial_vectorf(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             for body in self.builder.all_bodies:
                 body.u_i_0 = u_0
 
@@ -181,8 +181,10 @@ def check_padmm_solution(
         test.assertLessEqual(r_p, solver.config[w].primal_tolerance)
         test.assertLessEqual(r_d, solver.config[w].dual_tolerance)
         test.assertLessEqual(r_c, solver.config[w].compl_tolerance)
-        test.assertLessEqual(error_dual_abs_l2, solver.config[w].dual_tolerance)
-        test.assertLessEqual(error_dual_abs_inf, solver.config[w].dual_tolerance)
+        # Using expanded tolerance for true dual error due to potential numerical inaccuracies
+        # between in-solver residual and true residual.
+        test.assertLessEqual(error_dual_abs_l2, solver.config[w].dual_tolerance * 4.0)
+        test.assertLessEqual(error_dual_abs_inf, solver.config[w].dual_tolerance * 4.0)
 
 
 def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool = False):

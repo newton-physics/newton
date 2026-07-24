@@ -85,7 +85,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -108,7 +109,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

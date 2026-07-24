@@ -91,7 +91,7 @@ Effort limits, target rates, armature, and friction
    justified by actuator or gearbox data when possible.
 
 Collision frequency
-   Calling ``model.collide`` or ``pipeline.collide`` every substep is most
+   Calling ``pipeline.collide`` every substep is most
    robust. Calling it less frequently can improve performance for expensive
    collision models, but stale contacts can increase penetration or weaken
    grasping.
