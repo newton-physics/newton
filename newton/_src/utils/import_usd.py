@@ -1207,11 +1207,11 @@ def parse_usd(
 
         USD viewports draw the ``default`` and ``proxy`` purposes and hide ``guide`` and
         ``render``; the allowlist also keeps any future purpose hidden until explicitly
-        handled. Colliders deliberately do not use this check: ``guide`` is the conventional
-        purpose for authored collision geometry (e.g. the MuJoCo USD exporter), and the
-        collider display policy (``force_show_colliders`` / ``hide_collision_shapes``) is the
-        explicit mechanism for revealing colliders — gating them on purpose would make
-        ``force_show_colliders`` a no-op on such assets.
+        handled. ``guide`` is the conventional purpose for authored collision geometry
+        (e.g. the MuJoCo USD exporter), so it gates only whether a collider inherits
+        visibility from a bound render material. The collider display policy
+        (``force_show_colliders`` / ``hide_collision_shapes``) is checked independently and
+        still reveals ``guide`` colliders.
         """
         if not _is_effectively_visible(prim):
             return False
@@ -3479,7 +3479,15 @@ def parse_usd(
                 model_has_visual_shapes = load_visual_shapes and bool(bodies_with_visual_shapes)
                 material_props = _get_material_props_cached(prim)
                 collider_has_visual_material = (
-                    key == UsdPhysics.ObjectType.MeshShape and _has_visual_material_properties(material_props)
+                    key == UsdPhysics.ObjectType.MeshShape
+                    and _has_visual_material_properties(material_props)
+                    # A ``guide``/``render`` purpose collider is not viewport geometry, so it
+                    # must not inherit visibility from a bound render material: that would
+                    # give it the VISIBLE flag, and the viewer draws on ``(COLLIDE and
+                    # show_collision) or (VISIBLE and show_visual)``, leaving the collision
+                    # toggle unable to hide it. ``force_show_colliders`` is deliberately
+                    # checked separately below and still reveals such colliders.
+                    and _is_viewport_drawn(prim)
                 )
 
                 # Explicit hide_collision_shapes overrides material-based visibility:

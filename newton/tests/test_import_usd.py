@@ -11683,6 +11683,33 @@ def Xform "Body" (
         self.assertTrue(flags & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_guide_purpose_collider_with_material_is_not_visible(self):
+        """A guide-purpose collider does not inherit VISIBLE from its render material.
+
+        ``guide`` is the conventional purpose for authored collision geometry. Such a
+        collider is not viewport geometry, so binding a render material to it must not
+        set VISIBLE: viewers draw on ``(COLLIDE and show_collision) or (VISIBLE and
+        show_visual)``, and a VISIBLE collider cannot be hidden by the collision toggle.
+        """
+        from pxr import UsdGeom
+
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.9, 0.1, 0.2), roughness=0.55, metallic=0.25, add_visual_sphere=True
+        )
+        UsdGeom.Imageable(stage.GetPrimAtPath("/Body/CollisionMesh")).CreatePurposeAttr(UsdGeom.Tokens.guide)
+
+        builder = newton.ModelBuilder()
+        collision_shape = builder.add_usd(stage)["path_shape_map"]["/Body/CollisionMesh"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+
+        # force_show_colliders is an explicit display policy and still reveals it.
+        forced = newton.ModelBuilder()
+        forced_shape = forced.add_usd(stage, force_show_colliders=True)["path_shape_map"]["/Body/CollisionMesh"]
+        self.assertTrue(forced.shape_flags[forced_shape] & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_invisible_collision_shape_is_hidden(self):
         """Effective USD invisibility clears VISIBLE on colliders while preserving collision."""
         from pxr import Usd
