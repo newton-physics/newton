@@ -25,6 +25,18 @@ from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf, parse_mjcf
 from newton.solvers import SolverMuJoCo
 
+_UNSUPPORTED_CAMERA_WARNING = (
+    r"MJCF camera '.+' has (?:mode='[^']+'|orthographic='true'); authored camera "
+    r"(?:mode|projection) is ignored and a fixed pinhole CameraSensor is imported\."
+)
+
+
+def _add_mjcf_ignoring_unsupported_camera_warnings(builder, *args, **kwargs):
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=_UNSUPPORTED_CAMERA_WARNING, category=UserWarning)
+        return builder.add_mjcf(*args, **kwargs)
+
+
 MASSLESS_FIXED_ROOT_MJCF = """
 <mujoco model="massless_fixed_root">
     <worldbody>
@@ -193,7 +205,8 @@ class TestImportMjcfBasic(unittest.TestCase):
         builder.default_shape_cfg.mu_rolling = 0.888
         builder.default_joint_cfg.armature = 42.0
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
-        builder.add_mjcf(
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder,
             mjcf_filename,
             ignore_names=["floor", "ground"],
             up_axis="Z",
@@ -3453,47 +3466,67 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             )
 
     def test_granular_loading_flags(self):
-        """Test granular control over sites and visual shapes loading."""
+        """Test granular control over sites, cameras, and visual shapes loading."""
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
 
         # Test 1: Load all (default behavior)
         builder_all = newton.ModelBuilder()
-        builder_all.add_mjcf(mjcf_filename, ignore_names=["floor", "ground"], up_axis="Z")
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder_all, mjcf_filename, ignore_names=["floor", "ground"], up_axis="Z"
+        )
         count_all = builder_all.shape_count
 
         # Test 2: Load sites only, no visual shapes
         builder_sites_only = newton.ModelBuilder()
-        builder_sites_only.add_mjcf(
-            mjcf_filename, parse_sites=True, parse_visuals=False, ignore_names=["floor", "ground"], up_axis="Z"
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder_sites_only,
+            mjcf_filename,
+            parse_sites=True,
+            parse_visuals=False,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
         )
         count_sites_only = builder_sites_only.shape_count
 
         # Test 3: Load visual shapes only, no sites
         builder_visuals_only = newton.ModelBuilder()
-        builder_visuals_only.add_mjcf(
-            mjcf_filename, parse_sites=False, parse_visuals=True, ignore_names=["floor", "ground"], up_axis="Z"
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder_visuals_only,
+            mjcf_filename,
+            parse_sites=False,
+            parse_visuals=True,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
         )
         count_visuals_only = builder_visuals_only.shape_count
 
         # Test 4: Load neither (physics collision shapes only)
         builder_physics_only = newton.ModelBuilder()
-        builder_physics_only.add_mjcf(
-            mjcf_filename, parse_sites=False, parse_visuals=False, ignore_names=["floor", "ground"], up_axis="Z"
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder_physics_only,
+            mjcf_filename,
+            parse_sites=False,
+            parse_visuals=False,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
         )
         count_physics_only = builder_physics_only.shape_count
+        camera_count = sum(1 for source in builder_all.shape_source if isinstance(source, newton.CameraSensor))
 
         # Verify behavior
+        self.assertEqual(camera_count, 2, "Test asset should import 2 camera sensor shapes")
+
         # When loading all, should have most shapes
-        self.assertEqual(count_all, 41, "Loading all should give 41 shapes (sites + visuals + collision)")
+        self.assertEqual(count_all, 43, "Loading all should give 43 shapes (sites + cameras + visuals + collision)")
 
         # Sites only should have sites + collision shapes
-        self.assertEqual(count_sites_only, 41, "Sites only should give 41 shapes (22 sites + 19 collision)")
+        self.assertEqual(count_sites_only, 43, "Sites only should give 43 shapes (22 sites + 2 cameras + 19 collision)")
 
-        # Visuals only should have collision shapes only (no sites)
-        self.assertEqual(count_visuals_only, 19, "Visuals only should give 19 shapes (collision only, no sites)")
+        # Visuals only should have cameras + collision shapes (no sites)
+        self.assertEqual(count_visuals_only, 21, "Visuals only should give 21 shapes (2 cameras + 19 collision)")
 
-        # Physics only should have collision shapes only
-        self.assertEqual(count_physics_only, 19, "Physics only should give 19 shapes (collision only)")
+        # Physics only should have cameras + collision shapes
+        self.assertEqual(count_physics_only, 21, "Physics only should give 21 shapes (2 cameras + 19 collision)")
 
         # Verify that sites are actually filtered
         self.assertLess(count_visuals_only, count_all, "Excluding sites should reduce shape count")
@@ -3505,18 +3538,24 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
         # Default (should parse sites)
         builder1 = newton.ModelBuilder()
-        builder1.add_mjcf(mjcf_filename, ignore_names=["floor", "ground"], up_axis="Z")
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder1, mjcf_filename, ignore_names=["floor", "ground"], up_axis="Z"
+        )
 
         # Explicitly enable sites
         builder2 = newton.ModelBuilder()
-        builder2.add_mjcf(mjcf_filename, parse_sites=True, ignore_names=["floor", "ground"], up_axis="Z")
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder2, mjcf_filename, parse_sites=True, ignore_names=["floor", "ground"], up_axis="Z"
+        )
 
         # Should have same count
         self.assertEqual(builder1.shape_count, builder2.shape_count, "Default should parse sites")
 
         # Explicitly disable sites
         builder3 = newton.ModelBuilder()
-        builder3.add_mjcf(mjcf_filename, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z")
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder3, mjcf_filename, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z"
+        )
 
         # Should have fewer shapes
         self.assertLess(builder3.shape_count, builder1.shape_count, "Disabling sites should reduce shape count")
@@ -3527,14 +3566,24 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
         # Test 1: parse_visuals=False (don't load)
         builder_no_load = newton.ModelBuilder()
-        builder_no_load.add_mjcf(
-            mjcf_filename, parse_visuals=False, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z"
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder_no_load,
+            mjcf_filename,
+            parse_visuals=False,
+            parse_sites=False,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
         )
 
         # Test 2: hide_visuals=True (load but hide)
         builder_hidden = newton.ModelBuilder()
-        builder_hidden.add_mjcf(
-            mjcf_filename, hide_visuals=True, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z"
+        _add_mjcf_ignoring_unsupported_camera_warnings(
+            builder_hidden,
+            mjcf_filename,
+            hide_visuals=True,
+            parse_sites=False,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
         )
 
         # Note: nv_humanoid.xml doesn't have separate visual-only geometries

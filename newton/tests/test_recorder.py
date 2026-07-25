@@ -4,6 +4,7 @@
 import os
 import tempfile
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -672,12 +673,23 @@ def test_real_model_recording_roundtrip(test: TestRecorder, device):
 
     builder = newton.ModelBuilder()
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
-    parse_mjcf(
-        builder,
-        mjcf_filename,
-        ignore_names=["floor", "ground"],
-        up_axis="Z",
-    )
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        parse_mjcf(
+            builder,
+            mjcf_filename,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
+        )
+
+    expected_camera_warnings = [
+        "MJCF camera 'back' has mode='trackcom'; authored camera mode is ignored "
+        "and a fixed pinhole CameraSensor is imported.",
+        "MJCF camera 'side' has mode='trackcom'; authored camera mode is ignored "
+        "and a fixed pinhole CameraSensor is imported.",
+    ]
+    test.assertEqual([warning.category for warning in caught_warnings], [UserWarning, UserWarning])
+    test.assertEqual([str(warning.message) for warning in caught_warnings], expected_camera_warnings)
 
     model = builder.finalize(device=device)
     state = model.state()

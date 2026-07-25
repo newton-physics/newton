@@ -74,6 +74,11 @@ except ImportError:
 # instead of downloading. Example: export NEWTON_MENAGERIE_PATH=/path/to/mujoco_menagerie
 NEWTON_MENAGERIE_PATH_ENV = "NEWTON_MENAGERIE_PATH"
 
+_UNSUPPORTED_CAMERA_WARNING = (
+    r"MJCF camera '.+' has (?:mode='[^']+'|orthographic='true'); authored camera "
+    r"(?:mode|projection) is ignored and a fixed pinhole CameraSensor is imported\."
+)
+
 
 def download_menagerie_asset(
     robot_folder: str,
@@ -138,11 +143,13 @@ def create_newton_model_from_mjcf(
 
     # floating defaults to None, which honors the MJCF's explicit joint definitions.
     # Menagerie models define their own <freejoint> tags for floating-base robots.
-    robot_builder.add_mjcf(
-        str(mjcf_path),
-        parse_visuals=parse_visuals,
-        ctrl_direct=True,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=_UNSUPPORTED_CAMERA_WARNING, category=UserWarning)
+        robot_builder.add_mjcf(
+            str(mjcf_path),
+            parse_visuals=parse_visuals,
+            ctrl_direct=True,
+        )
 
     # Create main builder and replicate
     builder = newton.ModelBuilder()
@@ -357,7 +364,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Lights: Newton doesn't parse lights from MJCF
     "light_",
     "nlight",
-    # Cameras: Newton doesn't parse cameras from MJCF
+    # Cameras: dedicated camera-import tests cover CameraSensor creation. These
+    # comparisons skip native MuJoCo camera fields because SolverMuJoCo does not
+    # represent CameraSensor shapes as MuJoCo cameras.
     "cam_",
     "ncam",
     # Sensors: Newton doesn't parse sensors from MJCF
@@ -1777,7 +1786,7 @@ class TestMenagerieBase(unittest.TestCase):
         compare_models(
             self._newton_solver.mjw_model,
             self._native_mjw_model,
-            skip_fields=self.model_skip_fields,
+            skip_fields=self._effective_model_skip_fields(),
             backfill_fields=self.backfill_fields,
         )
 
@@ -1794,6 +1803,13 @@ class TestMenagerieBase(unittest.TestCase):
         self._compare_qD_structure(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_actuator_physics(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_compiled_fields(self._newton_solver.mjw_model, self._native_mjw_model)
+
+    def _effective_model_skip_fields(self) -> set[str]:
+        """Return model fields to skip for the currently loaded Newton model."""
+        skip_fields = set(self.model_skip_fields)
+        if any(isinstance(source, newton.CameraSensor) for source in self._newton_model.shape_source):
+            skip_fields.update({"nsite", "site_"})
+        return skip_fields
 
     def _backfill_and_recompute(self):
         """Backfill computed model fields from native and re-run kinematics/RNE."""
