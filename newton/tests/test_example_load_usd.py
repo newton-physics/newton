@@ -5,6 +5,8 @@
 
 import unittest
 
+import numpy as np
+
 import newton.examples
 from newton.examples.basic.example_load_usd import Example
 from newton.viewer import ViewerNull
@@ -67,6 +69,55 @@ class TestLoadUsdDeferredLoad(unittest.TestCase):
 
         self.assertEqual(example.current_path, str(second))
         self.assertIsNone(example._pending_path)
+
+
+class TestLoadUsdReset(unittest.TestCase):
+    def test_reset_sim_survives_the_next_step(self):
+        """Reset restores the imported pose and the restored pose survives stepping.
+
+        The default solver is reduced-coordinate: it steps from
+        ``state.joint_q``/``joint_qd`` and re-derives ``body_q`` by forward
+        kinematics. A reset that only rewrote ``body_q`` therefore looked correct
+        until the next step overwrote it from the stale joint coordinates.
+        """
+        asset = newton.examples.get_asset("ant.usda")
+        args = Example.create_parser().parse_args([str(asset)])
+        example = Example(ViewerNull(), args)
+
+        initial = example.state_0.body_q.numpy().copy()
+        for _ in range(60):
+            example.step()
+        moved = example.state_0.body_q.numpy().copy()
+        self.assertGreater(np.abs(moved - initial).max(), 0.05, "asset did not move; the test would be vacuous")
+
+        example.reset_sim()
+        np.testing.assert_allclose(example.state_0.body_q.numpy(), initial)
+
+        example.step()
+        after = example.state_0.body_q.numpy()
+        self.assertLess(np.abs(after - initial).max(), np.abs(after - moved).max())
+
+
+class TestLoadUsdSolverWiring(unittest.TestCase):
+    def test_solver_native_contacts_replace_the_newton_pipeline(self):
+        """The example runs Newton's collision pipeline only for solvers that consume it.
+
+        :class:`~newton.solvers.SolverMuJoCo` runs its own collision detection and
+        ignores the contacts passed to ``step()``, so the example must hand it a
+        buffer to report into instead of drawing contacts it never used.
+        """
+        asset = str(newton.examples.get_asset("cartpole.usda"))
+
+        mujoco = Example(ViewerNull(), Example.create_parser().parse_args([asset, "--solver", "mujoco"]))
+        self.assertIsNone(mujoco.collision_pipeline)
+
+        xpbd = Example(ViewerNull(), Example.create_parser().parse_args([asset, "--solver", "xpbd"]))
+        self.assertIsNotNone(xpbd.collision_pipeline)
+
+        # Both must report contacts for the viewer after a step.
+        for example in (mujoco, xpbd):
+            example.step()
+            self.assertIsNotNone(example.contacts.rigid_contact_count)
 
 
 if __name__ == "__main__":

@@ -22,8 +22,9 @@ import newton.examples
 from newton import JointTargetMode
 
 _SOLVERS = {
-    "xpbd": newton.solvers.SolverXPBD,
     "mujoco": newton.solvers.SolverMuJoCo,
+    "kamino": newton.solvers.SolverKamino,
+    "xpbd": newton.solvers.SolverXPBD,
     "featherstone": newton.solvers.SolverFeatherstone,
     "semi_implicit": newton.solvers.SolverSemiImplicit,
 }
@@ -62,9 +63,12 @@ class Example:
         args = self.args
         up_axis = newton.Axis[args.up_axis]
 
+        solver_cls = _SOLVERS[args.solver]
+
+        # Solver-specific USD attributes (e.g. mjc:*, kamino:*) are only parsed if
+        # the solver registers them on the builder before the file is read.
         articulation = newton.ModelBuilder(up_axis=up_axis)
-        if args.solver == "mujoco":
-            newton.solvers.SolverMuJoCo.register_custom_attributes(articulation)
+        solver_cls.register_custom_attributes(articulation)
 
         articulation.add_usd(
             path,
@@ -112,7 +116,7 @@ class Example:
         # Build into locals so a failure part-way through leaves the instance on the
         # previous scene, which is what _reload() reports when it catches.
         model = builder.finalize()
-        solver = _SOLVERS[args.solver](model)
+        solver = solver_cls(model)
 
         state_0 = model.state()
         state_1 = model.state()
@@ -121,8 +125,16 @@ class Example:
         # Populate maximal-coordinate state from the imported joint configuration.
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-        collision_pipeline = newton.CollisionPipeline(model)
-        contacts = collision_pipeline.contacts()
+        # SolverMuJoCo runs its own collision detection and ignores the contacts
+        # handed to step(), so give it a buffer to report into. Running Newton's
+        # pipeline as well would be wasted work and would draw contacts the
+        # solver never used.
+        if args.solver == "mujoco":
+            collision_pipeline = None
+            contacts = newton.Contacts(solver.get_max_contact_count(), 0)
+        else:
+            collision_pipeline = newton.CollisionPipeline(model)
+            contacts = collision_pipeline.contacts()
 
         self.model = model
         self.solver = solver
@@ -145,12 +157,16 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        self.collision_pipeline.collide(self.state_0, self.contacts)
+        if self.collision_pipeline is not None:
+            self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
+        if self.collision_pipeline is None:
+            # Read back the solver's own contacts so render() can draw them.
+            self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:
@@ -173,6 +189,10 @@ class Example:
 
     def reset_sim(self):
         """Reset the simulation to the imported configuration without reloading the file."""
+        # Reduced-coordinate solvers step from state.joint_q/joint_qd and carry
+        # internal buffers across steps, so restoring only the maximal-coordinate
+        # body_q via eval_fk would leave the reset invisible to them.
+        self.solver.reset(self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         self.sim_time = 0.0
         self.status = "Reset simulation"
@@ -242,10 +262,11 @@ class Example:
         parser.add_argument(
             "--solver",
             type=str,
-            default="xpbd",
+            default="mujoco",
             choices=list(_SOLVERS),
-            help="Solver used to simulate the loaded scene. Use 'mujoco' for the "
-            "highest-fidelity articulated-robot dynamics.",
+            help="Solver used to simulate the loaded scene. The default handles "
+            "arbitrary imported content most robustly; the others are useful for "
+            "comparing solver behavior on the same asset.",
         )
         parser.add_argument(
             "--up-axis",
