@@ -41,7 +41,7 @@ class Example:
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 4
+        self.sim_substeps = args.substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.current_path = None
@@ -267,6 +267,14 @@ class Example:
             help="Solver used to simulate the loaded scene. The default handles "
             "arbitrary imported content most robustly; the others are useful for "
             "comparing solver behavior on the same asset.",
+        )
+        parser.add_argument(
+            "--substeps",
+            type=int,
+            default=4,
+            help="Simulation substeps per frame. Small, light objects need more of "
+            "them to come to rest: a 75 mm 0.17 kg body jitters in place under "
+            "'xpbd' until roughly 12.",
         )
         parser.add_argument(
             "--up-axis",
