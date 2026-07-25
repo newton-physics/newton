@@ -35,7 +35,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -107,7 +107,7 @@ get_float32_array_offset_ptr = make_get_array_offset_ptr_func(wp.float32)
 
 @cache
 def make_llt_blocked_factorize_kernel(block_size: int):
-    @wp.kernel(enable_backward=False)
+    @wp.kernel
     def llt_blocked_factorize_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
@@ -227,7 +227,7 @@ def make_llt_blocked_factorize_kernel(block_size: int):
 
 @cache
 def make_llt_blocked_solve_kernel(block_size: int):
-    @wp.kernel(enable_backward=False)
+    @wp.kernel
     def llt_blocked_solve_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
@@ -322,7 +322,7 @@ def make_llt_blocked_solve_kernel(block_size: int):
 
 @cache
 def make_llt_blocked_solve_inplace_kernel(block_size: int):
-    @wp.kernel(enable_backward=False)
+    @wp.kernel
     def llt_blocked_solve_inplace_kernel(
         # Inputs:
         dim: wp.array[wp.int32],

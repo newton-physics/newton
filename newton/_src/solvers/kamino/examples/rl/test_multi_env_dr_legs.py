@@ -63,8 +63,6 @@ def run_test(num_worlds: int, num_steps: int, device):
     builder.max_contacts_per_pair = 8  # Cap contact budget to avoid Warp tile API shared memory bug
     offset = wp.transformf(0.0, 0.0, 0.265, 0.0, 0.0, 0.0, 1.0)
     set_uniform_body_pose_offset(builder=builder, offset=offset)
-    for w in range(builder.num_worlds):
-        builder.gravity[w].enabled = True
 
     # Create simulator
     msg.info("Creating simulator...")

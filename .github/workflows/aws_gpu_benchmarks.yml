@@ -112,6 +112,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -137,12 +138,16 @@ jobs:
 
       - name: Run Benchmarks
         run: |
+          # Gate this PR job on directly measured runtimes only.
           uvx --with virtualenv asv continuous \
             --launch-method spawn \
             --interleave-rounds \
             --append-samples \
             --no-only-changed \
-            -e -b Fast \
+            -e \
+            -b 'Fast\w*\.time_' \
+            -b 'Fast(?!NewtonOverhead)\w*\.track_simulate(\(|$)' \
+            -b 'Fast\w*\.track_(mean|p95)_\w*(time|ms)(\(|$)' \
             ${{ inputs.base_ref }} \
             ${{ inputs.ref }}
         continue-on-error: true

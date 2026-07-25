@@ -43,7 +43,7 @@ For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.S
 use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 :class:`~newton.solvers.SolverSemiImplicit`, and :class:`~newton.solvers.SolverVBD`
 use maximal coordinates.
-Note that collision detection, e.g., via :meth:`newton.Model.collide` requires the maximal coordinates to be current in the state.
+Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
 Cable joints
 ^^^^^^^^^^^^

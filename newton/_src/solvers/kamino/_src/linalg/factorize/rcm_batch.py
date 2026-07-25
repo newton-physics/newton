@@ -116,8 +116,9 @@ def _make_rcm_batch_kernels(dtype):
     """
     module_name = f"rcm_batch_kernels_{getattr(dtype, '__name__', str(dtype))}"
     module = wp.get_module(module_name)
+    module.options.update({"enable_backward": False, "default_grid_stride": False})
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def init_and_degree_kernel(
         num_blocks: int,
         tol: dtype,  # type: ignore[valid-type]
@@ -165,7 +166,7 @@ def _make_rcm_batch_kernels(dtype):
             head[b] = int(0)
             root[b] = int(0)
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def select_and_seed_kernel(
         num_blocks: int,
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -206,7 +207,7 @@ def _make_rcm_batch_kernels(dtype):
         slot = wp.atomic_add(head, b, int(1))
         order_buf[vb + slot] = best_idx
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def bfs_step_kernel(
         num_blocks: int,
         cur: int,
@@ -261,7 +262,7 @@ def _make_rcm_batch_kernels(dtype):
                         slot = wp.atomic_add(head, b, int(1))
                         order_buf[vb + slot] = j
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def append_unreached_kernel(
         num_blocks: int,
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -286,7 +287,7 @@ def _make_rcm_batch_kernels(dtype):
                 pos += int(1)
         head[b] = pos
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def reverse_into_perm_kernel(
         num_blocks: int,
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -323,8 +324,9 @@ def _make_rcm_batch_fused_tile_kernel(dtype, max_dim: int):
     """Create a native-free tiled RCM kernel using shared tiles."""
     module_name = f"rcm_batch_fused_tile_kernels_{getattr(dtype, '__name__', str(dtype))}_{max_dim}"
     module = wp.get_module(module_name)
+    module.options.update({"enable_backward": False, "default_grid_stride": False})
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def fused_rcm_tile_kernel(
         num_blocks: int,
         max_bfs_iters: int,

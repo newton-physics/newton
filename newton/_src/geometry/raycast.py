@@ -613,6 +613,7 @@ def _make_ray_intersect_mesh(compute_normal: bool):
         mesh_id: wp.uint64,
         enable_backface_culling: bool,
         max_t: float,
+        root: int = -1,
     ) -> tuple[float, wp.vec3, float, float, int]:
         """Computes ray-mesh intersection in the mesh's local frame using Warp's built-in mesh query.
 
@@ -624,6 +625,7 @@ def _make_ray_intersect_mesh(compute_normal: bool):
             enable_backface_culling: When ``True``, reject hits whose triangle normal
                 is aligned with the ray direction (back faces).
             max_t: Maximum parameter ``t`` along the local ray to consider.
+            root: Root node index for grouped mesh traversal, or ``-1`` for the global root.
 
         Returns:
             Tuple ``(distance, normal, u, v, face_index)``. The distance along the ray and the local-space normal of the intersection point (a zero vector in the ``no_normal`` variant), or -1.0 and a zero vector if there is no intersection; on miss, ``u`` and ``v`` are ``0.0`` and ``face_index`` is -1.
@@ -631,7 +633,7 @@ def _make_ray_intersect_mesh(compute_normal: bool):
         if mesh_id == wp.uint64(0):
             return -1.0, wp.vec3(0.0), 0.0, 0.0, -1
 
-        query = wp.mesh_query_ray(mesh_id, ray_origin, ray_direction, max_t)
+        query = wp.mesh_query_ray(mesh_id, ray_origin, ray_direction, max_t, root)
 
         if query.result:
             if not enable_backface_culling or wp.dot(ray_direction, query.normal) < 0.0:
@@ -655,6 +657,7 @@ def ray_intersect_mesh_anyhit(
     ray_direction: wp.vec3,
     mesh_id: wp.uint64,
     max_t: float,
+    root: int = -1,
 ) -> float:
     """Tests whether a ray hits a mesh within ``max_t``, in the mesh's local frame.
 
@@ -667,6 +670,7 @@ def ray_intersect_mesh_anyhit(
         ray_direction: The direction of the ray in the mesh's local frame.
         mesh_id: The Warp mesh ID for raycasting.
         max_t: Maximum parameter ``t`` along the local ray to consider.
+        root: Root node index for grouped mesh traversal, or ``-1`` for the global root.
 
     Returns:
         ``0.0`` if the ray hits the mesh within ``max_t``, otherwise ``-1.0``.
@@ -674,7 +678,7 @@ def ray_intersect_mesh_anyhit(
     if mesh_id == wp.uint64(0):
         return -1.0
 
-    hit = wp.mesh_query_ray_anyhit(mesh_id, ray_origin, ray_direction, max_t)
+    hit = wp.mesh_query_ray_anyhit(mesh_id, ray_origin, ray_direction, max_t, root)
 
     if hit:
         return 0.0

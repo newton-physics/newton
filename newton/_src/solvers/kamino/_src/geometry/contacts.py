@@ -37,7 +37,6 @@ from .....sim.contacts import Contacts, contact_surface_point, contact_surface_s
 from .....sim.model import Model
 from .....sim.state import State
 from ..core.materials import MaterialMixMode, make_get_mixed_material_pair_property
-from ..core.math import COS_PI_6, UNIT_X, UNIT_Y
 from ..core.model import ModelKamino
 from ..core.types import (
     to_warp_int32_array,
@@ -68,7 +67,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -378,14 +377,16 @@ class ContactsKaminoData:
 # Functions
 ###
 
+COS_PI_6 = wp.constant(0.8660254037844387)
+
 
 @wp.func
 def make_contact_frame_znorm(n: wp.vec3f) -> wp.mat33f:
     n = wp.normalize(n)
-    if wp.abs(wp.dot(n, UNIT_X)) < COS_PI_6:
-        e = UNIT_X
+    if wp.abs(n[0]) < COS_PI_6:
+        e = wp.vec3f(1.0, 0.0, 0.0)
     else:
-        e = UNIT_Y
+        e = wp.vec3f(0.0, 1.0, 0.0)
     o = wp.normalize(wp.cross(n, e))
     t = wp.normalize(wp.cross(o, n))
     return wp.mat33f(t.x, o.x, n.x, t.y, o.y, n.y, t.z, o.z, n.z)
@@ -394,10 +395,10 @@ def make_contact_frame_znorm(n: wp.vec3f) -> wp.mat33f:
 @wp.func
 def make_contact_frame_xnorm(n: wp.vec3f) -> wp.mat33f:
     n = wp.normalize(n)
-    if wp.abs(wp.dot(n, UNIT_X)) < COS_PI_6:
-        e = UNIT_X
+    if wp.abs(n[0]) < COS_PI_6:
+        e = wp.vec3f(1.0, 0.0, 0.0)
     else:
-        e = UNIT_Y
+        e = wp.vec3f(0.0, 1.0, 0.0)
     o = wp.normalize(wp.cross(n, e))
     t = wp.normalize(wp.cross(o, n))
     return wp.mat33f(n.x, t.x, o.x, n.y, t.y, o.y, n.z, t.z, o.z)
@@ -867,7 +868,7 @@ def make_convert_contacts_newton_to_kamino(
         A kernel function that converts Newton contacts to the Kamino format.
     """
 
-    @wp.kernel(module="unique", enable_backward=False)
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _convert_contacts_newton_to_kamino(
         # Inputs:
         num_worlds: wp.int32,

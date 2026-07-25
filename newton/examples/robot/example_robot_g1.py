@@ -92,7 +92,8 @@ class Example:
         if use_mujoco_contacts:
             self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
         else:
-            self.contacts = self.model.contacts()
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -106,7 +107,7 @@ class Example:
 
     def simulate(self):
         if not self.use_mujoco_contacts:
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 

@@ -23,6 +23,12 @@ from ...utils import logger as msg
 from .simulator import Simulator
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Kernels
 ###
 

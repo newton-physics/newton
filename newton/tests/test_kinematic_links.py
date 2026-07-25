@@ -228,7 +228,10 @@ def _uses_maximal_coordinates(solver) -> bool:
 
 
 def _create_contacts(model: newton.Model, solver):
-    return model.contacts() if not isinstance(solver, newton.solvers.SolverMuJoCo) else None
+    if isinstance(solver, newton.solvers.SolverMuJoCo):
+        return None, None
+    collision_pipeline = newton.CollisionPipeline(model)
+    return collision_pipeline, collision_pipeline.contacts()
 
 
 def _find_joint_for_child(model: newton.Model, child: int) -> int:
@@ -407,7 +410,7 @@ def test_kinematic_free_base_prescribed_motion(
     def run_once(apply_force: bool):
         model, kinematic_body, probe_body, kinematic_joint = _build_free_root_scene(device)
         solver = solver_fn(model)
-        contacts = _create_contacts(model, solver)
+        collision_pipeline, contacts = _create_contacts(model, solver)
         state_0, state_1 = model.state(), model.state()
 
         q_start = int(model.joint_q_start.numpy()[kinematic_joint])
@@ -434,7 +437,7 @@ def test_kinematic_free_base_prescribed_motion(
                 _set_body_wrench(state_0, kinematic_body, KINEMATIC_TEST_WRENCH)
 
             if contacts is not None:
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
 
             solver.step(state_0, state_1, None, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
@@ -491,7 +494,7 @@ def test_kinematic_revolute_root_pendulum_prescribed_motion(
     def run_once(apply_force: bool):
         model, root_body, pendulum_body, probe_body, root_joint = _build_revolute_root_pendulum_scene(device)
         solver = solver_fn(model)
-        contacts = _create_contacts(model, solver)
+        collision_pipeline, contacts = _create_contacts(model, solver)
         state_0, state_1 = model.state(), model.state()
 
         root_q_start = int(model.joint_q_start.numpy()[root_joint])
@@ -529,7 +532,7 @@ def test_kinematic_revolute_root_pendulum_prescribed_motion(
                 _set_body_wrench(state_0, root_body, KINEMATIC_TEST_WRENCH)
 
             if contacts is not None:
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
 
             solver.step(state_0, state_1, None, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
@@ -584,7 +587,7 @@ def test_kinematic_fixed_root_static_force_immune(
     def run_once(apply_force: bool):
         model, static_body, probe_body, probe_joint = _build_fixed_root_scene(device)
         solver = solver_fn(model)
-        contacts = _create_contacts(model, solver)
+        collision_pipeline, contacts = _create_contacts(model, solver)
         state_0, state_1 = model.state(), model.state()
 
         probe_qd_start = int(model.joint_qd_start.numpy()[probe_joint])
@@ -601,7 +604,7 @@ def test_kinematic_fixed_root_static_force_immune(
                 _set_body_wrench(state_0, static_body, KINEMATIC_TEST_WRENCH)
 
             if contacts is not None:
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
 
             solver.step(state_0, state_1, None, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
@@ -655,7 +658,7 @@ def test_kinematic_runtime_toggle(
     builder.color()
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    contacts = _create_contacts(model, solver)
+    collision_pipeline, contacts = _create_contacts(model, solver)
 
     state_0, state_1 = model.state(), model.state()
     applied_wrench = np.array([10.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -665,7 +668,7 @@ def test_kinematic_runtime_toggle(
         state_0.clear_forces()
         _set_body_wrench(state_0, body, applied_wrench)
         if contacts is not None:
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, None, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
 
@@ -683,7 +686,7 @@ def test_kinematic_runtime_toggle(
         state_0.clear_forces()
         _set_body_wrench(state_0, body, applied_wrench)
         if contacts is not None:
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, None, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
 
@@ -703,7 +706,7 @@ def test_kinematic_runtime_toggle(
         state_0.clear_forces()
         _set_body_wrench(state_0, body, applied_wrench)
         if contacts is not None:
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, None, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
 

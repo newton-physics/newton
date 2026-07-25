@@ -25,6 +25,7 @@ __all__ = [
     "ConfigBase",
     "ConstrainedDynamicsConfig",
     "ConstraintStabilizationConfig",
+    "DVISolverConfig",
     "ForwardKinematicsSolverConfig",
     "PADMMSolverConfig",
 ]
@@ -767,6 +768,167 @@ class PADMMSolverConfig:
         PADMMPenaltyUpdate.from_string(self.penalty_update_method)
         PADMMWarmStartMode.from_string(self.warmstart_mode)
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
+
+    @override
+    def __post_init__(self):
+        """Post-initialization to validate configurations."""
+        self.validate()
+
+
+@dataclass
+class DVISolverConfig:
+    """
+    A container to hold configurations for the DVI forward dynamics solver.
+    """
+
+    max_iterations: int = 100
+    """
+    Maximum projected Gauss-Seidel iterations for the all-constraint
+    fallback path. The direct bilateral block path is controlled by
+    `block_iterations` and `contact_iterations`. Must be greater than zero.
+    Defaults to `100`.
+    """
+
+    tolerance: float = 1e-5
+    """
+    The convergence tolerance on the projected update size.
+    Must be non-negative. Defaults to `1e-5`.
+    """
+
+    regularization: float = 1e-6
+    """
+    Diagonal regularization added to each projected update denominator.
+    Must be positive. Defaults to `1e-6`.
+    """
+
+    omega: float = 1.0
+    """
+    Relaxation factor applied to projected Gauss-Seidel updates.
+    Must be in the range `(0, 2]`. Defaults to `1.0`.
+    """
+
+    block_iterations: int = 32
+    """
+    Number of outer DVI block iterations alternating direct bilateral solves
+    with projected inequality solves. Must be greater than zero. Defaults to `32`.
+    """
+
+    contact_iterations: int = 4
+    """
+    Number of projected Gauss-Seidel sweeps used for unilateral inequalities
+    during each DVI block iteration. Contacts use graph-colored sweeps on CUDA.
+    Must be greater than zero. Defaults to `4`.
+    """
+
+    bilateral_solve_period: int = 1
+    """
+    Number of DVI block iterations between repeated direct bilateral solves.
+    A value of `1` re-solves after every projected inequality block, preserving
+    the standard direct-block schedule. Must be greater than zero. Defaults to `1`.
+    """
+
+    contact_jacobi_omega: float = 0.3
+    """
+    Step size for contact Jacobi updates and block-preconditioned contact
+    updates. Must be in the range `(0, 2]`. Defaults to `0.3`.
+    """
+
+    contact_jacobi_relaxation: float = 0.9
+    """
+    Solution mixing factor for contact Jacobi updates and block-preconditioned
+    contact updates. Must be in the range `(0, 1]`. Defaults to `0.9`.
+    """
+
+    contact_block_preconditioner: bool = False
+    """
+    Whether to use a full 3x3 contact diagonal block preconditioner for DVI
+    projected contact updates. Defaults to `False`.
+    """
+
+    warmstart_mode: Literal["none", "internal", "containers"] = "containers"
+    """
+    Warmstart mode to be used for the DVI solver.
+    Uses the same choices as the other dual dynamics solvers. Defaults to `containers`.
+    """
+
+    contact_warmstart_method: Literal[
+        "key_and_position",
+        "geom_pair_net_force",
+        "key_and_position_with_net_force_backup",
+    ] = "key_and_position_with_net_force_backup"
+    """
+    The contact warmstart method used when `warmstart_mode` is `containers`.
+    See :class:`WarmstarterContacts.Method` for available options.
+    Defaults to `key_and_position_with_net_force_backup`.
+    """
+
+    @override
+    @staticmethod
+    def register_custom_attributes(builder: ModelBuilder) -> None:
+        """Register DVI custom attributes supported by the Kamino USD schema.
+
+        DVI-specific tuning options are currently Python-only. The shared
+        ``max_solver_iterations`` attribute is registered by
+        :class:`PADMMSolverConfig` and parsed by both dynamics solvers.
+        """
+
+    @override
+    @staticmethod
+    def from_model(model: Model, **kwargs: dict[str, Any]) -> DVISolverConfig:
+        """Creates a :class:`DVISolverConfig` from model attributes if available.
+
+        Args:
+            model: The Newton model from which to parse configurations.
+        """
+        cfg = DVISolverConfig(**kwargs)
+        kamino_attrs = getattr(model, "kamino", None)
+        if kamino_attrs is not None and hasattr(kamino_attrs, "max_solver_iterations"):
+            max_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
+            if max_iterations >= 0:
+                cfg.max_iterations = max_iterations
+        cfg.validate()
+        return cfg
+
+    @override
+    def validate(self) -> None:
+        """Validates the current values held by this config instance."""
+        from ._src.solvers.common import WarmStartMode  # noqa: PLC0415
+        from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
+
+        if self.max_iterations <= 0:
+            raise ValueError(f"Invalid maximum iterations: {self.max_iterations}. Must be a positive integer.")
+        if self.tolerance < 0.0:
+            raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be non-negative.")
+        if self.regularization <= 0.0:
+            raise ValueError(f"Invalid regularization: {self.regularization}. Must be greater than zero.")
+        if self.omega <= 0.0 or self.omega > 2.0:
+            raise ValueError(f"Invalid omega: {self.omega}. Must be in the range (0, 2].")
+        if self.block_iterations <= 0:
+            raise ValueError(f"Invalid block iterations: {self.block_iterations}. Must be a positive integer.")
+        if self.contact_iterations <= 0:
+            raise ValueError(f"Invalid contact iterations: {self.contact_iterations}. Must be a positive integer.")
+        if self.bilateral_solve_period <= 0:
+            raise ValueError(
+                f"Invalid bilateral solve period: {self.bilateral_solve_period}. Must be a positive integer."
+            )
+        if self.contact_jacobi_omega <= 0.0 or self.contact_jacobi_omega > 2.0:
+            raise ValueError(f"Invalid contact Jacobi omega: {self.contact_jacobi_omega}. Must be in the range (0, 2].")
+        if self.contact_jacobi_relaxation <= 0.0 or self.contact_jacobi_relaxation > 1.0:
+            raise ValueError(
+                f"Invalid contact Jacobi relaxation: {self.contact_jacobi_relaxation}. Must be in the range (0, 1]."
+            )
+        WarmStartMode.from_string(self.warmstart_mode)
+        WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
+        implemented_contact_warmstart_methods = {
+            "key_and_position",
+            "geom_pair_net_force",
+            "key_and_position_with_net_force_backup",
+        }
+        if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
+            raise ValueError(
+                f"DVI contact warmstart method is not implemented: {self.contact_warmstart_method}. "
+                f"Choose one of {sorted(implemented_contact_warmstart_methods)}."
+            )
 
     @override
     def __post_init__(self):

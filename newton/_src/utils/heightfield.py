@@ -61,6 +61,83 @@ def load_heightfield_elevation(
     return data.reshape(header[0], header[1])
 
 
+@wp.kernel
+def _rasterize_mesh_kernel(
+    mesh_id: wp.uint64,
+    x_min: wp.float32,
+    y_min: wp.float32,
+    dx: wp.float32,
+    dy: wp.float32,
+    z_start: wp.float32,
+    max_dist: wp.float32,
+    z_floor: wp.float32,
+    heights: wp.array2d[wp.float32],
+):
+    row, col = wp.tid()
+    origin = wp.vec3(x_min + wp.float32(col) * dx, y_min + wp.float32(row) * dy, z_start)
+    query = wp.mesh_query_ray(mesh_id, origin, wp.vec3(0.0, 0.0, -1.0), max_dist)
+    heights[row, col] = wp.where(query.result, z_start - query.t, z_floor)
+
+
+def rasterize_mesh_to_heightfield(
+    mesh: wp.Mesh,
+    resolution: float,
+    *,
+    max_cells_per_axis: int = 4096,
+) -> tuple[np.ndarray, tuple[float, float, float, float]]:
+    """Rasterize a triangle mesh into a heightfield elevation grid.
+
+    Rays are cast straight down onto the mesh on a regular grid spanning the mesh's
+    XY bounding box. The grid follows Newton's heightfield convention (see
+    :class:`~newton.Heightfield`): ``heights[row, col]`` samples the surface at
+    ``x = x_min + col * dx`` (columns map to X) and ``y = y_min + row * dy`` (rows
+    map to Y). Rays that miss the mesh fall back to the mesh's minimum Z so that
+    nothing collides in gaps. This is only meaningful for surfaces that are
+    single-valued in Z (e.g. locomotion terrain).
+
+    Args:
+        mesh: Triangle mesh to rasterize. Its vertices are taken in their current
+            frame; transform the mesh into world space beforehand if needed.
+        resolution: Horizontal grid spacing [m]. Smaller values preserve more
+            detail at the cost of a larger grid.
+        max_cells_per_axis: Upper bound on grid rows/columns. If the mesh extent
+            would exceed this, the effective resolution is coarsened to fit.
+
+    Returns:
+        A tuple ``(heights, bounds)`` where ``heights`` is a ``(nrow, ncol)``
+        float32 array of world-space elevations [m] and ``bounds`` is the mesh's
+        XY bounding box as ``(x_min, y_min, x_max, y_max)`` [m].
+    """
+    if resolution <= 0.0:
+        raise ValueError(f"resolution must be positive, got {resolution}")
+    if max_cells_per_axis < 2:
+        raise ValueError(f"max_cells_per_axis must be at least 2, got {max_cells_per_axis}")
+
+    points = mesh.points.numpy()
+    x_min, y_min, z_min = (float(v) for v in points.min(axis=0))
+    x_max, y_max, z_max = (float(v) for v in points.max(axis=0))
+    size_x, size_y = x_max - x_min, y_max - y_min
+
+    ncol = max(2, min(int(round(size_x / resolution)) + 1, max_cells_per_axis))
+    nrow = max(2, min(int(round(size_y / resolution)) + 1, max_cells_per_axis))
+    dx = size_x / (ncol - 1)
+    dy = size_y / (nrow - 1)
+
+    z_start = z_max + 1.0
+    max_dist = (z_start - z_min) + 1.0
+
+    device = mesh.points.device
+    heights = wp.empty((nrow, ncol), dtype=wp.float32, device=device)
+    wp.launch(
+        _rasterize_mesh_kernel,
+        dim=(nrow, ncol),
+        inputs=[mesh.id, x_min, y_min, dx, dy, z_start, max_dist, z_min],
+        outputs=[heights],
+        device=device,
+    )
+    return heights.numpy(), (x_min, y_min, x_max, y_max)
+
+
 @wp.struct
 class HeightfieldData:
     """Per-shape heightfield metadata for collision kernels.
@@ -382,192 +459,3 @@ def heightfield_vs_convex_midphase(
                 out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
                 if out_idx < triangle_pairs.shape[0]:
                     triangle_pairs[out_idx] = wp.vec3i(hfield_shape, other_shape, tri_idx)
-
-
-# Tolerance for rejecting near-parallel rays in the local-space ray intersection.
-# Matches raycast.py's PARALLEL_TOL; duplicated here so heightfield queries don't
-# depend on raycast.py.
-_PARALLEL_TOL = 1e-6
-
-
-@wp.func
-def _ray_intersect_triangle(
-    ro: wp.vec3,
-    rd: wp.vec3,
-    v0: wp.vec3,
-    v1: wp.vec3,
-    v2: wp.vec3,
-) -> tuple[float, wp.vec3]:
-    """Moller-Trumbore ray-triangle intersection.
-
-    Returns ``(t, unnormalized_normal)`` on hit, or ``(-1, 0)`` on miss.
-    Back faces (ray aligned with the face normal) are not culled.
-    """
-    e1 = v1 - v0
-    e2 = v2 - v0
-    h = wp.cross(rd, e2)
-    a = wp.dot(e1, h)
-    if wp.abs(a) < _PARALLEL_TOL:
-        return -1.0, wp.vec3(0.0)
-    f = 1.0 / a
-    s = ro - v0
-    u = f * wp.dot(s, h)
-    if u < 0.0 or u > 1.0:
-        return -1.0, wp.vec3(0.0)
-    q = wp.cross(s, e1)
-    v = f * wp.dot(rd, q)
-    if v < 0.0 or u + v > 1.0:
-        return -1.0, wp.vec3(0.0)
-    t = f * wp.dot(e2, q)
-    if t < 0.0:
-        return -1.0, wp.vec3(0.0)
-    return t, wp.cross(e1, e2)
-
-
-@wp.func
-def ray_intersect_heightfield_local(
-    hfd: HeightfieldData,
-    elevation_data: wp.array[wp.float32],
-    ray_origin: wp.vec3,
-    ray_direction: wp.vec3,
-) -> tuple[float, wp.vec3]:
-    """Ray-heightfield intersection in the heightfield's local frame.
-
-    Slab-clips the ray against the local AABB, then walks the overlapped XY cells
-    with 2D DDA, testing the two triangles per cell with Moller-Trumbore. Stops
-    early once the next cell's entry parameter exceeds the best hit found so far.
-
-    Call ``ray_intersect_heightfield`` (in ``geometry.raycast``) from a world-space
-    kernel -- that thin wrapper does the world-to-local transform and rotates the
-    returned normal back to world space.
-
-    Args:
-        hfd: Per-shape heightfield metadata (extents, grid size, z-range, data offset).
-        elevation_data: Concatenated normalized [0, 1] elevation array.
-        ray_origin: Ray origin in the heightfield's local frame.
-        ray_direction: Ray direction in the heightfield's local frame.
-
-    Returns:
-        The distance along the (local-frame) ray and the unnormalized local-frame
-        surface normal, or ``-1.0`` and a zero vector on miss.
-    """
-    if hfd.nrow <= 1 or hfd.ncol <= 1:
-        return -1.0, wp.vec3(0.0)
-
-    ro = ray_origin
-    rd = ray_direction
-
-    # Slab-clip against the local AABB [-hx, hx] x [-hy, hy] x [min_z, max_z].
-    # Explicit float(...) casts make warp treat these as mutable scalars (not constants).
-    lo = wp.vec3(-hfd.hx, -hfd.hy, hfd.min_z)
-    hi = wp.vec3(hfd.hx, hfd.hy, hfd.max_z)
-    t_enter = float(0.0)
-    t_exit = float(1.0e30)
-    for i in range(3):
-        if wp.abs(rd[i]) < _PARALLEL_TOL:
-            if ro[i] < lo[i] or ro[i] > hi[i]:
-                return -1.0, wp.vec3(0.0)
-        else:
-            inv_d = 1.0 / rd[i]
-            t1 = (lo[i] - ro[i]) * inv_d
-            t2 = (hi[i] - ro[i]) * inv_d
-            t_near = wp.min(t1, t2)
-            t_far = wp.max(t1, t2)
-            if t_near > t_enter:
-                t_enter = t_near
-            if t_far < t_exit:
-                t_exit = t_far
-    if t_enter > t_exit or t_exit < 0.0:
-        return -1.0, wp.vec3(0.0)
-
-    t_enter = wp.max(t_enter, 0.0)
-
-    dx = 2.0 * hfd.hx / wp.float32(hfd.ncol - 1)
-    dy = 2.0 * hfd.hy / wp.float32(hfd.nrow - 1)
-    z_range = hfd.max_z - hfd.min_z
-    base = hfd.data_offset
-
-    # Starting cell from entry point.
-    entry = ro + rd * t_enter
-    col = wp.int32(wp.floor((entry[0] + hfd.hx) / dx))
-    row = wp.int32(wp.floor((entry[1] + hfd.hy) / dy))
-    col = wp.clamp(col, 0, hfd.ncol - 2)
-    row = wp.clamp(row, 0, hfd.nrow - 2)
-
-    # DDA deltas and first-boundary parameters per XY axis.
-    step_col = 0
-    t_delta_x = float(1.0e30)
-    t_next_x = float(1.0e30)
-    if rd[0] > _PARALLEL_TOL:
-        step_col = 1
-        t_delta_x = dx / rd[0]
-        t_next_x = (-hfd.hx + wp.float32(col + 1) * dx - ro[0]) / rd[0]
-    elif rd[0] < -_PARALLEL_TOL:
-        step_col = -1
-        t_delta_x = -dx / rd[0]
-        t_next_x = (-hfd.hx + wp.float32(col) * dx - ro[0]) / rd[0]
-
-    step_row = 0
-    t_delta_y = float(1.0e30)
-    t_next_y = float(1.0e30)
-    if rd[1] > _PARALLEL_TOL:
-        step_row = 1
-        t_delta_y = dy / rd[1]
-        t_next_y = (-hfd.hy + wp.float32(row + 1) * dy - ro[1]) / rd[1]
-    elif rd[1] < -_PARALLEL_TOL:
-        step_row = -1
-        t_delta_y = -dy / rd[1]
-        t_next_y = (-hfd.hy + wp.float32(row) * dy - ro[1]) / rd[1]
-
-    best_t = float(1.0e30)
-    best_normal_local = wp.vec3(0.0, 0.0, 0.0)
-
-    t_cell_enter = t_enter
-    # A 2D DDA visits at most (nrow + ncol) cells along any straight ray.
-    max_cells = hfd.nrow + hfd.ncol + 2
-    for _ in range(max_cells):
-        if best_t < t_cell_enter:
-            break
-
-        x0 = -hfd.hx + wp.float32(col) * dx
-        y0 = -hfd.hy + wp.float32(row) * dy
-        x1 = x0 + dx
-        y1 = y0 + dy
-        h00 = hfd.min_z + elevation_data[base + row * hfd.ncol + col] * z_range
-        h10 = hfd.min_z + elevation_data[base + row * hfd.ncol + col + 1] * z_range
-        h01 = hfd.min_z + elevation_data[base + (row + 1) * hfd.ncol + col] * z_range
-        h11 = hfd.min_z + elevation_data[base + (row + 1) * hfd.ncol + col + 1] * z_range
-
-        p00 = wp.vec3(x0, y0, h00)
-        p10 = wp.vec3(x1, y0, h10)
-        p01 = wp.vec3(x0, y1, h01)
-        p11 = wp.vec3(x1, y1, h11)
-
-        # Layout: tri 0 = (p00, p10, p11), tri 1 = (p00, p11, p01).
-        # Matches get_triangle_shape_from_heightfield so collisions and raycasts agree.
-        t0, n0 = _ray_intersect_triangle(ro, rd, p00, p10, p11)
-        if t0 >= 0.0 and t0 < best_t:
-            best_t = t0
-            best_normal_local = n0
-        t1, n1 = _ray_intersect_triangle(ro, rd, p00, p11, p01)
-        if t1 >= 0.0 and t1 < best_t:
-            best_t = t1
-            best_normal_local = n1
-
-        # Step to the next XY cell.
-        t_cell_enter = wp.min(t_next_x, t_next_y)
-        if t_cell_enter > t_exit:
-            break
-        if t_next_x < t_next_y:
-            col += step_col
-            t_next_x += t_delta_x
-        else:
-            row += step_row
-            t_next_y += t_delta_y
-        if col < 0 or col >= hfd.ncol - 1 or row < 0 or row >= hfd.nrow - 1:
-            break
-
-    if best_t >= 1.0e30:
-        return -1.0, wp.vec3(0.0)
-
-    return best_t, best_normal_local

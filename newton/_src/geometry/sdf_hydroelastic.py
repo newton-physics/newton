@@ -242,8 +242,8 @@ class HydroelasticSDF:
         writer_func: Callback for writing decoded contact data.
 
     Note:
-        Instances are typically created internally by the collision pipeline
-        (via :meth:`~newton.Model.collide`) rather than constructed directly.
+        Instances are typically created internally when constructing a
+        :class:`~newton.CollisionPipeline` rather than constructed directly.
         The pipeline automatically extracts the required SDF data and shape
         information from the simulation :class:`~newton.Model`.
 

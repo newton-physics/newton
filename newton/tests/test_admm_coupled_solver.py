@@ -159,13 +159,14 @@ def _run(solver, model: newton.Model, n_steps: int = 30, dt: float = 1.0 / 60.0)
     """Run ``n_steps`` of simulation and return (body_q, particle_q)."""
     state_0 = model.state()
     state_1 = model.state()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
     control = model.control()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     for _ in range(n_steps):
         state_0.clear_forces()
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, dt)
         state_0, state_1 = state_1, state_0
 
@@ -1026,12 +1027,13 @@ class TestAdmmExternalForces(unittest.TestCase):
         solver_a = _make_solver(model_a, rs, re, admm_iters=1)
         state_0 = model_a.state()
         state_1 = model_a.state()
-        contacts = model_a.contacts()
+        collision_pipeline = newton.CollisionPipeline(model_a)
+        contacts = collision_pipeline.contacts()
         control = model_a.control()
         newton.eval_fk(model_a, model_a.joint_q, model_a.joint_qd, state_0)
         for _ in range(5):
             state_0.clear_forces()
-            model_a.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver_a.step(state_0, state_1, control, contacts, 1.0 / 60.0)
             state_0, state_1 = state_1, state_0
         z_baseline = state_0.body_q.numpy()[0, 2]
@@ -1042,7 +1044,8 @@ class TestAdmmExternalForces(unittest.TestCase):
         solver_b = _make_solver(model_b, rs, re, admm_iters=1)
         state_0 = model_b.state()
         state_1 = model_b.state()
-        contacts = model_b.contacts()
+        collision_pipeline = newton.CollisionPipeline(model_b)
+        contacts = collision_pipeline.contacts()
         control = model_b.control()
         newton.eval_fk(model_b, model_b.joint_q, model_b.joint_qd, state_0)
         body_idx = rs  # only MuJoCo body
@@ -1053,7 +1056,7 @@ class TestAdmmExternalForces(unittest.TestCase):
             wrench = np.zeros((model_b.body_count, 6), dtype=np.float32)
             wrench[body_idx, 2] = upward_force  # linear z
             state_0.body_f = wp.array(wrench, dtype=wp.spatial_vector, device=model_b.device)
-            model_b.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver_b.step(state_0, state_1, control, contacts, 1.0 / 60.0)
             state_0, state_1 = state_1, state_0
         z_with_force = state_0.body_q.numpy()[0, 2]

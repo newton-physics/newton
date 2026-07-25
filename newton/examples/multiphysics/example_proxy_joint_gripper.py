@@ -85,7 +85,8 @@ class Example:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
@@ -154,14 +155,14 @@ class Example:
 
     def capture(self) -> None:
         self.graph = None
-        if not self.use_graph or not self.model.device.is_cuda:
+        if not self.use_graph:
             return
 
         with wp.ScopedDevice(self.model.device), wp.ScopedCapture() as capture:
             self.simulate()
         self.graph = capture.graph
         if self.graph is None:
-            raise RuntimeError(f"CUDA graph capture failed on device {self.model.device}")
+            raise RuntimeError(f"Graph capture failed on device {self.model.device}")
 
     def _emit_soft_object(self, builder: newton.ModelBuilder) -> None:
         size = 0.1 if self.scenario == "harsh" else 0.09
@@ -299,7 +300,7 @@ class Example:
         return np.min(particle_q, axis=0), np.max(particle_q, axis=0)
 
     def simulate(self) -> None:
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
@@ -399,7 +400,7 @@ class Example:
             action="store_false",
             dest="graph_capture",
             default=True,
-            help="Disable CUDA graph capture.",
+            help="Disable graph capture.",
         )
         return parser
 

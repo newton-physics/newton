@@ -11,9 +11,11 @@ import warp as wp
 
 import newton
 from newton import Model, ModelBuilder
+from newton._src.core.types import Axis
 from newton._src.geometry.types import GeoType
 from newton._src.solvers.kamino import SolverKamino
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton._src.solvers.kamino._src.core.gravity import GravityDescriptor
 from newton._src.solvers.kamino._src.core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType, JointDoFType
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -46,6 +48,54 @@ class TestUSDImporter(unittest.TestCase):
         self.default_device = None
         if self.verbose:
             msg.reset_log_level()
+
+    def test_gravity_descriptor_from_usd_default_magnitude(self):
+        """Resolve OpenUSD's negative-infinity gravity sentinel."""
+        gravity = GravityDescriptor.from_usd((0.0, 0.0, 0.0), -float("inf"), Axis.Y, 1.0)
+
+        np.testing.assert_array_equal(gravity.vector, np.array([0.0, -9.81, 0.0], dtype=np.float32))
+
+    def test_gravity_descriptor_from_usd_negative_magnitude(self):
+        """Preserve an explicitly authored negative gravity magnitude."""
+        gravity = GravityDescriptor.from_usd((0.0, 0.0, -1.0), -1.0, Axis.Y, 1.0)
+
+        np.testing.assert_array_equal(gravity.vector, np.array([0.0, 0.0, 1.0], dtype=np.float32))
+
+    def test_gravity_descriptor_from_usd_explicit_values(self):
+        """Normalize and scale explicitly authored OpenUSD gravity."""
+        gravity = GravityDescriptor.from_usd((3.0, 4.0, 0.0), 8.0, Axis.Z, 0.5)
+
+        np.testing.assert_allclose(gravity.vector, np.array([2.4, 3.2, 0.0], dtype=np.float32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_default_physics_scene_gravity(self):
+        """Import the resolved default gravity of a USD physics scene."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+        builder = USDImporter().import_from(stage, load_static_geometry=False, load_materials=False)
+
+        np.testing.assert_array_equal(builder.gravity[0].vector, np.array([0.0, -9.81, 0.0], dtype=np.float32))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_zero_gravity_uses_stage_up_axis(self):
+        """Retain the stage up axis when imported gravity is zero."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        scene = UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+        scene.CreateGravityMagnitudeAttr(0.0)
+
+        builder = USDImporter().import_from(stage, load_static_geometry=False, load_materials=False)
+
+        self.assertEqual(builder.up_axes[0], Axis.Y)
+        np.testing.assert_array_equal(builder.gravity[0].vector, np.zeros(3, dtype=np.float32))
 
     ###
     # Joints supported natively by USD

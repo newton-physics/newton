@@ -53,8 +53,10 @@ def test_zero_mass_isolated_particle_remains_finite(test, device):
     solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
     state_0 = model.state()
     state_1 = model.state()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
     initial_position = state_0.particle_q.numpy()[3].copy()
-    solver.step(state_0, state_1, model.control(), model.contacts(), 0.01)
+    solver.step(state_0, state_1, model.control(), contacts, 0.01)
 
     positions = state_1.particle_q.numpy()
     velocities = state_1.particle_qd.numpy()
@@ -117,7 +119,9 @@ def test_solver_flags_track_runtime_model_changes(test, device):
 
     state_0 = model.state()
     state_1 = model.state()
-    solver.step(state_0, state_1, model.control(), model.contacts(), 0.01)
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    solver.step(state_0, state_1, model.control(), contacts, 0.01)
 
     solver_flags = solver._particle_flags.numpy()
     active = int(newton.ParticleFlags.ACTIVE)

@@ -256,6 +256,27 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertIn("Unexpected stdout", result.failures[0][1])
         self.assertIn("generated test output", result.failures[0][1])
 
+    def test_add_function_test_without_devices_skips_before_output_capture(self):
+        class GeneratedTest(NewtonTestCase):
+            pass
+
+        def test_func(test, device):
+            pass
+
+        unittest_utils.add_function_test(GeneratedTest, "test_generated", test_func, devices=[])
+
+        stderr_capture = unittest_utils.StdErrCapture()
+        stderr_capture.begin()
+        try:
+            result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(
+                unittest.defaultTestLoader.loadTestsFromTestCase(GeneratedTest)
+            )
+        finally:
+            runner_output = stderr_capture.end()
+
+        self.assertTrue(result.wasSuccessful(), runner_output)
+        self.assertEqual(len(result.skipped), 1)
+
     def test_output_capture_begin_rolls_back_stdout_if_stderr_fails(self):
         class CaptureStub:
             def __init__(self, *, raises=False):

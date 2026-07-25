@@ -18,7 +18,7 @@ from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
     from ..sim.model import Model
-    from .sdf_utils import SDF
+    from .sdf_utils import SDF, SignMethod
 
 
 def _resolve_relative_or_absolute(
@@ -771,6 +771,7 @@ class Mesh:
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
+        sign_method: "SignMethod" = "auto",
         cache_dir: str | os.PathLike[str] | None = None,
         edge_lower_angle_threshold_rad: float = math.radians(0.1),
         edge_upper_angle_threshold_rad: float = math.radians(10.0),
@@ -805,6 +806,12 @@ class Mesh:
             texture_format: Subgrid texture storage: ``"uint16"`` (default,
                 half the memory of float32), ``"float32"`` (full precision),
                 or ``"uint8"`` (minimum memory, lower precision).
+            sign_method: Inside/outside sign strategy for the bake.
+                ``"auto"`` (default) uses parity rays if
+                :attr:`is_watertight` else winding numbers; ``"parity"``,
+                ``"winding"``, and ``"normal"`` (angle-weighted
+                pseudo-normal, for open sheets) force the respective
+                method.
             cache_dir: Optional directory for on-disk caching of the cooked
                 sparse SDF. Keyed by mesh content and build parameters
                 (``shape_margin`` is applied at sample time and is *not*
@@ -876,6 +883,7 @@ class Mesh:
             shape_margin=shape_margin,
             scale=scale,
             texture_format=texture_format,
+            sign_method=sign_method,
             cache_dir=cache_dir,
         )
 
@@ -2202,6 +2210,52 @@ class Heightfield:
         self.inertia = wp.mat33()
         self.mass = 0.0
         self.com = wp.vec3()
+
+    @staticmethod
+    def create_from_mesh(
+        mesh: "wp.Mesh",
+        resolution: float,
+        *,
+        max_cells_per_axis: int = 4096,
+    ) -> tuple["Heightfield", wp.transform]:
+        """Create a heightfield by rasterizing a triangle mesh.
+
+        Rays are cast straight down onto the mesh on a regular grid to sample its
+        elevation (see :func:`~newton.utils.rasterize_mesh_to_heightfield`). This
+        method supports terrain that is single-valued in Z, including sloped planes.
+
+        Args:
+            mesh: Triangle mesh to rasterize, with vertex coordinates [m] in the
+                frame where it should be placed.
+            resolution: Horizontal grid spacing [m]. Smaller values preserve more
+                detail at the cost of a larger grid.
+            max_cells_per_axis: Upper bound on grid rows/columns. If the mesh extent
+                would exceed this, the effective resolution is coarsened to fit.
+
+        Returns:
+            A tuple ``(heightfield, xform)`` where ``heightfield`` is the sampled
+            :class:`Heightfield` and ``xform`` has a translation [m] that places its
+            (origin-centered) grid at the mesh's XY center. Pass both to
+            :meth:`~newton.ModelBuilder.add_shape_heightfield`.
+        """
+        from ..utils.heightfield import rasterize_mesh_to_heightfield  # noqa: PLC0415
+
+        heights, (x_min, y_min, x_max, y_max) = rasterize_mesh_to_heightfield(
+            mesh, resolution, max_cells_per_axis=max_cells_per_axis
+        )
+        nrow, ncol = heights.shape
+        heightfield = Heightfield(
+            data=heights,
+            nrow=nrow,
+            ncol=ncol,
+            hx=0.5 * (x_max - x_min),
+            hy=0.5 * (y_max - y_min),
+        )
+        xform = wp.transform(
+            wp.vec3(0.5 * (x_min + x_max), 0.5 * (y_min + y_max), 0.0),
+            wp.quat_identity(),
+        )
+        return heightfield, xform
 
     @property
     def data(self):
