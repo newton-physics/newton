@@ -751,8 +751,6 @@ def parse_mjcf(
             # Skip density-based mass contribution and compute inertia directly from mass.
             if "mass" in geom_attrib:
                 geom_mass_explicit = parse_float(geom_attrib, "mass", 0.0)
-                # Set density to 0 to skip density-based mass contribution
-                # We'll add the explicit mass to the body separately
                 geom_density = 0.0
 
             geom_group = int(geom_attrib.get("group", 0))
@@ -1239,7 +1237,7 @@ def parse_mjcf(
         return shapes
 
     def accumulate_inertia_from_unloaded_geoms(defaults, body_name, link, geoms, incoming_xform=None, label_prefix=""):
-        """Accumulate selected geom inertia without retaining visual shapes."""
+        """Accumulate inertia from geoms not loaded as shapes, via a scratch builder."""
         if link < 0 or not geoms:
             return
         inertia_builder = ModelBuilder()
@@ -1257,7 +1255,7 @@ def parse_mjcf(
             target_builder=inertia_builder,
         )
         mass = inertia_builder.body_mass[inertia_link]
-        if mass > 0.0:
+        if mass > 0.0 and not builder.body_lock_inertia[link]:
             builder._update_body_mass(
                 link,
                 mass,
@@ -1621,7 +1619,13 @@ def parse_mjcf(
         body_name = body_attrib.get("name", f"body_{builder.body_count}")
         body_name = sanitize_name(body_name)
         has_inertial_definition = body.find("inertial") is not None
-        if inertia_from_geom == "false" and not ignore_inertial_definitions and not has_inertial_definition:
+        has_joint_definition = body.find("joint") is not None or body.find("freejoint") is not None
+        if (
+            inertia_from_geom == "false"
+            and not ignore_inertial_definitions
+            and has_joint_definition
+            and not has_inertial_definition
+        ):
             raise ValueError(
                 f"MJCF body '{body_name}' requires an <inertial> element when compiler inertiafromgeom=\"false\"."
             )
@@ -2037,7 +2041,6 @@ def parse_mjcf(
                     label_prefix=body_label_path,
                 )
 
-        m = builder.body_mass[link]
         if not infer_body_inertia_from_geoms and not ignore_inertial_definitions and has_inertial_definition:
             inertial = body.find("inertial")
             if "inertial" in defaults:
