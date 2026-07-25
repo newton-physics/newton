@@ -124,6 +124,37 @@ def Xform "Root" (
         self.assertEqual(len(collision_shapes), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mirrored_body_transform_warns(self):
+        """A rigid body with a negative-determinant (mirrored) transform warns.
+
+        Improper transforms have no unique rotation decomposition, so the
+        incoming-xform rebase can inject a spurious constant rotation into
+        body and joint frames (common with mirror-scaled CAD exports).
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body.AddScaleOp().Set(Gf.Vec3f(-1.0, -1.0, -1.0))
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.ArticulationRootAPI.Apply(body.GetPrim())
+        mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+        mass.GetMassAttr().Set(1.0)
+        mass.GetCenterOfMassAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        mass.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+        joint.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "mirrored"):
+            builder.add_usd(stage, load_visual_shapes=False)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_body_newton_armature_ignored(self):
         # Body-level newton:armature was removed: an authored value must be
         # ignored without warning and contribute nothing to body inertia.
