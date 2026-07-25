@@ -495,6 +495,9 @@ def parse_usd(
     }
     # mapping from remeshing method to a list of shape indices
     remeshing_queue = {}
+    # Approximated colliders whose prim is viewport geometry, and which therefore keep
+    # their authored topology as a visual shape. See the approximation pass below.
+    approximated_viewport_shapes: set[int] = set()
 
     if ignore_paths is None:
         ignore_paths = []
@@ -3871,6 +3874,8 @@ def parse_usd(
                                     if remeshing_method not in remeshing_queue:
                                         remeshing_queue[remeshing_method] = []
                                     remeshing_queue[remeshing_method].append(shape_id)
+                                    if _is_viewport_drawn(prim):
+                                        approximated_viewport_shapes.add(shape_id)
 
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     # Warp uses +Z convention for planes
@@ -3911,9 +3916,30 @@ def parse_usd(
                     no_collision_shapes.add(shape_id)
                     builder.shape_flags[shape_id] &= ~ShapeFlags.COLLIDE_SHAPES
 
-    # approximate meshes
+    # Approximate meshes. ``physics:approximation`` belongs to
+    # UsdPhysicsMeshCollisionAPI and is scoped to collision: it says which shape to
+    # collide against, not which to draw. Approximating a prim that is viewport
+    # geometry therefore splits it in two -- an approximated collider and a visual
+    # carrying the authored topology -- rather than replacing what is drawn.
+    #
+    # Viewport geometry is decided by USD purpose and visibility alone. A prim whose
+    # purpose resolves to ``default`` is drawable whether that value was authored or
+    # inherited from the fallback, and whether or not a material is bound; the
+    # collider display policy that governs pure colliders does not apply to a prim
+    # that is also render geometry. ``approximate_meshes`` copies shapes carrying
+    # VISIBLE, so mark these before handing them over.
     for remeshing_method, shape_ids in remeshing_queue.items():
-        builder.approximate_meshes(method=remeshing_method, shape_indices=shape_ids)
+        drawn = [s for s in shape_ids if s in approximated_viewport_shapes] if load_visual_shapes else []
+        for shape_id in drawn:
+            builder.shape_flags[shape_id] |= int(ShapeFlags.VISIBLE)
+        if drawn:
+            builder.approximate_meshes(method=remeshing_method, shape_indices=drawn, keep_visual_shapes=True)
+        # Colliders that are not render geometry keep no visual: there is nothing
+        # authored to preserve. If one is on screen it is because the collider
+        # display policy put it there, and what it should show is the collider.
+        rest = [s for s in shape_ids if s not in set(drawn)]
+        if rest:
+            builder.approximate_meshes(method=remeshing_method, shape_indices=rest, keep_visual_shapes=False)
 
     # Filtered pairs are applied after the deformable passes below, once every endpoint's
     # Newton shapes exist.

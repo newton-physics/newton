@@ -2737,7 +2737,9 @@ class TestImportUsdPhysics(unittest.TestCase):
             collapse_fixed_joints=True,
         )
         self.assertEqual(builder.body_count, 1)
-        self.assertEqual(builder.shape_count, 2)
+        # Two colliders, each of which keeps its authored topology as a visual shape
+        # because its collision geometry is approximated.
+        self.assertEqual(builder.shape_count, 4)
         self.assertEqual(builder.joint_count, 1)
 
         usd_path_to_shape = import_results["path_shape_map"]
@@ -2745,10 +2747,10 @@ class TestImportUsdPhysics(unittest.TestCase):
             "/World/Cylinder_dynamic/cylinder_reverse/mesh_0": {"mu": 0.2, "restitution": 0.3},
             "/World/Cube_static/cube2/mesh_0": {"mu": 0.75, "restitution": 0.3},
         }
-        # Reverse mapping: shape index -> USD path
+        # Reverse mapping: shape index -> USD path. Visual copies are not in the map.
         shape_idx_to_usd_path = {v: k for k, v in usd_path_to_shape.items()}
         for shape_idx in range(builder.shape_count):
-            usd_path = shape_idx_to_usd_path[shape_idx]
+            usd_path = shape_idx_to_usd_path.get(shape_idx)
             if usd_path in expected:
                 self.assertAlmostEqual(builder.shape_material_mu[shape_idx], expected[usd_path]["mu"], places=5)
                 self.assertAlmostEqual(
@@ -2811,11 +2813,30 @@ class TestImportUsdPhysics(unittest.TestCase):
         builder.add_usd(stage, mesh_maxhullvert=4)
 
         self.assertEqual(builder.body_count, 0)
-        self.assertEqual(builder.shape_count, 4)
+        # The three approximated colliders each keep their authored topology as an
+        # appended visual shape; the unapproximated one needs no copy. Collider
+        # indices are unchanged, so the positional assertions below still hold.
+        self.assertEqual(builder.shape_count, 7)
         self.assertEqual(
             builder.shape_type,
-            [newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.SPHERE, newton.GeoType.BOX],
+            [
+                newton.GeoType.MESH,
+                newton.GeoType.CONVEX_MESH,
+                newton.GeoType.SPHERE,
+                newton.GeoType.BOX,
+                newton.GeoType.MESH,
+                newton.GeoType.MESH,
+                newton.GeoType.MESH,
+            ],
         )
+        for collider, visual in ((1, 4), (2, 5), (3, 6)):
+            self.assertFalse(builder.shape_flags[collider] & ShapeFlags.VISIBLE)
+            self.assertTrue(builder.shape_flags[collider] & ShapeFlags.COLLIDE_SHAPES)
+            self.assertTrue(builder.shape_flags[visual] & ShapeFlags.VISIBLE)
+            self.assertFalse(builder.shape_flags[visual] & ShapeFlags.COLLIDE_SHAPES)
+            # The visual keeps the authored mesh, not the approximation.
+            assert_np_equal(builder.shape_source[visual].vertices, vertices)
+            assert_np_equal(builder.shape_source[visual].indices, indices)
 
         # original mesh
         mesh_original = builder.shape_source[0]
@@ -11708,6 +11729,64 @@ def Xform "Body" (
         forced = newton.ModelBuilder()
         forced_shape = forced.add_usd(stage, force_show_colliders=True)["path_shape_map"]["/Body/CollisionMesh"]
         self.assertTrue(forced.shape_flags[forced_shape] & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_approximated_viewport_collider_keeps_its_render_mesh(self):
+        """Approximating a drawable collider splits it into a collider and a visual.
+
+        ``physics:approximation`` is scoped to collision, so it must not change what is
+        drawn. Whether a prim is drawable follows USD purpose and visibility alone: an
+        unauthored ``purpose`` composes to ``default`` and is drawable, and no material
+        needs to be bound. A prim that is not drawable, or whose collision geometry is
+        not approximated, has nothing to preserve and stays a single shape.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def build(approximation, purpose=None, visible=True):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+            body = UsdGeom.Xform.Define(stage, "/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            box = newton.Mesh.create_box(
+                1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+            )
+            # Deliberately no material bound: drawability is a purpose/visibility question.
+            mesh = UsdGeom.Mesh.Define(stage, "/Body/Mesh")
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*p) for p in box.vertices.tolist()])
+            mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+            if purpose is not None:
+                mesh.CreatePurposeAttr().Set(purpose)
+            if not visible:
+                mesh.CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible)
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+            if approximation is not None:
+                UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).GetApproximationAttr().Set(approximation)
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            return builder
+
+        # Drawable and approximated: collider carries the hull, visual the authored box.
+        # purpose is left unauthored so it composes to "default".
+        builder = build(UsdPhysics.Tokens.convexHull)
+        self.assertEqual(builder.shape_count, 2)
+        collider, visual = 0, 1
+        self.assertEqual(builder.shape_type[collider], newton.GeoType.CONVEX_MESH)
+        self.assertTrue(builder.shape_flags[collider] & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(builder.shape_flags[collider] & ShapeFlags.VISIBLE)
+        self.assertEqual(builder.shape_type[visual], newton.GeoType.MESH)
+        self.assertTrue(builder.shape_flags[visual] & ShapeFlags.VISIBLE)
+        self.assertFalse(builder.shape_flags[visual] & ShapeFlags.COLLIDE_SHAPES)
+
+        # Nothing to preserve: collision geometry is the authored geometry.
+        for approximation in (None, UsdPhysics.Tokens.none):
+            self.assertEqual(build(approximation).shape_count, 1, f"approximation={approximation}")
+
+        # Not viewport geometry: no render role, so no visual is synthesized.
+        self.assertEqual(build(UsdPhysics.Tokens.convexHull, purpose=UsdGeom.Tokens.guide).shape_count, 1)
+        self.assertEqual(build(UsdPhysics.Tokens.convexHull, visible=False).shape_count, 1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_invisible_collision_shape_is_hidden(self):
