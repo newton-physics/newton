@@ -904,6 +904,53 @@ class ViewerBase(ABC):
 
         return tuple(max_extents)
 
+    def _get_world_bounds(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """World-space axis-aligned bounds of the model's visible geometry.
+
+        Each shape's world-space origin (its body's rest transform composed
+        with the shape's local transform) is padded by the shape's collision
+        radius to form a coarse AABB. Infinite ``GeoType.PLANE`` shapes (e.g.
+        the ground collider) are excluded so they don't blow the bounds up.
+
+        Returns:
+            ``(min, max)`` as ``float32`` arrays of shape ``(3,)``, or ``None``
+            when there is no model or no boundable geometry. Used by
+            :class:`~newton.viewer.ViewerGL` to place the shadow-catcher floor
+            at the scene's lowest point so it tracks the scene at any scale.
+        """
+        if self.model is None or self.model.shape_count == 0:
+            return None
+
+        boundable = self.model.shape_type.numpy() != int(newton.GeoType.PLANE)
+        if not boundable.any():
+            return None
+
+        local_pos = self.model.shape_transform.numpy()[:, :3].astype(np.float32)
+        shape_body = self.model.shape_body.numpy()
+        radius = self.model.shape_collision_radius.numpy().reshape(-1, 1).astype(np.float32)
+
+        # Place each shape at its world origin: global shapes stay at their
+        # local transform; bodied shapes are rotated/translated by the body's
+        # rest transform (quaternion stored xyzw).
+        world_pos = local_pos.copy()
+        state = self.model.state()
+        body_q = state.body_q.numpy() if state.body_q is not None else None
+        if body_q is not None:
+            bodied = shape_body >= 0
+            if bodied.any():
+                bidx = shape_body[bodied]
+                # p + R(q) v with the transform stored [px py pz, qx qy qz qw]:
+                # R(q) v = v + qw * (2 cross(qv, v)) + cross(qv, 2 cross(qv, v)).
+                v = local_pos[bodied]
+                qv = body_q[bidx, 3:6]
+                qw = body_q[bidx, 6:7]
+                t = 2.0 * np.cross(qv, v)
+                world_pos[bodied] = body_q[bidx, :3] + v + qw * t + np.cross(qv, t)
+
+        lo = (world_pos[boundable] - radius[boundable]).min(axis=0)
+        hi = (world_pos[boundable] + radius[boundable]).max(axis=0)
+        return lo.astype(np.float32), hi.astype(np.float32)
+
     def _auto_compute_world_offsets(self):
         """Automatically compute world offsets based on model extents."""
         max_extents = self._get_world_extents()
@@ -1026,7 +1073,9 @@ class ViewerBase(ABC):
 
         for gname, gaussian, parent, shape_xform, world_idx, flags, is_static in self._gaussian_instances:
             visible = (
-                self._should_show_shape(flags, is_static) and self._should_render_world(world_idx) and not layer_hidden
+                self._should_show_shape(flags, is_static, geo_type=newton.GeoType.GAUSSIAN)
+                and self._should_render_world(world_idx)
+                and not layer_hidden
             )
             if not visible or not self.show_gaussians:
                 self.log_gaussian(gname, gaussian, hidden=True)

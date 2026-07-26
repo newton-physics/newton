@@ -13,10 +13,13 @@ from newton import Mesh
 
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
+from ..lookdev import LookdevMode, _coerce_mode, _lights_for_up_axis, _params
+from .ground import GroundRenderer
 from .shaders import (
     FrameShader,
     ShaderArrow,
     ShaderEdge,
+    ShaderGround,
     ShaderLine,
     ShaderShape,
     ShaderSky,
@@ -975,6 +978,7 @@ class RendererGL:
         self.draw_fps = True
         self.draw_shadows = True
         self.draw_wireframe = False
+        self.draw_ground = True
         self.wireframe_line_width = 1.5  # pixels
         self.line_width = 1.5  # pixels, for all log_lines batches
         self.arrow_scale = 1.0  # screen-space multiplier on arrow line width and arrowhead size
@@ -986,23 +990,32 @@ class RendererGL:
 
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
-        self.sky_upper = self.background_color
-        self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
+        # Default (no-lookdev) sky gradient, reproducing the pre-lookdev viewer's
+        # sky exactly: main's display-sRGB colours (``sky_lower`` at the horizon
+        # -> ``sky_upper`` at the zenith), rendered by the sky shader's linear
+        # ``neutral_sky`` path. The neutral pass-through (``apply_lookdev(None)``)
+        # restores these exact values.
+        self._default_sky_upper = self.background_color
+        self._default_sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
+        self.sky_upper = self._default_sky_upper
+        self.sky_lower = self._default_sky_lower
 
-        # Lighting settings
-        self._shadow_radius = 3.0
+        # Hemispherical ambient light colors, interpolated by dot(N, up). The
+        # lookdev presets tint these per mode; lookdev-off keeps main's values.
+        self.ambient_sky = (0.8, 0.8, 0.85)
+        self.ambient_ground = (0.3, 0.3, 0.35)
         self._diffuse_scale = 1.0
         self._specular_scale = 1.0
         self.spotlight_enabled = True
+
+        # Lighting settings
+        self._shadow_radius = 3.0
         self._shadow_extents = 10.0
         self._exposure = 1.6
-
-        # Hemispherical ambient light colors, interpolated by dot(N, up).
-        # Decoupled from the sky background so the visible sky can be a
-        # saturated blue while the ambient fill stays neutral — a stand-in
-        # for a proper irradiance map that we don't precompute yet.
-        self.ambient_sky = (0.8, 0.8, 0.85)
-        self.ambient_ground = (0.3, 0.3, 0.35)
+        # Active lookdev mode — set by ``apply_lookdev`` (called from ViewerGL).
+        # ``light_dirs`` / ``light_colors`` are derived per-frame in
+        # ``_render_scene`` so they always match ``camera.up_axis``.
+        self._lookdev_mode: LookdevMode | None = None
 
         # On Wayland, PyOpenGL defaults to EGL which cannot see the GLX context
         # that pyglet creates via XWayland. Force GLX so both libraries agree.
@@ -1088,6 +1101,7 @@ class RendererGL:
         self._key_callbacks = []
         self._key_release_callbacks = []
 
+        # Environment map, sampled for metal reflections only.
         self._env_texture = None
         self._env_intensity = 1.0
         self._env_path = None
@@ -1110,6 +1124,10 @@ class RendererGL:
         self._shadow_fbo = None
         self._shadow_texture = None
         self._shadow_shader = None
+        # 2048 is half the prior resolution: ~4x cheaper to render and barely
+        # distinguishable for a single key light + soft PCF on a cyclorama.
+        # The shader's ``shadow_resolution`` uniform is wired from these so
+        # texel-size math stays consistent if the constants ever change.
         self._shadow_width = 4096
         self._shadow_height = 4096
         self._light_space_matrix = np.eye(4, dtype=np.float32)
@@ -1119,9 +1137,13 @@ class RendererGL:
         self._frame_fbo = None
         self._frame_pbo = None
 
-        self._sun_direction = None  # set on first render based on camera up_axis
-
-        self._light_color = (1.0, 1.0, 1.0)
+        # Light arrays derived from the active lookdev mode + camera up-axis
+        # by ``_update_lights_for_camera`` each frame. ``_sun_direction`` is
+        # ``_light_dirs[0]`` (the shadow-casting key light).
+        self._sun_direction: np.ndarray | None = None
+        self._light_dirs: np.ndarray | None = None
+        self._light_colors: np.ndarray | None = None
+        self._light_up_axis: int | None = None
 
         check_gl_error()
 
@@ -1153,6 +1175,14 @@ class RendererGL:
         self._sky_shader = ShaderSky(gl)
         self._wireframe_shader = ShaderLine(gl)
         self._arrow_shader = ShaderArrow(gl)
+        self._ground_shader = ShaderGround(gl)
+        self._ground_renderer = GroundRenderer(gl)
+        # World-space scene AABB, pushed by the viewer whenever the model
+        # changes. Drives the shadow-catcher plane height so the floor tracks
+        # the scene at any scale. ``None`` until a model is set, in which case
+        # the ground falls back to height 0 (world origin).
+        self._scene_min = None
+        self._scene_max = None
 
         if not headless:
             self._setup_window_callbacks()
@@ -1164,22 +1194,6 @@ class RendererGL:
     @shadow_radius.setter
     def shadow_radius(self, value: float):
         self._shadow_radius = max(float(value), 0.0)
-
-    @property
-    def diffuse_scale(self) -> float:
-        return self._diffuse_scale
-
-    @diffuse_scale.setter
-    def diffuse_scale(self, value: float):
-        self._diffuse_scale = max(float(value), 0.0)
-
-    @property
-    def specular_scale(self) -> float:
-        return self._specular_scale
-
-    @specular_scale.setter
-    def specular_scale(self, value: float):
-        self._specular_scale = max(float(value), 0.0)
 
     @property
     def shadow_extents(self) -> float:
@@ -1225,15 +1239,9 @@ class RendererGL:
 
         self.camera = camera
 
-        # Lazy-init sun direction based on camera up axis
-        if self._sun_direction is None:
-            _sun_dirs = {
-                0: np.array((0.8, 0.2, -0.3)),  # X-up
-                1: np.array((0.2, 0.8, -0.3)),  # Y-up
-                2: np.array((0.2, -0.3, 0.8)),  # Z-up
-            }
-            d = _sun_dirs.get(camera.up_axis, _sun_dirs[2])
-            self._sun_direction = d / np.linalg.norm(d)
+        # Refresh light arrays for the current camera up-axis. Cheap (3 vector
+        # transforms) and ensures up-axis changes between frames are honored.
+        self._update_lights_for_camera()
 
         # Store matrices for other methods
         self._view_matrix = self.camera.get_view_matrix()
@@ -1347,6 +1355,91 @@ class RendererGL:
     def set_title(self, title):
         self.window.set_caption(title)
 
+    def apply_lookdev(self, mode: LookdevMode | None) -> None:
+        """Apply the parameters of a built-in lookdev mode to the renderer.
+
+        Sets the sky gradient, ACES tone-map exposure, hemispherical ambient,
+        and stores the active mode. The three-point light arrays are derived
+        from the mode + camera up-axis on each rendered frame, so this call is
+        camera-independent, and nothing is baked or reloaded.
+
+        ``mode=None`` selects the neutral pass-through (lookdev disabled): the
+        sky reverts to the plain ``background_color`` and neutral shading
+        parameters are applied. The viewer additionally leaves the collision
+        plane visible and skips the analytical shadow-catcher in this mode.
+
+        Args:
+            mode: The lookdev mode to apply, or ``None`` to disable lookdev.
+        """
+        mode = _coerce_mode(mode)
+        params = _params(mode)
+        if mode is None:
+            # No lookdev: restore the default sky gradient (bright zenith -> dark
+            # horizon), matching the pre-lookdev viewer background.
+            self.sky_upper = self._default_sky_upper
+            self.sky_lower = self._default_sky_lower
+        else:
+            self.sky_upper = params["sky_upper"]
+            self.sky_lower = params["sky_lower"]
+        self._exposure = float(params["exposure"])
+        self.ambient_sky = params["ambient_sky"]
+        self.ambient_ground = params["ambient_ground"]
+        # The lookdev presets carry their own rig, so the camera-relative
+        # spotlight is only used by the pass-through (lookdev-off) look.
+        self.spotlight_enabled = mode is None
+        self._ground_renderer.color = params["ground_color"]
+        self._ground_renderer.roughness = float(params["ground_roughness"])
+        self._lookdev_mode = mode
+        # Invalidate cached light arrays so they get re-derived next frame.
+        self._light_up_axis = None
+
+    def set_environment_map(self, path: str, intensity: float = 1.0) -> None:
+        gl = RendererGL.gl
+        from ...utils.texture import load_texture_from_file  # noqa: PLC0415
+
+        image = load_texture_from_file(path)
+        if image is None:
+            return
+        if self._env_texture is not None:
+            try:
+                gl.glDeleteTextures(1, self._env_texture)
+            except Exception:
+                pass
+            self._env_texture = None
+        self._env_texture = _upload_texture_from_file(gl, image)
+        self._env_texture_obj = None
+        self._env_intensity = float(intensity)
+
+    @property
+    def diffuse_scale(self) -> float:
+        return self._diffuse_scale
+
+    @diffuse_scale.setter
+    def diffuse_scale(self, value: float):
+        self._diffuse_scale = max(float(value), 0.0)
+
+    @property
+    def specular_scale(self) -> float:
+        return self._specular_scale
+
+    @specular_scale.setter
+    def specular_scale(self, value: float):
+        self._specular_scale = max(float(value), 0.0)
+
+    def _update_lights_for_camera(self) -> None:
+        """Refresh ``_light_dirs`` / ``_light_colors`` for the camera up-axis.
+
+        Cached against ``_light_up_axis`` so we only rebuild the arrays when
+        the up-axis changes. Sets ``_sun_direction`` to ``light_dirs[0]``
+        (the shadow-casting key light).
+        """
+        up_axis = self.camera.up_axis
+        if self._light_up_axis == up_axis and self._light_dirs is not None:
+            return
+        self._light_dirs, self._light_colors = _lights_for_up_axis(self._lookdev_mode, up_axis)
+        self._sun_direction = self._light_dirs[0]
+        self._light_up_axis = up_axis
+
     def set_vsync(self, enabled: bool):
         """Enable or disable vertical synchronization (vsync).
 
@@ -1372,6 +1465,10 @@ class RendererGL:
         if not self.headless:
             self.app.event_loop.dispatch_event("on_exit")
             self.app.platform_event_loop.stop()
+
+        # Free GL resources owned by the lookdev pipelines while the context
+        # is still current (``window.close()`` below tears the context down).
+        self._ground_renderer.destroy()
 
         RendererGL._fallback_texture = None
         self.window.close()
@@ -1794,13 +1891,29 @@ class RendererGL:
 
         extents = self.shadow_extents
 
-        light_near = 1.0
-        light_far = 1000.0
+        # Centre the shadow frustum on the *scene*, not the camera. The camera
+        # can sit further from the scene than ``extents`` (auto-framing pulls
+        # back as the scene grows), which put every caster outside the ortho box
+        # and left the shadow map empty — the shadow-catcher floor then rendered
+        # shadow-free. Falls back to the camera when no bounds are known.
+        #
+        # The light sits ``extents`` away from that centre looking back at it, so
+        # shadow-relevant geometry lies within [0, 2*extents] along the light
+        # direction. Expressing near/far in units of ``extents`` (rather than
+        # absolute distances) keeps the depth range valid at any scene scale.
+        light_near = 0.0
+        light_far = 3.0 * extents
         camera_pos = np.array(self.camera.pos, dtype=np.float32)
-        light_pos = camera_pos + self._sun_direction * extents
+        if self._scene_min is not None and self._scene_max is not None:
+            shadow_target = 0.5 * (
+                np.asarray(self._scene_min, dtype=np.float32) + np.asarray(self._scene_max, dtype=np.float32)
+            )
+        else:
+            shadow_target = camera_pos
+        light_pos = shadow_target + self._sun_direction * extents
         light_proj = Mat4.orthogonal_projection(-extents, extents, -extents, extents, light_near, light_far)
 
-        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(*camera_pos), Vec3(*self.camera.get_up()))
+        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(*shadow_target), Vec3(*self.camera.get_up()))
         self._light_space_matrix = np.array(light_proj @ light_view, dtype=np.float32)
 
         self._shadow_shader.update(self._light_space_matrix)
@@ -1827,13 +1940,14 @@ class RendererGL:
             view_matrix=self._view_matrix,
             projection_matrix=self._projection_matrix,
             view_pos=self.camera.pos,
-            fog_color=self.sky_lower,
             up_axis=self.camera.up_axis,
             sun_direction=self._sun_direction,
+            light_dirs=self._light_dirs,
+            light_colors=self._light_colors,
             enable_shadows=self.draw_shadows,
             shadow_texture=self._shadow_texture,
             light_space_matrix=self._light_space_matrix,
-            light_color=self._light_color,
+            fog_color=self.sky_lower,
             sky_color=self.ambient_sky,
             ground_color=self.ambient_ground,
             env_texture=self._env_texture,
@@ -1841,9 +1955,12 @@ class RendererGL:
             shadow_radius=self.shadow_radius,
             diffuse_scale=self.diffuse_scale,
             specular_scale=self.specular_scale,
-            spotlight_enabled=self.spotlight_enabled,
             shadow_extents=self.shadow_extents,
+            shadow_resolution=float(self._shadow_width),
             exposure=self.exposure,
+            # The lookdev presets light the scene with their own rig, so the
+            # camera-relative spotlight only applies to the pass-through look.
+            spotlight_enabled=self.spotlight_enabled,
         )
 
         with self._shape_shader:
@@ -1872,6 +1989,39 @@ class RendererGL:
                 self._draw_objects(edge_objects)
             gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
             gl.glDisable(gl.GL_POLYGON_OFFSET_LINE)
+
+        # Analytical ground (shadow catcher). Drawn last so it depth-tests
+        # against shapes correctly. Skipped when wireframe is enabled so the
+        # scene reads as plain geometry, and skipped when ``draw_ground`` is
+        # off (for example, when Show Ground is disabled or collision geometry
+        # is visible).
+        if not self.draw_wireframe and self.draw_ground:
+            self._ground_renderer.update(
+                up_axis=self.camera.up_axis,
+                scene_min=self._scene_min,
+                scene_max=self._scene_max,
+            )
+            self._ground_renderer.draw(
+                self._ground_shader,
+                view_matrix=self._view_matrix,
+                projection_matrix=self._projection_matrix,
+                view_pos=self.camera.pos,
+                light_space_matrix=self._light_space_matrix,
+                shadow_texture=self._shadow_texture,
+                light_dirs=self._light_dirs,
+                light_colors=self._light_colors,
+                sky_upper=self.sky_upper,
+                sky_lower=self.sky_lower,
+                ambient_sky_color=self.ambient_sky,
+                ambient_ground_color=self.ambient_ground,
+                shadow_radius=self.shadow_radius,
+                shadow_extents=self.shadow_extents,
+                shadow_resolution=float(self._shadow_width),
+                exposure=self.exposure,
+                spotlight_enabled=self.spotlight_enabled,
+                # Lookdev presets: floor is an invisible matte shadow catcher.
+                shadow_catcher=(self._lookdev_mode is not None),
+            )
 
         check_gl_error()
 
@@ -1976,8 +2126,10 @@ class RendererGL:
             camera_far=self.camera.far,
             sky_upper=self.sky_upper,
             sky_lower=self.sky_lower,
-            sun_direction=self._sun_direction,
             up_axis=self.camera.up_axis,
+            exposure=self.exposure,
+            # Lookdev-off renders the sky as main's plain linear gradient.
+            neutral_sky=(self._lookdev_mode is None),
         )
 
         gl.glBindVertexArray(self._sky_vao)
@@ -1985,23 +2137,6 @@ class RendererGL:
         gl.glBindVertexArray(0)
 
         check_gl_error()
-
-    def set_environment_map(self, path: str, intensity: float = 1.0) -> None:
-        gl = RendererGL.gl
-        from ...utils.texture import load_texture_from_file  # noqa: PLC0415
-
-        image = load_texture_from_file(path)
-        if image is None:
-            return
-        if self._env_texture is not None:
-            try:
-                gl.glDeleteTextures(1, self._env_texture)
-            except Exception:
-                pass
-            self._env_texture = None
-        self._env_texture = _upload_texture_from_file(gl, image)
-        self._env_texture_obj = None
-        self._env_intensity = float(intensity)
 
     def _make_current(self):
         try:
