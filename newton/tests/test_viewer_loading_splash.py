@@ -83,6 +83,7 @@ class TestLoadingSplashLifecycle(unittest.TestCase):
     def _args(self, **overrides):
         defaults = {
             "viewer": "gl",
+            "lookdev": "off",
             "headless": False,
             "paused": False,
             "device": None,

@@ -16,11 +16,44 @@ import newton
 from ..core.types import override
 
 try:
-    from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, Vt
 except ImportError:
-    Gf = Sdf = Usd = UsdGeom = Vt = None
+    Gf = Sdf = Usd = UsdGeom = UsdLux = UsdShade = Vt = None
 
+from .lookdev import _PARAMS, LookdevMode, _coerce_mode, _rotate_z_up_to
 from .viewer import _DEFAULT_LAYER_ID, ViewerBase
+
+# Map the USD up-axis string to the lookdev light-rig axis index.
+_UP_AXIS_INDEX = {"X": 0, "Y": 1, "Z": 2}
+
+# Lookdev studio-rig authoring (see ViewerUSD ``lookdev=``). The GL key/fill/rim
+# intensities feed an ACES tone-map; USD renderers apply their own, so this scale
+# maps them into the range Newton's RTX studio rig uses (distant ~3000), folding
+# in the per-look exposure. First-pass calibration — tune by eye in Kit / ovrtx.
+_LOOKDEV_DISTANT_INTENSITY_SCALE = 750.0
+# Dome intensity. Matches Kit's default DomeLight intensity and the ZetCG
+# ExhibitionHall reference — the operating point at which the HDR sky is visible
+# as the RTX background. The textures hold true scene radiance, so this is the
+# normalization/exposure point where the renderer tone-maps it to the GL look
+# (not a literal multiplier); at intensity 1 the same textures read as black.
+_LOOKDEV_DOME_INTENSITY = 1000.0
+# Shadow-catcher floor half-size, as a multiple of the scene AABB diagonal so
+# the floor reaches past the scene at any scale (never a world constant). Its
+# altitude is the simulation ground level, not a scene-relative offset.
+_LOOKDEV_FLOOR_HALF_SIZE_FACTOR = 50.0
+# The committed sky gradients under ``assets/`` are Radiance HDR equirects
+# holding the scene radiance the GL sky shader feeds to its tone-map:
+# ``pow(sky_srgb, 2.2) * exposure`` (sRGB->linear, then exposure), with
+# ``sky_upper`` at the zenith and ``sky_lower`` at the nadir/ground (DARK
+# ~0.005-0.062, LIGHT ~0.32-0.63). Both modes share the same non-linear ramp (cf.
+# the studio prototype): the transition remapped into a sphere-height band with a
+# 2x lift (Kit renders the dome darker than GL's ACES) and a 0.3x zenith
+# darkening. LIGHT additionally darkens its ground (``sky_lower``) for USD only,
+# since Kit compresses its bright gradient toward white; GL is untouched. The
+# renderer tone-maps the radiance itself at ``_LOOKDEV_DOME_INTENSITY``, so no
+# tone-map is baked in. Re-bake if the sky colors, exposure, lift, band, or the
+# LIGHT ground override change.
+_LOOKDEV_ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets")
 
 
 # transforms a cylinder such that it connects the two points pos0, pos1
@@ -66,6 +99,199 @@ def _usd_set_xform(
         xform_ops[2].Set(Gf.Vec3d(float(scale[0]), float(scale[1]), float(scale[2])), time)
 
 
+def _lookdev_sky_texture_path(mode: LookdevMode) -> str:
+    """Path to the committed sky-gradient equirect (Radiance HDR) for ``mode``."""
+    return os.path.join(_LOOKDEV_ASSET_DIR, f"lookdev_sky_{LookdevMode(mode).name.lower()}.hdr")
+
+
+def _lookdev_up_vector(up_axis: int) -> tuple[float, float, float]:
+    v = [0.0, 0.0, 0.0]
+    v[up_axis] = 1.0
+    return (v[0], v[1], v[2])
+
+
+def _lookdev_dome_euler(up_axis: int) -> tuple[float, float, float]:
+    """``rotateXYZ`` Euler angles [deg] that carry the dome's default +Z pole
+    onto the scene up-axis, so a Z-up scene needs no rotation and a Y-up scene
+    matches the ZetCG reference's ``rotateXYZ (270, 0, 0)``.
+
+    Authored as a ``rotateXYZ`` op (not a quaternion ``orient`` op): Kit/RTX
+    honours ``rotateXYZ`` on a DomeLight but ignores ``orient``, so an orient op
+    leaves the sky gradient stuck on its default axis.
+    """
+    return {0: (0.0, 90.0, 0.0), 1: (-90.0, 0.0, 0.0), 2: (0.0, 0.0, 0.0)}[up_axis]
+
+
+def _relative_asset_path(src: str, base_dir: str) -> str:
+    """``src`` as an explicitly layer-relative USD asset path (forward slashes,
+    leading ``./``) anchored at ``base_dir`` — the exported stage's directory.
+
+    A leading ``./`` (or ``../``) is required: USD treats a bare ``foo/bar.png``
+    as a search path, not a path relative to the stage, so it would not resolve.
+    Falls back to ``src`` when there is no common base (e.g. different Windows
+    drives).
+    """
+    try:
+        rel = os.path.relpath(src, base_dir).replace(os.sep, "/")
+    except ValueError:
+        return src
+    return rel if rel.startswith("../") else "./" + rel
+
+
+def _ground_plane_altitude(model, up_axis: int) -> float | None:
+    """World altitude (along ``up_axis``) of the model's ground plane, or ``None``.
+
+    Returns the up-axis position of the first ``GeoType.PLANE`` shape (e.g. from
+    ``ModelBuilder.add_ground_plane``) so the shadow-catcher floor can sit on the
+    simulation ground rather than float at the scene's lowest geometry.
+    """
+    types = model.shape_type.numpy()
+    idxs = np.where(types == int(newton.GeoType.PLANE))[0]
+    if len(idxs) == 0:
+        return None
+    idx = int(idxs[0])
+    local = model.shape_transform.numpy()[idx, :3]
+    body = int(model.shape_body.numpy()[idx])
+    if body < 0:  # static plane: the shape transform is already world-space
+        return float(local[up_axis])
+    state = model.state()
+    body_q = state.body_q.numpy() if state.body_q is not None else None
+    if body_q is None:
+        return float(local[up_axis])
+    # Horizontal ground planes: body translation + local offset along up-axis.
+    return float(body_q[body, up_axis] + local[up_axis])
+
+
+def _author_lookdev(
+    stage,
+    root_path: str,
+    mode: LookdevMode,
+    up_axis: int,
+    aabb,
+    floor_height: float = 0.0,
+    sky_texture: str | None = None,
+) -> None:
+    """Author the lookdev studio rig into ``stage`` under ``root_path``.
+
+    Writes a ``_Lookdev`` scope with a sky ``DomeLight`` textured with the mode's
+    gradient (background + image-based ambient), three ``DistantLight`` key/fill/
+    rim lights (only the key casts shadows, matching the GL viewer), and a matte
+    shadow-catcher floor sized to ``aabb``. All values come from
+    :data:`.lookdev._PARAMS`, so the USD look tracks the GL look. The dome and
+    directional lights are scale-invariant; the floor scales with the scene
+    diagonal.
+
+    Args:
+        stage: The ``Usd.Stage`` to author into.
+        root_path: Prim path the rig is parented under (e.g. ``"/root"``).
+        mode: The concrete :class:`~newton.viewer.LookdevMode` to author.
+        up_axis: Active up-axis index (0=X, 1=Y, 2=Z).
+        aabb: ``(min, max)`` scene bounds (length-3, model space), or ``None`` to
+            skip the floor (no boundable geometry).
+        floor_height: World altitude (along ``up_axis``) for the shadow-catcher
+            floor — the simulation ground level, or 0.
+        sky_texture: Asset path for the dome's gradient texture. Defaults to the
+            committed absolute path; callers should pass a path relative to the
+            stage so it resolves in Kit / ovrtx.
+    """
+    params = _PARAMS[mode]
+    exposure = float(params["exposure"])
+    if sky_texture is None:
+        sky_texture = _lookdev_sky_texture_path(mode)
+
+    scope_path = f"{root_path}/_Lookdev"
+    UsdGeom.Scope.Define(stage, scope_path)
+
+    # Sky dome: background gradient + image-based ambient. Author the pole
+    # rotation as a rotateXYZ (Euler) op on the DomeLight, matching the ZetCG
+    # reference that Kit renders correctly -- Kit/RTX honours rotateXYZ on a dome
+    # but ignores a quaternion orient op (which leaves the gradient stuck on its
+    # default horizontal axis). See :func:`_lookdev_dome_euler`.
+    dome = UsdLux.DomeLight.Define(stage, f"{scope_path}/Sky")
+    dome_x = UsdGeom.Xformable(dome)
+    dome_x.ClearXformOpOrder()
+    dome_x.AddRotateXYZOp().Set(Gf.Vec3f(*_lookdev_dome_euler(up_axis)))
+    tex = dome.CreateTextureFileAttr()
+    tex.Set(Sdf.AssetPath(sky_texture))
+    # HDR holds linear radiance, so tag it raw (no sRGB decode). ``automatic``
+    # lets the renderer detect the equirect projection, matching how a real
+    # environment dome is authored.
+    tex.SetColorSpace("raw")
+    dome.CreateTextureFormatAttr().Set(UsdLux.Tokens.automatic)
+    dome.CreateIntensityAttr().Set(_LOOKDEV_DOME_INTENSITY)
+    # Make the dome camera-visible so RTX renders it as the viewport background.
+    # A scene dome is the default background source, so nothing else is needed;
+    # set explicitly because the RTX UI has defaulted this to false in some
+    # versions.
+    dome.GetPrim().CreateAttribute("visibleInPrimaryRay", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
+
+    # Three-point lights (key/fill/rim). Shadows are left entirely at the
+    # renderer default -- no ShadowAPI and no soft-shadow angle -- so Kit does
+    # not apply inconsistent per-light shadow overrides. A DistantLight emits
+    # along -Z; the lookdev direction points toward the source, so aim local +Z
+    # along it (light travels the opposite way).
+    for name, (direction, color, intensity) in zip(("Key", "Fill", "Rim"), params["lights"], strict=True):
+        d = _rotate_z_up_to(up_axis, direction)
+        n = max((d[0] ** 2 + d[1] ** 2 + d[2] ** 2) ** 0.5, 1e-12)
+        d = (d[0] / n, d[1] / n, d[2] / n)
+        light = UsdLux.DistantLight.Define(stage, f"{scope_path}/{name}")
+        light_x = UsdGeom.Xformable(light)
+        light_x.ClearXformOpOrder()
+        light_x.AddOrientOp().Set(Gf.Quatf(Gf.Rotation(Gf.Vec3d(0.0, 0.0, 1.0), Gf.Vec3d(*d)).GetQuat()))
+        light.CreateColorAttr().Set(Gf.Vec3f(*color))
+        light.CreateIntensityAttr().Set(float(intensity) * exposure * _LOOKDEV_DISTANT_INTENSITY_SCALE)
+
+    if aabb is not None:
+        _author_lookdev_floor(stage, scope_path, mode, up_axis, aabb, floor_height)
+
+
+def _author_lookdev_floor(stage, scope_path: str, mode: LookdevMode, up_axis: int, aabb, floor_height: float) -> None:
+    """Author the matte shadow-catcher floor quad + material (see :func:`_author_lookdev`)."""
+    lo, hi = np.asarray(aabb[0], dtype=np.float64), np.asarray(aabb[1], dtype=np.float64)
+    diagonal = float(np.linalg.norm(hi - lo)) or 1.0
+    half = _LOOKDEV_FLOOR_HALF_SIZE_FACTOR * diagonal
+    height = float(floor_height)  # simulation ground level, so objects rest on it
+    center = 0.5 * (lo + hi)
+
+    plane_axes = [a for a in range(3) if a != up_axis]
+    corners = []
+    for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+        p = [0.0, 0.0, 0.0]
+        p[up_axis] = height
+        p[plane_axes[0]] = float(center[plane_axes[0]]) + su * half
+        p[plane_axes[1]] = float(center[plane_axes[1]]) + sv * half
+        corners.append(Gf.Vec3f(*p))
+    normal = Gf.Vec3f(*_lookdev_up_vector(up_axis))
+
+    mesh = UsdGeom.Mesh.Define(stage, f"{scope_path}/Floor")
+    mesh.CreatePointsAttr(corners)
+    mesh.CreateFaceVertexCountsAttr([4])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    mesh.CreateNormalsAttr([normal, normal, normal, normal])
+    mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+    mesh.CreateDoubleSidedAttr(True)
+
+    # Flag the floor as an Omniverse RTX "matte object" (shadow catcher): in
+    # Kit / ovrtx it then renders invisibly — the sky/dome shows through — while
+    # still catching the scene's shadows, grounding the objects on the gradient
+    # background instead of an opaque plate. Requires the renderer's Matte Object
+    # (and, for shadows only, Shadow Catcher) post-process to be enabled;
+    # non-RTX Hydra delegates (usdview/Storm) ignore it and draw the plane using
+    # the bound material below.
+    UsdGeom.PrimvarsAPI(mesh.GetPrim()).CreatePrimvar("isMatteObject", Sdf.ValueTypeNames.Bool).Set(True)
+
+    mat_path = f"{scope_path}/FloorMaterial"
+    material = UsdShade.Material.Define(stage, mat_path)
+    surface = UsdShade.Shader.Define(stage, f"{mat_path}/PreviewSurface")
+    surface.CreateIdAttr("UsdPreviewSurface")
+    surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*_PARAMS[mode]["ground_color"]))
+    surface.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(float(_PARAMS[mode]["ground_roughness"]))
+    surface.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
+    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim())
+    UsdShade.MaterialBindingAPI(mesh).Bind(material)
+
+
 class ViewerUSD(ViewerBase):
     """
     USD viewer backend for Newton physics simulations.
@@ -83,6 +309,7 @@ class ViewerUSD(ViewerBase):
         num_frames: int | None = 100,
         scaling: float = 1.0,
         points_as_spheres: bool = True,
+        lookdev: LookdevMode | None = None,
     ):
         """
         Initialize the USD viewer backend for Newton physics simulations.
@@ -97,6 +324,11 @@ class ViewerUSD(ViewerBase):
                 :class:`~pxr.UsdGeom.PointInstancer` of :class:`~pxr.UsdGeom.Sphere`
                 prototypes scaled by ``radii``, instead of flat
                 :class:`~pxr.UsdGeom.Points` splats. Default is True.
+            lookdev: Built-in :class:`~newton.viewer.LookdevMode` to author into
+                the stage as a portable studio rig (textured sky dome, three
+                directional lights, matte shadow-catcher floor) approximating
+                the GL viewer's look, or ``None`` (the default) to author no
+                lighting/environment.
 
         Raises:
             ImportError: If the usd-core package is not installed.
@@ -112,6 +344,7 @@ class ViewerUSD(ViewerBase):
         self.scaling = scaling
         self.num_frames = num_frames
         self.points_as_spheres = points_as_spheres
+        self._lookdev_mode = _coerce_mode(lookdev)
 
         # Create USD stage. If this output path is already registered in the
         # current process, reuse and clear the existing layer instead of
@@ -149,6 +382,35 @@ class ViewerUSD(ViewerBase):
         self._frame_count = 0
 
         self.set_model(None)
+
+    @override
+    def set_model(self, model: newton.Model | None):
+        super().set_model(model)
+        # Author the studio rig once the model (and thus its bounds/up-axis) is
+        # known. set_model clears the stage on a model swap, so re-author here.
+        if self._lookdev_mode is not None and model is not None:
+            up_axis = _UP_AXIS_INDEX.get(self.up_axis.strip().upper(), 2)
+            ground = _ground_plane_altitude(model, up_axis)
+            _author_lookdev(
+                self.stage,
+                "/root",
+                self._lookdev_mode,
+                up_axis,
+                self._get_world_bounds(),
+                floor_height=ground if ground is not None else 0.0,
+                sky_texture=_relative_asset_path(
+                    _lookdev_sky_texture_path(self._lookdev_mode), os.path.dirname(self.output_path)
+                ),
+            )
+
+    @override
+    def _should_show_shape(self, flags: int, is_static: bool, geo_type: int | None = None) -> bool:
+        # The lookdev shadow-catcher floor replaces the ``GeoType.PLANE``
+        # collider from ``ModelBuilder.add_ground_plane`` — hide that plane while
+        # lookdev is active (mirrors ViewerGL) so the export has a single ground.
+        if geo_type == newton.GeoType.PLANE and self._lookdev_mode is not None and not self.show_collision:
+            return False
+        return super()._should_show_shape(flags, is_static, geo_type=geo_type)
 
     @override
     def _init_extra_layer_state(self, layer) -> None:
