@@ -36,16 +36,17 @@ import math
 import unittest
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import warp as wp
 
-from newton import Model, ModelBuilder
-from newton._src.usd.schema_resolver import SchemaResolverManager
+from newton import Model, ModelBuilder, ShapeFlags
+from newton._src.usd.schema_resolver import SchemaResolverManager, _registered_attribute_fallbacks
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.usd import (
     PrimType,
+    SchemaResolver,
     SchemaResolverMjc,
     SchemaResolverNewton,
     SchemaResolverPhysx,
@@ -76,6 +77,298 @@ class TestSchemaResolver(unittest.TestCase):
         self.ant_usda_path = test_dir / "assets" / "ant.usda"
         self.assertTrue(self.ant_usda_path.exists(), f"Ant USDA file not found: {self.ant_usda_path}")
 
+    def test_newton_owned_properties_have_registered_fallbacks(self):
+        registry = Usd.SchemaRegistry()
+        resolver = SchemaResolverNewton()
+        for prim_type, mapping in resolver.mapping.items():
+            for key, spec in mapping.items():
+                schema_name = resolver._schema_name(prim_type, key)
+                if schema_name is None:
+                    continue
+                definition = registry.FindAppliedAPIPrimDefinition(schema_name)
+                self.assertIsNotNone(definition, schema_name)
+                properties = set(definition.GetPropertyNames())
+                for name in spec.attribute_names or (spec.name,):
+                    self.assertIn(name, properties, f"{schema_name}:{name}")
+                    self.assertIsNotNone(definition.GetAttributeFallbackValue(name), f"{schema_name}:{name}")
+
+    def test_registered_fallbacks_omit_properties_without_fallbacks(self):
+        class PrimDefinition:
+            def GetPropertyNames(self):
+                return ["withFallback", "withoutFallback"]
+
+            def GetAttributeFallbackValue(self, name):
+                return 0.0 if name == "withFallback" else None
+
+        self.assertEqual(_registered_attribute_fallbacks(PrimDefinition()), {"withFallback": 0.0})
+
+    def test_missing_schema_fallback_tables_are_complete(self):
+        for resolver_type in (SchemaResolverPhysx, SchemaResolverMjc):
+            resolver = resolver_type()
+            for prim_type, mapping in resolver.mapping.items():
+                for key, spec in mapping.items():
+                    schema_name = resolver._schema_name(prim_type, key)
+                    if schema_name is None:
+                        continue
+                    self.assertIn(schema_name, resolver._schema_fallbacks)
+                    for name in spec.attribute_names or (spec.name,):
+                        self.assertIn(name, resolver._schema_fallbacks[schema_name], f"{schema_name}:{name}")
+
+    def test_schema_application_controls_fallback_ownership(self):
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 12.0)
+
+        joint.AddAppliedSchema("NewtonJointAPI")
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 12.0)
+        self.assertEqual(resolver._resolve_value(joint, PrimType.JOINT, "armature", default=12.0).value, 0.0)
+        self.assertEqual(
+            resolver._legacy_fallback_properties,
+            {"NewtonJointAPI (newton:armature)"},
+        )
+
+        armature = joint.GetAttribute("newton:armature")
+        armature.Set(0.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 0.0)
+
+        armature.Set(7.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 7.0)
+
+    def test_composed_fallback_policy_selects_schema_default(self):
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("NewtonJointAPI")
+        legacy = SchemaResolverManager(
+            [SchemaResolverNewton()],
+            use_applied_schema_fallbacks=False,
+        )
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton()],
+            use_applied_schema_fallbacks=True,
+        )
+
+        self.assertEqual(legacy.get_value(joint, PrimType.JOINT, "armature", default=12.0), 12.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 0.0)
+        self.assertFalse(resolver._legacy_fallback_properties)
+
+    def test_pxr_only_getter_remains_compatible_during_audit(self):
+        class LegacyResolver(SchemaResolver):
+            name = "legacy"
+            _schema_names: ClassVar = {PrimType.JOINT: "NewtonJointAPI"}
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute(
+                        "newton:armature",
+                        0.25,
+                        usd_value_getter=lambda _prim: None,
+                    )
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("NewtonJointAPI")
+        resolver = SchemaResolverManager([LegacyResolver()])
+
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature"), 0.25)
+        self.assertEqual(resolver._legacy_fallback_failures, {"NewtonJointAPI (newton:armature)"})
+
+    def test_unexpected_fallback_getter_error_is_not_suppressed(self):
+        def fail_on_fallback(read_attribute):
+            value = read_attribute("newton:armature")
+            if value is not None:
+                raise TypeError("invalid fallback")
+            return None
+
+        class BrokenResolver(SchemaResolver):
+            name = "broken"
+            _schema_names: ClassVar = {PrimType.JOINT: "NewtonJointAPI"}
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute("newton:armature", 0.25),
+                }
+            }
+
+        BrokenResolver.mapping[PrimType.JOINT]["armature"]._reader_value_getter = fail_on_fallback
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("NewtonJointAPI")
+        resolver = SchemaResolverManager([BrokenResolver()])
+
+        with self.assertRaisesRegex(TypeError, "invalid fallback"):
+            resolver.get_value(joint, PrimType.JOINT, "armature")
+
+    def test_composed_fallback_may_transform_to_none(self):
+        class SentinelResolver(SchemaResolver):
+            name = "sentinel"
+            _schema_names: ClassVar = {PrimType.SHAPE: "NewtonCollisionAPI"}
+            mapping: ClassVar = {
+                PrimType.SHAPE: {
+                    "gap": SchemaResolver.SchemaAttribute(
+                        "newton:contactGap",
+                        usd_value_transformer=lambda value: None if value == float("-inf") else value,
+                    )
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        collider = UsdGeom.Cube.Define(stage, "/collider").GetPrim()
+        collider.AddAppliedSchema("NewtonCollisionAPI")
+        resolver = SchemaResolverManager(
+            [SentinelResolver()],
+            use_applied_schema_fallbacks=True,
+        )
+
+        resolved = resolver._resolve_value(collider, PrimType.SHAPE, "gap")
+
+        self.assertIsNone(resolved.value)
+        self.assertIsInstance(resolved.resolver, SentinelResolver)
+        self.assertFalse(resolved.authored)
+
+        collider.CreateAttribute("newton:contactGap", Sdf.ValueTypeNames.Float).Set(float("-inf"))
+        resolved = resolver._resolve_value(collider, PrimType.SHAPE, "gap")
+
+        self.assertIsNone(resolved.value)
+        self.assertIsInstance(resolved.resolver, SentinelResolver)
+        self.assertTrue(resolved.authored)
+
+    def test_composed_value_block_suppresses_schema_fallback(self):
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("NewtonJointAPI")
+        joint.GetAttribute("newton:armature").Block()
+        joint.CreateAttribute("mjc:armature", Sdf.ValueTypeNames.Float).Set(3.0)
+
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton(), SchemaResolverMjc()],
+            use_applied_schema_fallbacks=True,
+        )
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 3.0)
+
+        joint.GetAttribute("mjc:armature").Clear()
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 12.0)
+
+    def test_composed_physx_engine_default_margin_uses_builder_default(self):
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        cube.GetPrim().AddAppliedSchema("PhysxCollisionAPI")
+
+        builder = ModelBuilder()
+        builder.default_shape_cfg.margin = 0.125
+        result = builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverPhysx()],
+            use_applied_schema_fallbacks=True,
+        )
+
+        shape = result["path_shape_map"]["/cube"]
+        self.assertEqual(builder.shape_margin[shape], builder.default_shape_cfg.margin)
+
+    def test_applied_sdf_effective_defaults_do_not_warn(self):
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        cube.GetPrim().AddAppliedSchema("NewtonSDFCollisionAPI")
+
+        for use_applied_schema_fallbacks in (False, True):
+            with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
+                builder = ModelBuilder()
+                result = builder.add_usd(
+                    stage,
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+
+                shape = result["path_shape_map"]["/cube"]
+                self.assertEqual(builder.shape_sdf_max_resolution[shape], 64)
+                self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[shape][0], -0.1)
+                self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[shape][1], 0.1)
+                self.assertEqual(builder.shape_sdf_texture_format[shape], "uint16")
+                self.assertFalse(builder.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
+
+    def test_applied_sdf_effective_default_change_warns(self):
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        cube.GetPrim().AddAppliedSchema("NewtonSDFCollisionAPI")
+
+        builder = ModelBuilder()
+        builder.default_shape_cfg.kh = 123.0
+        with self.assertWarnsRegex(DeprecationWarning, "newton:hydroelasticStiffness"):
+            result = builder.add_usd(stage)
+
+        shape = result["path_shape_map"]["/cube"]
+        self.assertEqual(builder.shape_material_kh[shape], 123.0)
+
+    def test_applied_schema_fallbacks_follow_resolver_priority(self):
+        class UnregisteredSceneResolver(SchemaResolver):
+            name = "unregistered"
+            _schema_names: ClassVar = {PrimType.SCENE: "UnregisteredSceneAPI"}
+            _schema_fallbacks: ClassVar = {
+                "UnregisteredSceneAPI": {
+                    "unregistered:gravityEnabled": False,
+                }
+            }
+            mapping: ClassVar = {
+                PrimType.SCENE: {
+                    "gravity_enabled": SchemaResolver.SchemaAttribute(
+                        "unregistered:gravityEnabled",
+                    )
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/scene").GetPrim()
+        scene.AddAppliedSchema("NewtonSceneAPI")
+        scene.AddAppliedSchema("UnregisteredSceneAPI")
+
+        unregistered_first = SchemaResolverManager([UnregisteredSceneResolver(), SchemaResolverNewton()])
+        newton_first = SchemaResolverManager([SchemaResolverNewton(), UnregisteredSceneResolver()])
+
+        self.assertFalse(unregistered_first._resolve_value(scene, PrimType.SCENE, "gravity_enabled").value)
+        self.assertTrue(newton_first._resolve_value(scene, PrimType.SCENE, "gravity_enabled").value)
+
+    def test_unregistered_schema_fallback_precedes_importer_default(self):
+        class UnregisteredResolver(SchemaResolver):
+            name = "unregistered"
+            _schema_names: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
+            _schema_fallbacks: ClassVar = {
+                "UnregisteredJointAPI": {
+                    "unregistered:armature": 9.0,
+                    "physics:lowerLimit": 8.0,
+                }
+            }
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute("unregistered:armature", 9.0),
+                    "lower_limit": SchemaResolver.SchemaAttribute("physics:lowerLimit", 8.0),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("UnregisteredJointAPI")
+        resolver = SchemaResolverManager(
+            [UnregisteredResolver()],
+            use_applied_schema_fallbacks=True,
+        )
+
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=4.0), 9.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature"), 9.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "lower_limit", default=4.0), 8.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "lower_limit"), 8.0)
+
+        unapplied = UsdPhysics.RevoluteJoint.Define(stage, "/unapplied").GetPrim()
+        self.assertIsNone(resolver.get_value(unapplied, PrimType.JOINT, "armature"))
+
     def test_basic_newton_physx_priority(self):
         """
         Test basic USD import functionality with Newton-PhysX schema priority.
@@ -91,6 +384,7 @@ class TestSchemaResolver(unittest.TestCase):
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
+            use_applied_schema_fallbacks=True,
         )
 
         # Basic import validation
@@ -205,6 +499,7 @@ class TestSchemaResolver(unittest.TestCase):
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
+            use_applied_schema_fallbacks=True,
         )
 
         schema_attrs = result.get("schema_attrs", {})
@@ -259,6 +554,7 @@ class TestSchemaResolver(unittest.TestCase):
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
+            use_applied_schema_fallbacks=True,
         )
 
         # Import with PhysX first
@@ -266,6 +562,7 @@ class TestSchemaResolver(unittest.TestCase):
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverPhysx(), SchemaResolverNewton()],
             verbose=False,
+            use_applied_schema_fallbacks=True,
         )
 
         # Both should succeed and have same structure
@@ -449,6 +746,7 @@ class TestSchemaResolver(unittest.TestCase):
             source=str(dst),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
             verbose=False,
+            use_applied_schema_fallbacks=True,
         )
 
         builder_mjc = ModelBuilder()
@@ -457,6 +755,7 @@ class TestSchemaResolver(unittest.TestCase):
             source=str(dst),
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
+            use_applied_schema_fallbacks=True,
         )
 
         # PhysX authors `physxLimit:angular:stiffness = 2.0` per-degree; importer converts
@@ -882,6 +1181,7 @@ class TestSchemaResolver(unittest.TestCase):
                 source=str(humanoid_path),
                 schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
                 verbose=False,
+                use_applied_schema_fallbacks=True,
             )
 
         # Get the model and state to access joint_q and joint_qd
@@ -1012,6 +1312,7 @@ class TestSchemaResolver(unittest.TestCase):
                 source=str(humanoid_path),
                 schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
                 verbose=False,
+                use_applied_schema_fallbacks=True,
             )
 
         model = builder.finalize()
@@ -1391,6 +1692,7 @@ class TestSchemaResolver(unittest.TestCase):
             source=stage,
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
             verbose=False,
+            use_applied_schema_fallbacks=True,
         )
         schema_attrs = result.get("schema_attrs", {})
         self.assertAlmostEqual(schema_attrs["mjc"]["/xform/collider"]["mjc:margin"], 0.4)
