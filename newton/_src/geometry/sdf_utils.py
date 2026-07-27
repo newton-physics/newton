@@ -1521,10 +1521,10 @@ def _generate_dense_mc_kernel(
             p_0 = wp.vec3f(corner_offsets_table[ev[0]])
             p_1 = wp.vec3f(corner_offsets_table[ev[1]])
             val_diff = val_1 - val_0
-            if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
+            if wp.abs(val_diff) < MC_EDGE_VAL_DIFF_EPS:
                 p = 0.5 * (p_0 + p_1)
             else:
-                t = wp.clamp((0.0 - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
+                t = wp.clamp((0.0 - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
                 p = p_0 + t * (p_1 - p_0)
             local = base + p
             face_verts[vi] = wp.vec3(
@@ -1534,7 +1534,7 @@ def _generate_dense_mc_kernel(
             )
         n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
         n_sq = wp.dot(n, n)
-        if n_sq < wp.static(MC_DEGENERATE_N_SQ_EPS):
+        if n_sq < MC_DEGENERATE_N_SQ_EPS:
             normal = wp.vec3(0.0, 0.0, 1.0)
         else:
             normal = n / wp.sqrt(n_sq)
