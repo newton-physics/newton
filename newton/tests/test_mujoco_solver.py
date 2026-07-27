@@ -8538,7 +8538,8 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             <option cone="elliptic"/>
             <default>
                 <geom condim="1" friction="0.2 0.01 0.001"
-                      solref="0.04 1" solimp="0.8 0.9 0.001 0.5 2"
+                      solref="0.04 1" solreffriction="0.04 1.5"
+                      solimp="0.8 0.9 0.001 0.5 2"
                       margin="{geom_margin}"/>
             </default>
             <worldbody>
@@ -8737,6 +8738,13 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         """Use MuJoCo's zero solreffriction default when a pair omits it."""
         model = self._make_explicit_pair_contact_model(include_solreffriction=False)
         np.testing.assert_array_equal(model.mujoco.pair_solreffriction.numpy(), [[0.0, 0.0]])
+        solver = self._step_with_newton_contacts(model)
+        contact_count = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertGreater(contact_count, 0)
+        np.testing.assert_allclose(
+            solver.mjw_data.contact.solreffriction.numpy()[:contact_count],
+            np.zeros((contact_count, 2)),
+        )
 
     def test_pair_properties_conversion_and_update(self):
         """
