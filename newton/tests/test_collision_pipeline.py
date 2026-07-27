@@ -1345,6 +1345,67 @@ add_function_test(
 )
 
 
+def test_shape_pairs_included_override_filters_without_duplicates(test, device):
+    """Force one filtered pair into every broad phase without duplicating automatic pairs."""
+
+    def collide_pair(*, filtered: bool, broad_phase: str) -> int:
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body_a = builder.add_body(xform=wp.transform_identity())
+        shape_a = builder.add_shape_sphere(body=body_a, radius=0.5)
+        body_b = builder.add_body(xform=wp.transform_identity())
+        shape_b = builder.add_shape_sphere(body=body_b, radius=0.5)
+        pair = (shape_a, shape_b)
+        if filtered:
+            builder.add_shape_collision_filter_pair(*pair)
+        model = builder.finalize(device=device)
+        included = wp.array([pair], dtype=wp.vec2i, device=device)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase=broad_phase,
+            shape_pairs_included=included,
+        )
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        return int(contacts.rigid_contact_count.numpy()[0])
+
+    def first_candidate_with_tight_buffer(broad_phase: str) -> tuple[int, int]:
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        shapes = []
+        for _ in range(3):
+            body = builder.add_body(xform=wp.transform_identity())
+            shapes.append(builder.add_shape_sphere(body=body, radius=0.5))
+        included_pair = (shapes[0], shapes[1])
+        builder.add_shape_collision_filter_pair(*included_pair)
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase=broad_phase,
+            shape_pairs_max=1,
+            shape_pairs_included=wp.array([included_pair], dtype=wp.vec2i, device=device),
+            verify_buffers=False,
+        )
+        pipeline.collide(model.state(), pipeline.contacts())
+        return tuple(sorted(pipeline.broad_phase_shape_pairs.numpy()[0]))
+
+    with wp.ScopedDevice(device):
+        for broad_phase in ("explicit", "nxn", "sap"):
+            with test.subTest(broad_phase=broad_phase, filtered=True):
+                test.assertEqual(collide_pair(filtered=True, broad_phase=broad_phase), 1)
+            with test.subTest(broad_phase=broad_phase, filtered=False):
+                test.assertEqual(collide_pair(filtered=False, broad_phase=broad_phase), 1)
+        for broad_phase in ("nxn", "sap"):
+            with test.subTest(broad_phase=broad_phase, tight_buffer=True):
+                test.assertEqual(first_candidate_with_tight_buffer(broad_phase), (0, 1))
+
+
+add_function_test(
+    TestCollisionPipelineFilterPairs,
+    "test_shape_pairs_included_override_filters_without_duplicates",
+    test_shape_pairs_included_override_filters_without_duplicates,
+    devices=devices,
+)
+
+
 # ============================================================================
 # Rigid Contact Normal Direction Tests
 # ============================================================================
@@ -1800,6 +1861,7 @@ class TestContactEstimator(unittest.TestCase):
 
         estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1500)
+        self.assertEqual(_estimate_rigid_contact_max(model, included_pair_count=50), 1750)
 
 
 class TestShapePairsMaxScaling(unittest.TestCase):

@@ -552,6 +552,12 @@ Broad Phase and Shape Compatibility
    * - **EXPLICIT**
      - Uses precomputed shape pairs (default). Combines static pair efficiency with advanced contact algorithms.
 
+``shape_pairs_included`` adds fixed pairs to any broad phase even when
+collision groups or pair filters exclude them. The pipeline deduplicates
+these pairs from its automatic candidates and still applies AABB overlap,
+shape collision flags, and the configured static/kinematic filtering.
+Force-including hydroelastic pairs is not supported.
+
 .. testsetup:: broad-phase
 
     import warp as wp
