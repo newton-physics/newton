@@ -2505,12 +2505,14 @@ def parse_usd(
             prim = stage.GetPrimAtPath(prim_path)
             mass_api = UsdPhysics.MassAPI(prim)
             if not mass_api:
+                # Shape insertion already accumulates material/default density.
+                # This fallback is only needed for enabled descendant MassAPI overrides.
                 descendants = iter(Usd.PrimRange(prim, Usd.TraverseInstanceProxies()))
                 for descendant in descendants:
                     if descendant != prim and descendant.HasAPI(UsdPhysics.RigidBodyAPI):
                         descendants.PruneChildren()
                         continue
-                    if descendant.HasAPI(UsdPhysics.CollisionAPI) and descendant.HasAPI(UsdPhysics.MassAPI):
+                    if _is_enabled_collider(descendant) and descendant.HasAPI(UsdPhysics.MassAPI):
                         bodies_requiring_mass_properties_fallback.add(body_path)
                         break
                 continue
@@ -3274,7 +3276,7 @@ def parse_usd(
     ):
         """Record collider mass information used by the rigid-body fallback callback."""
         body_path = str(shape_spec.rigidBody)
-        if body_path not in bodies_requiring_mass_properties_fallback:
+        if body_path not in bodies_requiring_mass_properties_fallback or not _is_enabled_collider(prim):
             return
 
         shape_geo_type = None
@@ -3350,6 +3352,7 @@ def parse_usd(
                 if any(re.match(p, path) for p in ignore_paths):
                     continue
                 prim = stage.GetPrimAtPath(xpath)
+                collider_is_enabled = _is_enabled_collider(prim)
                 # Deformable-owned meshes never reach this loop: the scout excludes them
                 # from the native parse. A sim-API mesh seen here was deliberately left
                 # rigid (e.g. its body API conflicts with RigidBodyAPI), so import it.
@@ -3382,7 +3385,9 @@ def parse_usd(
 
                 # Non-MassAPI body mass accumulation in ModelBuilder uses shape cfg density.
                 # Use per-shape physics material density when present; otherwise use default density.
-                if has_shape_material:
+                if not collider_is_enabled:
+                    shape_density = 0.0
+                elif has_shape_material:
                     shape_density = material.density
                 else:
                     shape_density = default_shape_density
@@ -3850,7 +3855,7 @@ def parse_usd(
 
                 _collect_filtered_pairs(prim)
 
-                if not _is_enabled_collider(prim):
+                if not collider_is_enabled:
                     no_collision_shapes.add(shape_id)
                     builder.shape_flags[shape_id] &= ~ShapeFlags.COLLIDE_SHAPES
 
@@ -3933,6 +3938,8 @@ def parse_usd(
 
     def _get_collision_mass_information(collider_prim: Usd.Prim):
         """MassInformation callback for ``ComputeMassProperties`` with one-time warning on misses."""
+        if not _is_enabled_collider(collider_prim):
+            return zero_mass_information
         collider_path = str(collider_prim.GetPath())
         is_expected_missing = (
             collider_path in expected_fallback_collider_paths and collider_path not in rigid_body_mass_info_map
@@ -3955,8 +3962,6 @@ def parse_usd(
             mass_info = rigid_body_mass_info_map[collider_path]
             shape_density = rigid_body_mass_fallback_density[collider_path]
             volume = float(mass_info.volume)
-            if volume <= 0.0:
-                continue
             collider_prim = stage.GetPrimAtPath(collider_path)
             collider_mass_api = UsdPhysics.MassAPI(collider_prim)
             collider_mass = _mass_api_effective_mass(collider_mass_api) if collider_mass_api else None
