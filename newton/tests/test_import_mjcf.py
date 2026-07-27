@@ -1320,6 +1320,53 @@ class TestImportMjcfMeshScale(unittest.TestCase):
         self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
 
 
+class TestImportMjcfInlineMesh(unittest.TestCase):
+    """Tests for MJCF mesh assets authored with inline arrays."""
+
+    def test_inline_mesh_vertex_face_data(self):
+        """Import inline mesh vertices and triangle faces."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"/>
+    </asset>
+    <worldbody>
+        <body>
+            <geom type="mesh" mesh="tetra" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, scale=2.0)
+
+        self.assertEqual(builder.shape_count, 1)
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(
+            mesh.vertices,
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]],
+        )
+        np.testing.assert_array_equal(mesh.indices, [0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2])
+
+    def test_inline_mesh_rejects_malformed_faces(self):
+        """Reject inline mesh face data that does not contain triangles."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="bad" vertex="0 0 0  1 0 0  0 1 0" face="0 1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="bad"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "face.*multiple of 3"):
+            builder.add_mjcf(mjcf)
+
+
 class TestImportMjcfGeometry(unittest.TestCase):
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
