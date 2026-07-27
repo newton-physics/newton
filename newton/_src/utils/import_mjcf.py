@@ -481,9 +481,9 @@ def parse_mjcf(
         return any(re.match(pattern, name) for pattern in ignore_classes)
 
     def resolve_class_defaults(element_class: str | None, ambient_defaults: dict) -> dict:
-        """Merge an element's default class (pre-resolved by resolve_defaults) over the ambient defaults."""
+        """Resolve an explicit default class or retain the ambient defaults."""
         if element_class is not None and element_class in class_defaults:
-            return merge_attrib(ambient_defaults, class_defaults[element_class])
+            return class_defaults[element_class]
         return ambient_defaults
 
     def resolve_element_attrib(element, tag: str, ambient_defaults: dict | None = None) -> dict:
