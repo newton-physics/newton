@@ -699,7 +699,7 @@ def parse_mjcf(
             end = wp.transform_point(incoming_xform, end)
 
         position = (start + end) * 0.5
-        direction = start - end
+        direction = end - start
         length = wp.length(direction)
         if length < 1.0e-6:
             if zero_length_error is not None:

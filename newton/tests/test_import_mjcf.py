@@ -9087,7 +9087,7 @@ class TestMjcfMultiRootArticulations(unittest.TestCase):
 class TestFromtoCapsuleOrientation(unittest.TestCase):
     """Verify fromto capsules/cylinders get the correct position and orientation.
 
-    MuJoCo computes fromto orientation by aligning Z with (start - end) via
+    MuJoCo computes fromto orientation by aligning Z with (end - start) via
     mjuu_z2quat. Position is the midpoint and half_height is half the length.
     """
 
@@ -9129,29 +9129,29 @@ class TestFromtoCapsuleOrientation(unittest.TestCase):
         np.testing.assert_allclose([*rotated_z], [*expected_dir], atol=1e-4, err_msg=msg)
 
     def test_diagonal_capsule(self):
-        """Diagonal fromto: pos = midpoint, Z aligned with start - end."""
+        """Align a diagonal capsule's Z axis from the first endpoint to the second."""
         pos, quat = self._get_shape_transform("cap_diag")
         np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
-        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        expected = wp.normalize(wp.vec3(-0.04, 0, 0.42))
         self._assert_z_aligned(quat, expected)
 
     def test_downward_capsule(self):
-        """Downward fromto: start - end = +Z, identity rotation."""
+        """Align a downward capsule's Z axis with its endpoint order."""
         pos, quat = self._get_shape_transform("cap_down")
         np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
-        self._assert_z_aligned(quat, wp.vec3(0, 0, 1))
+        self._assert_z_aligned(quat, wp.vec3(0, 0, -1))
 
     def test_upward_capsule(self):
-        """Upward fromto: start - end = -Z, 180 deg rotation (anti-parallel case)."""
+        """Align an upward capsule's Z axis with its endpoint order."""
         pos, quat = self._get_shape_transform("cap_up")
         np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
-        self._assert_z_aligned(quat, wp.vec3(0, 0, -1))
+        self._assert_z_aligned(quat, wp.vec3(0, 0, 1))
 
     def test_diagonal_cylinder(self):
         """Diagonal fromto cylinder: same code path as capsule, verify it works for cylinders too."""
         pos, quat = self._get_shape_transform("cyl_diag")
         np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
-        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        expected = wp.normalize(wp.vec3(-0.04, 0, 0.42))
         self._assert_z_aligned(quat, expected)
 
 
@@ -9181,7 +9181,7 @@ class TestSiteFromto(unittest.TestCase):
 
             shape_quat = wp.quat(*shape_xform[3:])
             rotated_z = wp.quat_rotate(shape_quat, wp.vec3(0.0, 0.0, 1.0))
-            np.testing.assert_allclose(rotated_z, [0.0, 0.0, -1.0], atol=1.0e-6)
+            np.testing.assert_allclose(rotated_z, [0.0, 0.0, 1.0], atol=1.0e-6)
 
         np.testing.assert_allclose(
             builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/capsule")],
@@ -9204,9 +9204,13 @@ class TestSiteFromto(unittest.TestCase):
             atol=1.0e-6,
         )
         box_diag_idx = builder.shape_label.index("site_fromto/worldbody/box_diag")
+        box_diag_xform = builder.shape_transform[box_diag_idx]
+        np.testing.assert_allclose(box_diag_xform[:3], [-0.1, 0.2, 0.7], atol=1.0e-6)
+        box_diag_quat = wp.quat(*box_diag_xform[3:])
+        box_diag_z = wp.quat_rotate(box_diag_quat, wp.vec3(0.0, 0.0, 1.0))
         np.testing.assert_allclose(
-            builder.shape_transform[box_diag_idx],
-            [-0.1, 0.2, 0.7, 0.64922922, 0.64922922, 0.0, 0.39623583],
+            box_diag_z,
+            wp.normalize(wp.vec3(-0.6, 0.6, 0.8)),
             atol=1.0e-6,
         )
         np.testing.assert_allclose(
@@ -9241,7 +9245,7 @@ class TestSiteFromto(unittest.TestCase):
 
         shape_quat = wp.quat(*shape_xform[3:])
         rotated_z = wp.quat_rotate(shape_quat, wp.vec3(0.0, 0.0, 1.0))
-        np.testing.assert_allclose(rotated_z, [0.0, -1.0, 0.0], atol=1.0e-6)
+        np.testing.assert_allclose(rotated_z, [0.0, 1.0, 0.0], atol=1.0e-6)
 
     def test_site_fromto_rejects_zero_length(self):
         """Reject a site whose fromto endpoints coincide."""
