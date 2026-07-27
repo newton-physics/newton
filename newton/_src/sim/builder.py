@@ -9520,6 +9520,10 @@ class ModelBuilder:
             :attr:`default_tet_k_mu`, :attr:`default_tet_k_lambda`,
             :attr:`default_tet_k_damp`).
 
+            Negative-volume tetrahedra are reoriented automatically before mass,
+            elasticity, and surface topology are generated. Degenerate tetrahedra
+            remain excluded.
+
             The generated surface triangles and optional edges are for collision purposes.
             Their stiffness and damping values default to zero so they do not introduce additional
             elastic forces. Set the stiffness parameters above to non-zero values if you
@@ -9528,6 +9532,7 @@ class ModelBuilder:
         from ..geometry.types import TetMesh  # noqa: PLC0415
 
         # Resolve parameters: explicit args > mesh attributes > error
+        indices_from_mesh = False
         if mesh is not None:
             if not isinstance(mesh, TetMesh):
                 raise TypeError(f"mesh must be a TetMesh, got {type(mesh).__name__}")
@@ -9535,6 +9540,7 @@ class ModelBuilder:
                 vertices = mesh.vertices
             if indices is None:
                 indices = mesh.tet_indices
+                indices_from_mesh = True
             if density is None:
                 density = mesh.density
             if k_mu is None:
@@ -9547,14 +9553,43 @@ class ModelBuilder:
         if vertices is None or indices is None:
             raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
 
+        reoriented_tets = False
+        indices_array = np.asarray(indices, dtype=np.int32)
+        if validate_mesh and indices_array.size > 0 and indices_array.size % 4 != 0:
+            from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
+
+            validate_tet_mesh(
+                np.asarray(vertices, dtype=float) * scale,
+                indices_array,
+                label=label,
+                stacklevel=3,
+            )
+            return
+
+        if indices_array.size > 0 and indices_array.size % 4 == 0:
+            tet_indices = indices_array.reshape(-1, 4)
+            scaled_vertices = np.asarray(vertices, dtype=float).reshape(-1, 3) * scale
+            v0 = scaled_vertices[tet_indices[:, 0]]
+            d1 = scaled_vertices[tet_indices[:, 1]] - v0
+            d2 = scaled_vertices[tet_indices[:, 2]] - v0
+            d3 = scaled_vertices[tet_indices[:, 3]] - v0
+            inverted = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) < 0.0
+            if np.any(inverted):
+                # External tetrahedralizers may use the opposite winding convention.
+                tet_indices = tet_indices.copy()
+                tet_indices[inverted, 1:3] = tet_indices[inverted][:, [2, 1]]
+                indices = tet_indices.flatten()
+                reoriented_tets = True
+
         if validate_mesh:
             from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
 
-            verts_np = np.array(vertices, dtype=float) * scale
-            inds_np = np.asarray(indices, dtype=np.intp)
-            validate_tet_mesh(verts_np, inds_np, label=label, stacklevel=3)
-            if inds_np.size > 0 and inds_np.size % 4 != 0:
-                return
+            validate_tet_mesh(
+                np.asarray(vertices, dtype=float) * scale,
+                np.asarray(indices, dtype=np.intp),
+                label=label,
+                stacklevel=3,
+            )
 
         if density is None:
             density = self.default_tet_density
@@ -9606,11 +9641,10 @@ class ModelBuilder:
             self.add_particle(p, vel, 0.0, particle_radius, custom_attributes=p_custom)
 
         # add tetrahedra
+        accepted_tet_indices: list[tuple[int, int, int, int]] = []
         for t in range(num_tets):
-            v0 = start_vertex + indices[t * 4 + 0]
-            v1 = start_vertex + indices[t * 4 + 1]
-            v2 = start_vertex + indices[t * 4 + 2]
-            v3 = start_vertex + indices[t * 4 + 3]
+            local_indices = tuple(int(indices[t * 4 + i]) for i in range(4))
+            v0, v1, v2, v3 = (start_vertex + index for index in local_indices)
 
             t_custom = {k: arr[t] for k, arr in tet_custom.items()} if tet_custom else None
             volume = self.add_tetrahedron(
@@ -9626,6 +9660,7 @@ class ModelBuilder:
 
             # distribute volume fraction to particles
             if volume > 0.0:
+                accepted_tet_indices.append(local_indices)
                 self.particle_mass[v0] += density * volume / 4.0
                 self.particle_mass[v1] += density * volume / 4.0
                 self.particle_mass[v2] += density * volume / 4.0
@@ -9633,10 +9668,20 @@ class ModelBuilder:
 
         # Compute surface triangles — reuse pre-computed result from TetMesh
         # only when the caller did not override the indices.
-        if mesh is not None and indices is mesh.tet_indices and len(mesh.surface_tri_indices) > 0:
-            surface_tri_indices = mesh.surface_tri_indices
+        all_tets_accepted = len(accepted_tet_indices) == num_tets
+        accepted_indices = np.asarray(accepted_tet_indices, dtype=np.int32).reshape(-1, 4)
+        if mesh is not None and indices_from_mesh and all_tets_accepted and len(mesh.surface_tri_indices) > 0:
+            if reoriented_tets:
+                normalized_surface = TetMesh.compute_surface_triangles(indices).reshape(-1, 3)
+                normalized_by_face = {tuple(sorted(face)): face for face in normalized_surface}
+                surface_tri_indices = np.asarray(
+                    [normalized_by_face[tuple(sorted(face))] for face in mesh.surface_tri_indices.reshape(-1, 3)],
+                    dtype=np.int32,
+                ).flatten()
+            else:
+                surface_tri_indices = mesh.surface_tri_indices
         else:
-            surface_tri_indices = TetMesh.compute_surface_triangles(indices)
+            surface_tri_indices = TetMesh.compute_surface_triangles(accepted_indices)
 
         # add surface triangles
         start_tri = len(self.tri_indices)

@@ -81,7 +81,9 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     See: https://en.wikipedia.org/wiki/Semi-implicit_Euler_method
 
-    This solver uses the routines from :class:`~newton.solvers.SolverSemiImplicit` to simulate particles, cloth, and soft bodies.
+    This solver uses the routines from :class:`~newton.solvers.SolverSemiImplicit` to simulate particles, cloth, and soft
+    bodies by default. Set ``simulate_particles=False`` when another solver owns the particle state, such as
+    :class:`~newton.solvers.SolverVBD` with external rigid-body integration.
 
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE (treated as FREE), D6.
@@ -142,6 +144,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         friction_smoothing: float = 1.0,
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
+        simulate_particles: bool = True,
         deterministic: wp.DeterministicMode | None = None,
     ):
         """
@@ -152,6 +155,9 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             friction_smoothing: The delta value for the Huber norm (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`) used for the friction velocity normalization. Defaults to 1.0.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
+            simulate_particles: Whether to evaluate particle, cloth, and soft-body forces and advance particle state.
+                When ``False``, particle positions and velocities are copied to the output unchanged, and particle-body
+                contacts do not affect rigid bodies. Defaults to ``True``.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
@@ -174,7 +180,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             borrowed_modules.append(kernels_contact)
         if getattr(model, "muscle_count", 0) > 0:
             borrowed_modules.append(kernels_muscle)
-        if model.particle_count > 0:
+        if simulate_particles and model.particle_count > 0:
             borrowed_modules.append(kernels_particle)
         borrowed_options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         for module in borrowed_modules:
@@ -185,6 +191,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         self.friction_smoothing = friction_smoothing
         self.use_tile_gemm = use_tile_gemm
         self.fuse_cholesky = fuse_cholesky
+        self.simulate_particles = simulate_particles
 
         self._step = 0
         self._mass_matrix_dirty = False
@@ -518,7 +525,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             particle_f = None
             body_f = None
 
-            if state_in.particle_count:
+            if self.simulate_particles and state_in.particle_count:
                 particle_f = state_in.particle_f
 
             if state_in.body_count:
@@ -538,25 +545,21 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         device=model.device,
                     )
 
-            # damped springs
-            eval_spring_forces(model, state_in, particle_f)
+            if self.simulate_particles:
+                eval_spring_forces(model, state_in, particle_f)
 
-            # triangle elastic and lift/drag forces
-            eval_triangle_forces(model, state_in, control, particle_f)
+                eval_triangle_forces(model, state_in, control, particle_f)
 
-            # triangle bending
-            eval_bending_forces(model, state_in, particle_f)
+                eval_bending_forces(model, state_in, particle_f)
 
-            # tetrahedral FEM
-            eval_tetrahedra_forces(model, state_in, control, particle_f)
+                eval_tetrahedra_forces(model, state_in, control, particle_f)
 
-            # particle-particle interactions
-            eval_particle_contact_forces(model, state_in, particle_f)
+                eval_particle_contact_forces(model, state_in, particle_f)
 
-            # particle shape contact for non-articulated models; articulated models run this after ID
-            # so contacts see the freshly reconstructed public COM twist.
-            if not model.joint_count:
-                eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
+                # Particle shape contact for non-articulated models; articulated models run this after ID
+                # so contacts see the freshly reconstructed public COM twist.
+                if not model.joint_count:
+                    eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
             # muscles
             if False:
@@ -637,15 +640,16 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-                eval_particle_body_contact_forces(
-                    model,
-                    state_in,
-                    contacts,
-                    particle_f,
-                    body_f,
-                    body_q=state_in.body_q,
-                    body_qd=state_aug.body_qd_fk,
-                )
+                if self.simulate_particles:
+                    eval_particle_body_contact_forces(
+                        model,
+                        state_in,
+                        contacts,
+                        particle_f,
+                        body_f,
+                        body_q=state_in.body_q,
+                        body_qd=state_aug.body_qd_fk,
+                    )
 
                 if contacts is not None and contacts.rigid_contact_max:
                     wp.launch(
@@ -1061,6 +1065,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
-            self.integrate_particles(model, state_in, state_out, dt)
+            if self.simulate_particles:
+                self.integrate_particles(model, state_in, state_out, dt)
+            elif not step_in_place and model.particle_count:
+                wp.copy(state_out.particle_q, state_in.particle_q)
+                wp.copy(state_out.particle_qd, state_in.particle_qd)
 
             self._step += 1

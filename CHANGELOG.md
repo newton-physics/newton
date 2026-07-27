@@ -23,6 +23,8 @@
 - Add viewer layer system to overlay multiple solvers/models in supported rendering viewers; call `ViewerBase.activate(layer_id)` to route subsequent `set_model` / `log_state` / `log_*` calls into a named layer, `ViewerBase.set_layer_visible()` to toggle layers independently, and `ViewerBase.set_layer_transform()` to position layers side-by-side. See `example_basic_multi_solver_overlay.py`
 - Add `Heightfield.create_from_mesh()` and `newton.utils.rasterize_mesh_to_heightfield()` to build a heightfield collider by ray-casting a `wp.Mesh`, replacing a large static terrain mesh with an equivalent heightfield.
 - Add `ViewerBase.camera_speed` to configure keyboard translation speed for interactive viewers. (#3439)
+- Add `SolverFeatherstone(simulate_particles=False)` for rigid-only stepping when a separate solver owns particle, cloth, or soft-body dynamics.
+- Add opt-in DVI forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="dvi")`, with sparse and dense execution, DVI-specific diagnostics, and warm-starting. PADMM remains the default.
 - Add opt-in DVI forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="dvi")`, with sparse and dense execution, DVI-specific convergence diagnostics, warm-starting, bounded contact-recovery controls, and RCM-reordered bilateral factorization with reusable ordering and panel-parallel numeric factorization for large systems. PADMM remains the default.
 - Add SDF contact support for convex-hull shapes with mesh-attached SDFs and opt-in SDF contact generation for box shapes.
 - Add opt-in filtering of static-static, static-kinematic, and kinematic-kinematic contacts during broad-phase collision detection. Set `CollisionPipeline(include_static_kinematic_pairs=False)` to enable filtering; the default preserves existing contact generation. `Model.shape_contact_pairs` remains an unfiltered superset for direct consumers such as `SolverKamino` and hydroelastic SDF setup.
@@ -111,6 +113,7 @@
 - Reject invalid hollow primitive shell thickness before computing inertia.
 - Fix `ModelBuilder.add_mjcf()` ignoring positive explicit mass on mesh geoms. (#3595)
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
+- Fix `ModelBuilder.add_soft_mesh()` dropping valid tetrahedra that use the opposite winding convention. (#3533)
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
 - Fix `SolverKamino` CG/CR solves silently under-iterating on CPU graph capture; the capture-safe loop path now runs on any capturing device, not only CUDA, so CPU captures no longer record a stale host-readback convergence decision at record time.

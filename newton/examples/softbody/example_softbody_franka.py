@@ -140,7 +140,11 @@ class Example:
         self.sim_time = 0.0
 
         # robot solver (Featherstone as kinematic integrator for body velocities)
-        self.robot_solver = SolverFeatherstone(self.model, update_mass_matrix_interval=self.sim_substeps)
+        self.robot_solver = SolverFeatherstone(
+            self.model,
+            update_mass_matrix_interval=self.sim_substeps,
+            simulate_particles=False,
+        )
 
         # IK solver setup
         self.set_up_ik()
@@ -340,17 +344,12 @@ class Example:
 
             self.viewer.apply_forces(self.state_0)
 
-            # Featherstone as kinematic integrator (disable particles + gravity)
-            particle_count = self.model.particle_count
-            self.model.particle_count = 0
+            # Featherstone owns only the robot; VBD advances the particles below.
             self.model.gravity.assign(self.gravity_zero)
-            self.model.shape_contact_pair_count = 0
 
             self.state_0.joint_qd.assign(self.target_joint_qd)
             self.robot_solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
 
-            self.state_0.particle_f.zero_()
-            self.model.particle_count = particle_count
             self.model.gravity.assign(self.gravity_earth)
 
             # collision detection
