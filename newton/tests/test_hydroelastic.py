@@ -619,7 +619,7 @@ def _make_pipelines(model, configs, rigid_contact_maxes=None):
     return result
 
 
-def _build_margin_gap_boxes(device):
+def _build_margin_gap_boxes(device, gaps=(0.03, 0.05)):
     """Build two hydroelastic boxes with asymmetric margins and gaps."""
     builder = newton.ModelBuilder()
     common = {
@@ -628,9 +628,9 @@ def _build_margin_gap_boxes(device):
         "sdf_max_resolution": 64,
         "sdf_narrow_band_range": (-0.25, 0.25),
     }
-    cfg_a = newton.ModelBuilder.ShapeConfig(margin=0.05, gap=0.03, **common)
+    cfg_a = newton.ModelBuilder.ShapeConfig(margin=0.05, gap=gaps[0], **common)
     cfg_b = newton.ModelBuilder.ShapeConfig(
-        margin=0.07, gap=0.05, kh=2.0e8, **{k: v for k, v in common.items() if k != "kh"}
+        margin=0.07, gap=gaps[1], kh=2.0e8, **{k: v for k, v in common.items() if k != "kh"}
     )
 
     body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
@@ -728,6 +728,57 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
                 active_keys = reducer.hashtable.keys.numpy()[active_slots[:active_count]]
                 bin_ids = (active_keys >> np.uint64(55)) & np.uint64(0xFF)
                 test.assertTrue(np.all(bin_ids >= 128), "Speculative contacts must use disjoint reduction keys.")
+
+
+def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_contacts):
+    """Omit positive-separation hydroelastic contacts when both gaps are zero."""
+    model, state, body_b = _build_margin_gap_boxes(device, gaps=(0.0, 0.0))
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=reduce_contacts,
+            pre_prune_contacts=reduce_contacts,
+            buffer_fraction=1.0,
+        ),
+    )
+    contacts = pipeline.contacts()
+
+    # The real surfaces are 0.16 m apart, while the margin-inflated surfaces
+    # are 0.04 m apart. A nonzero gap would generate speculative contacts here.
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state.body_q, body_b, 1.16],
+        device=device,
+    )
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    # Zero gap must not disable normal penetrating hydroelastic contacts.
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state.body_q, body_b, 1.08],
+        device=device,
+    )
+    pipeline.collide(state, contacts)
+    distances = _get_contact_distances(contacts, model, state)
+    test.assertGreater(len(distances), 0)
+    test.assertTrue(np.all(distances < 0.0))
+
+
+def test_hydroelastic_margin_contact_area_is_deprecated(test, device):
+    """Warn when the deprecated margin contact area is changed."""
+    model, _, _ = _build_margin_gap_boxes(device)
+    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*has no effect"):
+        newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            rigid_contact_max=20000,
+            sdf_hydroelastic_config=HydroelasticSDF.Config(margin_contact_area=0.02),
+        )
 
 
 def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
@@ -1892,6 +1943,29 @@ add_function_test(
     test_hydroelastic_margin_gap_bands,
     devices=cuda_devices,
     reduce_contacts=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_zero_gap_omits_speculative_contacts_reduced",
+    test_hydroelastic_zero_gap_omits_speculative_contacts,
+    devices=cuda_devices,
+    reduce_contacts=True,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_zero_gap_omits_speculative_contacts_unreduced",
+    test_hydroelastic_zero_gap_omits_speculative_contacts,
+    devices=cuda_devices,
+    reduce_contacts=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_margin_contact_area_is_deprecated",
+    test_hydroelastic_margin_contact_area_is_deprecated,
+    devices=cuda_devices,
 )
 
 add_function_test(

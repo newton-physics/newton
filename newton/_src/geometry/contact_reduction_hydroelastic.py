@@ -9,7 +9,7 @@ building on the core ``GlobalContactReducer`` from ``contact_reduction_global.py
 **Hydroelastic Contact Features:**
 
 - Aggregate stiffness calculation: ``c_stiffness = |agg_force| / total_depth`` where
-  ``agg_force = sum(area * pressure_func(depth) * normal)`` is in physical force units
+  ``agg_force = sum(area * pressure * normal)`` is in physical force units
 - Normal matching: rotates reduced normals to align with aggregate force direction
 - Anchor contact: synthetic contact at center of pressure for moment balance
 
@@ -125,8 +125,7 @@ def export_hydroelastic_contact_to_buffer(
     position: wp.vec3,
     normal: wp.vec3,
     pair_separation: float,
-    force_area: float,
-    geometric_area: float,
+    area: float,
     pressure: float,
     reducer_data: GlobalContactReducerData,
 ) -> int:
@@ -141,8 +140,7 @@ def export_hydroelastic_contact_to_buffer(
         position: Contact position in world space
         normal: Contact normal
         pair_separation: Margin-relative pair separation.
-        force_area: Portion of the face carrying current pressure.
-        geometric_area: Full face area.
+        area: Force-bearing area when penetrating, or full face area when speculative.
         pressure: Current pressure on the face.
         reducer_data: GlobalContactReducerData with all arrays
 
@@ -153,8 +151,7 @@ def export_hydroelastic_contact_to_buffer(
     contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, pair_separation, 0, reducer_data)
 
     if contact_id >= 0:
-        reducer_data.contact_area[contact_id] = force_area
-        reducer_data.contact_geometric_area[contact_id] = geometric_area
+        reducer_data.contact_area[contact_id] = area
         reducer_data.contact_pressure[contact_id] = pressure
 
     return contact_id
@@ -165,26 +162,17 @@ def export_hydroelastic_contact_to_buffer(
 # =============================================================================
 
 
-def get_reduce_hydroelastic_contacts_kernel(pressure_func: Any):
-    """Create a hydroelastic contact reduction kernel specialized to a pressure callback.
-
-    Args:
-        pressure_func: User-supplied Warp function ``(signed_depth, shape_idx, data) ->
-            pressure``. Required. Used to weight the unreduced friction-moment
-            accumulator by ``area * pressure_func(depth, shape_b, pressure_data)``.
+def get_reduce_hydroelastic_contacts_kernel():
+    """Create a hydroelastic contact reduction kernel.
 
     Returns:
         A Warp kernel that registers buffered contacts in the hashtable.
     """
 
-    if pressure_func is None:
-        raise ValueError("get_reduce_hydroelastic_contacts_kernel requires a non-None pressure_func.")
-
     @wp.kernel(enable_backward=False)
     def reduce_hydroelastic_contacts_kernel(
         reducer_data: GlobalContactReducerData,
         shape_material_k_hydro: wp.array[wp.float32],
-        pressure_data: Any,
         shape_transform: wp.array[wp.transform],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -516,11 +504,9 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
 
 def create_export_hydroelastic_reduced_contacts_kernel(
     writer_func: Any,
-    margin_contact_area: float,
     normal_matching: bool = True,
     anchor_contact: bool = False,
     moment_matching: bool = False,
-    pressure_func: Any = None,
 ):
     """Create a kernel that exports reduced hydroelastic contacts using a custom writer function.
 
@@ -545,8 +531,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
     Args:
         writer_func: A warp function with signature (ContactData, writer_data, int) -> None
-        margin_contact_area: Legacy non-penetrating area setting retained for
-            configuration compatibility.
         normal_matching: If True, rotate contact normals so their weighted sum aligns with aggregate force
         anchor_contact: If True, add an anchor contact at the center of pressure for each entry
         moment_matching: If True, adjust per-contact friction scales so that
@@ -556,9 +540,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
     Returns:
         A warp kernel that can be launched to export reduced hydroelastic contacts.
     """
-    if pressure_func is None:
-        raise ValueError("create_export_hydroelastic_reduced_contacts_kernel requires a non-None pressure_func.")
-
     # Define vector types for tracking exported contact data
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
     exported_depths_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.float32)
@@ -584,7 +565,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         normal: wp.array[wp.vec2],  # Octahedral-encoded
         shape_pairs: wp.array[wp.vec2i],
         contact_area: wp.array[wp.float32],
-        contact_geometric_area: wp.array[wp.float32],
         contact_pressure: wp.array[wp.float32],
         entry_k_eff: wp.array[wp.float32],
         contact_nbin_entry: wp.array[wp.int32],
@@ -599,8 +579,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         # Shape data for margin
         shape_gap: wp.array[float],
         shape_transform: wp.array[wp.transform],
-        # User pressure-callback state (recomputed on demand from depth+shape_b)
-        pressure_data: Any,
         # Writer data (custom struct)
         writer_data: Any,
         # Grid stride parameters
@@ -734,8 +712,11 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             # summing across reduced contacts gives
             #     sum_F_red = shared_stiffness * sum(|pair_separation|)
             # Setting shared_stiffness = agg_force_mag / total_depth_with_anchor
-            # makes that sum match agg_force_mag. ``agg_force`` is accumulated
-            # as ``area * pressure_func(d) * normal`` in the generate kernel
+            # makes that sum match agg_force_mag. Earlier code exported twice
+            # one shape's SDF depth, which assumed equal depth on both shapes.
+            # Pair separation already sums both adjusted SDF values, so it is
+            # exported once and no factor of two belongs here. ``agg_force`` is
+            # accumulated as ``area * pressure * normal`` in the generate kernel
             # so it is already in physical force units (no ``k_eff_first``
             # factor — that double-counts under a non-linear pressure law).
             shared_stiffness = float(0.0)
@@ -801,7 +782,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                 # Apply normal matching rotation for penetrating contacts (depth < 0)
                 final_normal = contact_normal
                 area_i = contact_area[contact_id]
-                geometric_area_i = contact_geometric_area[contact_id]
                 pressure_i = contact_pressure[contact_id]
 
                 c_friction_scale = float(1.0)
@@ -819,7 +799,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         if depth < 0.0:
                             c_stiffness = area_i * pressure_i / wp.max(-depth, wp.static(EPS_SMALL))
                         else:
-                            c_stiffness = geometric_area_i * k_eff_first
+                            c_stiffness = area_i * k_eff_first
 
                     # Moment matching friction adjustment
                     if wp.static(moment_matching) and depth < 0.0:
@@ -918,12 +898,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     elif depth < 0.0:
                         c_stiffness = area_i * pressure_i / wp.max(-depth, wp.static(EPS_SMALL))
                     else:
-                        c_stiffness = geometric_area_i * k_eff_first
+                        c_stiffness = area_i * k_eff_first
 
                 if depth >= 0.0:
                     # Speculative contacts never inherit penetrating
                     # force/wrench-matching stiffness from a mixed bin.
-                    c_stiffness = geometric_area_i * k_eff_first
+                    c_stiffness = area_i * k_eff_first
                     c_friction_scale = 1.0
 
                 # Transform contact to world space
@@ -994,8 +974,6 @@ class HydroelasticReductionConfig:
         moment_matching: If True, adjust per-contact friction scales so that the
             maximum friction moment per normal bin is preserved between reduced
             and unreduced contacts. Automatically enables ``anchor_contact``.
-        margin_contact_area: Legacy non-penetrating area setting retained for
-            configuration compatibility.
         hashtable_size_factor: Multiplier applied to the contact buffer capacity
             when allocating the reduction hashtable. Must be positive.
     """
@@ -1003,7 +981,6 @@ class HydroelasticReductionConfig:
     normal_matching: bool = True
     anchor_contact: bool = False
     moment_matching: bool = False
-    margin_contact_area: float = 1e-2
     hashtable_size_factor: float = 0.25
 
 
@@ -1038,8 +1015,6 @@ class HydroelasticContactReduction:
                 device="cuda:0",
                 writer_func=my_writer_func,
                 config=config,
-                pressure_func=my_pressure_func,
-                pressure_data=my_pressure_data,
             )
 
             # Each frame
@@ -1068,8 +1043,6 @@ class HydroelasticContactReduction:
         device: str | None = None,
         writer_func: Any = None,
         config: HydroelasticReductionConfig | None = None,
-        pressure_func: Any = None,
-        pressure_data: Any = None,
     ):
         """Initialize the hydroelastic contact reduction system.
 
@@ -1079,14 +1052,7 @@ class HydroelasticContactReduction:
             writer_func: Warp function for writing decoded contacts. Must have signature
                 ``(ContactData, writer_data, int) -> None``.
             config: Configuration options. If None, uses default ``HydroelasticReductionConfig``.
-            pressure_func: Warp function ``(signed_depth, shape_idx, data) -> pressure``
-                used to compute per-contact force throughout the reduction pipeline.
-                Required.
-            pressure_data: ``@wp.struct`` instance carrying state for ``pressure_func``.
-                Threaded through the reduce / export kernel launches. Required.
         """
-        if pressure_func is None or pressure_data is None:
-            raise ValueError("HydroelasticContactReduction requires pressure_func and pressure_data.")
         if config is None:
             config = HydroelasticReductionConfig()
         # Moment matching requires anchor contact for lever-arm reference
@@ -1094,7 +1060,6 @@ class HydroelasticContactReduction:
             config.anchor_contact = True
         self.config = config
         self.device = device
-        self.pressure_data = pressure_data
 
         # Create the underlying reducer with hydroelastic data storage enabled
         self.reducer = GlobalContactReducer(
@@ -1106,7 +1071,7 @@ class HydroelasticContactReduction:
         )
 
         # Create reduction kernel
-        self._reduce_kernel = get_reduce_hydroelastic_contacts_kernel(pressure_func)
+        self._reduce_kernel = get_reduce_hydroelastic_contacts_kernel()
         self._accumulate_depth_kernel = _create_accumulate_reduced_depth_kernel()
 
         # Create moment accumulation kernel (only when moment matching is enabled)
@@ -1119,11 +1084,9 @@ class HydroelasticContactReduction:
         # Create the export kernel with the configured options
         self._export_kernel = create_export_hydroelastic_reduced_contacts_kernel(
             writer_func=writer_func,
-            margin_contact_area=config.margin_contact_area,
             normal_matching=config.normal_matching,
             anchor_contact=config.anchor_contact,
             moment_matching=config.moment_matching,
-            pressure_func=pressure_func,
         )
 
     @property
@@ -1187,7 +1150,6 @@ class HydroelasticContactReduction:
             inputs=[
                 reducer_data,
                 shape_material_k_hydro,
-                self.pressure_data,
                 shape_transform,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
@@ -1276,7 +1238,6 @@ class HydroelasticContactReduction:
                 self.reducer.normal,
                 self.reducer.shape_pairs,
                 self.reducer.contact_area,
-                self.reducer.contact_geometric_area,
                 self.reducer.contact_pressure,
                 self.reducer.entry_k_eff,
                 self.reducer.contact_nbin_entry,
@@ -1287,7 +1248,6 @@ class HydroelasticContactReduction:
                 self.reducer.agg_moment2_reduced,
                 shape_gap,
                 shape_transform,
-                self.pressure_data,
                 writer_data,
                 grid_size,
             ],

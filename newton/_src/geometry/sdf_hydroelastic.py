@@ -74,9 +74,7 @@ def classify_hydroelastic_contact(pair_separation: wp.float32, gap_sum: wp.float
     """Classify pair separation as penetrating (-1), speculative (0), or outside (1)."""
     if pair_separation < 0.0:
         return wp.int32(-1)
-    if pair_separation <= gap_sum:
-        return wp.int32(0)
-    return wp.int32(1)
+    return wp.int32(pair_separation > gap_sum)
 
 
 @wp.kernel(enable_backward=False)
@@ -144,8 +142,8 @@ def mc_calc_face_texture(
     corner_offsets_table: wp.array[wp.vec3ub],
     tri_range_start: wp.int32,
     corner_vals: vec8f,
-    corner_sdf_self: vec8f,
-    corner_sdf_other: vec8f,
+    corner_adjusted_sdf: vec8f,
+    corner_other_adjusted_sdf: vec8f,
     sdf_a: TextureSDFData,
     x_id: wp.int32,
     y_id: wp.int32,
@@ -163,7 +161,7 @@ def mc_calc_face_texture(
     :attr:`HydroelasticSDF.Config.mc_edge_clamp_min`.
     """
     face_verts = wp.mat33f()
-    vert_sdf_self = wp.vec3f()
+    vert_adjusted_sdf = wp.vec3f()
     vert_pair_separation = wp.vec3f()
     num_inside = wp.int32(0)
     for vi in range(3):
@@ -189,14 +187,14 @@ def mc_calc_face_texture(
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         local_pos = sdf_a.sdf_box_lower + wp.cw_mul(vol_idx, sdf_a.voxel_size)
         face_verts[vi] = local_pos
-        sdf_self_from = wp.float32(corner_sdf_self[v_idx_from])
-        sdf_self_to = wp.float32(corner_sdf_self[v_idx_to])
-        sdf_other_from = wp.float32(corner_sdf_other[v_idx_from])
-        sdf_other_to = wp.float32(corner_sdf_other[v_idx_to])
-        sdf_self = sdf_self_from + t * (sdf_self_to - sdf_self_from)
-        sdf_other = sdf_other_from + t * (sdf_other_to - sdf_other_from)
-        pair_separation = sdf_self + sdf_other
-        vert_sdf_self[vi] = sdf_self
+        adjusted_sdf_from = wp.float32(corner_adjusted_sdf[v_idx_from])
+        adjusted_sdf_to = wp.float32(corner_adjusted_sdf[v_idx_to])
+        other_adjusted_sdf_from = wp.float32(corner_other_adjusted_sdf[v_idx_from])
+        other_adjusted_sdf_to = wp.float32(corner_other_adjusted_sdf[v_idx_to])
+        adjusted_sdf = adjusted_sdf_from + t * (adjusted_sdf_to - adjusted_sdf_from)
+        other_adjusted_sdf = other_adjusted_sdf_from + t * (other_adjusted_sdf_to - other_adjusted_sdf_from)
+        pair_separation = adjusted_sdf + other_adjusted_sdf
+        vert_adjusted_sdf[vi] = adjusted_sdf
         vert_pair_separation[vi] = pair_separation
         if pair_separation < 0.0:
             num_inside += 1
@@ -212,10 +210,10 @@ def mc_calc_face_texture(
         normal = n / n_len
         geometric_area = n_len / 2.0
     center = (face_verts[0] + face_verts[1] + face_verts[2]) / 3.0
-    sdf_self = (vert_sdf_self[0] + vert_sdf_self[1] + vert_sdf_self[2]) / 3.0
+    adjusted_sdf = (vert_adjusted_sdf[0] + vert_adjusted_sdf[1] + vert_adjusted_sdf[2]) / 3.0
     pair_separation = (vert_pair_separation[0] + vert_pair_separation[1] + vert_pair_separation[2]) / 3.0
     force_area = geometric_area * get_triangle_fraction(vert_pair_separation, num_inside)
-    return force_area, geometric_area, normal, center, sdf_self, pair_separation, face_verts
+    return force_area, geometric_area, normal, center, adjusted_sdf, pair_separation, face_verts
 
 
 class HydroelasticSDF:
@@ -318,10 +316,12 @@ class HydroelasticSDF:
         unreduced contacts. Automatically enables ``anchor_contact``.
         Only active when reduce_contacts is True."""
         margin_contact_area: float = 1e-2
-        """Legacy non-penetrating contact area setting.
+        """Deprecated no-op retained for configuration compatibility.
 
-        Retained for configuration compatibility. Speculative contacts use
-        their geometric face area for activation stiffness.
+        .. deprecated:: 1.5
+
+            This setting no longer affects hydroelastic contacts. Speculative
+            contacts use their geometric face area for activation stiffness.
         """
         pressure_func: Any = None
         """Optional Warp function defining ``pressure = f(signed_depth, shape_idx, data)``.
@@ -421,6 +421,12 @@ class HydroelasticSDF:
     ) -> None:
         if config is None:
             config = HydroelasticSDF.Config()
+        if config.margin_contact_area != 1.0e-2:
+            warnings.warn(
+                "HydroelasticSDF.Config.margin_contact_area is deprecated and has no effect; remove this setting.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         self.config = config
         if device is None:
@@ -543,7 +549,6 @@ class HydroelasticSDF:
                     normal_matching=self.config.normal_matching,
                     anchor_contact=self.config.anchor_contact,
                     moment_matching=self.config.moment_matching,
-                    margin_contact_area=self.config.margin_contact_area,
                     hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                 )
                 self.contact_reduction = HydroelasticContactReduction(
@@ -551,8 +556,6 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=reduction_config,
-                    pressure_func=self.pressure_func,
-                    pressure_data=self.pressure_data,
                 )
                 self.decode_contacts_kernel = None
             else:
@@ -562,17 +565,10 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=HydroelasticReductionConfig(
-                        margin_contact_area=self.config.margin_contact_area,
                         hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                     ),
-                    pressure_func=self.pressure_func,
-                    pressure_data=self.pressure_data,
                 )
-                self.decode_contacts_kernel = get_decode_contacts_kernel(
-                    self.config.margin_contact_area,
-                    writer_func,
-                    self.pressure_func,
-                )
+                self.decode_contacts_kernel = get_decode_contacts_kernel(writer_func)
 
         self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
         self._host_warning_poll_interval = 120
@@ -993,9 +989,7 @@ class HydroelasticSDF:
                 self.contact_reduction.reducer.normal,
                 self.contact_reduction.reducer.shape_pairs,
                 self.contact_reduction.reducer.contact_area,
-                self.contact_reduction.reducer.contact_geometric_area,
                 self.contact_reduction.reducer.contact_pressure,
-                self.pressure_data,
                 self.max_num_face_contacts,
             ],
             outputs=[writer_data],
@@ -1394,29 +1388,20 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any):
 
 
 def get_decode_contacts_kernel(
-    margin_contact_area: float = 1e-4,
     writer_func: Any = None,
-    pressure_func: Any = None,
 ):
     """Create a kernel that decodes hydroelastic contacts without reduction.
 
     This kernel is used when reduce_contacts=False. It exports all generated
-    contacts directly to the writer without any spatial reduction. Per-contact
-    pressure is computed on demand from the user's ``pressure_func``; depth
-    and shape index are read from the contact buffer.
+    contacts directly to the writer without any spatial reduction. Pressure is
+    read from the contact buffer after being evaluated once during generation.
 
     Args:
-        margin_contact_area: Legacy non-penetrating area setting retained for
-            configuration compatibility.
         writer_func: Warp function for writing decoded contacts.
-        pressure_func: Warp function defining the user pressure law. Required.
 
     Returns:
         A warp kernel that can be launched to decode all contacts.
     """
-
-    if pressure_func is None:
-        raise ValueError("get_decode_contacts_kernel requires a non-None pressure_func.")
 
     @wp.kernel(enable_backward=False)
     def decode_contacts_kernel(
@@ -1429,9 +1414,7 @@ def get_decode_contacts_kernel(
         normal: wp.array[wp.vec2],  # Octahedral-encoded
         shape_pairs: wp.array[wp.vec2i],
         contact_area: wp.array[wp.float32],
-        contact_geometric_area: wp.array[wp.float32],
         contact_pressure: wp.array[wp.float32],
-        pressure_data: Any,
         max_num_face_contacts: int,
         # outputs
         writer_data: Any,
@@ -1483,7 +1466,6 @@ def get_decode_contacts_kernel(
             gap_sum = gap_a + gap_b
 
             area = contact_area[tid]
-            geometric_area = contact_geometric_area[tid]
             face_pressure = contact_pressure[tid]
 
             # Hydroelastic force per face: F = area * pressure (Elandt et al.
@@ -1491,14 +1473,14 @@ def get_decode_contacts_kernel(
             # separation, so:
             #     c_stiffness = area * pressure / |pair_separation|
             # gives F_solver = area * p_face exactly, for any pressure law and
-            # any (kh_a, kh_b) pair. Pressure is recomputed from buffer state
-            # during generation and cached separately from pair separation.
+            # any (kh_a, kh_b) pair. Pressure is evaluated during generation
+            # and cached separately from pair separation.
             if depth < 0.0:
                 c_stiffness = area * face_pressure / wp.max(-depth, EPS_SMALL)
             else:
                 k_a = shape_material_kh[shape_a]
                 k_b = shape_material_kh[shape_b]
-                c_stiffness = geometric_area * get_effective_stiffness(k_a, k_b)
+                c_stiffness = area * get_effective_stiffness(k_a, k_b)
 
             # Create ContactData for the writer function
             contact_data = ContactData()
@@ -1667,7 +1649,6 @@ def get_generate_contacts_kernel(
             best_pen0_score = float(-MAXVAL)
             best_pen0_depth = float(0.0)
             best_pen0_area = float(0.0)
-            best_pen0_geometric_area = float(0.0)
             best_pen0_pressure = float(0.0)
             best_pen0_normal = wp.vec3(0.0, 0.0, 1.0)
             best_pen0_center = wp.vec3(0.0, 0.0, 0.0)
@@ -1679,7 +1660,6 @@ def get_generate_contacts_kernel(
             best_pen1_score = float(-MAXVAL)
             best_pen1_depth = float(0.0)
             best_pen1_area = float(0.0)
-            best_pen1_geometric_area = float(0.0)
             best_pen1_pressure = float(0.0)
             best_pen1_normal = wp.vec3(0.0, 0.0, 1.0)
             best_pen1_center = wp.vec3(0.0, 0.0, 0.0)
@@ -1690,7 +1670,6 @@ def get_generate_contacts_kernel(
             best_nonpen_valid = int(0)
             best_nonpen_depth = float(MAXVAL)
             best_nonpen_area = float(0.0)
-            best_nonpen_geometric_area = float(0.0)
             best_nonpen_pressure = float(0.0)
             best_nonpen_normal = wp.vec3(0.0, 0.0, 1.0)
             best_nonpen_center = wp.vec3(0.0, 0.0, 0.0)
@@ -1698,7 +1677,7 @@ def get_generate_contacts_kernel(
             best_nonpen_v1 = wp.vec3(0.0, 0.0, 0.0)
             best_nonpen_v2 = wp.vec3(0.0, 0.0, 0.0)
             for fi in range(num_faces):
-                force_area, geometric_area, normal, face_center, sdf_self, pair_separation, face_verts = (
+                force_area, geometric_area, normal, face_center, adjusted_sdf_shape_b, pair_separation, face_verts = (
                     mc_calc_face_texture(
                         flat_edge_verts_table,
                         corner_offsets_table,
@@ -1718,13 +1697,17 @@ def get_generate_contacts_kernel(
                     continue
                 if classify_hydroelastic_contact(pair_separation, gap_sum) > 0:
                     continue
-                # Pressure at the face. ``sdf_self`` is the adjusted SDF-B value at the
-                # face centroid; on the iso-pressure surface ``p_a == p_b`` so
+                # ``adjusted_sdf_shape_b`` is shape B's margin-adjusted SDF
+                # value at the face centroid. On the iso-pressure surface
+                # ``p_a == p_b``, so
                 # evaluating either side at its own depth gives the same value.
                 # Force accumulation below uses ``force_area * face_pressure`` instead
                 # of ``area * |pair_separation|``, removing the implicit linear-law
                 # assumption from the aggregate / anchor / moment computations.
-                face_pressure = wp.max(wp.static(pressure_func)(sdf_self, shape_b, pressure_data), 0.0)
+                face_pressure = wp.max(
+                    wp.static(pressure_func)(adjusted_sdf_shape_b, shape_b, pressure_data),
+                    0.0,
+                )
                 # Accumulate stats per normal bin
                 if pair_separation < 0.0:
                     bin_id = get_slot(normal)
@@ -1750,14 +1733,16 @@ def get_generate_contacts_kernel(
                         wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
 
                 if wp.static(not pre_prune):
+                    stored_area = geometric_area
+                    if pair_separation < 0.0:
+                        stored_area = force_area
                     contact_id = export_hydroelastic_contact_to_buffer(
                         shape_a,
                         shape_b,
                         face_center,
                         normal,
                         pair_separation,
-                        force_area,
-                        geometric_area,
+                        stored_area,
                         face_pressure,
                         reducer_data,
                     )
@@ -1780,7 +1765,6 @@ def get_generate_contacts_kernel(
                         best_pen1_score = best_pen0_score
                         best_pen1_depth = best_pen0_depth
                         best_pen1_area = best_pen0_area
-                        best_pen1_geometric_area = best_pen0_geometric_area
                         best_pen1_pressure = best_pen0_pressure
                         best_pen1_normal = best_pen0_normal
                         best_pen1_center = best_pen0_center
@@ -1792,7 +1776,6 @@ def get_generate_contacts_kernel(
                         best_pen0_score = score
                         best_pen0_depth = pair_separation
                         best_pen0_area = force_area
-                        best_pen0_geometric_area = geometric_area
                         best_pen0_pressure = face_pressure
                         best_pen0_normal = normal
                         best_pen0_center = face_center
@@ -1805,7 +1788,6 @@ def get_generate_contacts_kernel(
                             best_pen1_score = score
                             best_pen1_depth = pair_separation
                             best_pen1_area = force_area
-                            best_pen1_geometric_area = geometric_area
                             best_pen1_pressure = face_pressure
                             best_pen1_normal = normal
                             best_pen1_center = face_center
@@ -1817,8 +1799,7 @@ def get_generate_contacts_kernel(
                     if pair_separation < best_nonpen_depth:
                         best_nonpen_valid = int(1)
                         best_nonpen_depth = pair_separation
-                        best_nonpen_area = force_area
-                        best_nonpen_geometric_area = geometric_area
+                        best_nonpen_area = geometric_area
                         best_nonpen_pressure = face_pressure
                         best_nonpen_normal = normal
                         best_nonpen_center = face_center
@@ -1849,7 +1830,6 @@ def get_generate_contacts_kernel(
                             reducer_data.normal[out_idx] = encode_oct(best_pen0_normal)
                             reducer_data.shape_pairs[out_idx] = wp.vec2i(shape_a, shape_b)
                             reducer_data.contact_area[out_idx] = best_pen0_area
-                            reducer_data.contact_geometric_area[out_idx] = best_pen0_geometric_area
                             reducer_data.contact_pressure[out_idx] = best_pen0_pressure
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen0_v0)
@@ -1867,7 +1847,6 @@ def get_generate_contacts_kernel(
                                 reducer_data.normal[out_idx] = encode_oct(best_pen1_normal)
                                 reducer_data.shape_pairs[out_idx] = wp.vec2i(shape_a, shape_b)
                                 reducer_data.contact_area[out_idx] = best_pen1_area
-                                reducer_data.contact_geometric_area[out_idx] = best_pen1_geometric_area
                                 reducer_data.contact_pressure[out_idx] = best_pen1_pressure
                                 if wp.static(output_vertices):
                                     iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen1_v0)
@@ -1884,7 +1863,6 @@ def get_generate_contacts_kernel(
                             reducer_data.normal[out_idx] = encode_oct(best_nonpen_normal)
                             reducer_data.shape_pairs[out_idx] = wp.vec2i(shape_a, shape_b)
                             reducer_data.contact_area[out_idx] = best_nonpen_area
-                            reducer_data.contact_geometric_area[out_idx] = best_nonpen_geometric_area
                             reducer_data.contact_pressure[out_idx] = best_nonpen_pressure
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_nonpen_v0)
