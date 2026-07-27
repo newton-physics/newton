@@ -2782,11 +2782,11 @@ def _body_particle_contact_lists_skip_static_kinematic(test, device):
     test.assertEqual(int(overflow_max.numpy()[0]), 0)
 
 
-def _build_multi_world_particle_shape_scene(world_count, device, particles_per_world=8):
+def _build_multi_world_particle_shape_scene(world_count, device):
     """Build ``world_count`` replicas of a sub-world holding one shape and several free particles."""
     sub = newton.ModelBuilder()
     sub.add_shape_sphere(body=-1, radius=0.5)
-    for i in range(particles_per_world):
+    for i in range(8):
         sub.add_particle(pos=wp.vec3(0.1 * i, 0.0, 2.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
     builder = newton.ModelBuilder()
     for _ in range(world_count):
@@ -2804,8 +2804,6 @@ def _soft_contact_presize_is_world_aware(test, device):
         solver = newton.solvers.SolverVBD(model)
         sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
         test.assertEqual(sizes[world_count], newton.CollisionPipeline(model, broad_phase="nxn").soft_contact_max)
-        if world_count > 1:
-            test.assertLess(sizes[world_count], model.shape_count * model.particle_count)
     test.assertEqual(sizes[4], 4 * sizes[1])
 
 

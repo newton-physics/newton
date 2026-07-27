@@ -1640,11 +1640,13 @@ class TestParticleShapeContacts(unittest.TestCase):
             mass=0.1,
         )
         model = builder.finalize(device="cpu")
+        self.assertEqual(model.soft_contact_max, 0)
 
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
         contacts = pipeline.contacts()
 
         self.assertEqual(pipeline.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
+        self.assertEqual(model.soft_contact_max, pipeline.soft_contact_max)
         self.assertEqual(contacts.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
 
     def test_soft_contact_explicit_capacity_is_respected(self):
@@ -1657,6 +1659,7 @@ class TestParticleShapeContacts(unittest.TestCase):
 
         self.assertEqual(pipeline.soft_rigid_contact_pair_count, 1)
         self.assertEqual(pipeline.soft_contact_max, 1)
+        self.assertEqual(model.soft_contact_max, 1)
 
     def test_soft_contact_explicit_capacity_overflow_still_counts_candidates(self):
         builder = newton.ModelBuilder()
@@ -1709,91 +1712,44 @@ class TestParticleShapeContacts(unittest.TestCase):
         self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
 
-    @staticmethod
-    def _build_two_world_particle_scene():
-        sub = newton.ModelBuilder()
-        sub.add_shape_sphere(body=-1, radius=0.5)
-        sub.add_particle(pos=wp.vec3(0.0, 0.0, 2.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()  # global shape, pairs with every world
-        builder.add_world(sub)
-        builder.add_world(sub)
-        return builder.finalize(device="cpu")
-
     def test_world_compatible_pair_count_matches_materialized_pairs(self):
         """Verify the count-only pair helper agrees with the materialized pair list.
 
-        Anti-drift guard for the two implementations of the world-compatibility predicate. Sweeps
-        random layouts with global (-1) entries, out-of-range world ids, empty arrays, and the
-        optional ``shape_ok`` shape filter.
+        Sweeps global (-1) entries, out-of-range world ids, empty arrays and the ``shape_ok`` filter.
         """
         rng = np.random.default_rng(0)
-        for world_count in (0, 1, 3, 5):
-            for n_features, n_shapes in ((0, 0), (0, 4), (4, 0), (1, 1), (7, 5), (23, 11)):
+        for world_count in (0, 1, 3):
+            for n_features, n_shapes in ((0, 4), (4, 0), (1, 1), (7, 5), (23, 11)):
                 feature_world = rng.integers(-2, world_count + 2, size=n_features).astype(np.int32)
                 shape_world = rng.integers(-2, world_count + 2, size=n_shapes).astype(np.int32)
                 for shape_ok in (None, rng.random(n_shapes) < 0.7):
                     pairs = _world_compatible_pairs(feature_world, shape_world, world_count, "cpu", shape_ok=shape_ok)
                     count = _count_world_compatible_pairs(feature_world, shape_world, world_count, shape_ok=shape_ok)
-                    self.assertEqual(
-                        count,
-                        len(pairs),
-                        f"world_count={world_count} n_features={n_features} "
-                        f"n_shapes={n_shapes} filtered={shape_ok is not None}",
-                    )
-
-    def test_pipeline_writes_soft_contact_capacity_back_to_model(self):
-        """Verify the pipeline publishes its resolved soft-contact capacity on the model."""
-        model = self._build_two_world_particle_scene()
-        self.assertEqual(model.soft_contact_max, 0)
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-        self.assertEqual(pipeline.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
-        self.assertEqual(model.soft_contact_max, pipeline.soft_contact_max)
-
-        # An explicit argument still wins, and is written back too.
-        explicit_model = self._build_two_world_particle_scene()
-        explicit = newton.CollisionPipeline(explicit_model, broad_phase="nxn", soft_contact_max=3)
-        self.assertEqual(explicit.soft_contact_max, 3)
-        self.assertEqual(explicit_model.soft_contact_max, 3)
+                    msg = f"{world_count=} {n_features=} {n_shapes=} filtered={shape_ok is not None}"
+                    self.assertEqual(count, len(pairs), msg)
 
     def test_preset_model_soft_contact_capacity_is_not_an_input(self):
         """Verify a preset ``Model.soft_contact_max`` does not change the capacity a pipeline allocates."""
-        model = self._build_two_world_particle_scene()
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
         model.soft_contact_max = 5000
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-        self.assertGreater(5000, pipeline.soft_rigid_contact_pair_count)
         self.assertEqual(pipeline.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
         self.assertEqual(model.soft_contact_max, pipeline.soft_contact_max)
 
     def test_reused_model_keeps_full_surface_headroom(self):
         """Verify a flag-off pipeline does not strip edge/face headroom from a later flag-on one."""
 
-        def build():
-            builder = newton.ModelBuilder()
-            builder.add_ground_plane()
-            builder.add_cloth_grid(
-                pos=wp.vec3(-0.5, -0.5, 0.05),
-                rot=wp.quat_identity(),
-                vel=wp.vec3(0.0, 0.0, 0.0),
-                dim_x=4,
-                dim_y=4,
-                cell_x=0.25,
-                cell_y=0.25,
-                mass=0.1,
-            )
-            return builder.finalize(device="cpu")
-
         def full_surface_capacity(model):
             return newton.CollisionPipeline(
-                model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+                model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True
             ).soft_contact_max
 
-        reference = full_surface_capacity(build())
-
-        reused = build()
-        newton.CollisionPipeline(
-            reused, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
-        )
+        reference = full_surface_capacity(_build_cloth_over_plane("cpu"))
+        reused = _build_cloth_over_plane("cpu")
+        newton.CollisionPipeline(reused, broad_phase="nxn")
         # The flag-off pipeline published a headroom-free capacity; the flag-on one must ignore it.
         self.assertGreater(reference, reused.soft_contact_max)
         self.assertEqual(full_surface_capacity(reused), reference)

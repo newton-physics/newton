@@ -825,12 +825,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Zero-length body poses for static-shape contact kernels when State.body_q is absent.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
         if model.particle_count > 0 and model.shape_count > 0:
-            # shape_count * particle_count are global counts, so their product is quadratic in
-            # world count (and overflows int32 for large scenes) while worlds cannot collide.
-            # Use the pipeline capacity when known, else the world-aware candidate pair count.
-            # Buffers still grow lazily in _initialize_rigid_bodies, so this is only a pre-size.
-            scm = int(getattr(model, "soft_contact_max", 0) or 0)
-            self._init_body_particle_contact_state(scm if scm > 0 else _count_soft_particle_rigid_contact_pairs(model))
+            # shape_count * particle_count is quadratic in world count and overflows int32 for large
+            # scenes. Only a pre-size; _initialize_rigid_bodies grows the buffers as needed.
+            capacity = model.soft_contact_max or _count_soft_particle_rigid_contact_pairs(model)
+            self._init_body_particle_contact_state(capacity)
 
         # Kinematic body support: create effective inv_mass / inv_inertia arrays
         # with kinematic bodies zeroed out.

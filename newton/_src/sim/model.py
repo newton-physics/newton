@@ -1278,10 +1278,9 @@ class Model:
         """Number of potential contact points between particles and rigid shapes.
 
         Published by :class:`~newton.CollisionPipeline` on construction so solvers built afterwards
-        can pre-size their soft-contact buffers. Unlike :attr:`rigid_contact_max` this is not an
-        input: setting it does not change the capacity a pipeline allocates, because that capacity
-        also depends on the pipeline's ``enable_rigid_soft_full_surface_contact`` setting. Pass
-        ``CollisionPipeline(soft_contact_max=...)`` to choose the capacity explicitly.
+        can pre-size their soft-contact buffers. Unlike :attr:`rigid_contact_max` it is not an input:
+        the allocated capacity also depends on ``enable_rigid_soft_full_surface_contact``, so pass
+        ``CollisionPipeline(soft_contact_max=...)`` to choose it explicitly.
         """
 
         self.up_axis: int = 2
