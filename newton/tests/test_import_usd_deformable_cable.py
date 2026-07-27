@@ -374,6 +374,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         builder.default_shape_cfg.restitution = 0.41
         builder.add_usd(stage)
 
+        self.assertEqual(builder.shape_count, 2)
         self.assertTrue(all(math.isclose(value, 0.73, rel_tol=1.0e-6) for value in builder.shape_material_mu))
         self.assertTrue(all(math.isclose(value, 0.41, rel_tol=1.0e-6) for value in builder.shape_material_restitution))
 
@@ -408,6 +409,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 with self.assertWarnsRegex(UserWarning, "invalid physics:"):
                     builder.add_usd(stage)
 
+                self.assertEqual(builder.shape_count, 2)
                 self.assertTrue(
                     all(math.isclose(value, expected_mu, rel_tol=1.0e-6) for value in builder.shape_material_mu)
                 )
