@@ -5452,6 +5452,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 site_trntype_mask = template_mask & (act_trntype_np == int(SolverMuJoCo.TrnType.SITE))
                 trnid_targets = act_trnid_np[site_trntype_mask, 0]
                 actuator_required_shapes.update(trnid_targets[trnid_targets >= 0].tolist())
+                refsite_targets = act_trnid_np[site_trntype_mask, 1]
+                actuator_required_shapes.update(refsite_targets[refsite_targets >= 0].tolist())
                 # Vectorized: USD-deferred actuators reference sites by label.
                 # Intersect template-world target labels with the site label
                 # dict instead of iterating over every actuator.

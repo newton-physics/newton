@@ -1038,7 +1038,7 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
         reference_shape = model.shape_label.index("test_site_actuator_refsite/worldbody/base/reference_site")
         np.testing.assert_array_equal(imported_trnid, [target_shape, reference_shape])
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, include_sites=False)
         np.testing.assert_array_equal(solver.mj_model.actuator_trnid[0], native_model.actuator_trnid[0])
 
     def test_site_actuator_with_include_sites_false(self):
