@@ -996,6 +996,7 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
 
 
 def _rigid_contact_stick_eps_are_deprecated(test, device):
+    """Verify deprecated stick options warn and are ignored."""
     builder = newton.ModelBuilder()
     model = builder.finalize(device=device)
 
@@ -1014,7 +1015,7 @@ def _rigid_contact_stick_eps_are_deprecated(test, device):
 
 
 def _rigid_contact_dual_update_computes_lambda(test, device):
-    """update_duals_body_body_contacts computes normal load plus cone-clamped tangential lambda."""
+    """Verify dual updates compute normal and cone-clamped tangential lambda."""
     with wp.ScopedDevice(device):
         contact_count = wp.array([4], dtype=int, device=device)
         shape0 = wp.array([0, 0, 0, 0], dtype=int, device=device)
