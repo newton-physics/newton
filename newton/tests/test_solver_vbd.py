@@ -1045,7 +1045,7 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
         return pipeline, solver, contacts, state_in, state_out, control
 
     pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
-    with test.assertRaisesRegex(RuntimeError, "contact history must be allocated before CUDA graph capture"):
+    with test.assertRaisesRegex(RuntimeError, "contact history must be allocated before graph capture"):
         with wp.ScopedCapture(device=device):
             solver.step(state_in, state_out, control, contacts, 1.0e-3)
 

@@ -25,10 +25,12 @@ def _build_revolute(
     body_com: wp.vec3f | None = None,
     shape_materials: tuple[tuple[float, float], ...] | None = None,
     has_shape_collision: bool = True,
+    fk_actuation_flag: int | None = None,
 ) -> newton.Model:
     """Build a tiny world-to-body revolute model for notify tests."""
     builder = newton.ModelBuilder()
-    SolverKamino.register_custom_attributes(builder)
+    fk_actuation_flags = None if fk_actuation_flag is None else {0: fk_actuation_flag}
+    SolverKamino.register_custom_attributes(builder, fk_actuation_flags=fk_actuation_flags)
 
     builder.begin_world()
     bid = builder.add_link(
@@ -84,6 +86,42 @@ def _build_revolute(
     builder.add_articulation([jid])
     builder.end_world()
 
+    return builder.finalize()
+
+
+def _build_free_body() -> newton.Model:
+    """Build one free body so FK creates a synthetic base joint."""
+    builder = newton.ModelBuilder()
+    SolverKamino.register_custom_attributes(builder)
+    builder.begin_world()
+    bid = builder.add_link(
+        label="base",
+        mass=1.0,
+        inertia=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
+        lock_inertia=True,
+    )
+    builder.add_shape_box(body=bid, hx=0.1, hy=0.1, hz=0.1)
+    builder.end_world()
+    return builder.finalize()
+
+
+def _build_free_root(*, fk_actuation_flag: int = -1) -> newton.Model:
+    """Build one body attached to the world by an explicit free root joint."""
+    builder = newton.ModelBuilder()
+    SolverKamino.register_custom_attributes(builder, fk_actuation_flags={0: fk_actuation_flag})
+    builder.begin_world()
+    bid = builder.add_link(
+        label="base",
+        mass=1.0,
+        inertia=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
+        lock_inertia=True,
+    )
+    builder.add_shape_box(body=bid, hx=0.1, hy=0.1, hz=0.1)
+    jid = builder.add_joint_free(parent=-1, child=bid)
+    builder.add_articulation([jid])
+    builder.end_world()
     return builder.finalize()
 
 
@@ -513,6 +551,176 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
                     expected = solver._kamino.JointActuationType.from_newton(changed_mode)
                     self.assertEqual(solver._model_kamino.joints.act_type.numpy()[0], expected)
+
+    def test_fk_joint_frame_changes_propagate(self):
+        """Joint and CoM notifications propagate to FK-owned frames."""
+        model = _build_revolute(actuator_mode=newton.JointTargetMode.POSITION)
+        solver = SolverKamino(
+            model,
+            SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+        )
+        fk = solver._solver_kamino.solver_fk
+
+        model.joint_X_p.assign(
+            [wp.transformf(wp.vec3f(0.2, -0.1, 0.3), wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), 0.4))]
+        )
+        model.joint_X_c.assign(
+            [wp.transformf(wp.vec3f(-0.4, 0.5, 0.6), wp.quat_from_axis_angle(wp.vec3f(1.0, 0.0, 0.0), -0.35))]
+        )
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+
+        model.body_com.assign([wp.vec3f(0.1, -0.2, 0.15)])
+        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+        fk_joint = int(np.flatnonzero(fk.joints_source_id.numpy() == 0)[0])
+        joints = solver._model_kamino.joints
+        for fk_values, model_values in (
+            (fk.joints_B_r_Bj, joints.B_r_Bj),
+            (fk.joints_F_r_Fj, joints.F_r_Fj),
+            (fk.joints_X_Bj, joints.X_Bj),
+            (fk.joints_X_Fj, joints.X_Fj),
+        ):
+            np.testing.assert_allclose(fk_values.numpy()[fk_joint], model_values.numpy()[0], atol=1e-6)
+
+    def test_fk_base_pose_changes_propagate(self):
+        """Body-pose notifications propagate to the default synthetic FK base pose."""
+        model = _build_free_body()
+        solver = SolverKamino(
+            model,
+            SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+        )
+        fk = solver._solver_kamino.solver_fk
+        new_pose = wp.transformf(
+            wp.vec3f(0.3, -0.4, 1.5),
+            wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.25),
+        )
+        model.body_q.assign([new_pose])
+
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+        np.testing.assert_allclose(
+            fk.base_q_default.numpy()[0],
+            solver._model_kamino.bodies.q_i_0.numpy()[0],
+            atol=1e-6,
+        )
+
+    def test_fk_explicit_base_pose_changes_propagate(self):
+        """Joint-property notifications refresh an explicit FK base pose."""
+        model = _build_free_root()
+        solver = SolverKamino(
+            model,
+            SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+        )
+        fk = solver._solver_kamino.solver_fk
+        new_pose = wp.transformf(
+            wp.vec3f(0.3, -0.4, 1.5),
+            wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.25),
+        )
+        model.joint_q.assign(np.asarray(new_pose))
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+
+        np.testing.assert_allclose(
+            fk.base_q_default.numpy()[0],
+            np.asarray(new_pose),
+            atol=1e-6,
+        )
+
+    def test_fk_actuation_partition_change_raises(self):
+        """Runtime FK override edits cannot change the FK buffer layout."""
+        for flag in (newton.ModelFlags.ACTUATOR_PROPERTIES, newton.ModelFlags.JOINT_DOF_PROPERTIES):
+            with self.subTest(flag=flag.name):
+                model = _build_revolute(
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                    fk_actuation_flag=1,
+                )
+                solver = SolverKamino(
+                    model,
+                    SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+                )
+                model.fk_actuation_flag.assign([0])
+
+                with self.assertRaisesRegex(RuntimeError, "actuated vs passive status.*recreate"):
+                    solver.notify_model_changed(flag)
+
+    def test_fk_base_joint_override_change_is_allowed(self):
+        """FK overrides do not affect explicit base joints replaced by free joints."""
+        for flag in (newton.ModelFlags.ACTUATOR_PROPERTIES, newton.ModelFlags.JOINT_DOF_PROPERTIES):
+            with self.subTest(flag=flag.name):
+                model = _build_free_root(fk_actuation_flag=0)
+                solver = SolverKamino(
+                    model,
+                    SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+                )
+                fk = solver._solver_kamino.solver_fk
+                model.fk_actuation_flag.assign([1])
+
+                solver.notify_model_changed(flag)
+
+                self.assertEqual(fk.joints_act_type.numpy()[0], solver._kamino.JointActuationType.FORCE)
+
+    def test_equivalent_fk_actuation_override_change_is_allowed(self):
+        """Raw FK override changes are allowed when effective actuation is unchanged."""
+        model = _build_revolute(
+            actuator_mode=newton.JointTargetMode.POSITION,
+            fk_actuation_flag=1,
+        )
+        solver = SolverKamino(
+            model,
+            SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+        )
+        fk = solver._solver_kamino.solver_fk
+        model.fk_actuation_flag.assign([-1])
+
+        solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
+
+        fk_joint = int(np.flatnonzero(fk.joints_source_id.numpy() == 0)[0])
+        self.assertNotEqual(
+            fk.joints_act_type.numpy()[fk_joint],
+            solver._kamino.JointActuationType.PASSIVE,
+        )
+
+    def test_invalid_fk_actuation_override_raises(self):
+        """Runtime FK overrides accept only the documented -1, 0, and 1 values."""
+        models = (
+            _build_revolute(
+                actuator_mode=newton.JointTargetMode.POSITION,
+                fk_actuation_flag=1,
+            ),
+            _build_free_root(fk_actuation_flag=0),
+        )
+        for model in models:
+            with self.subTest(joint_type=newton.JointType(model.joint_type.numpy()[0]).name):
+                solver = SolverKamino(
+                    model,
+                    SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+                )
+                model.fk_actuation_flag.assign([2])
+
+                with self.assertRaisesRegex(ValueError, "Invalid FK actuation flag"):
+                    solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
+
+    def test_fk_reset_matches_fresh_solver_after_joint_update(self):
+        """An FK reset after notify matches a solver built from the updated model."""
+        model = _build_revolute(actuator_mode=newton.JointTargetMode.POSITION)
+        config = SolverKamino.Config(use_fk_solver=True, use_collision_detector=False)
+        solver = SolverKamino(model, config)
+        model.joint_X_c.assign(
+            [wp.transformf(wp.vec3f(0.2, 0.1, -0.15), wp.quat_from_axis_angle(wp.vec3f(1.0, 0.0, 0.0), 0.2))]
+        )
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        reference = SolverKamino(model, SolverKamino.Config(use_fk_solver=True, use_collision_detector=False))
+        actuator_q = wp.array([0.35], dtype=wp.float32, device=model.device)
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q),
+        )
+        state = model.state()
+        reference_state = model.state()
+
+        solver.reset(state, config=reset_config)
+        reference.reset(reference_state, config=reset_config)
+
+        np.testing.assert_allclose(state.body_q.numpy(), reference_state.body_q.numpy(), atol=1e-5)
 
     def test_invalid_actuation_mode_raises_before_update(self):
         """Invalid target modes do not mutate Kamino's actuation table."""

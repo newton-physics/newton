@@ -40,9 +40,9 @@ from .sdf_utils import (
 from .types import GeoType
 
 # Sentinel values for subgrid indirection slots.
-# Plain int so wp.static() works in kernels; numpy casts on assignment.
-SLOT_EMPTY = 0xFFFFFFFF  # No subgrid data (empty/far-field cell)
-SLOT_LINEAR = 0xFFFFFFFE  # Subgrid demoted to coarse interpolation
+# Typed uint32 so kernel codegen doesn't overflow an int32 constant.
+SLOT_EMPTY = wp.uint32(0xFFFFFFFF)  # No subgrid data (empty/far-field cell)
+SLOT_LINEAR = wp.uint32(0xFFFFFFFE)  # Subgrid demoted to coarse interpolation
 
 # Inside/outside sign strategies for the mesh distance queries during the
 # bake. Winding is 0 so a legacy ``use_parity`` boolean maps onto the same

@@ -155,14 +155,14 @@ class Example:
 
     def capture(self) -> None:
         self.graph = None
-        if not self.use_graph or not self.model.device.is_cuda:
+        if not self.use_graph:
             return
 
         with wp.ScopedDevice(self.model.device), wp.ScopedCapture() as capture:
             self.simulate()
         self.graph = capture.graph
         if self.graph is None:
-            raise RuntimeError(f"CUDA graph capture failed on device {self.model.device}")
+            raise RuntimeError(f"Graph capture failed on device {self.model.device}")
 
     def _emit_soft_object(self, builder: newton.ModelBuilder) -> None:
         size = 0.1 if self.scenario == "harsh" else 0.09
@@ -400,7 +400,7 @@ class Example:
             action="store_false",
             dest="graph_capture",
             default=True,
-            help="Disable CUDA graph capture.",
+            help="Disable graph capture.",
         )
         return parser
 

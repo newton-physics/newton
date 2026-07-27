@@ -3,7 +3,6 @@
 
 import logging
 import os
-import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -212,28 +211,6 @@ class SDF:
         # Keep texture references alive to prevent GC
         self._coarse_texture = _coarse_texture
         self._subgrid_texture = _subgrid_texture
-
-    @property
-    def texture_block_coords(self) -> None:
-        """Deprecated.  Always returns ``None``.
-
-        Texture-SDF block coordinates were removed when the hydroelastic
-        broadphase started deriving them arithmetically from the per-shape
-        coarse-texture dimensions.  The attribute is retained for one
-        release cycle so existing callers do not break.
-
-        .. deprecated:: 1.3
-            This attribute will be removed in a future release.
-        """
-        warnings.warn(
-            "SDF.texture_block_coords is deprecated and always returns None; "
-            "it will be removed in a future release. The hydroelastic broadphase "
-            "now derives block coordinates arithmetically from each SDF's "
-            "coarse-texture dimensions and no longer needs this attribute.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return None
 
     def to_kernel_data(self) -> SDFData:
         """Return kernel-facing SDF payload."""
