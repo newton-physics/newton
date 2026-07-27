@@ -27,7 +27,7 @@ from newton.solvers import SolverMuJoCo
 
 _UNSUPPORTED_CAMERA_WARNING = (
     r"MJCF camera '.+' has (?:mode='[^']+'|orthographic='true'); authored camera "
-    r"(?:mode|projection) is ignored and a fixed pinhole CameraSensor is imported\."
+    r"(?:mode|projection) is ignored and a fixed pinhole SensorCamera is imported\."
 )
 
 
@@ -3511,7 +3511,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             up_axis="Z",
         )
         count_physics_only = builder_physics_only.shape_count
-        camera_count = sum(1 for source in builder_all.shape_source if isinstance(source, newton.CameraSensor))
+        camera_count = sum(1 for source in builder_all.shape_source if isinstance(source, newton.SensorCamera))
 
         # Verify behavior
         self.assertEqual(camera_count, 2, "Test asset should import 2 camera sensor shapes")

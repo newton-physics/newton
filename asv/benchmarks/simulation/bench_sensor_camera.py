@@ -3,7 +3,7 @@
 
 """Rendering benchmarks for the shape-backed camera sensor.
 
-``FastCameraSensor`` and ``FastCameraSensorPixel`` measure Isaac Lab's Franka
+``FastSensorCamera`` and ``FastSensorCameraPixel`` measure Isaac Lab's Franka
 cabinet scene with tiled and pixel-priority rendering in CI. The other scene
 benchmarks cover varying visual complexity and are intended for hill-climbing
 renderer performance:
@@ -19,8 +19,8 @@ previews show exactly what is benchmarked.
 Run directly to benchmark, or to write PNG previews of each scene (a
 single-world view and a 4x4 grid of 16 worlds)::
 
-    uv run asv/benchmarks/simulation/bench_camera_sensor.py
-    uv run asv/benchmarks/simulation/bench_camera_sensor.py --preview
+    uv run asv/benchmarks/simulation/bench_sensor_camera.py
+    uv run asv/benchmarks/simulation/bench_sensor_camera.py --preview
 """
 
 import warp as wp
@@ -41,7 +41,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton import ShapeFlags
-from newton.sensors import CameraSensor
+from newton.sensors import SensorCamera
 
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_SEKTION_CABINET_FOLDER = "assets/urdf/sektion_cabinet_model"
@@ -53,7 +53,7 @@ ISAACGYM_ENVS_COMMIT = "aeed298638a1f7b5421b38f5f3cc2d1079b6d9c3"
 # traversal order with 8x8 pixel tiles.
 BVH_CONSTRUCTOR = "sah"
 KERNEL_BLOCK_DIM = 64
-RENDER_ORDER = CameraSensor.RenderOrder.TILED
+RENDER_ORDER = SensorCamera.RenderOrder.TILED
 RENDER_TILE_WIDTH = 8
 RENDER_TILE_HEIGHT = 8
 
@@ -244,7 +244,7 @@ def _look_at_transform(
     return wp.transformf(wp.vec3f(*eye), wp.quat_from_matrix(wp.mat33f(rotation.flatten())))
 
 
-class _CameraSensorSceneRig:
+class _SensorCameraSceneRig:
     """A scene replicated across worlds with a shape-backed camera sensor ready to render."""
 
     def __init__(
@@ -252,14 +252,14 @@ class _CameraSensorSceneRig:
         preset: ScenePreset,
         world_count: int,
         resolution: int,
-        render_order: CameraSensor.RenderOrder,
+        render_order: SensorCamera.RenderOrder,
         camera_fov_deg: float = 45.0,
     ):
         world = preset.build()
         _disable_collision_handling(world)
 
-        self.sensor = CameraSensor(
-            CameraSensor.compute_camera_rays_pinhole(
+        self.sensor = SensorCamera(
+            SensorCamera.compute_camera_rays_pinhole(
                 resolution,
                 resolution,
                 camera_fov=math.radians(camera_fov_deg),
@@ -313,7 +313,7 @@ class _SceneBenchmark:
     render_order = RENDER_ORDER
 
     def setup(self, resolution: int, world_count: int, iterations: int):
-        self.rig = _CameraSensorSceneRig(SCENES[self.scene], world_count, resolution, self.render_order)
+        self.rig = _SensorCameraSceneRig(SCENES[self.scene], world_count, resolution, self.render_order)
         # Compile and warm the render kernels for every output combination measured below.
         for color, depth in ((True, True), (True, False), (False, True)):
             self.rig.render(color=color, depth=depth)
@@ -338,23 +338,23 @@ class _SceneBenchmark:
         wp.synchronize()
 
 
-class CameraSensorQuadruped(_SceneBenchmark):
+class SensorCameraQuadruped(_SceneBenchmark):
     scene = "quadruped"
     params = ([64], [4096], [50])
 
 
-class FastCameraSensor(_SceneBenchmark):
+class FastSensorCamera(_SceneBenchmark):
     scene = "franka_cabinet"
     params = ([64], [4096], [50])
 
 
-class FastCameraSensorPixel(_SceneBenchmark):
+class FastSensorCameraPixel(_SceneBenchmark):
     scene = "franka_cabinet"
-    render_order = CameraSensor.RenderOrder.PIXEL_PRIORITY
+    render_order = SensorCamera.RenderOrder.PIXEL_PRIORITY
     params = ([64], [4096], [50])
 
 
-class CameraSensorShapes256(_SceneBenchmark):
+class SensorCameraShapes256(_SceneBenchmark):
     scene = "shapes_256"
     params = ([64], [4096], [50])
 
@@ -377,7 +377,7 @@ def write_preview_images(scene_names: list[str], output_dir: Path, image_size: i
     for name in scene_names:
         for world_count in PREVIEW_WORLD_COUNTS:
             worlds_per_row = math.isqrt(world_count)
-            rig = _CameraSensorSceneRig(SCENES[name], world_count, image_size // worlds_per_row, RENDER_ORDER)
+            rig = _SensorCameraSceneRig(SCENES[name], world_count, image_size // worlds_per_row, RENDER_ORDER)
             rig.render(color=True, depth=False)
             rgba = rig.sensor.utils.flatten_color_image_to_rgba(rig.color_image, worlds_per_row=worlds_per_row)
             path = output_dir / f"{name}_{world_count}_world{'s' if world_count > 1 else ''}.png"
@@ -412,10 +412,10 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "FastCameraSensor": FastCameraSensor,
-        "FastCameraSensorPixel": FastCameraSensorPixel,
-        "CameraSensorQuadruped": CameraSensorQuadruped,
-        "CameraSensorShapes256": CameraSensorShapes256,
+        "FastSensorCamera": FastSensorCamera,
+        "FastSensorCameraPixel": FastSensorCameraPixel,
+        "SensorCameraQuadruped": SensorCameraQuadruped,
+        "SensorCameraShapes256": SensorCameraShapes256,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -435,7 +435,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--preview-dir",
         type=Path,
-        default=Path("camera_sensor_previews"),
+        default=Path("sensor_camera_previews"),
         help="Directory for preview images.",
     )
     parser.add_argument(

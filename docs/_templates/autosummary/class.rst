@@ -1,7 +1,7 @@
 {{ fullname | escape | underline }}
 
 .. autoclass:: {{ fullname }}
-{% if fullname in ["newton.geometry.CameraSensor", "newton.sensors.CameraSensor"] %}   :no-index:
+{% if fullname in ["newton.geometry.SensorCamera", "newton.sensors.SensorCamera"] %}   :no-index:
 {% endif %}   :members:
    :undoc-members:
    :show-inheritance:

@@ -34,7 +34,7 @@ import warp as wp
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
-from ..sensors.camera_sensor import CameraSensor
+from ..sensors.sensor_camera import SensorCamera
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
@@ -1277,21 +1277,21 @@ def parse_usd(
 
         width, height = DEFAULT_CAMERA_RESOLUTION
         if _usd_camera_has_supported_intrinsics(usd_camera, time_code):
-            camera_rays = CameraSensor.compute_camera_rays_usd_pinhole(
+            camera_rays = SensorCamera.compute_camera_rays_usd_pinhole(
                 width, height, usd_camera, time=time_code, device="cpu"
             )
         else:
-            camera_rays = CameraSensor.compute_camera_rays_pinhole(
+            camera_rays = SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
                 _usd_camera_fov(usd_camera, time_code),
                 device="cpu",
             )
-        camera_sensor = CameraSensor(camera_rays)
+        sensor_camera = SensorCamera(camera_rays)
         return builder.add_shape_camera(
             body=body,
             xform=camera_xform,
-            camera=camera_sensor,
+            camera=sensor_camera,
             label=path,
         )
 

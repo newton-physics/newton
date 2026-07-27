@@ -684,9 +684,9 @@ def test_real_model_recording_roundtrip(test: TestRecorder, device):
 
     expected_camera_warnings = [
         "MJCF camera 'back' has mode='trackcom'; authored camera mode is ignored "
-        "and a fixed pinhole CameraSensor is imported.",
+        "and a fixed pinhole SensorCamera is imported.",
         "MJCF camera 'side' has mode='trackcom'; authored camera mode is ignored "
-        "and a fixed pinhole CameraSensor is imported.",
+        "and a fixed pinhole SensorCamera is imported.",
     ]
     test.assertEqual([warning.category for warning in caught_warnings], [UserWarning, UserWarning])
     test.assertEqual([str(warning.message) for warning in caught_warnings], expected_camera_warnings)

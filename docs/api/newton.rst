@@ -28,7 +28,6 @@ newton
 
    Axis
    BodyFlags
-   CameraSensor
    CollisionPipeline
    Contacts
    Control
@@ -44,6 +43,7 @@ newton
    ModelFlags
    ParticleFlags
    SDF
+   SensorCamera
    ShapeFlags
    State
    StateFlags

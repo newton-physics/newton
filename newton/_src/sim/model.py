@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
-    from ..sensors.camera_sensor_renderer import RenderContext
+    from ..sensors.sensor_camera_renderer import RenderContext
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
@@ -1837,7 +1837,7 @@ class Model:
         Returns:
             Shared render context.
         """
-        from ..sensors.camera_sensor_renderer import RenderContext  # noqa: PLC0415
+        from ..sensors.sensor_camera_renderer import RenderContext  # noqa: PLC0415
 
         if self.render_context is None:
             self.render_context = RenderContext(world_count=self.world_count, device=self.device)

@@ -11,7 +11,7 @@ import newton
 
 
 def _camera_shapes(model: newton.Model) -> list[int]:
-    return [i for i, source in enumerate(model.shape_source) if isinstance(source, newton.CameraSensor)]
+    return [i for i, source in enumerate(model.shape_source) if isinstance(source, newton.SensorCamera)]
 
 
 class TestImportMjcfCameras(unittest.TestCase):
@@ -105,7 +105,7 @@ class TestImportMjcfCameras(unittest.TestCase):
 
         camera_shape = model.shape_label.index("camera_focalpixel/worldbody/cam")
         camera_sensor = model.shape_source[camera_shape]
-        expected_rays = newton.CameraSensor.compute_camera_rays_pinhole(4, 2, math.radians(90.0), device="cpu")
+        expected_rays = newton.SensorCamera.compute_camera_rays_pinhole(4, 2, math.radians(90.0), device="cpu")
 
         np.testing.assert_allclose(camera_sensor.rays.numpy(), expected_rays.numpy(), rtol=1.0e-6, atol=1.0e-6)
 
@@ -156,7 +156,7 @@ class TestImportMjcfCameras(unittest.TestCase):
         target_shape = model.shape_label.index("render_camera/worldbody/target")
         camera_shape = model.shape_label.index("render_camera/worldbody/cam")
         camera_sensor = model.shape_source[camera_shape]
-        self.assertIsInstance(camera_sensor, newton.CameraSensor)
+        self.assertIsInstance(camera_sensor, newton.SensorCamera)
 
         depth = camera_sensor.create_depth_image_output()
         shape_index = camera_sensor.create_shape_index_image_output()

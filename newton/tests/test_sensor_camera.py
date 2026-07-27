@@ -11,37 +11,37 @@ import warp as wp
 
 import newton
 import newton.geometry as geometry
-from newton._src.sensors.camera_sensor_renderer.utils import Utils
-from newton.sensors import CameraSensor
+from newton._src.sensors.sensor_camera_renderer.utils import Utils
+from newton.sensors import SensorCamera
 
 
-class TestCameraSensor(unittest.TestCase):
+class TestSensorCamera(unittest.TestCase):
     @staticmethod
-    def _make_pinhole_camera(width: int, height: int, fov: float = math.radians(45.0)) -> CameraSensor:
-        rays = CameraSensor.compute_camera_rays_pinhole(width, height, fov, device="cpu")
-        return CameraSensor(rays)
+    def _make_pinhole_camera(width: int, height: int, fov: float = math.radians(45.0)) -> SensorCamera:
+        rays = SensorCamera.compute_camera_rays_pinhole(width, height, fov, device="cpu")
+        return SensorCamera(rays)
 
     @staticmethod
     def _build_sphere_camera_scene(
         width: int,
         height: int,
         *,
-        camera: CameraSensor | None = None,
+        camera: SensorCamera | None = None,
         camera_label: str = "camera",
-    ) -> tuple[newton.Model, CameraSensor]:
+    ) -> tuple[newton.Model, SensorCamera]:
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         sphere_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()))
         builder.add_shape_sphere(sphere_body, radius=0.75, color=(0.25, 0.5, 0.75))
 
         camera_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()))
-        camera = camera or TestCameraSensor._make_pinhole_camera(width, height)
+        camera = camera or TestSensorCamera._make_pinhole_camera(width, height)
         builder.add_shape_camera(body=camera_body, camera=camera, label=camera_label)
 
         return builder.finalize(device="cpu"), camera
 
     @staticmethod
     def _build_sphere_world(
-        camera: CameraSensor,
+        camera: SensorCamera,
         *,
         camera_label: str = "camera",
     ) -> newton.ModelBuilder:
@@ -54,25 +54,25 @@ class TestCameraSensor(unittest.TestCase):
 
         return builder
 
-    def test_camera_sensor_public_imports_resolve_to_same_class(self) -> None:
-        """Verify public CameraSensor imports and removed helpers."""
-        self.assertIs(newton.CameraSensor, CameraSensor)
-        self.assertIs(geometry.CameraSensor, CameraSensor)
-        self.assertFalse(hasattr(CameraSensor, "create_pinhole"))
-        self.assertFalse(hasattr(CameraSensor, "get_render_utils"))
-        self.assertFalse(hasattr(CameraSensor, "_bind_model"))
-        self.assertFalse(hasattr(CameraSensor, "_ensure_shape_index_by_world"))
-        self.assertFalse(hasattr(CameraSensor, "_ensure_render_buffers"))
-        self.assertEqual(int(CameraSensor.WorldRenderFlag.ENABLE), 1)
-        self.assertEqual(int(CameraSensor.WorldRenderFlag.DISABLE_CLEAR), 2)
-        self.assertEqual(int(CameraSensor.WorldRenderFlag.DISABLE_PRESERVE), 0)
+    def test_sensor_camera_public_imports_resolve_to_same_class(self) -> None:
+        """Verify public SensorCamera imports and removed helpers."""
+        self.assertIs(newton.SensorCamera, SensorCamera)
+        self.assertIs(geometry.SensorCamera, SensorCamera)
+        self.assertFalse(hasattr(SensorCamera, "create_pinhole"))
+        self.assertFalse(hasattr(SensorCamera, "get_render_utils"))
+        self.assertFalse(hasattr(SensorCamera, "_bind_model"))
+        self.assertFalse(hasattr(SensorCamera, "_ensure_shape_index_by_world"))
+        self.assertFalse(hasattr(SensorCamera, "_ensure_render_buffers"))
+        self.assertEqual(int(SensorCamera.WorldRenderFlag.ENABLE), 1)
+        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR), 2)
+        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE), 0)
 
     def test_constructor_derives_dimensions_from_rays(self) -> None:
-        """Verify CameraSensor derives read-only image dimensions from rays."""
+        """Verify SensorCamera derives read-only image dimensions from rays."""
         width, height = 5, 4
-        rays = CameraSensor.compute_camera_rays_pinhole(width, height, math.radians(45.0), device="cpu")
+        rays = SensorCamera.compute_camera_rays_pinhole(width, height, math.radians(45.0), device="cpu")
 
-        camera = CameraSensor(rays)
+        camera = SensorCamera(rays)
 
         self.assertEqual(camera.width, width)
         self.assertEqual(camera.height, height)
@@ -82,11 +82,11 @@ class TestCameraSensor(unittest.TestCase):
         with self.assertRaises(AttributeError):
             camera.height = 1
 
-        with self.assertRaisesRegex(ValueError, "CameraSensor rays must have shape"):
-            CameraSensor(rays.reshape((1, height, width, 2)))
+        with self.assertRaisesRegex(ValueError, "SensorCamera rays must have shape"):
+            SensorCamera(rays.reshape((1, height, width, 2)))
 
-    def test_camera_ray_helpers_live_on_camera_sensor(self) -> None:
-        """Verify camera ray helpers live on CameraSensor."""
+    def test_camera_ray_helpers_live_on_sensor_camera(self) -> None:
+        """Verify camera ray helpers live on SensorCamera."""
         sensor_helper_names = (
             "compute_camera_rays_pinhole",
             "compute_camera_rays_usd_pinhole",
@@ -95,7 +95,7 @@ class TestCameraSensor(unittest.TestCase):
             "compute_camera_rays_fisheye_kannala_brandt",
         )
         for helper_name in sensor_helper_names:
-            self.assertTrue(hasattr(CameraSensor, helper_name))
+            self.assertTrue(hasattr(SensorCamera, helper_name))
             self.assertFalse(hasattr(Utils, helper_name))
         self.assertFalse(hasattr(Utils, "compute_pinhole_camera_rays"))
         self.assertFalse(hasattr(Utils, "compute_camera_transforms_usd"))
@@ -116,8 +116,8 @@ class TestCameraSensor(unittest.TestCase):
 
         width, height = 3, 3
         rays = [
-            CameraSensor.compute_camera_rays_pinhole(width, height, math.radians(45.0), device="cpu"),
-            CameraSensor.compute_camera_rays_pinhole(
+            SensorCamera.compute_camera_rays_pinhole(width, height, math.radians(45.0), device="cpu"),
+            SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
                 focal_length=1.0,
@@ -125,13 +125,13 @@ class TestCameraSensor(unittest.TestCase):
                 vertical_aperture=2.0,
                 device="cpu",
             ),
-            CameraSensor.compute_camera_rays_fisheye_opencv(
+            SensorCamera.compute_camera_rays_fisheye_opencv(
                 width, height, fx=1.0, fy=1.0, cx=1.5, cy=1.5, device="cpu"
             ),
-            CameraSensor.compute_camera_rays_fisheye_ftheta(
+            SensorCamera.compute_camera_rays_fisheye_ftheta(
                 width, height, optical_center_x=1.5, optical_center_y=1.5, device="cpu"
             ),
-            CameraSensor.compute_camera_rays_fisheye_kannala_brandt(
+            SensorCamera.compute_camera_rays_fisheye_kannala_brandt(
                 width, height, optical_center_x=1.5, optical_center_y=1.5, device="cpu"
             ),
         ]
@@ -145,7 +145,7 @@ class TestCameraSensor(unittest.TestCase):
         width, height = 4, 3
         out_rays = wp.zeros((height, width, 2), dtype=wp.vec3f, device="cpu")
 
-        rays = CameraSensor.compute_camera_rays_pinhole(
+        rays = SensorCamera.compute_camera_rays_pinhole(
             width, height, math.radians(45.0), out_rays=out_rays, device="cpu"
         )
 
@@ -157,7 +157,7 @@ class TestCameraSensor(unittest.TestCase):
         width, height = 4, 3
 
         with self.assertRaisesRegex(ValueError, "camera_fov cannot be provided with aperture parameters"):
-            CameraSensor.compute_camera_rays_pinhole(
+            SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
                 math.radians(45.0),
@@ -168,10 +168,10 @@ class TestCameraSensor(unittest.TestCase):
             )
 
         with self.assertRaises(TypeError):
-            CameraSensor.compute_camera_rays_pinhole(width, height, [math.radians(45.0)], device="cpu")
+            SensorCamera.compute_camera_rays_pinhole(width, height, [math.radians(45.0)], device="cpu")
 
         with self.assertRaises(TypeError):
-            CameraSensor.compute_camera_rays_pinhole(
+            SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
                 focal_length=wp.array([1.0], dtype=wp.float32, device="cpu"),
@@ -182,10 +182,10 @@ class TestCameraSensor(unittest.TestCase):
 
         out_rays = wp.zeros((1, height, width, 2), dtype=wp.vec3f, device="cpu")
         with self.assertRaisesRegex(ValueError, "out_rays must have shape"):
-            CameraSensor.compute_camera_rays_pinhole(width, height, math.radians(45.0), out_rays=out_rays)
+            SensorCamera.compute_camera_rays_pinhole(width, height, math.radians(45.0), out_rays=out_rays)
 
-    def test_utils_property_uses_finalized_camera_sensor(self) -> None:
-        """Verify finalized CameraSensor instances own render utility state."""
+    def test_utils_property_uses_finalized_sensor_camera(self) -> None:
+        """Verify finalized SensorCamera instances own render utility state."""
         width, height = 4, 3
         camera = self._make_pinhole_camera(width, height)
         with self.assertRaisesRegex(RuntimeError, "finalized into a model"):
@@ -199,7 +199,7 @@ class TestCameraSensor(unittest.TestCase):
 
         self.assertIsInstance(utils, Utils)
         self.assertIsNot(camera.utils, utils)
-        self.assertFalse(hasattr(utils, "_Utils__camera_sensor"))
+        self.assertFalse(hasattr(utils, "_Utils__sensor_camera"))
         self.assertIsNone(model.render_context)
         self.assertEqual(camera.device, model.device)
         self.assertFalse(hasattr(camera, "_model_ref"))
@@ -211,7 +211,7 @@ class TestCameraSensor(unittest.TestCase):
         self.assertEqual(camera._all_world_render_flags.shape, (camera.view_count,))
         np.testing.assert_array_equal(
             camera._all_world_render_flags.numpy(),
-            np.full(camera.view_count, int(CameraSensor.WorldRenderFlag.ENABLE), dtype=np.int32),
+            np.full(camera.view_count, int(SensorCamera.WorldRenderFlag.ENABLE), dtype=np.int32),
         )
         output_specs = (
             (camera.create_image_output(wp.float32), wp.float32),
@@ -237,16 +237,16 @@ class TestCameraSensor(unittest.TestCase):
         self.assertEqual(len(model.render_context._texture_data_source), 1)
 
     def test_shape_index_by_world_rejects_negative_indices(self) -> None:
-        """Verify CameraSensor rejects negative shape indices."""
+        """Verify SensorCamera rejects negative shape indices."""
         with self.assertRaisesRegex(ValueError, "shape_indices must be non-negative"):
-            CameraSensor._compute_shape_index_by_world(
+            SensorCamera._compute_shape_index_by_world(
                 shape_indices=np.array([-1], dtype=np.int32),
                 shape_world=np.array([0, 1], dtype=np.int32),
                 world_count=2,
             )
 
         with self.assertRaises(IndexError):
-            CameraSensor._compute_shape_index_by_world(
+            SensorCamera._compute_shape_index_by_world(
                 shape_indices=np.array([2], dtype=np.int32),
                 shape_world=np.array([0, 1], dtype=np.int32),
                 world_count=2,
@@ -272,7 +272,7 @@ class TestCameraSensor(unittest.TestCase):
         self.assertEqual(camera._all_world_render_flags.device, expected_device)
 
     def test_update_renders_from_shape_transform(self) -> None:
-        """Verify CameraSensor renders from model shape transforms."""
+        """Verify SensorCamera renders from model shape transforms."""
         width, height = 16, 12
         model, camera = self._build_sphere_camera_scene(width, height)
         state = model.state()
@@ -290,7 +290,7 @@ class TestCameraSensor(unittest.TestCase):
         self.assertIsNotNone(model.render_context)
 
     def test_update_respects_disable_clear_flag(self) -> None:
-        """Verify CameraSensor clears output images for DISABLE_CLEAR worlds."""
+        """Verify SensorCamera clears output images for DISABLE_CLEAR worlds."""
         width, height = 16, 12
         camera = self._make_pinhole_camera(width, height)
 
@@ -300,9 +300,9 @@ class TestCameraSensor(unittest.TestCase):
         model = scene.finalize(device="cpu")
         state = model.state()
 
-        camera.clear_data = CameraSensor.ClearData(clear_depth=-2.0, clear_shape_index=123)
+        camera.clear_data = SensorCamera.ClearData(clear_depth=-2.0, clear_shape_index=123)
         world_render_flags = wp.array(
-            [int(CameraSensor.WorldRenderFlag.ENABLE), int(CameraSensor.WorldRenderFlag.DISABLE_CLEAR)],
+            [int(SensorCamera.WorldRenderFlag.ENABLE), int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR)],
             dtype=wp.int32,
             device="cpu",
         )
@@ -325,7 +325,7 @@ class TestCameraSensor(unittest.TestCase):
         self.assertEqual(int(shape_index_np[1, height // 2, width // 2]), 123)
 
     def test_update_respects_disable_preserve_flag(self) -> None:
-        """Verify CameraSensor preserves output images for DISABLE_PRESERVE worlds."""
+        """Verify SensorCamera preserves output images for DISABLE_PRESERVE worlds."""
         width, height = 16, 12
         camera = self._make_pinhole_camera(width, height)
 
@@ -336,7 +336,7 @@ class TestCameraSensor(unittest.TestCase):
         state = model.state()
 
         world_render_flags = wp.array(
-            [int(CameraSensor.WorldRenderFlag.ENABLE), int(CameraSensor.WorldRenderFlag.DISABLE_PRESERVE)],
+            [int(SensorCamera.WorldRenderFlag.ENABLE), int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE)],
             dtype=wp.int32,
             device="cpu",
         )
@@ -359,7 +359,7 @@ class TestCameraSensor(unittest.TestCase):
         np.testing.assert_array_equal(shape_index_np[1], np.full((height, width), 456, dtype=np.uint32))
 
     def test_update_reuses_default_world_render_flags(self) -> None:
-        """Verify CameraSensor reuses its finalized default world flags."""
+        """Verify SensorCamera reuses its finalized default world flags."""
         width, height = 16, 12
         model, camera = self._build_sphere_camera_scene(width, height)
         state = model.state()
@@ -373,8 +373,8 @@ class TestCameraSensor(unittest.TestCase):
         self.assertIs(camera._all_world_render_flags, default_world_render_flags)
 
     def test_update_uses_instance_render_settings(self) -> None:
-        """Verify CameraSensor update uses instance render settings."""
-        parameters = inspect.signature(CameraSensor.update).parameters
+        """Verify SensorCamera update uses instance render settings."""
+        parameters = inspect.signature(SensorCamera.update).parameters
         self.assertNotIn("clear_data", parameters)
         self.assertNotIn("render_config", parameters)
         self.assertNotIn("load_textures", parameters)
@@ -385,8 +385,8 @@ class TestCameraSensor(unittest.TestCase):
         model, camera = self._build_sphere_camera_scene(width, height)
         state = model.state()
 
-        camera.clear_data = CameraSensor.ClearData(clear_depth=-2.0, clear_shape_index=123)
-        camera.render_config = CameraSensor.RenderConfig(max_distance=0.1)
+        camera.clear_data = SensorCamera.ClearData(clear_depth=-2.0, clear_shape_index=123)
+        camera.render_config = SensorCamera.RenderConfig(max_distance=0.1)
         self.assertFalse(hasattr(camera, "load_textures"))
 
         depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
@@ -400,14 +400,14 @@ class TestCameraSensor(unittest.TestCase):
         self.assertEqual(int(shape_index.numpy()[0, height // 2, width // 2]), 123)
 
     def test_update_supports_all_render_orders_with_3d_outputs(self) -> None:
-        """Verify CameraSensor renders every render order into 3-D outputs."""
+        """Verify SensorCamera renders every render order into 3-D outputs."""
         width, height = 16, 12
 
-        for render_order in CameraSensor.RenderOrder:
+        for render_order in SensorCamera.RenderOrder:
             with self.subTest(render_order=render_order):
                 model, camera = self._build_sphere_camera_scene(width, height)
                 state = model.state()
-                camera.render_config = CameraSensor.RenderConfig(render_order=render_order)
+                camera.render_config = SensorCamera.RenderConfig(render_order=render_order)
 
                 depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
 
@@ -416,8 +416,8 @@ class TestCameraSensor(unittest.TestCase):
 
                 self.assertGreater(float(depth.numpy()[0, height // 2, width // 2]), 0.0)
 
-    def test_multiple_camera_sensors_share_model_render_context(self) -> None:
-        """Verify multiple CameraSensor instances share model render context."""
+    def test_multiple_sensor_cameras_share_model_render_context(self) -> None:
+        """Verify multiple SensorCamera instances share model render context."""
         width, height = 8, 6
         camera_a = self._make_pinhole_camera(width, height)
         camera_b = self._make_pinhole_camera(width, height)

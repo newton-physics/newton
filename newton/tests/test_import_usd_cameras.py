@@ -11,7 +11,7 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 
 
 def _camera_shapes(model: newton.Model) -> list[int]:
-    return [i for i, source in enumerate(model.shape_source) if isinstance(source, newton.CameraSensor)]
+    return [i for i, source in enumerate(model.shape_source) if isinstance(source, newton.SensorCamera)]
 
 
 def _make_stage():
@@ -141,7 +141,7 @@ class TestImportUsdCameras(unittest.TestCase):
         self.assertEqual(result["path_shape_map"]["/World/Body/Camera"], body_camera)
 
         self.assertEqual(int(model.shape_type.numpy()[overview]), int(newton.GeoType.CAMERA))
-        self.assertIsInstance(model.shape_source[overview], newton.CameraSensor)
+        self.assertIsInstance(model.shape_source[overview], newton.SensorCamera)
         self.assertEqual(model.shape_source[overview].width, 640)
         self.assertEqual(model.shape_source[overview].height, 480)
         self.assertEqual(int(model.shape_body.numpy()[overview]), -1)
@@ -151,7 +151,7 @@ class TestImportUsdCameras(unittest.TestCase):
         np.testing.assert_allclose(model.shape_transform.numpy()[body_camera][:3], [0.0, 0.0, 0.5])
         np.testing.assert_array_equal(model.shape_source[body_camera].shape_indices.numpy(), [body_camera])
 
-        expected_rays = newton.CameraSensor.compute_camera_rays_usd_pinhole(
+        expected_rays = newton.SensorCamera.compute_camera_rays_usd_pinhole(
             model.shape_source[overview].width,
             model.shape_source[overview].height,
             UsdGeom.Camera(stage.GetPrimAtPath("/World/Overview")),
@@ -200,7 +200,7 @@ class TestImportUsdCameras(unittest.TestCase):
         target_shape = result["path_shape_map"]["/World/Body/Target"]
         camera_shape = result["path_camera_map"]["/World/Camera"]
         camera_sensor = model.shape_source[camera_shape]
-        self.assertIsInstance(camera_sensor, newton.CameraSensor)
+        self.assertIsInstance(camera_sensor, newton.SensorCamera)
 
         depth = camera_sensor.create_depth_image_output()
         shape_index = camera_sensor.create_shape_index_image_output()

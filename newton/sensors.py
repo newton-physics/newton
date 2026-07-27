@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from ._src.sensors.camera_sensor import (
-    CameraSensor,
+from ._src.sensors.sensor_camera import (
+    SensorCamera,
 )
 
 # Contact sensors
@@ -26,7 +26,7 @@ from ._src.sensors.sensor_tiled_camera import (
 )
 
 __all__ = [
-    "CameraSensor",
+    "SensorCamera",
     "SensorContact",
     "SensorFrameTransform",
     "SensorIMU",

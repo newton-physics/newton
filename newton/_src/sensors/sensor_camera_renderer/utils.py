@@ -233,7 +233,7 @@ def _validate_rgba_out_buffer(
 
 
 class Utils:
-    """Utility functions for a CameraSensor."""
+    """Utility functions for a SensorCamera."""
 
     def __init__(self, view_count: int, device: wp.Device):
         self.__view_count = int(view_count)
@@ -244,10 +244,10 @@ class Utils:
         device = self.__device
         if image.shape[0] != view_count:
             raise ValueError(
-                f"{name}: image leading dimension {image.shape[0]} must match CameraSensor.view_count {view_count}"
+                f"{name}: image leading dimension {image.shape[0]} must match SensorCamera.view_count {view_count}"
             )
         if image.device != device:
-            raise ValueError(f"{name}: image is on {image.device} but CameraSensor is on {device}")
+            raise ValueError(f"{name}: image is on {image.device} but SensorCamera is on {device}")
         return view_count, image.shape[1], image.shape[2]
 
     def convert_ray_depth_to_forward_depth(
@@ -266,12 +266,12 @@ class Utils:
 
         Args:
             depth_image: Ray-distance depth [m] from
-                :meth:`~newton.sensors.CameraSensor.update`, shape
+                :meth:`~newton.sensors.SensorCamera.update`, shape
                 ``(view_count, height, width)``.
             camera_transforms: World-space camera transforms, shape
                 ``(view_count,)``.
             camera_rays: Camera-space rays from
-                :class:`~newton.sensors.CameraSensor`, shape
+                :class:`~newton.sensors.SensorCamera`, shape
                 ``(height, width, 2)``. Ray direction vectors must be unit
                 length; non-unit directions scale the converted depth.
             out_depth: Output forward-depth array [m] with the same shape as
@@ -313,7 +313,7 @@ class Utils:
         with :meth:`~newton.viewer.ViewerBase.log_image` for in-viewer display.
 
         Args:
-            image: Color output from :meth:`~newton.sensors.CameraSensor.update`, shape ``(view_count, height, width)``.
+            image: Color output from :meth:`~newton.sensors.SensorCamera.update`, shape ``(view_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Views per row in the grid. If None, picks a square-ish layout.
         """
@@ -517,7 +517,7 @@ class Utils:
         with :meth:`~newton.viewer.ViewerBase.log_image` for in-viewer display.
 
         Args:
-            image: Normal output from :meth:`~newton.sensors.CameraSensor.update`, shape ``(view_count, height, width)``.
+            image: Normal output from :meth:`~newton.sensors.SensorCamera.update`, shape ``(view_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Views per row in the grid. If None, picks a square-ish layout.
         """
@@ -558,7 +558,7 @@ class Utils:
         use :meth:`to_rgba_from_depth` with :meth:`~newton.viewer.ViewerBase.log_image` for in-viewer display.
 
         Args:
-            image: Depth output from :meth:`~newton.sensors.CameraSensor.update`, shape ``(view_count, height, width)``.
+            image: Depth output from :meth:`~newton.sensors.SensorCamera.update`, shape ``(view_count, height, width)``.
             out_buffer: Pre-allocated RGBA buffer. If None, allocates a new one.
             worlds_per_row: Views per row in the grid. If None, picks a square-ish layout.
             depth_range: Depth range to normalize to, shape ``(2,)`` ``[near, far]``. If None, computes from *image*.

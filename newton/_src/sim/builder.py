@@ -49,7 +49,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
-from ..sensors.camera_sensor import CameraSensor
+from ..sensors.sensor_camera import SensorCamera
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import deprecate_nonkeyword_arguments
@@ -7219,7 +7219,7 @@ class ModelBuilder:
         body: int = -1,
         *,
         xform: Transform | None = None,
-        camera: CameraSensor | None = None,
+        camera: SensorCamera | None = None,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = None,
         label: str | None = None,
@@ -7231,7 +7231,7 @@ class ModelBuilder:
             body: The index of the parent body this camera belongs to. Use
                 ``-1`` for a world-fixed camera.
             xform: Camera transform in the parent body's local frame.
-            camera: The :class:`~newton.CameraSensor` ray bundle asset.
+            camera: The :class:`~newton.SensorCamera` ray bundle asset.
             cfg: Shape configuration. If ``None``, a non-colliding,
                 invisible, zero-density site configuration is used.
             color: Optional display RGB color with values in [0, 1].
@@ -11149,7 +11149,7 @@ class ModelBuilder:
             heightfield_meshes = []
             camera_shape_indices = {}
             for shape_index, geo in enumerate(generated_shape_sources):
-                if isinstance(geo, CameraSensor):
+                if isinstance(geo, SensorCamera):
                     camera_shape_indices.setdefault(id(geo), []).append(shape_index)
 
             for geo in generated_shape_sources:
@@ -11194,7 +11194,7 @@ class ModelBuilder:
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
                         )
-                    elif isinstance(geo, CameraSensor):
+                    elif isinstance(geo, SensorCamera):
                         finalized_geos[geo_hash] = geo.finalize(
                             device=device,
                             shape_indices=camera_shape_indices[id(geo)],

@@ -11,7 +11,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from .camera_sensor_renderer.types import (
+from .sensor_camera_renderer.types import (
     ClearData,
     GaussianRenderMode,
     RenderConfig,
@@ -91,7 +91,7 @@ def _compute_camera_transforms(
     out_camera_transforms[world_index] = camera_transform
 
 
-class CameraSensor:
+class SensorCamera:
     """Camera ray bundle asset for shape-backed rendering.
 
     A camera sensor can be attached to a model as a ``GeoType.CAMERA`` shape.
@@ -160,13 +160,13 @@ class CameraSensor:
         """Renderer utility helpers for this finalized camera sensor."""
         self._ensure_finalized()
 
-        from .camera_sensor_renderer import Utils  # noqa: PLC0415
+        from .sensor_camera_renderer import Utils  # noqa: PLC0415
 
         return Utils(view_count=self.view_count, device=self.device)
 
     def _ensure_finalized(self) -> None:
         if self.view_count == 0:
-            raise RuntimeError("CameraSensor utilities are available after the sensor has been finalized into a model.")
+            raise RuntimeError("SensorCamera utilities are available after the sensor has been finalized into a model.")
 
     def create_image_output(self, dtype: Any) -> wp.array:
         """Create an output image array with shape ``(view_count, height, width)``."""
@@ -208,10 +208,10 @@ class CameraSensor:
         if not isinstance(rays, wp.array):
             raise TypeError(f"rays must be a Warp or NumPy array, got {type(rays).__name__}")
         if rays.dtype != wp.vec3f:
-            raise ValueError(f"CameraSensor rays must have dtype vec3f, got {rays.dtype}")
+            raise ValueError(f"SensorCamera rays must have dtype vec3f, got {rays.dtype}")
 
         if rays.ndim != 3 or rays.shape[0] <= 0 or rays.shape[1] <= 0 or rays.shape[2] != 2:
-            raise ValueError(f"CameraSensor rays must have shape (height, width, 2), got {rays.shape}")
+            raise ValueError(f"SensorCamera rays must have shape (height, width, 2), got {rays.shape}")
 
         return rays
 
@@ -230,7 +230,7 @@ class CameraSensor:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one pinhole camera."""
-        from .camera_sensor_renderer import camera_utils  # noqa: PLC0415
+        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
 
@@ -287,7 +287,7 @@ class CameraSensor:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one USD pinhole camera."""
-        from .camera_sensor_renderer import camera_utils  # noqa: PLC0415
+        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         camera_utils.compute_camera_rays_usd_pinhole(
@@ -320,7 +320,7 @@ class CameraSensor:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one OpenCV fisheye camera."""
-        from .camera_sensor_renderer import camera_utils  # noqa: PLC0415
+        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         image_width = float(width) if image_width is None else float(image_width)
@@ -371,7 +371,7 @@ class CameraSensor:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one F-theta fisheye camera."""
-        from .camera_sensor_renderer import camera_utils  # noqa: PLC0415
+        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
@@ -420,7 +420,7 @@ class CameraSensor:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one Kannala-Brandt fisheye camera."""
-        from .camera_sensor_renderer import camera_utils  # noqa: PLC0415
+        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
@@ -526,19 +526,19 @@ class CameraSensor:
             if world_index < 0:
                 if global_shape_index >= 0:
                     raise RuntimeError(
-                        "CameraSensor output has no camera axis; attach each CameraSensor to at most one "
+                        "SensorCamera output has no camera axis; attach each SensorCamera to at most one "
                         "global camera shape."
                     )
                 global_shape_index = int(shape_index)
             elif world_index >= world_count:
                 raise RuntimeError(
-                    f"CameraSensor shape {int(shape_index)} references world {world_index}, but model has "
+                    f"SensorCamera shape {int(shape_index)} references world {world_index}, but model has "
                     f"{world_count} worlds."
                 )
             else:
                 if shape_index_by_world[world_index] >= 0:
                     raise RuntimeError(
-                        "CameraSensor output has no camera axis; attach each CameraSensor to at most one "
+                        "SensorCamera output has no camera axis; attach each SensorCamera to at most one "
                         "camera shape per world."
                     )
                 shape_index_by_world[world_index] = int(shape_index)
@@ -562,7 +562,7 @@ class CameraSensor:
             or self._all_world_render_flags.shape != transforms_shape
             or self._all_world_render_flags.device != model.device
         ):
-            raise RuntimeError("CameraSensor render buffers are not finalized for this model.")
+            raise RuntimeError("SensorCamera render buffers are not finalized for this model.")
 
         wp.launch(
             kernel=_compute_camera_transforms,
@@ -617,10 +617,10 @@ class CameraSensor:
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``.
         """
         if self.rays.device != model.device:
-            raise RuntimeError("CameraSensor rays are not on the model device; finalize the model with this camera.")
+            raise RuntimeError("SensorCamera rays are not on the model device; finalize the model with this camera.")
         if self.shape_indices.device != model.device:
             raise RuntimeError(
-                "CameraSensor shape indices are not on the model device; finalize the model with this camera."
+                "SensorCamera shape indices are not on the model device; finalize the model with this camera."
             )
 
         render_context = model.init_render_context()

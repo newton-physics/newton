@@ -49,12 +49,12 @@ __all__ = [
 # ==================================================================================
 from ._src.geometry import (  # noqa: E402
     SDF,
-    CameraSensor,
     Gaussian,
     GeoType,
     Heightfield,
     Mesh,
     ParticleFlags,
+    SensorCamera,
     ShapeFlags,
     TetMesh,
     intersect_ray,
@@ -62,12 +62,12 @@ from ._src.geometry import (  # noqa: E402
 
 __all__ += [
     "SDF",
-    "CameraSensor",
     "Gaussian",
     "GeoType",
     "Heightfield",
     "Mesh",
     "ParticleFlags",
+    "SensorCamera",
     "ShapeFlags",
     "TetMesh",
     "intersect_ray",

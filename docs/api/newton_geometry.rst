@@ -16,9 +16,9 @@ newton.geometry
    BroadPhaseAllPairs
    BroadPhaseExplicit
    BroadPhaseSAP
-   CameraSensor
    HydroelasticSDF
    NarrowPhase
+   SensorCamera
 
 .. rubric:: Functions
 

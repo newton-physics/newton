@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from ..sensors.camera_sensor import CameraSensor
+from ..sensors.sensor_camera import SensorCamera
 from .broad_phase_common import test_group_pair, test_world_and_group_pair
 from .broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from .broad_phase_sap import BroadPhaseSAP
@@ -38,12 +38,12 @@ __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
-    "CameraSensor",
     "Gaussian",
     "GeoType",
     "Heightfield",
     "Mesh",
     "ParticleFlags",
+    "SensorCamera",
     "ShapeFlags",
     "TetMesh",
     "collide_box_box",

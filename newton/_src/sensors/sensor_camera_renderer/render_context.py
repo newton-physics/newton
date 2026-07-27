@@ -283,7 +283,7 @@ class RenderContext:
                 ``(height, width, 2)``.
             world_render_flags: Per-world render flags, shape
                 ``(world_count,)``. Values come from
-                :class:`~newton.sensors.CameraSensor.WorldRenderFlag`.
+                :class:`~newton.sensors.SensorCamera.WorldRenderFlag`.
             color_image: Output RGBA color buffer (packed ``uint32``).
             depth_image: Output depth buffer [m].
             forward_depth_image: Output forward-depth buffer [m].

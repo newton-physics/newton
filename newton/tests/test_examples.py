@@ -73,7 +73,7 @@ _MJCF_CAMERA_IMPORT_WARNING_RE = (
     r"(?m)"
     r"(?:^.*newton/_src/utils/import_mjcf\.py:\d+: UserWarning: "
     r"MJCF camera '[^']+' has mode='[^']+'; authored camera mode is ignored and "
-    r"a fixed pinhole CameraSensor is imported\.\n"
+    r"a fixed pinhole SensorCamera is imported\.\n"
     r"^  _parse_cameras_impl\(body, link, defaults, label_prefix=body_label_path\)\n?)+"
 )
 _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
@@ -873,7 +873,7 @@ add_example_test(
 
 add_example_test(
     TestSensorExamples,
-    name="sensors.example_camera_sensor",
+    name="sensors.example_sensor_camera",
     devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     use_viewer=True,

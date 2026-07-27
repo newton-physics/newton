@@ -19,7 +19,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
-from ..sensors.camera_sensor import CameraSensor
+from ..sensors.sensor_camera import SensorCamera
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -1361,13 +1361,13 @@ def parse_mjcf(
             if camera_mode is not None and camera_mode != "fixed":
                 warnings.warn(
                     f"MJCF camera '{camera_name}' has mode={camera_mode!r}; authored camera mode is ignored "
-                    "and a fixed pinhole CameraSensor is imported.",
+                    "and a fixed pinhole SensorCamera is imported.",
                     stacklevel=2,
                 )
             if camera_attrib.get("orthographic", "false").lower() == "true":
                 warnings.warn(
                     f"MJCF camera '{camera_name}' has orthographic='true'; authored camera projection is ignored "
-                    "and a fixed pinhole CameraSensor is imported.",
+                    "and a fixed pinhole SensorCamera is imported.",
                     stacklevel=2,
                 )
 
@@ -1378,18 +1378,18 @@ def parse_mjcf(
                 camera_xform = incoming_xform * camera_xform
 
             width, height = _parse_camera_resolution(camera_attrib)
-            camera_rays = CameraSensor.compute_camera_rays_pinhole(
+            camera_rays = SensorCamera.compute_camera_rays_pinhole(
                 width,
                 height,
                 _parse_camera_fov(camera_attrib, (width, height)),
                 device="cpu",
             )
-            camera_sensor = CameraSensor(camera_rays)
+            sensor_camera = SensorCamera(camera_rays)
             camera_label = f"{label_prefix}/{camera_name}" if label_prefix else camera_name
             camera_shape = builder.add_shape_camera(
                 body=body,
                 xform=camera_xform,
-                camera=camera_sensor,
+                camera=sensor_camera,
                 label=camera_label,
             )
             camera_shapes.append(camera_shape)
