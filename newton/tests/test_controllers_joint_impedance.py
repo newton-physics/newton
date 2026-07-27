@@ -26,9 +26,9 @@ def _dofs_arr(dofs_list, device):
     return wp.array(np.array(dofs_list, dtype=np.int32), device=device)
 
 
-def _gains(num_robots, max_dofs, value, device):
-    """Return a (num_robots, max_dofs) float32 gain array filled with value."""
-    return wp.full((num_robots, max_dofs), value, dtype=wp.float32, device=device)
+def _gains(robot_count, max_dofs, value, device):
+    """Return a (robot_count, max_dofs) float32 gain array filled with value."""
+    return wp.full((robot_count, max_dofs), value, dtype=wp.float32, device=device)
 
 
 def _flat(data, device):
@@ -87,7 +87,7 @@ def _build_two_robot_mixed():
 
 def _make_mf(
     *,
-    num_robots,
+    robot_count,
     dofs_list,
     kp,
     kd,
@@ -101,12 +101,12 @@ def _make_mf(
     max_dofs = max(dofs_list)
     total_dofs = sum(dofs_list)
     return ControllerJointImpedanceModelFree(
-        num_robots=num_robots,
+        robot_count=robot_count,
         dofs_per_robot=_dofs_arr(dofs_list, device),
         max_dofs=max_dofs,
         default_dof_indices=_iota(total_dofs, device),
-        stiffness=_gains(num_robots, max_dofs, kp, device),
-        damping=_gains(num_robots, max_dofs, kd, device),
+        stiffness=_gains(robot_count, max_dofs, kp, device),
+        damping=_gains(robot_count, max_dofs, kd, device),
         use_gravity_compensation=use_gravity,
         use_coriolis_compensation=use_coriolis,
         use_inertia_decoupling=use_inertia,
@@ -138,7 +138,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
     def test_zero_error_gives_zero_torque(self):
         """Verify that zero position and velocity error produces zero torque."""
         device = wp.get_device()
-        ctrl = _make_mf(num_robots=1, dofs_list=[3], kp=10.0, kd=1.0, device=device)
+        ctrl = _make_mf(robot_count=1, dofs_list=[3], kp=10.0, kd=1.0, device=device)
         tau = _run_mf(
             ctrl, q=[0.1, 0.2, 0.3], qd=[0.0, 0.0, 0.0], q_des=[0.1, 0.2, 0.3], qd_des=[0.0, 0.0, 0.0], device=device
         )
@@ -147,7 +147,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
     def test_position_error_produces_stiffness_torque(self):
         """Verify τ = Kp * (q_des - q) when Kd=0."""
         device = wp.get_device()
-        ctrl = _make_mf(num_robots=1, dofs_list=[3], kp=5.0, kd=0.0, device=device)
+        ctrl = _make_mf(robot_count=1, dofs_list=[3], kp=5.0, kd=0.0, device=device)
         tau = _run_mf(
             ctrl, q=[0.0, 0.0, 0.0], qd=[0.0, 0.0, 0.0], q_des=[1.0, 0.0, 0.0], qd_des=[0.0, 0.0, 0.0], device=device
         )
@@ -156,7 +156,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
     def test_velocity_error_produces_damping_torque(self):
         """Verify τ = Kd * (qd_des - qd) when Kp=0."""
         device = wp.get_device()
-        ctrl = _make_mf(num_robots=1, dofs_list=[3], kp=0.0, kd=2.0, device=device)
+        ctrl = _make_mf(robot_count=1, dofs_list=[3], kp=0.0, kd=2.0, device=device)
         tau = _run_mf(
             ctrl, q=[0.0, 0.0, 0.0], qd=[0.0, 0.0, 0.0], q_des=[0.0, 0.0, 0.0], qd_des=[0.0, 1.0, 0.0], device=device
         )
@@ -165,17 +165,17 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
     def test_multiple_robots_independent(self):
         """Verify that torques for each robot depend only on that robot's error."""
         device = wp.get_device()
-        num_robots, num_dofs = 3, 2
-        ctrl = _make_mf(num_robots=num_robots, dofs_list=[num_dofs] * num_robots, kp=1.0, kd=0.0, device=device)
+        robot_count, num_dofs = 3, 2
+        ctrl = _make_mf(robot_count=robot_count, dofs_list=[num_dofs] * robot_count, kp=1.0, kd=0.0, device=device)
         q_des = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
-        q = np.zeros((num_robots, num_dofs), dtype=np.float32)
+        q = np.zeros((robot_count, num_dofs), dtype=np.float32)
         tau = _run_mf(ctrl, q=q, qd=q * 0, q_des=q_des, qd_des=q * 0, device=device)
         np.testing.assert_allclose(tau, q_des.flatten(), atol=1e-5)
 
     def test_inertia_decoupling_scales_by_mass_matrix(self):
         """Verify τ = M @ (Kp * Δq) when use_inertia_decoupling=True."""
         device = wp.get_device()
-        ctrl = _make_mf(num_robots=1, dofs_list=[2], kp=1.0, kd=0.0, device=device, use_inertia=True)
+        ctrl = _make_mf(robot_count=1, dofs_list=[2], kp=1.0, kd=0.0, device=device, use_inertia=True)
         M = wp.array(np.eye(2, dtype=np.float32).reshape(1, 2, 2) * 2.0, dtype=wp.float32, device=device)
         tau = _run_mf(
             ctrl, q=[0.0, 0.0], qd=[0.0, 0.0], q_des=[1.0, 1.0], qd_des=[0.0, 0.0], device=device, mass_matrix=M
@@ -185,7 +185,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
     def test_gravity_compensation_adds_to_tau(self):
         """Verify gravity_force is added to τ when use_gravity_compensation=True."""
         device = wp.get_device()
-        ctrl = _make_mf(num_robots=1, dofs_list=[2], kp=0.0, kd=0.0, device=device, use_gravity=True)
+        ctrl = _make_mf(robot_count=1, dofs_list=[2], kp=0.0, kd=0.0, device=device, use_gravity=True)
         grav = wp.array([3.0, 4.0], dtype=wp.float32, device=device)
         tau = _run_mf(
             ctrl, q=[0.0, 0.0], qd=[0.0, 0.0], q_des=[0.0, 0.0], qd_des=[0.0, 0.0], device=device, gravity_force=grav
@@ -195,7 +195,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
     def test_coriolis_compensation_adds_to_tau(self):
         """Verify coriolis_force is added to τ when use_coriolis_compensation=True."""
         device = wp.get_device()
-        ctrl = _make_mf(num_robots=1, dofs_list=[2], kp=0.0, kd=0.0, device=device, use_coriolis=True)
+        ctrl = _make_mf(robot_count=1, dofs_list=[2], kp=0.0, kd=0.0, device=device, use_coriolis=True)
         cor = wp.array([1.0, -1.0], dtype=wp.float32, device=device)
         tau = _run_mf(
             ctrl, q=[0.0, 0.0], qd=[0.0, 0.0], q_des=[0.0, 0.0], qd_des=[0.0, 0.0], device=device, coriolis_force=cor
@@ -205,7 +205,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
     def test_qdd_feedforward_adds_before_inertia(self):
         """Verify qdd feedforward is included inside M @ (PD + qdd) when use_inertia=True."""
         device = wp.get_device()
-        ctrl = _make_mf(num_robots=1, dofs_list=[2], kp=0.0, kd=0.0, device=device, use_inertia=True, has_qdd=True)
+        ctrl = _make_mf(robot_count=1, dofs_list=[2], kp=0.0, kd=0.0, device=device, use_inertia=True, has_qdd=True)
         M = wp.array(np.eye(2, dtype=np.float32).reshape(1, 2, 2) * 3.0, dtype=wp.float32, device=device)
         qdd = wp.array([1.0, 0.0], dtype=wp.float32, device=device)
         tau = _run_mf(
@@ -224,7 +224,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         """Verify stiffness supplied via a live input attribute is applied correctly."""
         device = wp.get_device()
         ctrl = ControllerJointImpedanceModelFree(
-            num_robots=1,
+            robot_count=1,
             dofs_per_robot=_dofs_arr([2], device),
             max_dofs=2,
             default_dof_indices=_iota(2, device),
@@ -248,14 +248,14 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
     def test_is_graphable(self):
         """Verify the controller reports is_graphable() == True."""
         device = wp.get_device()
-        ctrl = _make_mf(num_robots=1, dofs_list=[2], kp=1.0, kd=0.0, device=device)
+        ctrl = _make_mf(robot_count=1, dofs_list=[2], kp=1.0, kd=0.0, device=device)
         self.assertTrue(ctrl.is_graphable())
 
     def test_inputs_has_required_fields(self):
         """Verify input() returns a namespace with all declared port fields present."""
         device = wp.get_device()
         ctrl = _make_mf(
-            num_robots=1,
+            robot_count=1,
             dofs_list=[3],
             kp=1.0,
             kd=0.0,
@@ -281,7 +281,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
     def test_outputs_has_joint_f(self):
         """Verify output() returns a flat array of size sum(dofs_per_robot)."""
         device = wp.get_device()
-        ctrl = _make_mf(num_robots=1, dofs_list=[2], kp=1.0, kd=0.0, device=device)
+        ctrl = _make_mf(robot_count=1, dofs_list=[2], kp=1.0, kd=0.0, device=device)
         outs = ctrl.output()
         self.assertTrue(hasattr(outs, "joint_f"))
         self.assertEqual(outs.joint_f.shape, (2,))
@@ -290,7 +290,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         """Verify joint_f_attr renames the output field on the output struct."""
         device = wp.get_device()
         ctrl = ControllerJointImpedanceModelFree(
-            num_robots=1,
+            robot_count=1,
             dofs_per_robot=_dofs_arr([2], device),
             max_dofs=2,
             default_dof_indices=_iota(2, device),
@@ -308,7 +308,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         device = wp.get_device()
         indices = wp.array([1, 3], dtype=wp.uint32, device=device)
         ctrl = ControllerJointImpedanceModelFree(
-            num_robots=1,
+            robot_count=1,
             dofs_per_robot=_dofs_arr([2], device),
             max_dofs=2,
             default_dof_indices=indices,
@@ -339,7 +339,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         duplicate_indices = wp.array([0, 0], dtype=wp.uint32, device=device)
         with self.assertRaises(ValueError):
             ControllerJointImpedanceModelFree(
-                num_robots=2,
+                robot_count=2,
                 dofs_per_robot=_dofs_arr([1, 1], device),
                 max_dofs=1,
                 default_dof_indices=duplicate_indices,
@@ -366,7 +366,7 @@ class TestControllerJointImpedanceModelFreeHeterogeneous(unittest.TestCase):
         dofs_list = [2, 1]
         max_dofs = 2
         ctrl = ControllerJointImpedanceModelFree(
-            num_robots=2,
+            robot_count=2,
             dofs_per_robot=_dofs_arr(dofs_list, device),
             max_dofs=max_dofs,
             default_dof_indices=_iota(3, device),  # 2 + 1 = 3 total DOFs
@@ -393,7 +393,7 @@ class TestControllerJointImpedanceModelFreeHeterogeneous(unittest.TestCase):
         dofs_list = [2, 1]
         max_dofs = 2
         ctrl = ControllerJointImpedanceModelFree(
-            num_robots=2,
+            robot_count=2,
             dofs_per_robot=_dofs_arr(dofs_list, device),
             max_dofs=max_dofs,
             default_dof_indices=_iota(3, device),
@@ -423,7 +423,7 @@ class TestControllerJointImpedanceModelFreeHeterogeneous(unittest.TestCase):
         dofs_list = [3, 1]
         max_dofs = 3
         ctrl = ControllerJointImpedanceModelFree(
-            num_robots=2,
+            robot_count=2,
             dofs_per_robot=_dofs_arr(dofs_list, device),
             max_dofs=max_dofs,
             default_dof_indices=_iota(4, device),
@@ -456,7 +456,7 @@ class TestControllerJointImpedanceModelFreeHeterogeneous(unittest.TestCase):
         dofs_list = [2, 1]
         max_dofs = 2
         ctrl = ControllerJointImpedanceModelFree(
-            num_robots=2,
+            robot_count=2,
             dofs_per_robot=_dofs_arr(dofs_list, device),
             max_dofs=max_dofs,
             default_dof_indices=_iota(3, device),
@@ -494,7 +494,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         """Build a ControllerJointImpedance for a single prismatic robot."""
         builder = _build_single_prismatic()
         return ControllerJointImpedance(
-            model_builder=builder,
+            builder=builder,
             default_dof_indices=_iota(1, device),
             stiffness=_gains(1, 1, kp, device),
             damping=_gains(1, 1, kd, device),
@@ -556,7 +556,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         builder.add_articulation([j], label="ball_robot")
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
-                model_builder=builder,
+                builder=builder,
                 default_dof_indices=_iota(3, device),
                 stiffness=_gains(1, 3, 1.0, device),
                 damping=_gains(1, 3, 0.0, device),
@@ -587,7 +587,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         builder.add_articulation([j_fixed, j_rev], label="robot")
         # Should not raise — fixed joint is zero-DOF and irrelevant to the PD term.
         ctrl = ControllerJointImpedance(
-            model_builder=builder,
+            builder=builder,
             default_dof_indices=_iota(1, device),
             stiffness=_gains(1, 1, 10.0, device),
             damping=_gains(1, 1, 1.0, device),
@@ -603,7 +603,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         builder = _build_single_prismatic()
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
-                model_builder=builder,
+                builder=builder,
                 default_dof_indices=_iota(5, device),
                 stiffness=_gains(1, 1, 1.0, device),
                 damping=_gains(1, 1, 0.0, device),
@@ -627,7 +627,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         builder = _build_two_robot_mixed()  # robot0: 2 DOFs, robot1: 1 DOF
         max_dofs = 2
         ctrl = ControllerJointImpedance(
-            model_builder=builder,
+            builder=builder,
             default_dof_indices=_iota(3, device),  # 2 + 1 total DOFs
             stiffness=_gains(2, max_dofs, 4.0, device),
             damping=_gains(2, max_dofs, 0.0, device),

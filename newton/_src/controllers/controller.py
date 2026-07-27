@@ -37,7 +37,7 @@ class Controller(ABC):
 
     @abstractmethod
     def is_graphable(self) -> bool:
-        """Whether :meth:`compute` is safe to capture in a CUDA graph."""
+        """Whether :meth:`compute` is safe to capture in a graph."""
 
     @abstractmethod
     def input(self) -> Any:

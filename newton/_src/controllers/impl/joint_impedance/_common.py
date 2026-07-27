@@ -14,14 +14,14 @@ def _idx_max(idx: wp.array[wp.uint32]) -> int:
 
 @wp.kernel
 def _pd_term_kernel(
-    joint_q: wp.array2d[wp.float32],  # (num_robots, max_dofs)
-    joint_qd: wp.array2d[wp.float32],  # (num_robots, max_dofs)
-    joint_q_des: wp.array2d[wp.float32],  # (num_robots, max_dofs)
-    joint_qd_des: wp.array2d[wp.float32],  # (num_robots, max_dofs)
-    stiffness: wp.array2d[wp.float32],  # (num_robots, max_dofs)
-    damping: wp.array2d[wp.float32],  # (num_robots, max_dofs)
-    dofs_per_robot: wp.array[wp.int32],  # (num_robots,)
-    out: wp.array2d[wp.float32],  # (num_robots, max_dofs)
+    joint_q: wp.array2d[wp.float32],  # (robot_count, max_dofs)
+    joint_qd: wp.array2d[wp.float32],  # (robot_count, max_dofs)
+    joint_q_des: wp.array2d[wp.float32],  # (robot_count, max_dofs)
+    joint_qd_des: wp.array2d[wp.float32],  # (robot_count, max_dofs)
+    stiffness: wp.array2d[wp.float32],  # (robot_count, max_dofs)
+    damping: wp.array2d[wp.float32],  # (robot_count, max_dofs)
+    dofs_per_robot: wp.array[wp.int32],  # (robot_count,)
+    out: wp.array2d[wp.float32],  # (robot_count, max_dofs)
 ):
     robot, dof = wp.tid()
     if dof >= dofs_per_robot[robot]:
@@ -33,9 +33,9 @@ def _pd_term_kernel(
 
 @wp.kernel
 def _add_term_kernel(
-    term: wp.array2d[wp.float32],  # (num_robots, max_dofs)
-    dofs_per_robot: wp.array[wp.int32],  # (num_robots,)
-    tau: wp.array2d[wp.float32],  # (num_robots, max_dofs)
+    term: wp.array2d[wp.float32],  # (robot_count, max_dofs)
+    dofs_per_robot: wp.array[wp.int32],  # (robot_count,)
+    tau: wp.array2d[wp.float32],  # (robot_count, max_dofs)
 ):
     robot, dof = wp.tid()
     if dof >= dofs_per_robot[robot]:
@@ -45,10 +45,10 @@ def _add_term_kernel(
 
 @wp.kernel
 def _mass_matrix_multiply_kernel(
-    M: wp.array3d[wp.float32],  # (num_robots, max_dofs, max_dofs)
-    vec: wp.array2d[wp.float32],  # (num_robots, max_dofs)
-    dofs_per_robot: wp.array[wp.int32],  # (num_robots,)
-    out: wp.array2d[wp.float32],  # (num_robots, max_dofs)
+    M: wp.array3d[wp.float32],  # (robot_count, max_dofs, max_dofs)
+    vec: wp.array2d[wp.float32],  # (robot_count, max_dofs)
+    dofs_per_robot: wp.array[wp.int32],  # (robot_count,)
+    out: wp.array2d[wp.float32],  # (robot_count, max_dofs)
 ):
     robot, dof = wp.tid()
     if dof >= dofs_per_robot[robot]:
@@ -73,9 +73,9 @@ def _gather_dof_flat_kernel(
 def _gather_dof_kernel(
     src: wp.array[wp.float32],  # flat sim array
     dof_indices: wp.array[wp.uint32],  # (total_dofs,) — concatenated per-robot indices
-    dof_offsets: wp.array[wp.int32],  # (num_robots,) — start of each robot in dof_indices
-    dofs_per_robot: wp.array[wp.int32],  # (num_robots,)
-    dst: wp.array2d[wp.float32],  # (num_robots, max_dofs)
+    dof_offsets: wp.array[wp.int32],  # (robot_count,) — start of each robot in dof_indices
+    dofs_per_robot: wp.array[wp.int32],  # (robot_count,)
+    dst: wp.array2d[wp.float32],  # (robot_count, max_dofs)
 ):
     robot, dof = wp.tid()
     if dof >= dofs_per_robot[robot]:
@@ -85,10 +85,10 @@ def _gather_dof_kernel(
 
 @wp.kernel
 def _scatter_dof_kernel(
-    src: wp.array2d[wp.float32],  # (num_robots, max_dofs)
+    src: wp.array2d[wp.float32],  # (robot_count, max_dofs)
     dof_indices: wp.array[wp.uint32],  # (total_dofs,) — concatenated per-robot indices
-    dof_offsets: wp.array[wp.int32],  # (num_robots,) — start of each robot in dof_indices
-    dofs_per_robot: wp.array[wp.int32],  # (num_robots,)
+    dof_offsets: wp.array[wp.int32],  # (robot_count,) — start of each robot in dof_indices
+    dofs_per_robot: wp.array[wp.int32],  # (robot_count,)
     dst: wp.array[wp.float32],  # flat sim output
 ):
     robot, dof = wp.tid()

@@ -40,7 +40,7 @@ class ControllerJointImpedance(Controller):
     model rather than supplied by the caller.
 
     Supports heterogeneous robot fleets — robots in the batch may have
-    different DOF counts. The ``model_builder`` articulations define the
+    different DOF counts. The ``builder`` articulations define the
     per-robot topology; the controller pads internal buffers to
     ``model.max_dofs_per_articulation`` and skips padding slots in all kernels.
 
@@ -51,7 +51,7 @@ class ControllerJointImpedance(Controller):
             + [g(q)      if use_gravity_compensation  else 0]
 
     Args:
-        model_builder: :class:`~newton.ModelBuilder` with N articulations (one
+        builder: :class:`~newton.ModelBuilder` with N articulations (one
             per robot). Articulations may have different DOF counts.
         default_dof_indices: ``wp.array[uint32]`` of length
             ``sum(dofs per articulation)`` — concatenated per-robot index
@@ -86,7 +86,7 @@ class ControllerJointImpedance(Controller):
 
     def __init__(
         self,
-        model_builder: ModelBuilder,
+        builder: ModelBuilder,
         *,
         default_dof_indices: wp.array[wp.uint32],
         stiffness: wp.array2d[wp.float32] | str,
@@ -110,20 +110,20 @@ class ControllerJointImpedance(Controller):
         device: Any = None,
         requires_grad: bool = False,
     ):
-        if not isinstance(model_builder, ModelBuilder):
-            raise TypeError(f"model_builder must be a newton.ModelBuilder, got {type(model_builder).__name__}.")
+        if not isinstance(builder, ModelBuilder):
+            raise TypeError(f"builder must be a newton.ModelBuilder, got {type(builder).__name__}.")
         if not isinstance(default_dof_indices, wp.array) or default_dof_indices.dtype != wp.uint32:
             raise TypeError("default_dof_indices must be wp.array[uint32].")
 
-        num_robots = model_builder.articulation_count
-        if num_robots < 1:
-            raise ValueError("model_builder has no articulations.")
+        robot_count = builder.articulation_count
+        if robot_count < 1:
+            raise ValueError("builder has no articulations.")
 
         # Fixed joints contribute zero DOFs and are invisible to the PD error term.
         allowed_joint_types = {int(JointType.REVOLUTE), int(JointType.PRISMATIC), int(JointType.FIXED)}
         unsupported_joints = [
             (joint_index, JointType(joint_type).name)
-            for joint_index, joint_type in enumerate(model_builder.joint_type)
+            for joint_index, joint_type in enumerate(builder.joint_type)
             if joint_type not in allowed_joint_types
         ]
         if unsupported_joints:
@@ -140,7 +140,7 @@ class ControllerJointImpedance(Controller):
         self._has_qdd = bool(has_qdd_feedforward)
         self._needs_fk = self._use_inertia or self._use_gravity or self._use_coriolis
 
-        self._model = model_builder.finalize(device=self._device, requires_grad=requires_grad)
+        self._model = builder.finalize(device=self._device, requires_grad=requires_grad)
         self._model_state = self._model.state()
 
         max_dofs = self._model.max_dofs_per_articulation
@@ -150,7 +150,7 @@ class ControllerJointImpedance(Controller):
         art_end = self._model.articulation_end.numpy()  # one-past-last joint per articulation
         joint_q_start = self._model.joint_q_start.numpy()  # DOF start per joint (+1 sentinel)
         dofs_per_robot_np = np.array(
-            [joint_q_start[art_end[i]] - joint_q_start[art_start[i]] for i in range(num_robots)],
+            [joint_q_start[art_end[i]] - joint_q_start[art_start[i]] for i in range(robot_count)],
             dtype=np.int32,
         )
         dofs_per_robot = wp.array(dofs_per_robot_np, dtype=wp.int32, device=self._device)
@@ -162,7 +162,7 @@ class ControllerJointImpedance(Controller):
                 f"sum of per-robot DOF counts = {total_dofs}."
             )
 
-        self._num_robots = num_robots
+        self._robot_count = robot_count
         self._max_dofs = max_dofs
         self._total_dofs = total_dofs
         self._dofs_per_robot_np = dofs_per_robot_np
@@ -188,7 +188,7 @@ class ControllerJointImpedance(Controller):
 
         if self._use_inertia:
             self._mass_matrix = wp.zeros(
-                (num_robots, max_dofs, max_dofs),
+                ((robot_count, max_dofs, max_dofs)),
                 dtype=wp.float32,
                 device=self._device,
                 requires_grad=requires_grad,
@@ -207,7 +207,7 @@ class ControllerJointImpedance(Controller):
         identity_idx = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self._device)
 
         self._model_free = ControllerJointImpedanceModelFree(
-            num_robots=num_robots,
+            robot_count=robot_count,
             dofs_per_robot=dofs_per_robot,
             max_dofs=max_dofs,
             default_dof_indices=default_dof_indices,
@@ -253,8 +253,8 @@ class ControllerJointImpedance(Controller):
             self._input_specs.append((self._qdd_attr, wp.float32, _idx_max(self._qdd_idx)))
 
     @property
-    def num_robots(self) -> int:
-        return self._num_robots
+    def robot_count(self) -> int:
+        return self._robot_count
 
     @property
     def max_dofs(self) -> int:
@@ -274,7 +274,7 @@ class ControllerJointImpedance(Controller):
     def input(self):
         """Return a pre-allocated input struct without dynamics fields (computed internally)."""
         ns = _allocate_namespace(self._input_specs, self._device, self._requires_grad)
-        shape_2d = (self._num_robots, self._max_dofs)
+        shape_2d = (self._robot_count, self._max_dofs)
         if self._stiffness_attr is not None:
             setattr(
                 ns,

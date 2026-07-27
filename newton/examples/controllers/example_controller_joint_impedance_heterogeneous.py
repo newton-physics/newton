@@ -152,7 +152,7 @@ class Example:
         default_idx = wp.array(np.arange(TOTAL_DOFS, dtype=np.uint32), device=self.device)
 
         self.controller = ControllerJointImpedance(
-            model_builder=ctrl_builder,
+            builder=ctrl_builder,
             default_dof_indices=default_idx,
             stiffness=wp.array(KP, dtype=wp.float32, device=self.device),
             damping=wp.array(KD, dtype=wp.float32, device=self.device),
