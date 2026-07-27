@@ -575,6 +575,39 @@ uv run --extra dev -m newton.tests
 uvx pre-commit run -a
 ```
 
+## Review measurements
+
+Measured on an NVIDIA RTX PRO 6000 Blackwell after merging `main`, using the
+20-frame nut-and-bolt ASV benchmark:
+
+```bash
+WARP_CACHE_PATH=/tmp/newton-warp-cache UV_CACHE_DIR=/tmp/newton-uv-cache uvx --with virtualenv asv continuous main HEAD -b FastExampleContactHydroWorkingDefaults --launch-method spawn
+```
+
+- `main`: `62.4 +/- 0.4 ms`
+- this branch: `80.7 +/- 0.4 ms`
+- ratio: `1.29`; ASV reports a significant slowdown
+
+The example explicitly sets `gap=0.005`. Instrumenting the same 20 frames
+shows why the default case costs more:
+
+| Configuration | Mean raw faces | Mean reduced contacts |
+| --- | ---: | ---: |
+| `main` | 22,326 | 1,232 |
+| branch, `gap=0.0` | 33,026 | 1,243 |
+| branch, `gap=0.005` | 301,540 | 1,894 |
+
+The branch's raw-face buffer capacity is 1,774,080 slots in the default-gap
+case, and the reduction table capacity is 524,288 entries. The review cleanup
+adds one cached pressure float per raw-face slot, about 6.8 MiB at this
+capacity. It does not add a second geometric-area array.
+
+A same-process timing check on the branch measured `84.3 ms` with
+`gap=0.005` and `65.9 ms` with `gap=0.0`. This supports the conclusion that
+the main cost is generating the requested speculative band, not the small
+classification helper. The exact counts vary with the simulated trajectory,
+so use the ASV result for the main-versus-branch timing claim.
+
 ## Required visual checks
 
 Run the dedicated verification scene:
