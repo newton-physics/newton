@@ -9,6 +9,7 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from ..core.reset import validate_reset_world_mask
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
@@ -1226,21 +1227,11 @@ class CollisionPipeline:
 
     def reset_contact_matching(self, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Clear all or reset-selected previous-frame contact history."""
-        if world_mask is not None:
-            if not isinstance(world_mask, wp.array) or world_mask.dtype != wp.bool:
-                raise TypeError("'world_mask' must be a Warp boolean array or None.")
-            if world_mask.ndim != 1:
-                raise ValueError("'world_mask' must be one-dimensional.")
-            if world_mask.device != self.model.device:
-                raise ValueError(
-                    f"'world_mask' device {world_mask.device} does not match model device {self.model.device}."
-                )
-            world_count = int(self.model.world_count)
-            if world_mask.shape[0] not in (world_count, world_count + 1):
-                raise ValueError(
-                    f"'world_mask' length {world_mask.shape[0]} must equal model.world_count "
-                    f"({world_count}) or model.world_count + 1 ({world_count + 1})."
-                )
+        world_mask = validate_reset_world_mask(
+            world_mask,
+            world_count=int(self.model.world_count),
+            device=self.model.device,
+        )
         if self._contact_matcher is not None:
             self._contact_matcher.reset(world_mask)
 

@@ -28,7 +28,7 @@ from newton.solvers.experimental.coupled import (
     SolverCoupled,
     SolverCoupledProxy,
 )
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 @wp.kernel(enable_backward=False)
@@ -801,7 +801,7 @@ class TestSolverCoupledResetMask(unittest.TestCase):
     """Test world-selective coupled reset behavior."""
 
     def test_mask_is_forwarded_without_touching_unselected_rows(self):
-        """Forward both mask forms and make an all-false mask an exact no-op."""
+        """Forward both mask forms while an all-false mask preserves state and history."""
 
         def spatial(values):
             return np.repeat(np.asarray(values, dtype=np.float32)[:, None], 6, axis=1)
@@ -848,12 +848,9 @@ class TestSolverCoupledResetMask(unittest.TestCase):
 
                 coupled.reset(parent, world_mask=world_mask, flags=newton.StateFlags.BODY_QD)
 
-                if selected_rows:
-                    self.assertEqual(len(entry.solver.reset_calls), 1)
-                    self.assertIs(entry.solver.reset_calls[0][1], world_mask)
-                    self.assertEqual(entry.solver.reset_calls[0][2], newton.StateFlags.BODY_QD)
-                else:
-                    self.assertEqual(entry.solver.reset_calls, [])
+                self.assertEqual(len(entry.solver.reset_calls), 1)
+                self.assertIs(entry.solver.reset_calls[0][1], world_mask)
+                self.assertEqual(entry.solver.reset_calls[0][2], newton.StateFlags.BODY_QD)
                 self.assertTrue(coupled.entry_output_state_valid())
 
                 for entry_state in entry_states[:2]:
@@ -875,6 +872,162 @@ class TestSolverCoupledResetMask(unittest.TestCase):
                 model.state(),
                 world_mask=wp.array((False, False, False), dtype=wp.bool, device=model.device),
             )
+
+    def test_registered_state_attributes_follow_compact_masked_reset(self):
+        """Synchronize selected custom STATE rows through compact entry mappings."""
+
+        frequency = newton.Model.AttributeFrequency
+        attributes = (
+            ("body_history", frequency.BODY, None, "body_world_start"),
+            ("coord_history", frequency.JOINT_COORD, "test", "joint_coord_world_start"),
+            ("constraint_history", frequency.JOINT_CONSTRAINT, None, "joint_constraint_world_start"),
+        )
+
+        def register_state_attributes(builder):
+            for name, frequency, namespace, _start_name in attributes:
+                builder.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name=name,
+                        frequency=frequency,
+                        dtype=wp.float32,
+                        assignment=newton.Model.AttributeAssignment.STATE,
+                        namespace=namespace,
+                    )
+                )
+
+        def state_value(state, name, namespace):
+            return getattr(state, name) if namespace is None else getattr(getattr(state, namespace), name)
+
+        world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        register_state_attributes(world)
+        for _ in range(2):
+            body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = world.add_joint_revolute(parent=-1, child=body, axis=(0.0, 0.0, 1.0))
+            world.add_articulation([joint])
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_world(world)
+        builder.add_world(world)
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry("other", _ResetRecordingCopySolver, bodies=(0, 2), joints=(0, 2)),
+                SolverCoupled.Entry("target", _ResetRecordingCopySolver, bodies=(1, 3), joints=(1, 3)),
+            ),
+        )
+        entry = coupled._entries["target"]
+        other = coupled._entries["other"]
+        parent = model.state()
+        reset_mask = wp.array((False, True), dtype=wp.bool, device=model.device)
+        np.testing.assert_array_equal(entry.body_local_to_global.numpy(), (1, 3))
+
+        for state, initial in (
+            (entry.state_0, 1.0),
+            (entry.state_1, 2.0),
+            (other.state_0, 3.0),
+            (parent, 3.0),
+        ):
+            for name, _frequency, namespace, _start_name in attributes:
+                state_value(state, name, namespace).fill_(initial)
+
+        def reset_selected_custom_state(state, world_mask=None, flags=None):
+            del flags
+            self.assertIs(world_mask, reset_mask)
+            for name, _frequency, namespace, start_name in attributes:
+                starts = getattr(entry.view, start_name).numpy()
+                selected = slice(int(starts[1]), int(starts[2]))
+                value = state_value(state, name, namespace)
+                values = value.numpy()
+                np.testing.assert_array_equal(values[selected], 1.0)
+                values[selected] = 9.0
+                value.assign(values)
+
+        with mock.patch.object(entry.solver, "reset", side_effect=reset_selected_custom_state):
+            coupled.reset(parent, world_mask=reset_mask, flags=0)
+
+        for name, frequency, namespace, start_name in attributes:
+            starts = getattr(entry.view, start_name).numpy()
+            selected = slice(int(starts[1]), int(starts[2]))
+            self.assertGreater(selected.stop, selected.start)
+            for state, initial in ((entry.state_0, 1.0), (entry.state_1, 2.0)):
+                value = state_value(state, name, namespace)
+                expected = np.full(value.shape, initial, dtype=np.float32)
+                expected[selected] = 9.0
+                np.testing.assert_array_equal(value.numpy(), expected)
+
+            parent_value = state_value(parent, name, namespace)
+            expected_parent = np.full(parent_value.shape, 3.0, dtype=np.float32)
+            global_rows = entry.attribute_local_to_global[frequency].numpy()[selected]
+            expected_parent[global_rows] = 9.0
+            np.testing.assert_array_equal(parent_value.numpy(), expected_parent)
+
+
+def _coupled_reset_replays_with_mutable_device_mask(test, device):
+    """Replay a coupled reset with the current mask in coupled and child kernels."""
+    world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    joint = world.add_joint_fixed(parent=-1, child=body)
+    world.add_articulation([joint])
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_world(world)
+    builder.add_world(world)
+    builder.color()
+    model = builder.finalize(device=device)
+    coupled = SolverCoupled(
+        model,
+        (
+            SolverCoupled.Entry(
+                "vbd",
+                lambda view: SolverVBD(view, iterations=0),
+                bodies=range(model.body_count),
+                joints=range(model.joint_count),
+            ),
+        ),
+    )
+    solver = coupled.solver("vbd")
+    state = model.state()
+    defaults = model.body_qd.numpy()
+
+    # Materialize reset kernels before capture.
+    coupled.reset(
+        state,
+        world_mask=wp.array((True, True), dtype=wp.bool, device=device),
+        flags=newton.StateFlags.BODY_QD,
+    )
+    state.body_qd.fill_(7.0)
+    solver.joint_lambda_lin.fill_(5.0)
+
+    world_mask = wp.zeros(2, dtype=wp.bool, device=device)
+    with wp.ScopedCapture(device=device) as capture:
+        coupled.reset(state, world_mask=world_mask, flags=newton.StateFlags.BODY_QD)
+
+    np.testing.assert_allclose(state.body_qd.numpy(), 7.0)
+    np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 5.0)
+
+    for selected, (state_marker, lambda_marker) in enumerate(((7.0, 5.0), (9.0, 6.0))):
+        with test.subTest(selected_world=selected):
+            state.body_qd.fill_(state_marker)
+            solver.joint_lambda_lin.fill_(lambda_marker)
+            world_mask.assign((selected == 0, selected == 1))
+            wp.capture_launch(capture.graph)
+
+            expected_state = np.full_like(defaults, state_marker)
+            expected_state[selected] = defaults[selected]
+            np.testing.assert_allclose(state.body_qd.numpy(), expected_state)
+
+            expected_lambdas = np.full_like(solver.joint_lambda_lin.numpy(), lambda_marker)
+            expected_lambdas[selected] = 0.0
+            np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), expected_lambdas)
+
+
+add_function_test(
+    TestSolverCoupledResetMask,
+    "test_replays_with_mutable_device_mask",
+    _coupled_reset_replays_with_mutable_device_mask,
+    devices=get_cuda_test_devices(),
+)
 
 
 class TestSolverCoupledBasic(unittest.TestCase):
@@ -1416,9 +1569,11 @@ class TestSolverCoupledBasic(unittest.TestCase):
         proxy_contacts.rigid_contact_shape0.assign(np.array([ground_shape], dtype=np.int32))
         proxy_contacts.rigid_contact_shape1.assign(np.array([dst_shape], dtype=np.int32))
 
+        pipeline = _FakeProxyCollisionPipeline(model.device, contacts=proxy_contacts)
+
         def make_pipeline(view):
             del view
-            return _FakeProxyCollisionPipeline(model.device, contacts=proxy_contacts)
+            return pipeline
 
         coupled = SolverCoupledProxy(
             model=model,
@@ -1438,18 +1593,45 @@ class TestSolverCoupledBasic(unittest.TestCase):
                         destination="dst",
                         bodies=[src_body],
                         collision_pipeline=make_pipeline,
+                        collide_interval=2,
                     ),
                 ],
+                iterations=2,
             ),
         )
 
         coupled.step(model.state(), model.state(), control=None, contacts=None, dt=1.0 / 60.0)
 
         dst_solver = _ContactRecordingBodyHarvestSolver.instances["dst"]
-        self.assertEqual(len(dst_solver.step_contacts), 1)
-        self.assertEqual(len(dst_solver.harvest_contacts), 1)
-        self.assertIs(dst_solver.step_contacts[0], proxy_contacts)
-        self.assertIs(dst_solver.harvest_contacts[0], proxy_contacts)
+        self.assertEqual(pipeline.collide_calls, 1)
+        self.assertEqual(len(dst_solver.step_contacts), 2)
+        self.assertEqual(len(dst_solver.harvest_contacts), 2)
+        self.assertTrue(all(contacts is proxy_contacts for contacts in dst_solver.step_contacts))
+        self.assertTrue(all(contacts is proxy_contacts for contacts in dst_solver.harvest_contacts))
+        self.assertEqual(coupled.get_proxy_collision_state(), {("src", "dst"): 1})
+
+        coupled.reset(
+            model.state(),
+            world_mask=wp.array((False,), dtype=wp.bool, device=model.device),
+            flags=0,
+        )
+        coupled.reset(
+            model.state(),
+            world_mask=wp.array((True,), dtype=wp.bool, device=model.device),
+            flags=0,
+        )
+        self.assertEqual(pipeline.collide_calls, 1)
+        self.assertEqual(coupled.get_proxy_collision_state(), {("src", "dst"): 1})
+
+        coupled.step(model.state(), model.state(), control=None, contacts=None, dt=1.0 / 60.0)
+        self.assertEqual(pipeline.collide_calls, 1)
+        self.assertEqual(len(dst_solver.step_contacts), 4)
+        self.assertEqual(len(dst_solver.harvest_contacts), 4)
+
+        coupled.step(model.state(), model.state(), control=None, contacts=None, dt=1.0 / 60.0)
+        self.assertEqual(pipeline.collide_calls, 2)
+        self.assertEqual(len(dst_solver.step_contacts), 6)
+        self.assertEqual(len(dst_solver.harvest_contacts), 6)
 
     def test_duplicate_shape_ownership_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "owned by more than one"):
@@ -3037,6 +3219,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         add_attribute("linkage_body1", "test:linkage", wp.int32, references="body")
         add_attribute("linkage_bodies", "test:linkage", wp.vec2i, references="body")
         add_attribute("linkage_weight", "test:linkage", wp.float32)
+        add_attribute("linkage_history", "test:linkage", wp.float32, assignment=newton.Model.AttributeAssignment.STATE)
         add_attribute("entity_body", "test:entity", wp.int32, references="body")
         add_attribute("link_entity", "test:link", wp.int32, references="test:entity")
         add_attribute(
@@ -3060,6 +3243,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 "test:linkage_body1": 2,
                 "test:linkage_bodies": wp.vec2i(0, 2),
                 "test:linkage_weight": 2.0,
+                "test:linkage_history": 20.0,
             }
         )
         builder.add_custom_values(
@@ -3068,6 +3252,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 "test:linkage_body1": 3,
                 "test:linkage_bodies": wp.vec2i(1, 3),
                 "test:linkage_weight": 4.0,
+                "test:linkage_history": 40.0,
             }
         )
         builder.add_custom_values(
@@ -3076,6 +3261,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 "test:linkage_body1": 1,
                 "test:linkage_bodies": wp.vec2i(-1, 1),
                 "test:linkage_weight": 6.0,
+                "test:linkage_history": 60.0,
             }
         )
         model = builder.finalize(device="cpu")
@@ -3128,6 +3314,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
 
         state = view.state()
         np.testing.assert_allclose(state.test.state_seed.numpy(), [11.0, 13.0])
+        np.testing.assert_allclose(state.test.linkage_history.numpy(), [40.0, 60.0])
 
         view.test.namespace_marker = "view"
         view.test.linkage_weight.fill_(7.0)

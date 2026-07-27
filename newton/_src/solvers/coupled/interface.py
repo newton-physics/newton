@@ -254,8 +254,15 @@ class CouplingInterface:
     ) -> None:
         """Synchronize solver-owned state after a masked coupled reset.
 
-        Public state arrays are synchronized by the coupled solver. Override
-        this hook only for persistent custom state arrays.
+        Public and registered ``STATE`` arrays with row-to-world metadata are
+        synchronized by the coupled solver. Override this hook only for
+        persistent arrays that cannot use that generic mapping.
+
+        Args:
+            state_in: Reset entry input state.
+            state_out: Entry output state whose persistent history is synchronized.
+            world_mask: Validated device mask selecting reset worlds.
+            flags: Optional state bitmask forwarded from the reset request.
         """
         del state_in, state_out, world_mask, flags
 

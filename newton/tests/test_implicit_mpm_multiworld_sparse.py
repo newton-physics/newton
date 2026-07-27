@@ -527,6 +527,7 @@ def test_masked_reset_restores_only_selected_world_history(test, device):
         np.testing.assert_array_equal(field.dof_values.numpy(), expected)
     np.testing.assert_array_equal(solver._last_step_data.body_q_prev.numpy(), 0.0)
     test.assertEqual(int(solver._grid_status.numpy()[0]), wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
+    test.assertEqual(int(solver._grid_accumulated_status.numpy()[0]), wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
 
     world_mask = wp.array((True, False, False), dtype=wp.bool, device=device)
     solver.reset(state, world_mask=world_mask)

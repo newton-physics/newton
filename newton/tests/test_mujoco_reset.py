@@ -103,6 +103,37 @@ class TestMuJoCoReset(unittest.TestCase):
             self.assertTrue(np.all(values[0] == 0.0), f"{name} not cleared in masked world 0")
             self.assertTrue(np.all(values[1] == 7.0), f"{name} wrongly cleared in unmasked world 1")
 
+    def test_native_cpu_reset_honors_template_world_mask(self):
+        """Reset native MuJoCo buffers only when local world 0 is selected."""
+        solver = SolverMuJoCo(self.model, separate_worlds=True, use_mujoco_cpu=True)
+        data = solver.mj_data
+        buffers = tuple(
+            buffer
+            for buffer in (
+                data.qacc_warmstart,
+                data.qfrc_applied,
+                data.ctrl,
+                data.act,
+                data.xfrc_applied,
+            )
+            if buffer.size > 0
+        )
+        for mask_values, expected in (
+            ((False, False, True), 7.0),
+            ((False, True, False), 7.0),
+            ((True, False, False), 0.0),
+        ):
+            with self.subTest(mask=mask_values):
+                for buffer in buffers:
+                    buffer[:] = 7.0
+                solver.reset(
+                    self.model.state(),
+                    world_mask=wp.array(mask_values, dtype=wp.bool, device=self.model.device),
+                    flags=0,
+                )
+                for buffer in buffers:
+                    np.testing.assert_array_equal(buffer, expected)
+
     def test_reset_all_worlds(self):
         """A ``None`` mask clears every world."""
         self._poison()

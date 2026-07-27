@@ -3766,7 +3766,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Native MuJoCo owns one template-world MjData instance even when
             # separate_worlds=True was requested for a multi-world Newton
             # model. Its persistent buffers therefore belong to local world 0.
-            if local_world_mask is not None and not bool(local_world_mask[0]):
+            if world_mask is not None and not bool(world_mask.numpy()[0]):
                 return
             # Single MjData instance: clear the whole buffers (no per-world mask).
             d.qacc_warmstart[:] = 0.0

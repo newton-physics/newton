@@ -138,6 +138,19 @@ def _sparse_grid_rebuild_error(status: int) -> RuntimeError:
     return RuntimeError(f"Implicit MPM sparse grid rebuild failed with status {status}.")
 
 
+@wp.kernel(enable_backward=False)
+def _clear_sparse_grid_rebuild_status_masked(
+    world_mask: wp.array[wp.bool],
+    status: wp.array[wp.uint32],
+    accumulated_status: wp.array[wp.uint32],
+):
+    for world in range(world_mask.shape[0]):
+        if world_mask[world]:
+            status[0] = wp.uint32(0)
+            accumulated_status[0] = wp.uint32(0)
+            return
+
+
 def _validate_sparse_grid_node_capacity(name: str, value: int) -> int:
     """Validate one optional NanoVDB hierarchy capacity."""
     if isinstance(value, bool):
@@ -1575,8 +1588,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 history.
         """
         self._validate_reset_inputs(state, world_mask)
-        if not self._reset_world_mask_selects_any(world_mask):
-            return
 
         reset_partitions = self._validate_reset_warmstart_fields(world_mask)
         state_flags = int(StateFlags.ALL if flags is None else flags)
@@ -1584,7 +1595,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # Clearing first ensures a capture-time rejection cannot leave state
         # partially reset.
-        self._clear_sparse_grid_rebuild_status()
+        if world_mask is None:
+            self._clear_sparse_grid_rebuild_status()
+        elif self._grid_status is not None:
+            wp.launch(
+                _clear_sparse_grid_rebuild_status_masked,
+                dim=1,
+                inputs=[world_mask, self._grid_status, self._grid_accumulated_status],
+                device=self.model.device,
+            )
 
         with wp.ScopedDevice(self.model.device):
             self._clear_reset_warmstarts(world_mask, reset_partitions)
@@ -1727,34 +1746,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
-
-    def coupling_sync_reset_state(
-        self,
-        state_in: newton.State,
-        state_out: newton.State,
-        world_mask: wp.array[wp.bool],
-        flags: StateFlags | int | None,
-    ) -> None:
-        """Reset selected custom history in a coupled output state."""
-        del state_in
-        state_flags = int(StateFlags.ALL if flags is None else flags)
-        if not state_flags & int(StateFlags.PARTICLE) or self.model.particle_count == 0:
-            return
-        wp.launch(
-            reset_mpm_particle_history,
-            dim=self.model.particle_count,
-            inputs=[
-                self.model.particle_world,
-                world_mask,
-                self._initial_world_count,
-                state_out.mpm.particle_elastic_strain,
-                state_out.mpm.particle_transform,
-                state_out.mpm.particle_qd_grad,
-                state_out.mpm.particle_stress,
-                state_out.mpm.particle_Jp,
-            ],
-            device=self.model.device,
-        )
 
     def coupling_rewind_proxy_body(
         self,

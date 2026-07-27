@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...core.reset import reset_world_selected
 from ...geometry import ParticleFlags
 from ...math.spatial import velocity_at_point
 from ...sim.contacts import contact_surface_point
@@ -69,13 +70,6 @@ def _point_angular_lump(arm: wp.vec3) -> float:
     return _POINT_ANGULAR_LUMP_SCALE * wp.dot(arm, arm)
 
 
-@wp.func
-def _reset_world_selected(world: int, world_mask: wp.array[wp.bool], world_count: int) -> bool:
-    if world >= 0 and world < world_count:
-        return world_mask[world]
-    return world == -1 and world_mask.shape[0] == world_count + 1 and world_mask[world_count]
-
-
 @wp.kernel(enable_backward=False)
 def reset_admm_history_kernel(
     endpoint_a: wp.array[int],
@@ -93,7 +87,7 @@ def reset_admm_history_kernel(
     index_b = endpoint_b[row]
     if index_a < 0 or index_b < 0:
         return
-    if _reset_world_selected(endpoint_world_a[index_a], world_mask, world_count) or _reset_world_selected(
+    if reset_world_selected(endpoint_world_a[index_a], world_mask, world_count) or reset_world_selected(
         endpoint_world_b[index_b], world_mask, world_count
     ):
         u[row] = wp.vec3()

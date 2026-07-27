@@ -12,6 +12,7 @@ from warp.types import type_size
 
 import newton
 
+from ...core.reset import reset_world_selected
 from .implicit_mpm_model import MaterialParameters
 from .rheology_solver_kernels import YieldParamVec, project_stress
 
@@ -909,15 +910,6 @@ def record_volume_rebuild_status(status: wp.array[wp.uint32], accumulated_status
         wp.printf("Warning: Implicit MPM sparse grid rebuild failed with status %u.\n", rebuild_status)
 
 
-@wp.func
-def reset_mpm_world_is_selected(world: int, world_mask: wp.array[wp.bool], world_count: int):
-    if world >= 0 and world < world_count:
-        return world_mask[world]
-    if world == -1 and world_mask.shape[0] == world_count + 1:
-        return world_mask[world_count]
-    return False
-
-
 @wp.kernel
 def reset_mpm_particle_history(
     particle_world: wp.array[wp.int32],
@@ -932,7 +924,7 @@ def reset_mpm_particle_history(
     """Reset implicit MPM history for selected local or shared particles."""
     particle_index = wp.tid()
     world = particle_world[particle_index]
-    if reset_mpm_world_is_selected(world, world_mask, world_count):
+    if reset_world_selected(world, world_mask, world_count):
         identity = wp.identity(n=3, dtype=float)
         particle_elastic_strain[particle_index] = identity
         particle_transform[particle_index] = identity
@@ -952,7 +944,7 @@ def reset_mpm_collider_history(
     """Refresh previous collider poses for selected local or shared bodies."""
     body_index = wp.tid()
     world = body_world[body_index]
-    if reset_mpm_world_is_selected(world, world_mask, world_count):
+    if reset_world_selected(world, world_mask, world_count):
         body_q_prev[body_index] = body_q[body_index]
 
 
@@ -966,7 +958,7 @@ def reset_mpm_point_warmstart(
     """Clear particle-backed warm starts for selected local or shared particles."""
     particle_index = wp.tid()
     world = particle_world[particle_index]
-    if reset_mpm_world_is_selected(world, world_mask, world_count):
+    if reset_world_selected(world, world_mask, world_count):
         values[particle_index] = values.dtype(0.0)
 
 

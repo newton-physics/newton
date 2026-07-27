@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
+from ...core.reset import reset_world_selected
 from ...sim import JointType, ModelFlags, StateFlags
 from .interface import (
     CouplingEndpointKind,
@@ -111,14 +112,6 @@ _PROXY_RELAXATION_MODE_BY_NAME = {
     "aitken": _ProxyRelaxationMode.AITKEN,
 }
 
-
-@wp.func
-def _reset_world_selected(world: int, world_mask: wp.array[wp.bool], world_count: int) -> bool:
-    if world >= 0 and world < world_count:
-        return world_mask[world]
-    return world == -1 and world_mask[world_count]
-
-
 @wp.kernel(module="unique", enable_backward=False)
 def _zero_global_proxy_values_masked_kernel(
     proxy_ids_global: wp.array[int],
@@ -129,7 +122,7 @@ def _zero_global_proxy_values_masked_kernel(
 ):
     index = wp.tid()
     proxy_id = proxy_ids_global[index]
-    if _reset_world_selected(entity_world[proxy_id], world_mask, world_count):
+    if reset_world_selected(entity_world[proxy_id], world_mask, world_count):
         values[proxy_id] = values.dtype(0.0)
 
 
@@ -251,13 +244,14 @@ class SolverCoupledProxy(SolverCoupled):
             collision_pipeline: Optional factory called as
                 ``collision_pipeline(destination_model_view)``. When supplied,
                 ``SolverCoupledProxy`` uses the returned pipeline to detect
-                destination proxy contacts before each destination solve. If
-                the factory returns ``None``, the destination solve receives
-                the outer-level contacts passed to :meth:`step`.
+                destination proxy contacts before the first destination solve
+                of each collision-refresh step. Inner proxy iterations reuse
+                that result. If the factory returns ``None``, the destination
+                solve receives the outer-level contacts passed to :meth:`step`.
             collide_interval: Collision-detection refresh interval for
-                ``collision_pipeline``. ``None`` means every proxy pass when a
-                custom pipeline is supplied. Explicit values must be positive
-                integers.
+                ``collision_pipeline``, measured in outer coupled steps.
+                ``None`` means every outer step when a custom pipeline is
+                supplied. Explicit values must be positive integers.
         """
 
         source: str
@@ -1056,7 +1050,7 @@ class SolverCoupledProxy(SolverCoupled):
         world_mask: wp.array | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
-        """Clear selected lagged proxy feedback and reset collision cadence."""
+        """Clear selected lagged proxy feedback."""
         super()._reset_coupling_state(state, world_mask=world_mask, flags=flags)
         mappings = (*self._proxy_mappings, *self._proxy_particle_mappings)
         if world_mask is None:
@@ -1076,6 +1070,9 @@ class SolverCoupledProxy(SolverCoupled):
                 if mapping.proxy_qd_before is not None:
                     mapping.proxy_qd_before.zero_()
         else:
+            # coupling_forces_previous, aitken_* and proxy_qd_before are also
+            # preserved: their stash/copy/Aitken paths overwrite them before use.
+            # Full resets clear those buffers above.
             for mapping_group, entity_world in (
                 (self._proxy_mappings, self.model.body_world),
                 (self._proxy_particle_mappings, self.model.particle_world),
@@ -1097,7 +1094,8 @@ class SolverCoupledProxy(SolverCoupled):
                     )
 
         for config in self._proxy_collision_configs.values():
-            config.collide_counter = 0
+            if world_mask is None:
+                config.collide_counter = 0
             if config.pipeline is not None:
                 self._reset_collision_provider_contact_matching(config.pipeline, world_mask)
             if world_mask is None and config.contacts is not None:

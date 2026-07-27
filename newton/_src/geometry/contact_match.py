@@ -102,9 +102,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
 import warp as wp
 
+from ..core.reset import reset_world_selected
 from ..core.types import Devicelike
 from .contact_sort import SORT_KEY_SENTINEL
 
@@ -129,11 +129,14 @@ MATCH_BROKEN = wp.constant(wp.int32(-2))
 _CLAIM_SENTINEL = wp.constant(wp.int64(0x7FFFFFFFFFFFFFFF))
 
 
-@wp.func
-def _world_is_reset(world: int, world_mask: wp.array[wp.bool], world_count: int) -> bool:
-    if world >= 0 and world < world_count:
-        return world_mask[world]
-    return world == -1 and world_mask[world_count]
+@wp.kernel(enable_backward=False)
+def _accumulate_reset_world_mask_kernel(
+    world_mask: wp.array[wp.bool],
+    accumulated_world_mask: wp.array[wp.bool],
+):
+    world = wp.tid()
+    if world_mask[world]:
+        accumulated_world_mask[world] = True
 
 
 @wp.func
@@ -278,7 +281,7 @@ def _match_contacts_kernel(data: _MatchData):
 
     shape0 = data.new_shape0[tid]
     shape1 = data.new_shape1[tid]
-    if _world_is_reset(data.shape_world[shape0], data.reset_world_mask, data.world_count) or _world_is_reset(
+    if reset_world_selected(data.shape_world[shape0], data.reset_world_mask, data.world_count) or reset_world_selected(
         data.shape_world[shape1], data.reset_world_mask, data.world_count
     ):
         data.match_index[tid] = MATCH_NOT_FOUND
@@ -603,7 +606,7 @@ def _collect_broken_contacts_kernel(
     key = prev_keys[i]
     shape0 = wp.int32((key >> wp.int64(43)) & wp.int64(0xFFFFF))
     shape1 = wp.int32((key >> wp.int64(23)) & wp.int64(0xFFFFF))
-    if _world_is_reset(shape_world[shape0], reset_world_mask, world_count) or _world_is_reset(
+    if reset_world_selected(shape_world[shape0], reset_world_mask, world_count) or reset_world_selected(
         shape_world[shape1], reset_world_mask, world_count
     ):
         return
@@ -689,7 +692,6 @@ class ContactMatcher:
             self._sorter = sorter
             self._shape_world = shape_world
             self._world_count = int(world_count)
-            self._reset_world_mask_host = np.zeros(self._world_count + 1, dtype=bool)
             self._reset_world_mask = wp.zeros(self._world_count + 1, dtype=wp.bool)
 
             # Only buffer we must own: sorted keys survive across frames
@@ -768,15 +770,15 @@ class ContactMatcher:
         """
         if world_mask is None:
             self._prev_count.zero_()
-            self._reset_world_mask_host.fill(False)
             self._reset_world_mask.zero_()
             return
 
-        mask = world_mask.numpy()
-        if not bool(mask.any()):
-            return
-        self._reset_world_mask_host[: mask.shape[0]] |= mask
-        self._reset_world_mask.assign(self._reset_world_mask_host)
+        wp.launch(
+            _accumulate_reset_world_mask_kernel,
+            dim=world_mask.shape[0],
+            inputs=[world_mask, self._reset_world_mask],
+            device=self._reset_world_mask.device,
+        )
 
     # ------------------------------------------------------------------
     # Public methods
@@ -955,7 +957,6 @@ class ContactMatcher:
             data.has_sticky = 0
 
         wp.launch(_save_sorted_state_kernel, dim=self._capacity, inputs=[data], device=device)
-        self._reset_world_mask_host.fill(False)
         self._reset_world_mask.zero_()
 
     def replay_matched(

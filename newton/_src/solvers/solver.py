@@ -6,6 +6,7 @@ from typing import Any
 
 import warp as wp
 
+from ..core.reset import validate_reset_world_mask
 from ..geometry import ParticleFlags
 from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
 
@@ -220,14 +221,12 @@ class SolverBase:
 
     def _normalize_reset_world_mask(self, world_mask: wp.array[wp.bool] | None) -> wp.array[wp.bool] | None:
         """Append an unselected global slot to a legacy reset mask."""
+        world_mask = self._validate_reset_world_mask(world_mask, allow_legacy=True)
         if world_mask is None:
             return None
-        world_count = self.model.world_count
-        mask_size = world_mask.size
-        if mask_size == world_count + 1:
+        if world_mask.shape[0] == self.model.world_count + 1:
             return world_mask
-        if mask_size != world_count:
-            raise ValueError(f"world_mask has size {mask_size}, expected {world_count} or {world_count + 1}.")
+        world_count = int(self.model.world_count)
         warnings.warn(
             "world_mask with shape (world_count,) is deprecated; use shape (world_count + 1,), "
             "where the final entry selects global entities in world -1.",
@@ -380,6 +379,20 @@ class SolverBase:
         """
         del state, flags
         self._normalize_reset_world_mask(world_mask)
+
+    def _validate_reset_world_mask(
+        self,
+        world_mask: wp.array | None,
+        *,
+        allow_legacy: bool = False,
+    ) -> wp.array | None:
+        """Validate a reset mask against the shared solver contract."""
+        return validate_reset_world_mask(
+            world_mask,
+            world_count=int(self.model.world_count),
+            device=self.model.device,
+            allow_legacy=allow_legacy,
+        )
 
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
