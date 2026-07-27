@@ -486,6 +486,37 @@ class TestBuilderIntegration(unittest.TestCase):
         for face in np.asarray(builder.tri_indices):
             np.testing.assert_array_equal(face, expected_by_face[tuple(sorted(face))])
 
+    def test_add_soft_mesh_excludes_rejected_tets_from_surface(self):
+        """Exclude a rejected degenerate tet from the generated collision surface."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [3.0, 1.0, 0.0],
+            ]
+        )
+        indices = np.array([[0, 1, 2, 3], [4, 5, 6, 7]])
+
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=wp.vec3(0, 0, 0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0, 0, 0),
+            vertices=vertices,
+            indices=indices.flatten(),
+            density=1000.0,
+        )
+
+        self.assertEqual(len(builder.tet_indices), 1)
+        self.assertEqual(len(builder.tri_indices), 4)
+        self.assertTrue(np.all(np.asarray(builder.tri_indices) < 4))
+
     def test_add_soft_mesh_validate_good_mesh(self):
         builder = newton.ModelBuilder()
         verts, inds = _regular_tet(scale=0.1)

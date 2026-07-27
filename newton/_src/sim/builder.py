@@ -9641,11 +9641,10 @@ class ModelBuilder:
             self.add_particle(p, vel, 0.0, particle_radius, custom_attributes=p_custom)
 
         # add tetrahedra
+        accepted_tet_indices: list[tuple[int, int, int, int]] = []
         for t in range(num_tets):
-            v0 = start_vertex + indices[t * 4 + 0]
-            v1 = start_vertex + indices[t * 4 + 1]
-            v2 = start_vertex + indices[t * 4 + 2]
-            v3 = start_vertex + indices[t * 4 + 3]
+            local_indices = tuple(int(indices[t * 4 + i]) for i in range(4))
+            v0, v1, v2, v3 = (start_vertex + index for index in local_indices)
 
             t_custom = {k: arr[t] for k, arr in tet_custom.items()} if tet_custom else None
             volume = self.add_tetrahedron(
@@ -9661,6 +9660,7 @@ class ModelBuilder:
 
             # distribute volume fraction to particles
             if volume > 0.0:
+                accepted_tet_indices.append(local_indices)
                 self.particle_mass[v0] += density * volume / 4.0
                 self.particle_mass[v1] += density * volume / 4.0
                 self.particle_mass[v2] += density * volume / 4.0
@@ -9668,7 +9668,9 @@ class ModelBuilder:
 
         # Compute surface triangles — reuse pre-computed result from TetMesh
         # only when the caller did not override the indices.
-        if mesh is not None and indices_from_mesh and len(mesh.surface_tri_indices) > 0:
+        all_tets_accepted = len(accepted_tet_indices) == num_tets
+        accepted_indices = np.asarray(accepted_tet_indices, dtype=np.int32).reshape(-1, 4)
+        if mesh is not None and indices_from_mesh and all_tets_accepted and len(mesh.surface_tri_indices) > 0:
             if reoriented_tets:
                 normalized_surface = TetMesh.compute_surface_triangles(indices).reshape(-1, 3)
                 normalized_by_face = {tuple(sorted(face)): face for face in normalized_surface}
@@ -9679,7 +9681,7 @@ class ModelBuilder:
             else:
                 surface_tri_indices = mesh.surface_tri_indices
         else:
-            surface_tri_indices = TetMesh.compute_surface_triangles(indices)
+            surface_tri_indices = TetMesh.compute_surface_triangles(accepted_indices)
 
         # add surface triangles
         start_tri = len(self.tri_indices)
