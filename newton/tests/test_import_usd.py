@@ -11304,9 +11304,14 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collision_shape_visibility_flags(self):
-        """Collision shapes on bodies with visual shapes should not have the
-        VISIBLE flag so they are toggleable via the viewer's 'Show Collision'."""
-        from pxr import Usd
+        """Collider visibility follows USD purpose, with explicit import overrides.
+
+        A collider whose ``purpose`` resolves to ``default`` is viewport geometry and
+        carries VISIBLE even when its body also has separate visual shapes; ``guide``
+        is how an asset marks geometry as collision-only. ``force_show_colliders`` and
+        ``hide_collision_shapes`` remain the explicit overrides either way.
+        """
+        from pxr import Usd, UsdGeom
 
         usd_content = """#usda 1.0
 (
@@ -11363,13 +11368,25 @@ def Xform "BodyWithoutVisuals" (
         collision_with_visual = path_shape_map["/BodyWithVisuals/CollisionBox"]
         flags_with_visual = builder.shape_flags[collision_with_visual]
         self.assertTrue(flags_with_visual & ShapeFlags.COLLIDE_SHAPES)
-        self.assertFalse(flags_with_visual & ShapeFlags.VISIBLE)
+        # Drawable per USD: purpose composes to "default" and it is not invisible.
+        self.assertTrue(flags_with_visual & ShapeFlags.VISIBLE)
 
-        # Collision shapes on bodies WITHOUT visuals should remain hidden by default
+        # Likewise on a body with no separate visual shapes.
         collision_no_visual = path_shape_map["/BodyWithoutVisuals/CollisionSphere"]
         flags_no_visual = builder.shape_flags[collision_no_visual]
         self.assertTrue(flags_no_visual & ShapeFlags.COLLIDE_SHAPES)
-        self.assertFalse(flags_no_visual & ShapeFlags.VISIBLE)
+        self.assertTrue(flags_no_visual & ShapeFlags.VISIBLE)
+
+        # A guide-purpose collider is not viewport geometry, so it is not drawn.
+        UsdGeom.Imageable(stage.GetPrimAtPath("/BodyWithVisuals/CollisionBox")).CreatePurposeAttr(UsdGeom.Tokens.guide)
+        guide_builder = newton.ModelBuilder()
+        guide_shape = guide_builder.add_usd(stage)["path_shape_map"]["/BodyWithVisuals/CollisionBox"]
+        guide_flags = guide_builder.shape_flags[guide_shape]
+        self.assertTrue(guide_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(guide_flags & ShapeFlags.VISIBLE)
+        UsdGeom.Imageable(stage.GetPrimAtPath("/BodyWithVisuals/CollisionBox")).CreatePurposeAttr(
+            UsdGeom.Tokens.default_
+        )
 
         # force_show_colliders=True: collision shapes always get VISIBLE
         builder2 = newton.ModelBuilder()
@@ -11390,9 +11407,11 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_hidden_with_visual & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags_hidden_with_visual & ShapeFlags.VISIBLE)
 
+        # hide_collision_shapes only fires where the body has other visual shapes, so
+        # this body -- whose collider is its only geometry -- is not left invisible.
         flags_fallback_no_visual = builder3.shape_flags[path_shape_map3["/BodyWithoutVisuals/CollisionSphere"]]
         self.assertTrue(flags_fallback_no_visual & ShapeFlags.COLLIDE_SHAPES)
-        self.assertFalse(flags_fallback_no_visual & ShapeFlags.VISIBLE)
+        self.assertTrue(flags_fallback_no_visual & ShapeFlags.VISIBLE)
 
         # load_visual_shapes=False: collision shapes remain visible because no
         # visual geometry is loaded for this import.
@@ -11926,12 +11945,12 @@ def Xform "Body" (
         self.assertTrue(flags & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_primitive_collider_with_roughness_only_material_stays_hidden(self):
-        """Primitive (non-mesh) colliders must not become visible from roughness-only materials.
+    def test_primitive_collider_drawability_follows_purpose_not_material(self):
+        """A collider's drawability comes from USD purpose, not from a bound material.
 
-        When a body already has visual shapes, ``show_collider_by_policy`` is
-        ``False``. Only ``collider_has_visual_material`` can promote a collider
-        to visible, and that promotion is restricted to mesh colliders only.
+        A primitive collider whose ``purpose`` resolves to ``default`` is viewport
+        geometry and is drawn, with or without a material bound. Marking it ``guide``
+        is how an asset states the geometry is collision-only.
         """
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -11976,9 +11995,16 @@ def Xform "Body" (
         collision_shape = path_shape_map["/Body/CollisionBox"]
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
-        # Primitive colliders should NOT be promoted to visible just because
-        # they have roughness metadata — only mesh colliders qualify.
-        self.assertFalse(flags & ShapeFlags.VISIBLE)
+        # Drawable per USD, so drawn -- the material is beside the point.
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+        # Marking it guide is the way to say "collision only".
+        UsdGeom.Imageable(box_prim).CreatePurposeAttr(UsdGeom.Tokens.guide)
+        guide_builder = newton.ModelBuilder()
+        guide_shape = guide_builder.add_usd(stage)["path_shape_map"]["/Body/CollisionBox"]
+        guide_flags = guide_builder.shape_flags[guide_shape]
+        self.assertTrue(guide_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(guide_flags & ShapeFlags.VISIBLE)
 
 
 class TestImportUsdMimicJoint(unittest.TestCase):

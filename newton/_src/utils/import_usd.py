@@ -3481,27 +3481,22 @@ def parse_usd(
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 model_has_visual_shapes = load_visual_shapes and bool(bodies_with_visual_shapes)
                 material_props = _get_material_props_cached(prim)
-                collider_has_visual_material = (
-                    key == UsdPhysics.ObjectType.MeshShape
-                    and _has_visual_material_properties(material_props)
-                    # A ``guide``/``render`` purpose collider is not viewport geometry, so it
-                    # must not inherit visibility from a bound render material: that would
-                    # give it the VISIBLE flag, and the viewer draws on ``(COLLIDE and
-                    # show_collision) or (VISIBLE and show_visual)``, leaving the collision
-                    # toggle unable to hide it. ``force_show_colliders`` is deliberately
-                    # checked separately below and still reveals such colliders.
-                    and _is_viewport_drawn(prim)
-                )
 
-                # Explicit hide_collision_shapes overrides material-based visibility:
+                # Explicit hide_collision_shapes overrides drawability:
                 # if the body already has visual shapes, hide its colliders unconditionally.
                 hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
                 show_collider_by_policy = should_show_collider(
                     force_show_colliders,
                     model_has_visual_shapes=model_has_visual_shapes,
                 )
+                # A collider that is also viewport geometry is drawn because USD says it is
+                # drawn -- ``purpose`` resolving to ``default``/``proxy`` and not being
+                # invisible -- not because a render material happens to be bound to it. The
+                # collider display policy decides only shapes with no render role of their
+                # own; it cannot hide a prim USD states is drawable. Keying this on a bound
+                # material made an unrelated visual elsewhere in the scene erase a collider.
                 collider_is_visible = (
-                    show_collider_by_policy or collider_has_visual_material
+                    show_collider_by_policy or _is_viewport_drawn(prim)
                 ) and not hide_collider_for_body
                 # visibility only — see _is_viewport_drawn for why purpose does not gate colliders
                 collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
