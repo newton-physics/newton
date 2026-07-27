@@ -62,7 +62,7 @@ These are noted here so Claude can pattern-match when reading commits, but the s
 
 - `.github/**`, `.pre-commit-config.yaml`, `uv.lock`, `.python-version` — infrastructure, not user-facing.
 - `asv.conf.json`, `asv/**`, root-level `_bench_*.py` — benchmark harness.
-- `docs/**`, root-level `*.md`, `CHANGELOG.md` — documentation.
+- `docs/**`, root-level `*.md`, `CHANGELOG.md`, `changelog.d/**` — documentation.
 - `newton/examples/**` — example scripts. New files here are user-facing (a new example is a release-notable addition). Changes to existing examples are typically not release-notable unless they change the example's registered name or behavior.
 - `newton/_src/**` other than the solver / sim / math / geometry paths above — internal Python implementation.
 - `pyproject.toml`, `uv.lock`, and files matched by `project.license-files` — dependency and license-audit inputs. New external dependency names, direct requirement scope changes, new resolved package names, and notice-file changes belong in "Dependency & License Audit". Version bumps are not release-notable on their own; dependency changes may also belong in "Behavioral & Support Changes" if a user-visible pin moves (e.g., `mujoco-warp ~=3.7.0`).

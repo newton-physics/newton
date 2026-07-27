@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+<!-- towncrier release notes start -->
+
 ### Added
 
 - Add selection of the shapes included in model shape BVHs through `Model.bvh_build_shapes(shape_flags=...)` and `ModelBuilder.default_bvh_cfg.shape_flags`, e.g. `ShapeFlags.VISIBLE | ShapeFlags.COLLIDE_SHAPES` to also include collision shapes.

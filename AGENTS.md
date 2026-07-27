@@ -51,8 +51,8 @@ uvx --with virtualenv asv run --launch-method spawn main^!
 ## PR Instructions
 
 - If opening a pull request on GitHub, use the template in `.github/PULL_REQUEST_TEMPLATE.md`.
-- If a change modifies user-facing behavior, insert an entry at a random position within the correct category (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`) in `CHANGELOG.md`'s `[Unreleased]` section. Use imperative present tense ("Add X") and avoid internal implementation details.
-- For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance: "Deprecate `Model.geo_meshes` in favor of `Model.shapes`".
+- Follow `changelog.d/README.md`: every normal pull request adds one logical fragment set or a one-line `.skip` reason, and never edits `CHANGELOG.md` directly.
+- Run `uv run --no-project python scripts/changelog_policy.py validate` after editing fragments.
 
 ## Examples
 

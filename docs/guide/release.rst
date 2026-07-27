@@ -166,8 +166,8 @@ Prefer sequential cherry-picks in ``main`` order with ``git cherry-pick -x``
 and keep the backport PR unsquashed.  Keep change/revert pairs together.  A bulk
 merge is appropriate only when every intervening commit belongs in the release.
 
-Finalize the changelog on ``release-X.Y`` and reconcile it to ``main`` after
-release, as described in :ref:`post-release`.
+Build the Towncrier fragments on ``release-X.Y`` and synchronize that build
+commit to ``main`` after release, as described in :ref:`post-release`.
 
 For each new RC, repeat the version, generated-file, validation, and tag steps
 used for RC1.
@@ -236,10 +236,13 @@ otherwise.
    * - ☐
      - Go/no-go approval obtained from maintainers.
    * - ☐
-     - Finalize ``CHANGELOG.md`` on ``release-X.Y`` using the previous release
-       tag and latest audit as references.  Date the section with the GA date
-       and merge it before preparing the final version.  The
-       ``release-changelog`` skill can assist.
+     - On ``release-X.Y``, run ``towncrier build --draft`` with the GA version
+       and date, audit and approve the preview, then rerun with ``--yes`` as
+       documented in ``changelog.d/README.md``.  Delete ``.skip`` fragments and
+       merge the changelog-only pull request with the
+       ``release-management`` label before preparing the final version.  For
+       the first Towncrier release, also merge duplicate category headings
+       while retaining every legacy ``[Unreleased]`` entry.
    * - ☐
      - Update ``README.md`` documentation links to point to versioned URLs
        (e.g. ``/X.Y.Z/guide.html`` instead of ``/latest/``).
@@ -314,9 +317,11 @@ Post-release
    :header-rows: 0
 
    * - ☐
-     - Merge the ``vX.Y.Z`` changelog section back to ``main`` in a
-       changelog-only PR, preserving ``[Unreleased]`` and all post-cut entries.
-       The ``release-changelog`` skill can assist.
+     - Inspect the release's exact Towncrier build commit, then cherry-pick it
+       onto a changelog-only branch from ``main``.  Review the resulting diff
+       before merging it in a pull request with the ``release-management``
+       label.  Confirm that post-cut fragments remain pending under
+       ``changelog.d/``.
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐

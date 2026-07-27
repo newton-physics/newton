@@ -8,6 +8,7 @@
 
 # Common PR companion files do not require maintainer approval
 /CHANGELOG.md
+/changelog.d/
 /README.md
 
 # Repo tooling and config

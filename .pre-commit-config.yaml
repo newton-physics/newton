@@ -50,8 +50,21 @@ repos:
       - id: typos
         args: []
         exclude: \.(js|css)$
+  - repo: https://github.com/twisted/towncrier
+    rev: 25.8.0
+    hooks:
+      - id: towncrier-check
+        entry: towncrier build --draft
+        args: [--version, "0.0.0", --date, "1970-01-01"]
+        files: ^(CHANGELOG\.md|changelog\.d/.*\.md|pyproject\.toml)$
   - repo: local
     hooks:
+      - id: changelog-policy
+        name: check changelog fragment policy
+        entry: python scripts/changelog_policy.py validate
+        language: python
+        pass_filenames: false
+        files: ^(changelog\.d/|scripts/changelog_policy\.py|pyproject\.toml)
       - id: check-warp-array-syntax
         name: check warp array syntax
         entry: python scripts/check_warp_array_syntax.py
