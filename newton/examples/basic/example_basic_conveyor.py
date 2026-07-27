@@ -8,6 +8,11 @@
 # to a kinematic root link with a prescribed revolute joint motion. Two
 # static annular boundary meshes keep dynamic "bags" on the belt.
 #
+# The bags are carried by ordinary contact friction against the moving belt
+# surface. See example_basic_conveyor_forces.py for the alternative used when
+# a belt cannot be moved kinematically: a static surface with a velocity
+# field, driving bodies through explicit tangential contact forces.
+#
 # Command: uv run -m newton.examples basic_conveyor
 #
 ###########################################################################

@@ -5,6 +5,7 @@
 ### Added
 
 - Add `forward_depth_image` output support to `SensorTiledCamera.update()` and `SensorTiledCamera.utils.create_forward_depth_image_output()` for native forward-depth rendering without post-processing `depth_image`.
+- Add the `basic_conveyor_forces` example: a multi-belt conveyor circuit that transports rigid boxes with per-belt velocity fields, applying Coulomb-limited tangential body forces from reported per-contact normal forces across `SolverXPBD`, `SolverVBD`, and `SolverMuJoCo`.
 
 ### Changed
 
