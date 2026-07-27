@@ -602,7 +602,7 @@ class TestJointBodyStateConversions(unittest.TestCase):
 
     def test_01_reset_joint_states_from_body_state(self):
         """
-        Validate that reset_joints_state_from_bodies_state() against compute_joints_data()
+        Validate reset_joints_state_from_bodies_state() against compute_joints_data()
         on a model with all joint types.
         """
         # Initialize rng

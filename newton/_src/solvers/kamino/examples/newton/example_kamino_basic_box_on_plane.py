@@ -121,7 +121,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

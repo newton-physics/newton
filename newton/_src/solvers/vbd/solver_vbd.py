@@ -22,6 +22,7 @@ from ...sim import (
     State,
     StateFlags,
 )
+from ...utils import is_graph_capture_allocation_enabled
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
@@ -134,13 +135,16 @@ class SolverVBD(SolverBase, CouplingInterface):
     Buffer sizing:
         SolverVBD pre-allocates contact state from capacities populated by
         :class:`~newton.CollisionPipeline` when available; otherwise, the first
-        :meth:`step` lazily sizes buffers from ``Contacts``. During CUDA graph
-        recording, ordinary lazy resizing is supported only when Warp's memory pool
-        is enabled; otherwise, the solver raises with guidance to pre-size before
-        capture. Rigid contact history must be allocated before capture regardless
-        of memory-pool support. With ``rigid_contact_history=True``, construct
-        :class:`~newton.CollisionPipeline` before ``SolverVBD``, or run one
-        uncaptured solver step before capture.
+        :meth:`step` lazily sizes buffers from ``Contacts``. During graph capture,
+        ordinary lazy resizing is supported on CPU and on CUDA with Warp's
+        stream-ordered memory pool enabled; otherwise the solver raises with
+        guidance to pre-size before capture. Rigid contact history is
+        cross-replay-persistent state, so it must always be allocated before
+        capture regardless of the device's allocation-during-capture support --
+        allocating it inside a graph records a `wp.zeros` fill that wipes the
+        warm-start buffers on every replay. With ``rigid_contact_history=True``,
+        construct :class:`~newton.CollisionPipeline` before ``SolverVBD``, or run
+        one uncaptured solver step before capture.
 
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
@@ -341,7 +345,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 Requires contacts with ``rigid_contact_match_index`` populated; use
                 ``CollisionPipeline(contact_matching="latest")`` for VBD warm-starting. Ignored
                 when ``integrate_with_external_rigid_solver=True`` or ``model.body_count == 0``.
-                For CUDA graph capture, construct :class:`~newton.CollisionPipeline` before
+                During graph capture, construct :class:`~newton.CollisionPipeline` before
                 ``SolverVBD`` so history is pre-allocated, or run one uncaptured solver step
                 before capture.
             rigid_contact_stick_motion_eps: Tangential contact residual threshold for marking hard
@@ -1180,8 +1184,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
     def _raise_if_capturing_resize(self, name: str, current: int, required: int) -> None:
-        from ...utils import is_graph_capture_allocation_enabled  # noqa: PLC0415
-
         if self.device.is_capturing and not is_graph_capture_allocation_enabled(self.device):
             raise RuntimeError(
                 f"SolverVBD {name} buffer needs to grow from {current} to {required} "
@@ -1544,7 +1546,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     @override
     @classmethod
-    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = True) -> None:
+    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = False) -> None:
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
@@ -1554,19 +1556,26 @@ class SolverVBD(SolverBase, CouplingInterface):
         Attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes and in USD as ``newton:vbd:<attr>``.
 
+        Dahl cable friction is enabled per joint only where both
+        ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
+        positive; the attributes default to zero.
+
         Args:
             builder: Model builder to register attributes on.
             dahl_defaults_enabled: Deprecated compatibility mode. When True, Dahl parameters
-                default to positive values. Prefer passing ``False`` and explicitly authoring
-                positive Dahl values only when Dahl cable friction is desired.
+                default to positive values instead of zero.
+
+                .. deprecated:: 1.5
+                    The compatibility mode will be removed; author positive Dahl
+                    values explicitly when Dahl cable friction is desired.
         """
         dahl_eps_default = 0.5 if dahl_defaults_enabled else 0.0
         dahl_tau_default = 1.0 if dahl_defaults_enabled else 0.0
         if dahl_defaults_enabled:
             warnings.warn(
-                "Implicit positive Dahl defaults in SolverVBD.register_custom_attributes() are deprecated "
-                "and will be disabled by default in a future release. Pass dahl_defaults_enabled=False and "
-                "explicitly author positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
+                "SolverVBD.register_custom_attributes(dahl_defaults_enabled=True) is deprecated "
+                "and the compatibility mode will be removed in a future release. Explicitly author "
+                "positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
                 "Dahl cable friction.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -1720,7 +1729,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         build time via the ``vbd:joint_is_hard`` custom attribute, avoiding a
         runtime :meth:`set_joint_constraint_mode` call::
 
-            SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)  # before adding joints
+            SolverVBD.register_custom_attributes(builder)  # before adding joints
             builder.add_joint_fixed(..., custom_attributes={"vbd:joint_is_hard": 0})
             model = builder.finalize()
             solver = SolverVBD(model, ...)
@@ -1809,7 +1818,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Raises:
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
-                need to be allocated or grown during CUDA graph capture.
+                need to be allocated or grown during graph capture.
         """
         self._apply_module_options()
         update_rigid = self._update_rigid_history
@@ -2141,11 +2150,17 @@ class SolverVBD(SolverBase, CouplingInterface):
         internal_rigid = model.body_count > 0 and not self.integrate_with_external_rigid_solver
         rigid_capacity = contacts.rigid_contact_max if contacts is not None else 0
 
+        # Rigid contact history is cross-replay-persistent state: allocating it
+        # during capture records a `wp.zeros` fill into the graph, which then
+        # re-zeros the warm-start buffers on every replay -- silently
+        # equivalent to `rigid_contact_history=False`. So this guard fires
+        # unconditionally when capturing, regardless of the device's
+        # allocation-during-capture support.
         if self.device.is_capturing and internal_rigid and self.rigid_contact_history:
             history_capacity = 0 if self._prev_contact_lambda is None else self._prev_contact_lambda.shape[0]
             if history_capacity < rigid_capacity:
                 raise RuntimeError(
-                    "SolverVBD contact history must be allocated before CUDA graph capture. "
+                    "SolverVBD contact history must be allocated before graph capture. "
                     "Construct CollisionPipeline before SolverVBD, or run one uncaptured solver step before capture."
                 )
 

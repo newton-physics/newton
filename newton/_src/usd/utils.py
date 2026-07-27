@@ -1065,6 +1065,121 @@ def _get_mesh_from_source(
     )
 
 
+def _material_surface_shader(material: UsdShade.Material | None) -> UsdShade.Shader | None:
+    """Return the surface shader driving a material (UsdPreviewSurface or MDL)."""
+    if not material:
+        return None
+    surface_output = material.GetSurfaceOutput() or material.GetOutput("surface") or material.GetOutput("mdl:surface")
+    if surface_output:
+        source = surface_output.GetConnectedSource()
+        if source:
+            return UsdShade.Shader(source[0].GetPrim())
+    for child in material.GetPrim().GetChildren():
+        if child.IsA(UsdShade.Shader):
+            return UsdShade.Shader(child)
+    return None
+
+
+def _uvtexture_reader_varname(texture_shader: UsdShade.Shader) -> str | None:
+    """Return the primvar name a ``UsdUVTexture`` reads via its ``st`` -> ``UsdPrimvarReader_float2``."""
+    st_input = texture_shader.GetInput("st")
+    source = st_input.GetConnectedSource() if st_input else None
+    if not source:
+        return None
+    reader = UsdShade.Shader(source[0].GetPrim())
+    varname = reader.GetInput("varname")
+    if not varname:
+        return None
+    value = varname.Get()
+    if value is None:
+        try:
+            attrs = UsdShade.Utils.GetValueProducingAttributes(varname)
+        except Exception:
+            attrs = ()
+        value = attrs[0].Get() if attrs else None
+    return str(value) if value else None
+
+
+def _uv_primvar_name_from_shader(shader: UsdShade.Shader | None) -> str | None:
+    """Resolve the texcoord primvar name a shader's base-color texture reads, or ``None``.
+
+    - ``UsdPreviewSurface``: follow the base-color ``UsdUVTexture``'s ``st`` input to its
+      ``UsdPrimvarReader_float2`` and read ``inputs:varname``.
+    - ``OmniPBR`` and other MDL shaders: ``st_<inputs:uv_space_index>``.
+    """
+    if shader is None:
+        return None
+    try:
+        shader_id = shader.GetIdAttr().Get()
+    except Exception:
+        shader_id = None
+    if shader_id == "UsdPreviewSurface":
+        for color_name in ("baseColor", "diffuseColor"):
+            color_input = shader.GetInput(color_name)
+            source = color_input.GetConnectedSource() if color_input else None
+            if not source:
+                continue
+            texture = UsdShade.Shader(source[0].GetPrim())
+            if texture.GetIdAttr().Get() == "UsdUVTexture":
+                name = _uvtexture_reader_varname(texture)
+                if name:
+                    return name
+    uv_index_input = shader.GetInput("uv_space_index")
+    if uv_index_input:
+        value = uv_index_input.Get()
+        if value is not None:
+            return f"st_{int(value)}"
+    return None
+
+
+def _resolve_material_uv_primvar_name(prim: Usd.Prim) -> str | None:
+    """Resolve the texcoord primvar name from the material(s) bound to a mesh or its subsets."""
+    candidate_prims = [prim]
+    try:
+        subsets = UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+        candidate_prims += [subset.GetPrim() for subset in subsets]
+    except Exception:
+        pass
+    for candidate in candidate_prims:
+        name = _uv_primvar_name_from_shader(_material_surface_shader(_get_bound_material(candidate)))
+        if name:
+            return name
+    return None
+
+
+def _find_uv_primvar(prim: Usd.Prim):
+    """Return a mesh's texture-coordinate primvar, or ``None``.
+
+    The primvar name is resolved from the bound material's shader network — the
+    ``UsdPreviewSurface`` texture reader's ``varname`` or an MDL/OmniPBR
+    ``uv_space_index`` — because a mesh may carry several UV sets and only the
+    material identifies the correct one. Falls back to the conventional ``st``
+    primvar, then to the first ``float2``/``texCoord2f`` primvar named ``st*``/``uv*``.
+    """
+    api = UsdGeom.PrimvarsAPI(prim)
+
+    resolved = _resolve_material_uv_primvar_name(prim)
+    if resolved:
+        primvar = api.GetPrimvar(resolved)
+        if primvar and primvar.HasValue():
+            return primvar
+
+    primvar = api.GetPrimvar("st")
+    if primvar and primvar.HasValue():
+        return primvar
+
+    fallback = None
+    for candidate in api.GetPrimvarsWithValues():
+        if candidate.GetTypeName() not in (Sdf.ValueTypeNames.TexCoord2fArray, Sdf.ValueTypeNames.Float2Array):
+            continue
+        name = candidate.GetPrimvarName().lower()
+        if name.startswith("st"):
+            return candidate
+        if (name.startswith("uv") or name == "map1") and fallback is None:
+            fallback = candidate
+    return fallback
+
+
 @overload
 def get_mesh(
     source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
@@ -1288,7 +1403,7 @@ def get_mesh(
     # faceVarying normal conversion, so we don't split again in the UV pass.
     did_split_vertices = False
     if load_uvs:
-        uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
+        uv_primvar = _find_uv_primvar(prim)
         if uv_primvar:
             uvs = uv_primvar.Get()
             if uvs is not None:
@@ -1361,8 +1476,27 @@ def get_mesh(
                 cos_thresh = np.cos(np.deg2rad(vertex_splitting_angle_threshold_deg))
 
                 # For each original vertex v, we'll keep a list of clusters:
-                # each cluster stores (sum_dir, count, new_vid)
+                # each cluster stores (sum_dir, count, new_vid, uv)
                 clusters_per_v = [[] for _ in range(V)]
+
+                # faceVarying UVs carry one value per corner; if the count does
+                # not match, they can't be indexed per-corner, so drop them
+                # (matching the non-splitting UV path below).
+                uvs_facevarying = uvs is not None and uvs_interpolation == UsdGeom.Tokens.faceVarying
+                if uvs_facevarying and len(uvs) != C:
+                    logger.info(
+                        "Mesh %s: UV primvar length (%d) does not match corner count (%d); dropping UVs.",
+                        prim.GetPath(),
+                        len(uvs),
+                        C,
+                    )
+                    uvs = None
+                    uvs_facevarying = False
+
+                def _corner_uv(v, corner_idx):
+                    if uvs is None:
+                        return None
+                    return uvs[corner_idx] if uvs_facevarying else uvs[v]
 
                 new_points = []
                 new_norm_sums = []  # accumulate directions per new vertex id
@@ -1370,42 +1504,45 @@ def get_mesh(
                 new_uvs = [] if uvs is not None else None
 
                 # Helper to create a new vertex clone from original v
-                def _new_vertex_from(v, n_dir, corner_idx):
+                def _new_vertex_from(v, n_dir, corner_uv):
                     new_vid = len(new_points)
                     new_points.append(points[v])
                     new_norm_sums.append(n_dir.copy())
-                    clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
+                    clusters_per_v[v].append([n_dir.copy(), 1, new_vid, corner_uv])
                     if new_uvs is not None:
-                        # Use corner UV if faceVarying, otherwise use vertex UV
-                        if uvs_interpolation == UsdGeom.Tokens.faceVarying:
-                            new_uvs.append(uvs[corner_idx])
-                        else:
-                            new_uvs.append(uvs[v])
+                        new_uvs.append(corner_uv)
                     return new_vid
 
-                # Assign each corner to a cluster (new vertex) based on angular proximity
+                # Assign each corner to a cluster (new vertex) based on angular
+                # proximity. Corners that share a smooth normal but carry
+                # different faceVarying UVs lie on a texture seam and must not be
+                # merged, or the seam's UVs would collapse onto one value.
                 for c in range(C):
                     v = int(indices[c])
                     n_dir = Ndir[c]
+                    corner_uv = _corner_uv(v, c)
 
                     clusters = clusters_per_v[v]
                     assigned = False
                     # try to match an existing cluster
                     for cl in clusters:
-                        sum_dir, cnt, new_vid = cl
+                        sum_dir, cnt, new_vid, cluster_uv = cl
                         # compare with current mean direction (sum_dir normalized)
                         mean_dir = sum_dir / max(np.linalg.norm(sum_dir), 1e-30)
-                        if float(np.dot(mean_dir, n_dir)) >= cos_thresh:
-                            # assign to this cluster
-                            cl[0] = sum_dir + n_dir
-                            cl[1] = cnt + 1
-                            new_norm_sums[new_vid] += n_dir
-                            new_indices[c] = new_vid
-                            assigned = True
-                            break
+                        if float(np.dot(mean_dir, n_dir)) < cos_thresh:
+                            continue
+                        if corner_uv is not None and not np.array_equal(cluster_uv, corner_uv):
+                            continue
+                        # assign to this cluster
+                        cl[0] = sum_dir + n_dir
+                        cl[1] = cnt + 1
+                        new_norm_sums[new_vid] += n_dir
+                        new_indices[c] = new_vid
+                        assigned = True
+                        break
 
                     if not assigned:
-                        new_vid = _new_vertex_from(v, n_dir, c)
+                        new_vid = _new_vertex_from(v, n_dir, corner_uv)
                         new_indices[c] = new_vid
 
                 new_points = np.asarray(new_points, dtype=np.float64)
@@ -2449,6 +2586,72 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
     return properties
 
 
+def _output_channel_count(type_name: Sdf.ValueTypeName) -> int:
+    """Return the component count of a shader output value type (float -> 1, float3 -> 3)."""
+    default = type_name.defaultValue
+    if hasattr(default, "__len__"):
+        return len(default)
+    return 1
+
+
+# Base-color input name fragments used to identify the diffuse/albedo parameter
+# feeding a surface shader. A texture connection's shape alone is ambiguous
+# (a normal map is a 3-channel ``rgb`` connection like a diffuse map), so the
+# input name is the disambiguator for both connected and direct-asset textures.
+_COLOR_TEXTURE_INPUT_NAMES = ("diffuse", "albedo", "basecolor", "base_color", "displaycolor")
+
+
+def _is_color_texture_input_name(base_name: str) -> bool:
+    """Return whether an input name denotes a base-color/albedo texture parameter."""
+    name = base_name.lower()
+    return any(fragment in name for fragment in _COLOR_TEXTURE_INPUT_NAMES)
+
+
+def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> str | np.ndarray | None:
+    """Return the base-color texture feeding a surface shader input, if any.
+
+    The input must be a base-color/albedo parameter by name: a normal map is
+    conventionally wired as ``UsdUVTexture.outputs:rgb`` too, so its 3-channel
+    connection is indistinguishable from a diffuse map by shape alone. Two
+    shapes are then supported:
+
+    - A connected ``UsdUVTexture``: accepted only when the connected output is a
+      multi-channel color output (``rgb`` / ``rgba``). Single-channel outputs
+      (``r``/``g``/``b``/``a``) are scalar data maps (roughness, metallic, ...)
+      and are ignored.
+    - A direct asset value (e.g. an MDL ``diffuse_texture`` parameter): there is
+      no texture node to inspect, so the base-color input is identified by name.
+    """
+    if not _is_color_texture_input_name(surface_input.GetBaseName()):
+        return None
+    try:
+        producing = UsdShade.Utils.GetValueProducingAttributes(surface_input)
+    except Exception:
+        producing = ()
+    for attr in producing:
+        source_shader = UsdShade.Shader(attr.GetPrim())
+        try:
+            if source_shader.GetIdAttr().Get() != "UsdUVTexture":
+                continue
+        except Exception:
+            continue
+        if _output_channel_count(attr.GetTypeName()) < 3:
+            continue
+        texture = _find_texture_in_shader(source_shader, prim)
+        if texture is not None:
+            return texture
+
+    try:
+        connected = surface_input.HasConnectedSource()
+    except Exception:
+        connected = False
+    if not connected:
+        asset = surface_input.Get()
+        if asset:
+            return _resolve_color_texture_asset(asset, prim, surface_input.GetAttr())
+    return None
+
+
 def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract common material properties from a shader node.
 
@@ -2495,19 +2698,10 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
 
     if properties["texture"] is None:
         for inp in shader.GetInputs():
-            name = inp.GetBaseName()
-            if inp.HasConnectedSource():
-                source = inp.GetConnectedSource()
-                source_shader = UsdShade.Shader(source[0].GetPrim())
-                texture = _find_texture_in_shader(source_shader, prim)
-                if texture is not None:
-                    properties["texture"] = texture
-                    break
-            elif "file" in name or "texture" in name:
-                asset = inp.Get()
-                if asset:
-                    properties["texture"] = _resolve_color_texture_asset(asset, prim, inp.GetAttr())
-                    break
+            texture = _color_texture_from_input(inp, prim)
+            if texture is not None:
+                properties["texture"] = texture
+                break
 
     return properties
 

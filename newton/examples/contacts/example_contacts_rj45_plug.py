@@ -241,7 +241,7 @@ class Example:
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        SolverVBD.register_custom_attributes(builder)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
