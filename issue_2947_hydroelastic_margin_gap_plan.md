@@ -200,7 +200,8 @@ This work does not:
 - implement continuous collision detection or time-of-impact calculation;
 - replace marching cubes or the contact-reduction algorithm;
 - broadly retune SDF resolution or pressure laws;
-- remove or repurpose `HydroelasticSDF.Config.margin_contact_area`;
+- remove `HydroelasticSDF.Config.margin_contact_area`; it remains available as
+  a deprecated no-op for configuration compatibility;
 - guarantee identical contact count, order, or tessellation;
 - add end-to-end hydroelastic support to the private SAP implementation.
 
@@ -482,8 +483,11 @@ penetrating cases for:
 
 Explicitly warn that `gap=None` may inherit a nonzero `builder.rigid_gap`.
 
-Keep `margin_contact_area` unchanged. If it is later found obsolete, deprecate
-it in a separate change before removal.
+Keep the public `margin_contact_area` field for configuration compatibility,
+but deprecate it as a no-op. Warn when a caller changes it from its legacy
+default; warning for every default configuration would be noisy and would not
+show that the caller relied on the setting. Remove the unused internal
+plumbing. Speculative contacts use their selected face's geometric area.
 
 Update collision and hydroelastic documentation with:
 
