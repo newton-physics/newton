@@ -520,6 +520,80 @@ class TestHeightfield(unittest.TestCase):
         self.assertGreater(soft_count, 0)
         self.assertEqual(int(contacts.soft_contact_shape.numpy()[0]), hfield_shape)
 
+    def test_create_from_mesh_sloped_plane(self):
+        """Rasterize a sloped plane mesh and verify sampled heights and placement."""
+        # A single-valued surface z = 0.5*x + 0.25*y over [0, 4] x [0, 8].
+        xs = np.linspace(0.0, 4.0, 9, dtype=np.float32)
+        ys = np.linspace(0.0, 8.0, 17, dtype=np.float32)
+        gx, gy = np.meshgrid(xs, ys)
+        gz = 0.5 * gx + 0.25 * gy
+        verts = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=-1).astype(np.float32)
+
+        rows, cols = gx.shape
+        faces = []
+        for r in range(rows - 1):
+            for c in range(cols - 1):
+                v00 = r * cols + c
+                v10 = v00 + 1
+                v01 = v00 + cols
+                v11 = v01 + 1
+                faces += [v00, v10, v11, v00, v11, v01]
+        mesh = wp.Mesh(
+            points=wp.array(verts, dtype=wp.vec3),
+            indices=wp.array(np.array(faces, dtype=np.int32), dtype=wp.int32),
+        )
+
+        hfield, xform = newton.Heightfield.create_from_mesh(mesh, resolution=0.5)
+
+        # Grid dimensions: col -> x (extent 4), row -> y (extent 8) at 0.5 m spacing.
+        self.assertEqual(hfield.ncol, 9)
+        self.assertEqual(hfield.nrow, 17)
+        self.assertAlmostEqual(hfield.hx, 2.0, places=5)
+        self.assertAlmostEqual(hfield.hy, 4.0, places=5)
+
+        # Placement centers the origin-centered grid on the mesh XY center.
+        origin = wp.transform_get_translation(xform)
+        self.assertAlmostEqual(origin[0], 2.0, places=4)
+        self.assertAlmostEqual(origin[1], 4.0, places=4)
+
+        # World heights (denormalized) must match the analytic plane at every sample.
+        world = hfield.min_z + hfield.data * (hfield.max_z - hfield.min_z)
+        expected = 0.5 * gx + 0.25 * gy
+        assert_np_equal(world, expected.astype(np.float32), tol=1e-3)
+
+    def test_rasterize_mesh_rejects_small_max_cells_per_axis(self):
+        """Reject a maximum grid dimension smaller than two."""
+        mesh = wp.Mesh(
+            points=wp.array(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                dtype=wp.vec3,
+            ),
+            indices=wp.array([0, 1, 2], dtype=wp.int32),
+        )
+
+        with self.assertRaisesRegex(ValueError, "max_cells_per_axis must be at least 2"):
+            newton.utils.rasterize_mesh_to_heightfield(mesh, resolution=0.5, max_cells_per_axis=1)
+
+    def test_rasterize_mesh_missed_rays_use_floor(self):
+        """Rasterize a mesh with a hole and verify missed rays fall back to min Z."""
+        # A flat quad at z = 1 covering only the +x half (x in [1, 2]) of the bounds,
+        # plus a lone low vertex at the origin so the mesh minimum Z is 0.
+        verts = np.array(
+            [[1.0, 0.0, 1.0], [2.0, 0.0, 1.0], [2.0, 2.0, 1.0], [1.0, 2.0, 1.0], [0.0, 0.0, 0.0]],
+            dtype=np.float32,
+        )
+        faces = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+        mesh = wp.Mesh(points=wp.array(verts, dtype=wp.vec3), indices=wp.array(faces, dtype=wp.int32))
+
+        heights, bounds = newton.utils.rasterize_mesh_to_heightfield(mesh, resolution=0.5)
+        self.assertEqual(bounds, (0.0, 0.0, 2.0, 2.0))
+
+        # Columns over the covered half (x >= 1) hit the quad at z = 1; columns over
+        # the uncovered half (x < 1) miss and fall back to the mesh minimum Z (0).
+        # Grid columns sample x = [0, 0.5, 1.0, 1.5, 2.0].
+        expected = np.tile([0.0, 0.0, 1.0, 1.0, 1.0], (heights.shape[0], 1)).astype(np.float32)
+        assert_np_equal(heights, expected, tol=1e-4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
