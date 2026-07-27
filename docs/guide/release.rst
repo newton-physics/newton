@@ -236,10 +236,11 @@ otherwise.
    * - ☐
      - Go/no-go approval obtained from maintainers.
    * - ☐
-     - On ``release-X.Y``, run ``towncrier build --draft`` with the GA version
-       and date, audit and approve the preview, then rerun with ``--yes`` as
-       documented in ``changelog.d/README.md``.  Delete ``.skip`` fragments and
-       merge the changelog-only pull request with the
+     - On ``release-X.Y``, run
+       ``uvx --from towncrier==25.8.0 towncrier build --draft`` with the GA
+       version and date, audit and approve the preview, then rerun with
+       ``--yes`` as documented in ``changelog.d/README.md``.  Delete ``.skip``
+       fragments and merge the changelog-only pull request with the
        ``release-management`` label before preparing the final version.  For
        the first Towncrier release, also merge duplicate category headings
        while retaining every legacy ``[Unreleased]`` entry.

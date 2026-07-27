@@ -16,12 +16,14 @@ _REPORT_NAME = re.compile(r"newton-[A-Za-z0-9][A-Za-z0-9.+-]*-(?:prerelease|rc|r
 def cleanup_report(path: Path, *, temporary_directory: Path | None = None) -> None:
     """Remove an allowed report directly beneath the temporary directory."""
     temporary_root = (temporary_directory or Path(tempfile.gettempdir())).resolve()
+    if path.is_symlink():
+        raise ValueError("report path must not be a symlink")
     candidate = path.resolve()
     if candidate.parent != temporary_root:
         raise ValueError(f"report must be directly beneath {temporary_root}")
     if _REPORT_NAME.fullmatch(candidate.name) is None:
         raise ValueError(f"not an allowed Newton report filename: {candidate.name}")
-    candidate.unlink(missing_ok=True)
+    path.unlink(missing_ok=True)
 
 
 def main() -> None:

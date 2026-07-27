@@ -180,11 +180,9 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
      ```
      Use the draft output as the canonical fragment preview; it does not modify
      `CHANGELOG.md` or delete fragments.
-   - **Retrospective**: read `CHANGELOG.md` at HEAD (the current working tree —
-     released sections are append-only). Locate the `## [<target-version>]`
-     header and collect content up to the next dated `##` heading. If the
-     header cannot be found at HEAD, fall back to
-     `git show v<target>:CHANGELOG.md`.
+   - **Retrospective**: read the target tag's changelog with
+     `git show v<target>:CHANGELOG.md`. Locate the `## [<target-version>]`
+     header and collect content up to the next dated `##` heading.
 
 4. Parse entries. Infer a fragment's section from its filename type (`added`,
    `changed`, `deprecated`, `removed`, or `fixed`); the file content is one
@@ -211,10 +209,11 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
      ```
      Numeric identifiers link to issues, not necessarily to the implementing
      pull request, so the fragment-addition commit is the authoritative join.
-   - For legacy entries and any fragment still lacking a backing commit, search
-     exact text across both storage forms:
+   - For legacy entries and any fragment still lacking a backing commit, put
+     the distinctive substring in `entry_text` without interpolating it into
+     shell source, then search exact text across both storage forms:
      ```bash
-     git log --reverse -S'<distinctive substring from the entry>' \
+     git log --reverse -S"$entry_text" \
        --format='%H|%s|%cs' <base-ref>..<head-ref> -- CHANGELOG.md changelog.d
      ```
      The first commit that is not a Towncrier build, synchronization, or another

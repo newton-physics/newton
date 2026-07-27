@@ -50,6 +50,24 @@ class CleanupReportTest(unittest.TestCase):
 
             self.assertTrue(report.exists())
 
+    def test_rejects_symlink(self):
+        """Reject a report symlink without deleting its target."""
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory)
+            target = temporary_root / "newton-1.5.0-rc-report.md"
+            target.write_text("keep\n", encoding="utf-8")
+            report = temporary_root / "newton-1.5.0-prerelease-report.md"
+            try:
+                report.symlink_to(target)
+            except OSError as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                cleanup_report(report, temporary_directory=temporary_root)
+
+            self.assertTrue(report.is_symlink())
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep\n")
+
 
 if __name__ == "__main__":
     unittest.main()

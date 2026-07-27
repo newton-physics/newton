@@ -81,7 +81,7 @@ path-level deletions are what preserve main-only fragments.
 ```bash
 uv run --no-project python scripts/changelog_policy.py validate
 git diff v<latest-release> -- CHANGELOG.md changelog.d
-git diff --name-status -- CHANGELOG.md changelog.d
+git diff --cached --name-status -- CHANGELOG.md changelog.d
 rg -ni "removed|deprecated|in favor of|use .* instead|renam|replac|default|breaking" \
   CHANGELOG.md changelog.d
 ```
