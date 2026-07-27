@@ -623,7 +623,7 @@ class ContactsKamino:
 
         The ``w`` component stores the signed ``distance`` between margin-shifted surfaces:
         - ``w < 0`` means penetration past the resting separation defined by the margin
-        - ``w > 0`` means separation within the detection ``distance = gap + margin``
+        - ``w > 0`` means margin-shifted separation within the detection gap
         """
         self._assert_has_data()
         return self._data.gapfunc

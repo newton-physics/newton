@@ -240,10 +240,9 @@ class SolutionMetricsData:
     """
     The largest constraint violation residual across all contact constraints.
 
-    Computed as the maximum absolute value (i.e. infinity-norm) over contact constraint residuals.
-
-    Equivalent to `r_cts_contacts := || d_k ||_inf`, where `d_k` would be an array of
-    contact penetrations extracted from the `gapfunc` elements of :class:`ContactsKaminoData`.
+    Equivalent to `r_cts_contacts := max_k max(0, -d_k)`, where `d_k` is the
+    margin-shifted signed distance stored in the ``w`` component of the contact
+    `gapfunc`. Negative `d_k` denotes penetration.
 
     Shape of ``(num_worlds,)``.
     """
@@ -871,12 +870,12 @@ def _compute_cts_contacts_residual(
     wcid = contact_cid[cid]
     gapfunc = contact_gapfunc[cid]
 
-    # Compute the per-contact constraint residual (infinity-norm)
-    r_cts_contacts_k = wp.abs(gapfunc[3])
+    # Compute unilateral penetration depth from the margin-shifted signed distance.
+    r_cts_contacts_k = wp.max(0.0, -gapfunc[3])
 
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_cts_contacts, wid, r_cts_contacts_k)
-    if r_cts_contacts_k >= previous_max:
+    if r_cts_contacts_k > 0.0 and r_cts_contacts_k >= previous_max:
         wp.atomic_exch(metric_r_cts_contacts_argmax, wid, wcid)
 
 
