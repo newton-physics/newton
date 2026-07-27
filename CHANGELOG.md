@@ -23,7 +23,9 @@
 - Add viewer layer system to overlay multiple solvers/models in supported rendering viewers; call `ViewerBase.activate(layer_id)` to route subsequent `set_model` / `log_state` / `log_*` calls into a named layer, `ViewerBase.set_layer_visible()` to toggle layers independently, and `ViewerBase.set_layer_transform()` to position layers side-by-side. See `example_basic_multi_solver_overlay.py`
 - Add `Heightfield.create_from_mesh()` and `newton.utils.rasterize_mesh_to_heightfield()` to build a heightfield collider by ray-casting a `wp.Mesh`, replacing a large static terrain mesh with an equivalent heightfield.
 - Add `ViewerBase.camera_speed` to configure keyboard translation speed for interactive viewers. (#3439)
+- Add a "Show Ground" visualization toggle (`ViewerBase.show_ground`, default on) to hide or show ground-plane shapes in the viewer.
 - Add opt-in DVI forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="dvi")`, with sparse and dense execution, DVI-specific diagnostics, and warm-starting. PADMM remains the default.
+- Add opt-in DVI forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="dvi")`, with sparse and dense execution, DVI-specific convergence diagnostics, warm-starting, bounded contact-recovery controls, and RCM-reordered bilateral factorization with reusable ordering and panel-parallel numeric factorization for large systems. PADMM remains the default.
 - Add SDF contact support for convex-hull shapes with mesh-attached SDFs and opt-in SDF contact generation for box shapes.
 - Add opt-in filtering of static-static, static-kinematic, and kinematic-kinematic contacts during broad-phase collision detection. Set `CollisionPipeline(include_static_kinematic_pairs=False)` to enable filtering; the default preserves existing contact generation. `Model.shape_contact_pairs` remains an unfiltered superset for direct consumers such as `SolverKamino` and hydroelastic SDF setup.
 - Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
@@ -40,6 +42,7 @@
 
 ### Changed
 
+- Disable the implicit positive Dahl-friction defaults in `SolverVBD.register_custom_attributes()` (deprecated in 1.3.0): `vbd:dahl_eps_max` and `vbd:dahl_tau` now default to zero, and Dahl cable friction is enabled only where both are authored positive. Pass `dahl_defaults_enabled=True` to temporarily restore the old defaults; the compatibility mode will be removed in a future release.
 - Compile tiled camera render kernels with CUDA fast math by default for faster rendering; set `SensorTiledCamera.render_config.enable_fast_math = False` for bit-exact, IEEE-precise output.
 - Make `CollisionPipeline` the sole owner of rigid-contact geometry for `SolverVBD`: `"latest"` supplies fresh geometry and `"sticky"` supplies replayed geometry. `SolverVBD(rigid_contact_history=True)` uses either mode's match indices only to warm-start its numeric lambda/penalty state.
 - Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).
@@ -81,6 +84,8 @@
 
 ### Fixed
 
+- Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
+- Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
 - Fix USD capsule, cylinder, and cone visual and site scaling to follow the authored primitive axis.
 - Fix USD plane visual width and length to scale along the axes defined by the `UsdGeomPlane` schema, and orient X- and Y-axis plane visuals along the authored axis.
 - Validate `ArticulationView` mask shapes and devices before launching selection kernels. (#3448)
@@ -112,6 +117,7 @@
 - Fix `ModelBuilder.add_mjcf()` ignoring positive explicit mass on mesh geoms. (#3595)
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
+- Fix `ModelBuilder.add_mjcf()` to honor compiler `inertiafromgeom` and `inertiagrouprange`, and keep inferred mass independent of `parse_visuals`. (#3596)
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
 - Fix `SolverKamino` CG/CR solves silently under-iterating on CPU graph capture; the capture-safe loop path now runs on any capturing device, not only CUDA, so CPU captures no longer record a stale host-readback convergence decision at record time.
 - Reject incompatible custom attribute and frequency definitions before composing `ModelBuilder` instances.
