@@ -1485,6 +1485,23 @@ class TestActuatorBuilder(unittest.TestCase):
 class TestActuatorSelectionAPI(unittest.TestCase):
     """Tests for actuator parameter access via ArticulationView."""
 
+    def build_actuator_view(self):
+        single_world_builder = newton.ModelBuilder()
+        body = single_world_builder.add_link()
+        joint = single_world_builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        single_world_builder.add_articulation([joint], label="robot")
+        single_world_builder.add_actuator(
+            ControllerPD,
+            index=single_world_builder.joint_qd_start[joint],
+            kp=100.0,
+        )
+
+        builder = newton.ModelBuilder()
+        builder.replicate(single_world_builder, 2)
+        model = builder.finalize()
+        view = ArticulationView(model, "robot")
+        return model.actuators[0], view
+
     def run_test_actuator_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="myart">
@@ -1676,6 +1693,25 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
     def test_actuator_selection_two_per_view_with_mask(self):
         self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
+
+    def test_set_actuator_parameter_rejects_invalid_masks_before_launch(self):
+        actuator, view = self.build_actuator_view()
+        values = wp.ones((view.world_count, 1), dtype=wp.float32, device=view.device)
+
+        invalid_masks = (
+            (wp.ones((view.world_count, 1), dtype=wp.bool, device=view.device), "mask shape"),
+            (wp.ones(view.world_count, dtype=wp.int32, device=view.device), "Boolean mask"),
+        )
+        if wp.is_cuda_available():
+            other_device = "cpu" if view.device.is_cuda else "cuda:0"
+            invalid_masks += ((wp.ones(view.world_count, dtype=wp.bool, device=other_device), "device"),)
+
+        for mask, message in invalid_masks:
+            with self.subTest(shape=mask.shape, dtype=mask.dtype, device=mask.device):
+                with patch.object(wp, "launch") as launch:
+                    with self.assertRaisesRegex(ValueError, message):
+                        view.set_actuator_parameter(actuator, actuator.controller, "kp", values, mask=mask)
+                    launch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

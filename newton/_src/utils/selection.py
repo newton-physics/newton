@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import re
 import warnings
 from fnmatch import fnmatch
 from types import NoneType
@@ -394,7 +395,10 @@ def get_name_from_label(label: str):
 
 
 def find_matching_ids(
-    pattern: str | list[str] | list[int], labels: list[str], world_ids, world_count: int
+    pattern: str | list[str] | re.Pattern[str] | list[int],
+    labels: list[str],
+    world_ids,
+    world_count: int,
 ) -> tuple[list[list[int]], list[int]]:
     matching_ids = match_labels(labels, pattern)
 
@@ -419,29 +423,35 @@ def find_matching_ids(
     return grouped_ids, global_ids
 
 
-def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> list[int]:
+def match_labels(labels: list[str], pattern: str | list[str] | re.Pattern[str] | list[int]) -> list[int]:
     """Find indices of elements in ``labels`` that match ``pattern``.
 
     See :ref:`label-matching` for the pattern syntax accepted across Newton APIs.
 
     Args:
         labels: List of label strings to match against.
-        pattern: A ``str`` is matched via :func:`fnmatch.fnmatch` against each label.
-            A ``list[str]`` matches any pattern.
-            A ``list[int]`` is returned as-is (indices used directly).
-            Mixing ``str`` and ``int`` in the same list is not allowed.
+        pattern: Glob string, list of glob strings, compiled string regular expression,
+            or list of integer indices. Regular expressions use full matching. Integer
+            indices are returned as-is.
 
     Returns:
         Unique list of matching indices, or ``pattern`` itself for ``list[int]``.
 
     Raises:
-        TypeError: If list elements are not all ``str`` or all ``int``.
+        TypeError: If the selector type is unsupported or list elements are not all
+            strings or all integers.
     """
     if isinstance(pattern, str):
         return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
 
+    if isinstance(pattern, re.Pattern):
+        return [idx for idx, label in enumerate(labels) if pattern.fullmatch(label) is not None]
+
     if not isinstance(pattern, list):
-        raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {type(pattern)}")
+        raise TypeError(
+            "Expected a glob string, list of glob strings, compiled string pattern, "
+            f"or list of int indices, got: {type(pattern)}"
+        )
 
     if len(pattern) == 0:
         return pattern
@@ -457,7 +467,7 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
         if not validation_failure:
             return pattern
     elif all(isinstance(item, str) for item in pattern):
-        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, item) for item in pattern)]
 
     types = {type(item).__name__ for item in pattern}
     raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
@@ -497,9 +507,17 @@ class ArticulationView:
     This is useful in RL and batched simulation workflows where a single policy or
     control routine operates on many parallel environments with consistent tensor shapes.
 
+    Methods that select articulations with a mask support per-world Boolean masks
+    with shape ``(world_count,)`` and per-articulation Boolean masks with shape
+    ``(world_count, count_per_world)``. Per-world masks select all articulations
+    in each selected world. :meth:`set_actuator_parameter` accepts only the
+    per-world layout. Masks provided as Warp arrays must be on the view's device.
+
     Example:
 
     .. code-block:: python
+
+        import re
 
         import newton
 
@@ -509,20 +527,32 @@ class ArticulationView:
         q_np[..., 0] = 0.0
         view.set_dof_positions(state, q_np)
 
+        regex_view = newton.selection.ArticulationView(
+            model,
+            pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_(A|B|C)"),
+            include_links=re.compile(r"(LF|RF)_FOOT"),
+        )
+
     The ``pattern``, ``include_joints``, ``exclude_joints``, ``include_links``,
     and ``exclude_links`` parameters accept label patterns or integer indices — see
-    :ref:`label-matching`.
+    :ref:`label-matching`. ``pattern`` is matched against full articulation labels.
+    Joint and link filters are matched against the final path component of each label.
 
     Args:
         model: The model containing the articulations.
-        pattern: Pattern or list of patterns to match articulation labels, or a list
-            of absolute articulation indices. Indices must be unique and in ascending order.
-        include_joints: List of joint names, patterns, or indices to include. Unsorted
-            integer indices are deprecated and will be rejected in a future release.
-        exclude_joints: List of joint names, patterns, or indices to exclude.
-        include_links: List of link names, patterns, or indices to include. Unsorted
-            integer indices are deprecated and will be rejected in a future release.
-        exclude_links: List of link names, patterns, or indices to exclude.
+        pattern: Glob pattern, list of glob patterns, compiled regular-expression pattern,
+            or list of absolute articulation indices. Regular expressions use full matching.
+            Indices must be unique and in ascending order.
+        include_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to include. Unsorted integer indices are
+            deprecated and will be rejected in a future release.
+        exclude_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to exclude.
+        include_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to include. Unsorted integer indices are
+            deprecated and will be rejected in a future release.
+        exclude_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to exclude.
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
@@ -533,12 +563,12 @@ class ArticulationView:
     def __init__(
         self,
         model: Model,
-        pattern: str | list[str] | list[int],
+        pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
-        include_joints: list[str] | list[int] | None = None,
-        exclude_joints: list[str] | list[int] | None = None,
-        include_links: list[str] | list[int] | None = None,
-        exclude_links: list[str] | list[int] | None = None,
+        include_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        include_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
@@ -1640,11 +1670,40 @@ class ArticulationView:
     # ========================================================================================
     # Utilities
 
+    def _resolve_world_mask(self, mask):
+        if mask is None:
+            return self.full_mask
+        if isinstance(mask, wp.array):
+            if mask.dtype is not wp.bool:
+                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+            if mask.shape != (self.world_count,):
+                raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+            return mask
+
+        try:
+            return wp.array(mask, dtype=bool, shape=(self.world_count,), device=self.device, copy=False)
+        except Exception as error:
+            raise ValueError(f"Expected Boolean mask with shape ({self.world_count},)") from error
+
     def _resolve_mask(self, mask):
         # accept 1D and 2D Boolean masks
         if isinstance(mask, wp.array):
-            if mask.dtype is wp.bool and mask.ndim < 3:
-                return mask
+            expected_shapes = {
+                (self.world_count,),
+                (self.world_count, self.count_per_world),
+            }
+            if mask.dtype is not wp.bool:
+                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+            if mask.shape not in expected_shapes:
+                raise ValueError(
+                    f"Expected Boolean mask with shape "
+                    f"({self.world_count}, {self.count_per_world}) or ({self.world_count},), got {mask.shape}"
+                )
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+            return mask
         else:
             # try interpreting as a 1D world mask
             try:
@@ -1994,6 +2053,7 @@ class ArticulationView:
                 where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
+        mask = self._resolve_world_mask(mask)
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return
@@ -2007,14 +2067,6 @@ class ArticulationView:
 
         if values.shape[:2] != expected_shape[:2]:
             raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
-
-        if mask is None:
-            mask = self.full_mask
-        else:
-            if not isinstance(mask, wp.array):
-                mask = wp.array(mask, dtype=bool, shape=(self.world_count,), device=self.device, copy=False)
-            if mask.shape != (self.world_count,):
-                raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
 
         wp.launch(
             _scatter_masked_2d_kernel,

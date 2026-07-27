@@ -3,6 +3,8 @@
 
 """IMU Sensor - measures accelerations and angular velocities at sensor sites."""
 
+import re
+
 import warp as wp
 
 from ..geometry.flags import ShapeFlags
@@ -114,7 +116,7 @@ class SensorIMU:
     def __init__(
         self,
         model: Model,
-        sites: str | list[str] | list[int],
+        sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
         request_state_attributes: bool = True,
@@ -126,8 +128,9 @@ class SensorIMU:
 
         Args:
             model: The model to use.
-            sites: List of site indices, single pattern to match against site
-                labels, or list of patterns where any one matches.
+            sites: Glob pattern, list of glob patterns, compiled regular-expression
+                pattern to match against site labels, or list of site indices. Regular
+                expressions use full matching.
             verbose: If True, print details. If False, suppress details. If None, print details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.

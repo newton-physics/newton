@@ -169,6 +169,26 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
                         self.assert_builder_merge_state_equal(expected, actual)
 
+    def test_replicate_matches_add_world_loop_with_explicit_transforms(self):
+        source = self._make_source()
+        xforms = [
+            wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.1, 0.2, 0.3)),
+            wp.transform((-2.0, 1.0, 0.5), wp.quat_rpy(-0.2, 0.4, 0.1)),
+        ]
+
+        expected = self._make_destination()
+        for xform in xforms:
+            expected.add_world(source, xform)
+
+        actual = self._make_destination()
+        actual.replicate(source, len(xforms), xforms=xforms)
+
+        self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_replicate_rejects_mismatched_explicit_transforms(self):
+        with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):
+            ModelBuilder().replicate(self._make_source(), 2, xforms=[wp.transform_identity()])
+
     def test_replicate_does_not_call_add_world(self):
         source = self._make_source()
         builder = self._make_destination()

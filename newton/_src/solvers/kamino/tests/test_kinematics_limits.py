@@ -11,7 +11,7 @@ import unittest
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.data import DataKamino
-from newton._src.solvers.kamino._src.core.math import quat_exp, screw, screw_angular, screw_linear
+from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
@@ -75,8 +75,8 @@ def _set_joint_follower_body_state(
     R_B = wp.quat_to_matrix(q_B)
 
     # Extract the linear and angular velocity of the Base body
-    v_B = screw_linear(u_B)
-    omega_B = screw_angular(u_B)
+    v_B = wp.spatial_top(u_B)
+    omega_B = wp.spatial_bottom(u_B)
 
     # Define the joint rotation offset
     q_x_j = Q_X_J
@@ -110,7 +110,7 @@ def _set_joint_follower_body_state(
 
     # Offset the bose of the body by a fixed amount
     state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=wp.float32)
-    state_body_u_i[bid_F] = screw(v_F_new, omega_F_new)
+    state_body_u_i[bid_F] = wp.spatial_vectorf(*v_F_new, *omega_F_new)
 
 
 ###

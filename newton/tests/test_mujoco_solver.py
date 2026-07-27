@@ -56,26 +56,6 @@ class TestMuJoCoSolver(unittest.TestCase):
         """
         self.assertTrue(True, "setUp method completed.")
 
-    def test_ls_parallel_deprecated(self):
-        """Test that the deprecated ls_parallel option warns and is ignored."""
-        # Create minimal model with proper inertia
-        builder = newton.ModelBuilder()
-        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
-        joint = builder.add_joint_revolute(-1, link)
-        builder.add_articulation([joint])
-        model = builder.finalize()
-
-        # Parallel line search was removed from mujoco_warp in 3.9.1; passing
-        # ls_parallel emits a DeprecationWarning and otherwise has no effect.
-        for value in (True, False):
-            with self.assertWarns(DeprecationWarning):
-                SolverMuJoCo(model, ls_parallel=value)
-
-        # Omitting ls_parallel does not warn.
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            SolverMuJoCo(model)
-
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia

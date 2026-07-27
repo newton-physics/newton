@@ -61,7 +61,7 @@ import warp as wp
 from .....core.types import override
 from ...config import ConfigBase, ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from ..core.data import DataKamino
-from ..core.math import FLOAT32_EPS, screw, screw_angular, screw_linear
+from ..core.math import FLOAT32_EPS
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import vec6f
@@ -343,7 +343,7 @@ def gravity_plus_coriolis_wrench(
     """
     f_gi_i = m_i * g
     tau_gi_i = -wp.skew(omega_i) @ (I_i @ omega_i)
-    return screw(f_gi_i, tau_gi_i)
+    return wp.spatial_vectorf(*f_gi_i, *tau_gi_i)
 
 
 @wp.func
@@ -370,7 +370,7 @@ def gravity_plus_coriolis_wrench_split(
 def _build_nonlinear_generalized_force(
     # Inputs:
     model_time_dt: wp.array[wp.float32],
-    model_gravity_vector: wp.array[wp.vec4f],
+    model_gravity_vector: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     state_bodies_u_i: wp.array[wp.spatial_vectorf],
@@ -393,13 +393,10 @@ def _build_nonlinear_generalized_force(
 
     # Get world data
     dt = model_time_dt[wid]
-    gv = model_gravity_vector[wid]
-
-    # Extract the effective gravity vector
-    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
+    g = model_gravity_vector[wid]
 
     # Extract the linear and angular components of the generalized velocity
-    omega_i = screw_angular(u_i)
+    omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
     h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
@@ -412,7 +409,7 @@ def _build_nonlinear_generalized_force(
 def _build_generalized_free_velocity(
     # Inputs:
     model_time_dt: wp.array[wp.float32],
-    model_gravity_vector: wp.array[wp.vec4f],
+    model_gravity_vector: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     model_bodies_inv_m_i: wp.array[wp.float32],
@@ -439,26 +436,23 @@ def _build_generalized_free_velocity(
 
     # Get world data
     dt = model_time_dt[wid]
-    gv = model_gravity_vector[wid]
-
-    # Extract the effective gravity vector
-    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
+    g = model_gravity_vector[wid]
 
     # Extract the linear and angular components of the generalized velocity
-    v_i = screw_linear(u_i)
-    omega_i = screw_angular(u_i)
+    v_i = wp.spatial_top(u_i)
+    omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
     h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
-    f_h_i = screw_linear(h_i)
-    tau_h_i = screw_angular(h_i)
+    f_h_i = wp.spatial_top(h_i)
+    tau_h_i = wp.spatial_bottom(h_i)
 
     # Compute the generalized free-velocity vector components
     v_f_i = v_i + dt * (inv_m_i * f_h_i)
     omega_f_i = omega_i + dt * (inv_I_i @ tau_h_i)
 
     # Store the generalized free-velocity vector
-    problem_u_f[bid] = screw(v_f_i, omega_f_i)
+    problem_u_f[bid] = wp.spatial_vectorf(*v_f_i, *omega_f_i)
 
 
 @wp.kernel

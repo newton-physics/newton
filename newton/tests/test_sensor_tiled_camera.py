@@ -283,6 +283,48 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         self.assertGreater(depth_image.numpy()[0, 0, 0, 0], 0.0)
 
+    def test_tiled_render_order_accepts_partial_tiles(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+
+        width, height = 17, 11
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(20.0))
+        state = model.state()
+
+        reference_color = sensor.utils.create_color_image_output(width, height)
+        reference_depth = sensor.utils.create_depth_image_output(width, height)
+        sensor.update(
+            state,
+            camera_transforms,
+            camera_rays,
+            color_image=reference_color,
+            depth_image=reference_depth,
+            render_config=SensorTiledCamera.RenderConfig(render_order=SensorTiledCamera.RenderOrder.VIEW_PRIORITY),
+        )
+
+        tiled_color = sensor.utils.create_color_image_output(width, height)
+        tiled_depth = sensor.utils.create_depth_image_output(width, height)
+        sensor.update(
+            state,
+            camera_transforms,
+            camera_rays,
+            color_image=tiled_color,
+            depth_image=tiled_depth,
+            render_config=SensorTiledCamera.RenderConfig(
+                render_order=SensorTiledCamera.RenderOrder.TILED,
+                tile_width=8,
+                tile_height=5,
+            ),
+        )
+
+        np.testing.assert_array_equal(tiled_color.numpy(), reference_color.numpy())
+        np.testing.assert_array_equal(tiled_depth.numpy(), reference_depth.numpy())
+
     def test_forward_depth_image_matches_utility(self) -> None:
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -5.0), q=wp.quat_identity()))
@@ -633,27 +675,6 @@ class TestSensorTiledCamera(unittest.TestCase):
         tiled_camera_sensor.update(state, camera_transforms, camera_rays, color_image=None, depth_image=None)
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
-
-    def test_deprecated_geometry_bvh_helpers_forward_to_model_methods(self) -> None:
-        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
-        state = model.state()
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.build_bvh_shape(model, state, bvh_constructor="median")
-        self.assertIsNotNone(model.bvh_shapes)
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.refit_bvh_shape(model, state)
-
-        particle_model = self._build_single_particle_scene()
-        particle_state = particle_model.state()
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.build_bvh_particle(particle_model, particle_state, bvh_constructor="median")
-        self.assertIsNotNone(particle_model.bvh_particles)
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.refit_bvh_particle(particle_model, particle_state)
 
     def test_model_bvh_build_accepts_constructor(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))

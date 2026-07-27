@@ -1779,18 +1779,32 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
 
     num_steps = 20
     fk_enabled = True
-    # USD asset has body_mass = 0.0033 kg for the gripper finger pads
-    # (`left_pad` / `right_pad`); the source MJCF has near-zero mass 2e-6 kg.
-    # The mass mismatch produces qvel diffs up to ~4e-3 on the gripper DOF in
-    # the first few steps before settling. Other tests (model comparison,
-    # FK) are unaffected once `_compare_inertia` is overridden to skip the
-    # body_mass check. To tighten: regenerate the USD asset from the current
-    # MJCF.
-    dynamics_tolerance = 1e-2
+    # Menagerie PR #252 corrected the source finger pads from 2e-6 kg to
+    # 0.0035 kg. The USD reconstructs them as 0.0033 kg, so exact inertia
+    # comparison remains inappropriate, but the dynamics residual is now two
+    # orders of magnitude below the tolerance required by the stale source.
+    dynamics_tolerance = 1e-4
 
     def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
         # body_mass differs for finger pads (see class docstring).
         pass
+
+    def test_pad_mass_matches_source_scale(self):
+        """The pinned MJCF and USD agree on the finger-pad mass scale."""
+        self._ensure_models()
+        newton_mass = self._newton_solver.mj_model.body_mass
+        native_mass = self._mj_model.body_mass
+
+        for body_name in ("left_pad", "right_pad"):
+            native_id = self._mj_model.body(body_name).id
+            newton_id = self._body_map[native_id]
+            np.testing.assert_allclose(
+                newton_mass[newton_id],
+                native_mass[native_id],
+                rtol=0.1,
+                atol=0.0,
+                err_msg=f"{body_name} mass",
+            )
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1868,8 +1882,11 @@ class TestMenagerieUSD_WonikAllegro(TestMenagerieUSD):
     # ~0.015. A larger residual than other USD robots remains because the
     # backfill operates at runtime on mjw_model fields but mjwarp/Newton also
     # consume inertia-derived quantities cached at solver build time that
-    # re-running smooth.{crb,factor_m} doesn't refresh. To tighten: regenerate
-    # the USD asset from the current MJCF.
+    # re-running smooth.{crb,factor_m} doesn't refresh. Regenerating with
+    # mujoco-usd-converter v0.3.0 reproduces the mismatch because implicit
+    # mesh-derived inertia is re-derived from USD convex hulls; converter issue
+    # https://github.com/newton-physics/mujoco-usd-converter/issues/99 tracks
+    # authoring MuJoCo's compiled body mass properties.
     num_steps = 20
     fk_enabled = True
     dynamics_tolerance = 5e-2
