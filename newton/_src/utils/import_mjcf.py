@@ -515,6 +515,10 @@ def parse_mjcf(
                     raise ValueError(f"MJCF mesh {name!r} refpos must have 3 values")
                 if refquat.shape != (4,):
                     raise ValueError(f"MJCF mesh {name!r} refquat must have 4 values")
+                if not np.all(np.isfinite(refpos)):
+                    raise ValueError(f"MJCF mesh {name!r} refpos must contain only finite values")
+                if not np.all(np.isfinite(refquat)):
+                    raise ValueError(f"MJCF mesh {name!r} refquat must contain only finite values")
                 refquat_norm = np.linalg.norm(refquat)
                 if refquat_norm == 0.0:
                     raise ValueError(f"MJCF mesh {name!r} refquat must be nonzero")
@@ -916,11 +920,7 @@ def parse_mjcf(
                     continue
                 else:
                     mesh_asset = mesh_assets[mesh_name]
-                    if "mesh" in geom_defaults:
-                        mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_asset["scale"])
-                    else:
-                        mesh_scale = mesh_asset["scale"]
-                    scaling = np.array(mesh_scale) * scale
+                    scaling = np.asarray(mesh_asset["scale"]) * scale
 
                     m_meshes = load_mjcf_mesh_asset(mesh_asset, scaling)
                     # Combine all sub-meshes into one vertex array for fitting.
