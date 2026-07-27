@@ -5053,6 +5053,59 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         verify_usdphysics_parser(self, asset_path, model, compare_min_max_coords=True, floating=True)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_static_visual_shapes_loading_flag(self):
+        """Load static visual instance proxies by default with an explicit opt-out."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        asset = UsdGeom.Xform.Define(stage, "/Asset")
+        UsdGeom.Cube.Define(stage, "/Asset/VisualCube")
+
+        UsdGeom.Xform.Define(stage, "/World")
+        static_instance = stage.DefinePrim("/World/Static", "Xform")
+        static_instance.GetReferences().AddInternalReference(asset.GetPath())
+        static_instance.SetInstanceable(True)
+        static_visual_path = "/World/Static/VisualCube"
+        self.assertTrue(stage.GetPrimAtPath(static_visual_path).IsInstanceProxy())
+
+        static_collider = UsdGeom.Cube.Define(stage, "/World/StaticCollider")
+        UsdPhysics.CollisionAPI.Apply(static_collider.GetPrim())
+
+        body = UsdGeom.Cube.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+        body_visual = UsdGeom.Sphere.Define(stage, "/World/Body/VisualSphere")
+
+        builder_default = newton.ModelBuilder()
+        result_default = builder_default.add_usd(stage, root_path="/World")
+        self.assertIn(static_visual_path, result_default["path_shape_map"])
+        default_static_shape = result_default["path_shape_map"][static_visual_path]
+        self.assertEqual(builder_default.shape_body[default_static_shape], -1)
+        self.assertIn(body_visual.GetPath().pathString, result_default["path_shape_map"])
+        self.assertIn(static_collider.GetPath().pathString, result_default["path_shape_map"])
+
+        builder_disabled = newton.ModelBuilder()
+        result_disabled = builder_disabled.add_usd(
+            stage,
+            root_path="/World",
+            load_static_visual_shapes=False,
+        )
+        self.assertNotIn(static_visual_path, result_disabled["path_shape_map"])
+        self.assertIn(body_visual.GetPath().pathString, result_disabled["path_shape_map"])
+        self.assertIn(static_collider.GetPath().pathString, result_disabled["path_shape_map"])
+
+        builder_no_visuals = newton.ModelBuilder()
+        result_no_visuals = builder_no_visuals.add_usd(
+            stage,
+            root_path="/World",
+            load_visual_shapes=False,
+            load_static_visual_shapes=True,
+        )
+        self.assertNotIn(static_visual_path, result_no_visuals["path_shape_map"])
+        self.assertNotIn(body_visual.GetPath().pathString, result_no_visuals["path_shape_map"])
+        self.assertIn(static_collider.GetPath().pathString, result_no_visuals["path_shape_map"])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_granular_loading_flags(self):
         """Test the granular control over sites and visual shapes loading."""
         from pxr import Usd

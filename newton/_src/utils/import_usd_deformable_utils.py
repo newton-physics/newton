@@ -812,6 +812,9 @@ class _DeformablePrimBuckets:
     tetmeshes: list[Usd.Prim] = field(default_factory=list)
     attachments: list[Usd.Prim] = field(default_factory=list)
     element_filters: list[Usd.Prim] = field(default_factory=list)
+    # Optional visual candidates collected for parse_usd's static visual pass. Reusing
+    # this scout avoids a second full instance-proxy traversal of the stage.
+    static_visuals: list[Usd.Prim] = field(default_factory=list)
     # PhysicsDeformableBodyAPI prim path -> the single simulation geometry it governs (the
     # first candidate of any family in traversal order); a body's mass must not be applied
     # once per family, so the passes skip every other candidate under the same body.
@@ -862,8 +865,26 @@ _SCOUT_SKIP_TYPE_NAMES = frozenset(
     }
 )
 
+_SCOUT_VISUAL_TYPE_NAMES = frozenset(
+    {
+        "Cube",
+        "Sphere",
+        "Plane",
+        "Capsule",
+        "Cylinder",
+        "Cone",
+        "Mesh",
+        "ParticleField3DGaussianSplat",
+    }
+)
 
-def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = ()) -> _DeformablePrimBuckets:
+
+def _scout_deformable_prims(
+    root_prim: Usd.Prim,
+    ignore_paths: Sequence[str] = (),
+    *,
+    collect_static_visuals: bool = False,
+) -> _DeformablePrimBuckets:
     """Classify deformable candidate prims in one stage traversal.
 
     Replaces the per-family full-stage walks: the lowering passes iterate these buckets instead of
@@ -897,6 +918,8 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
 
     for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
         type_name = str(prim.GetTypeName())
+        if collect_static_visuals and type_name in _SCOUT_VISUAL_TYPE_NAMES:
+            buckets.static_visuals.append(prim)
         if type_name in _SCOUT_SKIP_TYPE_NAMES:
             continue
         # An ignored prim must be as-if-absent from the start: bucketing it or letting it
