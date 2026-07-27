@@ -4530,6 +4530,8 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
         self.assertAlmostEqual(builder.shape_scale[0][0], 0.2)
         self.assertAlmostEqual(builder.shape_material_mu[0], 1.0)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[0], 0.005)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[0], 0.0001)
 
 
 class TestImportMjcfActuatorsFrames(unittest.TestCase):
