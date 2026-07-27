@@ -8,7 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverKamino, SolverSemiImplicit, SolverXPBD
+from newton.solvers import SolverKamino, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -316,6 +316,27 @@ def test_per_world_gravity_bodies(test, device, solver_fn):
 
     # World 2 (full gravity) should be falling fastest
     test.assertLess(z_vel_world2, -0.5)
+
+
+def test_per_world_gravity_particles_vbd(test, device):
+    """Verify SolverVBD applies each world's gravity to its particles."""
+    builder = newton.ModelBuilder()
+    for x in (0.0, 1.0):
+        builder.begin_world()
+        builder.add_particle(pos=(x, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        builder.end_world()
+
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -1.0), world=0)
+    model.set_gravity((0.0, 0.0, -5.0), world=1)
+
+    state_in, state_out = model.state(), model.state()
+    solver = SolverVBD(model)
+    solver.step(state_in, state_out, model.control(), None, 0.1)
+
+    np.testing.assert_allclose(state_out.particle_qd.numpy()[:, 2], [-0.1, -0.5], atol=1.0e-6)
+    np.testing.assert_allclose(state_out.particle_q.numpy()[:, 2], [-0.01, -0.05], atol=1.0e-6)
 
 
 def test_per_world_gravity_bodies_mujoco_warp(test, device):
@@ -712,6 +733,13 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
+
+    add_function_test(
+        TestRuntimeGravity,
+        "test_per_world_gravity_particles_vbd",
+        test_per_world_gravity_particles_vbd,
+        devices=[device],
+    )
 
     # Per-world gravity for MuJoCo Warp (only on CUDA - CPU MuJoCo uses single gravity)
     if device.is_cuda:

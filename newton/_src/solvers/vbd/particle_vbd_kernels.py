@@ -1351,6 +1351,7 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 def forward_step(
     dt: float,
     gravity: wp.array[wp.vec3],
+    particle_world: wp.array[wp.int32],
     pos_prev: wp.array[wp.vec3],
     pos: wp.array[wp.vec3],
     vel: wp.array[wp.vec3],
@@ -1368,7 +1369,9 @@ def forward_step(
         if displacements_out:
             displacements_out[particle] = wp.vec3(0.0, 0.0, 0.0)
         return
-    vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
+    world_idx = particle_world[particle]
+    world_g = gravity[wp.max(world_idx, 0)]
+    vel_new = vel[particle] + (world_g + external_force[particle] * inv_mass[particle]) * dt
     inertia = pos[particle] + vel_new * dt
     inertia_out[particle] = inertia
     if displacements_out:
