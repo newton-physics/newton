@@ -631,6 +631,72 @@ class TestSensorTiledCamera(unittest.TestCase):
         with self.assertWarnsRegex(DeprecationWarning, "assign_checkerboard_material"):
             tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
 
+    def _render_checkerboard_projection(self, shape_kind: str, texture_projection_mode: int) -> np.ndarray:
+        builder = newton.ModelBuilder()
+        if shape_kind == "primitive":
+            builder.add_shape_sphere(-1, radius=1.0, color=(1.0, 1.0, 1.0))
+        else:
+            vertices = np.array(
+                [
+                    [0.0, -0.9, -0.8],
+                    [0.0, 0.9, -0.8],
+                    [0.6, 0.9, 0.8],
+                    [0.6, -0.9, 0.8],
+                ],
+                dtype=np.float32,
+            )
+            indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+            mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+            builder.add_shape_mesh(-1, mesh=mesh, color=(1.0, 1.0, 1.0))
+        model = builder.finalize()
+
+        width = 64
+        height = 64
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(3.0, 0.0, 0.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
+        )
+
+        render_config = SensorTiledCamera.RenderConfig(
+            enable_textures=True,
+            texture_projection_mode=texture_projection_mode,
+        )
+        sensor = SensorTiledCamera(model=model, default_render_config=render_config)
+        sensor.utils.assign_checkerboard_material(
+            shape_indices=np.arange(model.shape_count, dtype=np.int32),
+            resolution=16,
+            checker_size=4,
+        )
+
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(
+            width,
+            height,
+            camera_fovs=math.radians(45.0),
+        )
+        albedo_image = sensor.utils.create_albedo_image_output(width, height, camera_count=1)
+        sensor.update(model.state(), camera_transforms, camera_rays, albedo_image=albedo_image)
+        return albedo_image.numpy()
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_texture_projection_golden_images(self):
+        golden_dir = os.path.join(os.path.dirname(__file__), "golden_data", "test_sensor_tiled_camera")
+        cases = (
+            ("primitive", SensorTiledCamera.TextureProjectionMode.CUBIC),
+            ("primitive", SensorTiledCamera.TextureProjectionMode.TRIPLANAR),
+            ("uvless_mesh", SensorTiledCamera.TextureProjectionMode.CUBIC),
+            ("uvless_mesh", SensorTiledCamera.TextureProjectionMode.TRIPLANAR),
+        )
+
+        for shape_kind, projection_mode in cases:
+            with self.subTest(shape_kind=shape_kind, projection_mode=projection_mode.name):
+                actual = self._render_checkerboard_projection(shape_kind, projection_mode)
+                golden = np.load(
+                    os.path.join(
+                        golden_dir,
+                        f"projection_{shape_kind}_{projection_mode.name.lower()}.npy",
+                    )
+                )
+                self.__compare_images(actual, golden, allowed_difference=0.1)
+
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_output_image_parameters(self):
         model = self._shared_model
