@@ -104,13 +104,15 @@ For one raw face under the default linear pressure law, use:
 
 ```python
 combined_material_slope = (kh_a * kh_b) / (kh_a + kh_b)
-activation_stiffness = geometric_face_area * combined_material_slope
+activation_stiffness = margin_contact_area * combined_material_slope
 ```
 
 This coefficient parameterizes possible activation; it does not create force
-while contact distance is nonnegative. It describes a local first-order slope
-for that face only. It is not the stiffness of the whole speculative patch and
-must not be summed or redistributed by penetrating force/wrench matching.
+while contact distance is nonnegative. The deprecated
+`margin_contact_area` remains effective for one compatibility window rather
+than becoming a no-op in the same release. This value is not the stiffness of
+the whole speculative patch and must not be summed or redistributed by
+penetrating force/wrench matching.
 
 For a custom pressure callback, the existing callback API does not expose a
 boundary tangent. Do not pretend that its declared `kh` is the derivative of
@@ -147,7 +149,7 @@ The stiffness is still relevant to continuity across activation:
   active constraint.
 
 For that reason, speculative hydroelastic contacts should carry the
-local activation stiffness defined above, even though their current force is
+activation stiffness defined above, even though their current force is
 zero. This is a transition regularization for a validated cached
 representative, not an aggregate speculative-patch model. Add an integration
 test that observes the contact in MuJoCo Warp's contact array while
@@ -200,8 +202,8 @@ This work does not:
 - implement continuous collision detection or time-of-impact calculation;
 - replace marching cubes or the contact-reduction algorithm;
 - broadly retune SDF resolution or pressure laws;
-- remove `HydroelasticSDF.Config.margin_contact_area`; it remains available as
-  a deprecated no-op for configuration compatibility;
+- remove `HydroelasticSDF.Config.margin_contact_area`; it remains available
+  and effective during the deprecation period;
 - guarantee identical contact count, order, or tessellation;
 - add end-to-end hydroelastic support to the private SAP implementation.
 
@@ -241,8 +243,8 @@ Directly assert that:
 - pair separation uses both adjusted SDF values;
 - speculative `contact_distance` is the pair separation;
 - exported writer margins are zero;
-- default-law activation stiffness is the selected raw face's area times
-  combined material slope;
+- default-law activation stiffness is `margin_contact_area` times the combined
+  material slope;
 - speculative faces contribute no pressure force;
 - damping and friction remain inactive before normal activation;
 - reduced and unreduced paths keep the same band;
@@ -251,8 +253,8 @@ Directly assert that:
 - normal matching and synthetic-anchor generation remain penetrating-only;
 - penetrating force/wrench values never classify or assign depth to a
   speculative representative;
-- local activation stiffness remains associated with the selected raw face
-  and is not summed or redistributed as a speculative patch stiffness;
+- activation stiffness remains associated with the selected raw contact and
+  is not summed or redistributed as a speculative patch stiffness;
 - MuJoCo Warp stores the speculative contact but does not allocate an active
   constraint or produce force;
 - MuJoCo Warp uses the per-contact stiffness-derived `solref` after the contact
@@ -388,9 +390,9 @@ penetrating tangent-stiffness to reduction totals.
 Their current force and wrench are both zero, so ordinary force matching and
 wrench matching contain no meaningful information for relocating them. Keep
 the implementation simple: a reduced speculative contact must retain the
-selected raw face's position, normal, pair separation, geometric area, and
-local activation stiffness. Normal matching and synthetic center-of-pressure
-anchors apply only to penetrating contacts.
+selected raw face's position, normal, pair separation, and activation
+stiffness. Normal matching and synthetic center-of-pressure anchors apply only
+to penetrating contacts.
 
 Use a disjoint reduction-key namespace for speculative candidates. This keeps
 their geometric selection bounded without letting them compete for
@@ -411,7 +413,7 @@ penetrating contacts, or matched penetrating stiffness.
 
 This deliberately does not preserve the stiffness or future wrench of the
 entire discarded speculative patch. Such a wrench is not a current physical
-quantity. The local activation stiffness is only a short-lived transition
+quantity. The activation stiffness is only a short-lived transition
 parameter until collision geometry is rebuilt.
 
 Reduction must not cause a contact to change bands within one collision pass.
@@ -484,10 +486,10 @@ penetrating cases for:
 Explicitly warn that `gap=None` may inherit a nonzero `builder.rigid_gap`.
 
 Keep the public `margin_contact_area` field for configuration compatibility,
-but deprecate it as a no-op. Warn when a caller changes it from its legacy
-default; warning for every default configuration would be noisy and would not
-show that the caller relied on the setting. Remove the unused internal
-plumbing. Speculative contacts use their selected face's geometric area.
+and deprecate it without changing its behavior in the same release. Warn when
+a caller changes it from its legacy default; warning for every default
+configuration would be noisy and would not show that the caller relied on the
+setting.
 
 Update collision and hydroelastic documentation with:
 
@@ -623,12 +625,12 @@ The work is complete when:
 - pair separation uses both adjusted world-space SDF values;
 - reduced and unreduced output follows the same bands;
 - speculative reduction retains the selected raw speculative position, normal,
-  separation, geometric area, and activation stiffness;
+  separation and activation stiffness;
 - normal matching and synthetic anchors apply only to penetrating contacts;
 - reduction never clamps speculative separation or exports it with an
   aggregate penetrating depth;
 - speculative reduction does not change penetrating force/wrench matching or
-  redistribute local activation stiffness as a speculative patch stiffness;
+  redistribute activation stiffness as a speculative patch stiffness;
 - speculative contacts appear in public and optional surface output;
 - stationary and separating speculative contacts produce no response;
 - existing speculative-aware consumers retain closing-motion information;

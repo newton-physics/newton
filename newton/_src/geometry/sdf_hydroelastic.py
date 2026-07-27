@@ -316,12 +316,12 @@ class HydroelasticSDF:
         unreduced contacts. Automatically enables ``anchor_contact``.
         Only active when reduce_contacts is True."""
         margin_contact_area: float = 1e-2
-        """Deprecated no-op retained for configuration compatibility.
+        """Deprecated speculative-contact area retained for compatibility.
 
         .. deprecated:: 1.5
 
-            This setting no longer affects hydroelastic contacts. Speculative
-            contacts use their geometric face area for activation stiffness.
+            This setting still controls speculative-contact activation
+            stiffness during the deprecation period.
         """
         pressure_func: Any = None
         """Optional Warp function defining ``pressure = f(signed_depth, shape_idx, data)``.
@@ -423,7 +423,7 @@ class HydroelasticSDF:
             config = HydroelasticSDF.Config()
         if config.margin_contact_area != 1.0e-2:
             warnings.warn(
-                "HydroelasticSDF.Config.margin_contact_area is deprecated and has no effect; remove this setting.",
+                "HydroelasticSDF.Config.margin_contact_area is deprecated; remove this setting.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -549,6 +549,7 @@ class HydroelasticSDF:
                     normal_matching=self.config.normal_matching,
                     anchor_contact=self.config.anchor_contact,
                     moment_matching=self.config.moment_matching,
+                    margin_contact_area=self.config.margin_contact_area,
                     hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                 )
                 self.contact_reduction = HydroelasticContactReduction(
@@ -565,10 +566,14 @@ class HydroelasticSDF:
                     device=device,
                     writer_func=writer_func,
                     config=HydroelasticReductionConfig(
+                        margin_contact_area=self.config.margin_contact_area,
                         hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                     ),
                 )
-                self.decode_contacts_kernel = get_decode_contacts_kernel(writer_func)
+                self.decode_contacts_kernel = get_decode_contacts_kernel(
+                    self.config.margin_contact_area,
+                    writer_func,
+                )
 
         self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
         self._host_warning_poll_interval = 120
@@ -1388,6 +1393,7 @@ def create_mc_iterate_voxel_vertices_func(pressure_func: Any):
 
 
 def get_decode_contacts_kernel(
+    margin_contact_area: float,
     writer_func: Any = None,
 ):
     """Create a kernel that decodes hydroelastic contacts without reduction.
@@ -1397,6 +1403,8 @@ def get_decode_contacts_kernel(
     read from the contact buffer after being evaluated once during generation.
 
     Args:
+        margin_contact_area: Deprecated compatibility area for speculative
+            contact activation stiffness.
         writer_func: Warp function for writing decoded contacts.
 
     Returns:
@@ -1480,7 +1488,7 @@ def get_decode_contacts_kernel(
             else:
                 k_a = shape_material_kh[shape_a]
                 k_b = shape_material_kh[shape_b]
-                c_stiffness = area * get_effective_stiffness(k_a, k_b)
+                c_stiffness = wp.static(margin_contact_area) * get_effective_stiffness(k_a, k_b)
 
             # Create ContactData for the writer function
             contact_data = ContactData()
@@ -1725,9 +1733,9 @@ def get_generate_contacts_kernel(
                             entry_idx,
                             (force_area * (-pair_separation)) * normal,
                         )
-                        # ``entry_k_eff`` is retained as the linear-law slope used
-                        # for margin (non-penetrating) contact regularization, where
-                        # the user pressure law is documented as undefined.
+                        # ``entry_k_eff`` is the declared linear-law slope used
+                        # for speculative activation. A custom pressure callback
+                        # does not expose the boundary tangent needed here.
                         reducer_data.entry_k_eff[entry_idx] = k_eff
                     else:
                         wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)

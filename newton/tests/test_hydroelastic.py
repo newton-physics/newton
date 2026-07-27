@@ -769,16 +769,32 @@ def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_c
     test.assertTrue(np.all(distances < 0.0))
 
 
-def test_hydroelastic_margin_contact_area_is_deprecated(test, device):
-    """Warn when the deprecated margin contact area is changed."""
-    model, _, _ = _build_margin_gap_boxes(device)
-    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*has no effect"):
-        newton.CollisionPipeline(
+def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_contacts):
+    """Preserve and warn about a deprecated margin contact area override."""
+    model, state, _ = _build_margin_gap_boxes(device)
+    margin_contact_area = 0.02
+    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
+        pipeline = newton.CollisionPipeline(
             model,
             broad_phase="explicit",
             rigid_contact_max=20000,
-            sdf_hydroelastic_config=HydroelasticSDF.Config(margin_contact_area=0.02),
+            sdf_hydroelastic_config=HydroelasticSDF.Config(
+                margin_contact_area=margin_contact_area,
+                reduce_contacts=reduce_contacts,
+                pre_prune_contacts=reduce_contacts,
+                buffer_fraction=1.0,
+            ),
         )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    k_eff = 1.0e8 * 2.0e8 / (1.0e8 + 2.0e8)
+    np.testing.assert_allclose(
+        contacts.rigid_contact_stiffness.numpy()[:count],
+        margin_contact_area * k_eff,
+        rtol=1.0e-5,
+    )
 
 
 def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
@@ -1963,9 +1979,18 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
-    "test_hydroelastic_margin_contact_area_is_deprecated",
+    "test_hydroelastic_margin_contact_area_is_deprecated_reduced",
     test_hydroelastic_margin_contact_area_is_deprecated,
     devices=cuda_devices,
+    reduce_contacts=True,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_margin_contact_area_is_deprecated_unreduced",
+    test_hydroelastic_margin_contact_area_is_deprecated,
+    devices=cuda_devices,
+    reduce_contacts=False,
 )
 
 add_function_test(
