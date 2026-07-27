@@ -39,6 +39,7 @@
 - Add compiled regular-expression support to label-based selectors while preserving glob strings.
 - Add simulation throughput, real-time factor, p95 step-time, steady-state GPU-memory, timestep, and MuJoCo solver-iteration metrics to the ASV robot-learning benchmarks.
 - Add `joint_dof_mask` to `newton.ik.IKSolver` to keep selected joint DOFs fixed during LM optimization. (#3488)
+- Load visual-only USD geometry outside rigid-body hierarchies as static shapes by default, with a `load_static_visual_shapes` importer opt-out.
 
 ### Changed
 
