@@ -509,9 +509,25 @@ def parse_mjcf(
                 name = mesh.attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
                 s = mesh_attrib.get("scale", "1.0 1.0 1.0")
                 s = np.array(s.split(), dtype=np.float32)
+                refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
+                refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
+                if refpos.shape != (3,):
+                    raise ValueError(f"MJCF mesh {name!r} refpos must have 3 values")
+                if refquat.shape != (4,):
+                    raise ValueError(f"MJCF mesh {name!r} refquat must have 4 values")
+                refquat_norm = np.linalg.norm(refquat)
+                if refquat_norm == 0.0:
+                    raise ValueError(f"MJCF mesh {name!r} refquat must be nonzero")
+                refquat /= refquat_norm
                 # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
                 maxhullvert = int(mesh_attrib.get("maxhullvert", str(mesh_maxhullvert)))
-                mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
+                mesh_assets[name] = {
+                    "file": fname,
+                    "scale": s,
+                    "refpos": refpos,
+                    "refquat": refquat,
+                    "maxhullvert": maxhullvert,
+                }
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
             tex_file = texture.attrib.get("file")
@@ -565,6 +581,59 @@ def parse_mjcf(
                 "file": file_path,
                 "elevation": elevation_data,
             }
+
+    def load_mjcf_mesh_asset(
+        mesh_asset: dict,
+        scaling: np.ndarray,
+        *,
+        override_color: np.ndarray | tuple[float, float, float] | None = None,
+        override_texture: np.ndarray | str | None = None,
+    ) -> list[Mesh]:
+        """Load a mesh asset after applying its MJCF reference pose."""
+        refpos = mesh_asset["refpos"]
+        refquat = mesh_asset["refquat"]
+        if np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)):
+            return load_meshes_from_file(
+                mesh_asset["file"],
+                scale=scaling,
+                maxhullvert=mesh_asset["maxhullvert"],
+                override_color=override_color,
+                override_texture=override_texture,
+            )
+
+        meshes = load_meshes_from_file(
+            mesh_asset["file"],
+            scale=(1.0, 1.0, 1.0),
+            maxhullvert=mesh_asset["maxhullvert"],
+            override_color=override_color,
+            override_texture=override_texture,
+        )
+        quat = wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])
+        rotation = np.asarray(wp.quat_to_matrix(quat), dtype=np.float32).reshape(3, 3)
+        transformed_meshes = []
+        for mesh in meshes:
+            vertices = ((mesh.vertices - refpos) @ rotation) * scaling
+            normals = mesh.normals
+            if normals is not None:
+                normals = (normals @ rotation) / scaling
+                lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+                normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
+            transformed_meshes.append(
+                Mesh(
+                    vertices=vertices,
+                    indices=mesh.indices,
+                    normals=normals,
+                    uvs=mesh.uvs,
+                    compute_inertia=mesh.has_inertia,
+                    is_solid=mesh.is_solid,
+                    maxhullvert=mesh.maxhullvert,
+                    color=mesh.color,
+                    roughness=mesh.roughness,
+                    metallic=mesh.metallic,
+                    texture=mesh.texture,
+                )
+            )
+        return transformed_meshes
 
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     xform = xform * axis_xform
@@ -846,19 +915,14 @@ def parse_mjcf(
                         print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
                     continue
                 else:
-                    stl_file = mesh_assets[mesh_name]["file"]
+                    mesh_asset = mesh_assets[mesh_name]
                     if "mesh" in geom_defaults:
-                        mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[mesh_name]["scale"])
+                        mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_asset["scale"])
                     else:
-                        mesh_scale = mesh_assets[mesh_name]["scale"]
+                        mesh_scale = mesh_asset["scale"]
                     scaling = np.array(mesh_scale) * scale
-                    maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
 
-                    m_meshes = load_meshes_from_file(
-                        stl_file,
-                        scale=scaling,
-                        maxhullvert=maxhullvert,
-                    )
+                    m_meshes = load_mjcf_mesh_asset(mesh_asset, scaling)
                     # Combine all sub-meshes into one vertex array for fitting.
                     all_vertices = np.concatenate([m.vertices for m in m_meshes], axis=0)
 
@@ -974,18 +1038,15 @@ def parse_mjcf(
                     if verbose:
                         print(f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
                     continue
-                stl_file = mesh_assets[geom_attrib["mesh"]]["file"]
-                mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
+                mesh_asset = mesh_assets[geom_attrib["mesh"]]
+                stl_file = mesh_asset["file"]
+                mesh_scale = mesh_asset["scale"]
                 scaling = np.array(mesh_scale) * scale
                 # as per the Mujoco XML reference, ignore geom size attribute
 
-                # get maxhullvert value from mesh assets
-                maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
-
-                m_meshes = load_meshes_from_file(
-                    stl_file,
-                    scale=scaling,
-                    maxhullvert=maxhullvert,
+                m_meshes = load_mjcf_mesh_asset(
+                    mesh_asset,
+                    scaling,
                     override_color=material_color,
                     override_texture=texture,
                 )
