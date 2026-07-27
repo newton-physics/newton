@@ -128,6 +128,8 @@ HINGED_PARCEL = (
     ("parcel_b", (-5.225, -0.7151, 1.0054), (0.125, 0.05, 0.05), 1.0, 0),
 )
 HINGE_LIMIT = math.radians(45.0)
+HINGE_LIMIT_KE = 100.0  # [N·m/rad]
+HINGE_LIMIT_KD = 1.0  # [N·m·s/rad]
 
 
 def belt_rotation(yaw_deg: float, tilt_deg: float) -> wp.quat:
@@ -384,6 +386,8 @@ class Example:
             axis=newton.Axis.Z,
             limit_lower=-HINGE_LIMIT,
             limit_upper=HINGE_LIMIT,
+            limit_ke=HINGE_LIMIT_KE,
+            limit_kd=HINGE_LIMIT_KD,
             label="parcel_hinge",
         )
         builder.add_articulation([free, hinge], label="hinged_parcel")
