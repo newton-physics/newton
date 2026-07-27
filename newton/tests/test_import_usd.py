@@ -7076,6 +7076,7 @@ def Xform "Articulation" (
             "zero mass falls back to density": ([(0.0, 500.0, True)], 4.0),
             "disabled collider mass": ([(0.05, None, False), (None, None, True)], 8.0),
             "disabled collider density": ([(None, 500.0, False), (None, None, True)], 8.0),
+            "disabled mass with MassAPI sibling": ([(0.05, None, False), (0.05, None, True)], 0.05),
         }
         for name, (collider_specs, expected_mass) in cases.items():
             for load_visual_shapes in (True, False):

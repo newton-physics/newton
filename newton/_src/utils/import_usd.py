@@ -678,12 +678,13 @@ def parse_usd(
     # into uninitialized locals (_ParseMassApi/_GetCoM in pxr/usd/usdPhysics/rigidBodyAPI.cpp;
     # usd-core <= 26.3, https://github.com/PixarAnimationStudios/OpenUSD/issues/4155).
     # A blocked attribute makes Get() fail, leaving stack garbage that can pass the
-    # authored-value checks and yield nondeterministic mass properties.
-    # Bypass ComputeMassProperties for bodies whose traversal would see a
-    # blocked attribute and use the accumulated-property fallback instead. Revert (delete the
-    # two helpers below and the bypass at the call site) once the minimum supported usd-core
-    # ships the upstream fix. Density is excluded: it is read into an initialized struct
-    # member upstream and blocked density already resolves to "unspecified".
+    # authored-value checks and yield nondeterministic mass properties. Supported versions
+    # also apply authored mass from disabled colliders after the callback
+    # (https://github.com/PixarAnimationStudios/OpenUSD/pull/4164).
+    # Bypass ComputeMassProperties for either condition and use recorded enabled colliders.
+    # Remove each workaround once the minimum supported usd-core ships its upstream fix.
+    # Density is excluded from the blocked-attribute check: it is read into an initialized
+    # struct member upstream and blocked density already resolves to "unspecified".
     def _mass_api_has_blocked_attrs(prim: Usd.Prim) -> bool:
         mass_api = UsdPhysics.MassAPI(prim)
         if not mass_api:
@@ -696,9 +697,8 @@ def parse_usd(
         )
         return any(attr.GetResolveInfo().ValueIsBlocked() for attr in attrs)
 
-    def _mass_computer_sees_blocked_attrs(body_prim: Usd.Prim) -> bool:
-        """Mirror ComputeMassProperties' traversal: the body prim and colliders below it,
-        pruning subtrees owned by nested rigid bodies."""
+    def _mass_computer_requires_recorded_fallback(body_prim: Usd.Prim) -> bool:
+        """Detect inputs that supported OpenUSD versions cannot aggregate safely."""
         if _mass_api_has_blocked_attrs(body_prim):
             return True
         it = iter(Usd.PrimRange(body_prim, Usd.TraverseInstanceProxies()))
@@ -706,8 +706,13 @@ def parse_usd(
             if prim != body_prim and prim.HasAPI(UsdPhysics.RigidBodyAPI):
                 it.PruneChildren()
                 continue
-            if prim.HasAPI(UsdPhysics.CollisionAPI) and _mass_api_has_blocked_attrs(prim):
-                return True
+            if prim.HasAPI(UsdPhysics.CollisionAPI):
+                if UsdPhysics.MassAPI(prim) and not _is_enabled_collider(prim):
+                    # OpenUSD reads authored mass after the callback, so a zero callback
+                    # cannot exclude a disabled collider with MassAPI.
+                    return True
+                if _mass_api_has_blocked_attrs(prim):
+                    return True
         return False
 
     def _should_write_solreflimit_mode() -> bool:
@@ -3386,6 +3391,7 @@ def parse_usd(
                 # Non-MassAPI body mass accumulation in ModelBuilder uses shape cfg density.
                 # Use per-shape physics material density when present; otherwise use default density.
                 if not collider_is_enabled:
+                    # Retain the disabled shape, but exclude it from builder mass aggregation.
                     shape_density = 0.0
                 elif has_shape_material:
                     shape_density = material.density
@@ -3961,6 +3967,7 @@ def parse_usd(
         for collider_path in rigid_body_fallback_collider_paths.get(body_path, ()):
             mass_info = rigid_body_mass_info_map[collider_path]
             shape_density = rigid_body_mass_fallback_density[collider_path]
+            # The recording helpers reject nonpositive unit-density mass.
             volume = float(mass_info.volume)
             collider_prim = stage.GetPrimAtPath(collider_path)
             collider_mass_api = UsdPhysics.MassAPI(collider_prim)
@@ -4049,9 +4056,8 @@ def parse_usd(
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
             if not (has_effective_mass and has_effective_inertia and has_effective_com):
                 rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
-                if _mass_computer_sees_blocked_attrs(prim):
-                    # See WORKAROUND note on _mass_api_has_blocked_attrs: blocked attributes
-                    # poison ComputeMassProperties; force the accumulated-property fallback.
+                if _mass_computer_requires_recorded_fallback(prim):
+                    # Use recorded enabled colliders when OpenUSD cannot aggregate safely.
                     cmp_mass = -1.0
                 else:
                     cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
