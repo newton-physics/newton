@@ -9155,6 +9155,137 @@ class TestFromtoCapsuleOrientation(unittest.TestCase):
         self._assert_z_aligned(quat, expected)
 
 
+class TestSiteFromto(unittest.TestCase):
+    """Verify sites honor MuJoCo's fromto transform and size semantics."""
+
+    def test_site_fromto_supported_types(self):
+        """Import fromto transforms and sizes for every supported site type."""
+        mjcf = """
+<mujoco model="site_fromto">
+    <worldbody>
+        <site name="capsule" type="capsule" size="0.1 0.2 0.3" fromto="0 0 0 0 0 2"/>
+        <site name="cylinder" type="cylinder" size="0.1 0.2 0.3" fromto="0 0 0 0 0 2"/>
+        <site name="ellipsoid" type="ellipsoid" size="0.1 0.2 0.3" fromto="0 0 0 0 0 2"/>
+        <site name="box" type="box" size="0.1 0.2 0.3" fromto="0 0 0 0 0 2"/>
+        <site name="box_diag" type="box" size="0.1" fromto="0.2 -0.1 0.3 -0.4 0.5 1.1"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_sites=True)
+
+        for name in ("capsule", "cylinder", "ellipsoid", "box"):
+            shape_idx = builder.shape_label.index(f"site_fromto/worldbody/{name}")
+            shape_xform = builder.shape_transform[shape_idx]
+            np.testing.assert_allclose(shape_xform[:3], [0.0, 0.0, 1.0], atol=1.0e-6)
+
+            shape_quat = wp.quat(*shape_xform[3:])
+            rotated_z = wp.quat_rotate(shape_quat, wp.vec3(0.0, 0.0, 1.0))
+            np.testing.assert_allclose(rotated_z, [0.0, 0.0, -1.0], atol=1.0e-6)
+
+        np.testing.assert_allclose(
+            builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/capsule")],
+            [0.1, 1.0, 0.3],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/cylinder")],
+            [0.1, 1.0, 0.3],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/ellipsoid")],
+            [0.1, 0.1, 1.0],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/box")],
+            [0.1, 0.1, 1.0],
+            atol=1.0e-6,
+        )
+        box_diag_idx = builder.shape_label.index("site_fromto/worldbody/box_diag")
+        np.testing.assert_allclose(
+            builder.shape_transform[box_diag_idx],
+            [-0.1, 0.2, 0.7, 0.64922922, 0.64922922, 0.0, 0.39623583],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            builder.shape_scale[box_diag_idx],
+            [0.1, 0.1, 0.58309519],
+            atol=1.0e-6,
+        )
+
+    def test_site_fromto_inherits_defaults_inside_frame(self):
+        """Compose an inherited fromto site with its containing frame."""
+        mjcf = """
+<mujoco model="site_fromto_frame">
+    <default>
+        <default class="segment">
+            <site type="cylinder" size="0.2" fromto="0 0 0 0 2 0"/>
+        </default>
+    </default>
+    <worldbody>
+        <frame pos="1 2 3">
+            <site name="site" class="segment"/>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_sites=True)
+
+        shape_idx = builder.shape_label.index("site_fromto_frame/worldbody/site")
+        shape_xform = builder.shape_transform[shape_idx]
+        np.testing.assert_allclose(shape_xform[:3], [1.0, 3.0, 3.0], atol=1.0e-6)
+        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.2, 1.0, 0.005], atol=1.0e-6)
+
+        shape_quat = wp.quat(*shape_xform[3:])
+        rotated_z = wp.quat_rotate(shape_quat, wp.vec3(0.0, 0.0, 1.0))
+        np.testing.assert_allclose(rotated_z, [0.0, -1.0, 0.0], atol=1.0e-6)
+
+    def test_site_fromto_rejects_zero_length(self):
+        """Reject a site whose fromto endpoints coincide."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <site name="site" type="cylinder" size="0.1" fromto="1 2 3 1 2 3"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "zero-length fromto"):
+            builder.add_mjcf(mjcf, parse_sites=True)
+
+    def test_site_fromto_rejects_pos(self):
+        """Reject explicit or inherited positions combined with fromto."""
+        mjcf_cases = (
+            """
+<mujoco>
+    <worldbody>
+        <site name="site" type="cylinder" size="0.1" pos="1 2 3" fromto="0 0 0 0 0 1"/>
+    </worldbody>
+</mujoco>
+""",
+            """
+<mujoco>
+    <default>
+        <default class="positioned">
+            <site pos="1 2 3"/>
+        </default>
+    </default>
+    <worldbody>
+        <site name="site" class="positioned" type="cylinder" size="0.1" fromto="0 0 0 0 0 1"/>
+    </worldbody>
+</mujoco>
+""",
+        )
+        for mjcf in mjcf_cases:
+            with self.subTest(mjcf=mjcf):
+                builder = newton.ModelBuilder()
+                with self.assertRaisesRegex(ValueError, "both pos and fromto"):
+                    builder.add_mjcf(mjcf, parse_sites=True)
+
+
 class TestOverrideRootXform(unittest.TestCase):
     """Tests for override_root_xform parameter in the MJCF importer."""
 
