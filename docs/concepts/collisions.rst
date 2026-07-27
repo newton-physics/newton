@@ -1855,11 +1855,6 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
 
 Any non-disabled mode implies ``deterministic=True``.
 
-Contact matching history belongs to the :class:`~CollisionPipeline`, not to a
-solver. Solver reset methods therefore do not clear matching or sticky geometry.
-To start a discontinuous episode with empty matching history, construct a new
-pipeline.
-
 .. testsetup:: contact-matching
 
     import warp as wp
