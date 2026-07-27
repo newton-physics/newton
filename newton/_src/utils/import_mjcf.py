@@ -103,15 +103,26 @@ def _load_and_expand_mjcf(
         base_dir = os.path.dirname(source) or "."
         root = ET.parse(source).getroot()
 
-    # Extract this file's own <compiler> meshdir/texturedir BEFORE expanding
+    # Extract this file's own asset directories BEFORE expanding
     # includes, so nested-include compilers cannot shadow it.
     own_compiler = root.find("compiler")
-    own_meshdir = own_compiler.attrib.get("meshdir", ".") if own_compiler is not None else "."
-    own_texturedir = own_compiler.attrib.get("texturedir", own_meshdir) if own_compiler is not None else "."
-    # Strip consumed meshdir/texturedir so they don't leak into the parent tree
+    if own_compiler is not None:
+        own_assetdir = own_compiler.attrib.get("assetdir")
+        if own_assetdir is None:
+            own_meshdir = own_compiler.attrib.get("meshdir", ".")
+            own_texturedir = own_compiler.attrib.get("texturedir", own_meshdir)
+        else:
+            own_meshdir = own_compiler.attrib.get("meshdir", own_assetdir)
+            own_texturedir = own_compiler.attrib.get("texturedir", own_assetdir)
+    else:
+        own_meshdir = "."
+        own_texturedir = "."
+
+    # Strip consumed asset directories so they don't leak into the parent tree
     # and affect parent-file asset resolution. Other compiler attributes (angle, etc.)
     # are left intact to match MuJoCo's include-as-paste semantics.
     if own_compiler is not None:
+        own_compiler.attrib.pop("assetdir", None)
         own_compiler.attrib.pop("meshdir", None)
         own_compiler.attrib.pop("texturedir", None)
 
@@ -150,7 +161,9 @@ def _load_and_expand_mjcf(
         if file_attr and not os.path.isabs(file_attr):
             asset_dir = _asset_dir_tags.get(elem.tag, ".")
             resolved_path = os.path.join(asset_dir, file_attr) if asset_dir != "." else file_attr
-            if base_dir is not None or os.path.isabs(resolved_path):
+            if base_dir is None and path_resolver is _default_path_resolver:
+                elem.set("file", resolved_path)
+            else:
                 elem.set("file", path_resolver(base_dir, resolved_path))
 
     return root, base_dir
@@ -545,7 +558,9 @@ def parse_mjcf(
             file_attr = hfield.attrib.get("file")
             file_path = None
             if file_attr:
-                file_path = path_resolver(base_dir, file_attr)
+                file_path = file_attr
+                if not os.path.isabs(file_path):
+                    file_path = os.path.abspath(os.path.join(mjcf_dirname, file_path))
             # Parse optional inline elevation data
             elevation_str = hfield.attrib.get("elevation")
             elevation_data = None
