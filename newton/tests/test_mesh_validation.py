@@ -438,7 +438,8 @@ class TestBuilderIntegration(unittest.TestCase):
         quality_warnings = [wi for wi in w if "Tet mesh quality" in str(wi.message)]
         self.assertEqual(len(quality_warnings), 0)
 
-    def test_add_soft_mesh_validate_bad_mesh(self):
+    def test_add_soft_mesh_validate_reoriented_mesh(self):
+        """Validate the normalized winding after reorienting an inverted tet."""
         builder = newton.ModelBuilder()
         verts, inds = _regular_tet(scale=0.1)
         inds[0, 2], inds[0, 3] = inds[0, 3], inds[0, 2]
@@ -455,7 +456,7 @@ class TestBuilderIntegration(unittest.TestCase):
                 validate_mesh=True,
             )
         quality_warnings = [wi for wi in w if "Tet mesh quality" in str(wi.message)]
-        self.assertEqual(len(quality_warnings), 1)
+        self.assertEqual(len(quality_warnings), 0)
 
     def test_add_soft_mesh_reorients_inverted_tets(self):
         """Inverted input tets are made dynamic without mutating the source mesh."""

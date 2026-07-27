@@ -9550,17 +9550,19 @@ class ModelBuilder:
         if vertices is None or indices is None:
             raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
 
-        if validate_mesh:
-            from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
-
-            verts_np = np.array(vertices, dtype=float) * scale
-            inds_np = np.asarray(indices, dtype=np.intp)
-            validate_tet_mesh(verts_np, inds_np, label=label, stacklevel=3)
-            if inds_np.size > 0 and inds_np.size % 4 != 0:
-                return
-
         reoriented_tets = False
         indices_array = np.asarray(indices, dtype=np.int32)
+        if validate_mesh and indices_array.size > 0 and indices_array.size % 4 != 0:
+            from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
+
+            validate_tet_mesh(
+                np.asarray(vertices, dtype=float) * scale,
+                indices_array,
+                label=label,
+                stacklevel=3,
+            )
+            return
+
         if indices_array.size > 0 and indices_array.size % 4 == 0:
             tet_indices = indices_array.reshape(-1, 4)
             scaled_vertices = np.asarray(vertices, dtype=float).reshape(-1, 3) * scale
@@ -9575,6 +9577,16 @@ class ModelBuilder:
                 tet_indices[inverted, 1:3] = tet_indices[inverted][:, [2, 1]]
                 indices = tet_indices.flatten()
                 reoriented_tets = True
+
+        if validate_mesh:
+            from ..utils.mesh import validate_tet_mesh  # noqa: PLC0415
+
+            validate_tet_mesh(
+                np.asarray(vertices, dtype=float) * scale,
+                np.asarray(indices, dtype=np.intp),
+                label=label,
+                stacklevel=3,
+            )
 
         if density is None:
             density = self.default_tet_density
