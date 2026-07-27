@@ -48,6 +48,7 @@ class Example:
             enable_self_collisions=False,
             hide_collision_shapes=True,
             skip_mesh_approximation=True,
+            use_applied_schema_fallbacks=True,
         )
 
         for i in range(6, g1.joint_dof_count):

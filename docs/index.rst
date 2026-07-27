@@ -61,6 +61,7 @@ Newton Physics
 
    FAQ <faq>
    Migration Guide <migration>
+   Schema Resolution Design <design/schema-resolution>
    Isaac Lab <lab/isaac-lab>
 
 
