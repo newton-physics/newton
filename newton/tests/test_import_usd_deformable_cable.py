@@ -311,6 +311,53 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(builder.joint_target_ke[dof0], 0.0)
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["stretchStiffness"], 0.0)
 
+    def test_cable_contact_material_maps_to_capsules(self):
+        """Apply authored contact friction and restitution to generated cable capsules."""
+        stage = _deformable_stage()
+        points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        curves = _add_cable_curve(stage, "/World/Cable", points, thickness=None)
+        _bind_deformable_material(
+            stage,
+            curves.GetPrim(),
+            "/World/CableMat",
+            thickness=0.02,
+            staticFriction=0.6,
+            dynamicFriction=0.35,
+            restitution=0.2,
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        body_start, body_end = group_range(builder, "cable", "/World/Cable", "body")
+        cable_shapes = [shape for shape, body in enumerate(builder.shape_body) if body_start <= body < body_end]
+        self.assertEqual(len(cable_shapes), 3)
+        for shape in cable_shapes:
+            self.assertAlmostEqual(builder.shape_material_mu[shape], 0.35)
+            self.assertAlmostEqual(builder.shape_material_restitution[shape], 0.2)
+
+    def test_welded_cable_contact_material_maps_to_capsules(self):
+        """Apply representative contact properties to welded cable graph capsules."""
+        stage = self._author_attached_cable_pair(gap=0.0)
+        for suffix in ("A", "B"):
+            _bind_deformable_material(
+                stage,
+                stage.GetPrimAtPath(f"/World/Cable{suffix}"),
+                f"/World/Cable{suffix}Mat",
+                thickness=0.02,
+                staticFriction=0.6,
+                dynamicFriction=0.35,
+                restitution=0.2,
+            )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.shape_count, 6)
+        for shape in range(builder.shape_count):
+            self.assertAlmostEqual(builder.shape_material_mu[shape], 0.35)
+            self.assertAlmostEqual(builder.shape_material_restitution[shape], 0.2)
+
     def test_cable_rest_length_from_rest_shape_points(self):
         """Per-joint stiffness uses the rest centerline (restShapePoints), not the possibly-deformed
         points, so an authored rest shape sets the rest length L in E*A/L (proposal: rest segment
