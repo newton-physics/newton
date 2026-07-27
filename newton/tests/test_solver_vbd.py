@@ -2782,6 +2782,41 @@ def _body_particle_contact_lists_skip_static_kinematic(test, device):
     test.assertEqual(int(overflow_max.numpy()[0]), 0)
 
 
+def _build_multi_world_particle_shape_scene(world_count, device, particles_per_world=8):
+    """Build ``world_count`` replicas of a sub-world holding one shape and several free particles."""
+    sub = newton.ModelBuilder()
+    sub.add_shape_sphere(body=-1, radius=0.5)
+    for i in range(particles_per_world):
+        sub.add_particle(pos=wp.vec3(0.1 * i, 0.0, 2.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+    builder = newton.ModelBuilder()
+    for _ in range(world_count):
+        builder.add_world(sub)
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def _soft_contact_presize_is_world_aware(test, device):
+    """Verify SolverVBD pre-sizes body-particle buffers from world-compatible pairs, not the dense product."""
+    sizes = {}
+    for world_count in (1, 4):
+        model = _build_multi_world_particle_shape_scene(world_count, device)
+        # Constructed before any CollisionPipeline exists, as downstream users (Isaac Lab) do.
+        solver = newton.solvers.SolverVBD(model)
+        sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
+        test.assertEqual(sizes[world_count], newton.CollisionPipeline(model, broad_phase="nxn").soft_contact_max)
+        if world_count > 1:
+            test.assertLess(sizes[world_count], model.shape_count * model.particle_count)
+    test.assertEqual(sizes[4], 4 * sizes[1])
+
+
+def _soft_contact_presize_honors_model_capacity(test, device):
+    """Verify SolverVBD pre-sizes body-particle buffers from ``Model.soft_contact_max`` when it is set."""
+    model = _build_multi_world_particle_shape_scene(2, device)
+    model.soft_contact_max = 7  # e.g. written back by a CollisionPipeline built earlier
+    solver = newton.solvers.SolverVBD(model)
+    test.assertEqual(solver.body_particle_contact_penalty_k.shape[0], 7)
+
+
 class TestSolverVBD(unittest.TestCase):
     pass
 
@@ -2980,6 +3015,18 @@ add_function_test(
     TestSolverVBD,
     "test_collect_rigid_contact_forces_reports_surface_points",
     _collect_rigid_contact_forces_reports_surface_points,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_contact_presize_is_world_aware",
+    _soft_contact_presize_is_world_aware,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_contact_presize_honors_model_capacity",
+    _soft_contact_presize_honors_model_capacity,
     devices=devices,
 )
 

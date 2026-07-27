@@ -546,6 +546,36 @@ def _world_compatible_pairs(
     return _pairs(np.concatenate(f_cols), np.concatenate(s_cols))
 
 
+def _count_world_compatible_pairs(
+    feature_world: np.ndarray,
+    shape_world: np.ndarray,
+    world_count: int,
+    shape_ok: np.ndarray | None = None,
+) -> int:
+    """Number of pairs :func:`_world_compatible_pairs` would emit, without materializing them.
+
+    Mirrors that function's three disjoint groups, so callers needing only the capacity pay
+    O(features + shapes) instead of O(pairs).
+    """
+    n_features, n_shapes = len(feature_world), len(shape_world)
+    if n_features == 0 or n_shapes == 0:
+        return 0
+    # ``shape_ok`` drops pairs whose shape cannot participate, exactly as in _world_compatible_pairs.
+    s_ok = np.ones(n_shapes, dtype=bool) if shape_ok is None else np.asarray(shape_ok, dtype=bool)
+    f_local = (feature_world >= 0) & (feature_world < world_count)
+    s_local = (shape_world >= 0) & (shape_world < world_count) & s_ok
+    # Global features pair with every shape.
+    total = int(np.count_nonzero(feature_world < 0)) * int(np.count_nonzero(s_ok))
+    # Local features additionally pair with every global shape.
+    total += int(np.count_nonzero(f_local)) * int(np.count_nonzero((shape_world < 0) & s_ok))
+    # Local features pair with the shapes sharing their world.
+    features_per_world = np.bincount(feature_world[f_local], minlength=world_count)
+    shapes_per_world = np.bincount(shape_world[s_local], minlength=world_count)
+    return total + int(
+        np.dot(features_per_world[:world_count].astype(np.int64), shapes_per_world[:world_count].astype(np.int64))
+    )
+
+
 def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
     """Build the soft-rigid (particle-shape) candidate pairs for ``model``.
 
@@ -560,6 +590,19 @@ def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]
         return wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
     world_count = int(getattr(model, "world_count", 0) or 0)
     return _world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device)
+
+
+def _count_soft_particle_rigid_contact_pairs(model: Model) -> int:
+    """Number of soft-rigid (particle-shape) candidate pairs :func:`_build_soft_particle_rigid_contact_pairs`
+    would emit for ``model``, so solvers can pre-size soft-contact buffers without building a
+    :class:`CollisionPipeline`. Excludes the full-surface edge/face headroom, which only the pipeline knows about.
+    """
+    particle_count = int(getattr(model, "particle_count", 0) or 0)
+    shape_count = int(getattr(model, "shape_count", 0) or 0)
+    if particle_count == 0 or shape_count == 0:
+        return 0
+    world_count = int(getattr(model, "world_count", 0) or 0)
+    return _count_world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), world_count)
 
 
 def _build_soft_face_rigid_contact_pairs(
@@ -780,7 +823,9 @@ class CollisionPipeline:
             soft_contact_max: Maximum number of soft contacts to allocate.
                 If None, defaults to ``soft_rigid_contact_pair_count``, the number
                 of precomputed soft-rigid (particle-shape) pairs launched for soft
-                contact generation.
+                contact generation, plus the full-surface edge/face headroom when
+                ``enable_rigid_soft_full_surface_contact`` is set. The resolved value is
+                published to :attr:`Model.soft_contact_max`, which is never read back as an input.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
             enable_rigid_soft_full_surface_contact: Generate soft contacts over the full soft-mesh
                 surface -- the edges and triangle interiors -- against rigid SDFs, in addition to the
@@ -1134,6 +1179,11 @@ class CollisionPipeline:
             soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
+        # Publish the resolved capacity so solvers constructed later can pre-size from it (e.g. VBD
+        # init). Write-only, unlike rigid_contact_max: the default depends on
+        # enable_rigid_soft_full_surface_contact, so reading it back would let a flag-off pipeline
+        # silently strip the edge/face headroom from a later flag-on pipeline on the same model.
+        model.soft_contact_max = soft_contact_max
 
         self.requires_grad = requires_grad
         self.deterministic = deterministic
