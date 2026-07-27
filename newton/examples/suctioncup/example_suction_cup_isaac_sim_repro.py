@@ -61,7 +61,7 @@ RECORDING_JSONL = ASSETS / "robot_recording_truncated.jsonl"
 SMOOTHING_SIGMA = 0.06
 
 FPS = 60  # rendered frames per second
-SIM_HZ = 240  # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
+SIM_HZ = 120  # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
 NUM_ARM_DOFS = 6  # J1-J6; recorded joints 6-8 are unused finger DOFs
 BOX_HALF = 0.5  # half-extent of the static support box (size [1, 1, 1]) [m]
 # The arm picks two boxes in sequence over the recording's two engage/disengage cycles: a wide shallow
@@ -70,6 +70,11 @@ BOX_HALF = 0.5  # half-extent of the static support box (size [1, 1, 1]) [m]
 # mass [kg]); shape density is 0, so mass/inertia are set on the body.
 PANEL = ((0.5, 0.5, 0.04), 30.0)  # 1st engagement -- wide shallow panel, size [1.0, 1.0, 0.08] m
 CRATE = ((0.242, 0.166, 0.137), 12.0)  # 2nd engagement -- deep crate, size [0.484, 0.332, 0.274] m
+# The robot picks NUM_CRATES crates from one conveyor spot (recording cycles 1..NUM_CRATES all share a
+# pick pose) and stacks them on the panel. Newton models are fixed after finalize, so all crate bodies
+# are pre-created: crate 0 starts on the pick pallet, the spares rest out of the way and are teleported
+# onto the pallet as each crate is placed (a stand-in for the conveyor advancing). See step().
+NUM_CRATES = 6
 
 # Deepest reach of the finger collision geometry along the suction axis, in the J6_link (flange)
 # frame [m] -- the point that would first penetrate the box. The box top is seated here so the fingers
@@ -529,15 +534,52 @@ class Example:
             return body, builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg)
 
         panel_body, panel_shape = add_box_on_pallet(PANEL, box_top_world(rising[0]), "panel")
-        crate_body, crate_shape = add_box_on_pallet(CRATE, box_top_world(rising[1]), "crate")
 
-        # Filter each pick box against the gripper geometry: the seal owns the hold (see
-        # ENABLE_PAD_BOX_CONTACT / SEAL_TENSION_ONLY). Each box still collides with its pallet and ground.
+        # Crates: cycles 1..NUM_CRATES all pick from the same pose, so one static pick pallet sits at that
+        # spot and crate 0 starts on it. The spares rest far from the scene (above ground so they pass
+        # test_final) and are teleported onto the pallet as each crate is placed (step()). All crates share
+        # the CRATE inertia; shape density is 0 so the body mass is authoritative.
+        crate_top = box_top_world(rising[1])
+        (chx, chy, chz), crate_mass = CRATE
+        builder.add_shape_box(  # shared crate pick pallet -- snug pedestal under the 90deg-rotated crate
+            -1,
+            xform=wp.transform(
+                wp.vec3(crate_top[0], crate_top[1], crate_top[2] - 2.0 * chz - BOX_HALF), wp.quat_identity()
+            ),
+            hx=chy + 0.04,  # crate is rotated 90deg about z, so world-x spans chy, world-y spans chx
+            hy=chx + 0.04,
+            hz=BOX_HALF,
+        )
+        self.crate_pick_pos = (crate_top[0], crate_top[1], crate_top[2] - chz)  # crate body center at the pick spot
+        crate_inertia = wp.mat33(
+            crate_mass / 3.0 * (chy * chy + chz * chz), 0.0, 0.0,
+            0.0, crate_mass / 3.0 * (chx * chx + chz * chz), 0.0,
+            0.0, 0.0, crate_mass / 3.0 * (chx * chx + chy * chy),
+        )
+        crate_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 1.0 * np.pi / 2.0)  # crates rest rotated 90deg about z
+        crate_bodies, crate_shapes = [], []
+        for k in range(NUM_CRATES):
+            pos = self.crate_pick_pos if k == 0 else (-3.0, -3.0 - 0.6 * float(k), chz)  # spares parked far off
+            body = builder.add_body(
+                xform=wp.transform(wp.vec3(*pos), crate_quat),
+                mass=crate_mass,
+                inertia=crate_inertia,
+                label=f"crate_{k}",
+            )
+            cfg = builder.default_shape_cfg.copy()
+            cfg.density = 0.0
+            crate_bodies.append(body)
+            crate_shapes.append(builder.add_shape_box(body, hx=chx, hy=chy, hz=chz, cfg=cfg))
+
+        # Filter every pick box against the gripper geometry: the seal owns the hold (see
+        # ENABLE_PAD_BOX_CONTACT / SEAL_TENSION_ONLY). Boxes still collide with the pallets, the panel, each
+        # other (so the crates stack), and the ground.
         if not ENABLE_PAD_BOX_CONTACT:
             for shape in range(len(builder.shape_body)):
                 if builder.shape_body[shape] == ee_body:
                     builder.add_shape_collision_filter_pair(panel_shape, shape)
-                    builder.add_shape_collision_filter_pair(crate_shape, shape)
+                    for cs in crate_shapes:
+                        builder.add_shape_collision_filter_pair(cs, shape)
 
         # Cup markers: a thin non-colliding disk at each suction cup so the cup layout is visible in the
         # viewer (radius = the modeled cup radius dim_a; oriented so the disk faces along the suction axis).
@@ -556,10 +598,12 @@ class Example:
                 )
 
         self.model = builder.finalize()
-        # njmax: MuJoCo's per-world constraint-row buffer. Its auto-estimate from the initial (resting)
-        # state is too small once the arm's self-contacts and the box/pallet/ground contacts are all
-        # active mid-cycle, which overflows nefc. Give ample headroom.
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=512, iterations=10)
+        # MuJoCo per-world buffers. Both auto-estimate from the initial (resting) state, which is far too
+        # small once the arm's self-contacts, the pallets/ground, and the growing stack of crates are all
+        # active mid-cycle. nconmax (contact count) overflowing is the worst: MuJoCo silently drops the
+        # excess contacts, so a box loses its support and falls through the floor / other boxes. njmax
+        # (constraint rows) overflowing trips nefc. Give both ample headroom.
+        self.solver = newton.solvers.SolverMuJoCo(self.model, nconmax=256, njmax=2048, iterations=10)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -617,12 +661,31 @@ class Example:
         self.pad_offsets = wp.array([0, len(GRIPPER_PADS)], dtype=wp.int32)
         self.seal_broken = wp.zeros(self.pad_offsets.shape[0] - 1, dtype=wp.bool)  # [grippers] latched break
         self.seal_break_count = wp.zeros(len(GRIPPER_PADS), dtype=wp.int32)  # consecutive over-threshold steps, per pad
-        # The seal grips the panel in the 1st cycle and the crate in the 2nd. seal_body_b is switched
-        # from panel to crate in step(), between the 1st disengage and 2nd engage (seal idle, safe).
+        # The seal grips the panel (cycle 0), then a fresh crate each cycle. seal_body_b is retargeted in
+        # step() during each idle gap; it is captured by reference, so the in-place assign takes on the
+        # next graph launch.
         self.seal_body_b = wp.full(len(GRIPPER_PADS), panel_body, dtype=wp.int32)
-        self.crate_body = crate_body
-        self.seal_switched = False
-        self.t_seal_switch = 0.5 * (float(rec_times[falling[0]]) + float(rec_times[rising[1]]))
+        self.crate_bodies = crate_bodies
+        # Per-crate free-joint DOF slices, so a spare can be teleported onto the pick pallet at runtime
+        # (7 joint_q = [pos, quat xyzw], 6 joint_qd) without disturbing the arm or the other bodies.
+        joint_child = self.model.joint_child.numpy()
+        joint_q_start = self.model.joint_q_start.numpy()
+        joint_qd_start = self.model.joint_qd_start.numpy()
+        self.crate_dof = [
+            (int(joint_q_start[j]), int(joint_qd_start[j]))
+            for b in crate_bodies
+            for j in [int(np.where(joint_child == b)[0][0])]
+        ]
+        self.crate_pick_q = np.array(
+            [*self.crate_pick_pos, crate_quat[0], crate_quat[1], crate_quat[2], crate_quat[3]], dtype=np.float32
+        )  # spares teleport onto the pallet at the same 90deg-about-z resting orientation
+        # Schedule: in the idle gap before crate cycle c (1..NUM_CRATES), retarget the seal to crate c-1
+        # and (for c>=2) teleport that spare onto the now-empty pick pallet. crate 0 already sits there.
+        self.seal_schedule = [
+            (0.5 * (float(rec_times[falling[c - 1]]) + float(rec_times[rising[c]])), c - 1)
+            for c in range(1, len(rising))
+        ]
+        self.next_switch = 0
 
         # Start the arm at the first recorded pose. Set only the arm DOFs; the pick box's free-joint
         # DOFs keep their built-in rest pose (from add_body), so it starts resting on the static box.
@@ -705,7 +768,7 @@ class Example:
             latch_engagement(self.state_0, self.gripper_model, self.gripper_state, self.seal_engaged, self.seal_body_b)
             if ENABLE_GRIPPER:
                 evaluate_gripper_force(
-                    self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control
+                    self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control, self.sim_dt
                 )
 
             self.model.collide(self.state_0, self.contacts)
@@ -718,13 +781,23 @@ class Example:
     def step(self):
         # the target kernel interpolates and applies the drive targets and advances the sub-step
         # counter before each physics sub-step, so step() just runs one frame.
-        # Between the two pick cycles (seal idle), retarget the seal from the panel to the crate so the
-        # 2nd engagement latches the crate. seal_body_b is captured by reference, so the in-place assign
-        # takes effect on the next graph launch.
-        if not self.seal_switched and int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt >= self.t_seal_switch:
-            self.seal_body_b.assign(np.full(len(GRIPPER_PADS), self.crate_body, dtype=np.int32))
+        # In each idle gap, retarget the seal to the next box (panel -> crate 0 -> crate 1 -> ...) and
+        # teleport the next spare crate onto the pick pallet. seal_body_b and the crate free-joint DOFs are
+        # captured by reference, so the in-place assigns take effect on the next graph launch.
+        sim_time = int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt
+        while self.next_switch < len(self.seal_schedule) and sim_time >= self.seal_schedule[self.next_switch][0]:
+            crate_idx = self.seal_schedule[self.next_switch][1]
+            self.seal_body_b.assign(np.full(len(GRIPPER_PADS), self.crate_bodies[crate_idx], dtype=np.int32))
             self.seal_modes = self.crate_seal_modes  # side-panel modes now describe the crate
-            self.seal_switched = True
+            if crate_idx >= 1:  # bring the next spare crate onto the (now-empty) pick pallet
+                qs, qds = self.crate_dof[crate_idx]
+                q = self.state_0.joint_q.numpy()
+                qd = self.state_0.joint_qd.numpy()
+                q[qs : qs + 7] = self.crate_pick_q
+                qd[qds : qds + 6] = 0.0
+                self.state_0.joint_q.assign(q)
+                self.state_0.joint_qd.assign(qd)
+            self.next_switch += 1
         if self.graph:
             wp.capture_launch(self.graph)
         else:
@@ -739,9 +812,13 @@ class Example:
         self.viewer.end_frame()
 
     def gui(self, ui):
-        # show the recorded suction-cup command (sampled per sub-step by sample_playback_kernel)
-        engaged = bool(self.engaged_wp.numpy()[0])
-        ui.text(f"Suction: {'On' if engaged else 'Off'}")
+        # commanded suction (recorded ro[0], sampled per sub-step by sample_playback_kernel) vs the
+        # actual latched seal (command AND-ed with the break/proximity logic in command_seal_kernel /
+        # latch_engagement) -- the two differ if a seal fractured or failed to grab.
+        commanded = bool(self.engaged_wp.numpy()[0])
+        held = int(self.seal_engaged.numpy().sum())
+        ui.text(f"Suction cmd:  {'On' if commanded else 'Off'}  (recording)")
+        ui.text(f"Seal engaged: {held}/{len(GRIPPER_PADS)} pads  (actual)")
         # seal spring-damper modes for the picked box (constant): natural frequency and damping ratio
         ui.text("Seal modes:")
         for name, omega_n, zeta in self.seal_modes:

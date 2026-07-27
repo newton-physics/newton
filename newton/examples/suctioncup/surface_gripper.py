@@ -880,6 +880,142 @@ def eval_twist_friction(
     return m_twist, twist_stick
 
 
+@wp.func
+def apparent_mass(axis_w: wp.vec3, r: wp.vec3, q_b: wp.quat, inv_m: float, inv_inertia: wp.mat33) -> float:
+    """Effective mass a rigid body presents to a force at offset ``r`` (world, COM->point) along the
+    world unit direction ``axis_w``: ``1/m_app = 1/m + (r x n).I^-1.(r x n)`` -- translational compliance
+    plus the rotational compliance from the off-COM spin. The rotational term is evaluated in the body
+    frame (``q_b``, ``inv_inertia``), where the inertia tensor is stored.
+    """
+    c_b = wp.quat_rotate_inv(q_b, wp.cross(r, axis_w))  # (r x n) in the body frame
+    return 1.0 / (inv_m + wp.dot(c_b, inv_inertia * c_b))
+
+
+@wp.func
+def apparent_inertia(axis_w: wp.vec3, q_b: wp.quat, inv_inertia: wp.mat33) -> float:
+    """Effective inertia a rigid body presents to a pure moment about the world unit axis ``axis_w``:
+    ``1/(n.I^-1.n)`` -- the free-body angular admittance about the axis, inverted. The axis is first
+    rotated into the body frame (``q_b``, where ``inv_inertia`` lives). No translation term: a couple
+    does not move the COM.
+    """
+    axis_b = wp.quat_rotate_inv(q_b, axis_w)  # seal axis in the body frame
+    return 1.0 / wp.dot(axis_b, inv_inertia * axis_b)
+
+
+@wp.func
+def effective_damping(d: float, m_eff: float, dt: float) -> float:
+    """Backward-Euler (implicit) damping coefficient: the explicit ``d`` rescaled so the applied force
+    lands the pad-point velocity at the implicit value ``v*m_eff/(m_eff + d*dt)`` in one step. Bounded by
+    ``m_eff/dt`` for any ``d`` (the damper can't overshoot the velocity). ``m_eff`` is the DOF's effective
+    mass (translation) or effective inertia (rotation).
+    """
+    return d / (1.0 + d * dt / m_eff)
+
+
+@wp.func
+def eval_effective_damping(
+    q_seal: wp.quat,  # seal frame world orientation
+    q_body_b: wp.quat,  # gripped body world orientation
+    r_body_b: wp.vec3,  # gripped body COM -> seal point (world)
+    mass_b: float,  # gripped body mass
+    inertia_b: wp.mat33,  # gripped body inertia tensor (body frame)
+    d_normal: float,
+    d_shear_x: float,
+    d_shear_y: float,
+    d_peel_x: float,
+    d_peel_y: float,
+    dt: float,
+) -> tuple[float, float, float, float, float]:
+    """Implicit (backward-Euler) damping coefficient for each of the five damped seal DOFs. Each raw
+    damping is rescaled via :func:`effective_damping` using that DOF's effective mass at the seal point
+    (:func:`apparent_mass`, translation) or effective inertia about the seal axis, 1/(n.I^-1.n) (peel).
+    Returns ``(d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff)``.
+    """
+    # Step 1.
+    # Implicit (backward-Euler) damping.
+    # F = M * [v(t+dt) - v(t)] / dt = -gamma * v(t+dt)
+    # Solver for v(t+dt)
+    # v(t+dt) = v(t) * [M / (M + gamma * dt)] * v(t)
+    # Now compute the force required to move from v(t) to v(t+dt) in dt.
+    # F = (M/dt) *  {[M / (M + gamma * dt)] - 1} * v(t)
+    # Rearrange
+    # F = (M/dt) * [-gamma*dt]/[M + gamma*dt]
+    # Some more algebra reveals
+    # F = - gamma/[1 + gamma*dt/M] * v(t)
+    # This looks like a damping equation with simple substitutions
+    # F = -gamma_effective * v(t)
+    # with
+    # gamma_effective = gamma/[1 + gamma*dt/M]
+
+    # Step 2.
+    # For translational dofs.
+    # We apply the force at a vector r from the COM of the picked body.
+    # The goal is to prevent the dof speeds of the picked body measured
+    # at its COM from changing sign under damping.
+    # Compute the acceleration a at the COM that arises from a force F applied
+    # along a vector n.
+    # a = a_com + alpha X r
+    # with a_com = (F/M)n
+    # and alpha the angular acceleration.
+    # Now project a along n
+    # a.n = (F/M) + (alpha X r).n
+    # Now apply the triple product rule:
+    # (alpha X r).n = alpha.(r X n)
+    # and we now have
+    # a.n = (F/M) + alpha.(r X n)
+    # We can compute alpha:
+    # I * alpha = F*(r X n) so alpha = F*[I^-1 * (r X n)]
+    # a.n = (F/M) + F*[I^-1.(r X n)].(r X n)
+    # I is symmetric so we have
+    # a.n = (F/M) + F*[(r X n).I^-1].(r X n)
+    # This reveals an effective mass
+    # m_eff = 1/M + (r X n).I^-1.(r X n)
+
+    # Step 2 for rotational dofs.
+    # Applying a torque tau around an axis n follows:
+    # I*alpha = tau*n
+    # Solve for alpha
+    # alpha = tau (I^-1.n)
+    # Now project alpha onto n
+    # alpha.n = tau (n.I^-1.n)
+    # We can now say that the effective inertia I_eff obeys
+    # I_eff^-1  = n.I^-1.n
+    # Rearrange
+    # I_eff = 1/(n.I^-1.n)
+
+    # Compute the seal axes in the world frame.
+    axes = wp.matrix_from_rows(
+        wp.vec3(1.0, 0.0, 0.0),
+        wp.vec3(0.0, 1.0, 0.0),
+        wp.vec3(0.0, 0.0, 1.0),
+    )  # the seal-frame basis axes x, y, z
+    # rotate each seal axis into world once, reused by translation and peel below
+    axes_w = wp.mat33(0.0)
+    for i in range(3):
+        axes_w[i] = wp.quat_rotate(q_seal, axes[i])
+
+    inv_m = wp.where(mass_b > 0.0, 1.0 / mass_b, 0.0)
+    inv_inertia = wp.inverse(inertia_b)
+
+    # Combine Step 1 and 2 for translational dofs
+    # gamma_effective = gamma/[1 + gamma*dt/m_eff]
+    d_trans_eff = wp.vec3(0.0, 0.0, 0.0)
+    d_trans = wp.vec3(d_shear_x, d_shear_y, d_normal)
+    for i in range(3):
+        m_app = apparent_mass(axes_w[i], r_body_b, q_body_b, inv_m, inv_inertia)
+        d_trans_eff[i] = effective_damping(d_trans[i], m_app, dt)
+
+    # Combine Step 1 and 2 for rotational dofs
+    # gamma_effective = gamma/[1 + gamma*dt/I_eff]
+    d_rot_eff = wp.vec2(0.0, 0.0)
+    d_rot = wp.vec2(d_peel_x, d_peel_y)
+    for i in range(2):
+        I_app = apparent_inertia(axes_w[i], q_body_b, inv_inertia)
+        d_rot_eff[i] = effective_damping(d_rot[i], I_app, dt)
+
+    return d_trans_eff[2], d_trans_eff[0], d_trans_eff[1], d_rot_eff[0], d_rot_eff[1]
+
+
 @wp.kernel
 def eval_pad_force(
     gripper_body_id: wp.array[int],
@@ -912,6 +1048,9 @@ def eval_pad_force(
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
+    body_mass: wp.array[float],  # gripped-body mass, for the implicit-damping rescale
+    body_inertia: wp.array[wp.mat33],  # gripped-body inertia tensor (body frame)
+    dt: float,  # sim sub-step [s]
     # outputs (mutated in place)
     pad_shear_stick_point: wp.array[wp.vec2],
     pad_theta_anchor: wp.array[float],
@@ -949,13 +1088,27 @@ def eval_pad_force(
         body_qd[body_a], body_qd[body_b], r_a, r_b, q_a_seal
     )
 
+    d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff = eval_effective_damping(
+        q_a_seal,
+        wp.transform_get_rotation(body_q[body_b]),
+        r_b,
+        body_mass[body_b],
+        body_inertia[body_b],
+        gripper_d_normal[g],
+        gripper_d_shear_x[g],
+        gripper_d_shear_y[g],
+        gripper_d_peel_x[g],
+        gripper_d_peel_y[g],
+        dt,
+    )
+
     # --- normal (z): controllable preload + spring-damper, bidirectional ---
     f_normal_max = gripper_f_normal_max[g]
     fz, fz_elastic = eval_normal_force(
         pad_grip_control[pad],
         gripper_f_grip_max[g],
         gripper_k_normal[g],
-        gripper_d_normal[g],
+        d_normal_eff,
         f_normal_max,
         pz,
         vz,
@@ -981,8 +1134,8 @@ def eval_pad_force(
         shear_stick[1],
         k_shear_x,
         k_shear_y,
-        gripper_d_shear_x[g],
-        gripper_d_shear_y[g],
+        d_shear_x_eff,
+        d_shear_y_eff,
         gripper_mu_x[g],
         gripper_mu_y[g],
         f_hold,
@@ -997,8 +1150,8 @@ def eval_pad_force(
     m_peel_x, m_peel_y = eval_peel_moment(
         k_peel_x,
         k_peel_y,
-        gripper_d_peel_x[g],
-        gripper_d_peel_y[g],
+        d_peel_x_eff,
+        d_peel_y_eff,
         theta_x,
         theta_y,
         omega_x,
@@ -1039,6 +1192,7 @@ def evaluate_gripper_force(
     gripper_model: SurfaceGripperModel,
     gripper_state: SurfaceGripperState,
     gripper_control: SurfaceGripperControl,
+    dt: float,
 ) -> None:
     """Accumulate the full per-pad suction wrench (all six DOF) into ``state.body_f``.
 
@@ -1086,6 +1240,9 @@ def evaluate_gripper_force(
             model.body_com,
             state.body_q,
             state.body_qd,
+            model.body_mass,
+            model.body_inertia,
+            dt,
             # outputs (mutated in place)
             gripper_state.pad_shear_stick_point,
             gripper_state.pad_theta_anchor,
