@@ -111,6 +111,7 @@
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
+- Fix MJCF fixed tendons ignoring properties inherited from tendon default classes.
 - Fix `SolverKamino` CG/CR solves silently under-iterating on CPU graph capture; the capture-safe loop path now runs on any capturing device, not only CUDA, so CPU captures no longer record a stale host-readback convergence decision at record time.
 - Reject incompatible custom attribute and frequency definitions before composing `ModelBuilder` instances.
 - Fix `cloth_franka` example rendering particles at simulation scale (cm) instead of viewer scale (m)
