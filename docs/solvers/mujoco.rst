@@ -493,10 +493,22 @@ contact's ``condim``, friction, ``solref``, ``solreffriction``, ``solimp``,
 margin, and gap. Newton's per-contact stiffness, damping, and friction
 scale still take precedence.
 
-This only changes contacts that Newton's collision pipeline already
-emits. An explicit MuJoCo pair does not create a Newton collision
-candidate, so pair-only contacts and pair margins wider than Newton's
-detection range still require matching Newton collision configuration.
+Pass the solver's mapped pairs to the collision pipeline when the
+explicit pair must also override Newton's automatic collision filters:
+
+.. code-block:: python
+
+   solver = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)
+   collision_pipeline = newton.CollisionPipeline(
+       model,
+       shape_pairs_included=solver.get_newton_collision_pairs(),
+   )
+
+Included pairs still use Newton's shape margins and gaps. A MuJoCo pair
+whose margin and gap extend beyond that detection range therefore needs
+matching Newton shape configuration. Pair topology is resolved when the
+collision pipeline is constructed; rebuild the pipeline after topology
+changes.
 MuJoCo collision sensors do not consume these injected contacts.
 
 

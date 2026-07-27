@@ -8247,6 +8247,43 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             atol=1.0e-7,
         )
 
+    def test_explicit_pair_selects_zero_mask_newton_contact(self):
+        """Map an explicit MuJoCo pair into Newton collision selection."""
+        mjcf = """<mujoco model="explicit_pair_selection">
+            <worldbody>
+                <geom name="floor" type="plane" size="1 1 0.1" contype="0" conaffinity="0"/>
+                <body name="box" pos="0 0 0.095">
+                    <freejoint/>
+                    <geom name="box" type="box" size="0.1 0.1 0.1" contype="0" conaffinity="0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="box" condim="3"
+                      friction="0.8 0.7 0.02 0.003 0.004"
+                      margin="0" gap="0"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        self.assertEqual(model.shape_contact_pair_count, 0)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=64, njmax=256, iterations=1)
+
+        collision_pipeline = newton.CollisionPipeline(
+            model,
+            shape_pairs_included=solver.get_newton_collision_pairs(),
+        )
+        contacts = collision_pipeline.contacts()
+        state_in = model.state()
+        state_out = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        collision_pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+
+        self.assertGreater(int(solver.mjw_data.nacon.numpy()[0]), 0)
+        self.assertEqual(int(solver.mjw_data.contact.dim.numpy()[0]), 3)
+
     def test_pair_margin_and_gap_filter_newton_contacts(self):
         """Keep inactive pair contacts and drop contacts beyond the pair gap."""
         inactive_model = self._make_explicit_pair_contact_model(box_height=0.1035, geom_margin=0.01)
@@ -8463,6 +8500,10 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         self.assertEqual(npair, pairs_per_world)
         expected_mapping = np.array([[2, 3], [4, 5], [0, 1]], dtype=np.int32)
         np.testing.assert_array_equal(solver.mjc_pair_to_newton_pair.numpy(), expected_mapping)
+        np.testing.assert_array_equal(
+            solver.get_newton_collision_pairs().numpy(),
+            [[1, 2], [2, 3], [4, 5], [5, 6], [7, 8], [8, 9]],
+        )
 
         # --- Step 1: Verify initial conversion ---
         # Use .copy() to ensure we capture the values, not a view (important for CPU mode)

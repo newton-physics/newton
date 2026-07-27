@@ -4303,6 +4303,32 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
+    def get_newton_collision_pairs(self) -> wp.array[wp.vec2i]:
+        """Return explicit MuJoCo pairs as absolute Newton shape pairs.
+
+        Pass the result to :class:`newton.CollisionPipeline` as
+        ``shape_pairs_included`` when using Newton-generated contacts.
+        Resolve it once when constructing the collision pipeline; pair topology
+        is fixed for the lifetime of the solver.
+
+        Returns:
+            The compiled MuJoCo contact pairs expanded across worlds and
+            mapped to Newton shape indices.
+        """
+        if self.mj_model.npair == 0:
+            return wp.empty(0, dtype=wp.vec2i, device=self.model.device)
+
+        geom_to_shape = self.mjc_geom_to_newton_shape.numpy()
+        shape0 = geom_to_shape[:, np.asarray(self.mj_model.pair_geom1, dtype=np.int32)]
+        shape1 = geom_to_shape[:, np.asarray(self.mj_model.pair_geom2, dtype=np.int32)]
+        pairs = np.stack((shape0, shape1), axis=-1).reshape(-1, 2)
+        if np.any(pairs < 0):
+            raise ValueError("MuJoCo contact pair references an unmapped Newton shape.")
+
+        pairs = np.sort(pairs, axis=1)
+        pairs = np.unique(pairs, axis=0)
+        return wp.array(pairs, dtype=wp.vec2i, device=self.model.device)
+
     def _create_inverse_shape_mapping(self):
         """
         Create the inverse shape mapping (Newton shape -> MuJoCo [world, geom]).
