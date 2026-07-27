@@ -373,6 +373,189 @@ class TestDeformableView(unittest.TestCase):
                 group_indices=[1, 1],
             )
 
+    def test_source_indices_map_value_rows_to_groups(self):
+        """Source rows can be mapped independently to destination groups."""
+        model = _replicated_model(3, device="cpu")
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        before = cloth.get_particle_positions(state).numpy().copy()
+        values = np.zeros((4, cloth.particles_per_group, 3), dtype=np.float32)
+        values[1].fill(10.0)
+        values[3].fill(30.0)
+
+        cloth.set_particle_positions(
+            state,
+            wp.array(values, dtype=wp.vec3, device=model.device),
+            group_indices=[0, 2],
+            source_indices=[3, 1],
+        )
+
+        after = cloth.get_particle_positions(state).numpy()
+        np.testing.assert_array_equal(after[0], values[3])
+        np.testing.assert_array_equal(after[1], before[1])
+        np.testing.assert_array_equal(after[2], values[1])
+
+    def test_source_indices_map_particle_velocity_rows(self):
+        """Particle velocity writes use the same source-to-group mapping."""
+        model = _replicated_model(3, device="cpu")
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        values = np.zeros((4, cloth.particles_per_group, 3), dtype=np.float32)
+        values[0].fill(2.0)
+        values[3].fill(7.0)
+
+        cloth.set_particle_velocities(
+            state,
+            wp.array(values, dtype=wp.vec3, device=model.device),
+            group_indices=[1, 2],
+            source_indices=[3, 0],
+        )
+
+        after = cloth.get_particle_velocities(state).numpy()
+        np.testing.assert_array_equal(after[0], np.zeros_like(after[0]))
+        np.testing.assert_array_equal(after[1], values[3])
+        np.testing.assert_array_equal(after[2], values[0])
+
+    def test_source_indices_map_body_transform_rows(self):
+        """Cable transform writes map source rows independently."""
+        model = _replicated_model(3, device="cpu")
+        state = model.state()
+        cable = DeformableView(model, "/World/Cable", family="curve")
+        before = cable.get_body_transforms(state).numpy().copy()
+        values = np.repeat(before[[0]], 4, axis=0)
+        values[1, :, 0] += 2.0
+        values[3, :, 1] -= 4.0
+
+        cable.set_body_transforms(
+            state,
+            wp.array(values, dtype=wp.transform, device=model.device),
+            group_indices=[0, 2],
+            source_indices=[3, 1],
+        )
+
+        after = cable.get_body_transforms(state).numpy()
+        np.testing.assert_allclose(after[0], values[3], atol=1.0e-6)
+        np.testing.assert_array_equal(after[1], before[1])
+        np.testing.assert_allclose(after[2], values[1], atol=1.0e-6)
+
+    def test_source_indices_map_body_velocity_rows(self):
+        """Cable velocity writes map source rows independently."""
+        model = _replicated_model(3, device="cpu")
+        state = model.state()
+        cable = DeformableView(model, "/World/Cable", family="curve")
+        values = np.zeros((4, cable.bodies_per_group, 6), dtype=np.float32)
+        values[0, :, 0] = 2.0
+        values[3, :, 4] = -5.0
+
+        cable.set_body_velocities(
+            state,
+            wp.array(values, dtype=wp.spatial_vector, device=model.device),
+            group_indices=[1, 2],
+            source_indices=[3, 0],
+        )
+
+        after = cable.get_body_velocities(state).numpy()
+        np.testing.assert_array_equal(after[0], np.zeros_like(after[0]))
+        np.testing.assert_array_equal(after[1], values[3])
+        np.testing.assert_array_equal(after[2], values[0])
+
+    def test_source_indices_validate_host_contract(self):
+        """Host source rows are integral, in range, and aligned with destinations."""
+        model = _replicated_model(3, device="cpu")
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        values = wp.zeros((4, cloth.particles_per_group), dtype=wp.vec3, device=model.device)
+
+        for invalid_indices in ([-1], [4]):
+            with self.subTest(source_indices=invalid_indices):
+                with self.assertRaisesRegex(ValueError, "source_indices"):
+                    cloth.set_particle_positions(
+                        state,
+                        values,
+                        group_indices=[0],
+                        source_indices=invalid_indices,
+                    )
+
+        for invalid_indices in ([1.5], ["1"], [True]):
+            with self.subTest(source_indices=invalid_indices):
+                with self.assertRaisesRegex(TypeError, "source_indices"):
+                    cloth.set_particle_positions(
+                        state,
+                        values,
+                        group_indices=[0],
+                        source_indices=invalid_indices,
+                    )
+
+        with self.assertRaisesRegex(ValueError, "source_indices length"):
+            cloth.set_particle_positions(
+                state,
+                values,
+                group_indices=[0, 1],
+                source_indices=[0],
+            )
+
+        repeated = np.full((1, cloth.particles_per_group, 3), 6.0, dtype=np.float32)
+        cloth.set_particle_positions(
+            state,
+            wp.array(repeated, dtype=wp.vec3, device=model.device),
+            group_indices=[0, 2],
+            source_indices=[0, 0],
+        )
+        after = cloth.get_particle_positions(state).numpy()
+        np.testing.assert_array_equal(after[0], repeated[0])
+        np.testing.assert_array_equal(after[2], repeated[0])
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
+    def test_source_indices_capture_and_replay(self):
+        """Device source and destination rows can change between captured writes."""
+        device = wp.get_device("cuda:0")
+        model = _replicated_model(3, device=device)
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        initial = cloth.get_particle_positions(state).numpy().copy()
+        values_np = np.zeros((4, cloth.particles_per_group, 3), dtype=np.float32)
+        values_np[0].fill(2.0)
+        values_np[1].fill(4.0)
+        values_np[2].fill(6.0)
+        values_np[3].fill(8.0)
+        values = wp.array(values_np, dtype=wp.vec3, device=device)
+        groups = wp.array([0, 2], dtype=wp.int32, device=device)
+        sources = wp.array([3, 1], dtype=wp.int32, device=device)
+
+        cloth.set_particle_positions(
+            state,
+            values,
+            group_indices=groups,
+            source_indices=sources,
+        )
+        state.particle_q.assign(model.particle_q)
+
+        with wp.ScopedCapture(device) as capture:
+            cloth.set_particle_positions(
+                state,
+                values,
+                group_indices=groups,
+                source_indices=sources,
+            )
+
+        wp.capture_launch(capture.graph)
+        expected = initial.copy()
+        expected[0] = values_np[3]
+        expected[2] = values_np[1]
+        np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), expected)
+
+        groups.assign(np.array([1, 2], dtype=np.int32))
+        sources.assign(np.array([0, 2], dtype=np.int32))
+        wp.capture_launch(capture.graph)
+        expected[1] = values_np[0]
+        expected[2] = values_np[2]
+        np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), expected)
+
+        before_invalid = cloth.get_particle_positions(state).numpy().copy()
+        sources.assign(np.array([-1, values.shape[0]], dtype=np.int32))
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before_invalid)
+
     def test_host_indices_require_integral_values(self):
         """Host selectors reject lossy coercions before they can write another group."""
         model = _replicated_model(3, device="cpu")
@@ -417,7 +600,7 @@ class TestDeformableView(unittest.TestCase):
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
 
     def test_device_group_indices_must_be_one_dimensional(self):
-        """Device index arrays fail clearly before reaching a one-dimensional kernel input."""
+        """Device index arrays fail clearly before reaching one-dimensional kernel inputs."""
         model = _replicated_model(3)
         state = model.state()
         cloth = DeformableView(model, "/World/Cloth", family="surface")
@@ -426,6 +609,8 @@ class TestDeformableView(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "one-dimensional"):
             cloth.set_particle_positions(state, values, group_indices=indices)
+        with self.assertRaisesRegex(ValueError, "source_indices.*one-dimensional"):
+            cloth.set_particle_positions(state, values, group_indices=[0], source_indices=indices)
 
     def test_device_selectors_validate_dtype_and_device(self):
         """Warp selectors must be int32 arrays on the view's device."""
@@ -437,11 +622,15 @@ class TestDeformableView(unittest.TestCase):
         indices = wp.array([0], dtype=wp.int64, device="cpu")
         with self.assertRaisesRegex(ValueError, "group_indices dtype int32"):
             cloth.set_particle_positions(state, values, group_indices=indices)
+        with self.assertRaisesRegex(ValueError, "source_indices dtype int32"):
+            cloth.set_particle_positions(state, values, group_indices=[0], source_indices=indices)
 
         if wp.is_cuda_available():
             indices = wp.array([0], dtype=wp.int32, device="cuda:0")
             with self.assertRaisesRegex(ValueError, "group_indices on device cpu"):
                 cloth.set_particle_positions(state, values, group_indices=indices)
+            with self.assertRaisesRegex(ValueError, "source_indices on device cpu"):
+                cloth.set_particle_positions(state, values, group_indices=[0], source_indices=indices)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
     def test_device_index_writes_capture_and_replay(self):

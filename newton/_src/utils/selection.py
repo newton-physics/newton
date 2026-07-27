@@ -2105,6 +2105,7 @@ def _scatter_group_vec3_kernel(
     values: wp.array2d[wp.vec3],
     starts: wp.array[wp.int32],
     groups: wp.array[wp.int32],
+    source_indices: wp.array[wp.int32],
     last_rows: wp.array[wp.int32],
     deduplicate: bool,
     dst: wp.array[wp.vec3],
@@ -2115,7 +2116,10 @@ def _scatter_group_vec3_kernel(
         return
     if deduplicate and last_rows[group] != i:
         return
-    dst[starts[group] + j] = values[i, j]
+    source = source_indices[i] if source_indices else i
+    if source < 0 or source >= values.shape[0]:
+        return
+    dst[starts[group] + j] = values[source, j]
 
 
 @wp.kernel
@@ -2133,6 +2137,7 @@ def _scatter_group_transform_kernel(
     values: wp.array2d[wp.transform],
     starts: wp.array[wp.int32],
     groups: wp.array[wp.int32],
+    source_indices: wp.array[wp.int32],
     last_rows: wp.array[wp.int32],
     deduplicate: bool,
     dst: wp.array[wp.transform],
@@ -2143,7 +2148,10 @@ def _scatter_group_transform_kernel(
         return
     if deduplicate and last_rows[group] != i:
         return
-    dst[starts[group] + j] = values[i, j]
+    source = source_indices[i] if source_indices else i
+    if source < 0 or source >= values.shape[0]:
+        return
+    dst[starts[group] + j] = values[source, j]
 
 
 @wp.kernel
@@ -2161,6 +2169,7 @@ def _scatter_group_spatial_kernel(
     values: wp.array2d[wp.spatial_vector],
     starts: wp.array[wp.int32],
     groups: wp.array[wp.int32],
+    source_indices: wp.array[wp.int32],
     last_rows: wp.array[wp.int32],
     deduplicate: bool,
     dst: wp.array[wp.spatial_vector],
@@ -2171,7 +2180,10 @@ def _scatter_group_spatial_kernel(
         return
     if deduplicate and last_rows[group] != i:
         return
-    dst[starts[group] + j] = values[i, j]
+    source = source_indices[i] if source_indices else i
+    if source < 0 or source >= values.shape[0]:
+        return
+    dst[starts[group] + j] = values[source, j]
 
 
 class DeformableView:
@@ -2211,8 +2223,12 @@ class DeformableView:
     Getters accept a :class:`~newton.Model` or :class:`~newton.State`. Writing a model
     changes its initial arrays; writing a state changes only that state. Host
     ``group_indices`` select flat group rows. Host group indices are bounds-checked
-    and duplicates are rejected. Device ``int32`` indices stay on the device:
+    and duplicates are rejected. Device ``int32`` group indices stay on the device:
     out-of-range entries are ignored and the last value wins for duplicates.
+    Setters accept optional ``source_indices`` to choose the row in ``values`` for
+    each destination group; without them, values use compact row order. Host source
+    indices are bounds-checked and may repeat. Invalid device source rows ignore the
+    corresponding write.
     Indexed setters and internally staged getters can be captured after view
     construction and kernel warm-up. Regular getter layouts return zero-copy views;
     irregular layouts reuse an internal contiguous staging array.
@@ -2499,32 +2515,41 @@ class DeformableView:
     def _resolve_group_indices(
         self,
         group_indices: Any,
-        argument_name: str = "group_indices",
     ) -> wp.array[wp.int32]:
         if group_indices is None:
             if self._all_groups is None:
                 self._all_groups = wp.array(list(range(self.count)), dtype=wp.int32, device=self.device)
             return self._all_groups
-        if isinstance(group_indices, wp.array):
+        return self._resolve_indices(group_indices, "group_indices", self.count, reject_duplicates=True)
+
+    def _resolve_indices(
+        self,
+        indices: Any,
+        argument_name: str,
+        upper_bound: int,
+        *,
+        reject_duplicates: bool,
+    ) -> wp.array[wp.int32]:
+        if isinstance(indices, wp.array):
             # Kernel-side checks keep this graph-safe without a host copy.
-            if group_indices.ndim != 1:
-                raise ValueError(f"Expected {argument_name} to be one-dimensional, got {group_indices.ndim} dimensions")
-            if group_indices.dtype is not wp.int32:
-                raise ValueError(f"Expected {argument_name} dtype int32, got {group_indices.dtype.__name__}")
-            if group_indices.device != self.device:
-                raise ValueError(f"Expected {argument_name} on device {self.device}, got {group_indices.device}")
-            return group_indices
+            if indices.ndim != 1:
+                raise ValueError(f"Expected {argument_name} to be one-dimensional, got {indices.ndim} dimensions")
+            if indices.dtype is not wp.int32:
+                raise ValueError(f"Expected {argument_name} dtype int32, got {indices.dtype.__name__}")
+            if indices.device != self.device:
+                raise ValueError(f"Expected {argument_name} on device {self.device}, got {indices.device}")
+            return indices
         idx = []
-        for value in group_indices:
+        for value in indices:
             if isinstance(value, bool):
                 raise TypeError(f"{argument_name} entries must be integers, got {value!r}")
             try:
                 idx.append(operator.index(value))
             except TypeError as error:
                 raise TypeError(f"{argument_name} entries must be integers, got {value!r}") from error
-        if any(i < 0 or i >= self.count for i in idx):
-            raise ValueError(f"{argument_name} entries must be in [0, {self.count}), got {idx}")
-        if len(set(idx)) != len(idx):
+        if any(i < 0 or i >= upper_bound for i in idx):
+            raise ValueError(f"{argument_name} entries must be in [0, {upper_bound}), got {idx}")
+        if reject_duplicates and len(set(idx)) != len(idx):
             raise ValueError(f"{argument_name} contains duplicate entries: {idx}")
         return wp.array(idx, dtype=wp.int32, device=self.device)
 
@@ -2536,15 +2561,33 @@ class DeformableView:
         dst: wp.array[Any],
         dtype: Any,
         group_indices: Any = None,
+        source_indices: Any = None,
     ) -> None:
         count = self._element_count(kind)
         device_indices = isinstance(group_indices, wp.array)
         groups = self._resolve_group_indices(group_indices)
         rows = groups.shape[0]
         if not isinstance(values, wp.array):
-            values = wp.array(values, dtype=dtype, shape=(rows, count), device=self.device, copy=False)
-        if values.shape != (rows, count):
-            raise ValueError(f"Expected values shape {(rows, count)}, got {values.shape}")
+            value_rows = rows if source_indices is None else len(values)
+            values = wp.array(values, dtype=dtype, shape=(value_rows, count), device=self.device, copy=False)
+        expected_shape = (rows, count)
+        if source_indices is None:
+            if values.shape != expected_shape:
+                raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
+            sources = None
+        else:
+            if values.ndim != 2 or values.shape[1] != count:
+                raise ValueError(f"Expected values shape (rows, {count}), got {values.shape}")
+            sources = self._resolve_indices(
+                source_indices,
+                "source_indices",
+                values.shape[0],
+                reject_duplicates=False,
+            )
+            if sources.shape[0] != rows:
+                raise ValueError(
+                    f"Expected source_indices length {rows} to match group_indices, got {sources.shape[0]}"
+                )
         # Validate Warp inputs eagerly so a mismatch reads as a contract error, not a
         # kernel-launch failure.
         if values.dtype is not dtype:
@@ -2562,7 +2605,15 @@ class DeformableView:
         wp.launch(
             kernel,
             dim=(rows, count),
-            inputs=[values, self._starts[kind], groups, self._last_group_rows, device_indices, dst],
+            inputs=[
+                values,
+                self._starts[kind],
+                groups,
+                sources,
+                self._last_group_rows,
+                device_indices,
+                dst,
+            ],
             device=self.device,
         )
 
@@ -2597,24 +2648,29 @@ class DeformableView:
         values: Any,
         *,
         group_indices: Any = None,
+        source_indices: Any = None,
     ) -> None:
-        """Write particle positions [m] from ``(rows, particles_per_group)`` vec3 values.
+        """Write particle positions [m] from ``(value_rows, particles_per_group)`` values.
 
-        ``rows`` is ``count``, or the number of selected groups. ``group_indices``
-        selects flat rows. Other groups are untouched.
+        ``group_indices`` selects destination groups. ``source_indices`` optionally
+        selects one row in ``values`` per destination; otherwise ``values`` must
+        contain one compact row per destination. Other groups are untouched.
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Particle positions [m] with shape ``(rows, particles_per_group)``.
+            values: Particle positions [m] with shape
+                ``(value_rows, particles_per_group)``.
             group_indices: Optional flat group rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
+            source_indices: Optional rows to read from ``values``, one per destination
+                group. Uses compact rows in order when omitted.
 
         Raises:
             AttributeError: If this is not a surface or volume view.
             TypeError: If a host selector entry is not an integer.
-            ValueError: If group sizes, value shape/dtype/device, host selector bounds
-                or uniqueness are invalid.
+            ValueError: If group sizes, value shape/dtype/device, selector bounds,
+                destination uniqueness, or source/destination alignment are invalid.
         """
         self._scatter(
             "particle",
@@ -2623,6 +2679,7 @@ class DeformableView:
             target.particle_q,
             wp.vec3,
             group_indices,
+            source_indices,
         )
 
     def get_particle_velocities(
@@ -2649,25 +2706,29 @@ class DeformableView:
         values: Any,
         *,
         group_indices: Any = None,
+        source_indices: Any = None,
     ) -> None:
-        """Write particle velocities [m/s] from ``(rows, particles_per_group)`` vec3 values.
+        """Write particle velocities [m/s] from ``(value_rows, particles_per_group)`` values.
 
-        ``rows`` is ``count``, or the number of selected groups. ``group_indices``
-        selects flat rows. Other groups are untouched.
+        ``group_indices`` selects destination groups. ``source_indices`` optionally
+        selects one row in ``values`` per destination; otherwise ``values`` must
+        contain one compact row per destination. Other groups are untouched.
 
         Args:
             target: Model initial state or simulation state to update.
             values: Particle velocities [m/s] with shape
-                ``(rows, particles_per_group)``.
+                ``(value_rows, particles_per_group)``.
             group_indices: Optional flat group rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
+            source_indices: Optional rows to read from ``values``, one per destination
+                group. Uses compact rows in order when omitted.
 
         Raises:
             AttributeError: If this is not a surface or volume view.
             TypeError: If a host selector entry is not an integer.
-            ValueError: If group sizes, value shape/dtype/device, host selector bounds
-                or uniqueness are invalid.
+            ValueError: If group sizes, value shape/dtype/device, selector bounds,
+                destination uniqueness, or source/destination alignment are invalid.
         """
         self._scatter(
             "particle",
@@ -2676,6 +2737,7 @@ class DeformableView:
             target.particle_qd,
             wp.vec3,
             group_indices,
+            source_indices,
         )
 
     # body state (curve) --------------------------------------------------
@@ -2712,25 +2774,30 @@ class DeformableView:
         values: Any,
         *,
         group_indices: Any = None,
+        source_indices: Any = None,
     ) -> None:
-        """Write segment transforms from ``(rows, bodies_per_group)`` values.
+        """Write segment transforms from ``(value_rows, bodies_per_group)`` values.
 
         Each transform contains a world-space translation [m] and a unitless
-        quaternion. ``group_indices`` selects flat rows.
+        quaternion. ``group_indices`` selects destination groups. ``source_indices``
+        optionally selects one row in ``values`` per destination; otherwise
+        ``values`` must contain one compact row per destination.
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Segment transforms with shape ``(rows, bodies_per_group)``;
+            values: Segment transforms with shape ``(value_rows, bodies_per_group)``;
                 translations are in meters and quaternions are unitless.
             group_indices: Optional flat group rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
+            source_indices: Optional rows to read from ``values``, one per destination
+                group. Uses compact rows in order when omitted.
 
         Raises:
             AttributeError: If this is not a curve view.
             TypeError: If a host selector entry is not an integer.
-            ValueError: If group sizes, value shape/dtype/device, host selector bounds
-                or uniqueness are invalid.
+            ValueError: If group sizes, value shape/dtype/device, selector bounds,
+                destination uniqueness, or source/destination alignment are invalid.
         """
         self._scatter(
             "body",
@@ -2739,6 +2806,7 @@ class DeformableView:
             target.body_q,
             wp.transform,
             group_indices,
+            source_indices,
         )
 
     def get_body_velocities(
@@ -2768,26 +2836,31 @@ class DeformableView:
         values: Any,
         *,
         group_indices: Any = None,
+        source_indices: Any = None,
     ) -> None:
-        """Write segment velocities from ``(rows, bodies_per_group)`` values.
+        """Write segment velocities from ``(value_rows, bodies_per_group)`` values.
 
         Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
-        followed by angular velocity [rad/s]. ``group_indices`` selects flat rows.
+        followed by angular velocity [rad/s]. ``group_indices`` selects destination
+        groups. ``source_indices`` optionally selects one row in ``values`` per
+        destination; otherwise ``values`` must contain one compact row per destination.
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Segment velocities with shape ``(rows, bodies_per_group)``;
+            values: Segment velocities with shape ``(value_rows, bodies_per_group)``;
                 linear components are in meters per second and angular components are
                 in radians per second.
             group_indices: Optional flat group rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
+            source_indices: Optional rows to read from ``values``, one per destination
+                group. Uses compact rows in order when omitted.
 
         Raises:
             AttributeError: If this is not a curve view.
             TypeError: If a host selector entry is not an integer.
-            ValueError: If group sizes, value shape/dtype/device, host selector bounds
-                or uniqueness are invalid.
+            ValueError: If group sizes, value shape/dtype/device, selector bounds,
+                destination uniqueness, or source/destination alignment are invalid.
         """
         self._scatter(
             "body",
@@ -2796,4 +2869,5 @@ class DeformableView:
             target.body_qd,
             wp.spatial_vector,
             group_indices,
+            source_indices,
         )
