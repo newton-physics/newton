@@ -8389,6 +8389,37 @@ class TestContypeConaffinityZero(unittest.TestCase):
         solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
         self.assertGreater(solver.mj_data.ncon, 0)
 
+    def test_default_pair_retains_unclassified_geoms_without_visuals(self):
+        """Retain zero-mask geoms referenced only by inherited pair endpoints."""
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="endpoint_pair">
+                    <pair geom1="floor_geom" geom2="ball_geom"/>
+                </default>
+            </default>
+            <worldbody>
+                <geom name="floor_geom" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.05">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="ball_geom" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair class="endpoint_pair" condim="3"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(builder.shape_count, 2)
+        self.assertEqual(builder.shape_collision_group, [0, 0])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.npair, 1)
+
     def test_explicit_pairs_across_contact_sections_without_visuals(self):
         """Pairs and excludes are parsed from every top-level contact section."""
         mjcf = """<mujoco>

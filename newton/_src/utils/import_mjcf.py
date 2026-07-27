@@ -338,13 +338,6 @@ def parse_mjcf(
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     contact_sections = root.findall("contact")
-    explicit_pair_geom_names: set[str] = set()
-    for contact in contact_sections:
-        for pair in contact.findall("pair"):
-            for geom_key in ("geom1", "geom2"):
-                geom_name = pair.attrib.get(geom_key)
-                if geom_name:
-                    explicit_pair_geom_names.add(geom_name)
 
     use_degrees = True  # angles are in degrees by default
     eulerseq = "xyz"  # default sequence (lowercase = intrinsic axes, per MuJoCo)
@@ -492,6 +485,15 @@ def parse_mjcf(
             ambient_defaults = class_defaults["__all__"]
         defaults = resolve_class_defaults(element.get("class"), ambient_defaults)
         return merge_attrib(defaults.get(tag, {}), element.attrib)
+
+    explicit_pair_geom_names: set[str] = set()
+    for contact in contact_sections:
+        for pair in contact.findall("pair"):
+            pair_attrib = resolve_element_attrib(pair, "pair")
+            for geom_key in ("geom1", "geom2"):
+                geom_name = pair_attrib.get(geom_key)
+                if geom_name:
+                    explicit_pair_geom_names.add(geom_name)
 
     mesh_assets = {}
     texture_assets = {}
