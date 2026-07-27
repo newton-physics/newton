@@ -8303,6 +8303,63 @@ class TestContypeConaffinityZero(unittest.TestCase):
         solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
         self.assertGreater(solver.mj_data.ncon, 0, "Explicit <pair> should generate contacts")
 
+    def test_explicit_pair_inherits_default_class(self):
+        """Apply global and named pair defaults before explicit pair overrides."""
+        mjcf = """
+<mujoco>
+    <default>
+        <pair friction="0.1 0.2 0.3 0.4 0.5" margin="0.1" condim="4" solref="0.03 0.8"/>
+        <default class="soft">
+            <pair friction="0.2 0.3 0.4 0.5 0.6" solimp="0.7 0.8 0.01 0.4 1.5"/>
+        </default>
+    </default>
+    <worldbody>
+        <geom name="a" type="sphere" size="0.1"/>
+        <geom name="b" type="sphere" size="0.1" pos="0 0 1"/>
+        <geom name="c" type="sphere" size="0.1" pos="0 0 2"/>
+        <geom name="d" type="sphere" size="0.1" pos="0 0 3"/>
+    </worldbody>
+    <contact>
+        <pair geom1="a" geom2="b"/>
+        <pair class="soft" geom1="a" geom2="c"/>
+        <pair
+            class="soft"
+            geom1="a"
+            geom2="d"
+            friction="0.9 0.8 0.7 0.6 0.5"
+            margin="0.4"
+            solref="0.05 1.2"
+        />
+    </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(
+            model.mujoco.pair_friction.numpy(),
+            [
+                [0.1, 0.2, 0.3, 0.4, 0.5],
+                [0.2, 0.3, 0.4, 0.5, 0.6],
+                [0.9, 0.8, 0.7, 0.6, 0.5],
+            ],
+        )
+        np.testing.assert_allclose(model.mujoco.pair_margin.numpy(), [0.1, 0.1, 0.4])
+        np.testing.assert_array_equal(model.mujoco.pair_condim.numpy(), [4, 4, 4])
+        np.testing.assert_allclose(
+            model.mujoco.pair_solref.numpy(),
+            [[0.03, 0.8], [0.03, 0.8], [0.05, 1.2]],
+        )
+        np.testing.assert_allclose(
+            model.mujoco.pair_solimp.numpy(),
+            [
+                [0.9, 0.95, 0.001, 0.5, 2.0],
+                [0.7, 0.8, 0.01, 0.4, 1.5],
+                [0.7, 0.8, 0.01, 0.4, 1.5],
+            ],
+        )
+
     def test_explicit_pair_retains_unclassified_geoms_without_visuals(self):
         """Pair-referenced zero-mask geoms survive parse_visuals=False."""
         mjcf = """<mujoco>
