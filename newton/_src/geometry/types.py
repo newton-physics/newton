@@ -111,6 +111,9 @@ class GeoType(enum.IntEnum):
     GAUSSIAN = 11
     """Gaussian splat."""
 
+    CAMERA = 12
+    """Camera sensor."""
+
     @property
     def is_primitive(self) -> bool:
         """Return whether this is a primitive (analytically defined) shape type."""

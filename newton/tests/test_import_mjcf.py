@@ -3453,7 +3453,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             )
 
     def test_granular_loading_flags(self):
-        """Test granular control over sites and visual shapes loading."""
+        """Test granular control over sites, cameras, and visual shapes loading."""
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
 
         # Test 1: Load all (default behavior)
@@ -3481,19 +3481,22 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             mjcf_filename, parse_sites=False, parse_visuals=False, ignore_names=["floor", "ground"], up_axis="Z"
         )
         count_physics_only = builder_physics_only.shape_count
+        camera_count = sum(1 for source in builder_all.shape_source if isinstance(source, newton.CameraSensor))
 
         # Verify behavior
+        self.assertEqual(camera_count, 2, "Test asset should import 2 camera sensor shapes")
+
         # When loading all, should have most shapes
-        self.assertEqual(count_all, 41, "Loading all should give 41 shapes (sites + visuals + collision)")
+        self.assertEqual(count_all, 43, "Loading all should give 43 shapes (sites + cameras + visuals + collision)")
 
         # Sites only should have sites + collision shapes
-        self.assertEqual(count_sites_only, 41, "Sites only should give 41 shapes (22 sites + 19 collision)")
+        self.assertEqual(count_sites_only, 43, "Sites only should give 43 shapes (22 sites + 2 cameras + 19 collision)")
 
-        # Visuals only should have collision shapes only (no sites)
-        self.assertEqual(count_visuals_only, 19, "Visuals only should give 19 shapes (collision only, no sites)")
+        # Visuals only should have cameras + collision shapes (no sites)
+        self.assertEqual(count_visuals_only, 21, "Visuals only should give 21 shapes (2 cameras + 19 collision)")
 
-        # Physics only should have collision shapes only
-        self.assertEqual(count_physics_only, 19, "Physics only should give 19 shapes (collision only)")
+        # Physics only should have cameras + collision shapes
+        self.assertEqual(count_physics_only, 21, "Physics only should give 21 shapes (2 cameras + 19 collision)")
 
         # Verify that sites are actually filtered
         self.assertLess(count_visuals_only, count_all, "Excluding sites should reduce shape count")

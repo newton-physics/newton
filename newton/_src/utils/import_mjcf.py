@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import warnings
@@ -18,6 +19,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
+from ..sensors.camera_sensor import CameraSensor
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -157,6 +159,7 @@ def _load_and_expand_mjcf(
 
 
 AttributeFrequency = Model.AttributeFrequency
+DEFAULT_CAMERA_RESOLUTION = (640, 480)
 
 
 def parse_mjcf(
@@ -1291,6 +1294,108 @@ def parse_mjcf(
 
         return site_shapes
 
+    def _parse_camera_resolution(camera_attrib: dict[str, str]) -> tuple[int, int]:
+        if "resolution" not in camera_attrib:
+            return DEFAULT_CAMERA_RESOLUTION
+        resolution = [int(float(v)) for v in camera_attrib["resolution"].split()]
+        if len(resolution) != 2 or resolution[0] <= 0 or resolution[1] <= 0:
+            raise ValueError(f"MJCF camera resolution must be two positive values, got {camera_attrib['resolution']!r}")
+        return resolution[0], resolution[1]
+
+    def _parse_camera_fov(camera_attrib: dict[str, str], resolution: tuple[int, int]) -> float:
+        if "focalpixel" in camera_attrib:
+            if "sensorsize" not in camera_attrib or "resolution" not in camera_attrib:
+                raise ValueError("MJCF camera focalpixel requires sensorsize and resolution attributes")
+            focalpixel = [float(v) for v in camera_attrib["focalpixel"].split()]
+            sensorsize = [float(v) for v in camera_attrib["sensorsize"].split()]
+            if len(focalpixel) != 2 or len(sensorsize) != 2:
+                raise ValueError("MJCF camera focalpixel and sensorsize attributes must each have two values")
+            if any(value <= 0.0 for value in (*focalpixel, *sensorsize)):
+                raise ValueError("MJCF camera focalpixel and sensorsize values must be positive")
+            focal_y = focalpixel[1] * sensorsize[1] / resolution[1]
+            return 2.0 * math.atan(0.5 * sensorsize[1] / focal_y)
+
+        if "focal" in camera_attrib:
+            if "sensorsize" not in camera_attrib:
+                raise ValueError("MJCF camera focal requires sensorsize")
+            focal = [float(v) for v in camera_attrib["focal"].split()]
+            sensorsize = [float(v) for v in camera_attrib["sensorsize"].split()]
+            if len(focal) != 2 or len(sensorsize) != 2:
+                raise ValueError("MJCF camera focal and sensorsize attributes must each have two values")
+            if focal[1] <= 0.0 or sensorsize[1] <= 0.0:
+                raise ValueError("MJCF camera focal and sensorsize values must be positive")
+            return 2.0 * math.atan(0.5 * sensorsize[1] / focal[1])
+
+        if "sensorsize" in camera_attrib:
+            raise ValueError("MJCF camera sensorsize requires focal or focalpixel")
+
+        fovy_degrees = float(camera_attrib.get("fovy", "45"))
+        return math.radians(fovy_degrees)
+
+    def _parse_cameras_impl(
+        parent_element,
+        body: int,
+        incoming_defaults: dict,
+        label_prefix: str = "",
+        incoming_xform: wp.transform | None = None,
+    ) -> list[int]:
+        """Parse camera elements from MJCF as shape-backed camera sensors."""
+        camera_shapes = []
+        for camera_index, camera in enumerate(parent_element.findall("camera")):
+            camera_defaults = incoming_defaults
+            if "class" in camera.attrib:
+                camera_class = camera.attrib["class"]
+                if any(re.match(pattern, camera_class) for pattern in ignore_classes):
+                    continue
+                if camera_class in class_defaults:
+                    camera_defaults = merge_attrib(incoming_defaults, class_defaults[camera_class])
+            if "camera" in camera_defaults:
+                camera_attrib = merge_attrib(camera_defaults["camera"], camera.attrib)
+            else:
+                camera_attrib = camera.attrib
+
+            camera_name = camera_attrib.get("name", f"camera_{camera_index}")
+            if any(re.match(pattern, camera_name) for pattern in ignore_names):
+                continue
+            camera_mode = camera_attrib.get("mode")
+            if camera_mode is not None and camera_mode != "fixed":
+                warnings.warn(
+                    f"MJCF camera '{camera_name}' has mode={camera_mode!r}; authored camera mode is ignored "
+                    "and a fixed pinhole CameraSensor is imported.",
+                    stacklevel=2,
+                )
+            if camera_attrib.get("orthographic", "false").lower() == "true":
+                warnings.warn(
+                    f"MJCF camera '{camera_name}' has orthographic='true'; authored camera projection is ignored "
+                    "and a fixed pinhole CameraSensor is imported.",
+                    stacklevel=2,
+                )
+
+            camera_pos = parse_vec(camera_attrib, "pos", (0.0, 0.0, 0.0)) * scale
+            camera_rot = parse_orientation(camera_attrib)
+            camera_xform = wp.transform(camera_pos, camera_rot)
+            if incoming_xform is not None:
+                camera_xform = incoming_xform * camera_xform
+
+            width, height = _parse_camera_resolution(camera_attrib)
+            camera_rays = CameraSensor.compute_camera_rays_pinhole(
+                width,
+                height,
+                _parse_camera_fov(camera_attrib, (width, height)),
+                device="cpu",
+            )
+            camera_sensor = CameraSensor(camera_rays)
+            camera_label = f"{label_prefix}/{camera_name}" if label_prefix else camera_name
+            camera_shape = builder.add_shape_camera(
+                body=body,
+                xform=camera_xform,
+                camera=camera_sensor,
+                label=camera_label,
+            )
+            camera_shapes.append(camera_shape)
+
+        return camera_shapes
+
     def get_frame_xform(frame_element, incoming_xform: wp.transform) -> wp.transform:
         """Compute composed transform for a frame element."""
         frame_pos = parse_vec(frame_element.attrib, "pos", (0.0, 0.0, 0.0)) * scale
@@ -1496,6 +1601,16 @@ def parse_mjcf(
                         incoming_xform=composed_body_rel,
                         label_prefix=label_prefix,
                     )
+
+            child_cameras = frame.findall("camera")
+            if child_cameras:
+                _parse_cameras_impl(
+                    frame,
+                    parent_body,
+                    _defaults,
+                    label_prefix=label_prefix,
+                    incoming_xform=composed_body_rel,
+                )
 
             # Add nested frames to stack with current defaults and childclass (in reverse to maintain order)
             frame_stack.extend(
@@ -1942,6 +2057,8 @@ def parse_mjcf(
                     sites=sites,
                     label_prefix=body_label_path,
                 )
+
+        _parse_cameras_impl(body, link, defaults, label_prefix=body_label_path)
 
         m = builder.body_mass[link]
         if not ignore_inertial_definitions and body.find("inertial") is not None:
@@ -2413,6 +2530,8 @@ def parse_mjcf(
                 incoming_xform=xform,
                 label_prefix=root_label_path,
             )
+
+        _parse_cameras_impl(world, -1, world_defaults, label_prefix=root_label_path, incoming_xform=xform)
 
         # -----------------
         # process frame elements at worldbody level

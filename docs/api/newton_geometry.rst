@@ -16,6 +16,7 @@ newton.geometry
    BroadPhaseAllPairs
    BroadPhaseExplicit
    BroadPhaseSAP
+   CameraSensor
    HydroelasticSDF
    NarrowPhase
 

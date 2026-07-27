@@ -69,6 +69,13 @@ _BASIC_PLOTTING_OUTPUT_RE = (
     r"  Constraints:        mean=[^\n]*\n?"
     r")"
 )
+_MJCF_CAMERA_IMPORT_WARNING_RE = (
+    r"(?m)"
+    r"(?:^.*newton/_src/utils/import_mjcf\.py:\d+: UserWarning: "
+    r"MJCF camera '[^']+' has mode='[^']+'; authored camera mode is ignored and "
+    r"a fixed pinhole CameraSensor is imported\.\n"
+    r"^  _parse_cameras_impl\(body, link, defaults, label_prefix=body_label_path\)\n?)+"
+)
 _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
     r"(?m)"
     r"(?:^.*wp_sdf_contact_write_contact_to_reducer_[^\n]*\.cpp:\d+:\d+: warning: "
@@ -327,6 +334,7 @@ add_basic_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 120, "world-count": 8},
+    allow_output_regexes=[(_MJCF_CAMERA_IMPORT_WARNING_RE, "stderr")],
 )
 
 add_basic_example_test(
@@ -865,6 +873,14 @@ add_example_test(
 
 add_example_test(
     TestSensorExamples,
+    name="sensors.example_camera_sensor",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
+    use_viewer=True,
+)
+
+add_example_test(
+    TestSensorExamples,
     name="sensors.example_sensor_imu",
     devices=test_devices,
     test_options={"num-frames": 200},  # allow cubes to settle
@@ -939,7 +955,10 @@ add_basic_example_test(
     test_options={"num-frames": 200},
     use_viewer=True,
     expect_output_regexes=[(_BASIC_PLOTTING_OUTPUT_RE, "stdout")],
-    allow_output_regexes=[(_MATPLOTLIB_FONT_CACHE_OUTPUT_RE, "stderr")],
+    allow_output_regexes=[
+        (_MATPLOTLIB_FONT_CACHE_OUTPUT_RE, "stderr"),
+        (_MJCF_CAMERA_IMPORT_WARNING_RE, "stderr"),
+    ],
 )
 
 

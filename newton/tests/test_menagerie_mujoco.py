@@ -357,7 +357,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Lights: Newton doesn't parse lights from MJCF
     "light_",
     "nlight",
-    # Cameras: Newton doesn't parse cameras from MJCF
+    # Cameras: dedicated camera-import tests cover CameraSensor creation. These
+    # comparisons skip native MuJoCo camera fields because SolverMuJoCo does not
+    # represent CameraSensor shapes as MuJoCo cameras.
     "cam_",
     "ncam",
     # Sensors: Newton doesn't parse sensors from MJCF
@@ -1777,7 +1779,7 @@ class TestMenagerieBase(unittest.TestCase):
         compare_models(
             self._newton_solver.mjw_model,
             self._native_mjw_model,
-            skip_fields=self.model_skip_fields,
+            skip_fields=self._effective_model_skip_fields(),
             backfill_fields=self.backfill_fields,
         )
 
@@ -1794,6 +1796,13 @@ class TestMenagerieBase(unittest.TestCase):
         self._compare_qD_structure(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_actuator_physics(self._newton_solver.mjw_model, self._native_mjw_model)
         self._compare_compiled_fields(self._newton_solver.mjw_model, self._native_mjw_model)
+
+    def _effective_model_skip_fields(self) -> set[str]:
+        """Return model fields to skip for the currently loaded Newton model."""
+        skip_fields = set(self.model_skip_fields)
+        if any(isinstance(source, newton.CameraSensor) for source in self._newton_model.shape_source):
+            skip_fields.update({"nsite", "site_"})
+        return skip_fields
 
     def _backfill_and_recompute(self):
         """Backfill computed model fields from native and re-run kinematics/RNE."""
