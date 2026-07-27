@@ -66,7 +66,6 @@ from .import_usd_deformable_utils import (
     _scout_deformable_prims,
 )
 from .import_usd_deformable_volume import _deformable_import_volume
-from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
 
@@ -3479,27 +3478,18 @@ def parse_usd(
                     margin_val = newton_margin
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
-                model_has_visual_shapes = load_visual_shapes and bool(bodies_with_visual_shapes)
                 material_props = _get_material_props_cached(prim)
 
                 # Explicit hide_collision_shapes overrides drawability:
                 # if the body already has visual shapes, hide its colliders unconditionally.
                 hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
-                show_collider_by_policy = should_show_collider(
-                    force_show_colliders,
-                    model_has_visual_shapes=model_has_visual_shapes,
-                )
-                # A collider that is also viewport geometry is drawn because USD says it is
-                # drawn -- ``purpose`` resolving to ``default``/``proxy`` and not being
-                # invisible -- not because a render material happens to be bound to it. The
-                # collider display policy decides only shapes with no render role of their
-                # own; it cannot hide a prim USD states is drawable. Keying this on a bound
-                # material made an unrelated visual elsewhere in the scene erase a collider.
-                collider_is_visible = (
-                    show_collider_by_policy or _is_viewport_drawn(prim)
-                ) and not hide_collider_for_body
-                # visibility only — see _is_viewport_drawn for why purpose does not gate colliders
-                collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
+                # A collider is drawn when USD says it is drawn: ``purpose`` resolving to
+                # ``default``/``proxy`` and the prim not being invisible. Not because a
+                # render material happens to be bound, and not because nothing else in the
+                # scene is visible -- an asset whose geometry is all ``guide`` has no render
+                # geometry, and an empty viewport is the honest result of that. Reach for
+                # ``force_show_colliders`` to inspect such a scene.
+                collider_is_visible = (force_show_colliders or _is_viewport_drawn(prim)) and not hide_collider_for_body
 
                 # Contact response precedence:
                 #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
