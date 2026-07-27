@@ -147,8 +147,9 @@ def _set_kinematic_sinusoidal_pose(
 ):
     t = wp.float32(sim_time[0])
     dx = x_amp * wp.sin(x_freq * t)
+    vx = x_amp * x_freq * wp.cos(x_freq * t)
     body_q[body_id] = wp.transform(wp.vec3(dx, 0.0, anchor_z), wp.quat_identity())
-    body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    body_qd[body_id] = wp.spatial_vector(vx, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
 @wp.kernel
@@ -166,8 +167,10 @@ def _set_kinematic_sinusoidal_xy_pose(
     t = wp.float32(sim_time[0])
     dx = x_amp * wp.sin(x_freq * t)
     dy = y_amp * wp.sin(y_freq * t)
+    vx = x_amp * x_freq * wp.cos(x_freq * t)
+    vy = y_amp * y_freq * wp.cos(y_freq * t)
     body_q[body_id] = wp.transform(wp.vec3(dx, dy, anchor_z), wp.quat_identity())
-    body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    body_qd[body_id] = wp.spatial_vector(vx, vy, 0.0, 0.0, 0.0, 0.0)
 
 
 @wp.kernel
@@ -185,10 +188,12 @@ def _set_kinematic_d6_pose(
     t = wp.float32(sim_time[0])
     dx = x_amp * wp.sin(x_freq * t)
     ang_y = ang_amp * wp.sin(ang_freq * t)
+    vx = x_amp * x_freq * wp.cos(x_freq * t)
+    omega_y = ang_amp * ang_freq * wp.cos(ang_freq * t)
     half = ang_y * 0.5
     q_anchor = wp.quat(0.0, wp.sin(half), 0.0, wp.cos(half))
     body_q[body_id] = wp.transform(wp.vec3(dx, 0.0, anchor_z), q_anchor)
-    body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    body_qd[body_id] = wp.spatial_vector(vx, 0.0, 0.0, 0.0, omega_y, 0.0)
 
 
 @wp.kernel
@@ -224,7 +229,7 @@ def _set_kinematic_linear_rotating_pose(
     half = angle_z * 0.5
     q_kin = wp.quat(0.0, 0.0, wp.sin(half), wp.cos(half))
     body_q[body_id] = wp.transform(wp.vec3(x_kin, 0.0, anchor_z), q_kin)
-    body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    body_qd[body_id] = wp.spatial_vector(velocity_x, 0.0, 0.0, 0.0, 0.0, angular_velocity_z)
 
 
 @wp.kernel
@@ -242,6 +247,7 @@ def _drive_gripper_boxes_graph_kernel(
     pull_ramp_time: float,
     pull_distance: float,
     body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
 ):
     """Kinematically move two gripper boxes using device-side time for graph capture."""
     tid = wp.tid()
@@ -260,6 +266,18 @@ def _drive_gripper_boxes_graph_kernel(
     local_off = wp.vec3(0.0, sgn * offset_mag, 0.0)
     pos = center + pull_dir * pull + wp.quat_rotate(rot, local_off)
     body_q[b] = wp.transform(pos, rot)
+
+    offset_speed = wp.float32(0.0)
+    if t >= 0.0 and t < wp.float32(ramp_time) and t < pull_end_time:
+        offset_speed = (target_offset_mag - initial_offset_mag) / wp.float32(ramp_time)
+
+    pull_speed = wp.float32(0.0)
+    if t >= wp.float32(pull_start_time) and t < pull_end_time:
+        pull_speed = wp.float32(pull_distance) / wp.float32(pull_ramp_time)
+
+    local_velocity = wp.vec3(0.0, sgn * offset_speed, pull_speed)
+    linear_velocity = wp.quat_rotate(rot, local_velocity)
+    body_qd[b] = wp.spatial_vector(linear_velocity, wp.vec3(0.0))
 
 
 # -----------------------------------------------------------------------------
@@ -1233,7 +1251,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
 
     # Kinematic anchor body at the rod start point.
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()), is_kinematic=True)
     # Anchor marker sphere.
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
@@ -1390,7 +1408,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation (can't match rotation to two different cables).
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()), is_kinematic=True)
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -1582,7 +1600,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()), is_kinematic=True)
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -2053,7 +2071,7 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation (matching ball/fixed/revolute).
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()), is_kinematic=True)
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -2464,7 +2482,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()), is_kinematic=True)
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2619,7 +2637,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()), is_kinematic=True)
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2749,7 +2767,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()), is_kinematic=True)
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -3261,11 +3279,13 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
     g_neg = builder.add_body(
         xform=wp.transform(p=anchor_p + wp.vec3(0.0, -initial_offset_mag, 0.0), q=anchor_q),
         mass=0.0,
+        is_kinematic=True,
         label="ut_gripper_neg",
     )
     g_pos = builder.add_body(
         xform=wp.transform(p=anchor_p + wp.vec3(0.0, initial_offset_mag, 0.0), q=anchor_q),
         mass=0.0,
+        is_kinematic=True,
         label="ut_gripper_pos",
     )
 
@@ -3349,6 +3369,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
                     float(pull_ramp_time),
                     float(pull_distance),
                     state0.body_q,
+                    state0.body_qd,
                 ],
                 device=device,
             )
@@ -4204,7 +4225,7 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
     builder = newton.ModelBuilder()
 
     anchor_pos = wp.vec3(0.0, 0.0, 1.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()), is_kinematic=True)
     builder.add_shape_sphere(anchor, radius=0.05)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -5553,6 +5574,8 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     rest_tip_quat = rest_body_q[tip_body, 3:7].copy()
     rest_tip_pos = rest_body_q[tip_body, :3].copy()
     tip_final_quat = _quat_mul(tip_target_quat, rest_tip_quat)
+    previous_tip_pos = rest_tip_pos.copy()
+    previous_scale = 0.0
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -5565,6 +5588,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     max_residual_ang_speed = 8.0e-4
 
     def _set_tip(scale):
+        nonlocal previous_tip_pos, previous_scale
         tip_pos_now = (1.0 - scale) * rest_tip_pos + scale * tip_target_pos
         half_now = 0.5 * tip_angle * scale
         delta_quat = np.array([0.0, np.sin(half_now), 0.0, np.cos(half_now)], dtype=np.float64)
@@ -5575,11 +5599,19 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
         body_q[tip_body, 3:7] = tip_quat_now.astype(np.float32)
         state_0.body_q.assign(body_q)
         state_1.body_q.assign(body_q)
+        body_qd = state_0.body_qd.numpy()
+        body_qd[tip_body, :3] = (tip_pos_now - previous_tip_pos) / sim_dt
+        body_qd[tip_body, 3:6] = [0.0, tip_angle * (scale - previous_scale) / sim_dt, 0.0]
+        state_0.body_qd.assign(body_qd)
+        previous_tip_pos = tip_pos_now
+        previous_scale = scale
 
     def _step_frame(scale):
         nonlocal state_0, state_1
-        _set_tip(scale)
-        for _ in range(sim_substeps):
+        frame_start_scale = previous_scale
+        for substep in range(sim_substeps):
+            substep_scale = frame_start_scale + (scale - frame_start_scale) * (substep + 1) / sim_substeps
+            _set_tip(substep_scale)
             solver.step(state_0, state_1, control, None, sim_dt)
             state_0, state_1 = state_1, state_0
 

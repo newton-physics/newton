@@ -695,8 +695,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Rigid-only AVBD state (used when SolverVBD integrates bodies)
         # -------------------------------------------------------------
         if not self.integrate_with_external_rigid_solver and model.body_count > 0:
-            # The first step's State establishes pose history; reset marks selected
-            # worlds for a new baseline. Final slot: entities without a world.
+            # Reset-rebaseline mask shared by coupling state and cable history;
+            # final slot is for entities without a world.
             history_mask_size = model.world_count + 1
             self._rigid_pose_rebaseline_mask = wp.ones(history_mask_size, dtype=wp.bool, device=self.device)
             # Contact-reset state is consumed only by the warm-start refresh, so
@@ -710,7 +710,10 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             # Deterministic fallbacks for inspection before the first step overwrites them.
             self.body_q_prev = wp.clone(model.body_q, device=self.device)
-            self._coupling_body_q_prev_snapshot = wp.clone(model.body_q, device=self.device)
+            # Coupling-only state: accepted poses are baselines for proxy updates;
+            # frame-start poses are retained for force harvest and iteration restarts.
+            self._coupling_body_q_accepted = wp.clone(model.body_q, device=self.device)
+            self._coupling_body_q_frame_start = wp.clone(model.body_q, device=self.device)
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
             # Adjacency and dimensions
@@ -876,7 +879,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
-        """Convert input body pose updates into VBD-compatible history updates."""
+        """Fold coupler-authored body poses into VBD's coupling-frame state."""
         self._apply_module_options()
         flags = int(flags)
 
@@ -889,14 +892,17 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         if dt <= 0.0:
-            # A reset distributes state before its world mask selects histories.
+            # Reset distributes public state before SolverVBD applies its world mask.
             if not iteration_restart:
-                wp.copy(dest=self.body_q_prev, src=state.body_q)
+                wp.copy(dest=self._coupling_body_q_accepted, src=state.body_q)
+                wp.copy(dest=self._coupling_body_q_frame_start, src=state.body_q)
             return
 
         if iteration_restart:
-            # Restore the beginning-of-iteration history after a previous solve advanced it.
-            wp.copy(dest=self.body_q_prev, src=self._coupling_body_q_prev_snapshot)
+            # Restarted iterations replay the outer interval. The coupler redistributes
+            # the interval's input state, so only the accepted pose needs rewinding.
+            wp.copy(dest=self._coupling_body_q_accepted, src=self._coupling_body_q_frame_start)
+            return
 
         wp.launch(
             _update_vbd_body_input_state_kernel,
@@ -904,19 +910,18 @@ class SolverVBD(SolverBase, CouplingInterface):
             inputs=[
                 float(dt),
                 self.model.body_flags,
+                int(BodyFlags.PROXY),
                 int(BodyFlags.KINEMATIC),
                 self.model.body_world,
                 self._rigid_pose_rebaseline_mask,
+                self.model.body_com,
                 state.body_q,
-                self.body_q_prev,
+                self._coupling_body_q_accepted,
                 state.body_qd,
             ],
+            outputs=[self._coupling_body_q_frame_start],
             device=self.device,
         )
-
-        if not iteration_restart:
-            # Snapshot pass-0 history so restarted iterations restore the same baseline.
-            wp.copy(dest=self._coupling_body_q_prev_snapshot, src=self.body_q_prev)
 
     def coupling_prepare_proxy_contacts(
         self,
@@ -983,7 +988,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if contacts is None:
             return
 
-        body_q_prev = self._coupling_body_q_prev_snapshot
+        body_q_prev = self._coupling_body_q_frame_start
 
         if contacts.rigid_contact_max > 0:
             body0, body1, point0, point1, force_on_body1, rigid_contact_count = self.collect_rigid_contact_forces(
@@ -1002,7 +1007,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     point0,
                     point1,
                     force_on_body1,
-                    self.model.body_inv_mass,
+                    self.body_inv_mass_effective,
                     self.model.body_flags,
                     body_local_to_proxy_global,
                     int(BodyFlags.PROXY),
@@ -1082,7 +1087,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 body_qd_for_particles = state_out.body_qd
             else:
                 body_q_for_particles = state.body_q
-                body_q_prev_for_particles = self._coupling_body_q_prev_snapshot if self.model.body_count > 0 else None
+                body_q_prev_for_particles = self._coupling_body_q_frame_start if self.model.body_count > 0 else None
                 body_qd_for_particles = state.body_qd
 
             wp.launch(
@@ -1106,7 +1111,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_particle_contact_material_mu,
                     self.model.shape_body,
                     self.model.body_flags,
-                    self.model.body_inv_mass,
+                    self.body_inv_mass_effective,
                     int(BodyFlags.PROXY),
                     body_q_for_particles,
                     body_q_prev_for_particles,
@@ -1845,9 +1850,11 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Body fields selected by *flags* are copied from the model defaults.
         Joint penalty is restored to its minimum; joint C0 and AVBD dual history
-        is zeroed immediately. Pose and enabled-cable friction history (curvature,
-        stress, and increment) are rebaselined together from the next :meth:`step`
-        input pose, after any intervening state edits or forward kinematics.
+        is zeroed immediately. Enabled-cable friction history (curvature, stress,
+        and increment) is rebaselined from the next :meth:`step` input pose, after
+        any intervening state edits or forward kinematics. Rigid pose baselines
+        are rebuilt every step from ``state_in.body_q`` and, for kinematic bodies,
+        ``state_in.body_qd``.
         Selected-world contact warm-start is cold-started when fresh rigid contacts
         are next processed. Internal rigid history is reset regardless of *flags*.
         When an external solver integrates the bodies, reset performs no rigid
@@ -1868,7 +1875,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Reset does not run collision detection: after moving bodies, regenerate
         contacts and let the next :meth:`step` refresh rigid contact state. The next
-        rigid :meth:`step` consumes the pose and cable rebaseline even when
+        rigid :meth:`step` consumes the cable rebaseline even when
         ``contacts=None``, so author the final pose (or run :func:`~newton.eval_fk`)
         before stepping; contact invalidation instead waits for a fresh refresh.
         With ``rigid_contact_history=True``, only ``contact_matching="latest"``
@@ -2372,14 +2379,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
-            # Forward integrate rigid bodies (body_q modified in-place for dynamic bodies only).
+            # Establish previous poses, then forward-integrate dynamic bodies in place.
             wp.launch(
                 kernel=forward_step_rigid_bodies,
                 inputs=[
                     dt,
                     model.gravity,
                     model.body_world,
-                    self._rigid_pose_rebaseline_mask,
+                    model.body_flags,
                     body_f_for_integration,
                     model.body_com,
                     model.body_inertia,
@@ -2389,7 +2396,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     state_in.body_qd,  # input/output
                 ],
                 outputs=[
-                    self.body_q_prev,  # rebaselined for flagged worlds (first step / reset)
+                    self.body_q_prev,
                     self.body_inertia_q,
                 ],
                 dim=model.body_count,
@@ -2464,7 +2471,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
-            # The forward step and any enabled cable update have consumed the mask.
+            # Any enabled cable update has consumed the pose-rebaseline mask.
             self._rigid_pose_rebaseline_mask.zero_()
 
         # ---------------------------
@@ -3058,13 +3065,11 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Args:
             body_q: Current body transforms (world frame),
-                typically ``state_out.body_q`` after a ``step()`` call.
-            body_q_prev: Effective previous-pose history used by the step (world frame).
-                Snapshot ``solver.body_q_prev`` before :meth:`step` (it is advanced
-                after the step). On a first or reset step, overwrite each rebaselined
-                row with that step's input ``body_q`` so its reported force matches the
-                solve. For externally integrated bodies, pass the external solver's
-                previous transforms.
+                typically ``state_out.body_q`` after a :meth:`step` call.
+            body_q_prev: Previous body transforms used by the step (world frame).
+                For internally integrated rigid VBD, pass ``solver.body_q_prev``.
+                For externally integrated bodies, pass their transforms from the
+                start of the same step.
             contacts: Contact data buffers containing rigid
                 contact geometry/material references. If None, the function
                 returns default zero/sentinel outputs.
@@ -3204,10 +3209,11 @@ class SolverVBD(SolverBase, CouplingInterface):
     def _finalize_rigid_bodies(self, state_in: State, state_out: State, dt: float, apply_stick_deadzone: bool):
         """Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).
 
-        Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for cable bend/twist.
-        Also transfers the final body poses from state_in to state_out. When requested,
-        the fused finalize kernel first applies the body-level stick-contact deadzone
-        before computing velocity from the accepted pose.
+        Updates rigid body velocities using BDF1 for dynamic bodies, keeps the prescribed
+        velocity for kinematic ones, and updates Dahl hysteresis state for cable
+        bend/twist. Also transfers the final body poses from state_in to state_out. When
+        requested, the fused finalize kernel first applies the body-level stick-contact
+        deadzone before computing velocity from the accepted pose.
         """
         model = self.model
 
@@ -3219,6 +3225,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             kernel=update_body_velocity,
             inputs=[
                 dt,
+                model.body_flags,
                 state_in.body_q,
                 model.body_com,
                 self.body_body_contact_buffer_pre_alloc,
@@ -3228,8 +3235,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 int(apply_stick_deadzone),
                 self.rigid_contact_stick_freeze_translation_eps,
                 self.rigid_contact_stick_freeze_angular_eps,
+                self.body_q_prev,
             ],
-            outputs=[self.body_q_prev, state_out.body_qd, state_in.body_qd, state_out.body_q],
+            outputs=[state_out.body_qd, state_in.body_qd, state_out.body_q, self._coupling_body_q_accepted],
             dim=model.body_count,
             device=self.device,
         )

@@ -42,14 +42,17 @@ def _drive_endpoints_kernel(
     tip_pos: wp.vec3,
     root_rest_rot: wp.quat,
     tip_rest_rot: wp.quat,
-    twist_angle: wp.array[wp.float32],
+    twist_angles: wp.array[wp.float32],
+    twist_rates: wp.array[wp.float32],
+    substep: int,
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
+    body_qd0: wp.array[wp.spatial_vector],
 ):
     # Counter-twist: split the total end-to-end twist symmetrically. The angle
     # lives in a device array so the simulate() loop can be captured into a
     # CUDA graph and replayed with the angle updated from the host each frame.
-    angle = twist_angle[0]
+    angle = twist_angles[substep]
     root_axis = wp.quat_rotate(root_rest_rot, wp.vec3(0.0, 0.0, 1.0))
     tip_axis = wp.quat_rotate(tip_rest_rot, wp.vec3(0.0, 0.0, 1.0))
     root_rot = wp.mul(wp.quat_from_axis_angle(root_axis, -0.5 * angle), root_rest_rot)
@@ -61,6 +64,9 @@ def _drive_endpoints_kernel(
     body_q1[root_body] = root_pose
     body_q0[tip_body] = tip_pose
     body_q1[tip_body] = tip_pose
+    rate = twist_rates[substep]
+    body_qd0[root_body] = wp.spatial_vector(wp.vec3(0.0), root_axis * (-0.5 * rate))
+    body_qd0[tip_body] = wp.spatial_vector(wp.vec3(0.0), tip_axis * (0.5 * rate))
 
 
 class Example:
@@ -156,6 +162,7 @@ class Example:
         self.root_body = self.bodies[0]
         self.tip_body = self.bodies[-1]
         for body in (self.root_body, self.tip_body):
+            builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
             builder.body_inertia[body] = wp.mat33(0.0)
@@ -196,9 +203,11 @@ class Example:
         self.state_0.body_q.assign(body_q_np)
         self.state_1.body_q.assign(body_q_np)
 
-        # End-to-end twist angle, kept in a device array so the simulate() loop
-        # can be captured into a CUDA graph and replayed with a host update.
-        self.twist_angle = wp.array([0.0], dtype=wp.float32, device=self.model.device)
+        # Per-substep commands keep authored endpoint poses and velocities consistent.
+        self.twist_angles_np = np.zeros(self.sim_substeps, dtype=np.float32)
+        self.twist_rates_np = np.zeros(self.sim_substeps, dtype=np.float32)
+        self.twist_angles = wp.array(self.twist_angles_np, dtype=wp.float32, device=self.model.device)
+        self.twist_rates = wp.array(self.twist_rates_np, dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "set_camera"):
@@ -244,7 +253,17 @@ class Example:
             return self.target_twist * a
         return self.target_twist
 
-    def _apply_command(self) -> None:
+    def _update_twist_motion(self) -> None:
+        previous_angle = self._command(self.sim_time - self.sim_dt)
+        for i in range(self.sim_substeps):
+            angle = self._command(self.sim_time + i * self.sim_dt)
+            self.twist_angles_np[i] = angle
+            self.twist_rates_np[i] = (angle - previous_angle) / self.sim_dt
+            previous_angle = angle
+        self.twist_angles.assign(self.twist_angles_np)
+        self.twist_rates.assign(self.twist_rates_np)
+
+    def _apply_command(self, substep: int) -> None:
         wp.launch(
             _drive_endpoints_kernel,
             dim=1,
@@ -255,9 +274,11 @@ class Example:
                 wp.vec3(*self.tip_rest_pos),
                 self.root_rest_rot,
                 self.tip_rest_rot,
-                self.twist_angle,
+                self.twist_angles,
+                self.twist_rates,
+                substep,
             ],
-            outputs=[self.state_0.body_q, self.state_1.body_q],
+            outputs=[self.state_0.body_q, self.state_1.body_q, self.state_0.body_qd],
             device=self.model.device,
         )
 
@@ -274,8 +295,8 @@ class Example:
             self.graph = None
 
     def simulate(self) -> None:
-        for _ in range(self.sim_substeps):
-            self._apply_command()
+        for substep in range(self.sim_substeps):
+            self._apply_command(substep)
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
@@ -284,10 +305,7 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        # The twist ramp is smooth, so a single per-frame angle (held across the
-        # frame's substeps) is sufficient and lets the substep loop be a graph.
-        angle = self._command(self.sim_time)
-        self.twist_angle.assign(np.array([angle], dtype=np.float32))
+        self._update_twist_motion()
         if self.graph is not None:
             wp.capture_launch(self.graph)
         else:

@@ -13,7 +13,7 @@ from .particle_vbd_kernels import (
     evaluate_edge_edge_contact_2_vertices,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
-from .rigid_vbd_kernels import _eval_body_particle_contact
+from .rigid_vbd_kernels import _eval_body_particle_contact, _integrate_kinematic_body_pose
 from .tri_mesh_collision import TriMeshCollisionInfo
 
 wp.set_module_options({"enable_backward": False})
@@ -23,39 +23,51 @@ wp.set_module_options({"enable_backward": False})
 def _update_vbd_body_input_state_kernel(
     dt: float,
     body_flags: wp.array[wp.int32],
+    proxy_flag: int,
     kinematic_flag: int,
     body_world: wp.array[wp.int32],
     pose_rebaseline_mask: wp.array[wp.bool],
+    body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
-    body_q_prev: wp.array[wp.transform],
+    body_q_accepted: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
+    body_q_frame_start: wp.array[wp.transform],
 ):
-    local_body = wp.tid()
+    """Fold coupler-authored pose updates into VBD's coupling-frame state."""
+    body = wp.tid()
+    flags = body_flags[body]
+    q = body_q[body]
 
-    world = body_world[local_body]
+    if (flags & kinematic_flag) != 0:
+        # Prescribed motion: hold the authored pose and place the frame start one outer
+        # step behind it, so harvested friction observes the qd*dt displacement.
+        body_q_accepted[body] = q
+        body_q_frame_start[body] = _integrate_kinematic_body_pose(q, body_com[body], body_qd[body], -dt)
+        return
+
+    if (flags & proxy_flag) == 0:
+        # Bodies the coupler does not author are accepted as-is, like a standalone step.
+        body_q_accepted[body] = q
+        body_q_frame_start[body] = q
+        return
+
+    world = body_world[body]
     if world < 0:
         world = pose_rebaseline_mask.shape[0] - 1
     if pose_rebaseline_mask[world]:
-        # Accept first/reset poses before teleport conversion or the kinematic early exit.
-        body_q_prev[local_body] = body_q[local_body]
+        # Accept first/reset poses before teleport conversion.
+        body_q_accepted[body] = q
+        body_q_frame_start[body] = q
         return
 
-    if (body_flags[local_body] & kinematic_flag) != 0:
-        return
-
-    q_prev = body_q_prev[local_body]
-    q_teleported = body_q[local_body]
-
-    p_teleported = wp.transform_get_translation(q_teleported)
-    p_prev = wp.transform_get_translation(q_prev)
-    dv = (p_teleported - p_prev) / dt
-
-    r_teleported = wp.transform_get_rotation(q_teleported)
-    r_prev = wp.transform_get_rotation(q_prev)
-    dw = quat_velocity(r_teleported, r_prev, dt)
-
-    body_qd[local_body] += wp.spatial_vector(dv, dw)
-    body_q[local_body] = q_prev
+    # A synchronized dynamic proxy must not teleport: rewind it to the pose VBD last
+    # accepted and carry the difference as velocity instead.
+    q_prev = body_q_accepted[body]
+    dp = wp.transform_get_translation(q) - wp.transform_get_translation(q_prev)
+    dw = quat_velocity(wp.transform_get_rotation(q), wp.transform_get_rotation(q_prev), dt)
+    body_qd[body] += wp.spatial_vector(dp / dt, dw)
+    body_q[body] = q_prev
+    body_q_frame_start[body] = q_prev
 
 
 @wp.kernel(enable_backward=False)

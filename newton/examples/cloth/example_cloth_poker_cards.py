@@ -98,6 +98,7 @@ class Example:
                 p=wp.vec3(self.sphere_start_x, 0.0, self.sphere_height),
                 q=wp.quat_identity(),
             ),
+            is_kinematic=True,
             label="sphere",
         )
         sphere_cfg = newton.ModelBuilder.ShapeConfig()
@@ -249,6 +250,9 @@ class Example:
             body_q[self.sphere_body_index][1] = 0.0
             body_q[self.sphere_body_index][2] = self.sphere_height
             self.state_0.body_q = wp.array(body_q, dtype=wp.transform)
+            body_qd = self.state_0.body_qd.numpy()
+            body_qd[self.sphere_body_index] = [self.sphere_velocity_x, 0.0, 0.0, 0.0, 0.0, 0.0]
+            self.state_0.body_qd.assign(body_qd)
 
             # Collision detection
             self.collision_pipeline.collide(self.state_0, self.contacts)

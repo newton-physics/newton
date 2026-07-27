@@ -54,6 +54,7 @@ def _spin_tip_kernel(
     dt: float,
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
+    body_qd0: wp.array[wp.spatial_vector],
 ):
     X = body_q0[tip_body]
     pos = wp.transform_get_translation(X)
@@ -63,6 +64,7 @@ def _spin_tip_kernel(
     X_new = wp.transform(pos, wp.mul(dq, rot))
     body_q0[tip_body] = X_new
     body_q1[tip_body] = X_new
+    body_qd0[tip_body] = wp.spatial_vector(wp.vec3(0.0), axis_world * twist_rate[0])
 
 
 class Example:
@@ -173,6 +175,7 @@ class Example:
         self.tip_body = self.bodies[-1]
 
         for body in (self.root_body, self.tip_body):
+            builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
             builder.body_inertia[body] = wp.mat33(0.0)
@@ -332,7 +335,7 @@ class Example:
                 _spin_tip_kernel,
                 dim=1,
                 inputs=[self.tip_body, self._twist_rate_wp, self.sim_dt],
-                outputs=[self.state_0.body_q, self.state_1.body_q],
+                outputs=[self.state_0.body_q, self.state_1.body_q, self.state_0.body_qd],
             )
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)

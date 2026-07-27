@@ -1801,7 +1801,7 @@ def _d6_fully_free_structural_slots_are_inactive(test, device):
 
 
 def _rigid_reset_state_and_history(test, device):
-    """Behavioral reset: constructor baseline, flags, masks, and one-shot deferral."""
+    """Verify step baselines, flags, masks, and history reset behavior."""
 
     def add_fixed_body(builder, x):
         # Dynamic root fixed to the world; with iterations=0 its velocity is a pure
@@ -1880,8 +1880,7 @@ def _rigid_reset_state_and_history(test, device):
         test.assertEqual(str(state.body_qd.device), "cpu")
         state.body_qd = good_qd
 
-    # Phase 3: immediate body-copy and joint selection (no steps; any armed pose
-    # intent is consumed before the velocity phases below).
+    # Phase 3: immediate body-copy and joint selection without stepping.
     custom_q = model_q.copy()
     custom_q[:, 0] += 10.0
     custom_qd = np.full_like(model_qd, 3.0)
@@ -1911,7 +1910,7 @@ def _rigid_reset_state_and_history(test, device):
     np.testing.assert_allclose(state.body_q.numpy(), custom_q)
     np.testing.assert_allclose(state.body_qd.numpy(), custom_qd)
 
-    # Consume any pose intent armed above and re-establish a known baseline.
+    # Re-establish a known baseline for the velocity checks below.
     solver.reset(state)
     base_q = model_q.copy()
     base_q[:, 0] += 1.0
@@ -1919,8 +1918,8 @@ def _rigid_reset_state_and_history(test, device):
     state.body_qd.zero_()
     step_swap()
 
-    # Phase 4: an all-false reset arms nothing, so the next step finite-differences
-    # a known delta for every body (a leaked pose baseline would zero some world).
+    # Phase 4: every call uses its authored input pose as the baseline, independent
+    # of reset selection. A pose-only edit is therefore a teleport, not velocity.
     solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
     all_false_delta = 2.0
     moved_q = base_q.copy()
@@ -1928,10 +1927,9 @@ def _rigid_reset_state_and_history(test, device):
     state.body_q.assign(moved_q)
     state.body_qd.zero_()
     step_swap()
-    np.testing.assert_allclose(state.body_qd.numpy()[:, 0], all_false_delta / dt, atol=1.0e-1)
+    np.testing.assert_allclose(state.body_qd.numpy(), 0.0, atol=1.0e-5)
 
-    # Phase 5: a full reset drains all joint history and restores model body State,
-    # then defers pose so the next step reports zero velocity everywhere.
+    # Phase 5: a full reset drains all joint history and restores model body State.
     solver.joint_penalty_k.fill_(123.0)
     solver.joint_C0_lin.fill_(11.0)
     solver.joint_C0_ang.fill_(12.0)
@@ -1953,19 +1951,17 @@ def _rigid_reset_state_and_history(test, device):
     step_swap()
     np.testing.assert_allclose(state.body_qd.numpy(), 0.0, atol=1.0e-5)
 
-    # One-shot: the consumed reset does not persist, so an ordinary later delta
-    # finite-differences for every body.
+    # An ordinary later pose-only edit is likewise a new step baseline.
     one_shot_delta = 4.0
     moved_final = final_q.copy()
     moved_final[:, 0] += one_shot_delta
     state.body_q.assign(moved_final)
     state.body_qd.zero_()
     step_swap()
-    np.testing.assert_allclose(state.body_qd.numpy()[:, 0], one_shot_delta / dt, atol=1.0e-1)
+    np.testing.assert_allclose(state.body_qd.numpy(), 0.0, atol=1.0e-5)
 
-    # Phase 6: a masked flags=0 reset defers only world 0 and drains only its joint
-    # history. The next step zeroes selected velocity while the unselected world and
-    # the globals finite-difference the jump.
+    # Phase 6: a masked flags=0 reset drains only selected joint history. It does
+    # not alter the per-call pose-baseline rule.
     solver.joint_lambda_lin.fill_(9.0)
     solver.reset(state, world_mask=world_mask, flags=0)
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy()[selected_joints], 0.0)
@@ -1977,8 +1973,7 @@ def _rigid_reset_state_and_history(test, device):
     state.body_qd.zero_()
     step_swap()
     masked_qd = state.body_qd.numpy()
-    np.testing.assert_allclose(masked_qd[selected_bodies, 0], 0.0, atol=1.0e-3)
-    np.testing.assert_allclose(masked_qd[~selected_bodies, 0], masked_delta / dt, atol=1.0e-1)
+    np.testing.assert_allclose(masked_qd, 0.0, atol=1.0e-5)
 
     # Phase 7: the extended mask's final entry selects only global entities.
     global_mask = wp.array([False, False, True], dtype=wp.bool, device=device)
@@ -2004,8 +1999,7 @@ def _rigid_reset_state_and_history(test, device):
     state.body_qd.zero_()
     step_swap()
     global_qd = state.body_qd.numpy()
-    np.testing.assert_allclose(global_qd[global_bodies], 0.0, atol=1.0e-3)
-    np.testing.assert_allclose(global_qd[~global_bodies, 0], global_delta / dt, atol=1.0e-1)
+    np.testing.assert_allclose(global_qd, 0.0, atol=1.0e-5)
 
     # An extended all-true mask has the same immediate selection as None.
     state.body_q.assign(custom_q)
@@ -2020,8 +2014,8 @@ def _rigid_reset_state_and_history(test, device):
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 0.0)
 
 
-def _rigid_reset_replays_captured_step(test, device):
-    """A reset issued after capture is consumed by the existing step graph."""
+def _rigid_captured_step_reads_current_input(test, device):
+    """Read current fixed-bound input buffers on every captured-step replay."""
     template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body(mass=1.0, is_kinematic=True)
     template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -2040,8 +2034,7 @@ def _rigid_reset_replays_captured_step(test, device):
     control = model.control()
     dt = 1.0e-2
 
-    # Finish lazy initialization and consume the constructor's initial baseline
-    # before capturing the fixed state-buffer bindings used below.
+    # Finish lazy initialization before capturing the fixed state-buffer bindings.
     solver.step(state_in, state_out, control, None, dt)
     wp.synchronize_device(device)
 
@@ -2050,35 +2043,83 @@ def _rigid_reset_replays_captured_step(test, device):
     graph = capture.graph
     test.assertIsNotNone(graph)
 
-    # reset() runs after capture. Its device-side mask write must be visible when
-    # replaying the graph, while post-reset pose preparation remains authoritative.
     world_mask = wp.array([True, False], dtype=wp.bool, device=device)
     solver.reset(state_in, world_mask=world_mask, flags=0)
     reset_q = model.body_q.numpy()
     reset_q[:, 0] += 1.0
+    reset_qd = model.body_qd.numpy()
+    reset_qd[:, 0] = [0.5, 1.0]
     state_in.body_q.assign(reset_q)
-    state_in.body_qd.zero_()
+    state_in.body_qd.assign(reset_qd)
 
     wp.capture_launch(graph)
 
     np.testing.assert_allclose(state_out.body_q.numpy(), reset_q, atol=1.0e-6)
-    expected_qd = np.zeros_like(model.body_qd.numpy())
-    expected_qd[1, 0] = 1.0 / dt
-    np.testing.assert_allclose(state_out.body_qd.numpy(), expected_qd, rtol=1.0e-5, atol=1.0e-3)
+    np.testing.assert_array_equal(state_out.body_qd.numpy(), reset_qd)
+    expected_prev = reset_q.copy()
+    expected_prev[:, 0] -= reset_qd[:, 0] * dt
+    np.testing.assert_allclose(solver.body_q_prev.numpy(), expected_prev, rtol=1.0e-5, atol=1.0e-6)
 
-    # The captured clear consumes reset intent once. A second replay of the same
-    # graph must finite-difference an ordinary pose edit for both worlds.
-    delta = 0.25
     next_q = reset_q.copy()
-    next_q[:, 0] += delta
+    next_q[:, 0] += 0.25
+    next_qd = model.body_qd.numpy()
+    next_qd[:, 0] = [-0.25, 0.75]
     state_in.body_q.assign(next_q)
-    state_in.body_qd.zero_()
+    state_in.body_qd.assign(next_qd)
 
     wp.capture_launch(graph)
 
     np.testing.assert_allclose(state_out.body_q.numpy(), next_q, atol=1.0e-6)
-    expected_qd[:, 0] = delta / dt
-    np.testing.assert_allclose(state_out.body_qd.numpy(), expected_qd, rtol=1.0e-5, atol=1.0e-3)
+    np.testing.assert_array_equal(state_out.body_qd.numpy(), next_qd)
+    expected_prev = next_q.copy()
+    expected_prev[:, 0] -= next_qd[:, 0] * dt
+    np.testing.assert_allclose(solver.body_q_prev.numpy(), expected_prev, rtol=1.0e-5, atol=1.0e-6)
+
+
+def _rigid_step_pose_baseline_and_kinematic_velocity(test, device):
+    """Snapshot each input pose while preserving prescribed kinematic motion."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    kinematic = builder.add_body(
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+        is_kinematic=True,
+    )
+    zero_response = builder.add_body(mass=0.0)
+    builder.color()
+    model = builder.finalize(device=device)
+
+    dt = 0.025
+    entry_q = model.body_q.numpy()
+    entry_q[:, 0] = [1.0, -2.0]
+    entry_qd = np.zeros((model.body_count, 6), dtype=np.float32)
+    entry_qd[:, 0] = [0.4, 4.0]
+    entry_qd[kinematic, 5] = 0.3
+    expected_prev = entry_q.copy()
+    expected_prev[kinematic, 0] -= entry_qd[kinematic, 0] * dt
+    expected_prev[kinematic, 5] = np.sin(-0.5 * entry_qd[kinematic, 5] * dt)
+    expected_prev[kinematic, 6] = np.cos(-0.5 * entry_qd[kinematic, 5] * dt)
+
+    for alias_states in (False, True):
+        with test.subTest(alias_states=alias_states):
+            solver = newton.solvers.SolverVBD(model, iterations=0)
+            state_in = model.state()
+            state_out = state_in if alias_states else model.state()
+            state_in.body_q.assign(entry_q)
+            state_in.body_qd.assign(entry_qd)
+
+            solver.step(state_in, state_out, None, None, dt)
+
+            public_q = state_out.body_q.numpy()
+            public_qd = state_out.body_qd.numpy()
+            np.testing.assert_allclose(solver.body_q_prev.numpy(), expected_prev, rtol=1.0e-5, atol=1.0e-6)
+
+            # Kinematics preserve caller-owned state while body_q_prev represents qd.
+            np.testing.assert_allclose(public_q[kinematic], entry_q[kinematic], rtol=0.0, atol=1.0e-6)
+            np.testing.assert_array_equal(public_qd[kinematic], entry_qd[kinematic])
+
+            # Zero response alone does not imply prescribed kinematic motion.
+            np.testing.assert_allclose(public_q[zero_response], entry_q[zero_response], rtol=0.0, atol=1.0e-6)
+            np.testing.assert_allclose(public_qd[zero_response], 0.0, rtol=0.0, atol=1.0e-6)
 
 
 def _rigid_contact_reset_lifecycle(test, device):
@@ -2908,9 +2949,15 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_rigid_reset_replays_captured_step",
-    _rigid_reset_replays_captured_step,
+    "test_rigid_captured_step_reads_current_input",
+    _rigid_captured_step_reads_current_input,
     devices=cuda_devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_rigid_step_pose_baseline_and_kinematic_velocity",
+    _rigid_step_pose_baseline_and_kinematic_velocity,
+    devices=devices,
 )
 add_function_test(
     TestSolverVBD,
