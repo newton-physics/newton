@@ -18,6 +18,10 @@ from .types import RenderConfig, RenderLightType, TextureData
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
+# Knuth multiplicative hash constant (2^32 / golden ratio).
+# Typed uint32 so kernel codegen doesn't overflow an int32 constant.
+HASH_MULTIPLIER = wp.uint32(2654435761)
+
 
 def _resolve_fisheye_image_size(
     axis: str,
@@ -225,7 +229,7 @@ def unpack_shape_index_hash_to_rgba_kernel(
     # Knuth multiplicative hash, masked to 24 bits. ``idx + 1`` keeps shape 0
     # away from the all-zero hash that collides with the miss color; the
     # miss sentinel ``0xFFFFFFFF`` wraps back to 0 and intentionally renders black.
-    h = ((idx + wp.uint32(1)) * wp.uint32(2654435761)) & wp.uint32(0xFFFFFF)
+    h = ((idx + wp.uint32(1)) * HASH_MULTIPLIER) & wp.uint32(0xFFFFFF)
     out[n, y, x, 0] = wp.uint8((h >> wp.uint32(16)) & wp.uint32(0xFF))
     out[n, y, x, 1] = wp.uint8((h >> wp.uint32(8)) & wp.uint32(0xFF))
     out[n, y, x, 2] = wp.uint8(h & wp.uint32(0xFF))
