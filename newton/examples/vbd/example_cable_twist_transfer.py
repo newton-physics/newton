@@ -111,6 +111,7 @@ class Example:
             )
             root_body = int(bodies[0])
             tip_body = int(bodies[-1])
+            builder.add_articulation(list(joints), label=f"twist_transfer_{label}_articulation")
             for body in (root_body, tip_body):
                 builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
                 builder.body_mass[body] = 0.0
@@ -118,7 +119,6 @@ class Example:
                 builder.body_inertia[body] = wp.mat33(0.0)
                 builder.body_inv_inertia[body] = wp.mat33(0.0)
 
-            builder.add_articulation(list(joints), label=f"twist_transfer_{label}_articulation")
             self.cases.append(
                 {
                     "label": label,

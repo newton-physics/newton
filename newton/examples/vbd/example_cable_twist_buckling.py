@@ -187,13 +187,13 @@ class Example:
 
         self.root_body = self.bodies[0]
         self.tip_body = self.bodies[-1]
+        builder.add_articulation(self.joints, label="twist_buckling_articulation")
         for body in (self.root_body, self.tip_body):
             builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
             builder.body_inertia[body] = wp.mat33(0.0)
             builder.body_inv_inertia[body] = wp.mat33(0.0)
-        builder.add_articulation(self.joints, label="twist_buckling_articulation")
 
         builder.color()
         self.model = builder.finalize()

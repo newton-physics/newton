@@ -130,9 +130,9 @@ class Example:
                     twist_stiffness=1000.0,
                     label=f"analytic_bend_{int(math.degrees(target))}",
                 )
+                builder.add_articulation(joints, label=f"analytic_bend_articulation_{i}")
                 self._make_kinematic(builder, bodies[0])
                 self._make_kinematic(builder, bodies[-1])
-                builder.add_articulation(joints, label=f"analytic_bend_articulation_{i}")
                 self.bend_cases.append({"target": target, "bodies": bodies, "tip": bodies[-1]})
 
         if mode in ("all", "twist", "twist_max"):
@@ -147,9 +147,9 @@ class Example:
                     twist_stiffness=self.TWIST_STIFFNESS,
                     label=f"analytic_twist_{int(math.degrees(target))}",
                 )
+                builder.add_articulation(joints, label=f"analytic_twist_articulation_{i}")
                 self._make_kinematic(builder, bodies[0])
                 self._make_kinematic(builder, bodies[-1])
-                builder.add_articulation(joints, label=f"analytic_twist_articulation_{i}")
                 self.twist_cases.append({"target": target, "bodies": bodies, "tip": bodies[-1]})
 
         builder.color()
