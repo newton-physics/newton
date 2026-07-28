@@ -436,6 +436,7 @@ class SurfaceGripperModel:
         s.pad_engaged = wp.zeros(n, dtype=wp.bool, device=self.pad_xform.device)
         s.pad_body_b = wp.full(n, -1, dtype=wp.int32, device=self.pad_xform.device)
         s.pad_anchor_b = wp.zeros(n, dtype=wp.transform, device=self.pad_xform.device)
+        s.pad_ignore = wp.full((n, 8), -2, dtype=wp.int32, device=self.pad_xform.device)
         return s
 
     def control(self) -> "SurfaceGripperControl":
@@ -455,6 +456,7 @@ class SurfaceGripperState:
     pad_engaged: wp.array  # per-pad engaged/disengaged flag (bool)
     pad_body_b: wp.array  # gripped body index, valid when engaged (int)
     pad_anchor_b: wp.array  # TBS: seal frame in the gripped body's frame, cached at engagement (wp.transform)
+    pad_ignore: wp.array2d  # bodies the held body was already touching at engagement, per pad (int)
 
 
 class SurfaceGripperControl:
@@ -517,6 +519,91 @@ def evaluate_seal(gripper_model: "SurfaceGripperModel", gripper_state: "SurfaceG
     )
 
 
+@wp.func
+def in_ignore_set(body: int, pad: int, pad_ignore: wp.array2d[int]) -> bool:
+    """True if ``body`` is one of the bodies cached in this pad's engagement-time ignore set."""
+    for k in range(pad_ignore.shape[1]):
+        if pad_ignore[pad, k] == body:
+            return True
+    return False
+
+
+# A contact counts as a real touch only if the surface gap is below this tolerance [m]. The
+# collision pipeline emits candidate contacts for near AABB pairs while they are still centimetres
+# apart, so gate on the true separation (point gap minus the shapes' surface thicknesses/margins).
+CONTACT_TOUCH_GAP = 0.005
+
+# Only an impact re-anchors the seal: the two surfaces must be approaching along the contact normal
+# faster than this [m/s]. A dropped/landing object arrives fast (>1 m/s even from 0.1 m); a gripper
+# lowering its payload against the stack closes at only ~0.3 m/s, so it should not reset the seal.
+CONTACT_IMPACT_SPEED = 1.0
+
+
+@wp.func
+def eval_contact_gap_and_speed(
+    c: int,
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_body: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_margin0: wp.array[float],
+    contact_margin1: wp.array[float],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+) -> tuple[float, float]:
+    """Signed surface gap [m] and closing speed [m/s] of contact ``c``, computed together since both
+    need the world contact points. Gap = ``dot(n, p1_world - p0_world) - (margin0 + margin1)``
+    (Newton's ``rigid_contact_diff_distance``; ``n`` points shape0 -> shape1). Closing speed =
+    ``dot(v1 - v0, n)`` with point velocity ``v_com + omega x (p - com)`` per body (>0 = approaching).
+    A static shape (body < 0) stores its point in world and is still: identity transform, zero
+    velocity (matching Newton's differentiable contact augmentation)."""
+    n = contact_normal[c]
+    b0 = shape_body[contact_shape0[c]]
+    b1 = shape_body[contact_shape1[c]]
+    x0 = wp.transform_identity()
+    if b0 >= 0:
+        x0 = body_q[b0]
+    x1 = wp.transform_identity()
+    if b1 >= 0:
+        x1 = body_q[b1]
+    w0 = wp.transform_point(x0, contact_point0[c])
+    w1 = wp.transform_point(x1, contact_point1[c])
+    v0 = wp.vec3(0.0, 0.0, 0.0)
+    if b0 >= 0:
+        v0 = wp.spatial_top(body_qd[b0]) + wp.cross(
+            wp.spatial_bottom(body_qd[b0]), w0 - wp.transform_point(x0, body_com[b0])
+        )
+    v1 = wp.vec3(0.0, 0.0, 0.0)
+    if b1 >= 0:
+        v1 = wp.spatial_top(body_qd[b1]) + wp.cross(
+            wp.spatial_bottom(body_qd[b1]), w1 - wp.transform_point(x1, body_com[b1])
+        )
+    gap = wp.dot(n, w1 - w0) - (contact_margin0[c] + contact_margin1[c])
+    closing = wp.dot(v1 - v0, n)
+    return gap, closing
+
+
+@wp.func
+def body_touches(
+    b: int,
+    other: int,
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_body: wp.array[int],
+) -> bool:
+    """True if bodies ``b`` and ``other`` are the two sides of any contact this sub-step."""
+    for c in range(contact_count[0]):
+        b0 = shape_body[contact_shape0[c]]
+        b1 = shape_body[contact_shape1[c]]
+        if (b0 == b and b1 == other) or (b1 == b and b0 == other):
+            return True
+    return False
+
+
 @wp.kernel
 def latch_engagement_kernel(
     engaged: wp.array[wp.bool],  # fresh seal decision (from the seal logic)
@@ -526,9 +613,14 @@ def latch_engagement_kernel(
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_body: wp.array[int],
     pad_engaged: wp.array[wp.bool],  # stored state, updated in place
     pad_body_b: wp.array[int],
     pad_anchor_b: wp.array[wp.transform],
+    pad_ignore: wp.array2d[int],
 ):
     pad = wp.tid()
     if engaged[pad] and not pad_engaged[pad]:
@@ -537,12 +629,35 @@ def latch_engagement_kernel(
         b = body_b[pad]
         t_as = gripper_xform[g] * pad_xform[pad]  # TAS: seal frame in body A
         pad_anchor_b[pad] = wp.transform_inverse(body_q[b]) * (body_q[gripper_body_id[g]] * t_as)
+ 
+        # Cache the external objects touched by the gripped object. 
+        # For a short time after that initial engagement we want to 
+        # ignore contact between the picked object and the cached external objects.
+        # If we don't ignore those cached external objects we will recompute the seal 
+        # frame immediately after engagement. This will make the grip appear 
+        # loose and unconvincing.         
+        cap = pad_ignore.shape[1]
+        for k in range(cap):
+            pad_ignore[pad, k] = -2
+        slot = int(0)
+        for c in range(contact_count[0]):
+            b0 = shape_body[contact_shape0[c]]
+            b1 = shape_body[contact_shape1[c]]
+            if b0 == b and slot < cap and not in_ignore_set(b1, pad, pad_ignore):
+                pad_ignore[pad, slot] = b1
+                slot += 1
+            if b1 == b and slot < cap and not in_ignore_set(b0, pad, pad_ignore):
+                pad_ignore[pad, slot] = b0
+                slot += 1
+ 
     pad_body_b[pad] = body_b[pad]
     pad_engaged[pad] = engaged[pad]
 
 
 def latch_engagement(
+    model,
     state,
+    contacts,
     gripper_model: SurfaceGripperModel,
     gripper_state: SurfaceGripperState,
     engaged,
@@ -552,7 +667,9 @@ def latch_engagement(
 
     ``engaged`` / ``body_b`` are this step's fresh seal decision. On a disengaged ->
     engaged transition, TBS (the seal frame in body B's frame) is cached into
-    ``pad_anchor_b``; ``pad_engaged`` / ``pad_body_b`` are then updated to the decision.
+    ``pad_anchor_b``, and the set of bodies B is already touching is cached into
+    ``pad_ignore`` (so :func:`reset_seal_on_contact` ignores B's support); ``pad_engaged`` /
+    ``pad_body_b`` are then updated to the decision.
     """
     n_pads = gripper_model.pad_xform.shape[0]
     if n_pads == 0:
@@ -568,9 +685,149 @@ def latch_engagement(
             gripper_model.pad_gripper,
             gripper_model.pad_xform,
             state.body_q,
+            contacts.rigid_contact_count,
+            contacts.rigid_contact_shape0,
+            contacts.rigid_contact_shape1,
+            model.shape_body,
             gripper_state.pad_engaged,
             gripper_state.pad_body_b,
             gripper_state.pad_anchor_b,
+            gripper_state.pad_ignore,
+        ],
+    )
+
+
+@wp.func
+def is_body_b_struck_by_external_object(
+    b: int,
+    pad: int,
+    pad_ignore: wp.array2d[int],
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_body: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_margin0: wp.array[float],
+    contact_margin1: wp.array[float],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+) -> bool:
+    """True if body ``b`` is hit by an object outside its ignore set: an actual touch
+    (gap < CONTACT_TOUCH_GAP) approaching as an impact (closing speed > CONTACT_IMPACT_SPEED), not
+    the payload being slowly lowered against the stack. Early-exits on the first such contact."""
+    for c in range(contact_count[0]):
+        b0 = shape_body[contact_shape0[c]]
+        b1 = shape_body[contact_shape1[c]]
+        hit_b = (b0 == b and not in_ignore_set(b1, pad, pad_ignore)) or (
+            b1 == b and not in_ignore_set(b0, pad, pad_ignore)
+        )
+        if hit_b:
+            gap, closing = eval_contact_gap_and_speed(
+                c, contact_shape0, contact_shape1, shape_body, contact_point0, contact_point1,
+                contact_normal, contact_margin0, contact_margin1, body_q, body_qd, body_com,
+            )
+            if gap < CONTACT_TOUCH_GAP and closing > CONTACT_IMPACT_SPEED:
+                return True
+    return False
+
+
+@wp.kernel
+def reset_seal_on_contact_kernel(
+    contact_count: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_body: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_margin0: wp.array[float],
+    contact_margin1: wp.array[float],
+    gripper_body_id: wp.array[int],
+    gripper_xform: wp.array[wp.transform],
+    pad_gripper: wp.array[int],
+    pad_xform: wp.array[wp.transform],
+    pad_engaged: wp.array[wp.bool],
+    pad_body_b: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    # outputs
+    pad_anchor_b: wp.array[wp.transform],
+    pad_ignore: wp.array2d[int],
+):
+    pad = wp.tid()
+    if not pad_engaged[pad]:
+        return
+    b = pad_body_b[pad]  # the body this pad is gripping
+
+    # Recompute the seal frame when body b is struck by an external object.
+    # The goal is to prevent a battle between contact and gripper forces.
+    # Contact will "win" in the solver stsep and the gripped object will 
+    # no longer track the surface gripper. This will lead to large biases
+    # on the gripper, which will lead to large gripper forces, which 
+    # will lead to numerical instabilities.
+    if is_body_b_struck_by_external_object(
+        b, pad, pad_ignore, contact_count, contact_shape0, contact_shape1, shape_body,
+        contact_point0, contact_point1, contact_normal, contact_margin0, contact_margin1,
+        body_q, body_qd, body_com,
+    ):
+        # TBS = TB^-1 * TA * TAS (seal frame in body B, re-cached at the current relative pose).
+        g = pad_gripper[pad]
+        a = gripper_body_id[g]
+        t_as = gripper_xform[g] * pad_xform[pad]  # TAS: seal frame in body A
+        pad_anchor_b[pad] = wp.transform_inverse(body_q[b]) * (body_q[a] * t_as)
+
+    # Evict the cached external objects from the cache as soon as 
+    # they are no longer in contact with the gripped object. 
+    for k in range(pad_ignore.shape[1]):
+        ib = pad_ignore[pad, k]
+        if ib != -2 and not body_touches(b, ib, contact_count, contact_shape0, contact_shape1, shape_body):
+            pad_ignore[pad, k] = -2
+
+
+def reset_seal_on_contact(
+    model,
+    state,
+    contacts,
+    gripper_model: SurfaceGripperModel,
+    gripper_state: SurfaceGripperState,
+) -> None:
+    """Re-anchor the seal frame of any engaged pad whose held body is in external contact.
+
+    When the picked body has an external contact, snap the seal frame to the current
+    relative pose so the seal yields to the contact instead of fighting it with a
+    growing elastic spring.
+    """
+    n_pads = gripper_model.pad_xform.shape[0]
+    if n_pads == 0:
+        return
+    wp.launch(
+        reset_seal_on_contact_kernel,
+        dim=n_pads,
+        inputs=[
+            contacts.rigid_contact_count,
+            contacts.rigid_contact_shape0,
+            contacts.rigid_contact_shape1,
+            model.shape_body,
+            contacts.rigid_contact_point0,
+            contacts.rigid_contact_point1,
+            contacts.rigid_contact_normal,
+            contacts.rigid_contact_margin0,
+            contacts.rigid_contact_margin1,
+            gripper_model.gripper_body_id,
+            gripper_model.gripper_xform,
+            gripper_model.pad_gripper,
+            gripper_model.pad_xform,
+            gripper_state.pad_engaged,
+            gripper_state.pad_body_b,
+            state.body_q,
+            state.body_qd,
+            model.body_com,
+            gripper_state.pad_anchor_b,
+            gripper_state.pad_ignore,
         ],
     )
 

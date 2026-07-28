@@ -44,6 +44,7 @@ from newton.examples.suctioncup.surface_gripper import (
     SurfaceGripperBuilder,
     evaluate_gripper_force,
     latch_engagement,
+    reset_seal_on_contact,
 )
 
 # assets live alongside this example
@@ -94,6 +95,11 @@ ENABLE_GRIPPER = True
 # and tipping is resisted by contact (matches a real vacuum grip on rigid tooling); pair with a
 # tension-only seal (surface_gripper.SEAL_TENSION_ONLY). Off: the soft seal alone owns the hold.
 ENABLE_PAD_BOX_CONTACT = False
+
+# When True, re-anchor a pad's seal frame whenever its held body is in external contact (e.g. a crate
+# lands on the held panel). The seal snaps to the current relative pose so it yields to the contact
+# instead of building a large elastic restoring spike. Uses the previous sub-step's contact set.
+SEAL_RESET_ON_CONTACT = True
 
 # Draw a small non-colliding disk at each suction cup (GRIPPER_PADS) so the cup layout is visible in
 # the viewer. Purely visual (has_shape_collision off); does not affect the physics.
@@ -571,12 +577,13 @@ class Example:
             crate_bodies.append(body)
             crate_shapes.append(builder.add_shape_box(body, hx=chx, hy=chy, hz=chz, cfg=cfg))
 
-        # Filter every pick box against the gripper geometry: the seal owns the hold (see
-        # ENABLE_PAD_BOX_CONTACT / SEAL_TENSION_ONLY). Boxes still collide with the pallets, the panel, each
-        # other (so the crates stack), and the ground.
+        # Filter every pick box against the whole robot arm (bodies 0..ee_body): the seal owns the
+        # hold, and the wide panel swings up against the wrist/forearm links during the carry, so
+        # letting them collide would fight the seal (see ENABLE_PAD_BOX_CONTACT / SEAL_TENSION_ONLY).
+        # Boxes still collide with the pallets, the panel, each other (so the crates stack), and the ground.
         if not ENABLE_PAD_BOX_CONTACT:
             for shape in range(len(builder.shape_body)):
-                if builder.shape_body[shape] == ee_body:
+                if 0 <= builder.shape_body[shape] <= ee_body:  # any robot-arm link (base..gripper)
                     builder.add_shape_collision_filter_pair(panel_shape, shape)
                     for cs in crate_shapes:
                         builder.add_shape_collision_filter_pair(cs, shape)
@@ -765,7 +772,19 @@ class Example:
                 ],
                 outputs=[self.seal_engaged],
             )
-            latch_engagement(self.state_0, self.gripper_model, self.gripper_state, self.seal_engaged, self.seal_body_b)
+            latch_engagement(
+                self.model,
+                self.state_0,
+                self.contacts,
+                self.gripper_model,
+                self.gripper_state,
+                self.seal_engaged,
+                self.seal_body_b,
+            )
+            if ENABLE_GRIPPER and SEAL_RESET_ON_CONTACT:
+                reset_seal_on_contact(
+                    self.model, self.state_0, self.contacts, self.gripper_model, self.gripper_state
+                )
             if ENABLE_GRIPPER:
                 evaluate_gripper_force(
                     self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control, self.sim_dt
