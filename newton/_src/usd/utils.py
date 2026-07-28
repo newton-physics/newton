@@ -877,6 +877,11 @@ def _split_corners_into_vertices(
     of their mean lie within the full threshold of each other, so the sequential pass
     would place every one of them in the first cluster.
 
+    A corner whose angle to the cluster mean is exactly ``angle_threshold_deg`` may fall
+    on either side of the comparison: the dot product is rounded differently depending on
+    the arithmetic used, so which cluster such a corner lands in is not defined beyond
+    "one of the clusters it is within the threshold of".
+
     Args:
         points: Source vertex positions, shape [vertex_count, 3].
         indices: Face-corner vertex indices, shape [corner_count].
@@ -938,6 +943,9 @@ def _split_corners_into_vertices(
             corner_uv = None if grouped_uvs is None else tuple(grouped_uvs[corner].tolist())
             for cluster in clusters:
                 sum_x, sum_y, sum_z = cluster[0], cluster[1], cluster[2]
+                # Scalar arithmetic rounds this dot product differently from the
+                # equivalent NumPy expression (which uses FMA and a scaled norm), so a
+                # corner sitting exactly on the threshold can cluster either way.
                 scale = max(math.sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z), 1e-30)
                 if (sum_x * dir_x + sum_y * dir_y + sum_z * dir_z) / scale < cos_thresh:
                     continue

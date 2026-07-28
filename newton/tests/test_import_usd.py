@@ -12609,6 +12609,21 @@ def Mesh "cube"
                 self.assertEqual(len(mesh.vertices), 6 + expected_clusters)
                 np.testing.assert_allclose(np.linalg.norm(np.asarray(mesh.normals), axis=1), 1.0, atol=1e-5)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_vertex_splitting_merges_corners_exactly_at_half_the_threshold(self):
+        """Corners exactly half the threshold off their mean stay one vertex.
+
+        ``(0, 12.5, 25)`` at a 25-degree threshold puts the outer corners exactly at half
+        the threshold from their mean, the boundary of the test that decides a vertex needs
+        no clustering. Both that test and the sequential clustering it stands in for must
+        keep the corners together, since the outer two are 25 degrees apart.
+        """
+        _stage, prim = self._define_facevarying_fan((0, 12.5, 25))
+
+        mesh = usd.get_mesh(prim, load_normals=True)
+
+        self.assertEqual(len(mesh.vertices), 6 + 1)
+
 
 class TestTetMesh(unittest.TestCase):
     def test_tetmesh_basic(self):
