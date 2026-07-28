@@ -63,28 +63,23 @@ SMOOTHING_SIGMA = 0.06
 
 FPS = 60  # rendered frames per second
 SIM_HZ = 120  # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
+
 NUM_ARM_DOFS = 6  # J1-J6; recorded joints 6-8 are unused finger DOFs
-BOX_HALF = 0.5  # half-extent of the static support box (size [1, 1, 1]) [m]
+
 # The arm picks two boxes in sequence over the recording's two engage/disengage cycles: a wide shallow
 # panel at the 1st engagement, then a deep crate at the 2nd. Each rests on its own static pallet until
 # the suction grips it (the gripper parameters are fixed -- a statement of the tool). (half-extents [m],
 # mass [kg]); shape density is 0, so mass/inertia are set on the body.
 PANEL = ((0.5, 0.5, 0.04), 30.0)  # 1st engagement -- wide shallow panel, size [1.0, 1.0, 0.08] m
 CRATE = ((0.242, 0.166, 0.137), 12.0)  # 2nd engagement -- deep crate, size [0.484, 0.332, 0.274] m
-# The robot picks NUM_CRATES crates from one conveyor spot (recording cycles 1..NUM_CRATES all share a
-# pick pose) and stacks them on the panel. Newton models are fixed after finalize, so all crate bodies
-# are pre-created: crate 0 starts on the pick pallet, the spares rest out of the way and are teleported
-# onto the pallet as each crate is placed (a stand-in for the conveyor advancing). See step().
+PANEL_PALLET_HALF = (0.54, 0.54, 0.5)
+CRATE_PALLET_HALF = (0.206, 0.282, 0.5)
 NUM_CRATES = 6
 
 # Deepest reach of the finger collision geometry along the suction axis, in the J6_link (flange)
 # frame [m] -- the point that would first penetrate the box. The box top is seated here so the fingers
 # rest on the box without sinking in. Resolved from the USD (max +x over the Finger_0x meshes).
 FINGER_HULL_DEEPEST_X = 0.3109
-
-# The pick box and its pallet are NOT hard-coded: their positions are derived at build time from the
-# flange pose at the first-engagement time (forward kinematics), so the box always seats itself at the
-# cups regardless of SMOOTHING_SIGMA, the cup geometry, or the recording. See Example.__init__.
 
 # Set False to disable the suction cup: the seal wrench is never applied, so the arm plays back the
 # recorded trajectory and the pick box just sits on the pallet (useful for inspecting the bare arm
@@ -207,46 +202,65 @@ GRIPPER_PARAMS = GripperParams(
 )
 
 
-def arm_targets_rad(frame) -> np.ndarray:
-    """Recorded :class:`Frame` -> the six arm joint position targets [rad].
+class RobotPlayback:
+    """Container for the recorded playback arrays the sim consumes, loaded onto the device.
 
-    Takes J1-J6, applies the J3-relative-to-J2 coupling (real J3 = recorded J3 + J2), and converts
-    degrees to radians. This is where the coupling/units are applied -- the recording stores raw.
+    Loads the recording at ``path``, applies the J3->J2 coupling and Gaussian smoothing (width
+    ``smoothing_sigma`` [s]), and holds the sample times, coupled arm drive targets, and per-frame
+    suction engagement command as device arrays, plus the recording duration.
     """
-    j = list(frame.joints_deg[:NUM_ARM_DOFS])
-    j[2] += j[1]  # J3 is recorded relative to J2
-    return np.deg2rad(np.asarray(j, dtype=np.float32))
 
+    @staticmethod
+    def arm_targets_rad(frame) -> np.ndarray:
+        """Recorded :class:`Frame` -> the six arm joint position targets [rad].
 
-def load_playback(path):
-    """Load a recording and extract the arrays the sim consumes.
+        Takes J1-J6, applies the J3-relative-to-J2 coupling (real J3 = recorded J3 + J2), and converts
+        degrees to radians. This is where the coupling/units are applied -- the recording stores raw.
+        """
+        j = list(frame.joints_deg[:NUM_ARM_DOFS])
+        j[2] += j[1]  # J3 is recorded relative to J2
+        return np.deg2rad(np.asarray(j, dtype=np.float32))
 
-    Returns ``(rec_times, rec_targets, rec_engaged, rec_duration)``:
-        - ``rec_times``: sample times [s], shape [N], starting at 0 (:func:`recorded_times`).
-        - ``rec_targets``: coupled arm joint targets [rad], shape [N, NUM_ARM_DOFS] (:func:`arm_targets_rad`).
-        - ``rec_engaged``: suction-cup engagement command (robot output ro[0]) per frame, shape [N] bool.
-        - ``rec_duration``: recording length [s] (``rec_times[-1]``).
-    """
-    frames = load_recording(path)
-    rec_times = np.asarray(recorded_times(frames), dtype=np.float64)
-    rec_targets = np.stack([arm_targets_rad(f) for f in frames]).astype(np.float64)  # [N, NUM_ARM_DOFS]
-    rec_engaged = np.array([f.ro[0] for f in frames], dtype=bool)  # [N]
-    return rec_times, rec_targets, rec_engaged, float(rec_times[-1])
+    @staticmethod
+    def load_playback(path):
+        """Load a recording and extract the arrays the sim consumes.
 
+        Returns ``(rec_times, rec_targets, rec_engaged, rec_duration)``:
+            - ``rec_times``: sample times [s], shape [N], starting at 0 (:func:`recorded_times`).
+            - ``rec_targets``: coupled arm joint targets [rad], shape [N, NUM_ARM_DOFS].
+            - ``rec_engaged``: suction-cup engagement command (robot output ro[0]) per frame, shape [N] bool.
+            - ``rec_duration``: recording length [s] (``rec_times[-1]``).
+        """
+        frames = load_recording(path)
+        rec_times = np.asarray(recorded_times(frames), dtype=np.float64)
+        rec_targets = np.stack([RobotPlayback.arm_targets_rad(f) for f in frames]).astype(np.float64)
+        rec_engaged = np.array([f.ro[0] for f in frames], dtype=bool)  # [N]
+        return rec_times, rec_targets, rec_engaged, float(rec_times[-1])
 
-def gaussian_smooth(times, values, sigma):
-    """Gaussian-smooth ``values`` ([N, D]) over the non-uniform sample ``times`` ([N]).
+    @staticmethod
+    def gaussian_smooth(times, values, sigma):
+        """Gaussian-smooth ``values`` ([N, D]) over the non-uniform sample ``times`` ([N]).
 
-    Each output sample is a Gaussian-weighted average of all samples by *time* distance
-    (``w_ij = exp(-((t_i - t_j) / sigma)^2 / 2)``), so it correctly handles the non-uniform sample
-    rate. ``sigma <= 0`` returns the input unchanged.
-    """
-    if sigma <= 0.0:
-        return values
-    dt = times[:, None] - times[None, :]  # [N, N] pairwise time differences [s]
-    weights = np.exp(-0.5 * (dt / sigma) ** 2)  # Gaussian weights by time distance
-    weights /= weights.sum(axis=1, keepdims=True)  # normalize per output sample
-    return weights @ values  # [N, D] smoothed targets
+        Each output sample is a Gaussian-weighted average of all samples by *time* distance
+        (``w_ij = exp(-((t_i - t_j) / sigma)^2 / 2)``), so it correctly handles the non-uniform sample
+        rate. ``sigma <= 0`` returns the input unchanged.
+        """
+        if sigma <= 0.0:
+            return values
+        dt = times[:, None] - times[None, :]  # [N, N] pairwise time differences [s]
+        weights = np.exp(-0.5 * (dt / sigma) ** 2)  # Gaussian weights by time distance
+        weights /= weights.sum(axis=1, keepdims=True)  # normalize per output sample
+        return weights @ values  # [N, D] smoothed targets
+
+    def __init__(self, path, smoothing_sigma):
+        rec_times, rec_targets, rec_engaged, self.rec_duration = self.load_playback(path)
+        rec_targets = self.gaussian_smooth(rec_times, rec_targets, smoothing_sigma)  # smooth the coarse waypoints
+        self.rec_times_wp = wp.array(rec_times, dtype=wp.float32)  # [N] sample times [s]
+        self.rec_targets_wp = wp.array(rec_targets, dtype=wp.float32)  # [N, NUM_ARM_DOFS] coupled targets [rad]
+        self.rec_engaged_wp = wp.array(rec_engaged, dtype=wp.bool)  # [N] engagement command per frame
+        # engage / disengage events: frame indices where the suction command rises (a pick) / falls (a release)
+        self.rising = [i for i in range(1, len(rec_engaged)) if rec_engaged[i] and not rec_engaged[i - 1]]
+        self.falling = [i for i in range(1, len(rec_engaged)) if not rec_engaged[i] and rec_engaged[i - 1]]
 
 
 @wp.kernel
@@ -451,6 +465,112 @@ class DriveTargetRecorder:
         print(f"wrote {len(self.time_log)} rows to {path}")
 
 
+def box_top_world(robot_arm_model, robot_arm_state, ee_body, cup_c, rec_targets, engage_frame):
+    """World position of the box top when the flange is at the given engagement frame's pose.
+
+    FK the arm to the recorded targets at ``engage_frame`` -> flange pose, then offset by the cup
+    contact point (finger-hull deepest along the suction axis, at the cup center ``cup_c``) to where
+    the cups meet the box top.
+    """
+    q = robot_arm_state.joint_q.numpy()
+    q[:NUM_ARM_DOFS] = rec_targets[engage_frame]
+    robot_arm_state.joint_q.assign(q)
+    newton.eval_fk(robot_arm_model, robot_arm_state.joint_q, robot_arm_state.joint_qd, robot_arm_state)
+    tf = robot_arm_state.body_q.numpy()[ee_body]  # flange world pose [px,py,pz,qx,qy,qz,qw]
+    bt = wp.vec3(*tf[:3]) + wp.quat_rotate(
+        wp.quat(*tf[3:7]), wp.vec3(FINGER_HULL_DEEPEST_X, float(cup_c[1]), float(cup_c[2]))
+    )
+    return float(bt[0]), float(bt[1]), float(bt[2])
+
+
+def box_and_pallet_poses(robot_arm_model, robot_arm_state, ee_body, cup_c, robot_playback, engage_index, spec):
+    """World center of the picked box body and of the static pallet it rests on, for the box picked at
+    the ``engage_index``-th engagement. FK the flange there (:func:`box_top_world`) then drop by the box
+    geometry ``spec = ((hx, hy, hz), mass)``."""
+    rec_targets = robot_playback.rec_targets_wp.numpy()
+    top = box_top_world(robot_arm_model, robot_arm_state, ee_body, cup_c, rec_targets, robot_playback.rising[engage_index])
+    (_hx, _hy, hz), _mass = spec
+    box_center = wp.vec3(top[0], top[1], top[2] - hz)  # body center: half a box below the top face
+    pallet_center = wp.vec3(top[0], top[1], top[2] - 2.0 * hz - 0.5)  # pallet directly under the box (half-height 0.5)
+    return box_center, pallet_center
+
+
+@dataclass
+class BoxPlacements:
+    """How to add every pick box to the robot_arm_builder (index 0 the panel, 1.. the crates), plus the pallets."""
+
+    masses: list  # [B] body mass [kg]
+    inertias: list  # [B] body inertia (wp.mat33), solid-box formula
+    dims: list  # [B] (hx, hy, hz) half-extents [m]
+    pick_poses: list  # [B] pose where the cups grip the box (wp.transform)
+    wait_poses: list  # [B] pose where the box is created, before it is moved to its pick pose
+    pallet_poses: list  # static pallet poses to add: the panel's, then the one shared crate pallet
+    pallet_dims: list  # matching (hx, hy, hz) half-extents [m] for each pallet in pallet_poses
+
+
+def _solid_box_inertia(spec):
+    """Diagonal inertia of a uniform solid box ``spec = ((hx, hy, hz), mass)`` about its center."""
+    (hx, hy, hz), mass = spec
+    return wp.mat33(
+        mass / 3.0 * (hy * hy + hz * hz), 0.0, 0.0,
+        0.0, mass / 3.0 * (hx * hx + hz * hz), 0.0,
+        0.0, 0.0, mass / 3.0 * (hx * hx + hy * hy),
+    )
+
+
+def compute_box_placements(robot_arm_builder, robot_playback, ee_body):
+    """Compute how to add every pick box (the panel + all crates) to ``robot_arm_builder``, from the arm's flange
+    pose at each pick engagement (``rising[0]`` the panel, ``rising[n+1]`` the nth crate). Finalizes
+    ``robot_arm_builder`` into an arm-only model for the FK probes, so call it before adding the boxes. The panel
+    is created where it is gripped; each crate is created parked in a line and moved to its grip pose at
+    pick time. The panel gets its own pallet; the crates share one.
+    """
+    robot_arm_model = robot_arm_builder.finalize()  # arm-only model, for the FK placement probes
+    robot_arm_state = robot_arm_model.state()
+    cup_c = np.mean(GRIPPER_PADS, axis=0)  # box top seats at the finger-hull deepest, under the cups
+    p = BoxPlacements([], [], [], [], [], [], [])
+
+    # Panel: created (and gripped) where the cups meet it at the 1st engagement; its own pallet.
+    panel_center, panel_pallet = box_and_pallet_poses(robot_arm_model, robot_arm_state, ee_body, cup_c, robot_playback, 0, PANEL)
+    panel_pose = wp.transform(panel_center, wp.quat_identity())  # panel rests axis-aligned
+    p.masses.append(PANEL[1])
+    p.inertias.append(_solid_box_inertia(PANEL))
+    p.dims.append(PANEL[0])
+    p.pick_poses.append(panel_pose)
+    p.wait_poses.append(panel_pose)  # panel is created at its pick pose (no separate waiting spot)
+    p.pallet_poses.append(wp.transform(panel_pallet, wp.quat_identity()))
+    p.pallet_dims.append(PANEL_PALLET_HALF)  # pallet snug to the panel (see PANEL_PALLET_HALF)
+
+    # Crates: gripped at their own engagement (rising[n+1]); created parked off-scene in a line; the
+    # crates share one static pallet under the (common) grip spot.
+    crate_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)  # crates rest rotated 90deg about z
+    (_chx, _chy, chz), _crate_mass = CRATE
+    for n in range(NUM_CRATES):
+        grip, crate_pallet = box_and_pallet_poses(robot_arm_model, robot_arm_state, ee_body, cup_c, robot_playback, n + 1, CRATE)
+        if n == 0:
+            p.pallet_poses.append(wp.transform(crate_pallet, wp.quat_identity()))  # one shared crate pallet
+            p.pallet_dims.append(CRATE_PALLET_HALF)  # snug pedestal sized to the rotated crate (see CRATE_PALLET_HALF)
+        p.masses.append(CRATE[1])
+        p.inertias.append(_solid_box_inertia(CRATE))
+        p.dims.append(CRATE[0])
+        p.pick_poses.append(wp.transform(grip, crate_quat))
+        p.wait_poses.append(wp.transform(wp.vec3(-3.0, -3.0 - 0.6 * float(n), chz), crate_quat))  # parked, in a line
+    return p
+
+
+def seal_modes_for(gripper, spec):
+    """The seal's three spring-damper modes for a gripped box ``spec = ((hx, hy, hz), mass)``, as
+    ``(name, omega_n [rad/s], zeta)`` per mode. ``ixx`` is the box's tilt inertia about a horizontal
+    grip axis; ``hz`` is the COM depth below the top-face grip. Shown in the side panel."""
+    (_hx, hy, hz), mass = spec
+    ixx = mass / 3.0 * (hy * hy + hz * hz)
+    return (
+        ("peel", gripper.peel_natural_frequency(ixx, mass, hz), gripper.peel_damping_ratio(ixx, mass, GRIPPER_PARAMS.d_peel_x, hz)),
+        ("normal", gripper.normal_natural_frequency(mass), gripper.normal_damping_ratio(mass, GRIPPER_PARAMS.d_normal)),
+        ("shear", gripper.shear_natural_frequency(mass), gripper.shear_damping_ratio(mass, GRIPPER_PARAMS.d_shear_x)),
+    )
+
+
 class Example:
     def __init__(self, viewer, args):
 
@@ -475,107 +595,38 @@ class Example:
         # states. Load and extract the time-stamps, the joint drive target positions and the
         # suction pad engagement states.
         # Apply gaussian smoothing to the raw drive target after loading.
-        rec_times, rec_targets, rec_engaged, self.rec_duration = load_playback(RECORDING_JSONL)
-        rec_targets = gaussian_smooth(rec_times, rec_targets, SMOOTHING_SIGMA)  # smooth the coarse waypoints
-        self.rec_times_wp = wp.array(rec_times, dtype=wp.float32)
-        self.rec_targets_wp = wp.array(rec_targets, dtype=wp.float32)  # 2d [N, NUM_ARM_DOFS]
-        self.rec_engaged_wp = wp.array(rec_engaged, dtype=wp.bool)  # [N]; suction engagement command per frame
+        self.playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA)
 
         # Load the Fanuc robot arm on a ground plane.
-        initial_arm_q = rec_targets[0].astype(np.float32)  # drive target at t=0, the start pose
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.restitution = 0.0  # low restitution: the held box shouldn't bounce
         builder.add_usd(str(ROBOT_USD), floating=False, collapse_fixed_joints=True)
         ee_body = builder.body_count - 1  # last arm link (J6_link) is the end-effector flange
         builder.add_ground_plane()
 
-        # Auto-place each pick box + its pallet from the flange pose at that box's engagement (forward
-        # kinematics): FK the arm to the engagement targets -> flange pose -> project the finger-hull
-        # deepest point -> box-top world position -> seat the box (and its pallet under it) there. The
-        # recording has two engage/disengage cycles: PANEL is picked at the 1st engagement, CRATE at the
-        # 2nd. Each rests on its own pallet until gripped. Robust to SMOOTHING_SIGMA / cups / recording.
-        rising = [i for i in range(1, len(rec_engaged)) if rec_engaged[i] and not rec_engaged[i - 1]]
-        falling = [i for i in range(1, len(rec_engaged)) if not rec_engaged[i] and rec_engaged[i - 1]]
-        fk_model = builder.finalize()  # arm-only model, solely to run the FK placement probes
-        fk_state = fk_model.state()
-        cup_c = np.mean(GRIPPER_PADS, axis=0)  # box top seats at the finger-hull deepest, under the cups
+        # Auto-place every pick box (panel + crates) + its pallet from the flange pose at each box's
+        # engagement (forward kinematics; see compute_box_placements). Robust to SMOOTHING_SIGMA / cups /
+        # recording. Each box is created at its initial pose -- the panel where it is gripped, each crate
+        # parked in a line -- and moved to its grip pose at pick time (crate_grip_poses; later).
+        placements = compute_box_placements(builder, self.playback, ee_body)
 
-        def box_top_world(engage_frame):
-            """World position of the box top when the flange is at the given engagement frame's pose."""
-            q = fk_state.joint_q.numpy()
-            q[:NUM_ARM_DOFS] = rec_targets[engage_frame]
-            fk_state.joint_q.assign(q)
-            newton.eval_fk(fk_model, fk_state.joint_q, fk_state.joint_qd, fk_state)
-            tf = fk_state.body_q.numpy()[ee_body]  # flange world pose [px,py,pz,qx,qy,qz,qw]
-            bt = wp.vec3(*tf[:3]) + wp.quat_rotate(
-                wp.quat(*tf[3:7]), wp.vec3(FINGER_HULL_DEEPEST_X, float(cup_c[1]), float(cup_c[2]))
-            )
-            return float(bt[0]), float(bt[1]), float(bt[2])
+        for pallet_pose, (phx, phy, phz) in zip(placements.pallet_poses, placements.pallet_dims, strict=True):
+            # the panel's plain pedestal, then the crate pallet snug to the rotated crate (see compute_box_placements)
+            builder.add_shape_box(-1, xform=pallet_pose, hx=phx, hy=phy, hz=phz)
 
-        def add_box_on_pallet(spec, top, label):
-            """Add a dynamic pick box (top face at ``top``) on its own static pallet. Returns (body, shape).
-
-            Mass/inertia set on the body (solid-box formula); shape density is 0 so the shape adds no mass.
-            """
-            (hx, hy, hz), mass = spec
-            builder.add_shape_box(  # 1x1x1 pallet, its top at the box bottom
-                -1,
-                xform=wp.transform(wp.vec3(top[0], top[1], top[2] - 2.0 * hz - BOX_HALF), wp.quat_identity()),
-                hx=BOX_HALF,
-                hy=BOX_HALF,
-                hz=BOX_HALF,
-            )
+        box_bodies, box_shapes = [], []  # index 0 the panel, 1.. the crates
+        for i in range(len(placements.masses)):
+            (hx, hy, hz) = placements.dims[i]
+            label = "panel" if i == 0 else f"crate_{i - 1}"
             body = builder.add_body(
-                xform=wp.transform(wp.vec3(top[0], top[1], top[2] - hz), wp.quat_identity()),
-                mass=mass,
-                inertia=wp.mat33(
-                    mass / 3.0 * (hy * hy + hz * hz), 0.0, 0.0,
-                    0.0, mass / 3.0 * (hx * hx + hz * hz), 0.0,
-                    0.0, 0.0, mass / 3.0 * (hx * hx + hy * hy),
-                ),
-                label=label,
+                xform=placements.wait_poses[i], mass=placements.masses[i], inertia=placements.inertias[i], label=label
             )
             cfg = builder.default_shape_cfg.copy()
-            cfg.density = 0.0
-            return body, builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg)
-
-        panel_body, panel_shape = add_box_on_pallet(PANEL, box_top_world(rising[0]), "panel")
-
-        # Crates: cycles 1..NUM_CRATES all pick from the same pose, so one static pick pallet sits at that
-        # spot and crate 0 starts on it. The spares rest far from the scene (above ground so they pass
-        # test_final) and are teleported onto the pallet as each crate is placed (step()). All crates share
-        # the CRATE inertia; shape density is 0 so the body mass is authoritative.
-        crate_top = box_top_world(rising[1])
-        (chx, chy, chz), crate_mass = CRATE
-        builder.add_shape_box(  # shared crate pick pallet -- snug pedestal under the 90deg-rotated crate
-            -1,
-            xform=wp.transform(
-                wp.vec3(crate_top[0], crate_top[1], crate_top[2] - 2.0 * chz - BOX_HALF), wp.quat_identity()
-            ),
-            hx=chy + 0.04,  # crate is rotated 90deg about z, so world-x spans chy, world-y spans chx
-            hy=chx + 0.04,
-            hz=BOX_HALF,
-        )
-        self.crate_pick_pos = (crate_top[0], crate_top[1], crate_top[2] - chz)  # crate body center at the pick spot
-        crate_inertia = wp.mat33(
-            crate_mass / 3.0 * (chy * chy + chz * chz), 0.0, 0.0,
-            0.0, crate_mass / 3.0 * (chx * chx + chz * chz), 0.0,
-            0.0, 0.0, crate_mass / 3.0 * (chx * chx + chy * chy),
-        )
-        crate_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 1.0 * np.pi / 2.0)  # crates rest rotated 90deg about z
-        crate_bodies, crate_shapes = [], []
-        for k in range(NUM_CRATES):
-            pos = self.crate_pick_pos if k == 0 else (-3.0, -3.0 - 0.6 * float(k), chz)  # spares parked far off
-            body = builder.add_body(
-                xform=wp.transform(wp.vec3(*pos), crate_quat),
-                mass=crate_mass,
-                inertia=crate_inertia,
-                label=f"crate_{k}",
-            )
-            cfg = builder.default_shape_cfg.copy()
-            cfg.density = 0.0
-            crate_bodies.append(body)
-            crate_shapes.append(builder.add_shape_box(body, hx=chx, hy=chy, hz=chz, cfg=cfg))
+            cfg.density = 0.0  # body mass is authoritative; the shape adds none
+            box_bodies.append(body)
+            box_shapes.append(builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg))
+        panel_body, panel_shape = box_bodies[0], box_shapes[0]
+        crate_bodies, crate_shapes = box_bodies[1:], box_shapes[1:]
+        crate_grip_poses = placements.pick_poses[1:]  # where each crate is moved to be gripped
 
         # Filter every pick box against the whole robot arm (bodies 0..ee_body): the seal owns the
         # hold, and the wide panel swings up against the wrist/forearm links during the carry, so
@@ -628,43 +679,16 @@ class Example:
         )
         for px, py, pz in GRIPPER_PADS:
             gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
-        # Characterize the seal's three spring-damper modes for the box currently gripped (shown in the
-        # side panel). The modes depend on the box, so precompute a set per box and select the active one
-        # as the seal retargets (see step()). ixx is the box's tilt inertia about a horizontal grip axis;
-        # hz is the COM depth below the top-face grip. Stored as (name, omega_n [rad/s], zeta) per mode.
-        def seal_modes_for(spec):
-            (_hx, hy, hz), mass = spec
-            ixx = mass / 3.0 * (hy * hy + hz * hz)
-            return (
-                (
-                    "peel",
-                    gripper.peel_natural_frequency(ixx, mass, hz),
-                    gripper.peel_damping_ratio(ixx, mass, GRIPPER_PARAMS.d_peel_x, hz),
-                ),
-                (
-                    "normal",
-                    gripper.normal_natural_frequency(mass),
-                    gripper.normal_damping_ratio(mass, GRIPPER_PARAMS.d_normal),
-                ),
-                (
-                    "shear",
-                    gripper.shear_natural_frequency(mass),
-                    gripper.shear_damping_ratio(mass, GRIPPER_PARAMS.d_shear_x),
-                ),
-            )
-
-        self.panel_seal_modes = seal_modes_for(PANEL)
-        self.crate_seal_modes = seal_modes_for(CRATE)
-        self.seal_modes = self.panel_seal_modes  # panel is gripped first; swapped to the crate at the switch
         gripper_builder = SurfaceGripperBuilder()
         gripper_builder.add_gripper(gripper)
         self.gripper_model = gripper_builder.finalize(device=self.model.device)
         self.gripper_state = self.gripper_model.state()
         self.gripper_control = self.gripper_model.control()
         self.gripper_control.pad_grip_control.fill_(1.0)  # full suction command
-        self.seal_engaged = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)
-        # CSR pad ranges per gripper: gripper g owns pads [pad_offsets[g], pad_offsets[g+1]). One 4-pad
+
+        # gripper g owns pads [pad_offsets[g], pad_offsets[g+1]). One 4-pad
         # gripper here -> [0, 4]; command_seal_kernel launches one thread per gripper over these ranges.
+        self.seal_engaged = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)
         self.pad_offsets = wp.array([0, len(GRIPPER_PADS)], dtype=wp.int32)
         self.seal_broken = wp.zeros(self.pad_offsets.shape[0] - 1, dtype=wp.bool)  # [grippers] latched break
         self.seal_break_count = wp.zeros(len(GRIPPER_PADS), dtype=wp.int32)  # consecutive over-threshold steps, per pad
@@ -673,29 +697,47 @@ class Example:
         # next graph launch.
         self.seal_body_b = wp.full(len(GRIPPER_PADS), panel_body, dtype=wp.int32)
         self.crate_bodies = crate_bodies
+
         # Per-crate free-joint DOF slices, so a spare can be teleported onto the pick pallet at runtime
         # (7 joint_q = [pos, quat xyzw], 6 joint_qd) without disturbing the arm or the other bodies.
         joint_child = self.model.joint_child.numpy()
         joint_q_start = self.model.joint_q_start.numpy()
         joint_qd_start = self.model.joint_qd_start.numpy()
-        self.crate_dof = [
-            (int(joint_q_start[j]), int(joint_qd_start[j]))
-            for b in crate_bodies
-            for j in [int(np.where(joint_child == b)[0][0])]
-        ]
-        self.crate_pick_q = np.array(
-            [*self.crate_pick_pos, crate_quat[0], crate_quat[1], crate_quat[2], crate_quat[3]], dtype=np.float32
-        )  # spares teleport onto the pallet at the same 90deg-about-z resting orientation
-        # Schedule: in the idle gap before crate cycle c (1..NUM_CRATES), retarget the seal to crate c-1
-        # and (for c>=2) teleport that spare onto the now-empty pick pallet. crate 0 already sits there.
+        self.crate_dof = []
+        for b in crate_bodies:
+            # each crate body is the child of exactly one (free) joint; find that joint's index
+            j = int(np.where(joint_child == b)[0][0])
+            q_start = int(joint_q_start[j])  # where this crate's 7 joint_q (pos + quat xyzw) begin
+            qd_start = int(joint_qd_start[j])  # where its 6 joint_qd begin
+            self.crate_dof.append((q_start, qd_start))
+        # Each crate's pick pose as free-joint DOFs [pos, quat xyzw]; the crate is teleported here to be
+        # gripped. Computed per crate in crate_grip_poses (see compute_box_placements); the crates all pick
+        # from the same conveyor spot, so these differ only by a few mm in the smoothed grip z, which
+        # settles out on the (snug) shared pick pallet before the grip.
+        self.crate_grip_q = np.array(
+            [[*wp.transform_get_translation(t), *wp.transform_get_rotation(t)] for t in crate_grip_poses],
+            dtype=np.float32,
+        )
+        # Schedule: in the idle gap before crate cycle c (1..NUM_CRATES) -- the midpoint between the
+        # previous release (falling[c-1]) and this pick (rising[c]) -- retarget the seal to crate c-1 and
+        # move it from its waiting spot to its pick pose (step()). Each entry is (time [s], crate index).
+        rising, falling = self.playback.rising, self.playback.falling  # engage / disengage frame indices
+        rec_times = self.playback.rec_times_wp.numpy()  # [N] sample times [s]
         self.seal_schedule = [
             (0.5 * (float(rec_times[falling[c - 1]]) + float(rec_times[rising[c]])), c - 1)
             for c in range(1, len(rising))
         ]
         self.next_switch = 0
 
+        # The seal's spring-damper modes depend on the gripped box (see seal_modes_for); precompute a set
+        # per box, shown in the side panel with the active one selected as the seal retargets (gui()).
+        self.panel_seal_modes = seal_modes_for(gripper, PANEL)
+        self.crate_seal_modes = seal_modes_for(gripper, CRATE)
+        self.seal_modes = self.panel_seal_modes  # panel is gripped first; swapped to the crate at the switch
+
         # Start the arm at the first recorded pose. Set only the arm DOFs; the pick box's free-joint
         # DOFs keep their built-in rest pose (from add_body), so it starts resting on the static box.
+        initial_arm_q = self.playback.rec_targets_wp.numpy()[0]  # drive target at t=0, the start pose
         joint_q = self.state_0.joint_q.numpy()
         joint_q[:NUM_ARM_DOFS] = initial_arm_q
         self.state_0.joint_q.assign(joint_q)
@@ -743,9 +785,9 @@ class Example:
                 sample_playback_kernel,
                 dim=NUM_ARM_DOFS,
                 inputs=[
-                    self.rec_times_wp,
-                    self.rec_targets_wp,
-                    self.rec_engaged_wp,
+                    self.playback.rec_times_wp,
+                    self.playback.rec_targets_wp,
+                    self.playback.rec_engaged_wp,
                     self.sim_step_count_wp,  # in/out: read as the current time, then advanced in place
                     self.last_lo_wp,  # in/out: forward-search index, resumed and cached
                     float(self.sim_dt),
@@ -808,14 +850,14 @@ class Example:
             crate_idx = self.seal_schedule[self.next_switch][1]
             self.seal_body_b.assign(np.full(len(GRIPPER_PADS), self.crate_bodies[crate_idx], dtype=np.int32))
             self.seal_modes = self.crate_seal_modes  # side-panel modes now describe the crate
-            if crate_idx >= 1:  # bring the next spare crate onto the (now-empty) pick pallet
-                qs, qds = self.crate_dof[crate_idx]
-                q = self.state_0.joint_q.numpy()
-                qd = self.state_0.joint_qd.numpy()
-                q[qs : qs + 7] = self.crate_pick_q
-                qd[qds : qds + 6] = 0.0
-                self.state_0.joint_q.assign(q)
-                self.state_0.joint_qd.assign(qd)
+            # move the crate from its waiting spot to its pick pose so the arm can grip it
+            qs, qds = self.crate_dof[crate_idx]
+            q = self.state_0.joint_q.numpy()
+            qd = self.state_0.joint_qd.numpy()
+            q[qs : qs + 7] = self.crate_grip_q[crate_idx]
+            qd[qds : qds + 6] = 0.0
+            self.state_0.joint_q.assign(q)
+            self.state_0.joint_qd.assign(qd)
             self.next_switch += 1
         if self.graph:
             wp.capture_launch(self.graph)
