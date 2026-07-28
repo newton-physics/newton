@@ -60,7 +60,11 @@ from .import_usd_deformable_attachments import (
 )
 from .import_usd_deformable_cable import _deformable_import_cable, _deformable_import_cable_graphs
 from .import_usd_deformable_cloth import _deformable_import_cloth
-from .import_usd_deformable_utils import _DeformableImportContext, _scout_deformable_prims
+from .import_usd_deformable_utils import (
+    _LOADABLE_VISUAL_TYPE_NAMES_LOWER,
+    _DeformableImportContext,
+    _scout_deformable_prims,
+)
 from .import_usd_deformable_volume import _deformable_import_volume
 from .import_utils import should_show_collider
 
@@ -619,16 +623,6 @@ def parse_usd(
     # Create a cache for world transforms to avoid recomputing them for each prim.
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     traverse_instance_proxies = Usd.TraverseInstanceProxies()
-    _visual_geom_types = {
-        "cube",
-        "sphere",
-        "plane",
-        "capsule",
-        "cylinder",
-        "cone",
-        "mesh",
-        "particlefield3dgaussiansplat",
-    }
 
     def _is_enabled_collider(prim: Usd.Prim) -> bool:
         if collider := UsdPhysics.CollisionAPI(prim):
@@ -1287,7 +1281,7 @@ def parse_usd(
                     parent_body_id, prim, body_xform, articulation_root_xform, allow_visual_shapes
                 )
             return
-        if type_name not in _visual_geom_types:
+        if type_name not in _LOADABLE_VISUAL_TYPE_NAMES_LOWER:
             # Skip the transform/material work below for prims that cannot produce a shape.
             if (
                 len(type_name) > 0

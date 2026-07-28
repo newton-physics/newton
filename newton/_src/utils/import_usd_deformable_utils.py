@@ -865,10 +865,9 @@ _SCOUT_SKIP_TYPE_NAMES = frozenset(
     }
 )
 
-# Keep this set aligned with _load_visual_shapes_impl's leaf-shape branches.
 # UsdGeom.Imageable is intentionally broader: it also accepts container and non-shape
 # schemas, while the static post-pass invokes the loader with child recursion disabled.
-_SCOUT_LOADABLE_VISUAL_TYPE_NAMES = frozenset(
+_LOADABLE_VISUAL_TYPE_NAMES = frozenset(
     {
         "Cube",
         "Sphere",
@@ -880,6 +879,7 @@ _SCOUT_LOADABLE_VISUAL_TYPE_NAMES = frozenset(
         "ParticleField3DGaussianSplat",
     }
 )
+_LOADABLE_VISUAL_TYPE_NAMES_LOWER = frozenset(type_name.lower() for type_name in _LOADABLE_VISUAL_TYPE_NAMES)
 
 
 def _scout_deformable_prims(
@@ -921,7 +921,7 @@ def _scout_deformable_prims(
 
     for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
         type_name = str(prim.GetTypeName())
-        is_static_visual = collect_static_visuals and type_name in _SCOUT_LOADABLE_VISUAL_TYPE_NAMES
+        is_static_visual = collect_static_visuals and type_name in _LOADABLE_VISUAL_TYPE_NAMES
         if type_name in _SCOUT_SKIP_TYPE_NAMES and not is_static_visual:
             continue
         # An ignored prim must be as-if-absent from the start: bucketing it or letting it
