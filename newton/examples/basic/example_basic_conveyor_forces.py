@@ -6,22 +6,16 @@
 #
 # A multi-belt conveyor circuit transports rigid boxes with a velocity field
 # rather than belt friction: every belt is a static, frictionless surface with
-# an attached constant or pivot velocity field. Each step the
-# per-contact normal forces are read back from the solver and converted into
-# Coulomb-limited tangential body forces, so boxes are carried around the
-# loop, through the 180-degree turn, up the incline, across the differential
-# pair, and back. Runs on SolverXPBD, SolverVBD, and SolverMuJoCo.
+# an attached constant or pivot velocity field. Each step the per-contact
+# normal forces are read back from the solver and converted into Coulomb-limited
+# tangential body forces, so boxes are carried around the loop, through the
+# 180-degree turn, up the incline, across the differential pair, and back.
+# The drive itself lives in conveyor_forces.py.
 #
 # Straight belts cannot be driven kinematically, which is what motivates the
 # force-based drive here. See example_basic_conveyor.py for the other
 # approach: a single rotating belt moved by a prescribed joint, carrying its
 # load through ordinary contact friction.
-#
-# The drive itself lives in three companion modules: conveyor_forces_actuators
-# turns a belt's velocity field into a per-contact force, conveyor_forces_kernels
-# groups contacts into patches and splits the normal force between them, and
-# conveyor_forces_adapter reformats Newton's contacts and body state into the
-# packed buffers those kernels read.
 #
 # Command: uv run -m newton.examples basic_conveyor_forces
 #
@@ -34,13 +28,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.basic import conveyor_forces_kernels
-from newton.examples.basic.conveyor_forces_actuators import (
-    VELOCITY_FIELD_TYPE_CONSTANT_VELOCITY,
-    VELOCITY_FIELD_TYPE_PIVOT,
-    VelocityFieldActuator,
-)
-from newton.examples.basic.conveyor_forces_adapter import NewtonConveyorAdapter
+from newton.examples.basic.conveyor_forces import ConveyorForceModel
 
 # A small positive collision margin smooths the belt-to-belt seam transitions. VBD's
 # rigid-contact handling needs a larger margin than XPBD to keep bodies on the belts.
@@ -53,9 +41,6 @@ VBD_ITERATIONS = 15
 MUJOCO_IMPRATIO = 0.1
 # Just above mujoco.mjMINMU, below which mujoco_warp warns about NaN-prone contacts.
 MUJOCO_MIN_FRICTION = 1.1e-5
-
-CONTACT_PROCESSING_BATCH_SIZE = 5
-MAX_THREAD_COUNT = 4096
 
 # Slowest observed fleet-average transport speed is ~1.8 m/s (XPBD) and every box travels
 # at least 1.3 m within a 100-frame test; undriven boxes sit at ~0.
@@ -72,9 +57,12 @@ TURN_SEGMENTS = 48
 # surface normal, so a box pressed against a guard wall is not carried sideways.
 CONTACT_PROCESSING_THRESHOLD = 0.997
 
-# Coulomb friction between a box material (row) and a belt material (column). The
-# tangential drive force on a box is limited to this times the contact normal force.
-FRICTION_TABLE = ((0.5,), (0.9,))
+# Coulomb limit on the drive: the tangential force on a box never exceeds this
+# times the contact normal force.
+BELT_DRIVE_FRICTION = 0.5
+
+BOX_FRICTION = 0.5
+GUARD_FRICTION = 0.2
 
 BELT_COLOR = (0.09, 0.09, 0.09)  # dark rubber
 GUARD_COLOR = (0.66, 0.69, 0.74)  # brushed metal
@@ -106,26 +94,26 @@ GUARDS = (
     ("decline_guard", (0.5, 9.3094, 0.746), -5.0, 3.305, (0.1, 1.5, GUARD_HALF_THICKNESS)),
 )
 
-# Transported boxes: (label, center [m], half extents [m], mass [kg], material index)
+# Transported boxes: (label, center [m], half extents [m], mass [kg])
 BOXES = (
-    ("box_0", (0.0, 0.0, 0.804), (0.2, 0.3, 0.2), 2.0, 0),
-    ("box_1", (-0.2, -1.0, 0.704), (0.1, 0.1, 0.1), 0.5, 0),
-    ("box_2", (0.1, -2.0, 0.804), (0.2, 0.3, 0.2), 2.0, 0),
-    ("box_3", (0.0, 4.0, 0.704), (0.25, 0.25, 0.1), 1.0, 1),
-    ("box_4", (-0.75, -6.85, 0.704), (0.1, 0.1, 0.1), 0.5, 0),
-    ("box_5", (-4.35, -6.85, 0.804), (0.2, 0.3, 0.2), 2.0, 0),
-    ("box_6", (-5.1, 4.0849, 1.1554), (0.2, 0.3, 0.2), 2.0, 0),
-    ("box_7", (-4.84, 4.5349, 1.0554), (0.1, 0.1, 0.1), 0.5, 0),
-    ("box_8", (-5.36, 3.6349, 1.0554), (0.1, 0.1, 0.1), 0.5, 0),
-    ("box_9", (-5.025, 1.3849, 1.1554), (0.2, 0.3, 0.2), 2.0, 0),
-    ("box_10", (-5.1, 7.5849, 1.0554), (0.25, 0.25, 0.1), 1.0, 1),
+    ("box_0", (0.0, 0.0, 0.804), (0.2, 0.3, 0.2), 2.0),
+    ("box_1", (-0.2, -1.0, 0.704), (0.1, 0.1, 0.1), 0.5),
+    ("box_2", (0.1, -2.0, 0.804), (0.2, 0.3, 0.2), 2.0),
+    ("box_3", (0.0, 4.0, 0.704), (0.25, 0.25, 0.1), 1.0),
+    ("box_4", (-0.75, -6.85, 0.704), (0.1, 0.1, 0.1), 0.5),
+    ("box_5", (-4.35, -6.85, 0.804), (0.2, 0.3, 0.2), 2.0),
+    ("box_6", (-5.1, 4.0849, 1.1554), (0.2, 0.3, 0.2), 2.0),
+    ("box_7", (-4.84, 4.5349, 1.0554), (0.1, 0.1, 0.1), 0.5),
+    ("box_8", (-5.36, 3.6349, 1.0554), (0.1, 0.1, 0.1), 0.5),
+    ("box_9", (-5.025, 1.3849, 1.1554), (0.2, 0.3, 0.2), 2.0),
+    ("box_10", (-5.1, 7.5849, 1.0554), (0.25, 0.25, 0.1), 1.0),
 )
 
 # A two-link parcel hinged about Z, straddling the differential pair: the speed
 # difference between the two belts folds it as it travels.
 HINGED_PARCEL = (
-    ("parcel_a", (-4.975, -0.7151, 1.0054), (0.125, 0.05, 0.05), 1.0, 0),
-    ("parcel_b", (-5.225, -0.7151, 1.0054), (0.125, 0.05, 0.05), 1.0, 0),
+    ("parcel_a", (-4.975, -0.7151, 1.0054), (0.125, 0.05, 0.05), 1.0),
+    ("parcel_b", (-5.225, -0.7151, 1.0054), (0.125, 0.05, 0.05), 1.0),
 )
 HINGE_LIMIT = math.radians(45.0)
 HINGE_LIMIT_KE = 100.0  # [N·m/rad]
@@ -191,13 +179,12 @@ class Example:
         self.sim_substeps = 4 if self.solver_type == "vbd" else 2
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
-        self.startup_duration = STARTUP_DURATION
 
         self.viewer = viewer
 
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
-        self.belts, self.bodies = self._build_scene(builder)
+        straight_belts, turn_belts, self.tracked_bodies = self._build_scene(builder)
 
         if self.solver_type == "mujoco":
             # Two MuJoCo-specific adjustments, both needed for the belts to carry anything:
@@ -209,10 +196,10 @@ class Example:
             #    cancels the tangential drive: over 100 frames the boxes crawl at 0.27 m/s
             #    with mu = 0.5 against 2.24 m/s with it dropped. So the boxes are made
             #    frictionless as well. The drive stays Coulomb-limited either way, since the
-            #    pipeline clamps it with FRICTION_TABLE and not with the shape materials.
+            #    conveyor clamps it with BELT_DRIVE_FRICTION and not with the shape materials.
             # 2. mujoco_warp warns that friction below ``mujoco.mjMINMU`` may produce NaN for
             #    condim=3 contacts, so use that floor rather than exactly zero.
-            transported = {b.body for b in self.bodies}
+            transported = set(self.tracked_bodies)
             for shape, body in enumerate(builder.shape_body):
                 builder.shape_material_mu[shape] = max(builder.shape_material_mu[shape], MUJOCO_MIN_FRICTION)
                 if body in transported:
@@ -230,7 +217,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        # The force pipeline consumes the per-contact normal force reported by the solver.
+        # The conveyor consumes the per-contact normal force reported by the solver.
         self.model.request_contact_attributes("force")
 
         if self.solver_type == "mujoco":
@@ -257,20 +244,25 @@ class Example:
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # --- Force pipeline: adapter + velocity-field actuator. ---
-        self.adapter = NewtonConveyorAdapter(self.model, self.belts, self.bodies, FRICTION_TABLE, self.contacts)
+        self.conveyor = ConveyorForceModel(self.model, solver_type=self.solver_type)
+        for shape, velocity, surface_normal in straight_belts:
+            self.conveyor.add_constant_belt(
+                shape,
+                velocity=velocity,
+                surface_normal=surface_normal,
+                friction=BELT_DRIVE_FRICTION,
+                threshold=CONTACT_PROCESSING_THRESHOLD,
+            )
+        for shape, pivot_point, angular_velocity in turn_belts:
+            self.conveyor.add_pivot_belt(
+                shape,
+                pivot_point=pivot_point,
+                angular_velocity=angular_velocity,
+                friction=BELT_DRIVE_FRICTION,
+                threshold=CONTACT_PROCESSING_THRESHOLD,
+            )
+        self.conveyor.finalize(self.contacts)
 
-        self.velocity_field_actuator = VelocityFieldActuator()
-        for velocity in self.constant_velocity_fields:
-            self.velocity_field_actuator.add_constant_velocity_field(velocity)
-        for pivot, angular_velocity in self.pivot_velocity_fields:
-            self.velocity_field_actuator.add_pivot_velocity_field(pivot, angular_velocity)
-        self.velocity_field_actuator.create_buffers(self.model.device)
-
-        self._allocate_pipeline_buffers()
-
-        # Newton body indices of the transported bodies, for the test hooks below.
-        self.tracked_bodies = self.adapter.pipeline_to_newton.numpy().tolist()
         self.tracked_start_pos = self.state_0.body_q.numpy()[self.tracked_bodies, :3].copy()
         self.max_travel = np.zeros(len(self.tracked_bodies))
 
@@ -279,18 +271,16 @@ class Example:
         self.viewer.set_camera(pos, pitch, yaw)
 
     def _build_scene(self, builder):
-        """Build the conveyor circuit and return its belt and transported-body specs.
+        """Build the conveyor circuit.
 
-        Also fills ``constant_velocity_fields`` / ``pivot_velocity_fields``, which the belts
-        reference by index and the actuator registers in the same order.
+        Returns the belt registrations for :class:`ConveyorForceModel` — straight belts as
+        ``(shape, velocity, surface_normal)`` and turns as ``(shape, pivot_point, angular_velocity)``
+        — plus the body indices of the transported boxes.
         """
-        belt_cfg = newton.ModelBuilder.ShapeConfig(mu=0.0)  # the drive comes from the force pipeline
-        guard_cfg = newton.ModelBuilder.ShapeConfig(mu=0.2)
+        belt_cfg = newton.ModelBuilder.ShapeConfig(mu=0.0)  # the drive comes from the conveyor forces
+        guard_cfg = newton.ModelBuilder.ShapeConfig(mu=GUARD_FRICTION)
 
-        self.constant_velocity_fields = []
-        self.pivot_velocity_fields = []
-        belts = []
-
+        straight_belts = []
         for label, pos, yaw, tilt, half_extents, speed in STRAIGHT_BELTS:
             rot = belt_rotation(yaw, tilt)
             shape = builder.add_shape_box(
@@ -304,18 +294,11 @@ class Example:
                 label=label,
             )
             # The belt carries its surface along its own +Y axis; its normal is its own +Z.
-            self.constant_velocity_fields.append(wp.quat_rotate(rot, wp.vec3(0.0, speed, 0.0)))
-            belts.append(
-                NewtonConveyorAdapter.Belt(
-                    shape=shape,
-                    velocity_field_type=VELOCITY_FIELD_TYPE_CONSTANT_VELOCITY,
-                    velocity_field_id=len(self.constant_velocity_fields) - 1,
-                    material_index=0,
-                    surface_normal=wp.quat_rotate(rot, wp.vec3(0.0, 0.0, 1.0)),
-                    contact_processing_threshold=CONTACT_PROCESSING_THRESHOLD,
-                )
+            straight_belts.append(
+                (shape, wp.quat_rotate(rot, wp.vec3(0.0, speed, 0.0)), wp.quat_rotate(rot, wp.vec3(0.0, 0.0, 1.0)))
             )
 
+        turn_belts = []
         for label, pivot, start_angle, end_angle, radii, angular_speed in TURN_BELTS:
             inner_radius, outer_radius = radii
             xform = wp.transform(p=wp.vec3(*pivot), q=wp.quat_identity())
@@ -344,17 +327,7 @@ class Example:
                 color=GUARD_COLOR,
                 label=f"{label}_guard",
             )
-            self.pivot_velocity_fields.append((wp.vec3(*pivot), wp.vec3(0.0, 0.0, angular_speed)))
-            belts.append(
-                NewtonConveyorAdapter.Belt(
-                    shape=shape,
-                    velocity_field_type=VELOCITY_FIELD_TYPE_PIVOT,
-                    velocity_field_id=len(self.pivot_velocity_fields) - 1,
-                    material_index=0,
-                    surface_normal=wp.vec3(0.0, 0.0, 1.0),
-                    contact_processing_threshold=CONTACT_PROCESSING_THRESHOLD,
-                )
-            )
+            turn_belts.append((shape, wp.vec3(*pivot), wp.vec3(0.0, 0.0, angular_speed)))
 
         for label, pos, yaw, tilt, half_extents in GUARDS:
             builder.add_shape_box(
@@ -369,14 +342,14 @@ class Example:
             )
 
         bodies = []
-        for label, pos, half_extents, mass, material_index in BOXES:
-            body = self._add_box_body(builder, label, pos, half_extents, mass, material_index)
+        for label, pos, half_extents, mass in BOXES:
+            body = self._add_box_body(builder, label, pos, half_extents, mass)
             builder.add_articulation([builder.add_joint_free(body)], label=label)
-            bodies.append(NewtonConveyorAdapter.Body(body=body, material_index=material_index))
+            bodies.append(body)
 
-        (label_a, pos_a, half_a, mass_a, mat_a), (label_b, pos_b, half_b, mass_b, mat_b) = HINGED_PARCEL
-        link_a = self._add_box_body(builder, label_a, pos_a, half_a, mass_a, mat_a)
-        link_b = self._add_box_body(builder, label_b, pos_b, half_b, mass_b, mat_b)
+        (label_a, pos_a, half_a, mass_a), (label_b, pos_b, half_b, mass_b) = HINGED_PARCEL
+        link_a = self._add_box_body(builder, label_a, pos_a, half_a, mass_a)
+        link_b = self._add_box_body(builder, label_b, pos_b, half_b, mass_b)
         free = builder.add_joint_free(link_a)
         hinge = builder.add_joint_revolute(
             parent=link_a,
@@ -391,209 +364,37 @@ class Example:
             label="parcel_hinge",
         )
         builder.add_articulation([free, hinge], label="hinged_parcel")
-        bodies.append(NewtonConveyorAdapter.Body(body=link_a, material_index=mat_a))
-        bodies.append(NewtonConveyorAdapter.Body(body=link_b, material_index=mat_b))
+        bodies += [link_a, link_b]
 
-        return belts, bodies
+        return straight_belts, turn_belts, bodies
 
     @staticmethod
-    def _add_box_body(builder, label, pos, half_extents, mass, material_index):
+    def _add_box_body(builder, label, pos, half_extents, mass):
         """Add a transported box, sizing its density so the shape carries the authored mass."""
         hx, hy, hz = half_extents
         body = builder.add_link(xform=wp.transform(p=wp.vec3(*pos), q=wp.quat_identity()), label=label)
-        cfg = newton.ModelBuilder.ShapeConfig(
-            mu=FRICTION_TABLE[material_index][0],
-            density=mass / (8.0 * hx * hy * hz),
-        )
+        cfg = newton.ModelBuilder.ShapeConfig(mu=BOX_FRICTION, density=mass / (8.0 * hx * hy * hz))
         builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg, color=BOX_COLOR, label=label)
         return body
-
-    def _allocate_pipeline_buffers(self):
-        d = self.model.device
-        N = self.adapter.body_count
-        C = self.adapter.max_contact_count
-
-        self.body_to_world_transform_buffer = wp.empty(N, dtype=wp.transform, device=d)
-        self.body_inverse_inertia_buffer = wp.empty(N, dtype=wp.mat33, device=d)
-        self.body_to_patch_buffer = wp.empty(N, dtype=wp.uint32, device=d)
-        self.body_force_buffer = wp.zeros((N, 3), dtype=wp.float32, device=d)
-        self.body_torque_buffer = wp.zeros((N, 3), dtype=wp.float32, device=d)
-
-        self.point_to_indices_map = wp.empty((C, 3), dtype=wp.uint32, device=d)
-        self.friction_coefficient_buffer = wp.empty(C, dtype=wp.float32, device=d)
-        self.contact_patch_buffer = wp.empty(C, dtype=conveyor_forces_kernels.Patch, device=d)
-        self.mass_splitting_scale_buffer = wp.empty(C, dtype=wp.float32, device=d)
-        self.adjusted_contact_normal_force_buffer = wp.empty((C, 1), dtype=wp.float32, device=d)
-        self.per_point_force_torque_buffer = wp.empty(C, dtype=wp.spatial_vector, device=d)
-
-        self.total_contact_count = wp.zeros(1, dtype=wp.uint32, device=d)
-        self.total_elapsed_time = wp.zeros(1, dtype=wp.float32, device=d)
-        self.global_conveyor_belt_speed_scale = wp.zeros(1, dtype=wp.float32, device=d)
-
-        self.body_q_prev = wp.zeros(N, dtype=wp.transform, device=d)
-
-    def _step_conveyor_pipeline(self, state):
-        """Run the conveyor force pipeline on Newton-derived buffers."""
-        adapter = self.adapter
-        N = adapter.body_count
-        M = adapter.belt_count
-        C = adapter.max_contact_count
-        d = self.model.device
-
-        adapter.gather_state(state)
-
-        # Reset the accumulated contact count for this step.
-        self.total_contact_count.zero_()
-
-        parallel_conveyor_belt_processing_count = 16
-        max_body_thread_count = MAX_THREAD_COUNT // parallel_conveyor_belt_processing_count
-        parallel_body_processing_count = min(max_body_thread_count, N)
-
-        wp.launch(
-            kernel=conveyor_forces_kernels.prepare_buffers,
-            dim=(parallel_body_processing_count, parallel_conveyor_belt_processing_count),
-            inputs=[
-                parallel_body_processing_count,
-                parallel_conveyor_belt_processing_count,
-                N,
-                M,
-                self.sim_dt,
-                self.startup_duration,
-                adapter._body_positions_ia,
-                adapter.body_orientations,
-                adapter._body_com_positions_ia,
-                adapter.body_com_orientations,
-                adapter._body_inverse_inertias_ia,
-                adapter.body_material_index,
-                adapter.conveyor_belt_to_indices_map,
-                adapter.friction_table,
-                adapter.pair_contacts_count,
-                adapter.pair_contacts_start_indices,
-            ],
-            outputs=[
-                self.body_to_world_transform_buffer,
-                self.body_inverse_inertia_buffer,
-                self.point_to_indices_map,
-                self.friction_coefficient_buffer,
-                self.total_contact_count,
-                self.total_elapsed_time,
-                self.global_conveyor_belt_speed_scale,
-            ],
-            device=d,
-        )
-
-        parallel_body_processing_count = min(MAX_THREAD_COUNT, N)
-        wp.launch(
-            kernel=conveyor_forces_kernels.correlate_and_filter_contact_points,
-            dim=parallel_body_processing_count,
-            inputs=[
-                parallel_body_processing_count,
-                N,
-                M,
-                adapter.surface_normal_buffer,
-                adapter.contact_processing_threshold_buffer,
-                adapter.pair_contacts_count,
-                adapter.pair_contacts_start_indices,
-                adapter.flat_normal,
-                adapter.flat_force,
-            ],
-            outputs=[
-                self.contact_patch_buffer,
-                self.body_to_patch_buffer,
-                self.mass_splitting_scale_buffer,
-            ],
-            device=d,
-        )
-
-        parallel_patch_processing_count = 1
-        max_body_thread_count = MAX_THREAD_COUNT // parallel_patch_processing_count
-        parallel_body_processing_count = min(max_body_thread_count, N)
-        wp.launch(
-            kernel=conveyor_forces_kernels.redistribute_contact_force,
-            dim=(parallel_body_processing_count, parallel_patch_processing_count),
-            inputs=[
-                parallel_body_processing_count,
-                parallel_patch_processing_count,
-                N,
-                self.body_to_patch_buffer,
-                self.contact_patch_buffer,
-                adapter.flat_point,
-                adapter.flat_force,
-                self.body_to_world_transform_buffer,
-            ],
-            outputs=[
-                self.adjusted_contact_normal_force_buffer,
-                self.mass_splitting_scale_buffer,
-            ],
-            device=d,
-        )
-
-        self.velocity_field_actuator.step(
-            self.sim_dt,
-            C,
-            self.body_to_world_transform_buffer,
-            adapter._body_inverse_masses_ia,
-            self.body_inverse_inertia_buffer,
-            adapter._body_linear_velocities_ia,
-            adapter._body_angular_velocities_ia,
-            adapter.flat_point,
-            adapter.flat_normal,
-            self.adjusted_contact_normal_force_buffer,
-            self.point_to_indices_map,
-            self.mass_splitting_scale_buffer,
-            self.friction_coefficient_buffer,
-            self.total_contact_count,
-            self.global_conveyor_belt_speed_scale,
-            self.per_point_force_torque_buffer,
-            max_thread_count=MAX_THREAD_COUNT,
-            batch_size=CONTACT_PROCESSING_BATCH_SIZE,
-            device=d,
-        )
-
-        parallel_body_processing_count = min(MAX_THREAD_COUNT, N)
-        wp.launch(
-            kernel=conveyor_forces_kernels.sum_up_force,
-            dim=parallel_body_processing_count,
-            inputs=[
-                parallel_body_processing_count,
-                N,
-                self.body_to_patch_buffer,
-                self.contact_patch_buffer,
-                self.per_point_force_torque_buffer,
-            ],
-            outputs=[
-                self.body_force_buffer,
-                self.body_torque_buffer,
-            ],
-            device=d,
-        )
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
 
-            # Apply the wrench computed from the previous step's contacts.
-            self.adapter.apply_forces(self.state_0, self.body_force_buffer, self.body_torque_buffer)
+            # Add the wrench the conveyor computed from the previous step's contacts.
+            self.conveyor.apply(self.state_0)
+            self.conveyor.snapshot_prev(self.state_0)
 
-            if self.solver_type == "vbd":
-                # Force reconstruction requires the same pose history used by VBD.
-                wp.copy(self.body_q_prev, self.solver.body_q_prev)
             self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
-            self.adapter.report_contact_forces(
-                self.solver, self.contacts, self.state_1, self.body_q_prev, self.sim_dt, self.solver_type
-            )
-            # Reformat Newton's contacts into the per-(body, belt) dense layout the pipeline
-            # expects (classify -> prefix-sum -> scatter). Must run after report_contact_forces
-            # so the per-contact normal force is available to the classifier.
-            self.adapter.build_contact_layout(self.contacts, self.state_1)
-            self._step_conveyor_pipeline(self.state_1)
-
+            self.conveyor.update(self.solver, self.contacts, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        # Ramp the belts up from rest so the boxes are not kicked at t = 0.
+        self.conveyor.set_speed_scale(min(1.0, self.sim_time / STARTUP_DURATION))
         self.simulate()
         self.sim_time += self.frame_dt
 
@@ -618,7 +419,7 @@ class Example:
 
         # Every box must actually be carried: a broken force pipeline leaves them
         # resting on the belts, which the pose checks above would happily accept.
-        if self.sim_time > self.startup_duration + 0.5:
+        if self.sim_time > STARTUP_DURATION + 0.5:
             stalled = int(np.argmin(self.max_travel))
             assert self.max_travel[stalled] > MIN_TRAVEL, (
                 f"transported body {self.tracked_bodies[stalled]} was never carried off its start pose: "
