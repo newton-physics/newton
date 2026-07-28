@@ -37,7 +37,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.suctioncup.robot_playback import load_recording, recorded_times
+from newton.examples.suctioncup.robot_playback import RobotPlayback
 from newton.examples.suctioncup.surface_gripper import (
     PadShape,
     SurfaceGripper,
@@ -200,132 +200,6 @@ GRIPPER_PARAMS = GripperParams(
     dim_a=0.03,
     dim_b=0.03,
 )
-
-
-class RobotPlayback:
-    """Container for the recorded playback arrays the sim consumes, loaded onto the device.
-
-    Loads the recording at ``path``, applies the J3->J2 coupling and Gaussian smoothing (width
-    ``smoothing_sigma`` [s]), and holds the sample times, coupled arm drive targets, and per-frame
-    suction engagement command as device arrays, plus the recording duration.
-    """
-
-    @staticmethod
-    def arm_targets_rad(frame) -> np.ndarray:
-        """Recorded :class:`Frame` -> the six arm joint position targets [rad].
-
-        Takes J1-J6, applies the J3-relative-to-J2 coupling (real J3 = recorded J3 + J2), and converts
-        degrees to radians. This is where the coupling/units are applied -- the recording stores raw.
-        """
-        j = list(frame.joints_deg[:NUM_ARM_DOFS])
-        j[2] += j[1]  # J3 is recorded relative to J2
-        return np.deg2rad(np.asarray(j, dtype=np.float32))
-
-    @staticmethod
-    def load_playback(path):
-        """Load a recording and extract the arrays the sim consumes.
-
-        Returns ``(rec_times, rec_targets, rec_engaged, rec_duration)``:
-            - ``rec_times``: sample times [s], shape [N], starting at 0 (:func:`recorded_times`).
-            - ``rec_targets``: coupled arm joint targets [rad], shape [N, NUM_ARM_DOFS].
-            - ``rec_engaged``: suction-cup engagement command (robot output ro[0]) per frame, shape [N] bool.
-            - ``rec_duration``: recording length [s] (``rec_times[-1]``).
-        """
-        frames = load_recording(path)
-        rec_times = np.asarray(recorded_times(frames), dtype=np.float64)
-        rec_targets = np.stack([RobotPlayback.arm_targets_rad(f) for f in frames]).astype(np.float64)
-        rec_engaged = np.array([f.ro[0] for f in frames], dtype=bool)  # [N]
-        return rec_times, rec_targets, rec_engaged, float(rec_times[-1])
-
-    @staticmethod
-    def gaussian_smooth(times, values, sigma):
-        """Gaussian-smooth ``values`` ([N, D]) over the non-uniform sample ``times`` ([N]).
-
-        Each output sample is a Gaussian-weighted average of all samples by *time* distance
-        (``w_ij = exp(-((t_i - t_j) / sigma)^2 / 2)``), so it correctly handles the non-uniform sample
-        rate. ``sigma <= 0`` returns the input unchanged.
-        """
-        if sigma <= 0.0:
-            return values
-        dt = times[:, None] - times[None, :]  # [N, N] pairwise time differences [s]
-        weights = np.exp(-0.5 * (dt / sigma) ** 2)  # Gaussian weights by time distance
-        weights /= weights.sum(axis=1, keepdims=True)  # normalize per output sample
-        return weights @ values  # [N, D] smoothed targets
-
-    def __init__(self, path, smoothing_sigma):
-        rec_times, rec_targets, rec_engaged, self.rec_duration = self.load_playback(path)
-        rec_targets = self.gaussian_smooth(rec_times, rec_targets, smoothing_sigma)  # smooth the coarse waypoints
-        self.rec_times_wp = wp.array(rec_times, dtype=wp.float32)  # [N] sample times [s]
-        self.rec_targets_wp = wp.array(rec_targets, dtype=wp.float32)  # [N, NUM_ARM_DOFS] coupled targets [rad]
-        self.rec_engaged_wp = wp.array(rec_engaged, dtype=wp.bool)  # [N] engagement command per frame
-        # engage / disengage events: frame indices where the suction command rises (a pick) / falls (a release)
-        self.rising = [i for i in range(1, len(rec_engaged)) if rec_engaged[i] and not rec_engaged[i - 1]]
-        self.falling = [i for i in range(1, len(rec_engaged)) if not rec_engaged[i] and rec_engaged[i - 1]]
-
-
-@wp.kernel
-def sample_playback_kernel(
-    rec_times: wp.array[float],  # [N] recorded sample times [s], monotonic
-    rec_targets: wp.array2d[float],  # [N, num_dofs] coupled arm targets [rad]
-    rec_engaged: wp.array[wp.bool],  # [N] suction-cup engagement command (ro[0]) per frame
-    sim_step_count: wp.array[
-        int
-    ],  # in/out: device sub-step counter (current time = sim_step_count[0] * dt); advanced in place
-    last_lo: wp.array[int],  # in/out: cached lower sample index; the forward search resumes from here
-    dt: float,  # physics sub-step [s]; sim time = sim_step_count * dt
-    # outputs
-    joint_target_q: wp.array[float],  # [num_dofs] interpolated position targets [rad]
-    engaged: wp.array[wp.bool],  # [1] engagement command sampled at the current time
-):
-    """Interpolate the recorded joint position targets and sample the engagement command at the
-    current time (one thread per DOF); advance the sub-step counter for the next sub-step.
-
-    The time is the integer sub-step count times ``dt`` (exact, no float accumulation). Since sim time
-    only advances, the bracketing samples are found by a forward search resumed from the cached
-    ``last_lo`` (usually 0-1 steps) rather than a fresh binary search, and the new index is cached
-    back. Engagement is a step signal, so its value at ``t`` is ``rec_engaged[lo]``. Clamps to the
-    last sample past the end, so the arm holds the final recorded pose.
-    """
-    dof = wp.tid()
-    n = rec_times.shape[0]
-
-    # every thread reads the shared scratch (counter, index) into a local first; then a single thread
-    # writes them back, so the reads and writes don't race (this launch is one warp, dim = NUM_ARM_DOFS).
-    step = sim_step_count[0]
-    if dof == 0:
-        sim_step_count[0] = step + 1
-    t = float(step) * dt
-
-    # forward search from the cached index for the largest lo with rec_times[lo] <= t
-    lo = last_lo[0]
-    while lo < n - 1 and rec_times[lo + 1] <= t:
-        lo += 1
-
-    if dof == 0:
-        last_lo[0] = lo
-        engaged[0] = rec_engaged[lo]  # step signal: value of the most recent frame at or before t
-
-    if lo >= n - 1:
-        joint_target_q[dof] = rec_targets[n - 1, dof]  # past the end: hold the last recorded pose
-        return
-
-    # Cubic (Catmull-Rom) interpolation through the four surrounding knots. It passes through the two
-    # bracketing knots (p1, p2) with tangents estimated from their neighbors, so the target is
-    # C1-continuous (no slope kink at the knots) -- unlike linear interpolation, whose kinks inject
-    # jerk that the stiff drives ring on.
-    frac = (t - rec_times[lo]) / (rec_times[lo + 1] - rec_times[lo])
-    p0 = rec_targets[wp.max(lo - 1, 0), dof]
-    p1 = rec_targets[lo, dof]
-    p2 = rec_targets[lo + 1, dof]
-    p3 = rec_targets[wp.min(lo + 2, n - 1), dof]
-    f2 = frac * frac
-    f3 = f2 * frac
-    joint_target_q[dof] = 0.5 * (
-        (2.0 * p1)
-        + (-p0 + p2) * frac
-        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * f2
-        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * f3
-    )
 
 
 @wp.kernel
@@ -595,7 +469,7 @@ class Example:
         # states. Load and extract the time-stamps, the joint drive target positions and the
         # suction pad engagement states.
         # Apply gaussian smoothing to the raw drive target after loading.
-        self.playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA)
+        self.playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA, NUM_ARM_DOFS)
 
         # Load the Fanuc robot arm on a ground plane.
         builder = newton.ModelBuilder()
@@ -771,28 +645,15 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            # Compute the joint drive target positions (joint_target_q)
-            # at current sim time (sim_step_count_wp*sim_dt) from the
-            # corresponding time series (rec_targets_wp, rec_times_wp).
-            # Compute the gripper engagement state (engaged_wp) at current sim
-            # time (sim_step_count_wp*sim_dt) from the time series
-            # (rec_engaged_wp, rec_times_wp).
-            # Advance the progress (last_lo_wp) through the time series
-            # (rec_times_wp) and cache it for the next simulate step.
-            # Advance sim time for the next call to sample_playback_kernel
-            # by incrementing sim_step_count_wp.
-            wp.launch(
-                sample_playback_kernel,
-                dim=NUM_ARM_DOFS,
-                inputs=[
-                    self.playback.rec_times_wp,
-                    self.playback.rec_targets_wp,
-                    self.playback.rec_engaged_wp,
-                    self.sim_step_count_wp,  # in/out: read as the current time, then advanced in place
-                    self.last_lo_wp,  # in/out: forward-search index, resumed and cached
-                    float(self.sim_dt),
-                ],
-                outputs=[self.control.joint_target_q, self.engaged_wp],
+            # Interpolate the arm drive targets (joint_target_q) and sample the engagement command
+            # (engaged_wp) at the current sim time (sim_step_count_wp*sim_dt), advance the search index
+            # (last_lo_wp), and advance sim time (sim_step_count_wp) for the next sub-step.
+            self.playback.advance(
+                self.sim_step_count_wp,  # in/out: read as the current time, then advanced in place
+                self.last_lo_wp,  # in/out: forward-search index, resumed and cached
+                self.sim_dt,
+                self.control.joint_target_q,
+                self.engaged_wp,
             )
             self.state_0.clear_forces()  # zero body_f each sub-step (the suction cup accumulates into it)
 
