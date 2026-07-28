@@ -31,9 +31,11 @@ finite-difference slope. Clamps provide their own ``@wp.func``
 limits are enforced against the predicted state — a DC-motor envelope, for
 example, sees the end-of-step velocity.
 
-Controllers whose law cannot run in-kernel (neural networks) are solved by
-the :class:`_EffortImplicitNetwork` subclass instead; see
-:mod:`implicit_network`.
+Neural-network controllers also solve in-kernel: they cannot run their law
+inside the kernel, so each step they linearize the network about the current
+state (:meth:`Controller.prepare_implicit`) and expose the linear force law
+``tau = c + a*q + b*qd`` through the same :attr:`~Controller.evaluate_force`
+/ :meth:`~Controller.force_params` interface as PD.
 
 See the design report: https://reports.mmacklin.com/implicit-actuation-newton/
 """
@@ -68,15 +70,10 @@ class ActuatorImplicitOptions:
         derivative_floor: Stop when ``|dr/dp|`` falls below this (flat residual).
         warm_start: Initial impulse guess: ``"explicit"`` starts from the
             explicit force impulse, ``"zero"`` starts from zero.
-        newton_iters: Newton iterations for the network strategy (neural
-            controllers): each iteration evaluates the network at the
-            previous step's predicted end-of-step state and takes one Newton
-            step. Fixed count, so CUDA-graph capture stays possible.
         block_solve: Solve coupled DOF groups (DOFs sharing an articulation)
             as a block instead of independent scalars, recovering the
             inertial cross terms. Requires ``oracle.refresh(state,
-            blocks=True)`` each step. Supported for PD controllers; ignored
-            for network controllers.
+            blocks=True)`` each step.
     """
 
     max_iters: int = 4
@@ -85,7 +82,6 @@ class ActuatorImplicitOptions:
     fd_epsilon: float = 1.0e-4
     derivative_floor: float = 1.0e-8
     warm_start: str = "explicit"
-    newton_iters: int = 1
     block_solve: bool = False
 
 
@@ -248,9 +244,10 @@ class _EffortImplicit:
     ``@wp.func`` and parameter pack, the compiled solve kernel, the resolved
     effective-inverse-mass buffer, and the composed in-solve clamp chain.
 
-    Subclasses for force laws that cannot run in-kernel override
-    :meth:`_init_solver` and :meth:`compute_force` (see
-    :class:`_EffortImplicitNetwork`).
+    Before each solve, :meth:`compute_force` calls the controller's
+    :meth:`~Controller.prepare_implicit` hook so state-dependent laws (a
+    network linearized about the current state) can refresh their parameter
+    pack; parameter-static laws like PD leave it a no-op.
     """
 
     def __init__(
@@ -273,6 +270,7 @@ class _EffortImplicit:
             )
         self._inv_mass = effective_inv_mass.alpha
         self._response = effective_inv_mass  # oracle; block solves also read .inverse_blocks
+        self._controller = controller
         self._init_solver(controller, clamping)
 
     def _resolve_force_law(self, controller):
@@ -351,6 +349,21 @@ class _EffortImplicit:
         """
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
+        # Parameter-static laws (PD) no-op here; a network relinearizes about
+        # the current state and rewrites its parameter pack in place.
+        self._controller.prepare_implicit(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            pos_indices,
+            vel_indices,
+            target_pos_indices,
+            target_vel_indices,
+            ctrl_state,
+            float(dt),
+            self._device,
+        )
         opts = self._options
         wp.launch(
             self._kernel,

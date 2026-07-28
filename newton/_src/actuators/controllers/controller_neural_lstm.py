@@ -78,7 +78,7 @@ class ControllerNeuralLSTM(Controller):
     must have three graph outputs: effort, hidden output, and cell output.
     Metadata properties map those names to controller roles.
 
-    Implicit actuation is not supported (:meth:`Controller.implicit_force_grad`
+    Implicit actuation is not supported (:meth:`Controller.force_params`
     returns ``None``): the hidden/cell state makes the force law's local
     linearization depend on gradients through the recurrent step, and the
     Warp-NN LSTM op path additionally lacks ``requires_grad`` on its cached

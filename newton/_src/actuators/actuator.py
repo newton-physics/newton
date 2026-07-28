@@ -15,7 +15,6 @@ from .delay import Delay
 from .effort_explicit import _EffortExplicit
 from .implicit import ActuatorImplicitOptions, ResponseOracle, _EffortImplicit
 from .implicit_block import _EffortImplicitBlock
-from .implicit_network import _EffortImplicitNetwork
 
 
 @wp.kernel
@@ -232,14 +231,13 @@ class Actuator:
 
         The control law is solved against the predicted end-of-step state
         before the solver runs, keeping stiff gains stable at large
-        timesteps. The strategy is picked by what the controller provides:
-        an in-kernel force law (:attr:`Controller.evaluate_force`) is solved
-        in one fused kernel; a launch-level force-and-gradients hook
-        (:meth:`Controller.implicit_force_grad`, e.g. neural networks) is
-        driven by a fixed-count Newton loop. Requires a ``dt`` passed to
-        :meth:`step`. The prediction is contact-blind: expect transients
-        (not instability) during impacts. Strategies can be switched at any
-        time; see :meth:`set_strategy_explicit`.
+        timesteps. Every controller is solved by the same fused kernel over
+        its in-kernel force law (:attr:`Controller.evaluate_force`); a neural
+        controller supplies that law by linearizing itself about the current
+        state each step (:meth:`Controller.prepare_implicit`). Requires a
+        ``dt`` passed to :meth:`step`. The prediction is contact-blind:
+        expect transients (not instability) during impacts. Strategies can be
+        switched at any time; see :meth:`set_strategy_explicit`.
 
         Args:
             effective_inv_mass: :class:`~newton.actuators.ResponseOracle` providing
@@ -251,9 +249,7 @@ class Actuator:
             options: Solver options; defaults to
                 :class:`ActuatorImplicitOptions`.
         """
-        if self.controller.implicit_force_grad() is not None:
-            cls = _EffortImplicitNetwork
-        elif options is not None and options.block_solve:
+        if options is not None and options.block_solve:
             cls = _EffortImplicitBlock
         else:
             cls = _EffortImplicit

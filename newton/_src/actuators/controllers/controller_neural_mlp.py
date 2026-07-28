@@ -162,6 +162,69 @@ def _output_and_state_grads_kernel(
     dtau_dqd[i] = -in_grad[i, vel_col] * vel_scale * effort_scale
 
 
+@wp.func
+def _mlp_linear_force(
+    q: wp.float64,
+    qd: wp.float64,
+    target_q: wp.float64,
+    target_qd: wp.float64,
+    feedforward: wp.float64,
+    params: wp.array2d[float],
+    i: wp.int32,
+) -> wp.float64:
+    """Force law from the network's linearization about the current state.
+
+    ``tau(q, qd) = c + a q + b qd`` with ``a = d(tau)/dq``, ``b = d(tau)/dqd``,
+    and ``c = tau0 - a q0 - b qd0`` (see :meth:`ControllerNeuralMLP.prepare_implicit`).
+    So the network enters the general implicit solve as any other in-kernel law.
+    """
+    c = wp.float64(params[i, 0])
+    a = wp.float64(params[i, 1])
+    b = wp.float64(params[i, 2])
+    return c + a * q + b * qd
+
+
+@wp.kernel(enable_backward=False)
+def _gather_slot_state_kernel(
+    positions: wp.array[float],
+    velocities: wp.array[float],
+    target_pos: wp.array[float],
+    target_vel: wp.array[float],
+    pos_indices: wp.array[wp.uint32],
+    vel_indices: wp.array[wp.uint32],
+    target_pos_indices: wp.array[wp.uint32],
+    target_vel_indices: wp.array[wp.uint32],
+    q0: wp.array[float],
+    qd0: wp.array[float],
+    tq0: wp.array[float],
+    tqd0: wp.array[float],
+):
+    """Gather per-slot current state and targets for the linearization point."""
+    i = wp.tid()
+    q0[i] = positions[pos_indices[i]]
+    qd0[i] = velocities[vel_indices[i]]
+    tq0[i] = target_pos[target_pos_indices[i]]
+    tqd0[i] = target_vel[target_vel_indices[i]]
+
+
+@wp.kernel(enable_backward=False)
+def _assemble_linear_params_kernel(
+    tau0: wp.array[float],
+    dtau_dq: wp.array[float],
+    dtau_dqd: wp.array[float],
+    q0: wp.array[float],
+    qd0: wp.array[float],
+    params: wp.array2d[float],
+):
+    """Pack the linearization into ``[c, a, b]`` for :func:`_mlp_linear_force`."""
+    i = wp.tid()
+    a = dtau_dq[i]
+    b = dtau_dqd[i]
+    params[i, 0] = tau0[i] - a * q0[i] - b * qd0[i]
+    params[i, 1] = a
+    params[i, 2] = b
+
+
 class ControllerNeuralMLP(Controller):
     """MLP-based neural network controller.
 
@@ -175,11 +238,14 @@ class ControllerNeuralMLP(Controller):
     metadata, falling back to defaults when absent. ``.onnx`` checkpoints run
     through Warp-NN. ``.pt`` and ``.pth`` checkpoints keep the Torch backend.
 
-    Implicit actuation (:meth:`implicit_force_grad`) is limited to the
-    Warp-NN backend with ``history_length == 1``, and depends on a workaround
-    for warp-nn allocating its tensors without ``requires_grad`` — without it,
-    autodiff gradients through multi-layer nets (and, under CUDA graph
-    capture, even single-layer nets) are silently zero.
+    Implicit actuation linearizes the network about the current state each
+    step (:meth:`prepare_implicit`) and enters the shared implicit solve as
+    the linear force law ``tau = c + a*q + b*qd`` (see :attr:`evaluate_force`
+    / :meth:`force_params`). It is limited to the Warp-NN backend with
+    ``history_length == 1``, and depends on a workaround for warp-nn
+    allocating its tensors without ``requires_grad`` — without it, autodiff
+    gradients through multi-layer nets (and, under CUDA graph capture, even
+    single-layer nets) are silently zero.
 
     TODO: drop the ``requires_grad`` workaround once fixed upstream in
     warp-nn; extend implicit support to the Torch backend and to input
@@ -311,6 +377,17 @@ class ControllerNeuralMLP(Controller):
         self._vel_error = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self._input_idx_wp = wp.array(self.input_idx, dtype=wp.int32, device=device)
 
+        # Implicit path: per-step linearization packed as [c, a, b] (see prepare_implicit)
+        # and the per-slot scratch it is assembled from.
+        self._lin_params = wp.zeros((num_actuators, 3), dtype=wp.float32, device=device)
+        self._q0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._qd0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._tq0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._tqd0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._tau0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._dtau_dq = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._dtau_dqd = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+
         try:
             out_shape = _runtime_shape(runtime, self._net_output_name)
         except ValueError:
@@ -328,15 +405,26 @@ class ControllerNeuralMLP(Controller):
     def is_graphable(self) -> bool:
         return not self._is_torch_checkpoint
 
-    def implicit_force_grad(self):
-        """Return the force-and-gradients hook for the implicit strategy, or ``None``.
+    #: The network enters the general implicit solve as a per-step-linearized
+    #: in-kernel law (see :meth:`prepare_implicit`), like any other controller.
+    evaluate_force = _mlp_linear_force
 
-        Supported for the Warp-NN (``.onnx``) backend with
-        ``history_length == 1``; other configurations return ``None``. See
-        :meth:`Controller.implicit_force_grad` for the hook contract.
+    def _implicit_supported(self) -> bool:
+        return not self._is_torch_checkpoint and self.history_length == 1 and self._network is not None
+
+    def force_params(self) -> wp.array2d[float] | None:
+        """Linearization pack ``[c, a, b]`` per actuator; ``None`` if implicit unsupported.
+
+        Refreshed each step by :meth:`prepare_implicit`. ``None`` for Torch
+        checkpoints or ``history_length > 1`` (implicit needs a single-step,
+        Warp-NN-backed net).
         """
-        if self._is_torch_checkpoint or self.history_length != 1 or self._network is None:
-            return None
+        return self._lin_params if self._implicit_supported() else None
+
+    def bind_params(self, params: wp.array2d[float]) -> None:
+        self._lin_params = params
+
+    def _ensure_grad_setup(self) -> None:
         if self._grad_seed is None:
             self._net_input.requires_grad = True
             self._grad_seed = wp.full((self._num_actuators, 1), 1.0, dtype=wp.float32, device=self._device)
@@ -347,7 +435,55 @@ class ControllerNeuralMLP(Controller):
             for tensor in self._network._tensors.values():
                 if isinstance(tensor, wp.array) and not tensor.requires_grad:
                     tensor.requires_grad = True
-        return self._force_and_grad
+
+    def prepare_implicit(
+        self,
+        positions,
+        velocities,
+        target_pos,
+        target_vel,
+        pos_indices,
+        vel_indices,
+        target_pos_indices,
+        target_vel_indices,
+        ctrl_state,
+        dt,
+        device=None,
+    ) -> None:
+        """Refresh the linearization of the network about the current state.
+
+        One network forward + autodiff backward at the current per-slot state
+        gives ``tau0, d(tau)/dq, d(tau)/dqd``; these are packed as ``[c, a, b]``
+        into :meth:`force_params`, which the general implicit kernel then reads
+        through :func:`_mlp_linear_force`. Called once per step before the solve.
+        """
+        device = device or self._device
+        n = self._num_actuators
+        self._ensure_grad_setup()
+        wp.launch(
+            _gather_slot_state_kernel,
+            dim=n,
+            inputs=[
+                positions,
+                velocities,
+                target_pos,
+                target_vel,
+                pos_indices,
+                vel_indices,
+                target_pos_indices,
+                target_vel_indices,
+            ],
+            outputs=[self._q0, self._qd0, self._tq0, self._tqd0],
+            device=device,
+        )
+        self._force_and_grad(self._q0, self._qd0, self._tq0, self._tqd0, self._tau0, self._dtau_dq, self._dtau_dqd)
+        wp.launch(
+            _assemble_linear_params_kernel,
+            dim=n,
+            inputs=[self._tau0, self._dtau_dq, self._dtau_dqd, self._q0, self._qd0],
+            outputs=[self._lin_params],
+            device=device,
+        )
 
     def _force_and_grad(
         self,

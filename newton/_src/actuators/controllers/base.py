@@ -145,21 +145,28 @@ class Controller:
         the solve then reads a frozen copy of the construction-time values.
         """
 
-    def implicit_force_grad(self):
-        """Optional launch-level force law for the implicit strategy.
+    def prepare_implicit(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        ctrl_state: Controller.State | None,
+        dt: float,
+        device: wp.Device | None = None,
+    ) -> None:
+        """Refresh :meth:`force_params` before an implicit solve step.
 
-        Controllers whose force law cannot run inside the solve kernel (e.g.
-        neural networks) return a callable
-
-            hook(q, qd, target_q, target_qd, tau, dtau_dq, dtau_dqd) -> None
-
-        taking per-slot state arrays (shape ``(N,)``) and writing the physical
-        effort and its derivatives w.r.t. position and velocity. The implicit
-        strategy's Newton loop calls it once per iteration, at the predicted
-        end-of-step state. ``None`` (the default) means the force law is
-        evaluated in-kernel via :attr:`evaluate_force` instead.
+        Called by the implicit strategy once per step, before the solve
+        kernel. Controllers whose :attr:`evaluate_force` law needs per-step
+        preparation (e.g. a neural network linearized about the current
+        state) override this to rewrite their parameter pack. The default is
+        a no-op — parameter-static laws like PD need nothing here.
         """
-        return None
 
     def is_stateful(self) -> bool:
         """Return True if this controller maintains internal state."""

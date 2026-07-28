@@ -269,6 +269,20 @@ class _EffortImplicitBlock(_EffortImplicit):
         """Solve each coupled group as a block; clamps run inside the solve."""
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
+        # See _EffortImplicit.compute_force: relinearize network laws in place.
+        self._controller.prepare_implicit(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            pos_indices,
+            vel_indices,
+            target_pos_indices,
+            target_vel_indices,
+            ctrl_state,
+            float(dt),
+            self._device,
+        )
         if not self._groups_built:
             self._build_groups(vel_indices)
         inverse_blocks = self._response.inverse_blocks

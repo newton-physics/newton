@@ -875,18 +875,18 @@ def test_strategy_switch_roundtrip(test, device):
 
 
 def test_neural_mlp_implicit_linear_net(test, device):
-    """A 1-layer (linear) neural controller solves implicitly, exact in one Newton step.
+    """A 1-layer (linear) neural controller solves implicitly, exact.
 
-    For a linear net (tau = w0*pos_err + w1*vel_err + b) the implicit residual
-    is linear, so the solve matches the analytic Stable-PD solution with
-    kp = w0, kd = w1, const = b, and extra Newton iterations do not change it.
+    For a linear net (tau = w0*pos_err + w1*vel_err + b) the linearization is
+    the net itself, so the solve matches the analytic Stable-PD solution with
+    kp = w0, kd = w1, const = b.
     """
     import tempfile  # noqa: PLC0415
 
     import onnx  # noqa: PLC0415
     from onnx import TensorProto, helper, numpy_helper  # noqa: PLC0415
 
-    from newton.actuators import ActuatorImplicitOptions, ControllerNeuralMLP  # noqa: PLC0415
+    from newton.actuators import ControllerNeuralMLP  # noqa: PLC0415
 
     h = 0.01
     w0, w1, b = 400.0, 8.0, 2.5
@@ -929,27 +929,22 @@ def test_neural_mlp_implicit_linear_net(test, device):
         expected_tau = (w0 * e_q + b) / (1.0 + alpha * h * w1 + alpha * h * h * w0)
         test.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
 
-        # Extra Newton iterations must not change the result for a linear net
-        # (Newton converges in one step on a linear residual).
-        actuator.set_strategy_implicit(effective_inv_mass=oracle, options=ActuatorImplicitOptions(newton_iters=3))
-        control.joint_f.zero_()
-        actuator.step(state, control, state_a, state_b, dt=h)
-        test.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
 
+def test_neural_mlp_implicit_nonlinear_linearized(test, device):
+    """A nonlinear neural controller enters the solve as a linearization.
 
-def test_neural_mlp_implicit_nonlinear_converges(test, device):
-    """A nonlinear neural controller's implicit solve converges to the true root.
-
-    Builds a 2-layer ELU net and checks that the solved effort satisfies the
-    implicit equation ``tau == net(state_predicted_from(tau))`` — i.e. the
-    residual goes to zero as the fixed Newton-iteration count grows.
+    Builds a 2-layer ELU net. Implicit actuation linearizes it once about the
+    current state, ``tau ~= tau0 + a*(q-q0) + b*(qd-qd0)`` with
+    ``a = d(tau)/dq``, ``b = d(tau)/dqd``, then solves the resulting linear
+    Stable-PD system exactly. The solved effort must match the closed-form
+    solution of that linear system.
     """
     import tempfile  # noqa: PLC0415
 
     import onnx  # noqa: PLC0415
     from onnx import TensorProto, helper, numpy_helper  # noqa: PLC0415
 
-    from newton.actuators import ActuatorImplicitOptions, ControllerNeuralMLP  # noqa: PLC0415
+    from newton.actuators import ControllerNeuralMLP  # noqa: PLC0415
 
     h = 0.01
     q0, qd0, target = 0.2, 0.0, 1.0
@@ -966,6 +961,13 @@ def test_neural_mlp_implicit_nonlinear_converges(test, device):
         a = np.where(hl >= 0.0, hl, np.exp(hl) - 1.0)  # ELU, alpha=1
         return float((w2 @ a + b2)[0])
 
+    def dnet_np(e_q, e_qd):
+        # d(net)/d(e_q), d(net)/d(e_qd); ELU'(x) = 1 (x>=0) else exp(x)
+        hl = w1 @ np.array([e_q, e_qd], dtype=np.float32) + b1
+        elu_p = np.where(hl >= 0.0, 1.0, np.exp(hl))
+        g = w2[0] * elu_p  # (4,)
+        return float(g @ w1[:, 0]), float(g @ w1[:, 1])
+
     model = _build_single_revolute(device)
     state = model.state()
     state.joint_q.assign(np.array([q0], dtype=np.float32))
@@ -974,15 +976,18 @@ def test_neural_mlp_implicit_nonlinear_converges(test, device):
     control.joint_target_q.assign(np.array([target], dtype=np.float32))
     alpha = _alpha_reference(model, state)[0]
 
-    def residual(tau):
-        # implicit equation: tau == net evaluated at the state this tau predicts
-        qd_pred = qd0 + alpha * h * tau
-        q_pred = q0 + h * qd_pred
-        return tau - net_np(target - q_pred, 0.0 - qd_pred)
+    # Linearize tau(q, qd) = net(target - q, -qd) about (q0, qd0):
+    #   a = d(tau)/dq = -d(net)/d(e_q),  b = d(tau)/dqd = -d(net)/d(e_qd).
+    tau0 = net_np(target - q0, 0.0 - qd0)
+    dneq, dneqd = dnet_np(target - q0, 0.0 - qd0)
+    a, b = -dneq, -dneqd
+    # Solve p/h from p = h*(tau0 + a*(q(p)-q0) + b*(qd(p)-qd0)),
+    #   qd(p) = qd0 + alpha*p, q(p) = q0 + h*qd(p).
+    expected_tau = (tau0 + a * h * qd0) / (1.0 - alpha * h * (a * h + b))
 
     with tempfile.TemporaryDirectory() as tmp:
         path = f"{tmp}/nonlinear.onnx"
-        inits = [numpy_helper.from_array(a, n) for a, n in ((w1, "W1"), (b1, "b1"), (w2, "W2"), (b2, "b2"))]
+        inits = [numpy_helper.from_array(a_, n) for a_, n in ((w1, "W1"), (b1, "b1"), (w2, "W2"), (b2, "b2"))]
         n1 = helper.make_node("Gemm", ["input", "W1", "b1"], ["hl"], alpha=1.0, beta=1.0, transB=1)
         n2 = helper.make_node("Elu", ["hl"], ["ael"], alpha=1.0)
         n3 = helper.make_node("Gemm", ["ael", "W2", "b2"], ["output"], alpha=1.0, beta=1.0, transB=1)
@@ -991,31 +996,20 @@ def test_neural_mlp_implicit_nonlinear_converges(test, device):
         graph = helper.make_graph([n1, n2, n3], "nonlinear", [x_vi], [y_vi], initializer=inits)
         onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)]), path)
 
-        def solve(iters):
-            controller = ControllerNeuralMLP(model_path=path)
-            oracle = ResponseOracle(model)
-            actuator = Actuator(
-                indices=wp.array([0], dtype=wp.uint32, device=device),
-                controller=controller,
-                control_target_pos_attr="joint_target_q",
-                control_target_vel_attr="joint_target_qd",
-            )
-            actuator.set_strategy_implicit(
-                effective_inv_mass=oracle, options=ActuatorImplicitOptions(newton_iters=iters)
-            )
-            oracle.refresh(state)
-            sa, sb = actuator.state(), actuator.state()
-            control.joint_f.zero_()
-            actuator.step(state, control, sa, sb, dt=h)
-            return float(control.joint_f.numpy()[0])
-
-        # One step already lands near the root; a few iterations drive the
-        # implicit residual to (float32) zero and further iterations are stable.
-        tau3 = solve(3)
-        test.assertLess(abs(residual(tau3)), 1e-2)
-        tau8 = solve(8)
-        test.assertLess(abs(residual(tau8)), 1e-3)
-        test.assertAlmostEqual(tau3, tau8, delta=abs(tau8) * 1e-3)
+        controller = ControllerNeuralMLP(model_path=path)
+        oracle = ResponseOracle(model)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=device),
+            controller=controller,
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        actuator.set_strategy_implicit(effective_inv_mass=oracle)
+        oracle.refresh(state)
+        sa, sb = actuator.state(), actuator.state()
+        control.joint_f.zero_()
+        actuator.step(state, control, sa, sb, dt=h)
+        test.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected_tau, delta=abs(expected_tau) * 3e-3)
 
 
 def test_unsupported_controller_raises(test, device):
@@ -1152,8 +1146,8 @@ if _HAS_ONNX and _HAS_WARP_NN:
     )
     add_function_test(
         TestActuatorImplicit,
-        "test_neural_mlp_implicit_nonlinear_converges",
-        test_neural_mlp_implicit_nonlinear_converges,
+        "test_neural_mlp_implicit_nonlinear_linearized",
+        test_neural_mlp_implicit_nonlinear_linearized,
         devices=devices,
     )
 add_function_test(TestActuatorImplicit, "test_validation_errors", test_validation_errors, devices=devices)
