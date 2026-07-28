@@ -89,9 +89,12 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * Valid, enabled, **dynamic** cable, cloth, and volume simulation prims that use the AOUSD
   deformable APIs. A bound simulation material supplies thickness, stiffness, and density;
   unauthored material properties fall back to documented builder defaults.
-* The points and topology **as currently authored**. Newton builds the deformable at that pose;
-  a standalone cable's ``restShapePoints`` may affect stiffness normalization but never
-  establishes an initial strain state.
+* Separate live and rest geometry for cloth and volume deformables. ``restShapePoints`` and
+  disjoint ``restTriVertexIndices`` / ``restTetVertexIndices`` determine FEM rest bases and
+  density-based mass distribution while the simulation ``points`` remain the initial state.
+  Cloth also honors ``restBendAnglesDefault`` plus explicit ``restAdjTriPairs`` /
+  ``restBendAngles``. A standalone cable's ``restShapePoints`` affects stiffness normalization
+  but does not yet establish an initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any
   geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
@@ -122,13 +125,11 @@ Limitations
 
 Known gaps of the experimental importer, tracked as follow-ups:
 
-* **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
-  configuration. Cloth and volume rest attributes are ignored with a warning, and welded cable
-  graphs drop ``restShapePoints``. For a standalone cable, a valid ``restShapePoints`` supplies
-  only the segment lengths used to convert the material moduli into joint stiffness; the rod
-  itself is still built relaxed at the current ``points`` pose, and mass distribution also uses
-  the current geometry. A body saved in a deformed pose therefore resumes relaxed at that pose
-  instead of springing back.
+* **Cable rest state** -- welded cable graphs drop ``restShapePoints``. For a standalone cable,
+  valid ``restShapePoints`` supplies only the segment lengths used to convert material moduli
+  into joint stiffness; the rod itself is still built relaxed at the current ``points`` pose,
+  ``restNormals`` is not imported, and mass distribution uses the current geometry. Cloth and
+  volume rest geometry is supported as described above.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
@@ -171,10 +172,9 @@ Known gaps of the experimental importer, tracked as follow-ups:
 
 **Mass distribution** follows the proposal's precedence order. Per-point ``physics:masses`` on
 the simulation geometry win. Next comes the ``PhysicsDeformableBodyAPI`` ``mass`` total, then
-the body or material density. Density- and total-derived masses are spread over the **current**
-geometry (segment lengths, triangle areas, tet volumes). The proposal spreads them over the rest
-shape instead, but rest state is not imported yet (see the limitations above), so a deformed
-saved pose shifts mass with it.
+the body or material density. Density- and total-derived masses use rest-shape triangle areas and
+tet volumes for cloth and volume deformables. Cable masses still use the current segment lengths
+(see the cable rest-state limitation above).
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
