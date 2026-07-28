@@ -3,7 +3,7 @@
 
 """Correctness tests for the force-based conveyor model.
 
-Exercises :class:`newton.examples.basic.conveyor_forces.ConveyorForceModel`
+Exercises :class:`newton.examples.basic.example_basic_conveyor_forces.ConveyorForceModel`
 across solver backends with quantitative (not just validity) checks: zero speed
 (no drift), constant/reversed speed (direction and convergence), rotated belt,
 curved (pivot) velocity field, contact loss, and long-running stability.
@@ -15,7 +15,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.examples.basic.conveyor_forces import ConveyorForceModel
+from newton.examples.basic.example_basic_conveyor_forces import ConveyorForceModel
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 BELT_HALF_X = 1.5
@@ -24,6 +24,7 @@ BELT_HALF_Z = 0.1
 BELT_TOP_Z = 0.5
 BOX_HALF = 0.2
 CONTACT_FRICTION = 2.0e-5
+BELT_FRICTION = 0.5
 
 
 def _make_solver(solver_name, model):
@@ -31,9 +32,7 @@ def _make_solver(solver_name, model):
         return newton.solvers.SolverVBD(model, iterations=5, rigid_body_contact_buffer_size=512)
     if solver_name == "mujoco":
         # MuJoCo configuration for Newton-generated contacts.
-        return newton.solvers.SolverMuJoCo(
-            model, cone="elliptic", use_mujoco_contacts=False, njmax=200, nconmax=100
-        )
+        return newton.solvers.SolverMuJoCo(model, cone="elliptic", use_mujoco_contacts=False, njmax=200, nconmax=100)
     return newton.solvers.SolverXPBD(model)
 
 
@@ -101,9 +100,18 @@ def run_conveyor(
 
     conveyor = ConveyorForceModel(model, solver_type=solver_name)
     if pivot_point is not None:
-        conveyor.add_pivot_belt(belt_shape, pivot_point=pivot_point, angular_velocity=angular_velocity)
+        conveyor.add_pivot_belt(
+            belt_shape,
+            pivot_point=pivot_point,
+            angular_velocity=angular_velocity,
+            friction=BELT_FRICTION,
+        )
     else:
-        conveyor.add_constant_belt(belt_shape, velocity=velocity if velocity is not None else wp.vec3(0.0, 0.0, 0.0))
+        conveyor.add_constant_belt(
+            belt_shape,
+            velocity=velocity if velocity is not None else wp.vec3(0.0, 0.0, 0.0),
+            friction=BELT_FRICTION,
+        )
     conveyor.finalize(contacts)
 
     sim_dt = 1.0 / fps / substeps
@@ -119,7 +127,7 @@ def run_conveyor(
         for _ in range(substeps):
             state_0.clear_forces()
             conveyor.apply(state_0)
-            conveyor.snapshot_prev(state_0)
+            conveyor.snapshot_prev(state_0, solver)
             collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt)
             conveyor.update(solver, contacts, state_1, sim_dt)
@@ -224,7 +232,7 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
         for _ in range(substeps):
             state_0.clear_forces()
             conveyor.apply(state_0)
-            conveyor.snapshot_prev(state_0)
+            conveyor.snapshot_prev(state_0, solver)
             collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt)
             conveyor.update(solver, contacts, state_1, sim_dt)
@@ -416,13 +424,12 @@ def test_contact_data_consistency(test, device, solver_name):
     test.assertGreater(float(normal_force), 0.0)
     # The externally applied tangential force must remain within the summed Coulomb limit.
     conveyor_force = float(np.linalg.norm(diagnostics["conveyor_force"]))
-    test.assertLessEqual(conveyor_force, 0.5 * float(normal_force) + 1.0e-4)
+    test.assertLessEqual(conveyor_force, BELT_FRICTION * float(normal_force) + 1.0e-4)
 
 
-def test_backend_parity(test, device, solver_name):
+def test_backend_parity(test, device, _solver_name):
     """Verify XPBD, VBD and MuJoCo agree on transport distance."""
     # The same force model must transport a box consistently across all three solvers.
-    # (solver_name is unused; this case drives XPBD, VBD, and MuJoCo itself.)
     ys = {}
     for name in ("xpbd", "vbd", "mujoco"):
         positions, _ = run_conveyor(device, name, velocity=wp.vec3(0.0, 2.0, 0.0), frames=120)
@@ -457,9 +464,17 @@ _cases = [
 # other solvers honest. MuJoCo and VBD rigid-contact support targets CUDA.
 REFERENCE_SOLVER = "mujoco"
 
-for _device in _devices:
-    if _device.is_cpu:
-        continue
+_cuda_devices = [device for device in _devices if not device.is_cpu]
+if not _cuda_devices:
+
+    @unittest.skip("conveyor force tests require a CUDA device")
+    def test_requires_cuda(self):
+        """Report that this suite requires CUDA instead of silently running no tests."""
+        pass
+
+    TestConveyorForces.test_requires_cuda = test_requires_cuda
+
+for _device in _cuda_devices:
     for _case_name, _case_fn in _cases:
         add_function_test(
             TestConveyorForces,
@@ -473,7 +488,7 @@ for _device in _devices:
         "test_backend_parity",
         test_backend_parity,
         devices=[_device],
-        solver_name=REFERENCE_SOLVER,
+        _solver_name=REFERENCE_SOLVER,
     )
 
 
