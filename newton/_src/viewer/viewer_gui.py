@@ -909,16 +909,18 @@ class ViewerGui:
     def _get_shape_role_counts(self, model) -> tuple[int, int] | None:
         """Return how many shapes are visual and how many are collision geometry.
 
-        A shape may be both, so the two counts need not sum to
-        :attr:`~newton.Model.shape_count`. Cached per model: ``shape_flags`` lives on
-        the device and reading it back every frame would stall the render loop.
+        Computed once per model and reused: ``shape_flags`` is a device array, so
+        reading it back every frame would stall the render loop. Keyed on the model
+        rather than computed once at construction because
+        :meth:`~newton.viewer.ViewerBase.set_model` may be called again with a
+        different model, and the counts have to follow it.
         """
-        flags_array = getattr(model, "shape_flags", None)
-        if flags_array is None:
-            return None
         cached = self._shape_role_counts
         if cached is not None and cached[0] is model:
             return cached[1], cached[2]
+        flags_array = getattr(model, "shape_flags", None)
+        if flags_array is None:
+            return None
         flags = flags_array.numpy()
         visible = int(np.count_nonzero(flags & int(nt.ShapeFlags.VISIBLE)))
         colliding = int(np.count_nonzero(flags & int(nt.ShapeFlags.COLLIDE_SHAPES)))
@@ -975,9 +977,7 @@ class ViewerGui:
                 roles = self._get_shape_role_counts(viewer.model)
                 if roles is not None:
                     visible, colliding = roles
-                    # A shape can be both, so these need not sum to the total; the
-                    # overlap is the point -- it shows how much of what is drawn is
-                    # collision geometry.
+                    # Categories overlap when a shape carries both flags.
                     imgui.indent()
                     imgui.text(f"visual: {visible}")
                     imgui.text(f"collision: {colliding}")
