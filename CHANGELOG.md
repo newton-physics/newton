@@ -107,6 +107,7 @@
 - Fix compiler warnings about overflowing int32 constants when compiling SDF texture and `SensorTiledCamera` kernels.
 - Fix USD site import to discover sites beneath non-visual containers, collider prims, and instanceable rigid-body prims independently of `load_visual_shapes`; the reworked traversal also speeds up import of scenes with many nested `Xform` or instance prims.
 - Fix `SolverFeatherstone` BALL joints to apply passive `joint_damping` on all three angular DOFs.
+- Fix `eval_ik()` and `SolverSemiImplicit` rounding small float32 revolute-joint angles to zero. (#3434)
 - Fix excessive memory usage when importing MJCF or URDF models containing many visual-only shapes with self-collisions disabled.
 - Fix `FastKitchenG1` ASV metrics to build the kitchen scene instead of a plain G1 model.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.

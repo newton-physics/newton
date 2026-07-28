@@ -92,6 +92,25 @@ def test_fk_ik(test, device):
     assert_np_equal(qd_fk, qd_ik.numpy(), tol=1e-6)
 
 
+def test_fk_ik_revolute_small_angles(test, device):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    child = builder.add_link()
+    joint = builder.add_joint_revolute(parent=-1, child=child, axis=newton.Axis.Z)
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+
+    state = model.state()
+    q_ik = wp.zeros_like(model.joint_q, device=device)
+    qd_ik = wp.zeros_like(model.joint_qd, device=device)
+    angles = np.array([-4.0, -5.0e-4, -1.0e-4, 1.0e-4, 5.0e-4, 4.0], dtype=np.float32)
+
+    for angle in angles:
+        state.joint_q.assign(np.array([angle], dtype=np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        newton.eval_ik(model, state, q_ik, qd_ik)
+        test.assertAlmostEqual(float(q_ik.numpy()[0]), float(angle), delta=1.0e-6)
+
+
 def test_fk_ik_with_analytical_solution(test, device):
     # Verify FK computes correct positions for a 2-link planar arm, and IK recovers joint angles.
     # Test parameters: length of the two links
@@ -1095,6 +1114,12 @@ class TestSimKinematics(unittest.TestCase):
 
 
 add_function_test(TestSimKinematics, "test_fk_ik", test_fk_ik, devices=devices)
+add_function_test(
+    TestSimKinematics,
+    "test_fk_ik_revolute_small_angles",
+    test_fk_ik_revolute_small_angles,
+    devices=devices,
+)
 add_function_test(
     TestSimKinematics, "test_fk_ik_with_analytical_solution", test_fk_ik_with_analytical_solution, devices=devices
 )

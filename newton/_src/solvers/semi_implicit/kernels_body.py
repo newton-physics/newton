@@ -203,10 +203,7 @@ def eval_body_joints(
         axis_p = wp.transform_vector(X_wp, axis)
         axis_c = wp.transform_vector(X_wc, axis)
 
-        # swing twist decomposition
-        twist = wp.quat_twist(axis, r_err)
-
-        q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
+        q = wp.quat_twist_angle_signed(axis, r_err)
         qd = wp.dot(w_err, axis_p)
 
         t_total = axis_p * (
@@ -346,10 +343,7 @@ def eval_body_joints(
             axis_p = wp.transform_vector(X_wp, axis)
             axis_c = wp.transform_vector(X_wc, axis)
 
-            # swing twist decomposition
-            twist = wp.quat_twist(axis, r_err)
-
-            q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
+            q = wp.quat_twist_angle_signed(axis, r_err)
             qd = wp.dot(w_err, axis_p)
 
             t_total = axis_p * (
