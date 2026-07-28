@@ -28,6 +28,7 @@ BELT_FRICTION = 0.5
 
 
 def _make_solver(solver_name, model):
+    """Build the solver named by ``solver_name`` with settings suited to belt contacts."""
     if solver_name == "vbd":
         return newton.solvers.SolverVBD(model, iterations=5, rigid_body_contact_buffer_size=512)
     if solver_name == "mujoco":
@@ -440,7 +441,7 @@ def test_backend_parity(test, device, _solver_name):
 
 
 class TestConveyorForces(unittest.TestCase):
-    pass
+    """Scenario matrix for the force-based conveyor model."""
 
 
 _devices = get_test_devices()

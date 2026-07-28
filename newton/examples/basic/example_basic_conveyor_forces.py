@@ -38,6 +38,8 @@ VELOCITY_FIELD_TYPE_PIVOT = 1
 # ---------------------------------------------------------------------------
 @wp.struct
 class Vec3Pair:
+    """Two orthonormal vectors spanning the plane tangent to a contact normal."""
+
     v0: wp.vec3
     v1: wp.vec3
 
@@ -155,6 +157,8 @@ def compute_point_force(
 # ---------------------------------------------------------------------------
 @wp.struct
 class BeltContact:
+    """One belt-to-body contact, reduced to what the force model needs."""
+
     valid: wp.int32
     body: wp.int32
     conv: wp.int32
@@ -778,6 +782,8 @@ def create_annular_sector_mesh(
 
 
 class Example:
+    """Conveyor circuit whose static belts carry rigid boxes with contact forces."""
+
     def __init__(self, viewer, args=None):
         self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
 
@@ -1004,29 +1010,37 @@ class Example:
         self.viewer.end_frame()
 
     def test_post_step(self):
+        """Record each box's furthest displacement from its spawn pose."""
         # Track how far each box has ever been from its spawn, so test_final can tell a
         # box that is genuinely carried from one that never left the belt it started on.
         travel = np.linalg.norm(self.state_0.body_q.numpy()[self.tracked_bodies, :3] - self.tracked_start_pos, axis=1)
         np.maximum(self.max_travel, travel, out=self.max_travel)
 
     def test_final(self):
+        """Verify every box stayed on the circuit and was actually carried by the belts."""
         body_q = self.state_0.body_q.numpy()
         assert np.all(np.isfinite(body_q)), "non-finite body pose"
         for b in self.tracked_bodies:
             z = float(body_q[b][2])
             assert z > -0.5, f"transported body {b} fell through the floor: z={z:.4f}"
 
+        # The transport checks below are the point of this test, so a run too short to
+        # reach full belt speed must fail rather than silently skip them.
+        assert self.sim_time > STARTUP_DURATION + 0.5, (
+            f"run too short to verify transport: {self.sim_time:.2f} s of simulation, "
+            f"need more than {STARTUP_DURATION + 0.5:.2f} s"
+        )
+
         # Pose validity alone does not establish transport, so require measurable displacement.
-        if self.sim_time > STARTUP_DURATION + 0.5:
-            stalled = int(np.argmin(self.max_travel))
-            assert self.max_travel[stalled] > MIN_TRAVEL, (
-                f"transported body {self.tracked_bodies[stalled]} was never carried off its start pose: "
-                f"{self.max_travel[stalled]:.3f} m"
-            )
-            # Individual boxes briefly slow at belt seams and in the turn, so this is a
-            # fleet average rather than a per-box floor.
-            speed = np.linalg.norm(self.state_0.body_qd.numpy()[self.tracked_bodies, :3], axis=1)
-            assert speed.mean() > MIN_TRANSPORT_SPEED, f"boxes are not moving with the belts: {speed.mean():.3f} m/s"
+        stalled = int(np.argmin(self.max_travel))
+        assert self.max_travel[stalled] > MIN_TRAVEL, (
+            f"transported body {self.tracked_bodies[stalled]} was never carried off its start pose: "
+            f"{self.max_travel[stalled]:.3f} m"
+        )
+        # Individual boxes briefly slow at belt seams and in the turn, so this is a
+        # fleet average rather than a per-box floor.
+        speed = np.linalg.norm(self.state_0.body_qd.numpy()[self.tracked_bodies, :3], axis=1)
+        assert speed.mean() > MIN_TRANSPORT_SPEED, f"boxes are not moving with the belts: {speed.mean():.3f} m/s"
 
 
 def _look_at(eye, target):
