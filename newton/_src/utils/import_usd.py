@@ -1209,11 +1209,10 @@ def parse_usd(
 
         USD viewports draw the ``default`` and ``proxy`` purposes and hide ``guide`` and
         ``render``; the allowlist also keeps any future purpose hidden until explicitly
-        handled. ``guide`` is the conventional purpose for authored collision geometry
-        (e.g. the MuJoCo USD exporter), so it gates only whether a collider inherits
-        visibility from a bound render material. The collider display policy
-        (``force_show_colliders`` / ``hide_collision_shapes``) is checked independently and
-        still reveals ``guide`` colliders.
+        handled. This is what decides whether a collider is drawn: ``guide`` is the
+        conventional purpose for authored collision geometry (e.g. the MuJoCo USD
+        exporter), and such a prim is not viewport geometry. ``force_show_colliders``
+        is the explicit override for inspecting it anyway.
         """
         if not _is_effectively_visible(prim):
             return False
@@ -3798,8 +3797,13 @@ def parse_usd(
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    if collider_is_visible:
-                        # Visible colliders should render with the same visual material metadata
+                    # The mesh needs its render material when anything will draw it: either
+                    # the collider itself is visible, or it is viewport geometry whose
+                    # authored topology is about to be split off as a visual shape. The
+                    # latter is not covered by collider_is_visible, which hide_collision_shapes
+                    # can clear while the visual copy is still produced.
+                    if collider_is_visible or (load_visual_shapes and _is_viewport_drawn(prim)):
+                        # Drawn colliders should render with the same visual material metadata
                         # as visual-only mesh imports.
                         mesh = _get_mesh_with_visual_material(prim, path_name=path)
                     else:
