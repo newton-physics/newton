@@ -3463,6 +3463,7 @@ class ModelBuilder:
         skip_mesh_approximation: bool = False,
         load_sites: bool = True,
         load_visual_shapes: bool = True,
+        load_static_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
         force_show_colliders: bool = False,
         parse_mujoco_options: bool = True,
@@ -3569,6 +3570,9 @@ class ModelBuilder:
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+            load_static_visual_shapes: If True, supported visual-only geometry outside
+                rigid-body hierarchies is loaded as static shapes when
+                ``load_visual_shapes`` is also True. Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
                 have visual-only geometry are hidden unconditionally, regardless of
                 whether the collider has authored PBR material data. Default is False.
@@ -3707,6 +3711,7 @@ class ModelBuilder:
             skip_mesh_approximation=skip_mesh_approximation,
             load_sites=load_sites,
             load_visual_shapes=load_visual_shapes,
+            load_static_visual_shapes=load_static_visual_shapes,
             hide_collision_shapes=hide_collision_shapes,
             force_show_colliders=force_show_colliders,
             parse_mujoco_options=parse_mujoco_options,
