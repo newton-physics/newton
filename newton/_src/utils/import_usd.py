@@ -1200,11 +1200,9 @@ def parse_usd(
 
         USD viewports draw the ``default`` and ``proxy`` purposes and hide ``guide`` and
         ``render``; the allowlist also keeps any future purpose hidden until explicitly
-        handled. Colliders deliberately do not use this check: ``guide`` is the conventional
-        purpose for authored collision geometry (e.g. the MuJoCo USD exporter), and the
-        collider display policy (``force_show_colliders`` / ``hide_collision_shapes``) is the
-        explicit mechanism for revealing colliders — gating them on purpose would make
-        ``force_show_colliders`` a no-op on such assets.
+        handled. For colliders, this identifies geometry authored to serve as both a visual
+        and collision shape. Explicit collider display remains independent of purpose so
+        ``force_show_colliders`` can still reveal ``guide`` geometry for debugging.
         """
         if not _is_effectively_visible(prim):
             return False
@@ -3370,9 +3368,10 @@ def parse_usd(
                     model_has_visual_shapes=model_has_visual_shapes,
                 )
                 collider_is_visible = (
-                    show_collider_by_policy or collider_has_visual_material
+                    show_collider_by_policy or collider_has_visual_material or _is_viewport_drawn(prim)
                 ) and not hide_collider_for_body
-                # visibility only — see _is_viewport_drawn for why purpose does not gate colliders
+                # Explicit collider display may reveal guide geometry, but inherited
+                # visibility still applies.
                 collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
 
                 # Contact response precedence:

@@ -10950,8 +10950,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collision_shape_visibility_flags(self):
-        """Collision shapes on bodies with visual shapes should not have the
-        VISIBLE flag so they are toggleable via the viewer's 'Show Collision'."""
+        """Keep guide-purpose collision shapes hidden in mixed USD imports."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -10975,6 +10974,7 @@ def Xform "BodyWithVisuals" (
     )
     {
         double size = 1.0
+        token purpose = "guide"
     }
 
     def Sphere "VisualSphere"
@@ -10995,6 +10995,7 @@ def Xform "BodyWithoutVisuals" (
     )
     {
         double radius = 0.5
+        token purpose = "guide"
     }
 }
 """
@@ -11050,6 +11051,41 @@ def Xform "BodyWithoutVisuals" (
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_shared_collision_visual_geometry_is_visible(self):
+        """Keep renderable USD colliders visible when geometry is shared."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+
+        shared_body = UsdGeom.Xform.Define(stage, "/World/SharedGeometryBody").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(shared_body)
+        shared_geometry = UsdGeom.Cube.Define(stage, "/World/SharedGeometryBody/SharedGeometry").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(shared_geometry)
+
+        separate_body = UsdGeom.Xform.Define(stage, "/World/SeparateGeometryBody").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(separate_body)
+        guide_collider = UsdGeom.Cube.Define(stage, "/World/SeparateGeometryBody/Collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(guide_collider)
+        UsdGeom.Imageable(guide_collider).CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
+        UsdGeom.Sphere.Define(stage, "/World/SeparateGeometryBody/Visual")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        shared_flags = builder.shape_flags[path_shape_map["/World/SharedGeometryBody/SharedGeometry"]]
+        self.assertTrue(shared_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(shared_flags & ShapeFlags.VISIBLE)
+
+        guide_flags = builder.shape_flags[path_shape_map["/World/SeparateGeometryBody/Collider"]]
+        self.assertTrue(guide_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(guide_flags & ShapeFlags.VISIBLE)
+
+        visual_flags = builder.shape_flags[path_shape_map["/World/SeparateGeometryBody/Visual"]]
+        self.assertFalse(visual_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(visual_flags & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collision_only_asset_keeps_colliders_visible(self):
@@ -11488,11 +11524,12 @@ def Xform "Body" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_with_roughness_only_material_stays_hidden(self):
-        """Primitive (non-mesh) colliders must not become visible from roughness-only materials.
+        """Keep guide-purpose primitive colliders hidden with roughness-only materials.
 
         When a body already has visual shapes, ``show_collider_by_policy`` is
-        ``False``. Only ``collider_has_visual_material`` can promote a collider
-        to visible, and that promotion is restricted to mesh colliders only.
+        ``False`` and guide geometry is not viewport-drawn. Only
+        ``collider_has_visual_material`` can promote the collider to visible,
+        and that promotion is restricted to mesh colliders only.
         """
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -11521,6 +11558,7 @@ def Xform "Body" (
         # Add a collision box with a roughness-only PBR material.
         box_prim = UsdGeom.Cube.Define(stage, "/Body/CollisionBox").GetPrim()
         UsdPhysics.CollisionAPI.Apply(box_prim)
+        UsdGeom.Imageable(box_prim).CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
         material = UsdShade.Material.Define(stage, "/Materials/RoughnessOnly")
         shader = UsdShade.Shader.Define(stage, "/Materials/RoughnessOnly/PreviewSurface")
         shader.CreateIdAttr("UsdPreviewSurface")
