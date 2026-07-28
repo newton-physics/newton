@@ -827,6 +827,20 @@ class DVISolverConfig:
     the standard direct-block schedule. Must be greater than zero. Defaults to `1`.
     """
 
+    bilateral_solver_type: Literal["LLTB", "LLTBRCM"] = "LLTB"
+    """
+    Direct linear solver used for the bilateral constraint block.
+    ``LLTBRCM`` can accelerate large sparse articulated systems, while
+    ``LLTB`` remains preferable for small or dense systems. Defaults to
+    ``LLTB``.
+    """
+
+    bilateral_solver_kwargs: dict[str, Any] = field(default_factory=dict)
+    """
+    Additional keyword arguments passed to the bilateral linear solver.
+    Defaults to an empty dictionary.
+    """
+
     contact_jacobi_omega: float = 0.3
     """
     Step size for contact Jacobi updates and block-preconditioned contact
@@ -910,6 +924,10 @@ class DVISolverConfig:
         if self.bilateral_solve_period <= 0:
             raise ValueError(
                 f"Invalid bilateral solve period: {self.bilateral_solve_period}. Must be a positive integer."
+            )
+        if self.bilateral_solver_type not in {"LLTB", "LLTBRCM"}:
+            raise ValueError(
+                f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM']."
             )
         if self.contact_jacobi_omega <= 0.0 or self.contact_jacobi_omega > 2.0:
             raise ValueError(f"Invalid contact Jacobi omega: {self.contact_jacobi_omega}. Must be in the range (0, 2].")

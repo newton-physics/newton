@@ -10,11 +10,9 @@ import warp as wp
 
 from ._tile_builtins import (
     HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
-    HAS_NATIVE_TILE_MATMUL_TRANSPOSE_UPDATE,
     HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
     HAS_TILE_MATMUL_TRANSPOSE_UPDATE,
     make_tile_matmul_left_transpose_update_func,
-    make_tile_matmul_transpose_update_func,
 )
 
 ###
@@ -166,10 +164,6 @@ def make_llt_blocked_factorize_kernel(block_size: int):
                     L_block = wp.tile_load(L_i, shape=(block_size, block_size), offset=(k, j))
                     if wp.static(HAS_TILE_MATMUL_TRANSPOSE_UPDATE):
                         wp.tile_matmul_transpose_update(A_kk_tile, L_block, L_block, alpha=-1.0)
-                    elif wp.static(HAS_NATIVE_TILE_MATMUL_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_transpose_update_func(block_size, "shared", "register"))(
-                            A_kk_tile, L_block, L_block, -1.0
-                        )
                     else:
                         L_block_T = wp.tile_transpose(L_block)
                         wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
@@ -206,10 +200,6 @@ def make_llt_blocked_factorize_kernel(block_size: int):
                         L_2_tile = wp.tile_load(L_i, shape=(block_size, block_size), offset=(k, j))
                         if wp.static(HAS_TILE_MATMUL_TRANSPOSE_UPDATE):
                             wp.tile_matmul_transpose_update(A_ik_tile, L_tile, L_2_tile, alpha=-1.0)
-                        elif wp.static(HAS_NATIVE_TILE_MATMUL_TRANSPOSE_UPDATE):
-                            wp.static(make_tile_matmul_transpose_update_func(block_size, "shared", "register"))(
-                                A_ik_tile, L_tile, L_2_tile, -1.0
-                            )
                         else:
                             L_T_tile = wp.tile_transpose(L_2_tile)
                             wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
@@ -306,7 +296,7 @@ def make_llt_blocked_solve_kernel(block_size: int):
                     if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
                         wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
                     elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_left_transpose_update_func(block_size, "generic", "register"))(
+                        wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
                             rhs_tile, L_tile, x_tile, -1.0
                         )
                     else:
@@ -395,7 +385,7 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
                     if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
                         wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
                     elif wp.static(HAS_NATIVE_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
-                        wp.static(make_tile_matmul_left_transpose_update_func(block_size, "generic", "register"))(
+                        wp.static(make_tile_matmul_left_transpose_update_func(block_size))(
                             rhs_tile, L_tile, x_tile, -1.0
                         )
                     else:
