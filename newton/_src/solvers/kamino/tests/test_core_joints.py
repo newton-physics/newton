@@ -55,6 +55,16 @@ class TestCoreJoints(unittest.TestCase):
         self.assertEqual(doftype.cts_axes, (0, 1, 2, 4, 5))
         self.assertEqual(doftype.dofs_axes, (3,))
 
+    def test_pure_three_dof_rotation_metadata(self):
+        """Identify joints with exactly three rotational DoFs and no translational DoFs."""
+        expected = {
+            JointDoFType.SPHERICAL,
+            JointDoFType.ROTATION_VECTOR,
+        }
+        for dof_type in JointDoFType:
+            with self.subTest(dof_type=dof_type):
+                self.assertEqual(dof_type.is_pure_three_dof_rotation, dof_type in expected)
+
 
 ###
 # Test execution

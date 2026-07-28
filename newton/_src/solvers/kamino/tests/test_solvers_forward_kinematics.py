@@ -48,10 +48,13 @@ wp.set_module_options({"enable_backward": False})
 ###
 
 
-def create_four_bar_tie_rod() -> ModelBuilderKamino:
-    """
-    Creates a four-bar linkage, but with two revolute joints replaced with
-    spherical joints so as to create a tie rod (to test axis joints).
+def create_four_bar_tie_rod(
+    rotation_dof_type: JointDoFType = JointDoFType.SPHERICAL,
+) -> ModelBuilderKamino:
+    """Create a four-bar linkage with a tie rod connected by rotation joints.
+
+    Args:
+        rotation_dof_type: Pure 3-DoF rotation type for both tie-rod joints.
     """
     builder_revolute = build_boxes_fourbar(
         fixedbase=False,
@@ -63,19 +66,19 @@ def create_four_bar_tie_rod() -> ModelBuilderKamino:
         implicit_pd=False,
         actuator_ids=[1],
     )
-    builder_spherical = ModelBuilderKamino(default_world=True)
+    builder_rotation = ModelBuilderKamino(default_world=True)
     for body in builder_revolute.bodies[0]:
-        builder_spherical.add_rigid_body_descriptor(copy.deepcopy(body))
+        builder_rotation.add_rigid_body_descriptor(copy.deepcopy(body))
     for joint in builder_revolute.joints[0]:
         joint_copy = copy.deepcopy(joint)
         if joint.name == "link2_to_link3" or joint.name == "link3_to_link4":
-            joint_copy.dof_type = JointDoFType.SPHERICAL
-        builder_spherical.add_joint_descriptor(joint_copy)
+            joint_copy.dof_type = rotation_dof_type
+        builder_rotation.add_joint_descriptor(joint_copy)
     for geom in builder_revolute.geoms[0]:
         geom_copy = copy.deepcopy(geom)
         geom_copy.shape = builder_revolute.shapes[geom.uid]
-        builder_spherical.add_geometry_descriptor(geom_copy)
-    return builder_spherical
+        builder_rotation.add_geometry_descriptor(geom_copy)
+    return builder_rotation
 
 
 class JacobianCheckForwardKinematics(unittest.TestCase):
@@ -554,83 +557,99 @@ class FourBarTieRodRandomPosesCheckForwardKinematics(unittest.TestCase):
 
     def test_axis_joint_frames_update_after_notify(self):
         """Synthetic axis frames match a fresh solver after model changes."""
-        model = create_four_bar_tie_rod().finalize(device=self.default_device, requires_grad=False)
-        config = ForwardKinematicsSolver.Config(add_axis_joints=True)
-        solver = ForwardKinematicsSolver(model, config)
-        axis_body = int(solver.fk_axis_body.numpy()[0])
-        source_joint = int(solver.fk_axis_source_joint_0.numpy()[0])
+        for dof_type in (
+            JointDoFType.SPHERICAL,
+            JointDoFType.ROTATION_VECTOR,
+        ):
+            with self.subTest(dof_type=dof_type):
+                model = create_four_bar_tie_rod(dof_type).finalize(device=self.default_device, requires_grad=False)
+                config = ForwardKinematicsSolver.Config(add_axis_joints=True)
+                solver = ForwardKinematicsSolver(model, config)
+                axis_body = int(solver.fk_axis_body.numpy()[0])
+                source_joint = int(solver.fk_axis_source_joint_0.numpy()[0])
 
-        body_q = model.bodies.q_i_0.numpy()
-        body_q[axis_body] = np.array(
-            wp.transformf(
-                wp.vec3f(*body_q[axis_body, :3]),
-                wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.3),
-            )
-        )
-        model.bodies.q_i_0.assign(body_q)
-        if model.joints.bid_B.numpy()[source_joint] == axis_body:
-            joint_anchor = model.joints.B_r_Bj.numpy()
-            joint_anchor[source_joint] += np.array([0.05, -0.02, 0.01], dtype=np.float32)
-            model.joints.B_r_Bj.assign(joint_anchor)
-        else:
-            joint_anchor = model.joints.F_r_Fj.numpy()
-            joint_anchor[source_joint] += np.array([0.05, -0.02, 0.01], dtype=np.float32)
-            model.joints.F_r_Fj.assign(joint_anchor)
+                body_q = model.bodies.q_i_0.numpy()
+                body_q[axis_body] = np.array(
+                    wp.transformf(
+                        wp.vec3f(*body_q[axis_body, :3]),
+                        wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.3),
+                    )
+                )
+                model.bodies.q_i_0.assign(body_q)
+                if model.joints.bid_B.numpy()[source_joint] == axis_body:
+                    joint_anchor = model.joints.B_r_Bj.numpy()
+                    joint_anchor[source_joint] += np.array([0.05, -0.02, 0.01], dtype=np.float32)
+                    model.joints.B_r_Bj.assign(joint_anchor)
+                else:
+                    joint_anchor = model.joints.F_r_Fj.numpy()
+                    joint_anchor[source_joint] += np.array([0.05, -0.02, 0.01], dtype=np.float32)
+                    model.joints.F_r_Fj.assign(joint_anchor)
 
-        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.BODY_PROPERTIES)
-        reference = ForwardKinematicsSolver(model, ForwardKinematicsSolver.Config(add_axis_joints=True))
-        axis_joints = solver.fk_axis_joint.numpy()
+                solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.BODY_PROPERTIES)
+                reference = ForwardKinematicsSolver(model, ForwardKinematicsSolver.Config(add_axis_joints=True))
+                axis_joints = solver.fk_axis_joint.numpy()
 
-        np.testing.assert_allclose(
-            solver.joints_X_Bj.numpy()[axis_joints],
-            reference.joints_X_Bj.numpy()[axis_joints],
-            atol=1e-6,
-        )
-        np.testing.assert_allclose(
-            solver.joints_X_Fj.numpy()[axis_joints],
-            reference.joints_X_Fj.numpy()[axis_joints],
-            atol=1e-6,
-        )
+                np.testing.assert_allclose(
+                    solver.joints_X_Bj.numpy()[axis_joints],
+                    reference.joints_X_Bj.numpy()[axis_joints],
+                    atol=1e-6,
+                )
+                np.testing.assert_allclose(
+                    solver.joints_X_Fj.numpy()[axis_joints],
+                    reference.joints_X_Fj.numpy()[axis_joints],
+                    atol=1e-6,
+                )
+
+    def test_adds_axis_joints_for_three_dof_rotation_joints(self):
+        """Add an axis joint for each pure 3-DoF rotation joint variant."""
+        for dof_type in (
+            JointDoFType.SPHERICAL,
+            JointDoFType.ROTATION_VECTOR,
+        ):
+            with self.subTest(dof_type=dof_type):
+                model = create_four_bar_tie_rod(dof_type).finalize(device=self.default_device, requires_grad=False)
+                solver = ForwardKinematicsSolver(
+                    model,
+                    ForwardKinematicsSolver.Config(add_axis_joints=True),
+                )
+                self.assertEqual(len(solver.fk_axis_joint), 1)
 
     def test_four_bar_tie_rod_model_FK_random_poses(self):
-        # Initialize RNG
-        test_name = "Four-bar with tie rod FK random poses check"
-        seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
-        rng = np.random.default_rng(seed)
+        """Solve spherical and rotation-vector tie-rod poses with both axis-joints and regularization."""
+        for dof_type in (JointDoFType.SPHERICAL, JointDoFType.ROTATION_VECTOR):
+            with self.subTest(dof_type=dof_type):
+                seed = int(hashlib.sha256(dof_type.name.encode("utf8")).hexdigest(), 16)
+                rng = np.random.default_rng(seed)
 
-        # Create a builder with 10 worlds, each with a four-bar with a tie rod
-        builder = make_homogeneous_builder(num_worlds=10, build_fn=create_four_bar_tie_rod)
-        model = builder.finalize(device=self.default_device, requires_grad=False)
+                # Create a builder with 10 worlds, each with a four-bar with a tie rod
+                builder = make_homogeneous_builder(
+                    num_worlds=10,
+                    build_fn=partial(create_four_bar_tie_rod, dof_type),
+                )
+                model = builder.finalize(device=self.default_device, requires_grad=False)
+                # Generate helper function to simulate random poses
+                num_poses = 30
+                simulate_function = partial(
+                    simulate_random_poses,
+                    model,
+                    num_poses,
+                    rng,
+                    use_graph=self.has_cuda and not wp.config.verify_cuda,
+                    verbose=self.verbose,
+                    reset_state=True,
+                    use_incremental_solve=True,
+                    preconditioner="jacobi_block_diagonal",
+                )
 
-        # Generate helper function to simulate random poses
-        num_poses = 30
-        simulate_function = partial(
-            simulate_random_poses,
-            model,
-            num_poses,
-            rng,
-            use_graph=self.has_cuda and not wp.config.verify_cuda,
-            verbose=self.verbose,
-            reset_state=True,
-            use_incremental_solve=True,
-            preconditioner="jacobi_block_diagonal",
-        )
-
-        # Simulate random poses, adding axis joints to handle tie rod (dense solver)
-        success = simulate_function(add_axis_joints=True, tolerance=1e-6, use_sparsity=False)
-        self.assertTrue(success)
-
-        # Simulate random poses, adding axis joints to handle tie rod (sparse solver)
-        success = simulate_function(add_axis_joints=True, tolerance=1e-6, use_sparsity=True)
-        self.assertTrue(success)
-
-        # Simulate random poses, using regularization to handle tie rod (dense solver)
-        success = simulate_function(add_axis_joints=False, use_regularization=True, tolerance=1e-5, use_sparsity=False)
-        self.assertTrue(success)
-
-        # Simulate random poses, using regularization to handle tie rod (sparse solver)
-        success = simulate_function(add_axis_joints=False, use_regularization=True, tolerance=1e-5, use_sparsity=True)
-        self.assertTrue(success)
+                # Test both dense and sparse solvers for axis joints and regularization.
+                for solver_config in (
+                    {"add_axis_joints": True, "tolerance": 1e-6},
+                    {"add_axis_joints": False, "use_regularization": True, "tolerance": 1e-5},
+                ):
+                    for use_sparsity in (False, True):
+                        with self.subTest(**solver_config, use_sparsity=use_sparsity):
+                            success = simulate_function(**solver_config, use_sparsity=use_sparsity)
+                            self.assertTrue(success)
 
 
 class AllJointsExampleRandomPosesCheckForwardKinematics(unittest.TestCase):
