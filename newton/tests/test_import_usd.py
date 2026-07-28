@@ -5106,6 +5106,74 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         self.assertIn(static_collider.GetPath().pathString, result_no_visuals["path_shape_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_static_visual_scout_excludes_ignored_prims(self):
+        """Exclude ignored prims from static visual scout buckets."""
+        from pxr import Usd, UsdGeom
+
+        from newton._src.utils.import_usd_deformable_utils import _scout_deformable_prims  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdGeom.Cube.Define(stage, "/World/Kept")
+        UsdGeom.Cube.Define(stage, "/World/Ignored")
+
+        buckets = _scout_deformable_prims(
+            root.GetPrim(),
+            ignore_paths=["/World/Ignored"],
+            collect_static_visuals=True,
+        )
+
+        self.assertEqual([str(prim.GetPath()) for prim in buckets.static_visuals], ["/World/Kept"])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_static_gaussian_respects_loading_flag(self):
+        """Control static Gaussian splats with the static visual loading flag."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.Xform.Define(stage, "/World")
+        gaussian = stage.DefinePrim("/World/Gaussian", "ParticleField3DGaussianSplat")
+        gaussian.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+
+        builder_default = newton.ModelBuilder()
+        result_default = builder_default.add_usd(stage, root_path="/World")
+        self.assertIn(gaussian.GetPath().pathString, result_default["path_shape_map"])
+
+        builder_disabled = newton.ModelBuilder()
+        result_disabled = builder_disabled.add_usd(
+            stage,
+            root_path="/World",
+            load_static_visual_shapes=False,
+        )
+        self.assertNotIn(gaussian.GetPath().pathString, result_disabled["path_shape_map"])
+
+        builder_no_visuals = newton.ModelBuilder()
+        result_no_visuals = builder_no_visuals.add_usd(
+            stage,
+            root_path="/World",
+            load_visual_shapes=False,
+            load_static_visual_shapes=True,
+        )
+        self.assertNotIn(gaussian.GetPath().pathString, result_no_visuals["path_shape_map"])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_disabled_static_collider_loads_as_visual(self):
+        """Load disabled static colliders as visual-only shapes."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        collider = UsdGeom.Cube.Define(stage, "/DisabledCollider")
+        collider.CreatePurposeAttr(UsdGeom.Tokens.guide)
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim()).CreateCollisionEnabledAttr(False)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, force_show_colliders=True)
+        flags = builder.shape_flags[result["path_shape_map"][collider.GetPath().pathString]]
+
+        self.assertFalse(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_granular_loading_flags(self):
         """Test the granular control over sites and visual shapes loading."""
         from pxr import Usd

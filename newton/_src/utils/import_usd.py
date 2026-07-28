@@ -321,11 +321,9 @@ def parse_usd(
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-        load_static_visual_shapes: If True, visual-only geometry outside rigid-body
-            hierarchies is loaded as static shapes when ``load_visual_shapes`` is
-            also True. Static Gaussian splats retain their existing
-            ``load_visual_shapes`` behavior independently of this option. Default is
-            True.
+        load_static_visual_shapes: If True, supported visual-only geometry outside
+            rigid-body hierarchies is loaded as static shapes when
+            ``load_visual_shapes`` is also True. Default is True.
         hide_collision_shapes: If True, collision shapes on bodies that already
             have visual-only geometry are hidden unconditionally, regardless of
             whether the collider has authored PBR material data. Default is False.
@@ -540,15 +538,14 @@ def parse_usd(
         )
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
-    # One scouting walk classifies every deformable candidate prim; it runs before the
-    # native loader so deformable-owned geometry (simulation prims and their colliders)
-    # can be excluded from rigid parsing, and the buckets are reused by the deformable
-    # passes below instead of re-traversing the stage.
+    # LoadUsdPhysicsFromRange remains the native rigid/joint descriptor parser, so this
+    # pre-pass supplies its deformable exclusions before it runs. The same walk also
+    # collects static visual leaves when requested, avoiding a third stage traversal.
     root_prim = stage.GetPrimAtPath(root_path)
     _deformable_prims = _scout_deformable_prims(
         root_prim,
         ignore_paths,
-        collect_static_visuals=load_visual_shapes,
+        collect_static_visuals=load_visual_shapes and load_static_visual_shapes,
     )
     deformable_visual_exclude_paths = set(_deformable_prims.native_physics_exclude_paths)
     native_exclude_paths = list(
@@ -3275,10 +3272,10 @@ def parse_usd(
             if src != dst:
                 authored_filtered_path_pairs.add((src, dst) if src < dst else (dst, src))
 
-    # The deformable scout collected geometry candidates during its existing instance-proxy
-    # walk. Body visuals were already loaded by add_body(), so only untouched static candidates
-    # need geometry/material work here.
-    if load_visual_shapes:
+    # The import scout collected supported visual leaf candidates during its existing
+    # instance-proxy walk. Body visuals were already loaded by add_body(), so only untouched
+    # static candidates need geometry/material work here.
+    if load_visual_shapes and load_static_visual_shapes:
         rigid_body_paths = {str(path) for path in ret_dict.get(UsdPhysics.ObjectType.RigidBody, ((), ()))[0]}
 
         def _is_in_rigid_body_hierarchy(path: str) -> bool:
@@ -3290,13 +3287,7 @@ def parse_usd(
 
         for prim in _deformable_prims.static_visuals:
             path = str(prim.GetPath())
-            is_gaussian = str(prim.GetTypeName()) == "ParticleField3DGaussianSplat"
-            if (
-                (not load_static_visual_shapes and not is_gaussian)
-                or path in deformable_visual_exclude_paths
-                or path in path_shape_map
-                or _is_in_rigid_body_hierarchy(path)
-            ):
+            if path in deformable_visual_exclude_paths or path in path_shape_map or _is_in_rigid_body_hierarchy(path):
                 continue
             _load_visual_shapes_impl(-1, prim, recurse=False)
 
