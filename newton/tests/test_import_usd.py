@@ -11425,6 +11425,46 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_shared_collision_visual_geometry_is_visible(self):
+        """Keep renderable USD colliders visible when geometry is shared.
+
+        From @eric-heiden's PR #3697. One default-purpose prim serving as both the
+        visual and the collider stays visible even though another body authors
+        separate visual geometry, while that body's dedicated guide collider does not.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+
+        shared_body = UsdGeom.Xform.Define(stage, "/World/SharedGeometryBody").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(shared_body)
+        shared_geometry = UsdGeom.Cube.Define(stage, "/World/SharedGeometryBody/SharedGeometry").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(shared_geometry)
+
+        separate_body = UsdGeom.Xform.Define(stage, "/World/SeparateGeometryBody").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(separate_body)
+        guide_collider = UsdGeom.Cube.Define(stage, "/World/SeparateGeometryBody/Collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(guide_collider)
+        UsdGeom.Imageable(guide_collider).CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
+        UsdGeom.Sphere.Define(stage, "/World/SeparateGeometryBody/Visual")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        shared_flags = builder.shape_flags[path_shape_map["/World/SharedGeometryBody/SharedGeometry"]]
+        self.assertTrue(shared_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(shared_flags & ShapeFlags.VISIBLE)
+
+        guide_flags = builder.shape_flags[path_shape_map["/World/SeparateGeometryBody/Collider"]]
+        self.assertTrue(guide_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(guide_flags & ShapeFlags.VISIBLE)
+
+        visual_flags = builder.shape_flags[path_shape_map["/World/SeparateGeometryBody/Visual"]]
+        self.assertFalse(visual_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(visual_flags & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collision_only_asset_keeps_colliders_visible(self):
         """Collision-only USD assets must remain visible by default."""
         from pxr import Usd
