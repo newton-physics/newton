@@ -376,9 +376,12 @@ retain their registered defaults.
            "mujoco:equality_constraint_body2": body2,
            "mujoco:equality_constraint_anchor": wp.vec3(0.0, 0.0, 0.0),
            "mujoco:equality_constraint_enabled": True,
-           "mujoco:equality_constraint_world": builder.current_world,
        }
    )
+
+``mujoco:equality_constraint_world`` has ``references="world"``, so omitting
+it assigns the row to ``builder.current_world``. Pass an explicit world index,
+including ``-1`` for the global world, when that is the intended owner instead.
 
 .. _mujoco-loop-closures:
 
