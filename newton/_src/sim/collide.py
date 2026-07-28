@@ -815,8 +815,7 @@ class CollisionPipeline:
                 If None, defaults to ``soft_rigid_contact_pair_count``, the number
                 of precomputed soft-rigid (particle-shape) pairs launched for soft
                 contact generation, plus the full-surface edge/face headroom when
-                ``enable_rigid_soft_full_surface_contact`` is set. The resolved value is
-                published to :attr:`Model.soft_contact_max`.
+                ``enable_rigid_soft_full_surface_contact`` is set.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
             enable_rigid_soft_full_surface_contact: Generate soft contacts over the full soft-mesh
                 surface -- the edges and triangle interiors -- against rigid SDFs, in addition to the
@@ -1170,8 +1169,6 @@ class CollisionPipeline:
             soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
-        # Publish-only; see :attr:`Model.soft_contact_max` for why it is never read back.
-        model.soft_contact_max = soft_contact_max
 
         self.requires_grad = requires_grad
         self.deterministic = deterministic

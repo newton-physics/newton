@@ -2807,14 +2807,6 @@ def _soft_contact_presize_is_world_aware(test, device):
     test.assertEqual(sizes[4], 4 * sizes[1])
 
 
-def _soft_contact_presize_honors_model_capacity(test, device):
-    """Verify SolverVBD pre-sizes body-particle buffers from ``Model.soft_contact_max`` when it is set."""
-    model = _build_multi_world_particle_shape_scene(2, device)
-    model.soft_contact_max = 7  # e.g. written back by a CollisionPipeline built earlier
-    solver = newton.solvers.SolverVBD(model)
-    test.assertEqual(solver.body_particle_contact_penalty_k.shape[0], 7)
-
-
 class TestSolverVBD(unittest.TestCase):
     pass
 
@@ -3019,12 +3011,6 @@ add_function_test(
     TestSolverVBD,
     "test_soft_contact_presize_is_world_aware",
     _soft_contact_presize_is_world_aware,
-    devices=devices,
-)
-add_function_test(
-    TestSolverVBD,
-    "test_soft_contact_presize_honors_model_capacity",
-    _soft_contact_presize_honors_model_capacity,
     devices=devices,
 )
 

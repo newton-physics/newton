@@ -1274,15 +1274,6 @@ class Model:
         self.rigid_contact_max: int = 0
         """Number of potential contact points between rigid bodies."""
 
-        self.soft_contact_max: int = 0
-        """Number of potential contact points between particles and rigid shapes.
-
-        Published by :class:`~newton.CollisionPipeline` on construction so solvers built afterwards
-        can pre-size their soft-contact buffers. Unlike :attr:`rigid_contact_max` it is not an input:
-        the allocated capacity also depends on ``enable_rigid_soft_full_surface_contact``, so pass
-        ``CollisionPipeline(soft_contact_max=...)`` to choose it explicitly.
-        """
-
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity: wp.array[wp.vec3] | None = None

@@ -1640,13 +1640,11 @@ class TestParticleShapeContacts(unittest.TestCase):
             mass=0.1,
         )
         model = builder.finalize(device="cpu")
-        self.assertEqual(model.soft_contact_max, 0)
 
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
         contacts = pipeline.contacts()
 
         self.assertEqual(pipeline.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
-        self.assertEqual(model.soft_contact_max, pipeline.soft_contact_max)
         self.assertEqual(contacts.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
 
     def test_soft_contact_explicit_capacity_is_respected(self):
@@ -1659,7 +1657,6 @@ class TestParticleShapeContacts(unittest.TestCase):
 
         self.assertEqual(pipeline.soft_rigid_contact_pair_count, 1)
         self.assertEqual(pipeline.soft_contact_max, 1)
-        self.assertEqual(model.soft_contact_max, 1)
 
     def test_soft_contact_explicit_capacity_overflow_still_counts_candidates(self):
         builder = newton.ModelBuilder()
@@ -1727,32 +1724,6 @@ class TestParticleShapeContacts(unittest.TestCase):
                     count = _count_world_compatible_pairs(feature_world, shape_world, world_count, shape_ok=shape_ok)
                     msg = f"{world_count=} {n_features=} {n_shapes=} filtered={shape_ok is not None}"
                     self.assertEqual(count, len(pairs), msg)
-
-    def test_preset_model_soft_contact_capacity_is_not_an_input(self):
-        """Verify a preset ``Model.soft_contact_max`` does not change the capacity a pipeline allocates."""
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()
-        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
-        model = builder.finalize(device="cpu")
-        model.soft_contact_max = 5000
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-        self.assertEqual(pipeline.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
-        self.assertEqual(model.soft_contact_max, pipeline.soft_contact_max)
-
-    def test_reused_model_keeps_full_surface_headroom(self):
-        """Verify a flag-off pipeline does not strip edge/face headroom from a later flag-on one."""
-
-        def full_surface_capacity(model):
-            return newton.CollisionPipeline(
-                model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True
-            ).soft_contact_max
-
-        reference = full_surface_capacity(_build_cloth_over_plane("cpu"))
-        reused = _build_cloth_over_plane("cpu")
-        newton.CollisionPipeline(reused, broad_phase="nxn")
-        # The flag-off pipeline published a headroom-free capacity; the flag-on one must ignore it.
-        self.assertGreater(reference, reused.soft_contact_max)
-        self.assertEqual(full_surface_capacity(reused), reference)
 
 
 class TestContactEstimator(unittest.TestCase):

@@ -827,8 +827,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         if model.particle_count > 0 and model.shape_count > 0:
             # shape_count * particle_count is quadratic in world count and overflows int32 for large
             # scenes. Only a pre-size; _initialize_rigid_bodies grows the buffers as needed.
-            capacity = model.soft_contact_max or _count_soft_particle_rigid_contact_pairs(model)
-            self._init_body_particle_contact_state(capacity)
+            # It excludes the enable_rigid_soft_full_surface_contact edge/face headroom.
+            self._init_body_particle_contact_state(_count_soft_particle_rigid_contact_pairs(model))
 
         # Kinematic body support: create effective inv_mass / inv_inertia arrays
         # with kinematic bodies zeroed out.
