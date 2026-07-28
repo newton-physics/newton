@@ -856,7 +856,7 @@ def _read_cell_corners(
     ty = loc.ty
     tz = loc.tz
 
-    if loc.start_slot >= wp.static(SLOT_LINEAR):
+    if loc.start_slot >= SLOT_LINEAR:
         cx = float(loc.x_base)
         cy = float(loc.y_base)
         cz = float(loc.z_base)
@@ -951,7 +951,7 @@ def texture_sample_sdf_at_voxel(
 
     start_slot = sdf.subgrid_start_slots[x_base, y_base, z_base]
 
-    if start_slot < wp.static(SLOT_LINEAR):
+    if start_slot < SLOT_LINEAR:
         block_x = float(start_slot & wp.uint32(0x3FF))
         block_y = float((start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
         block_z = float((start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
@@ -1023,7 +1023,7 @@ def texture_sample_sdf(
     ty = loc.ty
     tz = loc.tz
 
-    if loc.start_slot >= wp.static(SLOT_LINEAR):
+    if loc.start_slot >= SLOT_LINEAR:
         cx = float(loc.x_base)
         cy = float(loc.y_base)
         cz = float(loc.z_base)
@@ -1107,7 +1107,7 @@ def texture_sample_sdf_hw(
 
     sdf_val = float(0.0)
 
-    if loc.start_slot >= wp.static(SLOT_LINEAR):
+    if loc.start_slot >= SLOT_LINEAR:
         # ``cx + tx + 0.5`` lands at the centre of voxel (cx, cy, cz) and
         # ``+tx`` walks toward (cx+1, ...). The HW filter returns the
         # interpolated value in one fetch.
@@ -2526,10 +2526,10 @@ def _generate_isomesh_texture_kernel(
             p_0 = wp.vec3f(corner_offsets_table[v_from])
             p_1 = wp.vec3f(corner_offsets_table[v_to])
             val_diff = val_1 - val_0
-            if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
+            if wp.abs(val_diff) < MC_EDGE_VAL_DIFF_EPS:
                 p = 0.5 * (p_0 + p_1)
             else:
-                t = wp.clamp((isovalue - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
+                t = wp.clamp((isovalue - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
                 p = p_0 + t * (p_1 - p_0)
             vol_idx = p + wp.vec3(float(x_id), float(y_id), float(z_id))
             local_pos = sdf.sdf_box_lower + wp.cw_mul(vol_idx, sdf.voxel_size)
