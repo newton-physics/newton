@@ -735,7 +735,6 @@ def compute_and_write_joint_implicit_dynamics(
     data_joint_dq_b_j: wp.array[wp.float32],
 ):
     q_error = wp.vec3f(0.0)
-    dq_ref = wp.vec3f(0.0)
     if dof_type == JointDoFType.ROTATION_VECTOR:
         q = wp.vec3f(
             data_joint_q_j[coords_offset],
@@ -747,14 +746,10 @@ def compute_and_write_joint_implicit_dynamics(
             data_joint_q_j_ref[coords_offset + 1],
             data_joint_q_j_ref[coords_offset + 2],
         )
-        dq_ref_authored = wp.vec3f(
-            data_joint_dq_j_ref[dofs_offset],
-            data_joint_dq_j_ref[dofs_offset + 1],
-            data_joint_dq_j_ref[dofs_offset + 2],
-        )
+        # Left (spatial) error, i.e. expressed in the joint frame on the Base body,
+        # which is the frame of both the DoF velocities and the actuation torques.
         q_rel = quat_exp(q_ref) * wp.quat_inverse(quat_exp(q))
         q_error = quat_log(q_rel)
-        dq_ref = dq_ref_authored
 
     # Iterate over the dynamic constraints of the joint and
     # compute and store the implicit dynamics intermediates
@@ -786,10 +781,15 @@ def compute_and_write_joint_implicit_dynamics(
         pd_q_j_error = pd_q_j_ref - q_j
         if dof_type == JointDoFType.ROTATION_VECTOR:
             pd_q_j_error = q_error[j]
-            pd_dq_j_ref = dq_ref[j]
         pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j] if data_joint_tau_j_ref else 0.0
 
         # Compute the implicit joint dynamics intermediates
+        # NOTE: The `dt * dt * k_p_j` stiffness contribution to `m_j` assumes
+        # `d(pd_q_j_error)/d(dq_j) = -dt`, which holds exactly only for the
+        # translational and single-axis rotational DoF types. For rotation-vector
+        # DoFs the exact derivative is a dense 3x3 matrix (the left Jacobian of
+        # the exponential map), so this per-axis diagonal treatment is a
+        # first-order approximation that degrades with the orientation error.
         m_j = a_j + dt * b_j
         tau_j_tot = tau_j
         if act_type == JointActuationType.FORCE:
