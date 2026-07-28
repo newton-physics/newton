@@ -7229,7 +7229,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uvless_textured_visual_mesh_uses_projected_uvs(self):
-        """A full visual mesh retains its texture when UVs are unavailable."""
+        """Verify a full visual mesh retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
         builder = newton.ModelBuilder()
 
@@ -7244,7 +7244,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uvless_textured_visual_mesh_subset_uses_projected_uvs(self):
-        """A material subset retains its texture when UVs are unavailable."""
+        """Verify a material subset retains its texture when UVs are unavailable."""
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=True)
         builder = newton.ModelBuilder()
 
@@ -7641,7 +7641,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uv_length_mismatch_uses_info_logging(self):
-        """UV fallback diagnostics surface via `logger.info`, not `warnings.warn`."""
+        """Verify UV fallback diagnostics use `logger.info`, not `warnings.warn`."""
         import logging as _logging  # noqa: PLC0415
         import warnings as _warnings  # noqa: PLC0415
 
