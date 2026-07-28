@@ -658,6 +658,13 @@ def create_parser():
     parser.add_argument(
         "--output-path", type=str, default="output.usd", help="Path to the output USD file (required for usd viewer)."
     )
+    parser.add_argument(
+        "--lookdev",
+        type=str,
+        default="off",
+        choices=["off", "light", "dark"],
+        help="Built-in lookdev to apply (gl and usd viewers): off (default), light, or dark.",
+    )
     parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
     parser.add_argument(
         "--render-fps",
@@ -908,13 +915,16 @@ def init(parser=None):
         _raise_benchmark_priority(realtime=args.realtime)
 
     # Create viewer based on type
+    lookdev = {"off": None, "light": newton.viewer.LookdevMode.LIGHT, "dark": newton.viewer.LookdevMode.DARK}[
+        args.lookdev
+    ]
     visible_gl = args.viewer == "gl" and not args.headless
     if args.viewer == "gl":
-        viewer = newton.viewer.ViewerGL(headless=args.headless, paused=args.paused)
+        viewer = newton.viewer.ViewerGL(headless=args.headless, paused=args.paused, lookdev=lookdev)
     elif args.viewer == "usd":
         if args.output_path is None:
             raise ValueError("--output-path is required when using usd viewer")
-        viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
+        viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames, lookdev=lookdev)
     elif args.viewer == "rtx":
         viewer = newton.viewer.ViewerRTX(headless=args.headless, paused=args.paused, num_frames=args.num_frames)
     elif args.viewer == "rerun":

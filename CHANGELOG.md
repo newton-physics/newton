@@ -39,6 +39,7 @@
 - Add compiled regular-expression support to label-based selectors while preserving glob strings.
 - Add simulation throughput, real-time factor, p95 step-time, steady-state GPU-memory, timestep, and MuJoCo solver-iteration metrics to the ASV robot-learning benchmarks.
 - Add `joint_dof_mask` to `newton.ik.IKSolver` to keep selected joint DOFs fixed during LM optimization. (#3488)
+- Add opt-in `LookdevMode` presets to the GL and USD viewers with studio lighting, sky backgrounds, tone mapping, and a shadow-catching ground plane. (#3625)
 
 ### Changed
 

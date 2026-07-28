@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import collections
 import ctypes
-import re
 import time
 from collections.abc import Callable, Sequence
 from importlib import metadata
@@ -21,32 +20,38 @@ from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
+from .lookdev import LookdevMode, _coerce_mode
 from .picking import Picking
 from .viewer import _DEFAULT_LAYER_ID, ViewerBase
 from .viewer_gui import ViewerGui
 from .wind import Wind
 
-
-def _parse_version_tuple(version: str) -> tuple[int, ...]:
-    parts = re.findall(r"\d+", version)
-    return tuple(int(part) for part in parts[:3])
-
-
-def _imgui_uses_imvec4_color_edit3() -> bool:
-    """Return True when installed imgui_bundle expects ImVec4 in color_edit3."""
-    try:
-        version = metadata.version("imgui_bundle")
-    except metadata.PackageNotFoundError:
-        return False
-    return _parse_version_tuple(version) >= (1, 92, 6)
-
-
-_IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
 # Width of the main Newton Viewer sidebar in logical (96-DPI) pixels. The
 # actual framebuffer width used at render time is ``_SIDEBAR_WIDTH_PX *
 # ui.dpi_scale`` so the sidebar keeps a constant visual size on HiDPI
 # displays — see :meth:`ViewerGL._dpi_scale`.
 _SIDEBAR_WIDTH_PX: float = 300.0
+
+# Lookdev cycle order for the ``L`` keybind and UI combo: off first, then each
+# built-in mode. ``None`` (lookdev disabled) is the default state.
+_LOOKDEV_CYCLE: list[LookdevMode | None] = [None, *LookdevMode]
+
+
+def _imgui_uses_imvec4_color_edit3() -> bool:
+    """True when the installed imgui_bundle expects an ``ImVec4`` in ``color_edit3``.
+
+    imgui_bundle >= 1.92.6 changed ``color_edit3`` to take/return an ``ImVec4``
+    instead of a 3-tuple; older builds keep the tuple form.
+    """
+    try:
+        parts = metadata.version("imgui_bundle").split(".")
+        ver = tuple(int("".join(ch for ch in seg if ch.isdigit()) or "0") for seg in parts[:3])
+    except Exception:
+        return False
+    return ver >= (1, 92, 6)
+
+
+_IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
 
 
 @wp.kernel
@@ -202,6 +207,7 @@ class ViewerGL(ViewerBase):
         headless: bool = False,
         paused: bool = False,
         plot_history_size: int = 250,
+        lookdev: LookdevMode | None = None,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -214,11 +220,16 @@ class ViewerGL(ViewerBase):
             paused: Start the viewer in paused mode.
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
+            lookdev: Built-in look to render, or ``None`` (the default) to
+                disable lookdev and render the plain default look. Switch at
+                runtime via :meth:`set_lookdev` or by pressing ``L``.
         """
         if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
             raise TypeError("plot_history_size must be an integer")
         if plot_history_size <= 0:
             raise ValueError("plot_history_size must be > 0")
+
+        self._lookdev_mode = _coerce_mode(lookdev)
 
         # Rolling buffers for log_scalar() time-series plots.
         self._scalar_buffers: dict[str, collections.deque] = {}
@@ -241,6 +252,7 @@ class ViewerGL(ViewerBase):
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
+        self.renderer.apply_lookdev(self._lookdev_mode)
         self._image_logger = ImageLogger(
             device=self.device,
             sidebar_width_px=self._sidebar_width_fb_px(),
@@ -684,6 +696,24 @@ class ViewerGL(ViewerBase):
             self.wind.amplitude = prev_wind.amplitude
             self.wind.frequency = prev_wind.frequency
             self.wind.direction = prev_wind.direction
+
+        # Feed the scene AABB to the renderer so the analytical shadow-catcher
+        # floor sits just below the lowest body at any scene scale (see
+        # ``GroundRenderer.update``). Recomputed on every model change and
+        # cleared (floor falls back to world origin) when the model is removed.
+        bounds = self._get_world_bounds() if self.model is not None else None
+        if bounds is not None:
+            self.renderer._scene_min, self.renderer._scene_max = bounds
+            # Scale the camera-centered shadow frustum with the scene so
+            # shadows stay usable from cm- to km-scale scenes; the AABB
+            # diagonal comfortably covers geometry around the camera. Users
+            # may still override ``renderer.shadow_extents`` afterwards.
+            diagonal = float(np.linalg.norm(bounds[1] - bounds[0]))
+            if diagonal > 0.0:
+                self.renderer.shadow_extents = diagonal
+        else:
+            self.renderer._scene_min = None
+            self.renderer._scene_max = None
 
     def _build_packed_vbo_arrays(self):
         """Build write-index + output arrays for batched shape transform computation.
@@ -1728,6 +1758,11 @@ class ViewerGL(ViewerBase):
         if self.renderer.has_exit():
             return
 
+        # The analytical shadow-catcher follows the viewer's ground toggle
+        # and is drawn only for lookdev. Hide it while collision geometry is
+        # visible so it cannot z-fight with a ``GeoType.PLANE`` collider.
+        self.renderer.draw_ground = self.show_ground and self._lookdev_mode is not None and not self.show_collision
+
         # Render the scene and present it
         self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
 
@@ -2065,6 +2100,46 @@ class ViewerGL(ViewerBase):
         """
         pass
 
+    @property
+    def lookdev(self) -> LookdevMode | None:
+        """Currently active built-in look, or ``None`` when lookdev is off."""
+        return self._lookdev_mode
+
+    def set_lookdev(self, mode: LookdevMode | None) -> None:
+        """Switch the built-in look at runtime.
+
+        Args:
+            mode: The look to apply, or ``None`` to disable lookdev and
+                render the plain default look. The change takes effect on the
+                next rendered frame; nothing is baked or reloaded, so
+                switching is instant.
+        """
+        self._lookdev_mode = _coerce_mode(mode)
+        self.renderer.apply_lookdev(self._lookdev_mode)
+
+    def _cycle_lookdev(self) -> None:
+        """Cycle through off + built-in lookdev modes (the ``L`` keybind)."""
+        modes = _LOOKDEV_CYCLE
+        next_mode = modes[(modes.index(self._lookdev_mode) + 1) % len(modes)]
+        self.set_lookdev(next_mode)
+
+    @override
+    def _should_show_shape(
+        self,
+        flags: int,
+        is_static: bool,
+        geo_type: int | None = None,
+    ) -> bool:
+        # An active lookdev mode draws an analytical shadow-catcher floor that
+        # visually replaces the ``GeoType.PLANE`` collision shape registered
+        # by ``ModelBuilder.add_ground_plane``. Render both and they z-fight
+        # at grazing angles. Hide the collision plane only while lookdev is on
+        # and the user has not explicitly asked to see collision geometry via
+        # ``Show Collision``.
+        if geo_type == nt.GeoType.PLANE and self._lookdev_mode is not None and not self.show_collision:
+            return False
+        return super()._should_show_shape(flags, is_static, geo_type=geo_type)
+
     def on_key_press(self, symbol: int, modifiers: int):
         """
         Handle key press events for UI and simulation control.
@@ -2075,6 +2150,14 @@ class ViewerGL(ViewerBase):
         """
         if self.gui:
             self.gui.handle_key_press(symbol, close_fn=self.renderer.close)
+            if self.gui.is_keyboard_capturing():
+                return
+
+        import pyglet
+
+        if symbol == pyglet.window.key.L:
+            # Cycle the built-in lookdev mode (Light <-> Dark)
+            self._cycle_lookdev()
 
     def on_key_release(self, symbol: int, modifiers: int):
         """
@@ -2188,6 +2271,13 @@ class ViewerGL(ViewerBase):
 
     def _ui_populate_rendering_panel(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""
+        # Lookdev mode (Off / Light / Dark) — keyboard shortcut: L
+        modes = _LOOKDEV_CYCLE
+        _lookdev_labels = ["Off" if m is None else m.name.title() for m in modes]
+        changed, new_idx = imgui.combo("Lookdev", modes.index(self._lookdev_mode), _lookdev_labels)
+        if changed:
+            self.set_lookdev(modes[new_idx])
+
         # Sky rendering
         _changed, self.renderer.draw_sky = imgui.checkbox("Sky", self.renderer.draw_sky)
 
@@ -2197,21 +2287,21 @@ class ViewerGL(ViewerBase):
         # Wireframe mode
         _changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
 
-        def _edit_color3(label: str, color: tuple[float, float, float]) -> tuple[bool, tuple[float, float, float]]:
-            """Normalize color_edit3 input/output across imgui_bundle versions."""
+        def _edit_color3(label, color):
+            """color_edit3 wrapper tolerant of both imgui_bundle color APIs."""
+            color = (float(color[0]), float(color[1]), float(color[2]))
             if _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3:
-                changed, updated_color = imgui.color_edit3(label, imgui.ImVec4(*color, 1.0))
-                return changed, (updated_color.x, updated_color.y, updated_color.z)
+                changed, updated = imgui.color_edit3(label, imgui.ImVec4(*color, 1.0))
+                return changed, (updated.x, updated.y, updated.z)
+            changed, updated = imgui.color_edit3(label, color)
+            return changed, (updated[0], updated[1], updated[2])
 
-            changed, updated_color = imgui.color_edit3(label, color)
-            return changed, (updated_color[0], updated_color[1], updated_color[2])
-
-        # Light color
-        _changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
-        # Sky color
+        # Sky gradient endpoints (``sky_upper`` = zenith, ``sky_lower`` = horizon).
         _changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
-        # Ground color
         _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
+        # "Light Color" tints the hemispherical ambient's sky half, so it colours
+        # the environment light without disturbing the directional key/fill/rim rig.
+        _changed, self.renderer.ambient_sky = _edit_color3("Light Color", self.renderer.ambient_sky)
 
         self._image_logger.draw_controls()
 
