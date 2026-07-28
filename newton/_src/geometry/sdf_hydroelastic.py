@@ -580,16 +580,15 @@ class HydroelasticSDF:
         """
         shape_flags = model.shape_flags.numpy()
 
-        # Check if any shapes have hydroelastic flag
-        has_hydroelastic = any((flags & ShapeFlags.HYDROELASTIC) for flags in shape_flags)
-        if not has_hydroelastic:
+        # Check if any shapes have hydroelastic flag.
+        is_hydroelastic = (shape_flags & int(ShapeFlags.HYDROELASTIC)) != 0
+        if not is_hydroelastic.any():
             return None
 
-        shape_pairs = model.shape_contact_pairs.numpy()
-        num_hydroelastic_pairs = 0
-        for shape_a, shape_b in shape_pairs:
-            if (shape_flags[shape_a] & ShapeFlags.HYDROELASTIC) and (shape_flags[shape_b] & ShapeFlags.HYDROELASTIC):
-                num_hydroelastic_pairs += 1
+        shape_pairs = model.shape_contact_pairs.numpy().reshape(-1, 2)
+        num_hydroelastic_pairs = int(
+            np.count_nonzero(is_hydroelastic[shape_pairs[:, 0]] & is_hydroelastic[shape_pairs[:, 1]])
+        )
 
         if num_hydroelastic_pairs == 0:
             return None
