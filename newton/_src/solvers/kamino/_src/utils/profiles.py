@@ -76,32 +76,32 @@ class PerformanceProfile:
     and cached for later use.
 
     Args:
-        data (np.ndarray): Array of shape (num_solvers, num_problems) with measurements for num_solvers
+        data: Array of shape (num_solvers, num_problems) with measurements for num_solvers
             solvers across num_problems problems. Each entry typically represents a cost such as time,
             iterations, or error.
-        success (np.ndarray | None): Optional boolean or integer array of shape
+        success: Optional boolean or integer array of shape
             (num_solvers, num_problems) indicating successful runs (nonzero/True means success). Failed
             runs are excluded from the profile. If None, all runs are treated as
             successful.
-        taumax (float): Maximum performance ratio τ for which the profile is
+        taumax: Maximum performance ratio τ for which the profile is
             generated. If set to float('inf'), τ_max is chosen as 2x (max observed ratio).
-        ppfixmax (float): Upper threshold used by the Dingle-Higham refinement when
+        ppfixmax: Upper threshold used by the Dingle-Higham refinement when
             ppfix is True (useful when the data represent relative errors).
-        ppfixmin (float): Lower floor used by the Dingle-Higham refinement when
+        ppfixmin: Lower floor used by the Dingle-Higham refinement when
             ppfix is True to prevent zero or near-zero values.
-        ppfix (bool): If True, apply Dingle-Higham style refinement to the input
+        ppfix: If True, apply Dingle-Higham style refinement to the input
             data before computing ratios.
 
     Attributes:
-        _t_p_min (np.ndarray | None): Per-problem best (minimal) measurement across
+        _t_p_min: Per-problem best (minimal) measurement across
             solvers, used to form performance ratios.
-        _r_ps (np.ndarray | None): Array of performance ratios r_{p,s}.
-        _rho_s (list[np.ndarray]): Empirical distribution functions rho_s(τ) for each
+        _r_ps: Array of performance ratios r_{p,s}.
+        _rho_s: Empirical distribution functions rho_s(τ) for each
             solver over the profile domain.
-        _r_min (float): Minimum observed performance ratio.
-        _r_max (float): Maximum observed performance ratio.
-        _tau_max (float): Effective maximum τ used for the profile domain.
-        _valid (bool): True if the profile was successfully computed given the input
+        _r_min: Minimum observed performance ratio.
+        _r_max: Maximum observed performance ratio.
+        _tau_max: Effective maximum τ used for the profile domain.
+        _valid: True if the profile was successfully computed given the input
             data and success mask; False otherwise.
 
     Notes:
@@ -123,46 +123,46 @@ class PerformanceProfile:
     ) -> None:
         self._t_p_min: np.ndarray | None = None
         """
-        The per-problem best performance amongst all solvers\n
-        For every p in P : t_p_min = min{s in S : t_ps}\n
+        The per-problem best performance amongst all solvers
+        For every p in P : t_p_min = min{s in S : t_ps}
         Dimensions are: |P|
         """
 
         self._r_ps: np.ndarray | None = None
         """
-        The per-sample performance ratios\n
-        For every s in S and p in P : r_ps = t_ps / min{s in S : t_ps}\n
+        The per-sample performance ratios
+        For every s in S and p in P : r_ps = t_ps / min{s in S : t_ps}
         Dimensions are: |P| x |S|
         """
 
         self._rho_s: list[np.ndarray] = []
         """
-        The per-solver cumulative distributions\n
-        For every s in S : rho_s(tau) = (1/np) * size{p in P : r_ps <= tau}\n
+        The per-solver cumulative distributions
+        For every s in S : rho_s(tau) = (1/np) * size{p in P : r_ps <= tau}
         Dimensions are: |S| x |Rho|
         """
 
         self._r_min: float = np.inf
         """
-        The smallest performance ratio present in the data\n
+        The smallest performance ratio present in the data
         r in [r_min, r_max]
         """
 
         self._r_max: float = np.inf
         """
-        The largest performance ratio present in the data\n
+        The largest performance ratio present in the data
         r in [r_min, r_max]
         """
 
         self._tau_max: float = np.inf
         """
-        The largest performance ratio considered for generating the performance profile\n
+        The largest performance ratio considered for generating the performance profile
         tau in [1, tau_max]
         """
 
         self._valid: bool = False
         """
-        Flag to indicate if last call to 'compute' was valid\n
+        Flag to indicate if last call to 'compute' was valid
         This is also useful to check construction-time generation was successful.
         """
 
@@ -326,9 +326,8 @@ class PerformanceProfile:
         Compute solver rankings at tau=1.0 and at rho=1.0.
 
         Returns:
-            tuple[np.ndarray, np.ndarray]: A pair of 1D integer arrays with length equal to the number of solvers.
-                - First array: rankings based on rho at tau=1.0 (higher is better).
-                - Second array: rankings based on the smallest tau at which rho=1.0 (lower is better).
+            Mapping from metric name to ranking arrays and validity flags at
+            ``tau=1.0`` and ``rho=1.0``.
 
         Notes:
             Rankings are dense: solvers with the same value share the same rank, and
@@ -395,16 +394,16 @@ class PerformanceProfile:
         Generates a 2D plot to visualize the performance profile using Matplotlib.
 
         Args:
-            names (str, optional): A vector of solver names used to generate plot labels.
-            title (str, optional): The title of the plot.
-            xtitle (str, optional): The label for the x-axis.
-            ytitle (str, optional): The label for the y-axis.
-            xlim (tuple, optional): The limits for the x-axis as (xmin, xmax). If None, defaults to (1.0, tau_max).
-            ylim (tuple, optional): The limits for the y-axis as (ymin, ymax). If None, defaults to (0.0, 1.1).
-            xscale (str, optional): The scale for the x-axis. Options are 'linear', 'log2', or 'log10'.
-            yscale (str, optional): The scale for the y-axis. Options are 'linear', 'log2', or 'log10'.
-            legend_loc (str, optional): The location of the legend on the plot.
-            style (str, optional): An optional Matplotlib style to apply to the plot.
+            names: A vector of solver names used to generate plot labels.
+            title: The title of the plot.
+            xtitle: The label for the x-axis.
+            ytitle: The label for the y-axis.
+            xlim: The limits for the x-axis as (xmin, xmax). If None, defaults to (1.0, tau_max).
+            ylim: The limits for the y-axis as (ymin, ymax). If None, defaults to (0.0, 1.1).
+            xscale: The scale for the x-axis. Options are 'linear', 'log2', or 'log10'.
+            yscale: The scale for the y-axis. Options are 'linear', 'log2', or 'log10'.
+            legend_loc: The location of the legend on the plot.
+            style: An optional Matplotlib style to apply to the plot.
         """
         # Ensure a valid profile has been computed before plotting
         if not self._valid:

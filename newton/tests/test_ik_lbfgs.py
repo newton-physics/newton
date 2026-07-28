@@ -101,7 +101,7 @@ def _joint_type_name(joint_type):
 
 
 def _build_descendant_free_distance(device, joint_type) -> tuple[newton.Model, int]:
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     base = builder.add_link(mass=1.0)
     child = builder.add_link(mass=1.0)
     builder.body_com[child] = wp.vec3(0.21, -0.07, 0.16)

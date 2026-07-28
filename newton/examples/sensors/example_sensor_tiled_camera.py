@@ -199,6 +199,8 @@ class Example:
 
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
+        self.tiled_camera_sensor.default_render_config.enable_shadows = True
+        self.tiled_camera_sensor.default_render_config.enable_textures = True
         self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
         self.tiled_camera_sensor.utils.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
 
@@ -206,8 +208,8 @@ class Example:
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
 
-        self.camera_rays = self.tiled_camera_sensor.utils.compute_pinhole_camera_rays(
-            self.sensor_render_width, self.sensor_render_height, math.radians(fov)
+        self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+            self.sensor_render_width, self.sensor_render_height, camera_fovs=math.radians(fov)
         )
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.utils.create_color_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
@@ -370,40 +372,51 @@ class Example:
 
         if ui.radio_button(
             "Gaussians: Fast",
-            self.tiled_camera_sensor.render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
+            self.tiled_camera_sensor.default_render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
         ):
-            if self.tiled_camera_sensor.render_config.gaussians_mode != SensorTiledCamera.GaussianRenderMode.FAST:
-                self.tiled_camera_sensor.render_config.gaussians_mode = SensorTiledCamera.GaussianRenderMode.FAST
+            if (
+                self.tiled_camera_sensor.default_render_config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.FAST
+            ):
+                self.tiled_camera_sensor.default_render_config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.FAST
+                )
                 show_compile_kernel_info = True
 
         if ui.radio_button(
             "Gaussians: Quality",
-            self.tiled_camera_sensor.render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.QUALITY,
+            self.tiled_camera_sensor.default_render_config.gaussians_mode
+            == SensorTiledCamera.GaussianRenderMode.QUALITY,
         ):
-            if self.tiled_camera_sensor.render_config.gaussians_mode != SensorTiledCamera.GaussianRenderMode.QUALITY:
-                self.tiled_camera_sensor.render_config.gaussians_mode = SensorTiledCamera.GaussianRenderMode.QUALITY
+            if (
+                self.tiled_camera_sensor.default_render_config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.QUALITY
+            ):
+                self.tiled_camera_sensor.default_render_config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.QUALITY
+                )
                 show_compile_kernel_info = True
 
         changed, value = ui.slider_float(
             "Min Transmittance",
-            self.tiled_camera_sensor.render_config.gaussians_min_transmittance,
+            self.tiled_camera_sensor.default_render_config.gaussians_min_transmittance,
             0.0,
             1.0,
             "%.2f",
         )
         if changed:
-            self.tiled_camera_sensor.render_config.gaussians_min_transmittance = value
+            self.tiled_camera_sensor.default_render_config.gaussians_min_transmittance = value
             show_compile_kernel_info = True
 
         changed, value = ui.slider_int(
             "Max Num Hits",
-            self.tiled_camera_sensor.render_config.gaussians_max_num_hits,
+            self.tiled_camera_sensor.default_render_config.gaussians_max_num_hits,
             1,
             40,
             "%d",
         )
         if changed:
-            self.tiled_camera_sensor.render_config.gaussians_max_num_hits = value
+            self.tiled_camera_sensor.default_render_config.gaussians_max_num_hits = value
             show_compile_kernel_info = True
 
         if show_compile_kernel_info:

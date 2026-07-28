@@ -10,7 +10,6 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.types import float32
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_hinged
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -23,7 +22,7 @@ from newton.tests import get_kamino_basics_asset
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -33,8 +32,8 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.kernel
 def _control_callback(
-    state_t: wp.array[float32],
-    control_tau_j: wp.array[float32],
+    state_t: wp.array[wp.float32],
+    control_tau_j: wp.array[wp.float32],
 ):
     """
     An example control callback kernel.
@@ -44,8 +43,8 @@ def _control_callback(
     jid = int(0)
 
     # Define the time window for the active external force profile
-    t_start = float32(2.0)
-    t_end = float32(2.5)
+    t_start = wp.float32(2.0)
+    t_end = wp.float32(2.5)
 
     # Get the current time
     t = state_t[wid]
@@ -128,8 +127,9 @@ class Example:
             )
 
         # Set gravity
-        for w in range(self.builder.num_worlds):
-            self.builder.gravity[w].enabled = gravity
+        if not gravity:
+            for w in range(self.builder.num_worlds):
+                self.builder.set_gravity(wp.vec3f(0.0), w)
 
         # Set solver config
         config = Simulator.Config()
@@ -330,7 +330,7 @@ if __name__ == "__main__":
         device = wp.get_preferred_device()
 
     # Determine if CUDA graphs should be used for execution
-    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device) and not wp.config.verify_cuda
     use_cuda_graph = can_use_cuda_graph and args.cuda_graph
     msg.info(f"can_use_cuda_graph: {can_use_cuda_graph}")
     msg.info(f"use_cuda_graph: {use_cuda_graph}")

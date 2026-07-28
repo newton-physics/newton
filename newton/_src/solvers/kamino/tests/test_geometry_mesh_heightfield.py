@@ -213,7 +213,9 @@ def _run_newton_cd_and_convert(newton_model, device):
 
     state = newton_model.state()
     newton.eval_fk(newton_model, newton_model.joint_q, newton_model.joint_qd, state)
-    newton_contacts = newton_model.collide(state)
+    newton_collision_pipeline = newton.CollisionPipeline(newton_model)
+    newton_contacts = newton_collision_pipeline.contacts()
+    newton_collision_pipeline.collide(state, newton_contacts)
 
     nc = int(newton_contacts.rigid_contact_count.numpy()[0])
     kamino_contacts = ContactsKamino(capacity=[max(nc + 64, 256)], device=device)
@@ -247,11 +249,12 @@ def _step_with_newton_cd(builder, device, num_steps=200, dt=0.005):
     contacts = ContactsKamino(capacity=[per_world], device=device)
 
     solver = SolverKaminoImpl(model=model, contacts=contacts)
-    solver.reset(state_out=state_n)
+    solver.reset(state=state_n)
     state_p.copy_from(state_n)
 
     newton_state = newton_model.state()
-    newton_contacts = newton_model.contacts()
+    newton_collision_pipeline = newton.CollisionPipeline(newton_model)
+    newton_contacts = newton_collision_pipeline.contacts()
 
     for _ in range(num_steps):
         state_p.copy_from(state_n)
@@ -261,7 +264,7 @@ def _step_with_newton_cd(builder, device, num_steps=200, dt=0.005):
             body_q_com=state_p.q_i,
             body_q=newton_state.body_q,
         )
-        newton_model.collide(newton_state, newton_contacts)
+        newton_collision_pipeline.collide(newton_state, newton_contacts)
         convert_contacts_newton_to_kamino(newton_model, newton_state, newton_contacts, contacts)
 
         solver.step(
@@ -412,7 +415,7 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
 
 
 class TestNewtonCollisionPathMeshHeightfield(unittest.TestCase):
-    """Tests Newton model.collide() -> convert_contacts_newton_to_kamino() path.
+    """Tests Newton collision_pipeline.collide() -> convert_contacts_newton_to_kamino() path.
 
     This is the primary path for mesh collisions in Kamino.  Tests verify
     that contact data survives conversion with correct body indices,

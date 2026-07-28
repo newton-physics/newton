@@ -61,7 +61,7 @@ class Example:
         self.random_offset_xy = 0.005  # m (0.5 cm) - random XY offset
 
         # Build the model (using meters)
-        builder = newton.ModelBuilder(gravity=-9.8)  # m/s²
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.8))  # m/s²
 
         # Add a static cube for cards to stack on
         body_cube = builder.add_body(

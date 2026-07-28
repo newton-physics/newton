@@ -20,7 +20,6 @@ import warp as wp
 
 from ...core.builder import ModelBuilderKamino
 from ...core.shapes import BoxShape, PlaneShape
-from ...core.types import transformf, vec3f, vec6f
 from ...utils.io.usd import USDImporter
 
 ###
@@ -53,27 +52,22 @@ def add_ground_plane(
     Adds a static plane geometry to a given builder to represent a flat ground with infinite dimensions.
 
     Args:
-        builder (ModelBuilderKamino):
-            The model builder to which the ground plane should be added.
-        group (int):
-            The collision group for the ground geometry.\n
+        builder: The model builder to which the ground plane should be added.
+        group: The collision group for the ground geometry.
             Defaults to `1`.
-        collides (int):
-            The collision mask for the ground geometry.\n
+        collides: The collision mask for the ground geometry.
             Defaults to `1`.
-        world_index (int):
-            The index of the world in the builder where the ground geometry should be added.\n
-            If the value does not correspond to an existing world an error will be raised.\n
+        world_index: The index of the world in the builder where the ground geometry should be added.
+            If the value does not correspond to an existing world an error will be raised.
             Defaults to `0`.
-        z_offset (float):
-            The vertical offset of the ground plane along the Z axis.\n
+        z_offset: The vertical offset of the ground plane along the Z axis.
             Defaults to `0.0`.
     Returns:
-        int: The ID of the added ground geometry.
+        The ID of the added ground geometry.
     """
     return builder.add_geometry(
-        shape=PlaneShape(vec3f(0.0, 0.0, 1.0), 0.0),
-        offset=transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
+        shape=PlaneShape(wp.vec3f(0.0, 0.0, 1.0), 0.0),
+        offset=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
         name="ground",
         group=group,
         collides=collides,
@@ -92,28 +86,23 @@ def add_ground_box(
     Adds a static box geometry to a given builder to represent a flat ground with finite dimensions.
 
     Args:
-        builder (ModelBuilderKamino):
-            The model builder to which the ground box should be added.
-        group (int):
-            The collision group for the ground geometry.\n
+        builder: The model builder to which the ground box should be added.
+        group: The collision group for the ground geometry.
             Defaults to `1`.
-        collides (int):
-            The collision mask for the ground geometry.\n
+        collides: The collision mask for the ground geometry.
             Defaults to `1`.
-        world_index (int):
-            The index of the world in the builder where the ground geometry should be added.\n
-            If the value does not correspond to an existing world an error will be raised.\n
+        world_index: The index of the world in the builder where the ground geometry should be added.
+            If the value does not correspond to an existing world an error will be raised.
             Defaults to `0`.
-        z_offset (float):
-            The vertical offset of the ground box along the Z axis.\n
+        z_offset: The vertical offset of the ground box along the Z axis.
             Defaults to `0.0`.
 
     Returns:
-        int: The ID of the added ground geometry.
+        The ID of the added ground geometry.
     """
     return builder.add_geometry(
         shape=BoxShape(10.0, 10.0, 0.5),
-        offset=transformf(0.0, 0.0, -0.5 + z_offset, 0.0, 0.0, 0.0, 1.0),
+        offset=wp.transformf(0.0, 0.0, -0.5 + z_offset, 0.0, 0.0, 0.0, 1.0),
         name="ground",
         group=group,
         collides=collides,
@@ -121,25 +110,25 @@ def add_ground_box(
     )
 
 
-def set_uniform_body_pose_offset(builder: ModelBuilderKamino, offset: transformf):
+def set_uniform_body_pose_offset(builder: ModelBuilderKamino, offset: wp.transformf):
     """
     Offsets the initial poses of all rigid bodies existing in the builder uniformly by the specified offset.
 
     Args:
-        builder (ModelBuilderKamino): The model builder containing the bodies to offset.
-        offset (transformf): The pose offset to apply to each body in the builder in the form of a :class:`transformf`.
+        builder: The model builder containing the bodies to offset.
+        offset: The pose offset to apply to each body in the builder in the form of a :class:`wp.transformf`.
     """
     for body in builder.all_bodies:
         body.q_i_0 = wp.mul(offset, body.q_i_0)
 
 
-def set_uniform_body_twist_offset(builder: ModelBuilderKamino, offset: vec6f):
+def set_uniform_body_twist_offset(builder: ModelBuilderKamino, offset: wp.spatial_vectorf):
     """
     Offsets the initial twists of all rigid bodies existing in the builder uniformly by the specified offset.
 
     Args:
-        builder (ModelBuilderKamino): The model builder containing the bodies to offset.
-        offset (vec6f): The twist offset to apply to each body in the builder in the form of a :class:`vec6f`.
+        builder: The model builder containing the bodies to offset.
+        offset: The twist offset to apply to each body in the builder in the form of a :class:`wp.spatial_vectorf`.
     """
     for body in builder.all_bodies:
         body.u_i_0 += offset
@@ -168,7 +157,7 @@ def build_usd(
         ground: Whether to add a ground plane
 
     Returns:
-        ModelBuilderKamino with imported USD model and optional ground plane
+        Model builder with imported USD model and optional ground plane.
     """
     # Import the USD model
     importer = USDImporter()
@@ -191,13 +180,13 @@ def make_homogeneous_builder(num_worlds: int, build_fn: Callable, show_progress=
     Utility factory function to create a multi-world builder with identical worlds replicated across the model.
 
     Args:
-        num_worlds (int): The number of worlds to create.
-        build_fn (callable): The model builder function to use.
-        show_progress (bool): Whether to display a progress bar as the worlds are being replicated.
+        num_worlds: The number of worlds to create.
+        build_fn: The model builder function to use.
+        show_progress: Whether to display a progress bar as the worlds are being replicated.
         **kwargs: Additional keyword arguments to pass to the builder function.
 
     Returns:
-        ModelBuilderKamino: The constructed model builder.
+        The constructed model builder.
     """
     # First build a single world
     # NOTE: We want to do this first to avoid re-constructing the same model multiple

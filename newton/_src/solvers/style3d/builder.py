@@ -196,7 +196,7 @@ class PDMatrixBuilder:
         edge_inds = np.array(edge_indices).reshape(-1, 4)
         edge_area = np.array(edge_rest_area)
         edge_prop = np.array(edge_bending_properties).reshape(-1, 2)
-        edge_stiff = edge_prop[:, 0] / edge_area
+        edge_stiff = edge_prop[:, 0] * (3.0 / edge_area)
 
         bend_cot = np.array(edge_bending_cot).reshape(-1, 4)
         bend_weight = np.zeros(shape=(num_edge, 4), dtype=np.float32)
@@ -208,6 +208,7 @@ class PDMatrixBuilder:
         bend_weight[:, 1] = -bend_cot[:, 1] - bend_cot[:, 3]
 
         # Construct Hessian matrix per edge (outer product)
+        # Hessian = k * (3 / area) * w^T w
         bend_hess = (
             bend_weight[:, :, np.newaxis] * bend_weight[:, np.newaxis, :] * edge_stiff[:, np.newaxis, np.newaxis]
         )  # shape is num_edge,4,4

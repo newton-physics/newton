@@ -17,11 +17,16 @@ from ......geometry.types import GeoType
 from ......viewer import ViewerGL
 from ...core.builder import ModelBuilderKamino
 from ...core.geometry import GeometryDescriptor
-from ...core.types import vec3f
 from ...core.world import WorldDescriptor
 from ...geometry.contacts import ContactMode
 from ...utils import logger as msg
 from .simulator import Simulator
+
+###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 ###
 # Kernels
@@ -187,7 +192,7 @@ class ViewerKamino(ViewerGL):
     ]
 
     # Define a static world spacing offset for multiple worlds
-    world_spacing: ClassVar[vec3f] = vec3f(-2.0, 0.0, 0.0)
+    world_spacing: ClassVar[wp.vec3f] = wp.vec3f(-2.0, 0.0, 0.0)
 
     def __init__(
         self,
@@ -245,7 +250,7 @@ class ViewerKamino(ViewerGL):
         if self._record_video:
             os.makedirs(self._video_folder, exist_ok=True)
 
-    def render_geometry(self, body_poses: wp.array, geom: GeometryDescriptor, scope: str):
+    def render_geometry(self, body_poses: wp.array[wp.transformf], geom: GeometryDescriptor, scope: str):
         # TODO: Fix this
         bid = geom.body + self._worlds[geom.wid].bodies_idx_offset if geom.body >= 0 else -1
 
@@ -580,7 +585,7 @@ class ViewerKamino(ViewerGL):
 
         # Only capture and save if we've reached the skip threshold
         if self._img_idx >= self._skip_img_idx:
-            # Get frame from viewer as GPU array (height, width, 3) uint8
+            # Get frame from viewer as GPU array with shape (height, width, 3) and dtype wp.uint8
             frame = self.get_frame(target_image=self._frame_buffer)
 
             # Cache buffer for reuse to minimize allocations

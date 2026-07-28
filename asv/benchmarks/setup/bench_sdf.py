@@ -54,7 +54,6 @@ _BUILDS_PER_SAMPLE = {
     32: 20,
     64: 20,
     128: 10,
-    256: 5,
 }
 
 # Number of untimed warm-up builds in ``setup`` to push the GPU into a stable
@@ -146,7 +145,7 @@ def _create_icosphere(radius: float, subdivisions: int) -> tuple[np.ndarray, np.
 
 
 class FastBuildSdf:
-    """Time ``Mesh.build_sdf`` across a range of grid resolutions.
+    """Time ``Mesh.build_sdf`` across stable grid resolutions.
 
     Uses an icosphere with ~5120 triangles (subdivision 4), representative of
     typical collision meshes used with Newton's SDF contact path.
@@ -159,7 +158,7 @@ class FastBuildSdf:
     runs (see #2534).
     """
 
-    params = ([32, 64, 128, 256],)
+    params = ([32, 64, 128],)
     param_names = ["max_resolution"]
 
     rounds = 2
@@ -189,8 +188,7 @@ class FastBuildSdf:
         self._mesh.clear_sdf()
         wp.synchronize_device()
 
-    # Disabled, see #2534.
-    @skip_benchmark_if(True)
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_build_sdf(self, max_resolution):
         for _ in range(_BUILDS_PER_SAMPLE[max_resolution]):
             _build_sdf(self._mesh, max_resolution=max_resolution)

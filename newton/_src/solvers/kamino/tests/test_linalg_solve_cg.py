@@ -8,7 +8,6 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.types import float32
 from newton._src.solvers.kamino._src.linalg.conjugate import (
     BatchedLinearOperator,
     CGSolver,
@@ -45,7 +44,7 @@ class TestLinalgConjugate(unittest.TestCase):
             **problem_params,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=device,
         )
 
@@ -53,14 +52,14 @@ class TestLinalgConjugate(unittest.TestCase):
 
         # Create operator with per-world maxdims
         info = DenseSquareMultiLinearInfo()
-        info.finalize(dimensions=problem.maxdims, dtype=float32, device=device)
+        info.finalize(dimensions=problem.maxdims, dtype=wp.float32, device=device)
         info.dim = problem.dim_wp  # Override with actual active dimensions
         operator = DenseLinearOperatorData(info=info, mat=problem.A_wp)
         A = BatchedLinearOperator.from_dense(operator)
 
         # b and x are flat 1D arrays
         b_wp = problem.b_wp
-        x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+        x_wp = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
 
         world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
 
@@ -76,7 +75,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=maxiter,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         cur_iter, r_norm_sq, atol_sq = solver.solve(b_wp, x_wp)
 
@@ -140,6 +139,98 @@ class TestLinalgConjugate(unittest.TestCase):
             with self.subTest(problem=problem_name, solver=solver_cls.__name__):
                 self._test_solve(solver_cls, problem_params, device)
 
+    def _test_capture_replay_matches_eager(self, solver_cls, device):
+        """Regression: capture-and-replay must match an eager solve.
+
+        Guards against the class of bug where the capture-safe path in
+        ``_run_capturable_loop`` silently under-iterates. Concretely, if the
+        break decision is frozen at record time via a host readback of stale
+        pre-capture memory, the recorded graph bakes in a fixed cycle count
+        and ``cur_iter`` under capture will be far below the eager count.
+        """
+        device = wp.get_device(device)
+        problem = RandomProblemLLT(
+            maxdims=8,
+            dims=[5, 8],
+            seed=self.seed,
+            np_dtype=np.float32,
+            wp_dtype=wp.float32,
+            device=device,
+        )
+        n_worlds = problem.num_blocks
+
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=problem.maxdims, dtype=wp.float32, device=device)
+        info.dim = problem.dim_wp
+        operator = DenseLinearOperatorData(info=info, mat=problem.A_wp)
+        A = BatchedLinearOperator.from_dense(operator)
+
+        world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
+        maxdim = max(problem.maxdims)
+        atol = wp.full(n_worlds, 1.0e-4, dtype=problem.wp_dtype, device=device)
+        rtol = wp.full(n_worlds, 1.0e-5, dtype=problem.wp_dtype, device=device)
+        maxiter = wp.full(n_worlds, max(3 * maxdim, 50), dtype=int, device=device)
+
+        def new_solver(*, use_graph):
+            return solver_cls(
+                A=A,
+                world_active=world_active,
+                atol=atol,
+                rtol=rtol,
+                maxiter=maxiter,
+                Mi=None,
+                callback=None,
+                use_graph=use_graph,
+            )
+
+        # Eager reference.
+        x_eager = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
+        eager_cur, _, _ = new_solver(use_graph=False).solve(problem.b_wp, x_eager)
+
+        # Captured replay. Warm up outside capture so kernels compile before
+        # recording; zero the output between the warmup and the capture body
+        # so both solves see the same initial state.
+        solver = new_solver(use_graph=True)
+        x_capture = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
+        solver.solve(problem.b_wp, x_capture)
+        x_capture.zero_()
+        # Warp CPU graph capture currently rejects wp.copy() on non-contiguous
+        # arrays. Both the buggy pre-fix eager path (via strided
+        # ``dot_partial_sums[:, :, 0]`` in ``dot_product``) and the fixed
+        # capture path (via ``rz_old.assign(rz_new)`` in ``do_iteration``)
+        # hit that limitation on CPU, so the parity assertions below only
+        # activate once Warp lifts it. The CUDA counterparts exercise the
+        # same gate on a path where the dot buffer is contiguous and no
+        # skip is needed.
+        try:
+            with wp.ScopedCapture(device) as cap:
+                cap_cur, _, _ = solver.solve(problem.b_wp, x_capture)
+        except NotImplementedError as e:
+            if "non-contiguous" not in str(e):
+                raise
+            self.skipTest(f"Warp graph capture limitation on {device}: {e}")
+        assert cap.graph is not None
+        wp.capture_launch(cap.graph)
+
+        np.testing.assert_array_equal(cap_cur.numpy(), eager_cur.numpy())
+        np.testing.assert_array_equal(x_capture.numpy(), x_eager.numpy())
+
+    def test_capture_replay_cg_cpu(self):
+        self._test_capture_replay_matches_eager(CGSolver, "cpu")
+
+    def test_capture_replay_cr_cpu(self):
+        self._test_capture_replay_matches_eager(CRSolver, "cpu")
+
+    def test_capture_replay_cg_cuda(self):
+        if not wp.get_cuda_devices():
+            self.skipTest("No CUDA devices found")
+        self._test_capture_replay_matches_eager(CGSolver, wp.get_cuda_device())
+
+    def test_capture_replay_cr_cuda(self):
+        if not wp.get_cuda_devices():
+            self.skipTest("No CUDA devices found")
+        self._test_capture_replay_matches_eager(CRSolver, wp.get_cuda_device())
+
     def _test_sparse_solve(self, solver_cls, dims, block_size, device):
         """Test CG/CR with sparse matrices built from random SPD matrices.
 
@@ -184,7 +275,7 @@ class TestLinalgConjugate(unittest.TestCase):
         bsm.finalize(
             max_dims=[(pd, pd) for pd in padded_dims],
             capacities=capacities,
-            nzb_dtype=BlockDType(float32, (block_size, block_size)),
+            nzb_dtype=BlockDType(wp.float32, (block_size, block_size)),
             device=device,
         )
         bsm.dims.assign(np.array([[pd, pd] for pd in padded_dims], dtype=np.int32))
@@ -194,11 +285,11 @@ class TestLinalgConjugate(unittest.TestCase):
 
         # Build dense operator for comparison (flat 1D matrix storage)
         A_flat = np.concatenate([A.flatten() for A in A_padded_list]).astype(np.float32)
-        A_wp = wp.array(A_flat, dtype=float32, device=device)
+        A_wp = wp.array(A_flat, dtype=wp.float32, device=device)
         active_dims = wp.array(dims, dtype=wp.int32, device=device)
 
         info = DenseSquareMultiLinearInfo()
-        info.finalize(dimensions=padded_dims, dtype=float32, device=device)
+        info.finalize(dimensions=padded_dims, dtype=wp.float32, device=device)
         info.dim = active_dims
         dense_op = BatchedLinearOperator.from_dense(DenseLinearOperatorData(info=info, mat=A_wp))
         sparse_op = BatchedLinearOperator.from_block_sparse(bsm, active_dims)
@@ -208,14 +299,14 @@ class TestLinalgConjugate(unittest.TestCase):
         b_flat = np.zeros(total_vec_size, dtype=np.float32)
         for m in range(n_worlds):
             b_flat[vio_np[m] : vio_np[m] + dims[m]] = b_list[m]
-        b_wp = wp.array(b_flat, dtype=float32, device=device)
+        b_wp = wp.array(b_flat, dtype=wp.float32, device=device)
 
         world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
-        atol = wp.full(n_worlds, 1.0e-6, dtype=float32, device=device)
-        rtol = wp.full(n_worlds, 1.0e-6, dtype=float32, device=device)
+        atol = wp.full(n_worlds, 1.0e-6, dtype=wp.float32, device=device)
+        rtol = wp.full(n_worlds, 1.0e-6, dtype=wp.float32, device=device)
 
         # Solve with dense operator
-        x_dense = wp.zeros(total_vec_size, dtype=float32, device=device)
+        x_dense = wp.zeros(total_vec_size, dtype=wp.float32, device=device)
         solver_dense = solver_cls(
             A=dense_op,
             world_active=world_active,
@@ -224,12 +315,12 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=None,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver_dense.solve(b_wp, x_dense)
 
         # Solve with sparse operator
-        x_sparse = wp.zeros(total_vec_size, dtype=float32, device=device)
+        x_sparse = wp.zeros(total_vec_size, dtype=wp.float32, device=device)
         solver_sparse = solver_cls(
             A=sparse_op,
             world_active=world_active,
@@ -238,7 +329,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=None,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver_sparse.solve(b_wp, x_sparse)
 
@@ -299,7 +390,7 @@ class TestLinalgConjugate(unittest.TestCase):
         bsm.finalize(
             max_dims=[(dim, dim)],
             capacities=[total_blocks],
-            nzb_dtype=BlockDType(float32, (block_size, block_size)),
+            nzb_dtype=BlockDType(wp.float32, (block_size, block_size)),
             device=device,
         )
         bsm.dims.assign(np.array([[dim, dim]], dtype=np.int32))
@@ -323,11 +414,11 @@ class TestLinalgConjugate(unittest.TestCase):
 
         sparse_op = self._build_sparse_operator(A, block_size, device)
 
-        b_wp = wp.array(b, dtype=float32, device=device)
-        x_wp = wp.zeros(dim, dtype=float32, device=device)
+        b_wp = wp.array(b, dtype=wp.float32, device=device)
+        x_wp = wp.zeros(dim, dtype=wp.float32, device=device)
         world_active = wp.full(1, True, dtype=wp.bool, device=device)
-        atol = wp.full(1, 1e-6, dtype=float32, device=device)
-        rtol = wp.full(1, 1e-6, dtype=float32, device=device)
+        atol = wp.full(1, 1e-6, dtype=wp.float32, device=device)
+        rtol = wp.full(1, 1e-6, dtype=wp.float32, device=device)
 
         solver = CGSolver(
             A=sparse_op,
@@ -336,7 +427,7 @@ class TestLinalgConjugate(unittest.TestCase):
             rtol=rtol,
             maxiter=None,
             Mi=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver.solve(b_wp, x_wp)
 
@@ -391,10 +482,10 @@ class TestLinalgConjugate(unittest.TestCase):
             offset = w * max_dim * max_dim
             # Store compactly with dim as stride (canonical format)
             A_flat[offset : offset + dim * dim] = matrix.flatten()
-        A_wp = wp.array(A_flat, dtype=float32, device=device)
+        A_wp = wp.array(A_flat, dtype=wp.float32, device=device)
 
         info = DenseSquareMultiLinearInfo()
-        info.finalize(dimensions=[max_dim] * n_worlds, dtype=float32, device=device)
+        info.finalize(dimensions=[max_dim] * n_worlds, dtype=wp.float32, device=device)
         info.dim = wp.array(dims, dtype=wp.int32, device=device)
         dense_op = DenseLinearOperatorData(info=info, mat=A_wp)
 
@@ -447,7 +538,7 @@ class TestLinalgConjugate(unittest.TestCase):
             **problem_params,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=device,
         )
 
@@ -455,20 +546,20 @@ class TestLinalgConjugate(unittest.TestCase):
 
         # Create operator with heterogeneous maxdims
         info = DenseSquareMultiLinearInfo()
-        info.finalize(dimensions=problem.maxdims, dtype=float32, device=device)
+        info.finalize(dimensions=problem.maxdims, dtype=wp.float32, device=device)
         info.dim = problem.dim_wp  # Override with actual active dimensions
         operator = DenseLinearOperatorData(info=info, mat=problem.A_wp)
         A = BatchedLinearOperator.from_dense(operator)
 
         # b and x are flat 1D arrays
         b = problem.b_wp
-        x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+        x_wp = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
 
         world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
 
         maxdim = max(problem.maxdims)
-        atol = wp.full(n_worlds, 1.0e-4, dtype=float32, device=device)
-        rtol = wp.full(n_worlds, 1.0e-5, dtype=float32, device=device)
+        atol = wp.full(n_worlds, 1.0e-4, dtype=wp.float32, device=device)
+        rtol = wp.full(n_worlds, 1.0e-5, dtype=wp.float32, device=device)
         maxiter = wp.full(n_worlds, max(3 * maxdim, 50), dtype=int, device=device)
         solver = solver_cls(
             A=A,
@@ -478,7 +569,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=maxiter,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver.solve(b, x_wp)
 
@@ -529,7 +620,7 @@ class TestLinalgConjugate(unittest.TestCase):
             **problem_params,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=device,
         )
 
@@ -537,14 +628,14 @@ class TestLinalgConjugate(unittest.TestCase):
 
         # Create operator with heterogeneous maxdims
         info = DenseSquareMultiLinearInfo()
-        info.finalize(dimensions=problem.maxdims, dtype=float32, device=device)
+        info.finalize(dimensions=problem.maxdims, dtype=wp.float32, device=device)
         info.dim = problem.dim_wp
         operator = DenseLinearOperatorData(info=info, mat=problem.A_wp)
         A = BatchedLinearOperator.from_dense(operator)
 
         # Build Jacobi preconditioner
         maxdim = max(problem.maxdims)
-        jacobi_diag = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+        jacobi_diag = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
         wp.launch(
             make_jacobi_preconditioner,
             dim=(n_worlds, maxdim),
@@ -556,12 +647,12 @@ class TestLinalgConjugate(unittest.TestCase):
 
         # b and x are flat 1D arrays
         b = problem.b_wp
-        x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+        x_wp = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
 
         world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
 
-        atol = wp.full(n_worlds, 1.0e-4, dtype=float32, device=device)
-        rtol = wp.full(n_worlds, 1.0e-5, dtype=float32, device=device)
+        atol = wp.full(n_worlds, 1.0e-4, dtype=wp.float32, device=device)
+        rtol = wp.full(n_worlds, 1.0e-5, dtype=wp.float32, device=device)
         maxiter = wp.full(n_worlds, max(3 * maxdim, 50), dtype=int, device=device)
         solver = solver_cls(
             A=A,
@@ -571,7 +662,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=maxiter,
             Mi=Mi,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver.solve(b, x_wp)
 
@@ -618,7 +709,7 @@ class TestLinalgConjugate(unittest.TestCase):
 
         # Create DenseSquareMultiLinearInfo with heterogeneous dimensions
         info = DenseSquareMultiLinearInfo()
-        info.finalize(dimensions=dims_list, dtype=float32, device=device)
+        info.finalize(dimensions=dims_list, dtype=wp.float32, device=device)
         mio_np = info.mio.numpy()
         vio_np = info.vio.numpy()
 
@@ -627,7 +718,7 @@ class TestLinalgConjugate(unittest.TestCase):
         for w, (A, dim) in enumerate(zip(A_list, dims_list, strict=True)):
             offset = mio_np[w]
             A_flat[offset : offset + dim * dim] = A.flatten()
-        A_wp = wp.array(A_flat, dtype=float32, device=device)
+        A_wp = wp.array(A_flat, dtype=wp.float32, device=device)
 
         dense_op = DenseLinearOperatorData(info=info, mat=A_wp)
 
@@ -635,8 +726,8 @@ class TestLinalgConjugate(unittest.TestCase):
         b_flat = np.zeros(info.total_vec_size, dtype=np.float32)
         for w, (b, dim) in enumerate(zip(b_list, dims_list, strict=True)):
             b_flat[vio_np[w] : vio_np[w] + dim] = b
-        b_wp = wp.array(b_flat, dtype=float32, device=device)
-        x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+        b_wp = wp.array(b_flat, dtype=wp.float32, device=device)
+        x_wp = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
 
         # Solve
         kwargs = {}
@@ -661,7 +752,7 @@ class TestLinalgConjugate(unittest.TestCase):
 
         if discover_sparse:
             # Also solve with discover_sparse=False and compare
-            x_dense_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
+            x_dense_wp = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
             solver_dense = solver_cls(discover_sparse=False, device=device)
             solver_dense.finalize(dense_op)
             solver_dense.compute(A_wp)

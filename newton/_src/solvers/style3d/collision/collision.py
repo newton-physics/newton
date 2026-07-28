@@ -9,6 +9,7 @@ from newton._src.solvers.style3d.collision.kernels import (
     eval_body_contact_kernel,
     handle_edge_edge_contacts_kernel,
     handle_vertex_triangle_contacts_kernel,
+    hessian_multiply_kernel,
     solve_untangling_kernel,
 )
 
@@ -144,6 +145,7 @@ class Collision:
             particle_q_prev: Previous positions for velocity-based damping.
             particle_stiff: Optional stiffness array for particles.
         """
+        contacts._assert_particle_only_soft_contacts("SolverStyle3D")
         thickness = 2.0 * self.radius
         self.contact_hessian_diags.zero_()
 
@@ -222,6 +224,7 @@ class Collision:
                 contacts.soft_contact_body_pos,
                 contacts.soft_contact_body_vel,
                 contacts.soft_contact_normal,
+                self.model.shape_margin,
             ],
             outputs=[particle_forces, self.contact_hessian_diags],
             device=self.model.device,
@@ -236,17 +239,6 @@ class Collision:
 
     def hessian_multiply(self, x: wp.array[wp.vec3]):
         """Computes the Hessian-vector product for implicit integration."""
-
-        @wp.kernel
-        def hessian_multiply_kernel(
-            hessian_diags: wp.array[wp.mat33],
-            x: wp.array[wp.vec3],
-            # outputs
-            Hx: wp.array[wp.vec3],
-        ):
-            tid = wp.tid()
-            Hx[tid] = hessian_diags[tid] * x[tid]
-
         wp.launch(
             hessian_multiply_kernel,
             dim=self.model.particle_count,

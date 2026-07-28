@@ -27,6 +27,53 @@ def _eq_value(builder, name, idx):
 
 
 class TestEqualityConstraints(unittest.TestCase):
+    def test_eq_type_deprecation(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            legacy_type = newton.EqType.CONNECT
+            scoped_type = newton.solvers.SolverMuJoCo.EqType.CONNECT
+
+        self.assertEqual(legacy_type, scoped_type)
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertIn(
+            "newton.EqType is deprecated in Newton 1.4; use newton.solvers.SolverMuJoCo.EqType instead",
+            str(caught[0].message),
+        )
+
+    def test_equality_constraint_references_use_namespaced_frequency(self):
+        def make_builder(references):
+            builder = newton.ModelBuilder()
+            builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="ref", namespace="test"))
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name="equality_index",
+                    dtype=wp.int32,
+                    frequency="test:ref",
+                    namespace="test",
+                    references=references,
+                )
+            )
+            body1 = builder.add_body()
+            body2 = builder.add_body()
+            _add_equality_constraint(
+                builder,
+                constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
+                body1=body1,
+                body2=body2,
+            )
+            builder.add_custom_values(**{"test:equality_index": 0})
+            return builder
+
+        with self.assertRaisesRegex(ValueError, "Unknown references value 'equality_constraint'"):
+            newton.ModelBuilder().add_world(make_builder("equality_constraint"))
+
+        main_builder = newton.ModelBuilder()
+        namespaced_builder = make_builder("mujoco:equality_constraint")
+        main_builder.add_world(namespaced_builder)
+        main_builder.add_world(namespaced_builder)
+        np.testing.assert_array_equal(main_builder.finalize().test.equality_index.numpy(), [0, 1])
+
     def test_multiple_constraints(self):
         self.sim_time = 0.0
         self.frame_dt = 1 / 60
@@ -108,10 +155,16 @@ class TestEqualityConstraints(unittest.TestCase):
         b1 = builder.add_body()
         builder.add_joint_free(b1)
 
-        _add_equality_constraint(builder, constraint_type=newton.EqType.CONNECT, body1=b0, body2=b1)
-        _add_equality_constraint(builder, constraint_type=newton.EqType.WELD, body1=b0, body2=b1)
         _add_equality_constraint(
-            builder, constraint_type=newton.EqType.JOINT, joint1=0, joint2=1, polycoef=[0.0, 1.0, 0.0, 0.0, 0.0]
+            builder, constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT, body1=b0, body2=b1
+        )
+        _add_equality_constraint(builder, constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD, body1=b0, body2=b1)
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.JOINT,
+            joint1=0,
+            joint2=1,
+            polycoef=[0.0, 1.0, 0.0, 0.0, 0.0],
         )
 
         model = builder.finalize()
@@ -172,7 +225,7 @@ class TestEqualityConstraints(unittest.TestCase):
         # Add 2 equality constraints
         _add_equality_constraint(
             robot,
-            constraint_type=newton.EqType.CONNECT,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
             body1=base,
             body2=link2,
             anchor=wp.vec3(0.5, 0, 0),
@@ -180,7 +233,7 @@ class TestEqualityConstraints(unittest.TestCase):
         )
         _add_equality_constraint(
             robot,
-            constraint_type=newton.EqType.JOINT,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.JOINT,
             joint1=1,  # joint1 (base to link1)
             joint2=2,  # joint2 (link1 to link2)
             polycoef=[1.0, -1.0, 0, 0, 0],
@@ -273,7 +326,11 @@ class TestEqualityConstraints(unittest.TestCase):
             body2 = b.add_body()
             custom = {"mujoco:eq_solref": wp.vec2(*solref)} if solref is not None else None
             _add_equality_constraint(
-                b, constraint_type=newton.EqType.WELD, body1=body1, body2=body2, custom_attributes=custom
+                b,
+                constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD,
+                body1=body1,
+                body2=body2,
+                custom_attributes=custom,
             )
             return b
 
@@ -300,10 +357,8 @@ class TestEqualityConstraints(unittest.TestCase):
     def test_zero_constraint_model_exposes_shape_stable_equality_arrays(self):
         """A constraint-free finalized model still exposes the equality namespace arrays.
 
-        The deprecation message points callers at ``model.mujoco.equality_constraint_*``, so those
-        fields must stay shape-stable (empty arrays) even with no constraints rather than being
-        absent. The deprecated top-level ``model.equality_constraint_*`` accessor must forward to
-        the same empty array, not ``None``.
+        The canonical ``model.mujoco.equality_constraint_*`` fields stay shape-stable (empty
+        arrays) even when no constraints are present.
         """
         model = newton.ModelBuilder().finalize()
 
@@ -327,55 +382,6 @@ class TestEqualityConstraints(unittest.TestCase):
             self.assertEqual(arr.shape[0], 0, f"model.mujoco.{name} should be empty at zero rows")
             self.assertEqual(arr.shape[1:], row_shape, f"model.mujoco.{name} per-row shape should be stable")
 
-        # The deprecated top-level accessor forwards to the same empty array, not None.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            forwarded = model.equality_constraint_type
-        self.assertIsNotNone(forwarded)
-        self.assertEqual(forwarded.numpy().shape, (0,))
-
-    def test_deprecated_builder_equality_lists_are_read_only(self):
-        """Deprecated ``ModelBuilder.equality_constraint_*`` snapshots reject mutation.
-
-        Historically these were live builder lists; they are now read-only snapshots over the
-        ``mujoco:equality_constraint`` custom attributes. Mutating one would silently drop the
-        change, so every in-place mutation must raise instead of corrupting the builder.
-        """
-        builder = newton.ModelBuilder()
-        _add_equality_constraint(
-            builder,
-            constraint_type=newton.EqType.JOINT,
-            joint1=0,
-            joint2=1,
-            polycoef=[1.0, 2.0, 3.0, 0.0, 0.0],
-            label="c0",
-        )
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-
-            # Reads still behave like the historical list.
-            self.assertIsInstance(builder.equality_constraint_type, list)
-            self.assertEqual(len(builder.equality_constraint_type), 1)
-            self.assertEqual(builder.equality_constraint_label[0], "c0")
-
-            # Every in-place mutation raises rather than silently dropping the change.
-            self.assertRaises(TypeError, builder.equality_constraint_type.append, 5)
-            self.assertRaises(TypeError, builder.equality_constraint_type.extend, [5])
-            self.assertRaises(TypeError, builder.equality_constraint_type.insert, 0, 5)
-            self.assertRaises(TypeError, builder.equality_constraint_type.pop)
-            self.assertRaises(TypeError, builder.equality_constraint_type.clear)
-            with self.assertRaises(TypeError):
-                builder.equality_constraint_type[0] = 5
-            with self.assertRaises(TypeError):
-                del builder.equality_constraint_type[0]
-
-            # Mutating an inner polycoef list must not reach the builder's backing store.
-            builder.equality_constraint_polycoef[0].append(999.0)
-
-        backing = builder.custom_attributes["mujoco:equality_constraint_polycoef"].values[0]
-        self.assertEqual(list(backing), [1.0, 2.0, 3.0, 0.0, 0.0])
-
     def test_default_equality_constraint_torquescale_is_numeric(self):
         builder = newton.ModelBuilder()
 
@@ -389,10 +395,18 @@ class TestEqualityConstraints(unittest.TestCase):
         builder.add_articulation([joint0, joint1, joint2])
 
         _add_equality_constraint(
-            builder, constraint_type=newton.EqType.CONNECT, body1=base, body2=link1, anchor=wp.vec3(0.0, 0.0, 0.0)
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
+            body1=base,
+            body2=link1,
+            anchor=wp.vec3(0.0, 0.0, 0.0),
         )
-        _add_equality_constraint(builder, constraint_type=newton.EqType.JOINT, joint1=joint1, joint2=joint2)
-        _add_equality_constraint(builder, constraint_type=newton.EqType.WELD, body1=link1, body2=link2)
+        _add_equality_constraint(
+            builder, constraint_type=newton.solvers.SolverMuJoCo.EqType.JOINT, joint1=joint1, joint2=joint2
+        )
+        _add_equality_constraint(
+            builder, constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD, body1=link1, body2=link2
+        )
 
         model = builder.finalize()
         np.testing.assert_allclose(
@@ -461,7 +475,7 @@ class TestEqualityConstraints(unittest.TestCase):
 
         eq_connect = _add_equality_constraint(
             builder,
-            constraint_type=newton.EqType.CONNECT,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
             body1=base,
             body2=link3,
             anchor=wp.vec3(0.5, 0, 0),
@@ -469,7 +483,7 @@ class TestEqualityConstraints(unittest.TestCase):
         )
         eq_joint = _add_equality_constraint(
             builder,
-            constraint_type=newton.EqType.JOINT,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.JOINT,
             joint1=joint1,
             joint2=joint3,
             polycoef=[1.0, -1.0, 0, 0, 0],
@@ -477,7 +491,7 @@ class TestEqualityConstraints(unittest.TestCase):
         )
         eq_weld = _add_equality_constraint(
             builder,
-            constraint_type=newton.EqType.WELD,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD,
             body1=link2,
             body2=link3,
             anchor=original_anchor,
@@ -580,7 +594,7 @@ class TestEqualityConstraints(unittest.TestCase):
 
         builder.add_custom_values(
             **{
-                "mujoco:equality_constraint_type": int(newton.EqType.WELD),
+                "mujoco:equality_constraint_type": int(newton.solvers.SolverMuJoCo.EqType.WELD),
                 "mujoco:equality_constraint_body1": merged,
                 "mujoco:equality_constraint_body2": target,
                 "mujoco:equality_constraint_enabled": True,

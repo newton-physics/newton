@@ -36,7 +36,7 @@ def test_floating_body(
     up_axis=newton.Axis.Y,
     use_control: bool = False,
 ):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=up_axis)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=up_axis)
 
     # easy case: zero center of mass offset
     pos = wp.vec3(1.0, 2.0, 3.0)
@@ -98,7 +98,7 @@ def test_floating_body(
 def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, up_axis):
     # test mechanism with 3 orthogonally aligned prismatic joints
     # which allows to test all 3 dimensions of the control force independently
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=up_axis)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=up_axis)
     builder.default_shape_cfg.density = 1000.0
 
     b = builder.add_link()
@@ -164,7 +164,7 @@ def test_descendant_free_joint_f_world_force_under_rotated_parent(
     solver_fn,
 ):
     """A descendant FREE-joint world force should stay aligned with the commanded world axis and remain referenced at the child COM."""
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     parent = builder.add_link(is_kinematic=True, mass=1.0)
     child = builder.add_link(mass=1.0)
     builder.add_shape_sphere(parent, radius=0.1)
@@ -375,7 +375,7 @@ def test_force_no_rotation(
         force_direction: Direction of applied force (fx, fy, fz)
         use_control: Apply forces via control.joint_f instead of state.body_f
     """
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
     # use non-identity rotation to test that the wrench is applied correctly in world frame
@@ -463,7 +463,7 @@ def test_combined_force_torque(
         com_offset: Center of mass offset in body frame (x, y, z)
         use_control: Apply forces via control.joint_f instead of state.body_f
     """
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
     # use non-identity rotation to test that the wrench is applied correctly in world frame

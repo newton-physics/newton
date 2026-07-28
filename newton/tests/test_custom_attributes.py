@@ -1242,7 +1242,7 @@ class TestCustomAttributes(unittest.TestCase):
                 assignment=AttributeAssignment.MODEL,
             )
         )
-        # Should still work. ModelBuilder.__init__ also auto-registers the deprecated-window
+        # Should still work. ModelBuilder.__init__ also auto-registers the canonical
         # ``mujoco:equality_constraint_*`` CustomAttributes, so account for those alongside the
         # single attribute declared by this test.
         baseline = len(ModelBuilder().custom_attributes)
@@ -1639,7 +1639,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertIn("global_freq", builder.custom_frequencies)
 
         # Test 4: Duplicate registration should be silently ignored (idempotent)
-        # ModelBuilder.__init__ auto-registers the deprecated-window ``mujoco:equality_constraint``
+        # ModelBuilder.__init__ auto-registers the canonical ``mujoco:equality_constraint``
         # custom frequency, so take a baseline from a freshly-constructed builder.
         baseline = len(ModelBuilder().custom_frequencies)
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="freq1", namespace="ns"))  # Should not raise

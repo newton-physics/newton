@@ -101,11 +101,9 @@ def _compute_edge_bending_data(
         edge_bending_cot, edge_aniso_values)`` suitable for Style3D edge
         attributes.
     """
-    adjacency = MeshAdjacency(tri_indices.tolist())
-    edge_indices = np.fromiter(
-        (x for e in adjacency.edges.values() for x in (e.o0, e.o1, e.v0, e.v1, e.f0, e.f1)),
-        int,
-    ).reshape(-1, 6)
+    _adjacency = MeshAdjacency(tri_indices)
+    edge_indices, edge_tri_indices = _adjacency.edge_indices, _adjacency.edge_tri_indices
+    edge_indices = np.concatenate((edge_indices, edge_tri_indices), axis=1)
 
     edge_count = edge_indices.shape[0]
     edge_aniso_values = None
@@ -160,7 +158,7 @@ def _compute_edge_bending_data(
         np.abs(cross2d(panel_x43_f0, panel_x1_f0 - panel_x3_f0))
         + np.abs(cross2d(panel_x43_f1, panel_x2_f1 - panel_x3_f1))
         + 1.0e-8
-    ) / 3.0
+    ) / 2.0
 
     def cot2d(a, b, c):
         ba = b - a
@@ -360,15 +358,14 @@ def add_cloth_mesh(
     if edge_aniso_values is not None:
         edge_custom_attrs["style3d:aniso_ke"] = edge_aniso_values
 
-    builder.add_edges(
-        edge_indices_global[:, 0].tolist(),
-        edge_indices_global[:, 1].tolist(),
-        edge_indices_global[:, 2].tolist(),
-        edge_indices_global[:, 3].tolist(),
+    edge_range = builder._add_soft_mesh_edges_from_triangles(
+        tri_start,
+        tri_end,
         edge_ke=edge_ke,
         edge_kd=edge_kd_list,
         custom_attributes=edge_custom_attrs,
     )
+    edge_indices_global = np.asarray(builder.edge_indices[edge_range.start : edge_range.stop], dtype=np.int32)
 
     if add_springs:
         spring_indices = set()

@@ -379,7 +379,38 @@ def plot_graph(
     plt.show()
 
 
-def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> list[int]:
+def combine_independent_coloring_plan(sized_groups_1, sized_groups_2) -> list:
+    """
+    Pair the groups of 2 independent colorings without materializing them.
+
+    Items are ``(size, chunks)`` tuples; paired groups get their sizes added and their
+    chunk lists concatenated (first coloring's chunks first). Sorting the first coloring
+    in ascending size order and the second in descending order always combines the
+    smaller group with the larger group, which balances the load of each group.
+    """
+    if len(sized_groups_1) == 0:
+        return sized_groups_2
+    if len(sized_groups_2) == 0:
+        return sized_groups_1
+
+    # this made sure that the leftover groups are always the largest
+    if len(sized_groups_1) < len(sized_groups_2):
+        sized_groups_1, sized_groups_2 = sized_groups_2, sized_groups_1
+
+    groups_1 = sorted(sized_groups_1, key=lambda group: group[0])
+    groups_2 = sorted(sized_groups_2, key=lambda group: -group[0])
+
+    combined = []
+    for i, (size_1, chunks_1) in enumerate(groups_1):
+        if i < len(groups_2):
+            size_2, chunks_2 = groups_2[i]
+            combined.append((size_1 + size_2, chunks_1 + chunks_2))
+        else:
+            combined.append((size_1, chunks_1))
+    return combined
+
+
+def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> list:
     """
     A function that combines 2 independent coloring groups. Note that color_groups_1 and color_groups_2 must be from 2 independent
     graphs so that there is no connection between them. This algorithm will sort color_groups_1 in ascending order and
@@ -393,37 +424,11 @@ def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> lis
             and each `np.array` contains the indices of vertices with this color.
 
     """
-    if len(color_groups_1) == 0:
-        return color_groups_2
-    if len(color_groups_2) == 0:
-        return color_groups_1
-
-    num_colors_after_combining = max(len(color_groups_1), len(color_groups_2))
-    color_groups_combined = []
-
-    # this made sure that the leftover groups are always the largest
-    if len(color_groups_1) < len(color_groups_2):
-        color_groups_1, color_groups_2 = color_groups_2, color_groups_1
-
-    # sort group 1 in ascending order
-    color_groups_1_sorted = sorted(color_groups_1, key=len)
-    # sort group 1 in descending order
-    color_groups_2_sorted = sorted(color_groups_2, key=lambda group: -len(group))
-    # so that we are combining the smaller group with the larger group
-    # which will balance the load of each group
-
-    for i in range(num_colors_after_combining):
-        group_1 = color_groups_1_sorted[i] if i < len(color_groups_1) else None
-        group_2 = color_groups_2_sorted[i] if i < len(color_groups_2) else None
-
-        if group_1 is not None and group_2 is not None:
-            color_groups_combined.append(np.concatenate([group_1, group_2]))
-        elif group_1 is not None:
-            color_groups_combined.append(group_1)
-        else:
-            color_groups_combined.append(group_2)
-
-    return color_groups_combined
+    plan = combine_independent_coloring_plan(
+        [(len(group), [group]) for group in color_groups_1],
+        [(len(group), [group]) for group in color_groups_2],
+    )
+    return [chunks[0] if len(chunks) == 1 else np.concatenate(chunks) for _, chunks in plan]
 
 
 def color_rigid_bodies(

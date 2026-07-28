@@ -14,10 +14,9 @@ import warp as wp
 from ..._src.core.bodies import update_body_inertias
 from ..._src.core.builder import ModelBuilderKamino
 from ..._src.core.data import DataKamino
-from ..._src.core.math import quat_exp, screw, screw_angular, screw_linear
+from ..._src.core.math import quat_exp
 from ..._src.core.model import ModelKamino
 from ..._src.core.state import StateKamino
-from ..._src.core.types import float32, int32, mat33f, transformf, vec3f, vec6f
 from ..._src.geometry.contacts import ContactsKamino
 from ..._src.geometry.detector import CollisionDetector
 from ..._src.kinematics.constraints import make_unilateral_constraints_info, update_constraints_info
@@ -49,7 +48,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -284,7 +283,7 @@ def make_test_problem(
 
 def make_constraint_multiplier_arrays(model: ModelKamino) -> tuple[wp.array, wp.array]:
     with wp.ScopedDevice(model.device):
-        lambdas = wp.zeros(model.size.sum_of_max_total_cts, dtype=float32)
+        lambdas = wp.zeros(model.size.sum_of_max_total_cts, dtype=wp.float32)
     return model.info.total_cts_offset, lambdas
 
 
@@ -298,21 +297,21 @@ def make_constraint_multiplier_arrays(model: ModelKamino) -> tuple[wp.array, wp.
 Q_X_J = 0.3 * math.pi
 THETA_Y_J = 0.0
 THETA_Z_J = 0.0
-J_DR_J = vec3f(0.0)
-J_DV_J = vec3f(0.0)
-J_DOMEGA_J = vec3f(0.0)
+J_DR_J = wp.vec3f(0.0)
+J_DV_J = wp.vec3f(0.0)
+J_DOMEGA_J = wp.vec3f(0.0)
 
 
 @wp.kernel
 def _set_fourbar_body_states(
-    model_joint_bid_B: wp.array[int32],
-    model_joint_bid_F: wp.array[int32],
-    model_joint_B_r_Bj: wp.array[vec3f],
-    model_joint_F_r_Fj: wp.array[vec3f],
-    model_joint_X_Bj: wp.array[mat33f],
-    model_joint_X_Fj: wp.array[mat33f],
-    state_body_q_i: wp.array[transformf],
-    state_body_u_i: wp.array[vec6f],
+    model_joint_bid_B: wp.array[wp.int32],
+    model_joint_bid_F: wp.array[wp.int32],
+    model_joint_B_r_Bj: wp.array[wp.vec3f],
+    model_joint_F_r_Fj: wp.array[wp.vec3f],
+    model_joint_X_Bj: wp.array[wp.mat33f],
+    model_joint_X_Fj: wp.array[wp.mat33f],
+    state_body_q_i: wp.array[wp.transformf],
+    state_body_u_i: wp.array[wp.spatial_vectorf],
 ):
     """
     Set the state of the bodies to a certain values in order to check computations of joint states.
@@ -338,14 +337,14 @@ def _set_fourbar_body_states(
     R_B = wp.quat_to_matrix(q_B)
 
     # Extract the linear and angular velocity of the Base body
-    v_B = screw_linear(u_B)
-    omega_B = screw_angular(u_B)
+    v_B = wp.spatial_top(u_B)
+    omega_B = wp.spatial_bottom(u_B)
 
     # Define the joint rotation offset
     q_x_j = Q_X_J * wp.pow(-1.0, float(jid))  # Alternate sign for each joint
     theta_y_j = THETA_Y_J
     theta_z_j = THETA_Z_J
-    j_dR_j = vec3f(q_x_j, theta_y_j, theta_z_j)  # Joint offset as rotation vector
+    j_dR_j = wp.vec3f(q_x_j, theta_y_j, theta_z_j)  # Joint offset as rotation vector
     q_jq = quat_exp(j_dR_j)  # Joint offset as rotation quaternion
     R_jq = wp.quat_to_matrix(q_jq)  # Joint offset as rotation matrix
 
@@ -372,8 +371,8 @@ def _set_fourbar_body_states(
     v_F_new = R_B_X_j @ j_dv_j + v_B + wp.cross(omega_B, r_Bj) - wp.cross(omega_F_new, r_Fj)
 
     # Offset the pose of the body by a fixed amount
-    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=float32)
-    state_body_u_i[bid_F] = screw(v_F_new, omega_F_new)
+    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=wp.float32)
+    state_body_u_i[bid_F] = wp.spatial_vectorf(*v_F_new, *omega_F_new)
 
 
 def set_fourbar_body_states(model: ModelKamino, data: DataKamino):

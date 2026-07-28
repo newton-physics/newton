@@ -91,11 +91,28 @@ Before investing in an upstream solver contribution, open a GitHub Issue or Disc
 * the long-term maintenance plan and owners;
 * tests, benchmarks, examples, and documentation you expect to provide.
 
-## Adding Simulation Assets
+## Adding Simulation Assets and Tuned Models
 
-* Before proposing to add any assets to the Newton project, make sure that the assets are properly licensed for use and distribution. If you are unsure about the license, open a new discussion.
-* The Newton project hosts possibly large simulation assets such as models, textures, datasets, or pre-trained policies in the [newton-assets](https://github.com/newton-physics/newton-assets) repository to keep the main newton repository small.
-* Therefore, along with a pull request in the main newton repository that relies on new assets, open a corresponding pull request in the [newton-assets](https://github.com/newton-physics/newton-assets) repository.
-* Follow the instructions in the [README](https://github.com/newton-physics/newton-assets) of the newton-assets repository.
+Newton generally does not maintain a library of tuned or verified simulation content, such as actuator models, sensor models, robot models, calibrated material parameters, datasets, or trained policies. These assets are often tied to specific OEM products, firmware versions, calibration processes, validation datasets, or support commitments. They should be owned and maintained by the OEM, lab, or user project that can validate and support them.
+
+Newton's role is to provide the public APIs, capabilities, tooling, workflows, examples, and tests needed for externally maintained models to work with Newton. If Newton is missing functionality that prevents you from building, tuning, validating, or distributing your own model assets, submit a pull request for the required Newton functionality, documentation, examples, or extension points rather than adding the tuned assets themselves to the main Newton repository.
+
+When publishing externally maintained model assets:
+
+* Host them in their own repository or package.
+* Use public Newton APIs only; do not import from `newton._src`.
+* Document ownership, license, supported Newton versions, what was and was not validated, and support expectations.
+* Include tests or validation examples with the external project.
+* Add the `newton-physics` GitHub topic to the repository for discoverability.
+
+The Newton project may host simulation assets in the [newton-assets](https://github.com/newton-physics/newton-assets) repository when they are needed to test, document, or demonstrate Newton's core functionality. The `newton-assets` repository is not a general content library for OEM, lab, or user-maintained tuned models.
+
+For example, a calibrated URDF for a specific robot should live in the maintainer's own repository, while a generic URDF used to test a Newton importer or document a Newton feature may belong in `newton-assets`.
+
+Before proposing to add project-maintained assets:
+
+* Make sure that the assets are properly licensed for use and distribution. If you are unsure about the license, open a new discussion.
+* If a pull request in the main Newton repository relies on new assets, open a corresponding pull request in the [newton-assets](https://github.com/newton-physics/newton-assets) repository.
+* Follow the instructions in the [README](https://github.com/newton-physics/newton-assets) of the `newton-assets` repository.
 * Have a signed CLA on file (see [Legal Requirements](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#legal-requirements)).
-* Have the pull request approved by a [Project Member](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#project-members) and merged into the asset repository.
+* Have the `newton-assets` pull request approved by a [Project Member](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#project-members) and merged into the asset repository.

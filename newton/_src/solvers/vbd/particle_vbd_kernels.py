@@ -12,17 +12,27 @@ The high-level :class:`SolverVBD` interface should remain in
 
 from __future__ import annotations
 
-import numpy as np
 import warp as wp
 
 from newton._src.math import orthonormal_basis
-from newton._src.solvers.vbd.rigid_vbd_kernels import _eval_body_particle_contact, evaluate_body_particle_contact
+from newton._src.solvers.vbd.rigid_vbd_kernels import (
+    _eval_body_particle_contact,
+    _eval_soft_ef_contact,
+    evaluate_body_particle_contact,
+)
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
-from .tri_mesh_collision import (
-    TriMeshCollisionInfo,
+from ...utils.mesh import (
+    MeshAdjacencyData,
+    get_vertex_adjacent_edge_id_order,
+    get_vertex_adjacent_face_id_order,
+    get_vertex_adjacent_tet_id_order,
+    get_vertex_num_adjacent_edges,
+    get_vertex_num_adjacent_faces,
+    get_vertex_num_adjacent_tets,
 )
+from .tri_mesh_collision import TriMeshCollisionInfo
 
 # TODO: Grab changes from Warp that has fixed the backward pass
 wp.set_module_options({"enable_backward": False})
@@ -61,94 +71,6 @@ class mat43(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
 
 class vec9(wp.types.vector(length=9, dtype=wp.float32)):
     pass
-
-
-@wp.struct
-class ParticleForceElementAdjacencyInfo:
-    r"""
-    - vertex_adjacent_[element]: the flatten adjacency information. Its size is \sum_{i\inV} 2*N_i, where N_i is the
-    number of vertex i's adjacent [element]. For each adjacent element it stores 2 information:
-        - the id of the adjacent element
-        - the order of the vertex in the element, which is essential to compute the force and hessian for the vertex
-    - vertex_adjacent_[element]_offsets: stores where each vertex information starts in the  flatten adjacency array.
-    Its size is |V|+1 such that the number of vertex i's adjacent [element] can be computed as
-    vertex_adjacent_[element]_offsets[i+1]-vertex_adjacent_[element]_offsets[i].
-    """
-
-    v_adj_faces: wp.array[int]
-    v_adj_faces_offsets: wp.array[int]
-
-    v_adj_edges: wp.array[int]
-    v_adj_edges_offsets: wp.array[int]
-
-    v_adj_springs: wp.array[int]
-    v_adj_springs_offsets: wp.array[int]
-
-    v_adj_tets: wp.array[int]
-    v_adj_tets_offsets: wp.array[int]
-
-    def to(self, device):
-        if device == self.v_adj_faces.device:
-            return self
-        else:
-            adjacency_gpu = ParticleForceElementAdjacencyInfo()
-            adjacency_gpu.v_adj_faces = self.v_adj_faces.to(device)
-            adjacency_gpu.v_adj_faces_offsets = self.v_adj_faces_offsets.to(device)
-
-            adjacency_gpu.v_adj_edges = self.v_adj_edges.to(device)
-            adjacency_gpu.v_adj_edges_offsets = self.v_adj_edges_offsets.to(device)
-
-            adjacency_gpu.v_adj_springs = self.v_adj_springs.to(device)
-            adjacency_gpu.v_adj_springs_offsets = self.v_adj_springs_offsets.to(device)
-
-            adjacency_gpu.v_adj_tets = self.v_adj_tets.to(device)
-            adjacency_gpu.v_adj_tets_offsets = self.v_adj_tets_offsets.to(device)
-
-            return adjacency_gpu
-
-
-@wp.func
-def get_vertex_num_adjacent_edges(adjacency: ParticleForceElementAdjacencyInfo, vertex: wp.int32):
-    return (adjacency.v_adj_edges_offsets[vertex + 1] - adjacency.v_adj_edges_offsets[vertex]) >> 1
-
-
-@wp.func
-def get_vertex_adjacent_edge_id_order(adjacency: ParticleForceElementAdjacencyInfo, vertex: wp.int32, edge: wp.int32):
-    offset = adjacency.v_adj_edges_offsets[vertex]
-    return adjacency.v_adj_edges[offset + edge * 2], adjacency.v_adj_edges[offset + edge * 2 + 1]
-
-
-@wp.func
-def get_vertex_num_adjacent_faces(adjacency: ParticleForceElementAdjacencyInfo, vertex: wp.int32):
-    return (adjacency.v_adj_faces_offsets[vertex + 1] - adjacency.v_adj_faces_offsets[vertex]) >> 1
-
-
-@wp.func
-def get_vertex_adjacent_face_id_order(adjacency: ParticleForceElementAdjacencyInfo, vertex: wp.int32, face: wp.int32):
-    offset = adjacency.v_adj_faces_offsets[vertex]
-    return adjacency.v_adj_faces[offset + face * 2], adjacency.v_adj_faces[offset + face * 2 + 1]
-
-
-@wp.func
-def get_vertex_num_adjacent_springs(adjacency: ParticleForceElementAdjacencyInfo, vertex: wp.int32):
-    return adjacency.v_adj_springs_offsets[vertex + 1] - adjacency.v_adj_springs_offsets[vertex]
-
-
-@wp.func
-def get_vertex_adjacent_spring_id(adjacency: ParticleForceElementAdjacencyInfo, vertex: wp.int32, spring: wp.int32):
-    offset = adjacency.v_adj_springs_offsets[vertex]
-    return adjacency.v_adj_springs[offset + spring]
-
-
-@wp.func
-def get_vertex_num_adjacent_tets(adjacency: ParticleForceElementAdjacencyInfo, vertex: wp.int32):
-    return (adjacency.v_adj_tets_offsets[vertex + 1] - adjacency.v_adj_tets_offsets[vertex]) >> 1
-
-
-@wp.func
-def get_vertex_adjacent_tet_id_order(adjacency: ParticleForceElementAdjacencyInfo, vertex: wp.int32, tet: wp.int32):
-    offset = adjacency.v_adj_tets_offsets[vertex]
-    return adjacency.v_adj_tets[offset + tet * 2], adjacency.v_adj_tets[offset + tet * 2 + 1]
 
 
 @wp.func
@@ -539,195 +461,8 @@ def compute_cofactor_derivative(F: wp.mat33, scale: float) -> mat99:
 
 
 @wp.kernel
-def _count_num_adjacent_edges(edges_array: wp.array2d[wp.int32], num_vertex_adjacent_edges: wp.array[wp.int32]):
-    for edge_id in range(edges_array.shape[0]):
-        o0 = edges_array[edge_id, 0]
-        o1 = edges_array[edge_id, 1]
-
-        v0 = edges_array[edge_id, 2]
-        v1 = edges_array[edge_id, 3]
-
-        num_vertex_adjacent_edges[v0] = num_vertex_adjacent_edges[v0] + 1
-        num_vertex_adjacent_edges[v1] = num_vertex_adjacent_edges[v1] + 1
-
-        if o0 != -1:
-            num_vertex_adjacent_edges[o0] = num_vertex_adjacent_edges[o0] + 1
-        if o1 != -1:
-            num_vertex_adjacent_edges[o1] = num_vertex_adjacent_edges[o1] + 1
-
-
-@wp.kernel
-def _fill_adjacent_edges(
-    edges_array: wp.array2d[wp.int32],
-    vertex_adjacent_edges_offsets: wp.array[wp.int32],
-    vertex_adjacent_edges_fill_count: wp.array[wp.int32],
-    vertex_adjacent_edges: wp.array[wp.int32],
-):
-    for edge_id in range(edges_array.shape[0]):
-        v0 = edges_array[edge_id, 2]
-        v1 = edges_array[edge_id, 3]
-
-        fill_count_v0 = vertex_adjacent_edges_fill_count[v0]
-        buffer_offset_v0 = vertex_adjacent_edges_offsets[v0]
-        vertex_adjacent_edges[buffer_offset_v0 + fill_count_v0 * 2] = edge_id
-        vertex_adjacent_edges[buffer_offset_v0 + fill_count_v0 * 2 + 1] = 2
-        vertex_adjacent_edges_fill_count[v0] = fill_count_v0 + 1
-
-        fill_count_v1 = vertex_adjacent_edges_fill_count[v1]
-        buffer_offset_v1 = vertex_adjacent_edges_offsets[v1]
-        vertex_adjacent_edges[buffer_offset_v1 + fill_count_v1 * 2] = edge_id
-        vertex_adjacent_edges[buffer_offset_v1 + fill_count_v1 * 2 + 1] = 3
-        vertex_adjacent_edges_fill_count[v1] = fill_count_v1 + 1
-
-        o0 = edges_array[edge_id, 0]
-        if o0 != -1:
-            fill_count_o0 = vertex_adjacent_edges_fill_count[o0]
-            buffer_offset_o0 = vertex_adjacent_edges_offsets[o0]
-            vertex_adjacent_edges[buffer_offset_o0 + fill_count_o0 * 2] = edge_id
-            vertex_adjacent_edges[buffer_offset_o0 + fill_count_o0 * 2 + 1] = 0
-            vertex_adjacent_edges_fill_count[o0] = fill_count_o0 + 1
-
-        o1 = edges_array[edge_id, 1]
-        if o1 != -1:
-            fill_count_o1 = vertex_adjacent_edges_fill_count[o1]
-            buffer_offset_o1 = vertex_adjacent_edges_offsets[o1]
-            vertex_adjacent_edges[buffer_offset_o1 + fill_count_o1 * 2] = edge_id
-            vertex_adjacent_edges[buffer_offset_o1 + fill_count_o1 * 2 + 1] = 1
-            vertex_adjacent_edges_fill_count[o1] = fill_count_o1 + 1
-
-
-@wp.kernel
-def _count_num_adjacent_faces(face_indices: wp.array2d[wp.int32], num_vertex_adjacent_faces: wp.array[wp.int32]):
-    for face in range(face_indices.shape[0]):
-        v0 = face_indices[face, 0]
-        v1 = face_indices[face, 1]
-        v2 = face_indices[face, 2]
-
-        num_vertex_adjacent_faces[v0] = num_vertex_adjacent_faces[v0] + 1
-        num_vertex_adjacent_faces[v1] = num_vertex_adjacent_faces[v1] + 1
-        num_vertex_adjacent_faces[v2] = num_vertex_adjacent_faces[v2] + 1
-
-
-@wp.kernel
-def _fill_adjacent_faces(
-    face_indices: wp.array2d[wp.int32],
-    vertex_adjacent_faces_offsets: wp.array[wp.int32],
-    vertex_adjacent_faces_fill_count: wp.array[wp.int32],
-    vertex_adjacent_faces: wp.array[wp.int32],
-):
-    for face in range(face_indices.shape[0]):
-        v0 = face_indices[face, 0]
-        v1 = face_indices[face, 1]
-        v2 = face_indices[face, 2]
-
-        fill_count_v0 = vertex_adjacent_faces_fill_count[v0]
-        buffer_offset_v0 = vertex_adjacent_faces_offsets[v0]
-        vertex_adjacent_faces[buffer_offset_v0 + fill_count_v0 * 2] = face
-        vertex_adjacent_faces[buffer_offset_v0 + fill_count_v0 * 2 + 1] = 0
-        vertex_adjacent_faces_fill_count[v0] = fill_count_v0 + 1
-
-        fill_count_v1 = vertex_adjacent_faces_fill_count[v1]
-        buffer_offset_v1 = vertex_adjacent_faces_offsets[v1]
-        vertex_adjacent_faces[buffer_offset_v1 + fill_count_v1 * 2] = face
-        vertex_adjacent_faces[buffer_offset_v1 + fill_count_v1 * 2 + 1] = 1
-        vertex_adjacent_faces_fill_count[v1] = fill_count_v1 + 1
-
-        fill_count_v2 = vertex_adjacent_faces_fill_count[v2]
-        buffer_offset_v2 = vertex_adjacent_faces_offsets[v2]
-        vertex_adjacent_faces[buffer_offset_v2 + fill_count_v2 * 2] = face
-        vertex_adjacent_faces[buffer_offset_v2 + fill_count_v2 * 2 + 1] = 2
-        vertex_adjacent_faces_fill_count[v2] = fill_count_v2 + 1
-
-
-@wp.kernel
-def _count_num_adjacent_springs(springs_array: wp.array[wp.int32], num_vertex_adjacent_springs: wp.array[wp.int32]):
-    num_springs = springs_array.shape[0] / 2
-    for spring_id in range(num_springs):
-        v0 = springs_array[spring_id * 2]
-        v1 = springs_array[spring_id * 2 + 1]
-
-        num_vertex_adjacent_springs[v0] = num_vertex_adjacent_springs[v0] + 1
-        num_vertex_adjacent_springs[v1] = num_vertex_adjacent_springs[v1] + 1
-
-
-@wp.kernel
-def _fill_adjacent_springs(
-    springs_array: wp.array[wp.int32],
-    vertex_adjacent_springs_offsets: wp.array[wp.int32],
-    vertex_adjacent_springs_fill_count: wp.array[wp.int32],
-    vertex_adjacent_springs: wp.array[wp.int32],
-):
-    num_springs = springs_array.shape[0] / 2
-    for spring_id in range(num_springs):
-        v0 = springs_array[spring_id * 2]
-        v1 = springs_array[spring_id * 2 + 1]
-
-        fill_count_v0 = vertex_adjacent_springs_fill_count[v0]
-        buffer_offset_v0 = vertex_adjacent_springs_offsets[v0]
-        vertex_adjacent_springs[buffer_offset_v0 + fill_count_v0] = spring_id
-        vertex_adjacent_springs_fill_count[v0] = fill_count_v0 + 1
-
-        fill_count_v1 = vertex_adjacent_springs_fill_count[v1]
-        buffer_offset_v1 = vertex_adjacent_springs_offsets[v1]
-        vertex_adjacent_springs[buffer_offset_v1 + fill_count_v1] = spring_id
-        vertex_adjacent_springs_fill_count[v1] = fill_count_v1 + 1
-
-
-@wp.kernel
-def _count_num_adjacent_tets(tet_indices: wp.array2d[wp.int32], num_vertex_adjacent_tets: wp.array[wp.int32]):
-    for tet in range(tet_indices.shape[0]):
-        v0 = tet_indices[tet, 0]
-        v1 = tet_indices[tet, 1]
-        v2 = tet_indices[tet, 2]
-        v3 = tet_indices[tet, 3]
-
-        num_vertex_adjacent_tets[v0] = num_vertex_adjacent_tets[v0] + 1
-        num_vertex_adjacent_tets[v1] = num_vertex_adjacent_tets[v1] + 1
-        num_vertex_adjacent_tets[v2] = num_vertex_adjacent_tets[v2] + 1
-        num_vertex_adjacent_tets[v3] = num_vertex_adjacent_tets[v3] + 1
-
-
-@wp.kernel
-def _fill_adjacent_tets(
-    tet_indices: wp.array2d[wp.int32],
-    vertex_adjacent_tets_offsets: wp.array[wp.int32],
-    vertex_adjacent_tets_fill_count: wp.array[wp.int32],
-    vertex_adjacent_tets: wp.array[wp.int32],
-):
-    for tet in range(tet_indices.shape[0]):
-        v0 = tet_indices[tet, 0]
-        v1 = tet_indices[tet, 1]
-        v2 = tet_indices[tet, 2]
-        v3 = tet_indices[tet, 3]
-
-        fill_count_v0 = vertex_adjacent_tets_fill_count[v0]
-        buffer_offset_v0 = vertex_adjacent_tets_offsets[v0]
-        vertex_adjacent_tets[buffer_offset_v0 + fill_count_v0 * 2] = tet
-        vertex_adjacent_tets[buffer_offset_v0 + fill_count_v0 * 2 + 1] = 0
-        vertex_adjacent_tets_fill_count[v0] = fill_count_v0 + 1
-
-        fill_count_v1 = vertex_adjacent_tets_fill_count[v1]
-        buffer_offset_v1 = vertex_adjacent_tets_offsets[v1]
-        vertex_adjacent_tets[buffer_offset_v1 + fill_count_v1 * 2] = tet
-        vertex_adjacent_tets[buffer_offset_v1 + fill_count_v1 * 2 + 1] = 1
-        vertex_adjacent_tets_fill_count[v1] = fill_count_v1 + 1
-
-        fill_count_v2 = vertex_adjacent_tets_fill_count[v2]
-        buffer_offset_v2 = vertex_adjacent_tets_offsets[v2]
-        vertex_adjacent_tets[buffer_offset_v2 + fill_count_v2 * 2] = tet
-        vertex_adjacent_tets[buffer_offset_v2 + fill_count_v2 * 2 + 1] = 2
-        vertex_adjacent_tets_fill_count[v2] = fill_count_v2 + 1
-
-        fill_count_v3 = vertex_adjacent_tets_fill_count[v3]
-        buffer_offset_v3 = vertex_adjacent_tets_offsets[v3]
-        vertex_adjacent_tets[buffer_offset_v3 + fill_count_v3 * 2] = tet
-        vertex_adjacent_tets[buffer_offset_v3 + fill_count_v3 * 2 + 1] = 3
-        vertex_adjacent_tets_fill_count[v3] = fill_count_v3 + 1
-
-
-@wp.kernel
 def _test_compute_force_element_adjacency(
-    adjacency: ParticleForceElementAdjacencyInfo,
+    adjacency: MeshAdjacencyData,
     edge_indices: wp.array2d[wp.int32],
     face_indices: wp.array2d[wp.int32],
 ):
@@ -1645,7 +1380,7 @@ def compute_particle_conservative_bound(
     # inputs
     conservative_bound_relaxation: float,
     collision_query_radius: float,
-    adjacency: ParticleForceElementAdjacencyInfo,
+    adjacency: MeshAdjacencyData,
     collision_info: TriMeshCollisionInfo,
     # outputs
     particle_conservative_bounds: wp.array[float],
@@ -1904,190 +1639,6 @@ def accumulate_self_contact_force_and_hessian(
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
 
-def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
-    """Extract CSR row `i` from the flattened adjacency arrays."""
-    return vals[offs[i] : offs[i + 1]]
-
-
-def set_to_csr(
-    list_of_sets: list[set[int]], dtype: np.dtype = np.int32, sort: bool = True
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Convert a list of integer sets into CSR (Compressed Sparse Row) structure.
-    Args:
-        list_of_sets: Iterable where each entry is a set of ints.
-        dtype: Output dtype for the flattened arrays.
-        sort: Whether to sort each row when writing into ``flat``.
-    Returns:
-        A tuple ``(flat, offsets)`` representing the CSR values and offsets.
-    """
-    offsets = np.zeros(len(list_of_sets) + 1, dtype=dtype)
-    sizes = np.fromiter((len(s) for s in list_of_sets), count=len(list_of_sets), dtype=dtype)
-    np.cumsum(sizes, out=offsets[1:])
-    flat = np.empty(offsets[-1], dtype=dtype)
-    idx = 0
-    for s in list_of_sets:
-        if sort:
-            arr = np.fromiter(sorted(s), count=len(s), dtype=dtype)
-        else:
-            arr = np.fromiter(s, count=len(s), dtype=dtype)
-
-        flat[idx : idx + len(arr)] = arr
-        idx += len(arr)
-    return flat, offsets
-
-
-def one_ring_vertices(
-    v: int, edge_indices: np.ndarray, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
-) -> np.ndarray:
-    """
-    Find immediate neighboring vertices that share an edge with vertex `v`.
-    Args:
-        v: Vertex index whose neighborhood is queried.
-        edge_indices: Array of shape [num_edges, 4] storing edge endpoint indices.
-        v_adj_edges: Flattened CSR adjacency array listing edge ids and local order.
-        v_adj_edges_offsets: CSR offsets indexing into `v_adj_edges`.
-    Returns:
-        Sorted array of neighboring vertex indices, excluding `v`.
-    """
-    e_u = edge_indices[:, 2]
-    e_v = edge_indices[:, 3]
-    # preserve only the adjacent edge information, remove the order information
-    inc_edges = _csr_row(v_adj_edges, v_adj_edges_offsets, v)[::2]
-    inc_edges_order = _csr_row(v_adj_edges, v_adj_edges_offsets, v)[1::2]
-    if inc_edges.size == 0:
-        return np.empty(0)
-    us = e_u[inc_edges[np.where(inc_edges_order >= 2)]]
-    vs = e_v[inc_edges[np.where(inc_edges_order >= 2)]]
-
-    assert (np.logical_or(us == v, vs == v)).all()
-    nbrs = np.unique(np.concatenate([us, vs]))
-    return nbrs[nbrs != v]
-
-
-def leq_n_ring_vertices(
-    v: int, edge_indices: np.ndarray, n: int, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
-) -> np.ndarray:
-    """
-    Find all vertices within n-ring distance of vertex v using BFS.
-    Args:
-        v: Starting vertex index
-        edge_indices: Edge connectivity array
-        n: Maximum ring distance
-        v_adj_edges: CSR values for vertex-edge adjacency
-        v_adj_edges_offsets: CSR offsets for vertex-edge adjacency
-    Returns:
-        Array of all vertices within n-ring distance, including v itself
-    """
-    visited = {v}
-    frontier = {v}
-    for _ in range(n):
-        next_frontier = set()
-        for u in frontier:
-            for w in one_ring_vertices(u, edge_indices, v_adj_edges, v_adj_edges_offsets):  # iterable of neighbors of u
-                if w not in visited:
-                    visited.add(w)
-                    next_frontier.add(w)
-        if not next_frontier:
-            break
-        frontier = next_frontier
-    return np.fromiter(visited, dtype=int)
-
-
-def build_vertex_n_ring_tris_collision_filter(
-    n: int,
-    num_vertices: int,
-    edge_indices: np.ndarray,
-    v_adj_edges: np.ndarray,
-    v_adj_edges_offsets: np.ndarray,
-    v_adj_faces: np.ndarray,
-    v_adj_faces_offsets: np.ndarray,
-):
-    """
-    For each vertex v, return ONLY triangles adjacent to v's one ring neighbor vertices.
-    Excludes triangles incident to v itself (dist 0).
-    Returns:
-      v_two_flat, v_two_offs: CSR of strict-2-ring triangle ids per vertex
-    """
-
-    if n <= 1:
-        return None, None
-
-    v_nei_tri_sets = [set() for _ in range(num_vertices)]
-
-    for v in range(num_vertices):
-        # distance-1 vertices
-
-        if n == 2:
-            ring_n_minus_1 = one_ring_vertices(v, edge_indices, v_adj_edges, v_adj_edges_offsets)
-        else:
-            ring_n_minus_1 = leq_n_ring_vertices(v, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
-
-        ring_1_tri_set = set(_csr_row(v_adj_faces, v_adj_faces_offsets, v)[::2])
-
-        nei_tri_set = v_nei_tri_sets[v]
-        for w in ring_n_minus_1:
-            if w != v:
-                # preserve only the adjacent edge information, remove the order information
-                nei_tri_set.update(_csr_row(v_adj_faces, v_adj_faces_offsets, w)[::2])
-
-        nei_tri_set.difference_update(ring_1_tri_set)
-
-    return v_nei_tri_sets
-
-
-def build_edge_n_ring_edge_collision_filter(
-    n: int,
-    edge_indices: np.ndarray,
-    v_adj_edges: np.ndarray,
-    v_adj_edges_offsets: np.ndarray,
-):
-    """
-    For each vertex v, return ONLY triangles adjacent to v's one ring neighbor vertices.
-    Excludes triangles incident to v itself (dist 0).
-    Returns:
-      v_two_flat, v_two_offs: CSR of strict-2-ring triangle ids per vertex
-    """
-
-    if n <= 1:
-        return None, None
-
-    edge_nei_edge_sets = [set() for _ in range(edge_indices.shape[0])]
-
-    for e_idx in range(edge_indices.shape[0]):
-        # distance-1 vertices
-        v1 = edge_indices[e_idx, 2]
-        v2 = edge_indices[e_idx, 3]
-
-        if n == 2:
-            ring_n_minus_1_v1 = one_ring_vertices(v1, edge_indices, v_adj_edges, v_adj_edges_offsets)
-            ring_n_minus_1_v2 = one_ring_vertices(v2, edge_indices, v_adj_edges, v_adj_edges_offsets)
-        else:
-            ring_n_minus_1_v1 = leq_n_ring_vertices(v1, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
-            ring_n_minus_1_v2 = leq_n_ring_vertices(v2, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
-
-        all_neighbors = set(ring_n_minus_1_v1)
-        all_neighbors.update(ring_n_minus_1_v2)
-
-        ring_1_edge_set = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v1)[::2])
-        ring_2_edge_set = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v2)[::2])
-
-        nei_edge_set = edge_nei_edge_sets[e_idx]
-        for w in all_neighbors:
-            if w != v1 and w != v2:
-                # preserve only the adjacent edge information, remove the order information
-                # nei_tri_set.update(_csr_row(v_adj_faces, v_adj_faces_offsets, w)[::2])
-                adj_edges = _csr_row(v_adj_edges, v_adj_edges_offsets, w)[::2]
-                adj_edges_order = _csr_row(v_adj_edges, v_adj_edges_offsets, w)[1::2]
-                adj_collision_edges = adj_edges[np.where(adj_edges_order >= 2)]
-                nei_edge_set.update(adj_collision_edges)
-
-        nei_edge_set.difference_update(ring_1_edge_set)
-        nei_edge_set.difference_update(ring_2_edge_set)
-
-    return edge_nei_edge_sets
-
-
 @wp.func
 def evaluate_spring_force_and_hessian(
     particle_idx: int,
@@ -2261,6 +1812,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -2297,6 +1849,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                shape_margin,
                 dt,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
@@ -2744,7 +2297,7 @@ def accumulate_particle_body_contact_force_and_hessian(
     # body-particle contact
     friction_epsilon: float,
     particle_radius: wp.array[float],
-    body_particle_contact_particle: wp.array[int],
+    body_particle_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_count: wp.array[int],
     body_particle_contact_max: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
@@ -2752,7 +2305,6 @@ def accumulate_particle_body_contact_force_and_hessian(
     body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
-    shape_material_mu: wp.array[float],
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
@@ -2762,23 +2314,34 @@ def accumulate_particle_body_contact_force_and_hessian(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    # Barycentric weights on each record's soft particles; (1, 0, 0) for a particle contact.
+    contact_barycentric: wp.array[wp.vec3],
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
 
-    particle_body_contact_count = min(body_particle_contact_max, body_particle_contact_count[0])
+    # One unified soft-contact stream. body_particle_contact_count[0] is the total soft-contact count;
+    # each record self-describes via its -1-padded corner ids: (p, -1, -1) is a particle contact,
+    # (v0, v1, -1) an edge, (v0, v1, v2) a face. A contact energy E(x) at x = sum_i bary[i]*pos[c_i]
+    # contributes bary[i]*force to corner i and bary[i]^2*hessian to its block. VBD solves one color
+    # per launch, so only scatter to this record's corners of the active color.
+    count = min(body_particle_contact_max, body_particle_contact_count[0])
+    if t_id >= count:
+        return
 
-    if t_id < particle_body_contact_count:
-        particle_idx = body_particle_contact_particle[t_id]
+    corners = body_particle_contact_indices[t_id]
+    # Per-contact AVBD penalty + material properties shared with the rigid side.
+    contact_ke = body_particle_contact_penalty_k[t_id]
+    contact_kd = body_particle_contact_material_kd[t_id]
+    contact_mu = body_particle_contact_material_mu[t_id]
 
+    if corners[1] < 0:
+        # Particle contact (p, -1, -1): single-vertex path, unchanged from the pre-unification code.
+        particle_idx = corners[0]
         if particle_colors[particle_idx] == current_color:
-            # Read per-contact AVBD penalty and material properties shared with the rigid side
-            contact_ke = body_particle_contact_penalty_k[t_id]
-            contact_kd = body_particle_contact_material_kd[t_id]
-            contact_mu = body_particle_contact_material_mu[t_id]
-
             body_contact_force, body_contact_hessian = _eval_body_particle_contact(
                 particle_idx,
                 pos[particle_idx],
@@ -2798,10 +2361,44 @@ def accumulate_particle_body_contact_force_and_hessian(
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                shape_margin,
                 dt,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
+    else:
+        # Edge/face contact: barycentric point over the record's 2-3 soft particles.
+        bary = contact_barycentric[t_id]
+        ef_force, ef_hessian, _cp_world = _eval_soft_ef_contact(
+            t_id,
+            corners,
+            bary,
+            pos,
+            pos_anchor,
+            particle_radius,
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            friction_epsilon,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            contact_shape,
+            contact_body_pos,
+            contact_body_vel,
+            contact_normal,
+            shape_margin,
+            dt,
+        )
+        for i in range(3):
+            ci = corners[i]
+            if ci >= 0:
+                w = bary[i]
+                if particle_colors[ci] == current_color:
+                    wp.atomic_add(particle_forces, ci, w * ef_force)
+                    wp.atomic_add(particle_hessians, ci, (w * w) * ef_hessian)
 
 
 @wp.kernel
@@ -2824,7 +2421,7 @@ def solve_elasticity_tile(
     tet_indices: wp.array2d[wp.int32],
     tet_poses: wp.array[wp.mat33],
     tet_materials: wp.array2d[float],
-    particle_adjacency: ParticleForceElementAdjacencyInfo,
+    particle_adjacency: MeshAdjacencyData,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
     # output
@@ -2843,14 +2440,13 @@ def solve_elasticity_tile(
     dt_sqr_reciprocal = 1.0 / (dt * dt)
 
     # elastic force and hessian
-    num_adj_faces = get_vertex_num_adjacent_faces(particle_adjacency, particle_index)
-
     f = wp.vec3(0.0)
     h = wp.mat33(0.0)
 
     batch_counter = wp.int32(0)
 
-    if tri_indices:
+    if tri_indices.shape[0] > 0:
+        num_adj_faces = get_vertex_num_adjacent_faces(particle_adjacency, particle_index)
         # loop through all the adjacent triangles using whole block
         while batch_counter + thread_idx < num_adj_faces:
             adj_tri_counter = thread_idx + batch_counter
@@ -2894,7 +2490,7 @@ def solve_elasticity_tile(
                 f += f_tri
                 h += h_tri
 
-    if edge_indices:
+    if edge_indices.shape[0] > 0:
         batch_counter = wp.int32(0)
         num_adj_edges = get_vertex_num_adjacent_edges(particle_adjacency, particle_index)
         while batch_counter + thread_idx < num_adj_edges:
@@ -2920,7 +2516,7 @@ def solve_elasticity_tile(
                 f += f_edge
                 h += h_edge
 
-    if tet_indices:
+    if tet_indices.shape[0] > 0:
         # solve tet elasticity
         batch_counter = wp.int32(0)
         num_adj_tets = get_vertex_num_adjacent_tets(particle_adjacency, particle_index)
@@ -2989,7 +2585,7 @@ def solve_elasticity(
     tet_indices: wp.array2d[wp.int32],
     tet_poses: wp.array[wp.mat33],
     tet_materials: wp.array2d[float],
-    particle_adjacency: ParticleForceElementAdjacencyInfo,
+    particle_adjacency: MeshAdjacencyData,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
     # output
@@ -3017,7 +2613,7 @@ def solve_elasticity(
             f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
         )
 
-    if tri_indices:
+    if tri_indices.shape[0] > 0:
         # elastic force and hessian
         for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
             tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
@@ -3056,7 +2652,7 @@ def solve_elasticity(
                 f = f + f_tri
                 h = h + h_tri
 
-    if edge_indices:
+    if edge_indices.shape[0] > 0:
         for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
             nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(particle_adjacency, particle_index, i_adj_edge)
             # vertex is on the edge; otherwise it only effects the bending energy n
@@ -3069,7 +2665,7 @@ def solve_elasticity(
                 f = f + f_edge
                 h = h + h_edge
 
-    if tet_indices:
+    if tet_indices.shape[0] > 0:
         # solve tet elasticity
         num_adj_tets = get_vertex_num_adjacent_tets(particle_adjacency, particle_index)
         for adj_tet_counter in range(num_adj_tets):
@@ -3143,6 +2739,7 @@ def accumulate_contact_force_and_hessian(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -3294,6 +2891,7 @@ def accumulate_contact_force_and_hessian(
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                shape_margin,
                 dt,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)

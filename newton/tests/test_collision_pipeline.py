@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
+from collections import Counter
 from enum import IntFlag, auto
 
 import numpy as np
@@ -11,12 +13,39 @@ import warp.examples
 import newton
 from newton import GeoType
 from newton._src.geometry import create_mesh_terrain
-from newton._src.geometry.flags import ParticleFlags, ShapeFlags
-from newton._src.geometry.kernels import create_soft_contacts, mesh_sdf
-from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
+from newton._src.geometry.flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
+from newton._src.geometry.kernels import (
+    create_soft_contacts,
+    mesh_sdf,
+    resolve_mesh_sign_method,
+)
+from newton._src.geometry.sdf_texture import TextureSDFData
+from newton._src.geometry.soft_contacts_sdf import (
+    SDF_EDGE_ITERS,
+    SDF_FACE_ITERS,
+    SDF_LS_ITERS,
+    _is_analytic,
+    _shape_frames,
+    eval_shape_sdf,
+    launch_soft_ef_contacts,
+    optimize_edge_sdf,
+    optimize_face_sdf,
+)
+from newton._src.sim.collide import (
+    CollisionPipeline,
+    _build_soft_edge_rigid_contact_pairs,
+    _build_soft_face_rigid_contact_pairs,
+    _compute_per_world_shape_pairs_max,
+    _estimate_rigid_contact_max,
+)
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    configure_sdf_for_collision_shapes,
+    get_cuda_test_devices,
+    get_test_devices,
+)
 
 
 class TestLevel(IntFlag):
@@ -72,7 +101,7 @@ class CollisionSetup:
         self.sdf_max_resolution_b = sdf_max_resolution_b
         self._device = device
 
-        self.builder = newton.ModelBuilder(gravity=0.0)
+        self.builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Set contact margin to match previous test expectations
         # Note: margins are now summed (margin_a + margin_b), so we use half the previous value
         self.builder.rigid_gap = 0.005
@@ -216,7 +245,84 @@ devices = get_cuda_test_devices(mode="basic")
 
 
 class TestCollisionPipeline(unittest.TestCase):
-    pass
+    def test_model_collision_helpers_deprecated(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            contacts = model.contacts(collision_pipeline=pipeline)
+            returned_contacts = model.collide(state, contacts, collision_pipeline=pipeline)
+
+        self.assertIs(returned_contacts, contacts)
+        self.assertIs(model._collision_pipeline, pipeline)
+        self.assertEqual(len(caught), 2)
+        self.assertTrue(all(item.category is DeprecationWarning for item in caught))
+        self.assertTrue(all(item.filename == __file__ for item in caught))
+        self.assertIn("pipeline.contacts()", str(caught[0].message))
+        self.assertIn("pipeline.collide(state, contacts)", str(caught[1].message))
+
+    def test_deprecated_model_collide_allocates_contacts(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+
+        with self.assertWarnsRegex(DeprecationWarning, r"pipeline\.collide"):
+            contacts = model.collide(model.state())
+
+        self.assertIsInstance(contacts, newton.Contacts)
+
+    def test_soft_contact_max_zero_disables_soft_contact_generation(self):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_ground_plane()
+        builder.add_particle(pos=(0.0, 0.0, 0.025), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
+        model = builder.finalize(device="cpu")
+        state = model.state()
+
+        enabled_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1)
+        enabled_contacts = enabled_pipeline.contacts()
+        enabled_pipeline.collide(state, enabled_contacts)
+        self.assertGreater(int(enabled_contacts.soft_contact_count.numpy()[0]), 0)
+
+        disabled_pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            soft_contact_max=0,
+            soft_contact_margin=0.1,
+        )
+        disabled_contacts = disabled_pipeline.contacts()
+        disabled_pipeline.collide(state, disabled_contacts)
+
+        self.assertEqual(disabled_contacts.soft_contact_max, 0)
+        self.assertEqual(int(disabled_contacts.soft_contact_count.numpy()[0]), 0)
+
+
+def test_collision_pipeline_first_call_capture(test, device):
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+    builder.add_shape_sphere(body, radius=1.0)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state = model.state()
+
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(state, contacts)
+
+    wp.capture_launch(capture.graph)
+    test.assertGreater(contacts.rigid_contact_count.numpy()[0], 0)
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_collision_pipeline_first_call_capture",
+    test_collision_pipeline_first_call_capture,
+    devices=get_cuda_test_devices(mode="basic"),
+)
 
 
 # Collision pipeline tests - now supports both MESH and CONVEX_MESH
@@ -454,6 +560,69 @@ for mode_name, test_func in mesh_mesh_sdf_tests:
         )
 
 
+def test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage(test, device):
+    """Texture-SDF uncertainty keeps near-margin contacts in the preferred reduction tier."""
+    vertices = np.array(
+        [
+            [-0.10, -0.10, 0.50005],
+            [0.10, -0.10, 0.50005],
+            [0.00, 0.10, 0.50005],
+            [0.15, -0.10, 0.50500],
+            [0.35, -0.10, 0.50500],
+            [0.25, 0.10, 0.50500],
+        ],
+        dtype=np.float32,
+    )
+    probe_mesh = newton.Mesh(vertices, np.arange(6, dtype=np.int32), compute_inertia=False)
+    sdf_mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    sdf_mesh.build_sdf(max_resolution=64, device=device)
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, gap=0.01, margin=0.0)
+    builder.add_shape_mesh(body, mesh=probe_mesh, cfg=cfg)
+    builder.add_shape_mesh(-1, mesh=sdf_mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        deterministic=True,
+        rigid_contact_max=128,
+        max_triangle_pairs=128,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    points = contacts.rigid_contact_point0.numpy()[:count]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    top_face_points = points[normals[:, 2] < -0.99]
+
+    # All three directional representatives from the near-margin triangle must
+    # survive. With an exact zero-width inner tier, only two survive and the
+    # positive-X representative flickers into the gap-only outer tier.
+    near_margin_points = top_face_points[top_face_points[:, 2] < 0.501]
+    test.assertEqual(len(near_margin_points), 3)
+    test.assertTrue(np.any(near_margin_points[:, 0] > 0.09))
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage",
+    test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage,
+    devices=devices,
+)
+
+
 # ============================================================================
 # Mesh sign query regressions
 # ============================================================================
@@ -477,12 +646,8 @@ def _query_mesh_signs(
     parity = wp.mesh_query_point_sign_parity(mesh, p, max_dist)
     parity_sign[i] = parity.sign if parity.result else 0.0
 
-    sign = float(0.0)
-    face = int(0)
-    u = float(0.0)
-    v = float(0.0)
-    normal_hit = wp.mesh_query_point_sign_normal(mesh, p, max_dist, sign, face, u, v)
-    normal_sign[i] = sign if normal_hit else 0.0
+    normal = wp.mesh_query_point_sign_normal(mesh, p, max_dist)
+    normal_sign[i] = normal.sign if normal.result else 0.0
 
 
 @wp.kernel
@@ -494,6 +659,15 @@ def _query_mesh_sdf(
 ):
     i = wp.tid()
     distances[i] = mesh_sdf(mesh, points[i], max_dist)
+
+
+@wp.kernel
+def _resolve_mesh_sign_methods(
+    mesh_properties: wp.array[wp.int32],
+    methods: wp.array[wp.int32],
+):
+    i = wp.tid()
+    methods[i] = resolve_mesh_sign_method(mesh_properties[i])
 
 
 @wp.func
@@ -641,6 +815,59 @@ def _sample_thin_gap_points(sample_count: int = 8192) -> np.ndarray:
     return points
 
 
+def _make_open_square() -> tuple[np.ndarray, np.ndarray]:
+    vertices = np.array(
+        [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    return vertices, faces
+
+
+def _make_open_box() -> tuple[np.ndarray, np.ndarray]:
+    """Unit box centered at the origin with the +z (top) face removed.
+
+    A non-watertight mesh whose interior is still well defined below the
+    opening: parity ray-casts leak out through the missing face and wrongly sign
+    points near the opening, whereas the pseudo-normal stays correct.
+    """
+    vertices = np.array(
+        [
+            [-0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5],
+            [0.5, 0.5, -0.5],
+            [-0.5, 0.5, -0.5],
+            [-0.5, -0.5, 0.5],
+            [0.5, -0.5, 0.5],
+            [0.5, 0.5, 0.5],
+            [-0.5, 0.5, 0.5],
+        ],
+        dtype=np.float32,
+    )
+    # Outward-facing (CCW) triangles for every face except the top (4, 5, 6, 7).
+    faces = np.array(
+        [
+            [0, 2, 1],
+            [0, 3, 2],  # -z
+            [0, 1, 5],
+            [0, 5, 4],  # -y
+            [1, 2, 6],
+            [1, 6, 5],  # +x
+            [2, 3, 7],
+            [2, 7, 6],  # +y
+            [3, 0, 4],
+            [3, 4, 7],  # -x
+        ],
+        dtype=np.int32,
+    )
+    return vertices, faces
+
+
 def test_mixed_winding_convex_pile_contact_normal(test, device):
     vertices, faces = _make_mixed_winding_convex_pile_proxy()
     mesh = _make_warp_mesh(vertices, faces, device)
@@ -657,16 +884,20 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
 
     soft_contact_count = wp.zeros(1, dtype=wp.int32, device=device)
     soft_contact_particle = wp.empty(1, dtype=wp.int32, device=device)
+    soft_contact_indices = wp.empty(1, dtype=wp.vec3i, device=device)
+    soft_contact_barycentric = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_shape = wp.empty(1, dtype=wp.int32, device=device)
     soft_contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_tids = wp.empty(1, dtype=wp.int32, device=device)
+    soft_rigid_contact_pairs = wp.array([wp.vec2i(0, 0)], dtype=wp.vec2i, device=device)
 
     wp.launch(
         create_soft_contacts,
         dim=1,
         inputs=[
+            soft_rigid_contact_pairs,
             points,
             wp.array([0.05], dtype=wp.float32, device=device),
             wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),
@@ -677,9 +908,11 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             wp.array([int(GeoType.CONVEX_MESH)], dtype=wp.int32, device=device),
             wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
             wp.array([mesh.id], dtype=wp.uint64, device=device),
+            # Tagged watertight so the sign method resolves to parity.
+            wp.array([int(MeshProperties.WATERTIGHT)], dtype=wp.int32, device=device),
             wp.array([-1], dtype=wp.int32, device=device),
             0.0,
-            1,
+            wp.array([0.0], dtype=wp.float32, device=device),
             1,
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
@@ -689,6 +922,8 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
         outputs=[
             soft_contact_count,
             soft_contact_particle,
+            soft_contact_indices,
+            soft_contact_barycentric,
             soft_contact_shape,
             soft_contact_body_pos,
             soft_contact_body_vel,
@@ -766,6 +1001,171 @@ def test_parity_sign_accuracy_exceeds_normal_query(test, device):
     )
 
 
+class _CountingMesh(newton.Mesh):
+    """Mesh subclass that counts reads of its ``is_watertight`` property."""
+
+    watertight_query_count = 0
+
+    @property
+    def is_watertight(self):
+        self.watertight_query_count += 1
+        return super().is_watertight
+
+
+def test_model_mesh_properties_track_watertight(test, device):
+    open_vertices, open_faces = _make_open_square()
+    closed_vertices, closed_faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+
+    open_mesh = newton.Mesh(open_vertices, open_faces, compute_inertia=False)
+    closed_mesh = _CountingMesh(closed_vertices, closed_faces, compute_inertia=False)
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    open_shape = builder.add_shape_mesh(body=-1, mesh=open_mesh)
+    closed_shape = builder.add_shape_mesh(body=-1, mesh=closed_mesh)
+    model = builder.finalize(device=device)
+
+    mesh_properties = model._shape_mesh_properties.numpy()
+    test.assertFalse(int(mesh_properties[open_shape]) & MeshProperties.WATERTIGHT)
+    test.assertTrue(int(mesh_properties[closed_shape]) & MeshProperties.WATERTIGHT)
+    test.assertEqual(closed_mesh.watertight_query_count, 1)
+
+    CollisionPipeline(model)
+    test.assertEqual(closed_mesh.watertight_query_count, 1)
+
+
+def test_visual_only_mesh_properties_skip_watertight_query(test, device):
+    vertices, faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+
+    mesh = _CountingMesh(vertices, faces, compute_inertia=False)
+    cfg = newton.ModelBuilder.ShapeConfig(
+        density=0.0,
+        has_shape_collision=False,
+        has_particle_collision=False,
+        is_visible=True,
+    )
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    shape = builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    mesh_properties = model._shape_mesh_properties.numpy()
+    test.assertFalse(int(mesh_properties[shape]) & MeshProperties.WATERTIGHT)
+    test.assertEqual(mesh.watertight_query_count, 0)
+
+
+def test_resolve_mesh_sign_method_from_properties(test, device):
+    """The runtime sign method is a pure function of the stored mesh
+    properties: parity for watertight meshes, pseudo-normal otherwise."""
+    mesh_properties = wp.array([0, int(MeshProperties.WATERTIGHT)], dtype=wp.int32, device=device)
+    methods = wp.empty(2, dtype=wp.int32, device=device)
+
+    wp.launch(_resolve_mesh_sign_methods, dim=2, inputs=[mesh_properties, methods], device=device)
+
+    methods_np = methods.numpy()
+    test.assertEqual(int(methods_np[0]), MeshSignMethod.NORMAL)
+    test.assertEqual(int(methods_np[1]), MeshSignMethod.PARITY)
+
+
+def test_build_sdf_sign_method_passthrough(test, device):
+    """Mesh.build_sdf forwards sign_method to SDF.create_from_mesh."""
+    vertices, faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+    mesh = newton.Mesh(vertices, faces, compute_inertia=False)
+
+    with test.assertRaisesRegex(ValueError, "sign_method"):
+        mesh.build_sdf(max_resolution=8, sign_method="bogus", device=device)
+
+    mesh.build_sdf(max_resolution=8, sign_method="normal", device=device)
+    test.assertIsNotNone(mesh.sdf)
+
+
+def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties: int) -> np.ndarray:
+    """Run ``create_soft_contacts`` for one particle against an open-box mesh and
+    return the resulting world-space contact normal (asserting a hit)."""
+    count = wp.zeros(1, dtype=wp.int32, device=device)
+    contact_particle = wp.empty(1, dtype=wp.int32, device=device)
+    contact_indices = wp.empty(1, dtype=wp.vec3i, device=device)
+    contact_barycentric = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_shape = wp.empty(1, dtype=wp.int32, device=device)
+    contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_tids = wp.empty(1, dtype=wp.int32, device=device)
+    wp.launch(
+        create_soft_contacts,
+        dim=1,
+        inputs=[
+            wp.array([wp.vec2i(0, 0)], dtype=wp.vec2i, device=device),
+            points,
+            wp.array([0.4], dtype=wp.float32, device=device),
+            wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=wp.transform, device=device),
+            wp.array([wp.transform()], dtype=wp.transform, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.array([int(GeoType.MESH)], dtype=wp.int32, device=device),
+            wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
+            wp.array([mesh_id], dtype=wp.uint64, device=device),
+            wp.array([mesh_properties], dtype=wp.int32, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            0.0,
+            wp.array([0.0], dtype=wp.float32, device=device),
+            1,
+            wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=HeightfieldData, device=device),
+            wp.empty(0, dtype=wp.float32, device=device),
+        ],
+        outputs=[
+            count,
+            contact_particle,
+            contact_indices,
+            contact_barycentric,
+            contact_shape,
+            contact_body_pos,
+            contact_body_vel,
+            contact_normal,
+            contact_tids,
+        ],
+        device=device,
+    )
+    test.assertEqual(int(count.numpy()[0]), 1)
+    return np.asarray(contact_normal.numpy()[0], dtype=np.float32)
+
+
+def test_open_mesh_soft_contact_uses_normal_sign(test, device):
+    """End-to-end soft contact against an open (non-watertight) mesh.
+
+    Reproduces issue #3242 at the contact level: a particle just below the
+    missing top face of an open box is signed incorrectly by parity (its ray
+    leaks out through the opening), which inverts the contact response. The
+    automatically selected normal method signs it correctly; a mesh wrongly
+    tagged watertight resolves to parity and flips the contact normal to the
+    opposite direction.
+    """
+    vertices, faces = _make_open_box()
+    mesh = _make_warp_mesh(vertices, faces, device)
+
+    # Interior point near the opening whose unique closest wall is +x at x=0.5.
+    points = wp.array(np.array([[0.25, 0.0, 0.3]], dtype=np.float32), dtype=wp.vec3, device=device)
+
+    parity_sign = wp.zeros(1, dtype=wp.float32, device=device)
+    normal_sign = wp.zeros(1, dtype=wp.float32, device=device)
+    wp.launch(_query_mesh_signs, dim=1, inputs=[mesh.id, points, 10.0, parity_sign, normal_sign], device=device)
+    # Parity wrongly signs the interior point as outside; normal correctly reports inside.
+    test.assertGreater(float(parity_sign.numpy()[0]), 0.0)
+    test.assertLess(float(normal_sign.numpy()[0]), 0.0)
+
+    # Open mesh (mesh_properties = 0) -> normal method: the contact normal
+    # points out through the nearest wall (+x), which is correct.
+    auto_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, 0)
+    test.assertGreater(float(np.dot(auto_normal, np.array([1.0, 0.0, 0.0], dtype=np.float32))), 0.99)
+
+    # A mesh wrongly tagged watertight resolves to parity, which inverts the
+    # sign and therefore the contact normal.
+    parity_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, int(MeshProperties.WATERTIGHT))
+    test.assertLess(float(np.dot(auto_normal, parity_normal)), -0.99)
+
+
 add_function_test(
     TestMeshSignQueries,
     "test_mixed_winding_convex_pile_contact_normal",
@@ -775,8 +1175,43 @@ add_function_test(
 )
 add_function_test(
     TestMeshSignQueries,
+    "test_open_mesh_soft_contact_uses_normal_sign",
+    test_open_mesh_soft_contact_uses_normal_sign,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_build_sdf_sign_method_passthrough",
+    test_build_sdf_sign_method_passthrough,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
     "test_parity_sign_accuracy_exceeds_normal_query",
     test_parity_sign_accuracy_exceeds_normal_query,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_model_mesh_properties_track_watertight",
+    test_model_mesh_properties_track_watertight,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_visual_only_mesh_properties_skip_watertight_query",
+    test_visual_only_mesh_properties_skip_watertight_query,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_resolve_mesh_sign_method_from_properties",
+    test_resolve_mesh_sign_method_from_properties,
     devices=devices,
     check_output=False,
 )
@@ -800,7 +1235,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         broad_phase: Broad phase algorithm to test (NXN or SAP).
     """
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = 0.01
         # Two overlapping spheres (same position so they definitely overlap)
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
@@ -852,7 +1287,7 @@ def test_collision_filter_consistent_across_broadphases(test, device):
     EXPLICIT, NXN, and SAP all report exactly the same set of contacting shape pairs.
     """
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = 0.01
 
         # Three overlapping spheres at the same position
@@ -947,7 +1382,7 @@ def test_rigid_contact_normal_sphere_sphere(test, device, broad_phase: str):
         y_offsets = [0.0, 3.0, 6.0, 9.0]
         expect_contact = [True, True, True, False]
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = gap
 
         positions = []
@@ -1124,10 +1559,179 @@ for bp_name in ("explicit", "nxn", "sap"):
 
 
 class TestParticleShapeContacts(unittest.TestCase):
-    pass
+    def _assert_pairs_valid(self, model, pipeline):
+        # Pairs are a world-compatible superset over all particles/shapes; ACTIVE / COLLIDE_PARTICLES
+        # are filtered dynamically in create_soft_contacts, so only world compatibility is asserted.
+        pw = model.particle_world.numpy()
+        sw = model.shape_world.numpy()
+        for p, s in pipeline.soft_rigid_contact_pairs.numpy():
+            self.assertTrue(pw[p] == sw[s] or pw[p] < 0 or sw[s] < 0, f"cross-world pair ({p}, {s})")
+
+    def test_soft_rigid_pairs_multi_world_isolated(self):
+        sub = newton.ModelBuilder()
+        sub.add_shape_sphere(body=-1, radius=1.0)
+        sub.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        builder = newton.ModelBuilder()
+        builder.add_world(sub)
+        builder.add_world(sub)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+
+        # Two worlds, each one active particle x one particle-colliding shape; no cross-world pairs.
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
+        self._assert_pairs_valid(model, pipeline)
+
+    def test_soft_contacts_respect_active_and_collide_flags(self):
+        # Pairs are a world-compatible superset (flags are not baked in); create_soft_contacts applies
+        # ACTIVE / COLLIDE_PARTICLES dynamically, so only the active particle x the particle-colliding
+        # shape actually produces a contact.
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()  # collides with particles (default)
+        builder.add_shape_sphere(body=-1, radius=1.0, cfg=newton.ModelBuilder.ShapeConfig(has_particle_collision=False))
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)  # active
+        builder.add_particle(pos=wp.vec3(0.1, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0, flags=0)  # inactive
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+
+        # 2 particles x 2 shapes, all in the global world -> 4 candidate pairs regardless of flags.
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 4)
+        self._assert_pairs_valid(model, pipeline)
+
+        pipeline.collide(model.state(), contacts)
+        # Only (active particle, particle-colliding ground) survives the dynamic flag checks.
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 1)
+
+    def test_soft_contacts_track_runtime_flag_changes(self):
+        # Regression: pairs are precomputed once, so a particle activated *after* the pipeline is built
+        # must still produce a contact (flags are filtered dynamically, not baked into the pair list).
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0, flags=0)  # inactive
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+
+        # The candidate pair is cached even though the particle is inactive at construction.
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 1)
+        pipeline.collide(model.state(), contacts)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
+
+        # Activate the particle at runtime -> the contact appears without rebuilding the pipeline.
+        flags = model.particle_flags.numpy()
+        flags[0] = int(ParticleFlags.ACTIVE)
+        model.particle_flags.assign(flags)
+        pipeline.collide(model.state(), contacts)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 1)
+
+    def test_soft_contact_capacity_defaults_to_pair_count(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.5, -0.5, 0.05),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.2,
+            cell_y=0.2,
+            mass=0.1,
+        )
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+
+        self.assertEqual(pipeline.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
+        self.assertEqual(contacts.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
+
+    def test_soft_contact_explicit_capacity_is_respected(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_max=1)
+
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 1)
+        self.assertEqual(pipeline.soft_contact_max, 1)
+
+    def test_soft_contact_explicit_capacity_overflow_still_counts_candidates(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        builder.add_particle(pos=wp.vec3(0.1, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_max=1)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
+        self.assertEqual(contacts.soft_contact_max, 1)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
+
+    def test_soft_contacts_skip_cross_world_shape_particle_pairs(self):
+        particle_builder = newton.ModelBuilder()
+        particle_builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+        shape_builder = newton.ModelBuilder()
+        shape_builder.add_shape_sphere(body=-1, radius=1.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_world(particle_builder)
+        builder.add_world(shape_builder)
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 0)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
+
+    def test_global_shape_contacts_particles_in_all_worlds(self):
+        particle_builder = newton.ModelBuilder()
+        particle_builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_world(particle_builder)
+        builder.add_world(particle_builder)
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
 
 
 class TestContactEstimator(unittest.TestCase):
+    def test_visual_only_meshes_do_not_inflate_estimate(self):
+        """Visual meshes should not affect rigid contact capacity estimates."""
+        model = newton.Model()
+        model.world_count = 1
+        model.shape_contact_pair_count = 0
+
+        shape_type = np.array(
+            [int(GeoType.BOX)] * 4 + [int(GeoType.MESH)] * 100,
+            dtype=np.int32,
+        )
+        shape_world = np.zeros(len(shape_type), dtype=np.int32)
+        shape_flags = np.array(
+            [int(ShapeFlags.COLLIDE_SHAPES)] * 4 + [int(ShapeFlags.VISIBLE)] * 100,
+            dtype=np.int32,
+        )
+
+        model.shape_type = wp.array(shape_type, dtype=wp.int32)
+        model.shape_world = wp.array(shape_world, dtype=wp.int32)
+        model.shape_flags = wp.array(shape_flags, dtype=wp.int32)
+
+        estimate = _estimate_rigid_contact_max(model)
+        self.assertEqual(estimate, 1000)
+
     def test_heuristic_caps_large_pair_count(self):
         """When pair count is huge, the heuristic provides a tighter bound."""
         model = newton.Model()
@@ -1309,6 +1913,36 @@ class TestShapePairsMaxScaling(unittest.TestCase):
                 f"broad_phase={bp_mode}: shape_pairs_max must not be quadratic",
             )
 
+    def test_visual_only_mesh_does_not_enable_mesh_narrow_phase(self):
+        """Visual meshes should not opt the pipeline into mesh contact kernels."""
+        builder = newton.ModelBuilder()
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.0), wp.quat_identity()))
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(body=body_a, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body_b, hx=0.1, hy=0.1, hz=0.1)
+
+        visual_cfg = newton.ModelBuilder.ShapeConfig(
+            density=0.0,
+            has_shape_collision=False,
+            has_particle_collision=False,
+            is_visible=True,
+        )
+        visual_mesh = newton.Mesh.create_box(
+            0.2,
+            0.2,
+            0.2,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        builder.add_shape_mesh(body=body_a, mesh=visual_mesh, cfg=visual_cfg)
+
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(model, broad_phase="sap")
+
+        self.assertFalse(pipeline.narrow_phase.has_meshes)
+
 
 def test_particle_shape_contacts(test, device, shape_type: GeoType):
     """
@@ -1451,6 +2085,46 @@ class TestHeightfieldConvexMidphase(unittest.TestCase):
     pass
 
 
+class TestPlanarSDFRouting(unittest.TestCase):
+    """Test normal SDF contact routing for planar-faced non-mesh shapes."""
+
+    pass
+
+
+class TestCurvedPrimitiveSDFExclusion(unittest.TestCase):
+    def test_non_hydro_sphere_sdf_config_does_not_build_general_sdf(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=32)
+        sphere = builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
+
+        model = builder.finalize()
+
+        self.assertEqual(int(model._shape_sdf_index.numpy()[sphere]), -1)
+
+
+class TestPlanarSDFOptIn(unittest.TestCase):
+    def test_default_box_does_not_build_general_sdf(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        box = builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5)
+
+        model = builder.finalize()
+
+        self.assertEqual(int(model._shape_sdf_index.numpy()[box]), -1)
+        self.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 0)
+
+    def test_default_convex_hull_does_not_build_general_sdf(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+        convex = builder.add_shape_convex_hull(body=body, mesh=mesh)
+
+        model = builder.finalize()
+
+        self.assertEqual(int(model._shape_sdf_index.numpy()[convex]), -1)
+
+
 def test_mesh_convex_midphase_queries_margin_shell(test, device):
     margin = 0.02
     gap = 0.005
@@ -1485,6 +2159,135 @@ def test_mesh_convex_midphase_queries_margin_shell(test, device):
     pipeline.collide(state, contacts)
 
     contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0)
+
+
+def test_mesh_convex_with_sdf_routes_to_sdf_contact(test, device):
+    """A convex mesh with SDF should use the SDF pair route against a triangle mesh."""
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    convex = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    mesh.build_sdf(max_resolution=32, device=device)
+    convex.build_sdf(max_resolution=32, device=device)
+
+    builder = newton.ModelBuilder()
+    body_mesh = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_convex = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_mesh(body=body_mesh, mesh=mesh)
+    builder.add_shape_convex_hull(body=body_convex, mesh=convex)
+
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    mesh_convex_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_count.numpy()[0])
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(sdf_pair_count, 0)
+    test.assertEqual(mesh_convex_pair_count, 0)
+    test.assertGreater(contact_count, 0)
+
+
+def test_mesh_convex_one_sdf_keeps_existing_route(test, device):
+    """Avoid SDF routing when it would require expensive BVH fallback on one side."""
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    convex = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    convex.build_sdf(max_resolution=32, device=device)
+
+    builder = newton.ModelBuilder()
+    body_mesh = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_convex = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_mesh(body=body_mesh, mesh=mesh)
+    builder.add_shape_convex_hull(body=body_convex, mesh=convex)
+
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    mesh_convex_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 0)
+    test.assertGreater(mesh_convex_pair_count, 0)
+
+
+def test_mesh_box_with_sdf_routes_to_sdf_contact(test, device):
+    """An explicitly SDF-configured box should use the SDF pair route against a mesh."""
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    mesh.build_sdf(max_resolution=32, device=device)
+
+    builder = newton.ModelBuilder()
+    body_mesh = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_mesh(body=body_mesh, mesh=mesh)
+    box_cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=32)
+    box = builder.add_shape_box(body=body_box, hx=0.5, hy=0.5, hz=0.5, cfg=box_cfg)
+
+    model = builder.finalize(device=device)
+    test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[box]), 0)
+    test.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 12)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    mesh_convex_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_count.numpy()[0])
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(sdf_pair_count, 0)
+    test.assertEqual(mesh_convex_pair_count, 0)
+    test.assertGreater(contact_count, 0)
+
+
+def test_box_box_with_sdf_keeps_primitive_route(test, device):
+    """Box-box contacts should keep the primitive path even when both boxes have SDFs."""
+    cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=32)
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    box_a = builder.add_shape_box(body=body_a, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
+    box_b = builder.add_shape_box(body=body_b, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    shape_sdf_index = model._shape_sdf_index.numpy()
+    test.assertGreaterEqual(int(shape_sdf_index[box_a]), 0)
+    test.assertGreaterEqual(int(shape_sdf_index[box_b]), 0)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    gjk_pair_count = int(pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0])
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 0)
+    test.assertGreater(gjk_pair_count, 0)
+    test.assertGreater(contact_count, 0)
+
+
+def test_convex_convex_with_sdf_routes_to_sdf_contact(test, device):
+    """Two SDF-backed convex meshes should use the SDF path and produce contacts."""
+    mesh_a = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    mesh_b = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    mesh_a.build_sdf(max_resolution=32, device=device)
+    mesh_b.build_sdf(max_resolution=32, device=device)
+
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_convex_hull(body=body_a, mesh=mesh_a)
+    builder.add_shape_convex_hull(body=body_b, mesh=mesh_b)
+
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    gjk_pair_count = int(pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0])
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(sdf_pair_count, 0)
+    test.assertEqual(gjk_pair_count, 0)
     test.assertGreater(contact_count, 0)
 
 
@@ -1933,11 +2736,1453 @@ add_function_test(
 )
 
 add_function_test(
+    TestPlanarSDFRouting,
+    "test_mesh_convex_with_sdf_routes_to_sdf_contact",
+    test_mesh_convex_with_sdf_routes_to_sdf_contact,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_mesh_convex_one_sdf_keeps_existing_route",
+    test_mesh_convex_one_sdf_keeps_existing_route,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_mesh_box_with_sdf_routes_to_sdf_contact",
+    test_mesh_box_with_sdf_routes_to_sdf_contact,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_box_box_with_sdf_keeps_primitive_route",
+    test_box_box_with_sdf_keeps_primitive_route,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_convex_convex_with_sdf_routes_to_sdf_contact",
+    test_convex_convex_with_sdf_routes_to_sdf_contact,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
     TestHeightfieldConvexMidphase,
     "test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge",
     test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge,
     devices=get_cuda_test_devices(),
     check_output=False,
+)
+
+
+def _build_cloth_over_plane(device, particle_z: float = 0.05):
+    """A 5x5 cloth grid hovering just above a ground plane (particles overlap within margin)."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.5, -0.5, particle_z),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=5,
+        dim_y=5,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    return builder.finalize(device=device)
+
+
+def test_soft_contact_schema(test, device):
+    """soft_contact_count is a 1-element total; unified soft_contact_indices + barycentric added."""
+    model = _build_cloth_over_plane(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1)
+    contacts = pipeline.contacts()
+
+    # Single total soft counter (bit-identical in shape to a build without the feature).
+    test.assertEqual(tuple(contacts.soft_contact_count.shape), (1,))
+    test.assertFalse(contacts._enable_rigid_soft_full_surface_contact)  # flag off by default
+
+    # Unified record fields + the particle-only view, all sized to soft_contact_max.
+    test.assertEqual(contacts.soft_contact_indices.shape[0], contacts.soft_contact_max)
+    test.assertEqual(contacts.soft_contact_indices.dtype, wp.vec3i)
+    test.assertEqual(contacts.soft_contact_particle.shape[0], contacts.soft_contact_max)
+    test.assertEqual(contacts.soft_contact_barycentric.shape[0], contacts.soft_contact_max)
+
+    # Rigid counter untouched and independent of the soft counter.
+    test.assertEqual(tuple(contacts.rigid_contact_count.shape), (1,))
+
+    # Flag-off collide: only the particle pass runs, so every record is a particle: (p, -1, -1).
+    state = model.state()
+    pipeline.collide(state, contacts)
+    total = int(contacts.soft_contact_count.numpy()[0])
+    test.assertGreater(total, 0)
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    test.assertTrue(np.all(idx[:, 1] < 0))  # no edge/face records
+    test.assertTrue(np.all(idx[:, 0] >= 0))
+    # soft_contact_particle mirrors index slot 0 for particle contacts.
+    test.assertTrue(np.array_equal(contacts.soft_contact_particle.numpy()[:total], idx[:, 0]))
+
+
+soft_devices = get_test_devices()
+
+
+class TestFullSurfaceSoftContact(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_soft_contact_schema",
+    test_soft_contact_schema,
+    devices=soft_devices,
+)
+
+
+# ---------------------------------------------------------------------------
+# SDF optimizers (Macklin 2020) validated against a brute-force grid min.
+# The brute-force reference samples phi on a fine grid and takes the argmin,
+# so these isolate "does the optimizer find the minimum of phi".
+# ---------------------------------------------------------------------------
+
+
+def _box_sdf_np(point, half):
+    """Reference box SDF (matches geometry.kernels.sdf_box) for brute-force comparison."""
+    q = np.abs(point) - half
+    return float(np.linalg.norm(np.maximum(q, 0.0)) + min(max(q[0], q[1], q[2]), 0.0))
+
+
+@wp.kernel
+def _edge_opt_kernel(
+    geo: wp.int32,
+    scale: wp.vec3,
+    p: wp.vec3,
+    q: wp.vec3,
+    shape_sdf_index: wp.int32,
+    table: wp.array[TextureSDFData],
+    n_iter: wp.int32,
+    out_u: wp.array[float],
+    out_phi: wp.array[float],
+    out_x: wp.array[wp.vec3],
+):
+    u, x, phi, _grad = optimize_edge_sdf(geo, scale, p, q, shape_sdf_index, table, n_iter)
+    out_u[0] = u
+    out_phi[0] = phi
+    out_x[0] = x
+
+
+@wp.kernel
+def _face_opt_kernel(
+    geo: wp.int32,
+    scale: wp.vec3,
+    a: wp.vec3,
+    b: wp.vec3,
+    c: wp.vec3,
+    shape_sdf_index: wp.int32,
+    table: wp.array[TextureSDFData],
+    n_iter: wp.int32,
+    ls_iter: wp.int32,
+    out_bary: wp.array[wp.vec3],
+    out_phi: wp.array[float],
+    out_x: wp.array[wp.vec3],
+):
+    bary, x, phi, _grad = optimize_face_sdf(geo, scale, a, b, c, shape_sdf_index, table, n_iter, ls_iter)
+    out_bary[0] = bary
+    out_phi[0] = phi
+    out_x[0] = x
+
+
+def _empty_sdf_table(device):
+    return wp.zeros(0, dtype=TextureSDFData, device=device)
+
+
+def test_optimize_edge_sdf_box(test, device):
+    """Golden-section edge optimizer finds the deepest point of phi along the segment."""
+    half = (0.5, 0.5, 0.5)
+    p = (0.8, 0.0, 0.0)
+    q = (0.0, 0.8, 0.0)
+    out_u = wp.zeros(1, dtype=float, device=device)
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_x = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _edge_opt_kernel,
+        dim=1,
+        inputs=[
+            int(GeoType.BOX),
+            wp.vec3(*half),
+            wp.vec3(*p),
+            wp.vec3(*q),
+            -1,
+            _empty_sdf_table(device),
+            SDF_EDGE_ITERS,
+        ],
+        outputs=[out_u, out_phi, out_x],
+        device=device,
+    )
+    phi_opt = float(out_phi.numpy()[0])
+    pa, qa, ha = np.array(p), np.array(q), np.array(half)
+    phi_brute = min(_box_sdf_np((1.0 - u) * pa + u * qa, ha) for u in np.linspace(0.0, 1.0, 20001))
+    test.assertLess(abs(phi_opt - phi_brute), 1.0e-4)
+
+
+def test_optimize_face_sdf_box(test, device):
+    """Frank-Wolfe face optimizer finds the deepest point of phi over the triangle."""
+    half = (0.5, 0.5, 0.5)
+    a = (0.9, 0.0, 0.0)
+    b = (0.0, 0.9, 0.0)
+    c = (0.0, 0.0, 0.9)
+    out_bary = wp.zeros(1, dtype=wp.vec3, device=device)
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_x = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _face_opt_kernel,
+        dim=1,
+        inputs=[
+            int(GeoType.BOX),
+            wp.vec3(*half),
+            wp.vec3(*a),
+            wp.vec3(*b),
+            wp.vec3(*c),
+            -1,
+            _empty_sdf_table(device),
+            SDF_FACE_ITERS,
+            SDF_LS_ITERS,
+        ],
+        outputs=[out_bary, out_phi, out_x],
+        device=device,
+    )
+    phi_opt = float(out_phi.numpy()[0])
+    aa, ba, ca, ha = np.array(a), np.array(b), np.array(c), np.array(half)
+    n = 200
+    best = min(
+        _box_sdf_np((i / n) * aa + (j / n) * ba + (1.0 - i / n - j / n) * ca, ha)
+        for i in range(n + 1)
+        for j in range(n + 1 - i)
+    )
+    test.assertLess(abs(phi_opt - best), 2.0e-3)
+
+
+def _sphere_sdf_np(point, radius):
+    """Reference sphere SDF (matches geometry.kernels.sdf_sphere)."""
+    return float(np.linalg.norm(point) - radius)
+
+
+def test_optimize_edge_sdf_sphere(test, device):
+    """Golden-section on a smooth field finds the segment's closest approach to the sphere."""
+    r = 0.5
+    p = (1.0, 0.5, 0.0)
+    q = (0.5, 1.0, 0.3)
+    out_u = wp.zeros(1, dtype=float, device=device)
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_x = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _edge_opt_kernel,
+        dim=1,
+        inputs=[
+            int(GeoType.SPHERE),
+            wp.vec3(r, r, r),
+            wp.vec3(*p),
+            wp.vec3(*q),
+            -1,
+            _empty_sdf_table(device),
+            SDF_EDGE_ITERS,
+        ],
+        outputs=[out_u, out_phi, out_x],
+        device=device,
+    )
+    phi_opt = float(out_phi.numpy()[0])
+    pa, qa = np.array(p), np.array(q)
+    phi_brute = min(_sphere_sdf_np((1.0 - u) * pa + u * qa, r) for u in np.linspace(0.0, 1.0, 20001))
+    test.assertLess(abs(phi_opt - phi_brute), 1.0e-4)
+
+
+def test_optimize_face_sdf_sphere(test, device):
+    """Frank-Wolfe on a smooth field moves to a non-centroid optimum (asymmetric triangle)."""
+    r = 0.5
+    a = (1.0, 0.0, 0.2)
+    b = (0.0, 1.0, 0.2)
+    c = (0.3, 0.3, 1.2)
+    out_bary = wp.zeros(1, dtype=wp.vec3, device=device)
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_x = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _face_opt_kernel,
+        dim=1,
+        inputs=[
+            int(GeoType.SPHERE),
+            wp.vec3(r, r, r),
+            wp.vec3(*a),
+            wp.vec3(*b),
+            wp.vec3(*c),
+            -1,
+            _empty_sdf_table(device),
+            SDF_FACE_ITERS,
+            SDF_LS_ITERS,
+        ],
+        outputs=[out_bary, out_phi, out_x],
+        device=device,
+    )
+    phi_opt = float(out_phi.numpy()[0])
+    aa, ba, ca = np.array(a), np.array(b), np.array(c)
+    n = 200
+    best = min(
+        _sphere_sdf_np((i / n) * aa + (j / n) * ba + (1.0 - i / n - j / n) * ca, r)
+        for i in range(n + 1)
+        for j in range(n + 1 - i)
+    )
+    # Face Frank-Wolfe tail at SDF_FACE_ITERS on a smooth field (~3e-3); ample for contact-within-margin.
+    test.assertLess(abs(phi_opt - best), 6.0e-3)
+
+
+# ---------------------------------------------------------------------------
+# Edge + face pass kernels (record emission).
+# ---------------------------------------------------------------------------
+
+
+def test_edge_face_passes_box(test, device):
+    """A cloth sheet inside a box: every unique soft edge and triangle emits exactly one record."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(
+        body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5
+    )
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.4, -0.4, 0.45),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+    # Large fixed buffer to isolate the kernels; the flag-aware default sizing is covered separately.
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1, soft_contact_max=4096)
+    contacts = pipeline.contacts()
+    state = model.state()
+    contacts.soft_contact_count.zero_()
+    edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
+    face_pairs = _build_soft_face_rigid_contact_pairs(model)
+    # Isolated launch (no particle pass), so this pass's tids start at 0.
+    launch_soft_ef_contacts(
+        model=model,
+        state=state,
+        contacts=contacts,
+        margin=0.1,
+        device=device,
+        edge_pairs=edge_pairs,
+        face_pairs=face_pairs,
+        n_particle_pairs=0,
+    )
+
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    # Records self-describe by -1 padding: edge (v0, v1, -1), face (v0, v1, v2).
+    n_edge = int(np.sum((idx[:, 1] >= 0) & (idx[:, 2] < 0)))
+    n_face = int(np.sum(idx[:, 2] >= 0))
+    n_edges = model.edge_count
+    # Structural dedup: the sheet is entirely inside the box, so every unique edge / triangle
+    # emits exactly once (one thread per unique edge / triangle).
+    test.assertEqual(n_edge, n_edges)
+    test.assertEqual(n_face, model.tri_count)
+    test.assertEqual(n_edge + n_face, total)  # no particle records in this isolated launch
+
+    barys = contacts.soft_contact_barycentric.numpy()[:total]
+    normals = contacts.soft_contact_normal.numpy()[:total]
+    body_pos = contacts.soft_contact_body_pos.numpy()[:total]
+    half = np.array([0.5, 0.5, 0.5])
+    n_particles = model.particle_count
+
+    for i in range(total):
+        c = idx[i]
+        n_valid = int(np.sum(c >= 0))
+        test.assertIn(n_valid, (2, 3))  # edge or face
+        for k in range(n_valid):
+            test.assertTrue(0 <= int(c[k]) < n_particles)  # corners are soft particle ids
+        test.assertAlmostEqual(float(barys[i].sum()), 1.0, places=4)
+        test.assertGreater(float(normals[i][2]), 0.99)  # +z face of the box
+        test.assertLess(abs(_box_sdf_np(body_pos[i], half)), 1.0e-2)  # closest point on the box surface
+
+
+def test_edge_face_respect_shape_margin(test, device):
+    """EDGE/FACE culls must include the per-shape margin (#2994) like the legacy particle pass:
+    a sheet beyond ``soft_contact_margin`` but within ``soft_contact_margin + shape margin``
+    must still emit every edge/face record."""
+    margin = 0.05
+    shape_margin = 0.2
+    builder = newton.ModelBuilder()
+    builder.default_particle_radius = 0.01
+    builder.add_shape_box(
+        body=-1,
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        hx=0.5,
+        hy=0.5,
+        hz=0.5,
+        cfg=newton.ModelBuilder.ShapeConfig(margin=shape_margin),
+    )
+    # Sheet 0.15 above the box top face: outside margin + radius (0.06), inside
+    # margin + shape_margin + radius (0.26).
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.4, -0.4, 0.65),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=margin, soft_contact_max=4096)
+    contacts = pipeline.contacts()
+    state = model.state()
+    contacts.soft_contact_count.zero_()
+    edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
+    face_pairs = _build_soft_face_rigid_contact_pairs(model)
+    launch_soft_ef_contacts(
+        model=model,
+        state=state,
+        contacts=contacts,
+        margin=margin,
+        device=device,
+        edge_pairs=edge_pairs,
+        face_pairs=face_pairs,
+        n_particle_pairs=0,
+    )
+
+    # Sanity: the gap really is beyond the threshold without the shape margin, so any record
+    # emitted below can only come from the per-shape margin term.
+    max_radius = float(model.particle_radius.numpy().max())
+    test.assertGreater(0.15, margin + max_radius)
+
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    n_edge = int(np.sum((idx[:, 1] >= 0) & (idx[:, 2] < 0)))
+    n_face = int(np.sum(idx[:, 2] >= 0))
+    test.assertEqual(n_edge, model.edge_count)
+    test.assertEqual(n_face, model.tri_count)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch flag — backward-compat (bit-for-bit) and full-surface regression.
+# ---------------------------------------------------------------------------
+
+
+def _sorted_particle_records(contacts, c0):
+    """Particle-range records sorted by particle id (emission order is non-deterministic on GPU).
+
+    The particle pass runs first, so the first ``c0`` records are the particle contacts.
+    """
+    prim = contacts.soft_contact_particle.numpy()[:c0]
+    order = np.argsort(prim, kind="stable")
+    return (
+        prim[order],
+        contacts.soft_contact_shape.numpy()[:c0][order],
+        contacts.soft_contact_body_pos.numpy()[:c0][order],
+        contacts.soft_contact_normal.numpy()[:c0][order],
+    )
+
+
+def test_backward_compat_bit_for_bit(test, device):
+    """Flag on vs off (same buffer): the particle range is bit-identical; on only adds E/F records."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(
+        body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5
+    )
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.4, -0.4, 0.45),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    # The flag is fixed at construction, so off vs on are two separately-sized pipelines.
+    pipeline_off = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
+    )
+    contacts_off = pipeline_off.contacts()
+    pipeline_off.collide(state, contacts_off)
+    c0 = int(contacts_off.soft_contact_count.numpy()[0])
+    test.assertGreater(c0, 0)
+    # Flag off: every record is a particle contact (p, -1, -1).
+    test.assertTrue(np.all(contacts_off.soft_contact_indices.numpy()[:c0][:, 1] < 0))
+    prim_off, shape_off, pos_off, nrm_off = _sorted_particle_records(contacts_off, c0)
+
+    pipeline_on = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts_on = pipeline_on.contacts()
+    pipeline_on.collide(state, contacts_on)
+    total_on = int(contacts_on.soft_contact_count.numpy()[0])
+    idx_on = contacts_on.soft_contact_indices.numpy()[:total_on]
+    n_particle_on = int(np.sum(idx_on[:, 1] < 0))
+    test.assertEqual(n_particle_on, c0)  # particle-contact count unchanged; E/F only added
+    prim_on, shape_on, pos_on, nrm_on = _sorted_particle_records(contacts_on, c0)
+
+    # Bit-identical particle range (same legacy kernel, same inputs; particle records come first).
+    test.assertTrue(np.array_equal(prim_on, prim_off))
+    test.assertTrue(np.array_equal(shape_on, shape_off))
+    test.assertTrue(np.array_equal(pos_on, pos_off))
+    test.assertTrue(np.array_equal(nrm_on, nrm_off))
+    # Flag on only ADDS edge/face records.
+    test.assertGreater(total_on - n_particle_on, 0)
+
+
+def test_full_surface_catches_what_particles_miss(test, device):
+    """A soft quad spanning a box with all corners outside margin: per-particle misses, E/F catches."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(
+        body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5
+    )
+    # 1x1 cloth = one quad (2 tris); corners at (+-1, +-1, 0.45) are far outside the box margin,
+    # but the quad's interior/diagonal cross the box's +z face within margin.
+    builder.add_cloth_grid(
+        pos=wp.vec3(-1.0, -1.0, 0.45),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=2.0,
+        cell_y=2.0,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    # Per-particle path alone (flag off at construction): every corner is outside margin -> no contact.
+    pipeline_off = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
+    )
+    contacts_off = pipeline_off.contacts()
+    pipeline_off.collide(state, contacts_off)
+    test.assertEqual(int(contacts_off.soft_contact_count.numpy()[0]), 0)
+
+    # Full-surface path (flag on): the edge/face passes detect the crossing the particles miss.
+    pipeline_on = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts_on = pipeline_on.contacts()
+    pipeline_on.collide(state, contacts_on)
+    total = int(contacts_on.soft_contact_count.numpy()[0])
+    idx = contacts_on.soft_contact_indices.numpy()[:total]
+    test.assertEqual(int(np.sum(idx[:, 1] < 0)), 0)  # still no per-particle contact
+    test.assertGreater(total, 0)  # caught by edge/face
+
+
+for _name, _fn in (
+    ("test_optimize_edge_sdf_box", test_optimize_edge_sdf_box),
+    ("test_optimize_face_sdf_box", test_optimize_face_sdf_box),
+    ("test_optimize_edge_sdf_sphere", test_optimize_edge_sdf_sphere),
+    ("test_optimize_face_sdf_sphere", test_optimize_face_sdf_sphere),
+    ("test_edge_face_passes_box", test_edge_face_passes_box),
+    ("test_edge_face_respect_shape_margin", test_edge_face_respect_shape_margin),
+    ("test_backward_compat_bit_for_bit", test_backward_compat_bit_for_bit),
+    ("test_full_surface_catches_what_particles_miss", test_full_surface_catches_what_particles_miss),
+):
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
+
+
+# ---------------------------------------------------------------------------
+# Mesh volume-SDF provisioning at finalize. Texture SDFs are CUDA-only.
+# ---------------------------------------------------------------------------
+
+
+def test_mesh_sdf_provisioned_and_emits(test, device):
+    """A participating MESH shape gets a volume SDF baked at finalize and emits EDGE/FACE records."""
+    box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+    builder = newton.ModelBuilder()
+    mesh_shape = builder.add_shape_mesh(body=-1, mesh=box_mesh)
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.4, -0.4, 0.45),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    configure_sdf_for_collision_shapes(builder)
+    model = builder.finalize(device=device)
+    # The participating mesh now carries a provisioned volume SDF.
+    test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[mesh_shape]), 0)
+
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()
+    state = model.state()
+    pipeline.collide(state, contacts)
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    # The mesh's volume SDF feeds the edge/face passes -> edge/face records emitted.
+    test.assertGreater(int(np.sum(idx[:, 1] >= 0)), 0)
+
+
+def test_force_sdf_provisions_collision_meshes(test, device):
+    """ShapeConfig.configure_sdf(force_sdf=True) marks a mesh/convex COLLIDE_PARTICLES shape for SDF
+    construction; analytic primitives are skipped (builder-level; no SDF is built here)."""
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.configure_sdf(force_sdf=True)
+    m0 = builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5), cfg=cfg)
+    m1 = builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))  # default cfg, no force_sdf
+    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)  # analytic: never provisioned
+
+    test.assertTrue(builder.shape_force_sdf[m0])
+    test.assertFalse(builder.shape_force_sdf[m1])
+    # force_sdf on an analytic shape is captured but harmless: finalize only builds mesh/convex SDFs.
+    test.assertTrue(builder.shape_force_sdf[box])
+
+    # configure_sdf still rejects both resolution knobs at once.
+    with test.assertRaises(ValueError):
+        newton.ModelBuilder.ShapeConfig().configure_sdf(max_resolution=64, target_voxel_size=0.01)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_force_sdf_provisions_collision_meshes",
+    test_force_sdf_provisions_collision_meshes,
+    devices=soft_devices,
+)
+
+
+def test_optimize_against_mesh_texture_sdf(test, device):
+    """optimize_edge/face_sdf against a MESH's provisioned texture SDF match the box it represents.
+
+    Validates the volume-SDF branch of eval_shape_sdf (texture sampling + query-time scaling) end to
+    end through the optimizers, to within the texture grid's resolution.
+    """
+    box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(body=-1, mesh=box_mesh)
+    configure_sdf_for_collision_shapes(builder)
+    model = builder.finalize(device=device)
+    sdf_idx = int(model._shape_sdf_index.numpy()[0])
+    test.assertGreaterEqual(sdf_idx, 0)
+    table = model._texture_sdf_data
+    scale = wp.vec3(*(float(s) for s in model.shape_scale.numpy()[0]))
+    half = np.array([0.5, 0.5, 0.5])
+    tol = 3.0e-2  # texture SDF grid resolution (default 64^3 over a unit box) + optimizer tail
+
+    # Edge: from just inside the +z face to outside; the minimum is the inside endpoint.
+    p, q = (0.0, 0.0, 0.45), (0.0, 0.0, 0.65)
+    out_u = wp.zeros(1, dtype=float, device=device)
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_x = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _edge_opt_kernel,
+        dim=1,
+        inputs=[int(GeoType.MESH), scale, wp.vec3(*p), wp.vec3(*q), sdf_idx, table, SDF_EDGE_ITERS],
+        outputs=[out_u, out_phi, out_x],
+        device=device,
+    )
+    pa, qa = np.array(p), np.array(q)
+    phi_ref_edge = min(_box_sdf_np((1.0 - u) * pa + u * qa, half) for u in np.linspace(0.0, 1.0, 4001))
+    test.assertLess(abs(float(out_phi.numpy()[0]) - phi_ref_edge), tol)
+
+    # Face: a small triangle grazing the +z face.
+    a, b, c = (0.2, 0.0, 0.45), (-0.2, 0.1, 0.45), (0.0, -0.2, 0.45)
+    out_bary = wp.zeros(1, dtype=wp.vec3, device=device)
+    out_phi2 = wp.zeros(1, dtype=float, device=device)
+    out_x2 = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _face_opt_kernel,
+        dim=1,
+        inputs=[
+            int(GeoType.MESH),
+            scale,
+            wp.vec3(*a),
+            wp.vec3(*b),
+            wp.vec3(*c),
+            sdf_idx,
+            table,
+            SDF_FACE_ITERS,
+            SDF_LS_ITERS,
+        ],
+        outputs=[out_bary, out_phi2, out_x2],
+        device=device,
+    )
+    aa, ba, ca = np.array(a), np.array(b), np.array(c)
+    n = 80
+    phi_ref_face = min(
+        _box_sdf_np((i / n) * aa + (j / n) * ba + (1.0 - i / n - j / n) * ca, half)
+        for i in range(n + 1)
+        for j in range(n + 1 - i)
+    )
+    test.assertLess(abs(float(out_phi2.numpy()[0]) - phi_ref_face), tol)
+
+
+for _name, _fn in (
+    ("test_mesh_sdf_provisioned_and_emits", test_mesh_sdf_provisioned_and_emits),
+    ("test_optimize_against_mesh_texture_sdf", test_optimize_against_mesh_texture_sdf),
+):
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
+
+
+@wp.kernel
+def _eval_shape_sdf_kernel(
+    geo: wp.int32,
+    scale: wp.vec3,
+    x: wp.vec3,
+    sdf_idx: wp.int32,
+    table: wp.array[TextureSDFData],
+    out_phi: wp.array[float],
+    out_grad: wp.array[wp.vec3],
+):
+    _phi_l, phi, grad = eval_shape_sdf(geo, scale, x, sdf_idx, table)
+    out_phi[0] = phi
+    out_grad[0] = grad
+
+
+def _make_box_mesh_sdf_model(device):
+    """A single box MESH with a provisioned (unscaled) volume SDF, for eval_shape_sdf tests."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+    configure_sdf_for_collision_shapes(builder)
+    model = builder.finalize(device=device)
+    return model, int(model._shape_sdf_index.numpy()[0])
+
+
+def test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign(test, device):
+    """A mirrored (negative) mesh scale must not flip the SDF sign (E3). wp.min(scale) would go
+    negative and invert an outside distance; wp.min(wp.abs(scale)) keeps the magnitude positive."""
+    model, sdf_idx = _make_box_mesh_sdf_model(device)
+    test.assertGreaterEqual(sdf_idx, 0)
+    table = model._texture_sdf_data
+    x_out = wp.vec3(1.0, 0.0, 0.0)  # clearly outside the |x| <= 0.5 box
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_grad = wp.zeros(1, dtype=wp.vec3, device=device)
+
+    def _sample(scl):
+        wp.launch(
+            _eval_shape_sdf_kernel,
+            dim=1,
+            inputs=[int(GeoType.MESH), scl, x_out, sdf_idx, table],
+            outputs=[out_phi, out_grad],
+            device=device,
+        )
+        return float(out_phi.numpy()[0]), out_grad.numpy()[0].copy()
+
+    phi_id, grad_id = _sample(wp.vec3(1.0, 1.0, 1.0))
+    phi_mir, grad_mir = _sample(wp.vec3(-1.0, 1.0, 1.0))
+
+    test.assertGreater(phi_id, 0.0, "identity-scale SDF must be positive outside the box")
+    test.assertGreater(phi_mir, 0.0, "mirrored mesh scale must not flip the SDF sign")
+    test.assertLess(abs(phi_id - phi_mir), 3.0e-2, "mirror of a symmetric box must not change |phi|")
+    test.assertGreater(float(grad_id[0]), 0.0, "gradient must point outward (+x)")
+    test.assertGreater(float(grad_mir[0]), 0.0, "mirrored gradient must still point outward (+x)")
+
+
+def test_full_surface_empty_sdf_descriptor_rejected(test, device):
+    """A participating mesh whose shape_sdf_index points at an empty placeholder descriptor (coarse
+    texture None, e.g. a mesh-mesh BVH fallback) is rejected by the full-surface guard rather than
+    sampled -- sampling one reproduced CUDA error 700 (E1)."""
+    model, sdf_idx = _make_box_mesh_sdf_model(device)
+    test.assertGreaterEqual(sdf_idx, 0)
+    # Simulate an empty placeholder descriptor at that slot: a nonnegative index whose descriptor
+    # carries no texture (coarse texture None), exactly what a BVH fallback appends.
+    model._texture_sdf_coarse_textures[sdf_idx] = None
+    with test.assertRaises(ValueError):
+        newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+
+
+def _add_soft_triangle(builder, z=1.0):
+    p0 = builder.add_particle(wp.vec3(-0.2, -0.2, z), wp.vec3(0.0), 0.1, radius=0.0)
+    p1 = builder.add_particle(wp.vec3(0.2, -0.2, z), wp.vec3(0.0), 0.1, radius=0.0)
+    p2 = builder.add_particle(wp.vec3(0.0, 0.2, z), wp.vec3(0.0), 0.1, radius=0.0)
+    builder.add_triangle(p0, p1, p2)
+
+
+def test_soft_contact_tids_decoupled_from_capacity(test, device):
+    """soft_contact_tids is sized independently of soft_contact_max so a small custom capacity cannot
+    drop a launch thread's replay slot (E2, unit)."""
+    from newton._src.sim.contacts import Contacts  # noqa: PLC0415
+
+    c = Contacts(rigid_contact_max=4, soft_contact_max=1, soft_contact_tids_size=37, device=device)
+    test.assertEqual(c.soft_contact_tids.shape[0], 37)
+    c_default = Contacts(rigid_contact_max=4, soft_contact_max=9, device=device)
+    test.assertEqual(c_default.soft_contact_tids.shape[0], 9)
+
+
+def test_full_surface_replay_spans_candidate_space(test, device):
+    """The pipeline sizes soft_contact_tids to the full particle+edge+face candidate space even when
+    soft_contact_max is overridden smaller, so differentiable backward never loses a thread (E2)."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    _add_soft_triangle(builder)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True, soft_contact_max=1
+    )
+    contacts = pipeline.contacts()
+    candidate = (
+        pipeline.soft_rigid_contact_pair_count
+        + len(pipeline.soft_edge_rigid_pairs)
+        + len(pipeline.soft_face_rigid_pairs)
+    )
+    test.assertGreater(candidate, 1, "test needs a candidate space larger than the capacity override")
+    test.assertEqual(contacts.soft_contact_max, 1, "explicit soft_contact_max capacity must be honored")
+    test.assertEqual(contacts.soft_contact_tids.shape[0], candidate, "replay array must span the full candidate space")
+
+
+def test_collide_syncs_full_surface_marker(test, device):
+    """collide() sets the buffer's full-surface capability marker on every call so a buffer created
+    elsewhere (or by a flag-off pipeline) cannot silently misroute edge/face records (E6)."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    _add_soft_triangle(builder, z=0.5)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()
+    # Simulate a buffer whose marker was left False (e.g. constructed by a flag-off pipeline).
+    contacts._enable_rigid_soft_full_surface_contact = False
+    pipeline.collide(model.state(), contacts)
+    test.assertTrue(
+        contacts._enable_rigid_soft_full_surface_contact,
+        "collide() must re-sync the full-surface marker so particle-only solvers can refuse the buffer",
+    )
+
+
+def test_full_surface_finite_plane_falls_back(test, device):
+    """A finite plane can't do edge/face (its +Z normal is wrong off the quad), so it warns and falls
+    back to per-particle soft contact instead of failing the pipeline: construction succeeds, the
+    plane is excluded from the edge/face candidate pairs, and a capable box still keeps them (E4)."""
+    builder = newton.ModelBuilder()
+    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    plane = builder.add_shape_plane(plane=(0.0, 0.0, 1.0, 0.0), width=5.0, length=5.0)  # finite
+    _add_soft_triangle(builder)
+    model = builder.finalize(device=device)
+    with test.assertWarns(UserWarning):
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+    face_shapes = (
+        {int(s) for s in pipeline.soft_face_rigid_pairs.numpy()[:, 1]} if len(pipeline.soft_face_rigid_pairs) else set()
+    )
+    test.assertIn(box, face_shapes, "the capable box keeps its full-surface face pairs")
+    test.assertNotIn(plane, face_shapes, "the finite plane is excluded from full-surface (fell back)")
+
+
+def test_full_surface_heightfield_falls_back(test, device):
+    """A heightfield exposes only a per-cell local-plane distance (discontinuous across cells),
+    unsuitable for the edge/face SDF optimizers, so it warns and falls back to per-particle soft
+    contact rather than failing the pipeline; a capable box keeps full-surface (E4)."""
+    builder = newton.ModelBuilder()
+    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    hf = builder.add_shape_heightfield(
+        heightfield=newton.Heightfield(
+            data=np.zeros((3, 3), dtype=np.float32), nrow=3, ncol=3, hx=1.0, hy=1.0, min_z=0.0, max_z=0.0
+        )
+    )
+    _add_soft_triangle(builder)
+    model = builder.finalize(device=device)
+    with test.assertWarns(UserWarning):
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+    face_shapes = (
+        {int(s) for s in pipeline.soft_face_rigid_pairs.numpy()[:, 1]} if len(pipeline.soft_face_rigid_pairs) else set()
+    )
+    test.assertIn(box, face_shapes, "the capable box keeps its full-surface face pairs")
+    test.assertNotIn(hf, face_shapes, "the heightfield is excluded from full-surface (fell back)")
+
+
+def test_full_surface_allows_infinite_plane(test, device):
+    """An infinite plane (width=length=0) is supported by full-surface (+Z normal is correct
+    everywhere), so the common ground-plane case keeps working (E4 regression guard)."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()  # infinite
+    _add_soft_triangle(builder)
+    model = builder.finalize(device=device)
+    # Must not raise.
+    newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+
+
+def _nonuniform_box_mesh_gap_model(device, tri_x):
+    """Box MESH scaled (2, 1, 1) at the origin -> its +x face sits at body x = 0.5 * 2 = 1.0. A soft
+    triangle parallel to that face at x = ``tri_x`` (within the face's y/z extent) has a uniform gap of
+    ``tri_x - 1.0``. Used to probe the nonuniform-scale distance (E8)."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5), scale=(2.0, 1.0, 1.0))
+    configure_sdf_for_collision_shapes(builder)
+    p0 = builder.add_particle(wp.vec3(tri_x, -0.2, -0.2), wp.vec3(0.0), 0.1, radius=0.0)
+    p1 = builder.add_particle(wp.vec3(tri_x, 0.2, -0.2), wp.vec3(0.0), 0.1, radius=0.0)
+    p2 = builder.add_particle(wp.vec3(tri_x, 0.0, 0.2), wp.vec3(0.0), 0.1, radius=0.0)
+    builder.add_triangle(p0, p1, p2)
+    return builder.finalize(device=device)
+
+
+def test_full_surface_nonuniform_mesh_accurate_distance(test, device):
+    """Under nonuniform mesh scale the volume-SDF distance stretches along the surface normal, not by
+    the smallest scale factor -- so full-surface keeps working (no fallback) and the distance is right:
+    a soft triangle 0.08 m outside a (2,1,1) box's +x face (0.06 m margin) yields NO ghost contact, and
+    one 0.03 m inside is caught and projected onto the true surface x=1.0, not past it. min_scale would
+    report 0.04 (ghost) and project to ~1.015 (E8)."""
+    # 0.08 m gap, 0.06 m margin -> outside -> no contact. min_scale would under-report 0.04 < 0.06.
+    model_out = _nonuniform_box_mesh_gap_model(device, tri_x=1.08)
+    pipe_out = newton.CollisionPipeline(
+        model_out, broad_phase="nxn", soft_contact_margin=0.06, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts_out = pipe_out.contacts()
+    pipe_out.collide(model_out.state(), contacts_out)
+    test.assertEqual(
+        int(contacts_out.soft_contact_count.numpy()[0]), 0, "no ghost contact 0.08 m outside a 0.06 m margin"
+    )
+
+    # 0.03 m gap -> inside the margin -> contact, projected onto the true +x surface at x = 1.0.
+    model_in = _nonuniform_box_mesh_gap_model(device, tri_x=1.03)
+    pipe_in = newton.CollisionPipeline(
+        model_in, broad_phase="nxn", soft_contact_margin=0.06, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts_in = pipe_in.contacts()
+    pipe_in.collide(model_in.state(), contacts_in)
+    n_in = int(contacts_in.soft_contact_count.numpy()[0])
+    test.assertGreater(
+        n_in, 0, "a 0.03 m gap is within the 0.06 m margin -> full-surface still active for nonuniform scale"
+    )
+    body_pos_x = contacts_in.soft_contact_body_pos.numpy()[:n_in, 0]
+    test.assertTrue(
+        bool(np.all(np.abs(body_pos_x - 1.0) < 5e-3)),
+        f"contact projects onto the true surface x=1.0 (min_scale would land ~1.015), got {body_pos_x}",
+    )
+
+
+for _name, _fn in (
+    ("test_soft_contact_tids_decoupled_from_capacity", test_soft_contact_tids_decoupled_from_capacity),
+    ("test_full_surface_replay_spans_candidate_space", test_full_surface_replay_spans_candidate_space),
+    ("test_collide_syncs_full_surface_marker", test_collide_syncs_full_surface_marker),
+    ("test_full_surface_finite_plane_falls_back", test_full_surface_finite_plane_falls_back),
+    ("test_full_surface_heightfield_falls_back", test_full_surface_heightfield_falls_back),
+    ("test_full_surface_allows_infinite_plane", test_full_surface_allows_infinite_plane),
+):
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
+
+for _name, _fn in (
+    ("test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign", test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign),
+    ("test_full_surface_empty_sdf_descriptor_rejected", test_full_surface_empty_sdf_descriptor_rejected),
+    ("test_full_surface_nonuniform_mesh_accurate_distance", test_full_surface_nonuniform_mesh_accurate_distance),
+):
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
+
+
+def test_unprovisioned_mesh_raises(test, device):
+    """A participating mesh with no SDF makes CollisionPipeline raise when the flag is enabled.
+
+    Mirrors SolverVBD raising on an uncolored model: provisioning an SDF (e.g. via
+    ShapeConfig.configure_sdf(force_sdf=True)) is a required build step, and skipping it is an error
+    rather than a silent degrade to the per-particle path.
+    """
+    box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(body=-1, mesh=box_mesh)
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.4, -0.4, 0.45),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    # SDF provisioning intentionally skipped -> the mesh carries no SDF.
+    model = builder.finalize(device=device)
+    with test.assertRaises(ValueError):
+        newton.CollisionPipeline(
+            model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        )
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_unprovisioned_mesh_raises",
+    test_unprovisioned_mesh_raises,
+    devices=soft_devices,
+)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: all shape types + random soft triangles, full-surface on, no
+# false positives / false negatives vs a brute-force grid min of the same
+# eval_shape_sdf. (For analytic shapes the optimizer evaluates phi on the
+# feature, so phi* >= true min => false positives are structurally impossible;
+# this guards false negatives and the dispatch/record matching too.)
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _brute_face_min_kernel(
+    n_tris: wp.int32,
+    particle_q: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    shape_body: wp.array[wp.int32],
+    shape_type: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    shape_transform: wp.array[wp.transform],
+    shape_scale: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    shape_sdf_index: wp.array[wp.int32],
+    texture_sdf_table: wp.array[TextureSDFData],
+    n_grid: wp.int32,
+    out_min: wp.array[float],
+):
+    tid = wp.tid()
+    shape_index = tid // n_tris
+    t = tid % n_tris
+    out_min[tid] = 1.0e10
+    if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+        return
+    geo = shape_type[shape_index]
+    sdf_idx = shape_sdf_index[shape_index]
+    if (not _is_analytic(geo)) and sdf_idx < 0:
+        return
+    _X_bs, _X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
+    a = wp.transform_point(X_sw, particle_q[tri_indices[t, 0]])
+    b = wp.transform_point(X_sw, particle_q[tri_indices[t, 1]])
+    c = wp.transform_point(X_sw, particle_q[tri_indices[t, 2]])
+    scale = shape_scale[shape_index]
+    m = float(1.0e10)
+    for k in range((n_grid + 1) * (n_grid + 1)):
+        i = k // (n_grid + 1)
+        j = k % (n_grid + 1)
+        if i + j <= n_grid:
+            u = float(i) / float(n_grid)
+            v = float(j) / float(n_grid)
+            _phi_l, phi, _g = eval_shape_sdf(geo, scale, u * a + v * b + (1.0 - u - v) * c, sdf_idx, texture_sdf_table)
+            m = wp.min(m, phi)
+    out_min[tid] = m
+
+
+@wp.kernel
+def _brute_edge_min_kernel(
+    n_edges: wp.int32,
+    particle_q: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    shape_body: wp.array[wp.int32],
+    shape_type: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    shape_transform: wp.array[wp.transform],
+    shape_scale: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    shape_sdf_index: wp.array[wp.int32],
+    texture_sdf_table: wp.array[TextureSDFData],
+    n_grid: wp.int32,
+    out_min: wp.array[float],
+):
+    tid = wp.tid()
+    shape_index = tid // n_edges
+    e = tid % n_edges
+    out_min[tid] = 1.0e10
+    if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+        return
+    geo = shape_type[shape_index]
+    sdf_idx = shape_sdf_index[shape_index]
+    if (not _is_analytic(geo)) and sdf_idx < 0:
+        return
+    _X_bs, _X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
+    p = wp.transform_point(X_sw, particle_q[edge_indices[e, 2]])
+    q = wp.transform_point(X_sw, particle_q[edge_indices[e, 3]])
+    scale = shape_scale[shape_index]
+    m = float(1.0e10)
+    for i in range(n_grid + 1):
+        u = float(i) / float(n_grid)
+        _phi_l, phi, _g = eval_shape_sdf(geo, scale, (1.0 - u) * p + u * q, sdf_idx, texture_sdf_table)
+        m = wp.min(m, phi)
+    out_min[tid] = m
+
+
+def _build_all_shapes_scene(device, rng):
+    """Ground plane + the six analytic primitives, with random soft triangles seeded near each."""
+    z = 1.0
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+    primitives = [
+        (
+            lambda: builder.add_shape_sphere(
+                body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()), radius=0.5
+            ),
+            (0.0, 0.0, z),
+            0.5,
+        ),
+        (
+            lambda: builder.add_shape_box(
+                body=-1, xform=wp.transform(wp.vec3(2.0, 0.0, z), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5
+            ),
+            (2.0, 0.0, z),
+            0.6,
+        ),
+        (
+            lambda: builder.add_shape_capsule(
+                body=-1, xform=wp.transform(wp.vec3(4.0, 0.0, z), wp.quat_identity()), radius=0.4, half_height=0.4
+            ),
+            (4.0, 0.0, z),
+            0.55,
+        ),
+        (
+            lambda: builder.add_shape_cylinder(
+                body=-1, xform=wp.transform(wp.vec3(6.0, 0.0, z), wp.quat_identity()), radius=0.5, half_height=0.4
+            ),
+            (6.0, 0.0, z),
+            0.6,
+        ),
+        (
+            lambda: builder.add_shape_cone(
+                body=-1, xform=wp.transform(wp.vec3(8.0, 0.0, z), wp.quat_identity()), radius=0.5, half_height=0.5
+            ),
+            (8.0, 0.0, z),
+            0.6,
+        ),
+        (
+            lambda: builder.add_shape_ellipsoid(
+                body=-1, xform=wp.transform(wp.vec3(10.0, 0.0, z), wp.quat_identity()), rx=0.5, ry=0.4, rz=0.6
+            ),
+            (10.0, 0.0, z),
+            0.6,
+        ),
+        # MESH (a box-shaped triangle mesh): on CUDA its texture SDF is provisioned at finalize and
+        # validated; on CPU texture SDFs are unavailable so the passes and the brute-force reference
+        # both gate it out identically.
+        (
+            lambda: builder.add_shape_mesh(
+                body=-1, xform=wp.transform(wp.vec3(12.0, 0.0, z), wp.quat_identity()), mesh=box_mesh
+            ),
+            (12.0, 0.0, z),
+            0.6,
+        ),
+    ]
+    centers, sizes = [], []
+    for add, center, size in primitives:
+        add()
+        centers.append(np.array(center))
+        sizes.append(size)
+
+    verts, indices = [], []
+
+    def add_tri(centroid):
+        base = len(verts)
+        for _ in range(3):
+            off = rng.normal(0.0, 0.12, 3)
+            verts.append(wp.vec3(float(centroid[0] + off[0]), float(centroid[1] + off[1]), float(centroid[2] + off[2])))
+        indices.extend([base, base + 1, base + 2])
+
+    for center, size in zip(centers, sizes, strict=True):
+        for _ in range(5):
+            d = rng.normal(0.0, 1.0, 3)
+            d = d / np.linalg.norm(d)
+            add_tri(center + d * (size + rng.uniform(-0.12, 0.18)))
+    for _ in range(6):  # near the ground plane (z ~ 0)
+        add_tri(np.array([rng.uniform(0.0, 10.0), rng.uniform(-1.0, 1.0), rng.uniform(-0.05, 0.22)]))
+
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        vertices=verts,
+        indices=indices,
+        density=0.1,
+        particle_radius=0.0,  # so the pass threshold is exactly `margin` (matches the brute-force check)
+    )
+    configure_sdf_for_collision_shapes(builder)
+    return builder.finalize(device=device)
+
+
+def test_end_to_end_no_false_pos_neg(test, device):
+    """All shapes + random triangles: full-surface emissions match a brute-force grid min (no FP/FN)."""
+    margin = 0.1
+    model = _build_all_shapes_scene(device, np.random.default_rng(0))
+    n_tris = model.tri_count
+    n_edges = model.soft_mesh_adjacency.edge_indices.shape[0]
+    n_shapes = model.shape_count
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_margin=margin,
+        soft_contact_max=n_shapes * (n_tris + n_edges) + 16,
+        enable_rigid_soft_full_surface_contact=True,
+    )
+    contacts = pipeline.contacts()
+    state = model.state()
+    contacts.soft_contact_count.zero_()
+    edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
+    face_pairs = _build_soft_face_rigid_contact_pairs(model)
+    launch_soft_ef_contacts(
+        model=model,
+        state=state,
+        contacts=contacts,
+        margin=margin,
+        device=device,
+        edge_pairs=edge_pairs,
+        face_pairs=face_pairs,
+        n_particle_pairs=0,
+    )
+
+    total = int(contacts.soft_contact_count.numpy()[0])
+    rec_idx = contacts.soft_contact_indices.numpy()[:total]
+    n_edge_rec = int(np.sum((rec_idx[:, 1] >= 0) & (rec_idx[:, 2] < 0)))
+    n_face_rec = int(np.sum(rec_idx[:, 2] >= 0))
+    test.assertGreater(n_edge_rec + n_face_rec, 0)  # the scene actually generates contacts
+
+    # Brute-force ground truth: min phi per (shape, feature) using the same eval_shape_sdf.
+    face_min = wp.empty(n_shapes * n_tris, dtype=float, device=device)
+    edge_min = wp.empty(n_shapes * n_edges, dtype=float, device=device)
+    shape_args = [
+        model.shape_body,
+        model.shape_type,
+        model.shape_flags,
+        model.shape_transform,
+        model.shape_scale,
+        state.body_q,
+        model._shape_sdf_index,
+        model._texture_sdf_data,
+    ]
+    # MeshAdjacency.edge_indices is host numpy; upload for the brute-force kernel.
+    edge_indices_dev = wp.array(
+        np.ascontiguousarray(model.soft_mesh_adjacency.edge_indices, dtype=np.int32), dtype=wp.int32, device=device
+    )
+    wp.launch(
+        _brute_face_min_kernel,
+        dim=n_shapes * n_tris,
+        inputs=[n_tris, state.particle_q, model.tri_indices, *shape_args, 40],
+        outputs=[face_min],
+        device=device,
+    )
+    wp.launch(
+        _brute_edge_min_kernel,
+        dim=n_shapes * n_edges,
+        inputs=[n_edges, state.particle_q, edge_indices_dev, *shape_args, 200],
+        outputs=[edge_min],
+        device=device,
+    )
+    face_min = face_min.numpy().reshape(n_shapes, n_tris)
+    edge_min = edge_min.numpy().reshape(n_shapes, n_edges)
+
+    # Emitted records self-describe via -1 padding; map each back to its (shape, feature) by matching
+    # its corner set to the mesh's triangles / edges (records store particle ids, not a feature id).
+    rec_shape = contacts.soft_contact_shape.numpy()[:total]
+    tri_np = model.tri_indices.numpy()
+    tri_by_corners = {frozenset(int(x) for x in tri_np[t]): t for t in range(n_tris)}
+    adj_edges = np.asarray(model.soft_mesh_adjacency.edge_indices)  # matches edge_min's indexing
+    edge_by_endpoints = {frozenset((int(adj_edges[e, 2]), int(adj_edges[e, 3]))): e for e in range(n_edges)}
+    edge_owner = np.asarray(model.soft_mesh_adjacency.edge_tri_indices)[:, 0]
+
+    emitted_faces = set()
+    emitted_edge_owner = Counter()
+    for i in range(total):
+        c = rec_idx[i]
+        if int(c[2]) >= 0:  # face record (v0, v1, v2)
+            t = tri_by_corners.get(frozenset(int(x) for x in c))
+            if t is not None:
+                emitted_faces.add((int(rec_shape[i]), t))
+        elif int(c[1]) >= 0:  # edge record (v0, v1, -1)
+            e = edge_by_endpoints.get(frozenset((int(c[0]), int(c[1]))))
+            if e is not None:
+                emitted_edge_owner[(int(rec_shape[i]), int(edge_owner[e]))] += 1
+
+    delta = 0.03  # margin band: optimizer tail + brute grid step; borderline cases are not asserted
+
+    # Faces match exactly on (shape, tri).
+    for s in range(n_shapes):
+        for t in range(n_tris):
+            if face_min[s, t] < margin - delta:
+                test.assertIn(
+                    (s, t), emitted_faces, f"false negative: face (shape {s}, tri {t}) phi={face_min[s, t]:.4f}"
+                )
+    for s, t in emitted_faces:
+        test.assertLess(face_min[s, t], margin + delta, f"false positive: face (shape {s}, tri {t})")
+
+    # Edges: one record per near owned edge, but the bary degenerates to a vertex when the contact is
+    # at an endpoint, so match by owner triangle + count. For each (shape, owner-tri) the number of
+    # emitted edge records must lie within [#edges clearly inside, #edges possibly inside].
+    for s in range(n_shapes):
+        for t in range(n_tris):
+            near_lo = sum(1 for e in range(n_edges) if edge_owner[e] == t and edge_min[s, e] < margin - delta)
+            near_hi = sum(1 for e in range(n_edges) if edge_owner[e] == t and edge_min[s, e] < margin + delta)
+            got = emitted_edge_owner[(s, t)]
+            test.assertGreaterEqual(got, near_lo, f"false negative: edges of (shape {s}, tri {t}): {got} < {near_lo}")
+            test.assertLessEqual(got, near_hi, f"false positive: edges of (shape {s}, tri {t}): {got} > {near_hi}")
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_end_to_end_no_false_pos_neg",
+    test_end_to_end_no_false_pos_neg,
+    devices=soft_devices,
+    check_output=False,  # CPU emits a benign warning when the mesh's texture SDF cannot be provisioned
+)
+
+
+def test_graph_capture_stable(test, device):
+    """A flag-on collide is CUDA-graph-capturable and replays to identical soft-contact counts."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(
+        body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5
+    )
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.4, -0.4, 0.45),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()
+    state = model.state()
+
+    # Warm up so all kernels are compiled before capture.
+    pipeline.collide(state, contacts)
+    counts0 = contacts.soft_contact_count.numpy().copy()
+    total0 = int(counts0[0])
+    test.assertGreater(int(np.sum(contacts.soft_contact_indices.numpy()[:total0][:, 1] >= 0)), 0)
+
+    # Capture the flag-on collide and replay it; counts must be stable across replays.
+    with wp.ScopedCapture(device) as capture:
+        pipeline.collide(state, contacts)
+    for _ in range(3):
+        wp.capture_launch(capture.graph)
+        test.assertTrue(np.array_equal(contacts.soft_contact_count.numpy(), counts0))
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_graph_capture_stable",
+    test_graph_capture_stable,
+    devices=get_cuda_test_devices(),
+)
+
+
+def test_face_cull_uses_max_vertex_reach(test, device):
+    """Regression: the FACE cull reach must be the max centroid-to-vertex distance, not circumradius.
+
+    A deliberately non-equilateral triangle whose near vertex is also the one *farthest* from the
+    centroid, so circumradius (~0.124) is smaller than the true reach (~0.163). The near vertex sits
+    inside the sphere's contact margin (phi ~= 0.005 < 0.01), so a real FACE contact exists -- but the
+    centroid SDF (~0.168) exceeds ``margin + circumradius`` (~0.134), so the old circumradius cull
+    dropped the whole triangle. The correct reach keeps it (``margin + reach`` ~= 0.173 > 0.168).
+    A sphere gives an unambiguous radial SDF, so the culled point is genuinely within margin.
+    """
+    builder = newton.ModelBuilder()
+    builder.add_shape_sphere(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.1)
+    # Near vertex b0 (just outside the sphere along +x) is farthest from the centroid; the a0/c0
+    # cluster sits far out along +x, making the triangle strongly non-equilateral.
+    b0 = builder.add_particle(wp.vec3(0.105, 0.0, 0.0), wp.vec3(0.0), 0.0, radius=0.0)
+    a0 = builder.add_particle(wp.vec3(0.35, 0.03, 0.0), wp.vec3(0.0), 0.0, radius=0.0)
+    c0 = builder.add_particle(wp.vec3(0.35, -0.03, 0.0), wp.vec3(0.0), 0.0, radius=0.0)
+    builder.add_triangle(b0, a0, c0)
+
+    builder.color()
+    configure_sdf_for_collision_shapes(builder)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.01, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()
+    state = model.state()
+
+    pipeline.collide(state, contacts)
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    n_face = int(np.sum(idx[:, 2] >= 0))  # face records are (v0, v1, v2)
+    test.assertGreater(
+        n_face, 0, "FACE contact wrongly culled: the cull reach must be the max centroid-to-vertex distance"
+    )
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_face_cull_uses_max_vertex_reach",
+    test_face_cull_uses_max_vertex_reach,
+    devices=soft_devices,
+)
+
+
+def test_edge_face_pairs_respect_worlds(test, device):
+    """Multi-world: the full-surface edge/face candidate pairs never cross worlds.
+
+    Two worlds, each a box + a triangle. The edge/face pair builders must emit exactly the
+    world-compatible (feature, shape) pairs (same world, or either global -1) -- matching a
+    brute-force reference -- and must strictly exclude the cross-world combinations, mirroring the
+    particle path's ``_build_soft_particle_rigid_contact_pairs``.
+    """
+
+    def _sub():
+        # A cloth grid (not a bare triangle) so finalize builds soft-mesh edge adjacency.
+        b = newton.ModelBuilder()
+        b.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5)
+        b.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.2,
+            cell_y=0.2,
+            mass=0.1,
+        )
+        return b
+
+    builder = newton.ModelBuilder()
+    builder.add_world(_sub())
+    builder.add_world(_sub())
+    model = builder.finalize(device=device)
+
+    edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
+    face_pairs = _build_soft_face_rigid_contact_pairs(model)
+    pw = model.particle_world.numpy()
+    sw = model.shape_world.numpy()
+    tri = model.tri_indices.numpy()
+    owner = np.asarray(model.soft_mesh_adjacency.edge_tri_indices)[:, 0]
+    n_shapes = int(model.shape_count)
+    n_tris = int(model.tri_count)
+    n_edges = int(model.soft_mesh_adjacency.edge_indices.shape[0])
+
+    # The setup must actually span multiple worlds, else there is nothing to isolate.
+    test.assertGreaterEqual(len(set(pw.tolist())), 2)
+
+    def _compat(feature_world, s):
+        return feature_world == sw[s] or feature_world < 0 or sw[s] < 0
+
+    face_world = pw[tri[:, 0]]
+    expected_face = {(t, s) for t in range(n_tris) for s in range(n_shapes) if _compat(face_world[t], s)}
+    test.assertEqual({tuple(int(v) for v in p) for p in face_pairs.numpy()}, expected_face)
+
+    edge_world = pw[tri[owner, 0]]
+    expected_edge = {(e, s) for e in range(n_edges) for s in range(n_shapes) if _compat(edge_world[e], s)}
+    test.assertEqual({tuple(int(v) for v in p) for p in edge_pairs.numpy()}, expected_edge)
+
+    # Filtering must drop the cross-world combinations (fewer than the naive full cross product).
+    test.assertLess(len(face_pairs), n_tris * n_shapes)
+    test.assertLess(len(edge_pairs), n_edges * n_shapes)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_edge_face_pairs_respect_worlds",
+    test_edge_face_pairs_respect_worlds,
+    devices=soft_devices,
 )
 
 
