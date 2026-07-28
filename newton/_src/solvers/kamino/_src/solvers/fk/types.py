@@ -33,8 +33,8 @@ wp.set_module_options({"enable_backward": False})
 class FKJointDoFType(IntEnum):
     """
     Joint dof types for the FK solver, which currently differs from Kamino's main joint types
-    by the addition of the axis joint, used to regularize tie rods between two spherical joints
-    (taking out the rotation dof about their own axis).
+    by the addition of the axis joint, used to regularize tie rods between two pure 3-DoF
+    rotation joints (taking out the rotation dof about their own axis).
 
     Importantly, the integer value is the same for all joints not specific to FK, allowing seamless
     conversions.
@@ -48,7 +48,8 @@ class FKJointDoFType(IntEnum):
     SPHERICAL = 5
     CARTESIAN = 6
     FIXED = 7
-    AXIS = 8
+    ROTATION_VECTOR = 8
+    AXIS = 9
 
 
 class ForwardKinematicsPreconditionerType(IntEnum):

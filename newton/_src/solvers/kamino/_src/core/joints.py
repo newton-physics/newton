@@ -418,6 +418,18 @@ class JointDoFType(IntEnum):
         6D vector: {`T_x`, `T_y`, `T_z`, `R_x`, `R_y`, `R_z`}
     """
 
+    ROTATION_VECTOR = 8
+    """
+    A 3-DoF D6 joint using canonical exponential-map coordinates.
+
+    Coordinates:
+        3D rotation vector about the local x, y, and z axes
+    DoFs:
+        3D relative angular velocity about the local x, y, and z axes
+    Constraints:
+        3D vector: {`T_x`, `T_y`, `T_z`}
+    """
+
     ###
     # Operations
     ###
@@ -431,6 +443,11 @@ class JointDoFType(IntEnum):
     def __repr__(self):
         """Returns a string representation of the joint DoF type."""
         return self.__str__()
+
+    @property
+    def is_pure_three_dof_rotation(self) -> bool:
+        """Whether the joint has exactly three rotational DoFs and no translational DoFs."""
+        return self.num_dofs == 3 and self.dofs_axes == (3, 4, 5)
 
     @property
     def num_coords(self) -> int:
@@ -449,6 +466,8 @@ class JointDoFType(IntEnum):
             return 2  # 2D angles
         elif self.value == self.SPHERICAL:
             return 4  # 4D unit-quaternion
+        elif self.value == self.ROTATION_VECTOR:
+            return 3  # 3D rotation vector
         elif self.value == self.CARTESIAN:
             return 3  # 3D distances
         elif self.value == self.FIXED:
@@ -472,6 +491,8 @@ class JointDoFType(IntEnum):
         elif self.value == self.UNIVERSAL:
             return 2  # 2D angular velocities
         elif self.value == self.SPHERICAL:
+            return 3  # 3D angular velocities
+        elif self.value == self.ROTATION_VECTOR:
             return 3  # 3D angular velocities
         elif self.value == self.CARTESIAN:
             return 3  # 3D linear velocities
@@ -497,6 +518,8 @@ class JointDoFType(IntEnum):
             return 4  # 4D vector for `{R_x, R_y, R_z, R_w}`
         elif self.value == self.SPHERICAL:
             return 3  # 3D vector for `{R_x, R_y, R_z}`
+        elif self.value == self.ROTATION_VECTOR:
+            return 3  # 3D vector for `{T_x, T_y, T_z}`
         elif self.value == self.CARTESIAN:
             return 3  # 3D vector for `{T_x, T_y, T_z}`
         elif self.value == self.FIXED:
@@ -520,6 +543,8 @@ class JointDoFType(IntEnum):
         elif self.value == self.UNIVERSAL:
             return wp.constant(wp.vec4i(0, 1, 2, 5))
         elif self.value == self.SPHERICAL:
+            return wp.constant(wp.vec3i(0, 1, 2))
+        elif self.value == self.ROTATION_VECTOR:
             return wp.constant(wp.vec3i(0, 1, 2))
         elif self.value == self.CARTESIAN:
             return wp.constant(wp.vec3i(3, 4, 5))
@@ -545,6 +570,8 @@ class JointDoFType(IntEnum):
             return wp.constant(wp.vec2i(3, 4))
         elif self.value == self.SPHERICAL:
             return wp.constant(wp.vec3i(3, 4, 5))
+        elif self.value == self.ROTATION_VECTOR:
+            return wp.constant(wp.vec3i(3, 4, 5))
         elif self.value == self.CARTESIAN:
             return wp.constant(wp.vec3i(0, 1, 2))
         elif self.value == self.FIXED:
@@ -569,6 +596,8 @@ class JointDoFType(IntEnum):
             return wp.vec2f
         elif self.value == self.SPHERICAL:
             return wp.vec4f
+        elif self.value == self.ROTATION_VECTOR:
+            return wp.vec3f
         elif self.value == self.CARTESIAN:
             return wp.vec3f
         elif self.value == self.FIXED:
@@ -593,6 +622,8 @@ class JointDoFType(IntEnum):
             return wp.vec2f
         elif self.value == self.SPHERICAL:
             return wp.quatf
+        elif self.value == self.ROTATION_VECTOR:
+            return wp.vec3f
         elif self.value == self.CARTESIAN:
             return wp.vec3f
         elif self.value == self.FIXED:
@@ -617,6 +648,8 @@ class JointDoFType(IntEnum):
             return [0.0, 0.0]
         elif self.value == self.SPHERICAL:
             return [0.0, 0.0, 0.0, 1.0]
+        elif self.value == self.ROTATION_VECTOR:
+            return [0.0, 0.0, 0.0]
         elif self.value == self.CARTESIAN:
             return [0.0, 0.0, 0.0]
         elif self.value == self.FIXED:
@@ -643,6 +676,8 @@ class JointDoFType(IntEnum):
             return [rotation_bound, rotation_bound]
         elif self.value == self.SPHERICAL:
             return [JOINT_QMAX] * 4
+        elif self.value == self.ROTATION_VECTOR:
+            return [wp.pi] * 3
         elif self.value == self.CARTESIAN:
             return [JOINT_QMAX] * 3
         elif self.value == self.FIXED:
@@ -676,6 +711,7 @@ class JointDoFType(IntEnum):
             JointDoFType.CARTESIAN: JointType.D6,
             JointDoFType.CYLINDRICAL: JointType.D6,
             JointDoFType.UNIVERSAL: JointType.D6,
+            JointDoFType.ROTATION_VECTOR: JointType.D6,
         }
         joint_type = _MAP_TO_NEWTON.get(dof_type, None)
         if joint_type is None:
@@ -770,7 +806,7 @@ class JointDoFType(IntEnum):
             elif q_count == 3 and qd_count == 3 and dof_dim == (3, 0):
                 dof_type = JointDoFType.CARTESIAN
             elif q_count == 3 and qd_count == 3 and dof_dim == (0, 3):
-                raise ValueError("Unsupported joint type: GIMBAL joints are not currently supported.")
+                dof_type = JointDoFType.ROTATION_VECTOR
             elif q_count == 4 and qd_count == 3 and dof_dim == (0, 3):
                 dof_type = JointDoFType.SPHERICAL
             elif q_count == 7 and qd_count == 6:
@@ -851,7 +887,7 @@ class JointDoFType(IntEnum):
         elif q_count == 3 and qd_count == 3 and dof_dim == wp.vec2i(3, 0):
             return JointDoFType.CARTESIAN
         elif q_count == 3 and qd_count == 3 and dof_dim == wp.vec2i(0, 3):
-            return -1
+            return JointDoFType.ROTATION_VECTOR
         elif q_count == 4 and qd_count == 3 and dof_dim == wp.vec2i(0, 3):
             return JointDoFType.SPHERICAL
         elif q_count == 7 and qd_count == 6:
@@ -889,6 +925,8 @@ class JointDoFType(IntEnum):
             return 2  # 2D angles
         elif dof_type == JointDoFType.SPHERICAL:
             return 4  # 4D unit-quaternion
+        elif dof_type == JointDoFType.ROTATION_VECTOR:
+            return 3  # 3D rotation vector
         elif dof_type == JointDoFType.CARTESIAN:
             return 3  # 3D distances
         elif dof_type == JointDoFType.FIXED:
@@ -919,6 +957,8 @@ class JointDoFType(IntEnum):
         elif dof_type == JointDoFType.UNIVERSAL:
             return 2  # 2D angular velocities
         elif dof_type == JointDoFType.SPHERICAL:
+            return 3  # 3D angular velocities
+        elif dof_type == JointDoFType.ROTATION_VECTOR:
             return 3  # 3D angular velocities
         elif dof_type == JointDoFType.CARTESIAN:
             return 3  # 3D linear velocities
@@ -951,6 +991,8 @@ class JointDoFType(IntEnum):
             return 4  # 4D vector for `{R_x, R_y, R_z, R_w}`
         elif dof_type == JointDoFType.SPHERICAL:
             return 3  # 3D vector for `{R_x, R_y, R_z}`
+        elif dof_type == JointDoFType.ROTATION_VECTOR:
+            return 3  # 3D vector for `{T_x, T_y, T_z}`
         elif dof_type == JointDoFType.CARTESIAN:
             return 3  # 3D vector for `{T_x, T_y, T_z}`
         elif dof_type == JointDoFType.FIXED:
@@ -996,6 +1038,18 @@ class JointDoFType(IntEnum):
             R_axis_j = wp.matrix_from_cols(ax, ay, az)
         elif dof_type == JointDoFType.SPHERICAL:
             R_axis_j = wp.matrix_from_cols(dof_axes[0], dof_axes[1], dof_axes[2])
+        elif dof_type == JointDoFType.ROTATION_VECTOR:
+            axis_x_is_canonical = (
+                wp.abs(dof_axes[0][0] - 1.0) < 1e-6 and wp.abs(dof_axes[0][1]) < 1e-6 and wp.abs(dof_axes[0][2]) < 1e-6
+            )
+            axis_y_is_canonical = (
+                wp.abs(dof_axes[1][0]) < 1e-6 and wp.abs(dof_axes[1][1] - 1.0) < 1e-6 and wp.abs(dof_axes[1][2]) < 1e-6
+            )
+            axis_z_is_canonical = (
+                wp.abs(dof_axes[2][0]) < 1e-6 and wp.abs(dof_axes[2][1]) < 1e-6 and wp.abs(dof_axes[2][2] - 1.0) < 1e-6
+            )
+            axes_are_canonical = axis_x_is_canonical and axis_y_is_canonical and axis_z_is_canonical
+            assert axes_are_canonical, "Rotation-vector joint axes must be canonical +X/+Y/+Z"
         elif dof_type == JointDoFType.CARTESIAN:
             R_axis_j = wp.matrix_from_cols(dof_axes[0], dof_axes[1], dof_axes[2])
         elif dof_type == JointDoFType.FREE:
@@ -1458,13 +1512,15 @@ class JointDescriptor(Descriptor):
         # Validate that the specified parameters are valid
         self._check_parameter_values()
 
-        # TODO: Add support for dynamic multi-dof joints in the future.
-        # Ensure that only revolute and prismatic joints are dynamically constrained
-        supported_implicit_joint_types = (JointDoFType.REVOLUTE, JointDoFType.PRISMATIC)
+        supported_implicit_joint_types = (
+            JointDoFType.REVOLUTE,
+            JointDoFType.PRISMATIC,
+            JointDoFType.ROTATION_VECTOR,
+        )
         if (self.is_dynamic or self.is_implicit_pd) and self.dof_type not in supported_implicit_joint_types:
             raise ValueError(
                 "Invalid joint: Kamino currently supports dynamic/implicit joints "
-                f"for those that are REVOLUTE or PRISMATIC (name={self.name}, uid={self.uid})."
+                f"for REVOLUTE, PRISMATIC, or ROTATION_VECTOR types (name={self.name}, uid={self.uid})."
             )
 
         # TODO: Add more checks based on JointDoFType because how do we

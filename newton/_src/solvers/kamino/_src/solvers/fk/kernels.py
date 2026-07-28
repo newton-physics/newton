@@ -12,6 +12,7 @@ import warp as wp
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.math import (
     G_of,
+    quat_exp,
     quat_left_jacobian_inverse,
     quat_log,
     unit_quat_apply,
@@ -341,7 +342,7 @@ def _compute_fk_axis_joint_frames(
     joint_1 = axis_joint_1[axis_joint]
     body_q = model_body_q_0[body]
 
-    # Locate both spherical-joint anchors in the tie-rod body frame.
+    # Locate both 3 DoF rotation-joint anchors in the tie-rod body frame.
     local_0 = model_joint_F_r_Fj[joint_0]
     if model_joint_bid_B[joint_0] == body:
         local_0 = model_joint_B_r_Bj[joint_0]
@@ -543,6 +544,10 @@ def _joint_transform_to_coords(
         wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.REVOLUTE))(pos_rel, q_rel, offset, output)
     elif dof_type == FKJointDoFType.SPHERICAL:
         wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.SPHERICAL))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.ROTATION_VECTOR:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.ROTATION_VECTOR))(
+            pos_rel, q_rel, offset, output
+        )
     elif dof_type == FKJointDoFType.UNIVERSAL:
         wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.UNIVERSAL))(pos_rel, q_rel, offset, output)
 
@@ -651,7 +656,10 @@ def _correct_actuator_coords(
     # Apply correction based on DoFs
     dof_type = joints_dof_type[joint_id]
     if (
-        dof_type == FKJointDoFType.CARTESIAN or dof_type == FKJointDoFType.FIXED or dof_type == FKJointDoFType.PRISMATIC
+        dof_type == FKJointDoFType.CARTESIAN
+        or dof_type == FKJointDoFType.FIXED
+        or dof_type == FKJointDoFType.PRISMATIC
+        or dof_type == FKJointDoFType.ROTATION_VECTOR
     ):  # No correction needed
         return
     elif dof_type == FKJointDoFType.CYLINDRICAL:  # Correct angle up to +/- 2 pi
@@ -897,6 +905,16 @@ def _eval_target_relative_transformations(
             elif dof_type_j == FKJointDoFType.SPHERICAL:
                 q_X_B = wp.quat_from_matrix(X_B)
                 q_loc = read_quat_from_array(actuators_q, offset_q_j, normalize_quaternions)
+                q = q_X_B * q_loc * wp.quat_inverse(q_X_B)
+            elif dof_type_j == FKJointDoFType.ROTATION_VECTOR:
+                q_X_B = wp.quat_from_matrix(X_B)
+                q_loc = quat_exp(
+                    wp.vec3f(
+                        actuators_q[offset_q_j],
+                        actuators_q[offset_q_j + 1],
+                        actuators_q[offset_q_j + 2],
+                    )
+                )
                 q = q_X_B * q_loc * wp.quat_inverse(q_X_B)
             elif dof_type_j == FKJointDoFType.UNIVERSAL:
                 q_x = wp.quat_from_axis_angle(wp.vec3f(X_B[:, 0]), actuators_q[offset_q_j])
@@ -2116,6 +2134,10 @@ def _eval_target_constraint_velocities(
         elif dof_type_j == FKJointDoFType.REVOLUTE:
             target_cts_u[wd_id, offset_cts_j + 3] = actuators_u[offset_u_j]
         elif dof_type_j == FKJointDoFType.SPHERICAL:
+            target_cts_u[wd_id, offset_cts_j + 3] = actuators_u[offset_u_j]
+            target_cts_u[wd_id, offset_cts_j + 4] = actuators_u[offset_u_j + 1]
+            target_cts_u[wd_id, offset_cts_j + 5] = actuators_u[offset_u_j + 2]
+        elif dof_type_j == FKJointDoFType.ROTATION_VECTOR:
             target_cts_u[wd_id, offset_cts_j + 3] = actuators_u[offset_u_j]
             target_cts_u[wd_id, offset_cts_j + 4] = actuators_u[offset_u_j + 1]
             target_cts_u[wd_id, offset_cts_j + 5] = actuators_u[offset_u_j + 2]

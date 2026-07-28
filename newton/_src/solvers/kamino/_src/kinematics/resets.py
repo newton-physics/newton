@@ -55,7 +55,10 @@ def make_correct_joint_coords(dof_type: JointDoFType):
         coords_ref: wp.array[wp.float32],
     ) -> Any:  # dof_type.coords_storage_type
         if wp.static(
-            dof_type == JointDoFType.CARTESIAN or dof_type == JointDoFType.FIXED or dof_type == JointDoFType.PRISMATIC
+            dof_type == JointDoFType.CARTESIAN
+            or dof_type == JointDoFType.FIXED
+            or dof_type == JointDoFType.PRISMATIC
+            or dof_type == JointDoFType.ROTATION_VECTOR
         ):
             pass  # No correction needed
 
@@ -172,6 +175,12 @@ def _compute_and_write_joint_coords_and_vel(
     elif dof_type == JointDoFType.FREE:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.FREE))(r_j, q_j, coords_offset, joint_q_ref, joint_q)
         wp.static(make_compute_and_write_joint_vel(JointDoFType.FREE))(q_j, u_j, dofs_offset, joint_u)
+
+    elif dof_type == JointDoFType.ROTATION_VECTOR:
+        wp.static(make_compute_and_write_joint_coords(JointDoFType.ROTATION_VECTOR))(
+            r_j, q_j, coords_offset, joint_q_ref, joint_q
+        )
+        wp.static(make_compute_and_write_joint_vel(JointDoFType.ROTATION_VECTOR))(q_j, u_j, dofs_offset, joint_u)
 
     elif dof_type == JointDoFType.PRISMATIC:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.PRISMATIC))(

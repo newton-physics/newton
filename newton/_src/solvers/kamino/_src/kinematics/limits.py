@@ -230,6 +230,12 @@ def map_joint_coords_to_dofs_spherical(q_j: wp.vec4f) -> wp.vec3f:
 
 
 @wp.func
+def map_joint_coords_to_dofs_rotation_vector(q_j: wp.vec3f) -> wp.vec3f:
+    """Return logarithmic rotation coordinates unchanged in DoF space."""
+    return q_j
+
+
+@wp.func
 def map_joint_coords_to_dofs_cartesian(q_j: wp.vec3f) -> wp.vec3f:
     """No mapping needed for cartesian joints."""
     return q_j
@@ -252,6 +258,8 @@ def get_joint_coords_to_dofs_mapping_function(dof_type: JointDoFType):
         return map_joint_coords_to_dofs_universal
     elif dof_type == JointDoFType.SPHERICAL:
         return map_joint_coords_to_dofs_spherical
+    elif dof_type == JointDoFType.ROTATION_VECTOR:
+        return map_joint_coords_to_dofs_rotation_vector
     elif dof_type == JointDoFType.CARTESIAN:
         return map_joint_coords_to_dofs_cartesian
     elif dof_type == JointDoFType.FIXED:
@@ -361,6 +369,15 @@ def read_joint_coords_map_and_limits(
 
     elif dof_type == JointDoFType.SPHERICAL:
         d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.SPHERICAL))(
+            dofs_offset,
+            coords_offset,
+            model_joint_q_j_min,
+            model_joint_q_j_max,
+            state_joints_q_j,
+        )
+
+    elif dof_type == JointDoFType.ROTATION_VECTOR:
+        d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.ROTATION_VECTOR))(
             dofs_offset,
             coords_offset,
             model_joint_q_j_min,

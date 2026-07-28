@@ -1012,8 +1012,8 @@ class ForwardKinematicsSolverConfig:
 
     add_axis_joints: bool = True
     """
-    Whether to automatically add axis joints to take out superfluous DoFs at tie rods,
-    that otherwise render the FK problem ill-posed.
+    Whether to automatically add axis joints to take out superfluous DoFs at tie rods
+    connected by pure 3-DoF rotation joints, which otherwise render the FK problem ill-posed.
     Changes to this setting after the solver's initialization will have no effect.
     Defaults to `True`.
     """

@@ -13,7 +13,12 @@ import warp as wp
 
 from ..core.data import DataKamino
 from ..core.joints import JointActuationType, JointCorrectionMode, JointDoFType
-from ..core.math import FLOAT32_MAX, quat_log, quat_twist_angle
+from ..core.math import (
+    FLOAT32_MAX,
+    quat_exp,
+    quat_log,
+    quat_twist_angle,
+)
 from ..core.model import ModelKamino
 from ..core.types import (
     vec1f,
@@ -133,6 +138,14 @@ def correct_joint_coord_spherical(
 
 
 @wp.func
+def correct_joint_coord_rotation_vector(
+    q_j_in: wp.vec3f, q_j_ref: wp.vec3f, q_j_limit: wp.vec3f = DEFAULT_LIMIT_V3F
+) -> wp.vec3f:
+    """Keep the principal rotation vector selected by the quaternion logarithm."""
+    return q_j_in
+
+
+@wp.func
 def correct_joint_coord_cartesian(
     q_j_in: wp.vec3f, q_j_ref: wp.vec3f, q_j_limit: wp.vec3f = DEFAULT_LIMIT_V3F
 ) -> wp.vec3f:
@@ -157,6 +170,8 @@ def get_joint_coord_correction_function(dof_type: JointDoFType):
         return correct_joint_coord_universal
     elif dof_type == JointDoFType.SPHERICAL:
         return correct_joint_coord_spherical
+    elif dof_type == JointDoFType.ROTATION_VECTOR:
+        return correct_joint_coord_rotation_vector
     elif dof_type == JointDoFType.CARTESIAN:
         return correct_joint_coord_cartesian
     elif dof_type == JointDoFType.FIXED:
@@ -225,6 +240,12 @@ def map_to_joint_coords_spherical(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec4f:
 
 
 @wp.func
+def map_to_joint_coords_rotation_vector(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec3f:
+    """Return the principal logarithm of the relative rotation."""
+    return quat_log(j_q_j)
+
+
+@wp.func
 def map_to_joint_coords_cartesian(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec3f:
     """Returns the 3D translational."""
     return j_r_j
@@ -247,6 +268,8 @@ def get_joint_coords_mapping_function(dof_type: JointDoFType):
         return map_to_joint_coords_universal
     elif dof_type == JointDoFType.SPHERICAL:
         return map_to_joint_coords_spherical
+    elif dof_type == JointDoFType.ROTATION_VECTOR:
+        return map_to_joint_coords_rotation_vector
     elif dof_type == JointDoFType.CARTESIAN:
         return map_to_joint_coords_cartesian
     elif dof_type == JointDoFType.FIXED:
@@ -311,6 +334,8 @@ def get_joint_constraint_angular_residual_function(dof_type: JointDoFType):
     elif dof_type == JointDoFType.UNIVERSAL:
         return joint_constraint_angular_residual_universal
     elif dof_type == JointDoFType.SPHERICAL:
+        return joint_constraint_angular_residual_free
+    elif dof_type == JointDoFType.ROTATION_VECTOR:
         return joint_constraint_angular_residual_free
     elif dof_type == JointDoFType.CARTESIAN:
         return joint_constraint_angular_residual_fixed
@@ -542,6 +567,21 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
                 data_dq_j,
             )
 
+        elif dof_type == JointDoFType.ROTATION_VECTOR:
+            wp.static(make_typed_write_joint_data(JointDoFType.ROTATION_VECTOR, JointCorrectionMode.NONE))(
+                cts_offset,
+                dofs_offset,
+                coords_offset,
+                j_r_j,
+                j_q_j,
+                j_u_j,
+                q_j_p,
+                data_r_j,
+                data_dr_j,
+                data_q_j,
+                data_dq_j,
+            )
+
         elif dof_type == JointDoFType.CARTESIAN:
             wp.static(make_typed_write_joint_data(JointDoFType.CARTESIAN))(
                 cts_offset,
@@ -672,6 +712,7 @@ def compute_joint_pose_and_relative_motion(
 def compute_and_write_joint_implicit_dynamics(
     # Constants:
     dt: wp.float32,
+    dof_type: wp.int32,
     act_type: wp.int32,
     coords_offset: wp.int32,
     dofs_offset: wp.int32,
@@ -693,6 +734,28 @@ def compute_and_write_joint_implicit_dynamics(
     data_joint_inv_m_j: wp.array[wp.float32],
     data_joint_dq_b_j: wp.array[wp.float32],
 ):
+    q_error = wp.vec3f(0.0)
+    dq_ref = wp.vec3f(0.0)
+    if dof_type == JointDoFType.ROTATION_VECTOR:
+        q = wp.vec3f(
+            data_joint_q_j[coords_offset],
+            data_joint_q_j[coords_offset + 1],
+            data_joint_q_j[coords_offset + 2],
+        )
+        q_ref = wp.vec3f(
+            data_joint_q_j_ref[coords_offset],
+            data_joint_q_j_ref[coords_offset + 1],
+            data_joint_q_j_ref[coords_offset + 2],
+        )
+        dq_ref_authored = wp.vec3f(
+            data_joint_dq_j_ref[dofs_offset],
+            data_joint_dq_j_ref[dofs_offset + 1],
+            data_joint_dq_j_ref[dofs_offset + 2],
+        )
+        q_rel = quat_exp(q_ref) * wp.quat_inverse(quat_exp(q))
+        q_error = quat_log(q_rel)
+        dq_ref = dq_ref_authored
+
     # Iterate over the dynamic constraints of the joint and
     # compute and store the implicit dynamics intermediates
     # TODO: We currently do not handle implicit dynamics of
@@ -720,6 +783,10 @@ def compute_and_write_joint_implicit_dynamics(
         # Retrieve PD control references
         pd_q_j_ref = data_joint_q_j_ref[coords_offset_j]
         pd_dq_j_ref = data_joint_dq_j_ref[dofs_offset_j]
+        pd_q_j_error = pd_q_j_ref - q_j
+        if dof_type == JointDoFType.ROTATION_VECTOR:
+            pd_q_j_error = q_error[j]
+            pd_dq_j_ref = dq_ref[j]
         pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j] if data_joint_tau_j_ref else 0.0
 
         # Compute the implicit joint dynamics intermediates
@@ -729,16 +796,16 @@ def compute_and_write_joint_implicit_dynamics(
             tau_j_tot += pd_tau_j_ff
         elif act_type == JointActuationType.POSITION:
             m_j += dt * k_d_j + dt * dt * k_p_j
-            tau_j_tot += k_p_j * (pd_q_j_ref - q_j)
+            tau_j_tot += k_p_j * pd_q_j_error
         elif act_type == JointActuationType.VELOCITY:
             m_j += dt * k_d_j
             tau_j_tot += k_d_j * pd_dq_j_ref
         elif act_type == JointActuationType.POSITION_VELOCITY:
             m_j += dt * k_d_j + dt * dt * k_p_j
-            tau_j_tot += k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
+            tau_j_tot += k_p_j * pd_q_j_error + k_d_j * pd_dq_j_ref
         elif act_type == JointActuationType.POSITION_VELOCITY_FORCE:
             m_j += dt * k_d_j + dt * dt * k_p_j
-            tau_j_tot += pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
+            tau_j_tot += pd_tau_j_ff + k_p_j * pd_q_j_error + k_d_j * pd_dq_j_ref
         # Enforce minimum mass to avoid division by zero
         m_j = wp.max(1e-6, m_j)
         inv_m_j = 1.0 / m_j
@@ -864,6 +931,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         # for the dynamic constraints of the joint
         compute_and_write_joint_implicit_dynamics(
             dt,
+            dof_type,
             act_type,
             coords_offset,
             dofs_offset,
