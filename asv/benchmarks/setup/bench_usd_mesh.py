@@ -18,7 +18,7 @@ import newton.usd
 # articulation's visuals).
 _GRID_RESOLUTIONS = [64, 256]
 
-# Fraction of corners carrying a hard crease or a UV seam. ``0.0`` is the
+# Fraction of corners carrying both a hard crease and a UV seam. ``0.0`` is the
 # common case for exported visual meshes -- every vertex is already referenced
 # by a single corner, so no corner needs splitting. ``0.25`` forces a quarter
 # of the corners through the sequential clustering fallback.
@@ -48,12 +48,15 @@ def _build_facevarying_mesh(stage, grid: int, split_fraction: float):
     # Jitter stays well inside the 25-degree default threshold, so it never
     # splits on its own; the creases below are what force the fallback.
     corner_normals += rng.normal(scale=0.01, size=corner_normals.shape).astype(np.float32)
-    if split_fraction > 0.0:
-        creased = rng.random(len(indices)) < split_fraction
-        corner_normals[creased] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    creased = rng.random(len(indices)) < split_fraction
+    corner_normals[creased] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     corner_normals /= np.linalg.norm(corner_normals, axis=1, keepdims=True)
 
+    # A UV derived from the vertex position alone gives every corner of a vertex
+    # the same value, which would leave the UV comparison unexercised; offsetting
+    # the creased corners puts a texture seam on the same corners.
     corner_uvs = (points[indices][:, :2] / grid).astype(np.float32)
+    corner_uvs[creased] += np.float32(0.5)
 
     mesh = UsdGeom.Mesh.Define(stage, "/grid")
     mesh.CreatePointsAttr().Set(Vt.Vec3fArray.FromNumpy(points))
