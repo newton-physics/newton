@@ -241,15 +241,8 @@ class ControllerNeuralMLP(Controller):
     Implicit actuation linearizes the network about the current state each
     step (:meth:`prepare_implicit`) and enters the shared implicit solve as
     the linear force law ``tau = c + a*q + b*qd`` (see :attr:`evaluate_force`
-    / :meth:`force_params`). It is limited to the Warp-NN backend with
-    ``history_length == 1``, and depends on a workaround for warp-nn
-    allocating its tensors without ``requires_grad`` — without it, autodiff
-    gradients through multi-layer nets (and, under CUDA graph capture, even
-    single-layer nets) are silently zero.
-
-    TODO: drop the ``requires_grad`` workaround once fixed upstream in
-    warp-nn; extend implicit support to the Torch backend and to input
-    histories (``history_length > 1``).
+    / :meth:`force_params`). Supported only on the Warp-NN backend with
+    ``history_length == 1``.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -428,10 +421,8 @@ class ControllerNeuralMLP(Controller):
         if self._grad_seed is None:
             self._net_input.requires_grad = True
             self._grad_seed = wp.full((self._num_actuators, 1), 1.0, dtype=wp.float32, device=self._device)
-            # Workaround: warp-nn allocates its tensors without requires_grad,
-            # which silently zeroes tape gradients through intermediates and,
-            # under CUDA graph capture, even through the output. Remove once
-            # fixed upstream in warp-nn.
+            # Tape gradients are zero unless every intermediate tensor carries
+            # requires_grad; warp-nn allocates them without it.
             for tensor in self._network._tensors.values():
                 if isinstance(tensor, wp.array) and not tensor.requires_grad:
                     tensor.requires_grad = True

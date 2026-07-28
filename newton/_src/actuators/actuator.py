@@ -14,7 +14,6 @@ from .controllers.base import Controller
 from .delay import Delay
 from .effort_explicit import _EffortExplicit
 from .implicit import ActuatorImplicitOptions, ResponseOracle, _EffortImplicit
-from .implicit_block import _EffortImplicitBlock
 
 
 @wp.kernel
@@ -249,11 +248,7 @@ class Actuator:
             options: Solver options; defaults to
                 :class:`ActuatorImplicitOptions`.
         """
-        if options is not None and options.block_solve:
-            cls = _EffortImplicitBlock
-        else:
-            cls = _EffortImplicit
-        self._strategy = cls(
+        self._strategy = _EffortImplicit(
             self.controller,
             self.clamping,
             effective_inv_mass,
