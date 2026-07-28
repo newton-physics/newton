@@ -12,12 +12,14 @@ curves. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import itertools
 import math
 import warnings
 from dataclasses import replace
 
 import warp as wp
 
+from ..usd.schema_resolver import PrimType
 from .import_usd_deformable_utils import (
     _DEFAULT_CABLE_RADIUS,
     _apply_cable_masses,
@@ -39,6 +41,20 @@ from .import_usd_deformable_utils import (
     _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
 )
+
+
+def _apply_cable_self_collision_filter(builder, bodies, self_collision_enabled: bool) -> None:
+    """Filter all shape pairs among a cable articulation's bodies when self-collision is disabled.
+
+    Adjacent segments are already filtered by the CABLE joints (``collision_filter_parent``);
+    this extends filtering to the non-adjacent pairs, mirroring the general rigid importer.
+    """
+    if self_collision_enabled or len(bodies) < 2:
+        return
+    for b1, b2 in itertools.combinations(bodies, 2):
+        for s1 in builder.body_shapes[b1]:
+            for s2 in builder.body_shapes[b2]:
+                builder.add_shape_collision_filter_pair(s1, s2)
 
 
 def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
@@ -418,6 +434,29 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             body_frame_origin="com",
         )
 
+        # One rod graph is one articulation, so resolve self-collision per component: a welded graph
+        # disables it if ANY member curve prim authors newton:selfCollisionEnabled=False.
+        self_collision_states = {
+            key: bool(
+                ctx.resolver.get_value(
+                    curve_recs[key].prim,
+                    prim_type=PrimType.ARTICULATION,
+                    key="self_collision_enabled",
+                    default=ctx.enable_self_collisions,
+                    verbose=verbose,
+                )
+            )
+            for key in comp_paths
+        }
+        graph_self_collision = all(self_collision_states.values())
+        if not graph_self_collision and any(self_collision_states.values()):
+            warnings.warn(
+                f"cable graph '{cid}': welded cables mix self-collision-enabled and "
+                f"self-collision-disabled curves; the whole graph disables self-collision.",
+                stacklevel=2,
+            )
+        _apply_cable_self_collision_filter(builder, body_ids, graph_self_collision)
+
         # Partition graph bodies back to their owning curve, and rebuild the per-prim anchor
         # maps the curve-to-xform attachment pass reads (point index / segment index -> body).
         per_prim_segments: dict[str, dict[int, tuple[int, float]]] = {}
@@ -627,6 +666,17 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
+        # Each curve in this prim becomes its own articulation via add_rod below, so resolve the
+        # prim's self-collision flag once and apply the filter per curve (not across sibling curves).
+        self_collision_enabled = bool(
+            ctx.resolver.get_value(
+                prim,
+                prim_type=PrimType.ARTICULATION,
+                key="self_collision_enabled",
+                default=ctx.enable_self_collisions,
+                verbose=ctx.verbose,
+            )
+        )
 
         cable_bodies: list[int] = []
         cable_joints: list[int] = []
@@ -719,6 +769,8 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 wrap_in_articulation=True,
                 body_frame_origin="com",
             )
+            # This curve is its own articulation, so filter its own segments' self-collisions here.
+            _apply_cable_self_collision_filter(builder, bodies, self_collision_enabled)
             cable_bodies.extend(bodies)
             cable_joints.extend(joints)
             cable_point_runs.append((start, n, bodies))
