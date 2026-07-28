@@ -37,6 +37,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.suctioncup.box_placements import PlacementConfig, compute_box_placements
 from newton.examples.suctioncup.robot_playback import RobotPlayback
 from newton.examples.suctioncup.surface_gripper import (
     PadShape,
@@ -339,99 +340,6 @@ class DriveTargetRecorder:
         print(f"wrote {len(self.time_log)} rows to {path}")
 
 
-def box_top_world(robot_arm_model, robot_arm_state, ee_body, cup_c, rec_targets, engage_frame):
-    """World position of the box top when the flange is at the given engagement frame's pose.
-
-    FK the arm to the recorded targets at ``engage_frame`` -> flange pose, then offset by the cup
-    contact point (finger-hull deepest along the suction axis, at the cup center ``cup_c``) to where
-    the cups meet the box top.
-    """
-    q = robot_arm_state.joint_q.numpy()
-    q[:NUM_ARM_DOFS] = rec_targets[engage_frame]
-    robot_arm_state.joint_q.assign(q)
-    newton.eval_fk(robot_arm_model, robot_arm_state.joint_q, robot_arm_state.joint_qd, robot_arm_state)
-    tf = robot_arm_state.body_q.numpy()[ee_body]  # flange world pose [px,py,pz,qx,qy,qz,qw]
-    bt = wp.vec3(*tf[:3]) + wp.quat_rotate(
-        wp.quat(*tf[3:7]), wp.vec3(FINGER_HULL_DEEPEST_X, float(cup_c[1]), float(cup_c[2]))
-    )
-    return float(bt[0]), float(bt[1]), float(bt[2])
-
-
-def box_and_pallet_poses(robot_arm_model, robot_arm_state, ee_body, cup_c, robot_playback, engage_index, spec):
-    """World center of the picked box body and of the static pallet it rests on, for the box picked at
-    the ``engage_index``-th engagement. FK the flange there (:func:`box_top_world`) then drop by the box
-    geometry ``spec = ((hx, hy, hz), mass)``."""
-    rec_targets = robot_playback.rec_targets_wp.numpy()
-    top = box_top_world(robot_arm_model, robot_arm_state, ee_body, cup_c, rec_targets, robot_playback.rising[engage_index])
-    (_hx, _hy, hz), _mass = spec
-    box_center = wp.vec3(top[0], top[1], top[2] - hz)  # body center: half a box below the top face
-    pallet_center = wp.vec3(top[0], top[1], top[2] - 2.0 * hz - 0.5)  # pallet directly under the box (half-height 0.5)
-    return box_center, pallet_center
-
-
-@dataclass
-class BoxPlacements:
-    """How to add every pick box to the robot_arm_builder (index 0 the panel, 1.. the crates), plus the pallets."""
-
-    masses: list  # [B] body mass [kg]
-    inertias: list  # [B] body inertia (wp.mat33), solid-box formula
-    dims: list  # [B] (hx, hy, hz) half-extents [m]
-    pick_poses: list  # [B] pose where the cups grip the box (wp.transform)
-    wait_poses: list  # [B] pose where the box is created, before it is moved to its pick pose
-    pallet_poses: list  # static pallet poses to add: the panel's, then the one shared crate pallet
-    pallet_dims: list  # matching (hx, hy, hz) half-extents [m] for each pallet in pallet_poses
-
-
-def _solid_box_inertia(spec):
-    """Diagonal inertia of a uniform solid box ``spec = ((hx, hy, hz), mass)`` about its center."""
-    (hx, hy, hz), mass = spec
-    return wp.mat33(
-        mass / 3.0 * (hy * hy + hz * hz), 0.0, 0.0,
-        0.0, mass / 3.0 * (hx * hx + hz * hz), 0.0,
-        0.0, 0.0, mass / 3.0 * (hx * hx + hy * hy),
-    )
-
-
-def compute_box_placements(robot_arm_builder, robot_playback, ee_body):
-    """Compute how to add every pick box (the panel + all crates) to ``robot_arm_builder``, from the arm's flange
-    pose at each pick engagement (``rising[0]`` the panel, ``rising[n+1]`` the nth crate). Finalizes
-    ``robot_arm_builder`` into an arm-only model for the FK probes, so call it before adding the boxes. The panel
-    is created where it is gripped; each crate is created parked in a line and moved to its grip pose at
-    pick time. The panel gets its own pallet; the crates share one.
-    """
-    robot_arm_model = robot_arm_builder.finalize()  # arm-only model, for the FK placement probes
-    robot_arm_state = robot_arm_model.state()
-    cup_c = np.mean(GRIPPER_PADS, axis=0)  # box top seats at the finger-hull deepest, under the cups
-    p = BoxPlacements([], [], [], [], [], [], [])
-
-    # Panel: created (and gripped) where the cups meet it at the 1st engagement; its own pallet.
-    panel_center, panel_pallet = box_and_pallet_poses(robot_arm_model, robot_arm_state, ee_body, cup_c, robot_playback, 0, PANEL)
-    panel_pose = wp.transform(panel_center, wp.quat_identity())  # panel rests axis-aligned
-    p.masses.append(PANEL[1])
-    p.inertias.append(_solid_box_inertia(PANEL))
-    p.dims.append(PANEL[0])
-    p.pick_poses.append(panel_pose)
-    p.wait_poses.append(panel_pose)  # panel is created at its pick pose (no separate waiting spot)
-    p.pallet_poses.append(wp.transform(panel_pallet, wp.quat_identity()))
-    p.pallet_dims.append(PANEL_PALLET_HALF)  # pallet snug to the panel (see PANEL_PALLET_HALF)
-
-    # Crates: gripped at their own engagement (rising[n+1]); created parked off-scene in a line; the
-    # crates share one static pallet under the (common) grip spot.
-    crate_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)  # crates rest rotated 90deg about z
-    (_chx, _chy, chz), _crate_mass = CRATE
-    for n in range(NUM_CRATES):
-        grip, crate_pallet = box_and_pallet_poses(robot_arm_model, robot_arm_state, ee_body, cup_c, robot_playback, n + 1, CRATE)
-        if n == 0:
-            p.pallet_poses.append(wp.transform(crate_pallet, wp.quat_identity()))  # one shared crate pallet
-            p.pallet_dims.append(CRATE_PALLET_HALF)  # snug pedestal sized to the rotated crate (see CRATE_PALLET_HALF)
-        p.masses.append(CRATE[1])
-        p.inertias.append(_solid_box_inertia(CRATE))
-        p.dims.append(CRATE[0])
-        p.pick_poses.append(wp.transform(grip, crate_quat))
-        p.wait_poses.append(wp.transform(wp.vec3(-3.0, -3.0 - 0.6 * float(n), chz), crate_quat))  # parked, in a line
-    return p
-
-
 def seal_modes_for(gripper, spec):
     """The seal's three spring-damper modes for a gripped box ``spec = ((hx, hy, hz), mass)``, as
     ``(name, omega_n [rad/s], zeta)`` per mode. ``ixx`` is the box's tilt inertia about a horizontal
@@ -481,7 +389,17 @@ class Example:
         # engagement (forward kinematics; see compute_box_placements). Robust to SMOOTHING_SIGMA / cups /
         # recording. Each box is created at its initial pose -- the panel where it is gripped, each crate
         # parked in a line -- and moved to its grip pose at pick time (crate_grip_poses; later).
-        placements = compute_box_placements(builder, self.playback, ee_body)
+        placement_config = PlacementConfig(
+            num_arm_dofs=NUM_ARM_DOFS,
+            finger_hull_deepest_x=FINGER_HULL_DEEPEST_X,
+            gripper_pads=GRIPPER_PADS,
+            panel=PANEL,
+            crate=CRATE,
+            num_crates=NUM_CRATES,
+            panel_pallet_half=PANEL_PALLET_HALF,
+            crate_pallet_half=CRATE_PALLET_HALF,
+        )
+        placements = compute_box_placements(builder, self.playback, ee_body, placement_config)
 
         for pallet_pose, (phx, phy, phz) in zip(placements.pallet_poses, placements.pallet_dims, strict=True):
             # the panel's plain pedestal, then the crate pallet snug to the rotated crate (see compute_box_placements)
