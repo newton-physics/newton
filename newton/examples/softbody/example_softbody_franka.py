@@ -65,7 +65,7 @@ class Example:
         self.soft_contact_kd = 2e-1
         self.self_contact_friction = 0.5
 
-        self.scene = ModelBuilder(gravity=-9.81)
+        self.scene = ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
         self.viewer = viewer
 

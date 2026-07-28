@@ -714,7 +714,9 @@ by joint type:
 - **Roots attached to world with a fixed joint** become MuJoCo mocap
   bodies (whether kinematic or not). MuJoCo has no joint coordinates
   for a fixed root, so Newton drives the pose through
-  ``mjData.mocap_pos`` and ``mjData.mocap_quat`` instead.
+  ``mjData.mocap_pos`` and ``mjData.mocap_quat`` instead. A D6 root
+  with all axes locked (e.g. imported from a generic USD
+  ``PhysicsJoint``) is treated the same way.
 - **World-attached shapes that are not part of an articulation**
   remain ordinary static MuJoCo geometry rather than mocap bodies.
 

@@ -415,7 +415,9 @@ def jcalc_tau(
             # w = joint_qd[dof_start + i]
             # r = joint_q[coord_start + i]
 
-            tau[dof_start + i] = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
+            j = dof_start + i
+            passive_f = -joint_damping[j] * joint_qd[j]
+            tau[j] = -wp.dot(S_s, body_f_s) + joint_f[j] + passive_f
             # tau -= w * target_kd - r * target_ke
 
         return

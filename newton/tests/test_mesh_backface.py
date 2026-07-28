@@ -126,7 +126,9 @@ def _build_collision_only(mesh, shape_type, shape_pos, shape_scale=None, shape_r
 
 def _collide(model, cp, state):
     """Run collision detection and return contacts."""
-    return model.collide(state, collision_pipeline=cp)
+    contacts = cp.contacts()
+    cp.collide(state, contacts)
+    return contacts
 
 
 def _get_contact_normals(contacts):
@@ -187,9 +189,10 @@ def _build_sim_scene(mesh, shape_type, shape_pos, shape_scale=None, shape_rot=No
 
 def _step_sim(model, cp, solver, s0, s1, ctrl, dt=0.005, substeps=1):
     """Advance one frame."""
+    contacts = cp.contacts()
     for _ in range(substeps):
         s0.clear_forces()
-        contacts = model.collide(s0, collision_pipeline=cp)
+        cp.collide(s0, contacts)
         solver.step(s0, s1, ctrl, contacts, dt)
         s0, s1 = s1, s0
     return s0, s1, contacts
@@ -207,12 +210,13 @@ class _SimLoop:
         self.ctrl = ctrl
         self.dt = dt
         self.substeps = substeps
-        self.contacts = model.collide(s0, collision_pipeline=cp)
+        self.contacts = cp.contacts()
+        cp.collide(s0, self.contacts)
 
     def _simulate_frame(self):
         for i in range(self.substeps):
             self.s0.clear_forces()
-            self.model.collide(self.s0, self.contacts, collision_pipeline=self.cp)
+            self.cp.collide(self.s0, self.contacts)
             self.solver.step(self.s0, self.s1, self.ctrl, self.contacts, self.dt)
             if self.substeps % 2 == 1 and i == self.substeps - 1:
                 self.s0.assign(self.s1)

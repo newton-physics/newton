@@ -226,8 +226,10 @@ jobs:
     needs: gpu-unit-tests
     if: ${{ !cancelled() && needs.gpu-unit-tests.result != 'skipped' }}
     runs-on: ubuntu-latest
-    # Same-run artifact downloads use the runtime token, not GITHUB_TOKEN.
-    permissions: {}
+    # Same-run artifact downloads use the runtime token; contents access is
+    # only used to build Codecov's source network for coverage path mapping.
+    permissions:
+      contents: read
     steps:
       # *.blob.core.windows.net is intentionally broad: GitHub artifact storage
       # uses rotating productionresultssaN hosts and harden-runner only supports
@@ -239,11 +241,20 @@ jobs:
           allowed-endpoints: >
             *.blob.core.windows.net:443
             cli.codecov.io:443
+            github.com:443
             ingest.codecov.io:443
             keybase.io:443
             o26192.ingest.us.sentry.io:443
             results-receiver.actions.githubusercontent.com:443
             storage.googleapis.com:443
+      - name: Checkout source for coverage path mapping
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            newton
       - name: Download coverage artifact
         id: download-coverage
         continue-on-error: true
@@ -258,6 +269,7 @@ jobs:
           env_vars: AWS_INSTANCE_TYPE
           files: ./coverage.xml
           flags: unittests
+          plugins: noop
           override_commit: ${{ inputs.ref || github.sha }}
           token: ${{ secrets.CODECOV_TOKEN }}
 

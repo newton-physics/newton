@@ -49,7 +49,7 @@ class Example:
         self.track_gap = args.test
         self.particle_radius = 0.025
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         (
             self.falling_particles_a,
             self.falling_particles_b,
@@ -122,7 +122,8 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.falling_ids = wp.array(self.falling_particles, dtype=int, device=self.model.device)
         self.falling_points = wp.empty(len(self.falling_particles), dtype=wp.vec3, device=self.model.device)

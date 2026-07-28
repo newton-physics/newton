@@ -1258,7 +1258,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     inertia_lower = (1.0 / 6.0) * mass_lower * box_size_lower * box_size_lower
     I_m_lower = wp.mat33(inertia_lower, 0.0, 0.0, 0.0, inertia_lower, 0.0, 0.0, 0.0, inertia_lower)
 
-    builder = newton.ModelBuilder(gravity=-gravity)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
 
     lower_body_indices = []
     upper_body_indices = []

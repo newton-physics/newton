@@ -282,7 +282,6 @@ def assert_builders_equal(
         for m in range(builder1.num_materials):
             test.assertEqual(builder1.materials[m].wid, builder2.materials[m].wid)
             test.assertEqual(builder1.materials[m].mid, builder2.materials[m].mid)
-            test.assertEqual(builder1.materials[m].density, builder2.materials[m].density)
             test.assertEqual(builder1.materials[m].restitution, builder2.materials[m].restitution)
             test.assertEqual(builder1.materials[m].static_friction, builder2.materials[m].static_friction)
             test.assertEqual(builder1.materials[m].dynamic_friction, builder2.materials[m].dynamic_friction)
@@ -406,10 +405,6 @@ def assert_model_info_equal(
         "joint_kinematic_cts_group_offset",
         "base_body_index",
         "base_joint_index",
-        "mass_min",
-        "mass_max",
-        "mass_total",
-        "inertia_total",
     ]
     if excluded:
         array_attributes = [attr for attr in array_attributes if attr not in excluded]
@@ -528,7 +523,6 @@ def assert_model_materials_equal(
 ) -> None:
     assert_scalar_attributes_equal(test, materials0, materials1, ["num_materials"])
     array_attributes = [
-        # "density",
         "restitution",
         "static_friction",
         "dynamic_friction",

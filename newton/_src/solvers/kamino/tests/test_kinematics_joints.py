@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.data import DataKamino
-from newton._src.solvers.kamino._src.core.math import quat_exp, screw, screw_angular, screw_linear
+from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointActuationType, compute_joints_data
 from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
@@ -22,7 +22,7 @@ from newton._src.solvers.kamino.tests import setup_tests, test_context
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 ###
 # Constants
@@ -74,8 +74,8 @@ def _set_joint_follower_body_state(
     r_B = wp.transform_get_translation(p_B)
     q_B = wp.transform_get_rotation(p_B)
     R_B = wp.quat_to_matrix(q_B)
-    v_B = screw_linear(u_B)
-    omega_B = screw_angular(u_B)
+    v_B = wp.spatial_top(u_B)
+    omega_B = wp.spatial_bottom(u_B)
 
     # Define the joint rotation offset
     j_dR_yz_j = wp.vec3f(0.0, THETA_Y_J, THETA_Z_J)  # Joint residual as rotation vector
@@ -107,7 +107,7 @@ def _set_joint_follower_body_state(
 
     # Offset the bose of the body by a fixed amount
     state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=wp.float32)
-    state_body_u_i[bid_F] = screw(v_F_new, omega_F_new)
+    state_body_u_i[bid_F] = wp.spatial_vectorf(*v_F_new, *omega_F_new)
 
 
 ###

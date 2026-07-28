@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from ...geometry import ParticleFlags, ShapeFlags
-from ...sim import ModelFlags, StateFlags
+from ...sim import Model, ModelFlags, StateFlags
 from ..solver import SolverBase
 from .interface import (
     CouplingEndpointKind,
@@ -23,7 +23,7 @@ from .interface import (
 from .model_view import ModelView, _AttributeNamespaceView
 
 if TYPE_CHECKING:
-    from ...sim import Contacts, Control, Model, State
+    from ...sim import Contacts, Control, State
 
 logger = logging.getLogger(__name__)
 
@@ -1975,7 +1975,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _sync_entry_reset_state(self, entry: SolverEntry) -> None:
         """Mirror a reset entry input state to persistent entry buffers."""
         if entry.state_1 is not None and entry.state_1 is not entry.state_0:
-            _copy_state(entry.state_0, entry.state_1)
+            _copy_same_view_state(entry.state_0, entry.state_1)
 
         for entry_state in (entry.state_0, entry.state_1):
             if entry_state is not None:
@@ -2283,7 +2283,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         substep_dt = dt / float(entry.substeps)
         if entry.state_tmp is None:
             raise RuntimeError(f"SolverCoupled.Entry {entry.name!r} is missing a substep scratch state")
-        _copy_state(entry.state_0, entry.state_1)
+        _copy_same_view_state(entry.state_0, entry.state_1)
         state_in = entry.state_1
         state_out = entry.state_tmp
         for substep in range(entry.substeps):
@@ -2292,7 +2292,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.solver.step(state_in, state_out, control, contacts, substep_dt)
             state_in, state_out = state_out, state_in
         if state_in is entry.state_tmp:
-            _copy_state(entry.state_tmp, entry.state_1)
+            _copy_same_view_state(entry.state_tmp, entry.state_1)
         return contacts
 
     def _contacts_for_entry(self, entry: SolverEntry, contacts: Contacts | None) -> Contacts | None:
@@ -2812,6 +2812,43 @@ def _copy_state(src: State, dst: State) -> None:
     if src.joint_q is not None and dst.joint_q is not None:
         _copy_prefix(dst.joint_q, src.joint_q, "joint_q")
         _copy_prefix(dst.joint_qd, src.joint_qd, "joint_qd")
+
+
+def _copy_same_view_state(src: State, dst: State) -> None:
+    """Copy persistent arrays between states allocated from the same model view.
+
+    Core state arrays retain the coupled solver's established copy semantics,
+    while custom namespaced arrays (such as implicit MPM history) are copied in
+    full. Solver-produced top-level output annotations are intentionally not
+    copied; they are not persistent state and may only exist on output buffers.
+    """
+    if src is dst:
+        return
+
+    _copy_state(src, dst)
+
+    src_namespaces = {name: value for name, value in vars(src).items() if isinstance(value, Model.AttributeNamespace)}
+    dst_namespaces = {name: value for name, value in vars(dst).items() if isinstance(value, Model.AttributeNamespace)}
+    for namespace_name in src_namespaces.keys() | dst_namespaces.keys():
+        src_namespace = src_namespaces.get(namespace_name)
+        dst_namespace = dst_namespaces.get(namespace_name)
+        src_arrays = (
+            {}
+            if src_namespace is None
+            else {name: value for name, value in vars(src_namespace).items() if isinstance(value, wp.array)}
+        )
+        dst_arrays = (
+            {}
+            if dst_namespace is None
+            else {name: value for name, value in vars(dst_namespace).items() if isinstance(value, wp.array)}
+        )
+        for array_name in src_arrays.keys() | dst_arrays.keys():
+            qualified_name = f"{namespace_name}.{array_name}"
+            if array_name not in dst_arrays:
+                raise ValueError(f"State is missing array for '{qualified_name}' which is present in the other state.")
+            if array_name not in src_arrays:
+                raise ValueError(f"Other state is missing array for '{qualified_name}' which is present in this state.")
+            dst_arrays[array_name].assign(src_arrays[array_name])
 
 
 def _copy_forces(src: State, dst: State) -> None:

@@ -13,17 +13,7 @@ import warp as wp
 
 from ..core.data import DataKamino
 from ..core.joints import JointActuationType, JointCorrectionMode, JointDoFType
-from ..core.math import (
-    FLOAT32_MAX,
-    TWO_PI,
-    quat_log,
-    quat_to_vec4,
-    quat_twist_angle,
-    screw,
-    screw_angular,
-    screw_linear,
-    squared_norm,
-)
+from ..core.math import FLOAT32_MAX, quat_log, quat_twist_angle
 from ..core.model import ModelKamino
 from ..core.types import (
     vec1f,
@@ -45,7 +35,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -66,15 +56,19 @@ DEFAULT_LIMIT_V7F = vec7f(FLOAT32_MAX)
 
 
 @wp.func
-def correct_rotational_coord(
-    q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0, q_j_limit: wp.float32 = FLOAT32_MAX
-) -> wp.float32:
+def correct_rotational_coord(q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0) -> wp.float32:
     """
     Corrects a rotational joint coordinate to be as close as possible to a reference coordinate.
     """
-    q_j_in += wp.round((q_j_ref - q_j_in) / TWO_PI) * TWO_PI
-    q_j_in = wp.mod(q_j_in, q_j_limit)
-    return q_j_in
+    return q_j_in + wp.round((q_j_ref - q_j_in) / wp.tau) * wp.tau  # Note: wp.tau is 2 * pi
+
+
+@wp.func
+def correct_rotational_coord_with_limit(
+    q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0, q_j_limit: wp.float32 = FLOAT32_MAX
+) -> wp.float32:
+    """Corrects a rotational coordinate relative to a reference and wraps it within a limit."""
+    return wp.mod(correct_rotational_coord(q_j_in, q_j_ref), q_j_limit)
 
 
 @wp.func
@@ -86,7 +80,7 @@ def correct_quat_vector_coord(q_j_in: wp.vec4f, q_j_ref: wp.vec4f) -> wp.vec4f:
     closer to the reference quaternion `q_j_ref`, accounting for the fact
     that quaternions `q` and `-q` represent the same rotation.
     """
-    if squared_norm(q_j_in + q_j_ref) < squared_norm(q_j_in - q_j_ref):
+    if wp.length_sq(q_j_in + q_j_ref) < wp.length_sq(q_j_in - q_j_ref):
         q_j_in *= -1.0
     return q_j_in
 
@@ -101,7 +95,7 @@ def correct_joint_coord_free(q_j_in: vec7f, q_j_ref: vec7f, q_j_limit: vec7f = D
 @wp.func
 def correct_joint_coord_revolute(q_j_in: vec1f, q_j_ref: vec1f, q_j_limit: vec1f = DEFAULT_LIMIT_V1F) -> vec1f:
     """Corrects the rotational joint coordinate."""
-    q_j_in[0] = correct_rotational_coord(q_j_in[0], q_j_ref[0], q_j_limit[0])
+    q_j_in[0] = correct_rotational_coord_with_limit(q_j_in[0], q_j_ref[0], q_j_limit[0])
     return q_j_in
 
 
@@ -116,7 +110,7 @@ def correct_joint_coord_cylindrical(
     q_j_in: wp.vec2f, q_j_ref: wp.vec2f, q_j_limit: wp.vec2f = DEFAULT_LIMIT_V2F
 ) -> wp.vec2f:
     """Corrects only the rotational joint coordinate."""
-    q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
+    q_j_in[1] = correct_rotational_coord_with_limit(q_j_in[1], q_j_ref[1], q_j_limit[1])
     return q_j_in
 
 
@@ -125,8 +119,8 @@ def correct_joint_coord_universal(
     q_j_in: wp.vec2f, q_j_ref: wp.vec2f, q_j_limit: wp.vec2f = DEFAULT_LIMIT_V2F
 ) -> wp.vec2f:
     """Corrects each of the two rotational joint coordinates individually."""
-    q_j_in[0] = correct_rotational_coord(q_j_in[0], q_j_ref[0], q_j_limit[0])
-    q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
+    q_j_in[0] = correct_rotational_coord_with_limit(q_j_in[0], q_j_ref[0], q_j_limit[0])
+    q_j_in[1] = correct_rotational_coord_with_limit(q_j_in[1], q_j_ref[1], q_j_limit[1])
     return q_j_in
 
 
@@ -227,7 +221,7 @@ def map_to_joint_coords_universal(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec2f:
 @wp.func
 def map_to_joint_coords_spherical(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec4f:
     """Returns the 4D unit-quaternion representing the joint rotation."""
-    return quat_to_vec4(j_q_j)
+    return wp.vec4f(*j_q_j)
 
 
 @wp.func
@@ -344,8 +338,10 @@ def convert_angular_vel_to_universal_joint_intermediary_frame(
     a_z = wp.cross(a_x, a_y)
 
     # Project angular velocity into intermediary body frame
-    omega = screw_angular(j_u_j)
-    return screw(screw_linear(j_u_j), wp.vec3f(wp.dot(omega, a_x), wp.dot(omega, a_y), wp.dot(omega, a_z)))
+    omega = wp.spatial_bottom(j_u_j)
+    return wp.spatial_vectorf(
+        *wp.spatial_top(j_u_j), *wp.vec3f(wp.dot(omega, a_x), wp.dot(omega, a_y), wp.dot(omega, a_z))
+    )
 
 
 ###
@@ -400,7 +396,7 @@ def make_typed_write_joint_data(dof_type: JointDoFType, correction: JointCorrect
         if wp.static(num_cts > 0):
             # Construct a 6D residual vector
             j_theta_j = wp.static(get_joint_constraint_angular_residual_function(dof_type))(j_q_j)
-            j_p_j = screw(j_r_j, j_theta_j)
+            j_p_j = wp.spatial_vectorf(*j_r_j, *j_theta_j)
             # Store the joint constraint residuals
             for j in range(num_cts):
                 r_j_out[cts_offset + j] = j_p_j[cts_axes[j]]
@@ -636,14 +632,14 @@ def compute_joint_pose_and_relative_motion(
     # Extract the decomposed state of the Base body
     r_B_j = wp.transform_get_translation(T_B_j)
     q_B_j = wp.transform_get_rotation(T_B_j)
-    v_B_j = screw_linear(u_B_j)
-    omega_B_j = screw_angular(u_B_j)
+    v_B_j = wp.spatial_top(u_B_j)
+    omega_B_j = wp.spatial_bottom(u_B_j)
 
     # Extract the decomposed state of the Follower body
     r_F_j = wp.transform_get_translation(T_F_j)
     q_F_j = wp.transform_get_rotation(T_F_j)
-    v_F_j = screw_linear(u_F_j)
-    omega_F_j = screw_angular(u_F_j)
+    v_F_j = wp.spatial_top(u_F_j)
+    omega_F_j = wp.spatial_bottom(u_F_j)
 
     # Local joint frame quantities
     r_Bj = wp.quat_rotate(q_B_j, B_r_Bj)
@@ -666,7 +662,7 @@ def compute_joint_pose_and_relative_motion(
     # TODO: How can we simplify this expression and make it more efficient?
     j_v_j = wp.quat_rotate_inv(q_Bj, v_F_j - v_B_j + wp.cross(omega_F_j, r_Fj) - wp.cross(omega_B_j, r_Bj + r_j))
     j_omega_j = wp.quat_rotate_inv(q_Bj, omega_F_j - omega_B_j)
-    j_u_j = screw(j_v_j, j_omega_j)
+    j_u_j = wp.spatial_vectorf(*j_v_j, *j_omega_j)
 
     # Return the computed joint frame pose and relative motion vectors
     return p_j, j_r_j, j_q_j, j_u_j
@@ -895,7 +891,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
 @wp.kernel
 def _extract_actuators_state_from_joints(
     # Inputs:
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     model_joint_wid: wp.array[wp.int32],
     model_joint_act_type: wp.array[wp.int32],
     model_joint_coords_offset: wp.array[wp.int32],
@@ -916,7 +912,7 @@ def _extract_actuators_state_from_joints(
     act_type = model_joint_act_type[jid]
 
     # Early exit the operation if the joint's world is flagged as skipped or if the joint is not actuated
-    if not world_mask[wid] or act_type == JointActuationType.PASSIVE:
+    if (world_mask and not world_mask[wid]) or act_type == JointActuationType.PASSIVE:
         return
 
     # Retrieve the joint model data
@@ -1063,11 +1059,11 @@ def compute_joints_data(
 
 def extract_actuators_state_from_joints(
     model: ModelKamino,
-    world_mask: wp.array[wp.bool],
     joint_q: wp.array[wp.float32],
     joint_u: wp.array[wp.float32],
     actuator_q: wp.array[wp.float32],
     actuator_u: wp.array[wp.float32],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Extracts the states of the actuated joints from the full joint state arrays.
@@ -1085,7 +1081,7 @@ def extract_actuators_state_from_joints(
             Shape of ``(sum_of_num_actuated_joint_coords,)``.
         actuator_u: The output array to store the actuated joint velocities.
             Shape of ``(sum_of_actuated_joint_dofs,)``.
-        world_mask: An array indicating which worlds are active (True) or skipped (False).
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
             Shape of ``(num_worlds,)``.
     """
     wp.launch(

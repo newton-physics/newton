@@ -14,7 +14,7 @@ import warp as wp
 from ..._src.core.bodies import update_body_inertias
 from ..._src.core.builder import ModelBuilderKamino
 from ..._src.core.data import DataKamino
-from ..._src.core.math import quat_exp, screw, screw_angular, screw_linear
+from ..._src.core.math import quat_exp
 from ..._src.core.model import ModelKamino
 from ..._src.core.state import StateKamino
 from ..._src.geometry.contacts import ContactsKamino
@@ -48,7 +48,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -337,8 +337,8 @@ def _set_fourbar_body_states(
     R_B = wp.quat_to_matrix(q_B)
 
     # Extract the linear and angular velocity of the Base body
-    v_B = screw_linear(u_B)
-    omega_B = screw_angular(u_B)
+    v_B = wp.spatial_top(u_B)
+    omega_B = wp.spatial_bottom(u_B)
 
     # Define the joint rotation offset
     q_x_j = Q_X_J * wp.pow(-1.0, float(jid))  # Alternate sign for each joint
@@ -372,7 +372,7 @@ def _set_fourbar_body_states(
 
     # Offset the pose of the body by a fixed amount
     state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=wp.float32)
-    state_body_u_i[bid_F] = screw(v_F_new, omega_F_new)
+    state_body_u_i[bid_F] = wp.spatial_vectorf(*v_F_new, *omega_F_new)
 
 
 def set_fourbar_body_states(model: ModelKamino, data: DataKamino):

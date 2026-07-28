@@ -105,7 +105,7 @@ def _run_particle_rollout(device, solver_name):
     solver = _make_particle_solver(model, solver_name)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
-    contacts = model.contacts()
+    contacts = newton.CollisionPipeline(model).contacts()
 
     for _ in range(20):
         state_0.clear_forces()
@@ -127,7 +127,7 @@ def test_particle_determinism(test, device, solver_name):
 
 
 def _build_branching_articulation(device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
     root = builder.add_link()
@@ -156,7 +156,7 @@ def _build_branching_articulation(device):
 
 def _check_mujoco_sparse_articulation_construction(device):
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         joints = []
         parent = -1

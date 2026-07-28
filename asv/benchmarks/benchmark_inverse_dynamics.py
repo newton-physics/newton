@@ -43,7 +43,7 @@ def set_default_pose(model: newton.Model, state: newton.State) -> None:
     tiled) so the Coriolis bias ``C(q, q_dot)*q_dot`` is non-trivial.
     Forward kinematics is evaluated so ``state.body_q`` stays consistent
     with ``state.joint_q`` (the documented precondition of
-    :func:`~newton.eval_inverse_dynamics`).
+    :func:`~newton.eval_inverse_dynamics_passive`).
     """
     world_count = max(model.world_count, 1)
 

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import warp as wp
 import warp.fem as fem
 
@@ -44,6 +46,17 @@ def transform_grains(
 
     p_pos_adv = p_frame @ pos_loc + p_pos
     positions[pid, k] = p_pos_adv
+
+
+@wp.kernel
+def repeat_particle_environment(
+    particle_environment: wp.array[int],
+    grains_per_particle: int,
+    grain_environment: wp.array[int],
+):
+    grain_index = wp.tid()
+    particle_index = grain_index // grains_per_particle
+    grain_environment[grain_index] = particle_environment[particle_index]
 
 
 @fem.integrand
@@ -144,6 +157,9 @@ def update_render_grains(
     grains: wp.array,
     particle_radius: wp.array,
     dt: float,
+    *,
+    particle_environment: wp.array[int] | None = None,
+    temporary_store: fem.TemporaryStore | None = None,
 ):
     """Advect grain samples with the grid velocity and keep them inside the deformed particle.
 
@@ -163,48 +179,76 @@ def update_render_grains(
          grains: 2D array of grain positions per particle to be updated in place.
          particle_radius: Per-particle radius used for projection.
          dt: Time step duration.
+         particle_environment: Per-particle world IDs for isolated multi-world advection.
+         temporary_store: Temporary storage used by grain binning and interpolation.
     """
 
-    if state.velocity_field is None:
+    if getattr(state, "velocity_field", None) is None or grains.size == 0:
         return
+
     grain_pos = grains.flatten()
     domain = fem.Cells(state.velocity_field.space.geometry)
-    grain_pic = fem.PicQuadrature(domain, positions=grain_pos)
+    grain_environment = None
+    try:
+        if particle_environment is not None:
+            grain_environment = fem.borrow_temporary(
+                temporary_store,
+                shape=grain_pos.shape,
+                dtype=int,
+                device=grains.device,
+            )
+            wp.launch(
+                repeat_particle_environment,
+                dim=grain_pos.shape,
+                inputs=[particle_environment, grains.shape[1], grain_environment],
+                device=grains.device,
+            )
 
-    wp.launch(
-        advect_grains_from_particles,
-        dim=grains.shape,
-        inputs=[
-            dt,
-            state_prev.particle_q,
-            state.particle_q,
-            state.mpm.particle_qd_grad,
-            grains,
-        ],
-        device=grains.device,
-    )
+        grain_pic = fem.PicQuadrature(
+            domain,
+            positions=grain_pos,
+            env_indices=grain_environment,
+            temporary_store=temporary_store,
+        )
 
-    fem.interpolate(
-        advect_grains,
-        at=grain_pic,
-        values={
-            "dt": dt,
-            "positions": grain_pos,
-        },
-        fields={
-            "grid_vel": state.velocity_field,
-        },
-        device=grains.device,
-    )
+        wp.launch(
+            advect_grains_from_particles,
+            dim=grains.shape,
+            inputs=[
+                dt,
+                state_prev.particle_q,
+                state.particle_q,
+                state.mpm.particle_qd_grad,
+                grains,
+            ],
+            device=grains.device,
+        )
 
-    wp.launch(
-        project_grains,
-        dim=grains.shape,
-        inputs=[
-            particle_radius,
-            state.particle_q,
-            state.mpm.particle_transform,
-            grains,
-        ],
-        device=grains.device,
-    )
+        fem.interpolate(
+            advect_grains,
+            at=grain_pic,
+            values={
+                "dt": dt,
+                "positions": grain_pos,
+            },
+            fields={
+                "grid_vel": state.velocity_field,
+            },
+            device=grains.device,
+            temporary_store=temporary_store,
+        )
+
+        wp.launch(
+            project_grains,
+            dim=grains.shape,
+            inputs=[
+                particle_radius,
+                state.particle_q,
+                state.mpm.particle_transform,
+                grains,
+            ],
+            device=grains.device,
+        )
+    finally:
+        if grain_environment is not None:
+            grain_environment.release()

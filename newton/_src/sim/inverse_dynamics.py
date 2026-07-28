@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from enum import IntFlag
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -30,7 +29,7 @@ def _compute_body_q_com_kernel(
 
 
 class _InverseDynamicsScratchBuffer:
-    """Internal scratch buffers reused across calls to :func:`eval_inverse_dynamics`.
+    """Internal scratch buffers for :func:`eval_inverse_dynamics_passive`.
 
     Holds the RNEA per-body and per-DOF arrays, the mass-matrix Jacobian
     scratch, and the constant-zero inputs that the compensation passes
@@ -39,8 +38,8 @@ class _InverseDynamicsScratchBuffer:
     the model with a different body, joint, articulation, or DOF count
     requires a new instance.
 
-    All attributes are internal implementation details. Callers must not
-    read from or write to them directly.
+    Instances are allocated for one evaluation and released when it returns.
+    All attributes are internal implementation details.
     """
 
     def __init__(
@@ -99,104 +98,6 @@ class _InverseDynamicsScratchBuffer:
         self.zeros_dof = wp.zeros(jdc, dtype=wp.float32, device=device)
         self.zeros_body = wp.zeros(bc, dtype=wp.spatial_vector, device=device)
         self.zero_gravity = wp.zeros(world_count, dtype=wp.vec3, device=device)
-
-
-class InverseDynamics:
-    """Inverse dynamics quantities for a batch of articulated rigid-body systems."""
-
-    class EvalType(IntFlag):
-        """Bitmask flags selecting which quantities :class:`~newton.InverseDynamics` should compute.
-
-        Flags can be combined with bitwise-or to request multiple quantities
-        simultaneously; :attr:`ALL` is the union of all individual flags.
-        """
-
-        MASS_MATRIX = 1 << 0
-        """Compute the joint-space mass matrix M(q)."""
-
-        GRAVITY_FORCE = 1 << 1
-        """Compute the gravity force ``g(q) = ∂U/∂q``."""
-
-        CORIOLIS_FORCE = 1 << 2
-        """Compute the Coriolis force ``C(q, q_dot)*q_dot``."""
-
-        ALL = MASS_MATRIX | GRAVITY_FORCE | CORIOLIS_FORCE
-        """Compute the mass matrix, gravity force, and Coriolis force."""
-
-    def __init__(
-        self,
-        articulation_count: int,
-        joint_dof_count: int,
-        max_dofs_per_articulation: int,
-        body_count: int,
-        max_joints_per_articulation: int,
-        world_count: int,
-        device: Devicelike | None = None,
-    ):
-        """Allocate output buffers for inverse dynamics.
-
-        The mass matrix is stored in the shape expected by
-        :func:`~newton.eval_mass_matrix`:
-        ``(articulation_count, max_dofs_per_articulation, max_dofs_per_articulation)``.
-        ``max_dofs_per_articulation`` already includes any 6 DOFs contributed by a
-        floating-base root joint.
-
-        The ``gravity_force`` and ``coriolis_force`` buffers share the flat
-        joint-space layout that :attr:`~newton.Model.joint_qd` uses.
-
-        Internal RNEA/Jacobian scratch is allocated once and held privately on
-        this instance; callers do not manage it. Prefer
-        :meth:`Model.inverse_dynamics` over calling this constructor directly.
-
-        Args:
-            articulation_count: Number of articulations (matches
-                :attr:`Model.articulation_count`).
-            joint_dof_count: Total number of joint DOFs across all articulations
-                (matches :attr:`Model.joint_dof_count`).
-            max_dofs_per_articulation: Per-articulation DOF count (inclusive of
-                floating-base root DOFs, if any). Matches
-                :attr:`Model.max_dofs_per_articulation`.
-            body_count: Total number of rigid bodies (matches
-                :attr:`Model.body_count`); sizes the internal RNEA scratch.
-            max_joints_per_articulation: Maximum joints in any articulation
-                (matches :attr:`Model.max_joints_per_articulation`); sizes the
-                internal Jacobian scratch.
-            world_count: Number of simulation worlds (matches
-                :attr:`Model.world_count`); sizes the internal zero-gravity input.
-            device: Warp device on which the buffers are allocated.
-        """
-        ac = articulation_count
-        jdc = joint_dof_count
-        max_dofs = max_dofs_per_articulation
-
-        self.mass_matrix: wp.array3d[wp.float32] = wp.zeros((ac, max_dofs, max_dofs), dtype=wp.float32, device=device)
-        """Joint-space mass matrix M(q) [kg, kg·m, or kg·m^2, depending on the joint types of the row/column DOFs], shape (articulation_count, max_dofs_per_articulation, max_dofs_per_articulation), dtype float."""
-
-        self.gravity_force: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
-        """Gravity force ``g(q) = ∂U/∂q`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
-        The joint-space force a controller must apply to hold the articulation static under gravity."""
-
-        self.coriolis_force: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
-        """Coriolis + centrifugal force ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
-        The joint-space force a controller must apply to maintain the current ``joint_qd`` at zero acceleration in the absence of gravity."""
-
-        self.tau: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
-        """Inverse-dynamics joint force ``tau = M(q)*qddot + C(q, q_dot)*q_dot + g(q)`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
-        Populated by :func:`~newton.eval_inverse_dynamics_force` from the other buffers in this container plus a user-supplied ``qddot``.
-        :func:`~newton.eval_inverse_dynamics` does not write this buffer; it remains zero until
-        :func:`~newton.eval_inverse_dynamics_force` is called."""
-
-        # Internal RNEA/Jacobian scratch, reused across eval_inverse_dynamics
-        # calls. Private implementation detail; not part of the public API.
-        self._scratch = _InverseDynamicsScratchBuffer(
-            body_count=body_count,
-            articulation_count=articulation_count,
-            joint_dof_count=joint_dof_count,
-            max_dofs_per_articulation=max_dofs_per_articulation,
-            max_joints_per_articulation=max_joints_per_articulation,
-            world_count=world_count,
-            device=device,
-        )
 
 
 def _rnea_compensation_pass(
@@ -400,12 +301,11 @@ def _rnea_compensation_pass(
 def _compute_gravity_force(
     model: Model,
     state: State,
-    inverse_dynamics: InverseDynamics,
+    gravity_force: wp.array[wp.float32],
     scratch: _InverseDynamicsScratchBuffer,
     mask: wp.array[bool] | None = None,
 ) -> None:
-    """Compute the gravity force ``g(q) = ∂U/∂q`` into
-    ``inverse_dynamics.gravity_force``.
+    """Compute the gravity force ``g(q) = ∂U/∂q``.
 
     Runs RNEA with joint velocities zeroed and gravity set to
     :attr:`Model.gravity`, producing the joint-space force needed to hold the
@@ -420,7 +320,7 @@ def _compute_gravity_force(
         scratch,
         scratch.zeros_dof,
         model.gravity,
-        inverse_dynamics.gravity_force,
+        gravity_force,
         mask=mask,
     )
 
@@ -428,12 +328,11 @@ def _compute_gravity_force(
 def _compute_coriolis_force(
     model: Model,
     state: State,
-    inverse_dynamics: InverseDynamics,
+    coriolis_force: wp.array[wp.float32],
     scratch: _InverseDynamicsScratchBuffer,
     mask: wp.array[bool] | None = None,
 ) -> None:
-    """Compute the Coriolis force ``C(q, q_dot)*q_dot`` into
-    ``inverse_dynamics.coriolis_force``.
+    """Compute the Coriolis force ``C(q, q_dot)*q_dot``.
 
     Runs RNEA with the current joint velocities and gravity zeroed, producing
     the Coriolis + centrifugal force in joint space.
@@ -447,22 +346,24 @@ def _compute_coriolis_force(
         scratch,
         state.joint_qd,
         scratch.zero_gravity,
-        inverse_dynamics.coriolis_force,
+        coriolis_force,
         mask=mask,
     )
 
 
-def eval_inverse_dynamics(
+def eval_inverse_dynamics_passive(
     model: Model,
     state: State,
-    eval_type: InverseDynamics.EvalType,
-    inverse_dynamics: InverseDynamics,
+    *,
+    mass_matrix: wp.array3d[wp.float32] | None = None,
+    gravity_force: wp.array[wp.float32] | None = None,
+    coriolis_force: wp.array[wp.float32] | None = None,
     mask: wp.array[bool] | None = None,
 ) -> None:
-    """Compute inverse dynamics quantities for an articulation.
+    """Compute passive inverse-dynamics quantities for articulated systems.
 
-    Depending on the flags in ``eval_type``, populates one or more of the
-    output buffers on ``inverse_dynamics``:
+    Each non-``None`` output is computed independently. Omitted outputs are
+    not computed. Callers allocate the requested output arrays:
 
     * ``mass_matrix`` ← the joint-space mass matrix ``M(q)`` [kg, kg·m, or
       kg·m^2, depending on the joint types of the row/column DOFs];
@@ -475,7 +376,7 @@ def eval_inverse_dynamics(
       ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type].
 
     All three quantities follow the standard manipulator-equation convention
-    ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)``.
+    ``tau = M(q)*joint_qdd + C(q,q_dot)*q_dot + g(q)``.
 
     Requires ``state.body_q`` to be consistent with ``state.joint_q``;
     callers must invoke :func:`~newton.eval_fk` (or otherwise update
@@ -486,35 +387,69 @@ def eval_inverse_dynamics(
         loop-closure joints (``EqType.CONNECT``, ``EqType.WELD``, ``EqType.JOINT``)
         play no role in the inverse dynamics evaluation.
 
+        :attr:`~newton.JointType.CABLE` joints are not supported because they
+        do not define generalized coordinates or a motion subspace for this
+        inverse-dynamics formulation.
+
+    .. experimental::
+
     Args:
         model: Model providing articulation topology and inertial parameters.
         state: State providing the current generalized coordinates and velocities.
             ``state.body_q`` must already reflect ``state.joint_q``.
-        eval_type: Bitmask selecting which quantities to compute.
-        inverse_dynamics: Output container whose buffers are written in place;
-            also holds the internal scratch reused across calls.
+        mass_matrix: Optional output for the joint-space mass matrix,
+            shape ``(model.articulation_count, model.max_dofs_per_articulation,
+            model.max_dofs_per_articulation)``, dtype float. The padded rows
+            and columns beyond each articulation's DOF count are zero.
+        gravity_force: Optional output for ``g(q) = ∂U/∂q`` [N or N·m,
+            depending on joint type], shape ``(model.joint_dof_count,)``,
+            dtype float.
+        coriolis_force: Optional output for ``C(q, q_dot)*q_dot`` [N or N·m,
+            depending on joint type], shape ``(model.joint_dof_count,)``,
+            dtype float.
         mask: Optional ``wp.array[bool]`` of shape
             ``(articulation_count,)`` selecting which articulations to
             compute. Entries belonging to unselected articulations are
             zero in the output buffers (mirroring
             :func:`~newton.eval_mass_matrix`'s mask convention). If
             ``None``, all articulations are computed.
+
+    Raises:
+        ValueError: If the model contains a :attr:`~newton.JointType.CABLE`
+            joint, no outputs are requested, or an output or mask has an
+            unexpected shape.
     """
-    if not (eval_type & InverseDynamics.EvalType.ALL):
-        raise ValueError(
-            f"eval_type {eval_type!r} does not include any recognized flag "
-            f"(MASS_MATRIX, GRAVITY_FORCE, CORIOLIS_FORCE)."
-        )
+    if model._has_cable_joints:  # pyright: ignore[reportPrivateUsage]
+        raise ValueError("eval_inverse_dynamics_passive() does not support JointType.CABLE joints.")
 
-    scratch = inverse_dynamics._scratch
+    if mass_matrix is None and gravity_force is None and coriolis_force is None:
+        raise ValueError("At least one inverse-dynamics output must be provided.")
 
-    if eval_type & InverseDynamics.EvalType.MASS_MATRIX:
+    if mass_matrix is not None:
         expected_shape = (model.articulation_count, model.max_dofs_per_articulation, model.max_dofs_per_articulation)
-        if inverse_dynamics.mass_matrix.shape != expected_shape:
-            raise ValueError(
-                f"inverse_dynamics.mass_matrix has shape "
-                f"{inverse_dynamics.mass_matrix.shape}, expected {expected_shape}."
-            )
+        if mass_matrix.shape != expected_shape:
+            raise ValueError(f"mass_matrix has shape {mass_matrix.shape}, expected {expected_shape}.")
+
+    expected_dof_shape = (model.joint_dof_count,)
+    for name, array in (("gravity_force", gravity_force), ("coriolis_force", coriolis_force)):
+        if array is not None and array.shape != expected_dof_shape:
+            raise ValueError(f"{name} has shape {array.shape}, expected {expected_dof_shape}.")
+
+    expected_mask_shape = (model.articulation_count,)
+    if mask is not None and mask.shape != expected_mask_shape:
+        raise ValueError(f"mask has shape {mask.shape}, expected {expected_mask_shape}.")
+
+    scratch = _InverseDynamicsScratchBuffer(
+        body_count=model.body_count,
+        articulation_count=model.articulation_count,
+        joint_dof_count=model.joint_dof_count,
+        max_dofs_per_articulation=model.max_dofs_per_articulation,
+        max_joints_per_articulation=model.max_joints_per_articulation,
+        world_count=model.world_count,
+        device=model.device,
+    )
+
+    if mass_matrix is not None:
         # eval_jacobian zeros scratch.J internally; jcalc_motion_subspace
         # fully overwrites every DOF of scratch.joint_S_s;
         # compute_body_spatial_inertia fully overwrites every body's
@@ -524,27 +459,15 @@ def eval_inverse_dynamics(
         eval_mass_matrix(
             model,
             state,
-            H=inverse_dynamics.mass_matrix,
+            H=mass_matrix,
             J=scratch.J,
             body_I_s=scratch.body_I_s,
             joint_S_s=scratch.joint_S_s,
             mask=mask,
         )
 
-    if eval_type & InverseDynamics.EvalType.GRAVITY_FORCE:
-        expected_shape = (model.joint_dof_count,)
-        if inverse_dynamics.gravity_force.shape != expected_shape:
-            raise ValueError(
-                f"inverse_dynamics.gravity_force has shape "
-                f"{inverse_dynamics.gravity_force.shape}, expected {expected_shape}."
-            )
-        _compute_gravity_force(model, state, inverse_dynamics, scratch, mask=mask)
+    if gravity_force is not None:
+        _compute_gravity_force(model, state, gravity_force, scratch, mask=mask)
 
-    if eval_type & InverseDynamics.EvalType.CORIOLIS_FORCE:
-        expected_shape = (model.joint_dof_count,)
-        if inverse_dynamics.coriolis_force.shape != expected_shape:
-            raise ValueError(
-                f"inverse_dynamics.coriolis_force has shape "
-                f"{inverse_dynamics.coriolis_force.shape}, expected {expected_shape}."
-            )
-        _compute_coriolis_force(model, state, inverse_dynamics, scratch, mask=mask)
+    if coriolis_force is not None:
+        _compute_coriolis_force(model, state, coriolis_force, scratch, mask=mask)

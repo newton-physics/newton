@@ -61,8 +61,9 @@ class Example:
         msg.info("total diag inertia: %f", self.builder.worlds[0].inertia_total)
 
         # Set gravity
-        for w in range(self.builder.num_worlds):
-            self.builder.gravity[w].enabled = gravity
+        if not gravity:
+            for w in range(self.builder.num_worlds):
+                self.builder.set_gravity(wp.vec3f(0.0), w)
 
         # Set solver config
         config = Simulator.Config()
@@ -253,7 +254,7 @@ if __name__ == "__main__":
         device = wp.get_preferred_device()
 
     # Determine if CUDA graphs should be used for execution
-    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device) and not wp.config.verify_cuda
     use_cuda_graph = can_use_cuda_graph and args.cuda_graph
     msg.info(f"can_use_cuda_graph: {can_use_cuda_graph}")
     msg.info(f"use_cuda_graph: {use_cuda_graph}")

@@ -18,6 +18,10 @@ from .types import RenderConfig, RenderLightType, TextureData
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
+# Knuth multiplicative hash constant (2^32 / golden ratio).
+# Typed uint32 so kernel codegen doesn't overflow an int32 constant.
+HASH_MULTIPLIER = wp.uint32(2654435761)
+
 
 def _resolve_fisheye_image_size(
     axis: str,
@@ -225,7 +229,7 @@ def unpack_shape_index_hash_to_rgba_kernel(
     # Knuth multiplicative hash, masked to 24 bits. ``idx + 1`` keeps shape 0
     # away from the all-zero hash that collides with the miss color; the
     # miss sentinel ``0xFFFFFFFF`` wraps back to 0 and intentionally renders black.
-    h = ((idx + wp.uint32(1)) * wp.uint32(2654435761)) & wp.uint32(0xFFFFFF)
+    h = ((idx + wp.uint32(1)) * HASH_MULTIPLIER) & wp.uint32(0xFFFFFF)
     out[n, y, x, 0] = wp.uint8((h >> wp.uint32(16)) & wp.uint32(0xFF))
     out[n, y, x, 1] = wp.uint8((h >> wp.uint32(8)) & wp.uint32(0xFF))
     out[n, y, x, 2] = wp.uint8(h & wp.uint32(0xFF))
@@ -324,6 +328,21 @@ class Utils:
             dtype=wp.float32,
             device=self.__render_context.device,
         )
+
+    def create_forward_depth_image_output(
+        self, width: int, height: int, camera_count: int = 1
+    ) -> wp.array4d[wp.float32]:
+        """Create a forward-depth output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
+
+        Returns:
+            Array of shape ``(world_count, camera_count, height, width)``, dtype ``float32``.
+        """
+        return self.create_depth_image_output(width, height, camera_count)
 
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a shape-index output array for :meth:`~newton.sensors.SensorTiledCamera.update`.

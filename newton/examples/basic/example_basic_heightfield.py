@@ -75,7 +75,8 @@ class Example:
             self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
-            self.contacts = self.model.contacts()
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -92,7 +93,7 @@ class Example:
 
     def simulate(self):
         if not self.use_mujoco_contacts:
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)

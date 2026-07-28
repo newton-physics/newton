@@ -799,6 +799,43 @@ benchmark code from the ``asv/benchmarks`` directory against the code state of t
 the benchmark definitions themselves are not checked out from different branches—only the code being
 benchmarked is.
 
+Simulation benchmark metrics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The nightly robot and policy simulation benchmarks publish several metrics from one cached benchmark run. This
+includes the batched MuJoCo and Kamino KPI workloads, the non-policy DR Legs workload, the pretrained Anymal
+workload, and the XPBD quadruped workload. Companion ``FastMetrics*`` classes reuse the exact factories, scenes,
+solvers, and frame counts of existing aggregate benchmarks. Rendering, IK, inverse dynamics, CPU-backend
+regression, material/contact microbenchmarks, and startup benchmarks are not experience-collection workloads and
+are outside this metric set.
+
+Let ``F`` be the number of measured frames across all samples, ``S`` the number of physics substeps per frame,
+``W`` the world count, ``dt`` the physics timestep in seconds, ``T`` the synchronized complete-step wall time in
+seconds, and ``T_physics`` the workload's synchronized internal physics time. The reported metrics are:
+
+* mean world-step time: ``1000 * T_physics / (F * S * W)`` in ``ms/world-step`` for workloads with an internal
+  timer and ``1000 * T / (F * S * W)`` otherwise;
+* simulation throughput: ``F * S * W / T`` in ``world-steps/s``;
+* real-time factor: ``F * S * W * dt / T``;
+* p95 step time: the 95th percentile of synchronized complete-step times in ``ms/frame``; and
+* steady-state GPU memory in ``MiB``; and
+* mean and maximum MuJoCo solver iteration counts across worlds at the final frame of each measured sample.
+
+The existing KPI mean world-step series keeps its ``track_simulate`` name and definition, and existing
+``time_simulate`` aggregate series remain unchanged. ``world_count`` remains an ASV parameter where applicable,
+while ``sim_dt`` and ``sim_substeps`` are also recorded as tracked values so dashboard results retain the
+configuration needed to interpret throughput and real-time factor. The existing KPI mean series continues to use
+each workload's internal physics timer. Throughput, real-time factor, and p95 metrics time and synchronize the
+complete ``step()`` operation, including any policy or control work it performs.
+
+GPU memory is the decrease in ``Device.free_memory`` between a baseline immediately before the first finalized
+workload is created and a measurement after initialization, CUDA graph capture, and the first complete measured
+sample, while that sample's workload is still live. This device-level delta includes allocations from Warp,
+PyTorch, solver support, and CUDA graphs. Because the measurement is device-wide, runners must provide exclusive
+GPU access during the measurement interval. The remaining samples do not affect this measurement. A benchmark
+fails instead of publishing metrics if its final simulation state is invalid, has non-normalized body rotations,
+or exceeds the workload's body-speed bounds.
+
 Benchmarks can also be run against a range of commits using the ``commit1..commit2`` syntax.
 This is useful for comparing performance across several recent changes:
 

@@ -243,11 +243,17 @@ Collisions
 +-----------------------------------------------+--------------------------------------------------------------+
 | **warp.sim**                                  | **Newton**                                                   |
 +-----------------------------------------------+--------------------------------------------------------------+
-| ``contacts = model.collide(state)``           | ``contacts = model.collide(state)``                          |
+| ``contacts = model.collide(state)``           | ``pipeline.collide(state, contacts)``                        |
 +-----------------------------------------------+--------------------------------------------------------------+
 
-:meth:`~newton.Model.collide` allocates and returns a contacts buffer when ``contacts`` is omitted.
-For more control, create a :class:`~newton.CollisionPipeline` directly.
+Create a :class:`~newton.CollisionPipeline` and its contacts buffer before stepping::
+
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+The compatibility helpers :meth:`~newton.Model.contacts` and
+:meth:`~newton.Model.collide` are deprecated in Newton 1.4.
 
 
 Renderers

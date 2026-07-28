@@ -141,13 +141,18 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
         self.capture()
 
     def capture(self):
+        # SolverStyle3D makes host calls (PCG dot products, BVH refit) that CPU graph capture cannot record
+        if self.solver_type == "style3d" and wp.get_device().is_cpu:
+            self.graph = None
+            return
         with wp.ScopedCapture() as capture:
             self.simulate()
         self.graph = capture.graph
@@ -159,7 +164,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
