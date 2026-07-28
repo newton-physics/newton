@@ -6878,6 +6878,409 @@ def Xform "Articulation" (
         np.testing.assert_allclose(np.array(blue_mesh.color), np.array([1.0, 1.0, 1.0]), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_mesh_material_subset_with_loaded_texture_array(self):
+        """Import a material-subset mesh whose subset texture decodes to an image array.
+
+        Regression test: a subset texture that resolves to a decoded image (a
+        linear-encoded texture that exists on disk) must be tested with
+        ``is not None`` rather than truthiness, which raises ``ValueError`` on a
+        multi-element array.
+        """
+        from PIL import Image
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            texture_path = os.path.join(tmpdir, "tex.png")
+            Image.fromarray(np.full((4, 4, 4), (10, 20, 30, 255), dtype=np.uint8)).save(texture_path)
+
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            body = UsdGeom.Xform.Define(stage, "/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+            mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+            mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)])
+            mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+            mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+            st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+                "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+            )
+            st.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+            red_material = UsdShade.Material.Define(stage, "/Materials/Red")
+            red_shader = UsdShade.Shader.Define(stage, "/Materials/Red/PreviewSurface")
+            red_shader.CreateIdAttr("UsdPreviewSurface")
+            red_shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set((1.0, 0.0, 0.0))
+            red_material.CreateSurfaceOutput().ConnectToSource(red_shader.ConnectableAPI(), "surface")
+
+            # A linear ("raw") texture that exists on disk decodes to a numpy array.
+            tex_material = UsdShade.Material.Define(stage, "/Materials/Tex")
+            tex_shader = UsdShade.Shader.Define(stage, "/Materials/Tex/PreviewSurface")
+            tex_shader.CreateIdAttr("UsdPreviewSurface")
+            albedo = UsdShade.Shader.Define(stage, "/Materials/Tex/Albedo")
+            albedo.CreateIdAttr("UsdUVTexture")
+            albedo.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(texture_path))
+            albedo.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+            albedo.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+            tex_shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+                albedo.ConnectableAPI(), "rgb"
+            )
+            tex_material.CreateSurfaceOutput().ConnectToSource(tex_shader.ConnectableAPI(), "surface")
+
+            red_subset = UsdGeom.Subset.Define(stage, "/Body/VisualMesh/red")
+            red_subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+            red_subset.CreateFamilyNameAttr().Set("materialBind")
+            red_subset.CreateIndicesAttr().Set(Vt.IntArray([0]))
+            UsdShade.MaterialBindingAPI.Apply(red_subset.GetPrim()).Bind(red_material)
+
+            tex_subset = UsdGeom.Subset.Define(stage, "/Body/VisualMesh/tex")
+            tex_subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+            tex_subset.CreateFamilyNameAttr().Set("materialBind")
+            tex_subset.CreateIndicesAttr().Set(Vt.IntArray([1]))
+            UsdShade.MaterialBindingAPI.Apply(tex_subset.GetPrim()).Bind(tex_material)
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(stage)
+
+        self.assertIn("/Body/VisualMesh/tex", result["path_shape_map"])
+        tex_mesh = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh/tex"]]
+        self.assertIsInstance(tex_mesh.texture, np.ndarray)
+        self.assertEqual(np.asarray(tex_mesh.texture).shape[-1], 4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_textured_visual_mesh_uses_white_base_color(self):
+        """A textured full mesh with no scalar color imports with a white base color.
+
+        Regression test: the renderer tints textures by the shape's base color, so
+        a textured mesh must default to white ``(1, 1, 1)``; otherwise the default
+        per-shape palette color stains the texture. Mirrors the material-subset
+        behavior for the non-subset mesh path.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+        st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+        st.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        material = UsdShade.Material.Define(stage, "/Materials/Tex")
+        shader = UsdShade.Shader.Define(stage, "/Materials/Tex/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        albedo = UsdShade.Shader.Define(stage, "/Materials/Tex/Albedo")
+        albedo.CreateIdAttr("UsdUVTexture")
+        albedo.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("albedo.png"))
+        albedo.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("sRGB")
+        albedo.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(albedo.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        self.assertIsNotNone(src.texture)
+        np.testing.assert_allclose(np.array(src.color), np.array([1.0, 1.0, 1.0]))
+
+    def _build_custom_shader_mesh_stage(self, *, with_diffuse: bool):
+        """Build a stage whose mesh binds a non-UsdPreviewSurface shader with map inputs.
+
+        The surface shader always wires a single-channel roughness map (a scalar
+        data map that must not be treated as the base color) and optionally a
+        multi-channel diffuse color map. Exercises the fallback texture search in
+        ``_extract_shader_properties``, which selects the base-color texture by
+        the connected ``UsdUVTexture`` output type *and* a base-color input name.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+        st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+        st.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        material = UsdShade.Material.Define(stage, "/M")
+        surface = UsdShade.Shader.Define(stage, "/M/Surface")
+        surface.CreateIdAttr("MyCustomShader")  # not UsdPreviewSurface -> hits the fallback
+
+        def _uv_texture(name, asset):
+            tex = UsdShade.Shader.Define(stage, f"/M/{name}")
+            tex.CreateIdAttr("UsdUVTexture")
+            tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(asset))
+            tex.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+            tex.CreateOutput("r", Sdf.ValueTypeNames.Float)
+            return tex
+
+        # Scalar data map: consumed from the single-channel ``r`` output.
+        roughness_tex = _uv_texture("RoughTex", "roughness.png")
+        surface.CreateInput("roughness", Sdf.ValueTypeNames.Float).ConnectToSource(roughness_tex.ConnectableAPI(), "r")
+
+        if with_diffuse:
+            # Color map: consumed from the multi-channel ``rgb`` output.
+            diffuse_tex = _uv_texture("DiffuseTex", "diffuse.png")
+            surface.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+                diffuse_tex.ConnectableAPI(), "rgb"
+            )
+
+        material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_fallback_texture_ignores_scalar_data_maps(self):
+        """A shader wiring only a single-channel data map imports no base-color texture.
+
+        Regression test: the fallback texture search must not mistake a scalar data
+        map (here a roughness map consumed from the ``r`` output) for the diffuse
+        texture. Selection is by the connected ``UsdUVTexture`` output type.
+        """
+        stage = self._build_custom_shader_mesh_stage(with_diffuse=False)
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        self.assertIsNone(src.texture)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_fallback_texture_prefers_color_output(self):
+        """The fallback texture search selects the color (``rgb``) map over a scalar data map."""
+        stage = self._build_custom_shader_mesh_stage(with_diffuse=True)
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        self.assertIsInstance(src.texture, str)
+        self.assertTrue(src.texture.endswith("diffuse.png"), src.texture)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_fallback_texture_ignores_connected_normal_map(self):
+        """A normal map connected via the ``rgb`` output must not be read as the base color.
+
+        Regression test: a normal map is conventionally wired as
+        ``UsdUVTexture.outputs:rgb -> shader.inputs:normal`` — a 3-channel
+        connection identical in shape to a diffuse map. Output-channel count
+        alone can't distinguish them, so a non-color input name must exclude it.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+        # UVs present so that any selected texture would actually attach — the
+        # normal map must still be rejected on its own merits, not for lack of UVs.
+        st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+        st.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        material = UsdShade.Material.Define(stage, "/M")
+        surface = UsdShade.Shader.Define(stage, "/M/Surface")
+        surface.CreateIdAttr("MyCustomShader")  # not UsdPreviewSurface -> hits the fallback
+
+        normal_tex = UsdShade.Shader.Define(stage, "/M/NormalTex")
+        normal_tex.CreateIdAttr("UsdUVTexture")
+        normal_tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("normal.png"))
+        normal_tex.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        surface.CreateInput("normal", Sdf.ValueTypeNames.Float3).ConnectToSource(normal_tex.ConnectableAPI(), "rgb")
+
+        material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        self.assertIsNone(src.texture)
+
+    def _build_mdl_shader_mesh_stage(self, texture_inputs: dict):
+        """Build a stage whose mesh binds an MDL-style shader with direct asset parameters.
+
+        MDL materials wire textures as direct asset inputs (e.g. ``diffuse_texture``)
+        rather than connected ``UsdUVTexture`` nodes, so the base-color parameter can
+        only be recognized by name. ``texture_inputs`` maps input name -> asset path.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+        st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+        st.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        material = UsdShade.Material.Define(stage, "/M")
+        shader = UsdShade.Shader.Define(stage, "/M/Mdl")
+        shader.SetSourceAsset(Sdf.AssetPath("OmniPBR.mdl"), "mdl")
+        shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+        for name, asset in texture_inputs.items():
+            shader.CreateInput(name, Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(asset))
+        material.CreateOutput("mdl:surface", Sdf.ValueTypeNames.Token).ConnectToSource(shader.ConnectableAPI(), "out")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mdl_direct_asset_selects_diffuse_texture(self):
+        """An MDL shader's direct ``diffuse_texture`` parameter imports as the base color.
+
+        Regression test: MDL wires textures as direct asset parameters (no
+        ``UsdUVTexture`` node), so the base-color parameter is recognized by name;
+        a ``normalmap_texture`` must not be selected instead.
+        """
+        stage = self._build_mdl_shader_mesh_stage(
+            {"normalmap_texture": "normal.png", "diffuse_texture": "albedo.png", "reflectionroughness_texture": "r.png"}
+        )
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        self.assertIsInstance(src.texture, str)
+        self.assertTrue(src.texture.endswith("albedo.png"), src.texture)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mdl_direct_asset_ignores_non_color_maps(self):
+        """An MDL shader wiring only a normal map imports no base-color texture."""
+        stage = self._build_mdl_shader_mesh_stage({"normalmap_texture": "normal.png"})
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        self.assertIsNone(src.texture)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_loads_alternate_texcoord_set(self):
+        """``get_mesh`` loads UVs from an alternate texcoord set name (``st_0``), not just ``st``.
+
+        Regression test: assets exported from DCC tools often name their UV set
+        ``st_0`` rather than ``st``, and only looking for ``st`` drops the UVs
+        entirely (scrambling any texture mapping).
+        """
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([4])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+        # No "st"; the only texcoord set is "st_0" (faceVarying float2), as authored by many DCC exporters.
+        uv = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st_0", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.faceVarying)
+        uv.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        result = usd.get_mesh(mesh.GetPrim(), load_uvs=True)
+        self.assertIsNotNone(result.uvs, "UVs from the st_0 set should be loaded")
+        self.assertEqual(len(result.uvs), len(result.vertices))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_uses_material_texcoord_set(self):
+        """``get_mesh`` loads the texcoord set the bound material references, not just the first ``st*``.
+
+        A ``UsdUVTexture`` names its primvar via a connected ``UsdPrimvarReader_float2``'s
+        ``varname``; ``get_mesh`` must honor that over the conventional ``st`` set when a
+        mesh carries several UV sets.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([4])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+        api = UsdGeom.PrimvarsAPI(mesh)
+        # Decoy "st" (all zeros) and the real set "st_1" (distinct, non-zero values).
+        decoy = api.CreatePrimvar("st", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.faceVarying)
+        decoy.Set([(0.0, 0.0)] * 4)
+        st1 = api.CreatePrimvar("st_1", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.faceVarying)
+        st1.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        material = UsdShade.Material.Define(stage, "/Mat")
+        shader = UsdShade.Shader.Define(stage, "/Mat/Surface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        texture = UsdShade.Shader.Define(stage, "/Mat/Tex")
+        texture.CreateIdAttr("UsdUVTexture")
+        texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("a.png"))
+        texture.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        reader = UsdShade.Shader.Define(stage, "/Mat/Reader")
+        reader.CreateIdAttr("UsdPrimvarReader_float2")
+        reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st_1")
+        reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+        texture.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(reader.ConnectableAPI(), "result")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(texture.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+        result = usd.get_mesh(mesh.GetPrim(), load_uvs=True)
+        self.assertIsNotNone(result.uvs)
+        # Must load st_1 (has non-zero corners), not the all-zero "st" decoy the naive path would pick.
+        self.assertGreater(float(np.asarray(result.uvs).max()), 0.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_mesh_uses_mdl_uv_space_index_texcoord_set(self):
+        """``get_mesh`` resolves an MDL/OmniPBR ``uv_space_index`` to the ``st_<index>`` set.
+
+        Unlike ``UsdPreviewSurface`` (which wires a ``UsdPrimvarReader``), OmniPBR and
+        other MDL shaders select the texcoord set by integer index via
+        ``inputs:uv_space_index``. get_mesh must map that to ``st_<index>`` and prefer
+        it over the conventional ``st`` set.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([4])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+        api = UsdGeom.PrimvarsAPI(mesh)
+        # Decoy "st" (all zeros) and the real set "st_1" referenced by uv_space_index=1.
+        decoy = api.CreatePrimvar("st", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.faceVarying)
+        decoy.Set([(0.0, 0.0)] * 4)
+        st1 = api.CreatePrimvar("st_1", Sdf.ValueTypeNames.Float2Array, UsdGeom.Tokens.faceVarying)
+        st1.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        material = UsdShade.Material.Define(stage, "/Mat")
+        shader = UsdShade.Shader.Define(stage, "/Mat/OmniPBR")
+        shader.SetSourceAsset(Sdf.AssetPath("OmniPBR.mdl"), "mdl")
+        shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+        shader.CreateInput("uv_space_index", Sdf.ValueTypeNames.Int).Set(1)
+        material.CreateOutput("mdl:surface", Sdf.ValueTypeNames.Token).ConnectToSource(shader.ConnectableAPI(), "out")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+        result = usd.get_mesh(mesh.GetPrim(), load_uvs=True)
+        self.assertIsNotNone(result.uvs)
+        # Must load st_1 (non-zero corners), not the all-zero "st" decoy.
+        self.assertGreater(float(np.asarray(result.uvs).max()), 0.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_subset_splitting_is_independent_of_material_vocabulary(self):
         """Subsets binding unrecognized materials split identically to recognized ones.
 
@@ -12091,6 +12494,71 @@ def Mesh "cube"
         normals = np.asarray(mesh.normals)
         lengths = np.linalg.norm(normals, axis=1)
         np.testing.assert_allclose(lengths, 1.0, atol=1e-5)
+
+    @staticmethod
+    def _define_facevarying_quad(uv_values):
+        """Build a two-triangle quad with +Z faceVarying normals and given faceVarying UVs.
+
+        The two corners at vertex 2 (positions (0,1,0)) share a smooth +Z normal,
+        so they cluster together on normals alone; ``uv_values`` controls whether
+        they also form a UV seam.
+        """
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/quad")
+        mesh.CreatePointsAttr().Set([(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        # Corners: c0->v0, c1->v1, c2->v2, c3->v2, c4->v1, c5->v3.
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 2, 1, 3])
+        api = UsdGeom.PrimvarsAPI(mesh)
+        normals = api.CreatePrimvar("normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.faceVarying)
+        normals.Set([(0, 0, 1)] * 6)
+        uvs = api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying)
+        uvs.Set(uv_values)
+        return stage, mesh.GetPrim()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_vertex_splitting_preserves_uv_seams(self):
+        """Corners sharing a smooth normal but different faceVarying UVs split into separate vertices.
+
+        Regression test: the faceVarying-normal vertex-splitting path keyed
+        clusters on normal direction only, so a texture seam (same position and
+        normal, two UVs) collapsed onto one vertex and one UV was dropped.
+        """
+        # Corner c3 (at vertex 2) carries a UV distinct from c2 -> a seam at vertex 2.
+        # Corners c1 and c4 (at vertex 1) share a UV -> no seam there.
+        _stage, prim = self._define_facevarying_quad([(0, 0), (1, 0), (0, 1), (0.5, 0.5), (1, 0), (1, 1)])
+        mesh = usd.get_mesh(prim, load_normals=True, load_uvs=True)
+
+        vertices = np.asarray(mesh.vertices)
+        uvs = np.asarray(mesh.uvs)
+        # Vertex 2's seam adds one extra vertex (5 instead of the 4 originals).
+        self.assertEqual(len(vertices), 5)
+        self.assertEqual(len(uvs), 5)
+        # Both UVs authored at the seam position (0,1,0) survive.
+        seam = np.all(np.isclose(vertices, (0, 1, 0)), axis=1)
+        seam_uvs = {tuple(np.round(uv, 3)) for uv in uvs[seam]}
+        self.assertEqual(seam_uvs, {(0.0, 1.0), (0.5, 0.5)})
+        # Normals stay unit +Z everywhere.
+        np.testing.assert_allclose(np.asarray(mesh.normals), np.tile((0, 0, 1), (5, 1)), atol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_vertex_splitting_drops_mismatched_facevarying_uvs(self):
+        """faceVarying UVs whose length != corner count are dropped, not indexed out of bounds.
+
+        Regression test: with ``load_normals`` and ``load_uvs`` both set, the
+        vertex-splitting path indexed faceVarying UVs per corner without checking
+        their length, raising ``IndexError`` on assets whose UV set doesn't match
+        the mesh topology.
+        """
+        # 4 UV values for a 6-corner mesh -> a length mismatch that must not crash.
+        _stage, prim = self._define_facevarying_quad([(0, 0), (1, 0), (0, 1), (1, 1)])
+
+        mesh = usd.get_mesh(prim, load_normals=True, load_uvs=True)
+
+        self.assertIsNone(mesh.uvs)
+        self.assertIsNotNone(mesh.normals)
 
 
 class TestTetMesh(unittest.TestCase):
