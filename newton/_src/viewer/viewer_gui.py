@@ -61,9 +61,10 @@ class ViewerGui:
         self._last_fps_time: float = perf_counter()
         self._fps_frame_count: int = 0
         self._current_fps: float = 0.0
-        # (model, visible, colliding) for the stats panel. shape_flags lives on the
-        # device, so the readback is cached rather than repeated every frame.
-        self._shape_role_counts: tuple[Any, int, int] | None = None
+        # Visual / collision shape counts for the stats panel, refreshed by
+        # update_shape_counts() when the viewer is given a model.
+        self._shape_visual_count: int | None = None
+        self._shape_collision_count: int | None = None
 
         # Selection panel state (UI-local, not simulation state).
         self._selection_ui_state = {
@@ -906,26 +907,20 @@ class ViewerGui:
         imgui.text(f"Pitch: {cam.pitch:.1f} deg")
         imgui.text(f"Yaw: {cam.yaw:.1f} deg")
 
-    def _get_shape_role_counts(self, model) -> tuple[int, int] | None:
-        """Return how many shapes are visual and how many are collision geometry.
+    def update_shape_counts(self, model) -> None:
+        """Recompute the visual / collision shape counts shown in the stats overlay.
 
-        Computed once per model and reused: ``shape_flags`` is a device array, so
-        reading it back every frame would stall the render loop. Keyed on the model
-        rather than computed once at construction because
-        :meth:`~newton.viewer.ViewerBase.set_model` may be called again with a
-        different model, and the counts have to follow it.
+        Called when the viewer is given a model. ``shape_flags`` is a device array, so
+        this is done once per model rather than while rendering the overlay.
         """
-        cached = self._shape_role_counts
-        if cached is not None and cached[0] is model:
-            return cached[1], cached[2]
-        flags_array = getattr(model, "shape_flags", None)
-        if flags_array is None:
-            return None
+        flags_array = getattr(model, "shape_flags", None) if model is not None else None
+        if flags_array is None or len(flags_array) == 0:
+            self._shape_visual_count = None
+            self._shape_collision_count = None
+            return
         flags = flags_array.numpy()
-        visible = int(np.count_nonzero(flags & int(nt.ShapeFlags.VISIBLE)))
-        colliding = int(np.count_nonzero(flags & int(nt.ShapeFlags.COLLIDE_SHAPES)))
-        self._shape_role_counts = (model, visible, colliding)
-        return visible, colliding
+        self._shape_visual_count = int(np.count_nonzero(flags & int(nt.ShapeFlags.VISIBLE)))
+        self._shape_collision_count = int(np.count_nonzero(flags & int(nt.ShapeFlags.COLLIDE_SHAPES)))
 
     def _render_stats_overlay(self):
         """Render performance overlay in the top-right corner."""
@@ -974,13 +969,11 @@ class ViewerGui:
                 imgui.text(f"Worlds: {viewer.model.world_count}")
                 imgui.text(f"Bodies: {viewer.model.body_count}")
                 imgui.text(f"Shapes: {viewer.model.shape_count}")
-                roles = self._get_shape_role_counts(viewer.model)
-                if roles is not None:
-                    visible, colliding = roles
+                if self._shape_visual_count is not None:
                     # Categories overlap when a shape carries both flags.
                     imgui.indent()
-                    imgui.text(f"visual: {visible}")
-                    imgui.text(f"collision: {colliding}")
+                    imgui.text(f"visual: {self._shape_visual_count}")
+                    imgui.text(f"collision: {self._shape_collision_count}")
                     imgui.unindent()
                 imgui.text(f"Joints: {viewer.model.joint_count}")
                 imgui.text(f"Particles: {viewer.model.particle_count}")
