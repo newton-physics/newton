@@ -12560,6 +12560,55 @@ def Mesh "cube"
         self.assertIsNone(mesh.uvs)
         self.assertIsNotNone(mesh.normals)
 
+    @staticmethod
+    def _define_facevarying_fan(corner_angles_deg):
+        """Build three triangles sharing vertex 0, tilting that vertex's corner normal per triangle.
+
+        Every other vertex is referenced by exactly one corner, so the split count at
+        vertex 0 is ``len(mesh.vertices) - 6``.
+        """
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/fan")
+        points = [(0.0, 0.0, 0.0)]
+        indices = []
+        for triangle in range(3):
+            points += [(1.0, float(triangle), 0.0), (1.0, float(triangle) + 1.0, 0.0)]
+            indices += [0, 1 + 2 * triangle, 2 + 2 * triangle]
+        mesh.CreatePointsAttr().Set(points)
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set(indices)
+
+        # Only vertex 0's corners are tilted; they rotate about +Y away from +Z.
+        corner_normals = []
+        for angle in corner_angles_deg:
+            radians = np.deg2rad(angle)
+            corner_normals += [(float(np.sin(radians)), 0.0, float(np.cos(radians))), (0, 0, 1), (0, 0, 1)]
+        normals = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.faceVarying
+        )
+        normals.Set(corner_normals)
+        return stage, mesh.GetPrim()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_vertex_splitting_clusters_against_the_running_mean(self):
+        """Corners cluster by angle to their cluster's running mean, not to their spread about it.
+
+        ``(0, 24, 48)`` is the discriminating case: the three corners sit within the
+        25-degree threshold of their overall mean, yet the 48-degree corner is 36 degrees
+        off the running mean of the first two and must start a second cluster.
+        """
+        for corner_angles, expected_clusters in (((0, 12, 24), 1), ((0, 20, 40), 2), ((0, 24, 48), 2)):
+            with self.subTest(corner_angles=corner_angles):
+                _stage, prim = self._define_facevarying_fan(corner_angles)
+
+                mesh = usd.get_mesh(prim, load_normals=True)
+
+                # Six single-corner vertices plus one output vertex per cluster at vertex 0.
+                self.assertEqual(len(mesh.vertices), 6 + expected_clusters)
+                np.testing.assert_allclose(np.linalg.norm(np.asarray(mesh.normals), axis=1), 1.0, atol=1e-5)
+
 
 class TestTetMesh(unittest.TestCase):
     def test_tetmesh_basic(self):
