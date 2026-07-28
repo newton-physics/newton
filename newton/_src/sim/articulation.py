@@ -865,7 +865,7 @@ def eval_ik(
     Evaluates the model's inverse kinematics given the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`) and updates the generalized joint coordinates `joint_q` and `joint_qd`.
 
     The input :attr:`State.body_qd` is interpreted using Newton's public body-twist
-    convention ``(v_com_world, omega_world)``. For FREE and DISTANCE joints,
+    convention ``(v_com_world, omega_world)``. For FREE, DISTANCE, and CABLE joints,
     the recovered ``joint_qd`` linear entries are referenced at the child COM
     and expressed in the joint parent frame.
 
@@ -1394,7 +1394,7 @@ def eval_articulation_inverse_dynamics_force_kernel(
     Evaluates ``tau = M(q)*joint_qdd + C(q,q_dot)*q_dot + g(q)`` per DOF,
     with the mass-matrix term and bias terms supplied explicitly.
 
-    For any FREE/DISTANCE joint, the mass matrix is in the joint's parent frame
+    For any FREE/DISTANCE/CABLE joint, the mass matrix is in the joint's parent frame
     while the bias terms are in world frame, so the six ``M @ joint_qdd``
     components are rotated to world before summing.
 
@@ -1427,15 +1427,15 @@ def eval_articulation_inverse_dynamics_force_kernel(
             sum_val += mass_matrix[art_idx, i, j] * joint_qdd[dof_start + j]
         tau[dof_start + i] = sum_val
 
-    # Rotate every FREE/DISTANCE wrench from parent frame to world so it
+    # Rotate every FREE/DISTANCE/CABLE wrench from parent frame to world so it
     # matches the world-frame bias terms. M @ joint_qdd is conjugate to the
     # parent-frame joint_qdd convention used internally; coriolis_force and
     # gravity_force already use the world-frame CoM-wrench convention of
-    # Control.joint_f. Any FREE/DISTANCE joint in the articulation tree
+    # Control.joint_f. Any FREE/DISTANCE/CABLE joint in the articulation tree
     # (not only the root) needs this rotation.
     for ji in range(joint_start, joint_end):
         jtype = joint_type[ji]
-        if jtype == JointType.FREE or jtype == JointType.DISTANCE:
+        if jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.CABLE:
             jdof = joint_qd_start[ji]
             X_wpj = joint_X_p[ji]
             parent = joint_parent[ji]
@@ -1495,9 +1495,8 @@ def eval_inverse_dynamics_force(
     ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
     ``joint_f`` is entirely in that world convention.
 
-    :attr:`~newton.JointType.CABLE` joints are not supported because their DOF
-    slots are constraints rather than generalized coordinates for this
-    inverse-dynamics formulation.
+    :attr:`~newton.JointType.CABLE` joints are not yet supported by the
+    inverse-dynamics pipeline.
 
     .. experimental::
 

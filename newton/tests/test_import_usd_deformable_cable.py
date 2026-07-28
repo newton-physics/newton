@@ -232,7 +232,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 6], expected, rtol=1.0e-3)
 
     def test_cable_material_maps_to_rod_stiffness(self):
-        """Verify a bound curve-deformable material maps to radius and four per-joint stiffnesses.
+        """Verify four cable material moduli map to six per-axis joint stiffness slots.
 
         Authored zero stiffness (range [0, inf)) is preserved rather than replaced by
         ``add_rod`` defaults, and all four moduli remain available in ``path_cable_attrs``.
