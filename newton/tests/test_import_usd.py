@@ -11497,6 +11497,35 @@ def Xform "Body" (
         self.assertTrue(collision_flags & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_guide_only_asset_draws_nothing_by_default(self):
+        """An asset whose every prim is guide has no render geometry.
+
+        Collision-only imports used to have all their colliders forced visible so the
+        viewport would not come up blank, which overrode the one thing such an asset
+        states. ``guide`` means the geometry is not viewport geometry; nothing visible
+        is the correct depiction, and ``force_show_colliders`` is how it is inspected.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        collider = UsdGeom.Sphere.Define(stage, "/Body/Collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider)
+        UsdGeom.Imageable(collider).CreatePurposeAttr().Set(UsdGeom.Tokens.guide)
+
+        builder = newton.ModelBuilder()
+        shape = builder.add_usd(stage)["path_shape_map"]["/Body/Collider"]
+        flags = builder.shape_flags[shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+
+        forced = newton.ModelBuilder()
+        forced_shape = forced.add_usd(stage, force_show_colliders=True)["path_shape_map"]["/Body/Collider"]
+        self.assertTrue(forced.shape_flags[forced_shape] & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_guide_purpose_shapes_not_visible(self):
         """Guide-purpose prims (e.g. collision geometry authored by MuJoCo-USD
         converters) should not be loaded as visible visual shapes."""
