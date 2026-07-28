@@ -2157,6 +2157,10 @@ def _rigid_contact_reset_lifecycle(test, device):
     )
     state_in = model.state()
     state_out = model.state()
+    authored_q = state_in.body_q.numpy()
+    prescribed_qd = np.zeros((model.body_count, 6), dtype=np.float32)
+    prescribed_qd[:, 0] = [0.25, -0.5]
+    state_in.body_qd.assign(prescribed_qd)
 
     def advance(step_contacts):
         nonlocal state_in, state_out
@@ -2212,6 +2216,11 @@ def _rigid_contact_reset_lifecycle(test, device):
     pipeline.collide(state_in, contacts)
     row_worlds()
     advance(contacts)
+    np.testing.assert_allclose(state_in.body_q.numpy(), authored_q, rtol=0.0, atol=1.0e-6)
+    np.testing.assert_array_equal(state_in.body_qd.numpy(), prescribed_qd)
+    expected_prev = authored_q.copy()
+    expected_prev[:, 0] -= prescribed_qd[:, 0] * dt
+    np.testing.assert_allclose(solver.body_q_prev.numpy(), expected_prev, rtol=1.0e-5, atol=1.0e-6)
 
     # Reset world 0, then step without contacts: the intent has no fresh geometry
     # to act on and must survive the absent buffer.
