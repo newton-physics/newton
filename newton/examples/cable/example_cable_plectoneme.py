@@ -14,8 +14,8 @@
 #      back on itself into a plectoneme held open by rod self-contact.
 #
 # Plectoneme formation requires self-contact (the strands press against each
-# other), so this uses hard-history contact with sticky contact matching at the
-# true capsule radius and a healthy substep/iteration budget.
+# other), so this uses hard-history contact at the true capsule radius with a
+# healthy substep/iteration budget.
 #
 # Run interactively:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme
@@ -165,7 +165,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="sticky")
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
         self.contacts = self.collision_pipeline.contacts()
         self.solver = newton.solvers.SolverVBD(
             self.model,

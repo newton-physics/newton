@@ -418,7 +418,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "contact_matching_pos_threshold=...) for persistent contact geometry. "
                 "The SolverVBD body-level contact deadzone was removed.",
                 DeprecationWarning,
-                stacklevel=2,
+                # __init__ is wrapped by @deprecate_nonkeyword_arguments.
+                stacklevel=3,
             )
 
         super().__init__(model)

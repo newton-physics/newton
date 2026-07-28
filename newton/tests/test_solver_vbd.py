@@ -1000,13 +1000,15 @@ def _rigid_contact_stick_eps_are_deprecated(test, device):
     builder = newton.ModelBuilder()
     model = builder.finalize(device=device)
 
-    with test.assertWarnsRegex(DeprecationWarning, "deprecated and ignored"):
+    with test.assertWarnsRegex(DeprecationWarning, "deprecated and ignored") as warning:
         solver = newton.solvers.SolverVBD(
             model,
             rigid_contact_stick_motion_eps=1.0e-4,
             rigid_contact_stick_freeze_translation_eps=1.0e-5,
             rigid_contact_stick_freeze_angular_eps=1.0e-5,
         )
+
+    test.assertEqual(warning.filename, __file__)
 
     # "and ignored": the solver retains no state derived from the deprecated epsilons.
     test.assertFalse(hasattr(solver, "rigid_contact_stick_motion_eps"))
