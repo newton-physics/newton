@@ -508,7 +508,7 @@ def evaluate_seal(gripper_model: "SurfaceGripperModel", gripper_state: "SurfaceG
 
     For each pad: if currently engaged, evaluate whether the seal survives; otherwise evaluate
     whether a new seal forms. Writes the decision into ``seal_engaged``, which then feeds
-    :func:`latch_engagement`.
+    :func:`attach_seal`.
     """
     n_pads = gripper_model.pad_xform.shape[0]
     if n_pads == 0:
@@ -607,8 +607,8 @@ def body_touches(
 
 
 @wp.kernel
-def latch_engagement_kernel(
-    engaged: wp.array[wp.bool],  # fresh seal decision (from the seal logic)
+def attach_seal_kernel(
+    engaged: wp.array[wp.bool],  # [pads] fresh per-pad seal decision (from the seal logic)
     body_b: wp.array[int],  # body each pad seals against this step
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
@@ -619,6 +619,7 @@ def latch_engagement_kernel(
     contact_shape0: wp.array[int],
     contact_shape1: wp.array[int],
     shape_body: wp.array[int],
+    # outputs
     pad_engaged: wp.array[wp.bool],  # stored state, updated in place
     pad_body_b: wp.array[int],
     pad_anchor_b: wp.array[wp.transform],
@@ -656,7 +657,7 @@ def latch_engagement_kernel(
     pad_engaged[pad] = engaged[pad]
 
 
-def latch_engagement(
+def attach_seal(
     model,
     state,
     contacts,
@@ -677,7 +678,7 @@ def latch_engagement(
     if n_pads == 0:
         return
     wp.launch(
-        latch_engagement_kernel,
+        attach_seal_kernel,
         dim=n_pads,
         inputs=[
             engaged,

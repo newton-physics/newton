@@ -45,7 +45,7 @@ from newton.examples.suctioncup.surface_gripper import (
     SurfaceGripper,
     SurfaceGripperBuilder,
     evaluate_gripper_force,
-    latch_engagement,
+    attach_seal,
     reset_seal_on_contact,
 )
 
@@ -202,50 +202,47 @@ GRIPPER_PARAMS = GripperParams(
 
 
 @wp.kernel
-def command_seal_kernel(
-    engaged: wp.array[wp.bool],  # [1] recorded engagement command (ro[0])
+def update_seal_break_kernel(
+    gripper_command_engaged: wp.array[wp.bool],  # [1] recorded engagement command (ro[0])
     pad_break_metric: wp.array[float],  # [pads] brittle break envelope from the previous force eval
-    pad_engaged: wp.array[wp.bool],  # [pads] whether each pad held last sub-step (from latch_engagement)
+    pad_engaged: wp.array[wp.bool],  # [pads] whether each pad held last sub-step (from attach_seal)
     break_threshold: float,  # break metric above this counts as over-capacity (1.0 = nominal capacity)
     break_hold_steps: int,  # sub-steps a cup must stay over threshold before the gripper fractures
     pad_offsets: wp.array[int],  # [grippers+1] CSR offsets: gripper g owns pads [pad_offsets[g], pad_offsets[g+1])
-    seal_break_count: wp.array[int],  # [pads] in/out: consecutive over-threshold sub-steps, per pad
-    seal_broken: wp.array[wp.bool],  # [grippers] in/out: latched gripper-wide break within an engaged window
-    seal_engaged: wp.array[wp.bool],  # [pads] out: seal command fed to latch_engagement
+    pad_seal_break_count: wp.array[int],  # [pads] in/out: consecutive over-threshold sub-steps, per pad
+    gripper_seal_broken: wp.array[wp.bool],  # [grippers] in/out: latched gripper-wide break within an engaged window
+    # outputs
+    pad_seal_engaged: wp.array[wp.bool],  # [pads] out: seal command fed to attach_seal
 ):
-    """Command a whole gripper's seal: break on a recorded release (ro[0] low) or a *sustained* physics
-    break at any one of its cups.
-
-    One thread per gripper, iterating its own pads -- so the gripper-wide break latch has a single writer
-    and there is no cross-pad contention (and no atomics). Detection is per pad: each cup debounces its
-    own brittle break metric (see
-    :func:`~newton.examples.suctioncup.surface_gripper.eval_break_metric`), gated on ``pad_engaged`` so
-    only a cup that was actually holding can trip and a stale metric cannot veto a fresh grip; lone
-    transient spikes are ignored. Release is per gripper: the first cup to stay over ``break_threshold``
-    for ``break_hold_steps`` consecutive sub-steps latches ``seal_broken`` for the whole gripper --
-    modeling a shared-vacuum tool that vents as a unit -- so every pad releases together and the box is
-    never left hanging on a subset of cups. A recorded release clears the latch and the pad counters so
-    the next engage cycle can re-seal.
+    """
+    One thread per gripper.
+    If the gripper is commanded to disengage then 
+    1) set the per pad seal break count to 0
+    2) set the per pad engagement state to False
+    3) set the per gripper seal broken state to False
+    If the gripper is commanded to engage and the pad is engaged then 
+    1) increment the per pad break count if the break metric is True
+    2) if any pad break count exceeds a threshold then break the seal on all pads
     """
     g = wp.tid()  # one thread per gripper -> sole owner of this gripper's latch, counters, and commands
     lo = pad_offsets[g]  # this gripper's pads are [lo, hi)
     hi = pad_offsets[g + 1]
-    cmd = engaged[0]
+    cmd = gripper_command_engaged[0]
     if not cmd:
-        seal_broken[g] = False  # recorded release clears the gripper latch for the next cycle
+        gripper_seal_broken[g] = False  # recorded release clears the gripper latch for the next cycle
         for pad in range(lo, hi):
-            seal_break_count[pad] = 0
+            pad_seal_break_count[pad] = 0
     else:
         for pad in range(lo, hi):
             if pad_engaged[pad] and pad_break_metric[pad] > break_threshold:
-                seal_break_count[pad] = seal_break_count[pad] + 1
-                if seal_break_count[pad] >= break_hold_steps:
-                    seal_broken[g] = True  # sustained overload at this cup vents the whole gripper
+                pad_seal_break_count[pad] = pad_seal_break_count[pad] + 1
+                if pad_seal_break_count[pad] >= break_hold_steps:
+                    gripper_seal_broken[g] = True  # sustained overload at this cup vents the whole gripper
             else:
-                seal_break_count[pad] = 0  # dipped back under -> not a sustained overload
-    hold = cmd and not seal_broken[g]  # whole gripper engages or releases as a unit
+                pad_seal_break_count[pad] = 0  # dipped back under -> not a sustained overload
+    hold = cmd and not gripper_seal_broken[g]  # whole gripper engages or releases as a unit
     for pad in range(lo, hi):
-        seal_engaged[pad] = hold
+        pad_seal_engaged[pad] = hold
 
 
 def seal_modes_for(gripper, spec):
@@ -278,18 +275,25 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.break_hold_steps = max(1, round(BREAK_HOLD_TIME / self.sim_dt))  # debounce span in sub-steps
 
-        # Device scratch for sample_playback_kernel: the sub-step counter (drives the sim clock),
-        # the cached lower sample index for the forward time search, and the engagement command
-        # sampled at the current time (kernel output, for the seal wired up later).
+        # sim_step_count_wp stores the number of completed simulation steps.
+        # last_lo_wp is used to iterate through the recording of the robot arm.
+        # gripper_command_engaged_wp is the engagement state of the gripper as read from the recording of the robot arm.
+        # gripper_seal_broken_wp is the fracture state of the gripper.
+        # pad_seal_engaged_wp is the per pad engagement state after accounting for gripper_command_engaged_wp and gripper_seal_broken_wp.
+        # pad_offsets maps each gripper to the range of pads owned by the gripper.
         self.sim_step_count_wp = wp.zeros(1, dtype=wp.int32)
         self.last_lo_wp = wp.zeros(1, dtype=wp.int32)
-        self.engaged_wp = wp.zeros(1, dtype=wp.bool)
+        self.gripper_command_engaged_wp = wp.zeros(1, dtype=wp.bool)  # [gripper] recorded engagement command
+        self.pad_seal_break_count_wp = wp.zeros(len(GRIPPER_PADS), dtype=wp.int32)  # consecutive over-threshold steps, per pad
+        self.gripper_seal_broken_wp = wp.zeros(1, dtype=wp.bool)  # [gripper] latched fracture
+        self.pad_seal_engaged_wp = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)  # [pads] per-pad seal command
+        self.pad_offsets = wp.array([0, len(GRIPPER_PADS)], dtype=wp.int32)
 
         # RECORDING_JSONL contains time-stamped joint drive target positions and suction pad engagement
         # states. Load and extract the time-stamps, the joint drive target positions and the
         # suction pad engagement states.
         # Apply gaussian smoothing to the raw drive target after loading.
-        self.playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA, NUM_ARM_DOFS)
+        self.robot_arm_playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA, NUM_ARM_DOFS)
 
         # Load the Fanuc robot arm on a ground plane.
         builder = newton.ModelBuilder()
@@ -297,10 +301,13 @@ class Example:
         ee_body = builder.body_count - 1  # last arm link (J6_link) is the end-effector flange
         builder.add_ground_plane()
 
-        # Auto-place every pick box (panel + crates) + its pallet from the flange pose at each box's
-        # engagement (forward kinematics; see compute_box_placements). Robust to SMOOTHING_SIGMA / cups /
-        # recording. Each box is created at its initial pose -- the panel where it is gripped, each crate
-        # parked in a line -- and moved to its grip pose at pick time (crate_grip_poses; later).
+        # Compute poses for every pick box (panel + crates) and every pallet (one for the panel,
+        # one for the crates).
+        # Each crate is initially posed at a waiting pose and then moved one at a time to the
+        # grip pose on the corresponding pallet so that the crate may be gripped by the gripper.
+        # The panel is immediately ready for gripping so its wait pose is equal to its grip pose.
+        # The pick and pallet poses are computed using the pose of the end effector at engagement time.
+        # These poses are computed using the recording of the robot arm motion.
         placement_config = PlacementConfig(
             num_arm_dofs=NUM_ARM_DOFS,
             finger_hull_deepest_x=FINGER_HULL_DEEPEST_X,
@@ -311,14 +318,19 @@ class Example:
             panel_pallet_half=PANEL_PALLET_HALF,
             crate_pallet_half=CRATE_PALLET_HALF,
         )
-        placements = compute_box_placements(builder, self.playback, ee_body, placement_config)
+        placements = compute_box_placements(builder, self.robot_arm_playback, ee_body, placement_config)
 
-        for pallet_pose, (phx, phy, phz) in zip(placements.pallet_poses, placements.pallet_dims, strict=True):
-            # the panel's plain pedestal, then the crate pallet snug to the rotated crate (see compute_box_placements)
-            builder.add_shape_box(-1, xform=pallet_pose, hx=phx, hy=phy, hz=phz)
+        # Add each static pallet: one for the panel and one for the crates.
+        nb_pallets = len(placements.pallet_poses)
+        for i in range(nb_pallets):
+            pallet_pose = placements.pallet_poses[i]
+            hx, hy, hz = placements.pallet_dims[i]  # (hx, hy, hz) half-extents [m]
+            builder.add_shape_box(-1, xform=pallet_pose, hx=hx, hy=hy, hz=hz)
 
-        box_bodies, box_shapes = [], []  # index 0 the panel, 1.. the crates
-        for i in range(len(placements.masses)):
+        # Add the panel and crates that will be gripped by the gripper.
+        box_body_ids, box_shape_ids = [], []
+        nb_boxes = len(placements.masses)
+        for i in range(nb_boxes):
             (hx, hy, hz) = placements.dims[i]
             label = "panel" if i == 0 else f"crate_{i - 1}"
             body = builder.add_body(
@@ -326,10 +338,14 @@ class Example:
             )
             cfg = builder.default_shape_cfg.copy()
             cfg.density = 0.0  # body mass is authoritative; the shape adds none
-            box_bodies.append(body)
-            box_shapes.append(builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg))
-        panel_body, panel_shape = box_bodies[0], box_shapes[0]
-        crate_bodies, crate_shapes = box_bodies[1:], box_shapes[1:]
+            box_body_ids.append(body)
+            box_shape_ids.append(builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg))
+
+        # Store the body and shape ids for panel and crates.
+        # Store the grip poses of the crates so that the crates may be moved to their grip pose
+        # and made ready for gripping.
+        panel_body_id, panel_shape_id = box_body_ids[0], box_shape_ids[0]
+        crate_body_ids, crate_shape_ids = box_body_ids[1:], box_shape_ids[1:]
         crate_grip_poses = placements.pick_poses[1:]  # where each crate is moved to be gripped
 
         # Filter every pick box against the whole robot arm (bodies 0..ee_body): the seal owns the
@@ -339,8 +355,8 @@ class Example:
         if not ENABLE_PAD_BOX_CONTACT:
             for shape in range(len(builder.shape_body)):
                 if 0 <= builder.shape_body[shape] <= ee_body:  # any robot-arm link (base..gripper)
-                    builder.add_shape_collision_filter_pair(panel_shape, shape)
-                    for cs in crate_shapes:
+                    builder.add_shape_collision_filter_pair(panel_shape_id, shape)
+                    for cs in crate_shape_ids:
                         builder.add_shape_collision_filter_pair(cs, shape)
 
         # Cup markers: a thin non-colliding disk at each suction cup so the cup layout is visible in the
@@ -359,12 +375,8 @@ class Example:
                     cfg=marker_cfg,
                 )
 
+        # The newton scene is complete.
         self.model = builder.finalize()
-        # MuJoCo per-world buffers. Both auto-estimate from the initial (resting) state, which is far too
-        # small once the arm's self-contacts, the pallets/ground, and the growing stack of crates are all
-        # active mid-cycle. nconmax (contact count) overflowing is the worst: MuJoCo silently drops the
-        # excess contacts, so a box loses its support and falls through the floor / other boxes. njmax
-        # (constraint rows) overflowing trips nefc. Give both ample headroom.
         self.solver = newton.solvers.SolverMuJoCo(self.model, nconmax=256, njmax=2048, iterations=10)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -375,12 +387,12 @@ class Example:
         # recorded finger offsets, suction axis along the flange +x (pad local +z rotated onto +x).
         # Driven by the recorded ro[0] command -- all four pads engage/release together, sealing the
         # dynamic pick box.
-        pad_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # pad +z -> flange +x
         gripper = SurfaceGripper(
             body_id=ee_body,
             xform=wp.transform_identity(),  # gripper frame == flange body frame
             **asdict(GRIPPER_PARAMS),
         )
+        pad_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # pad +z -> flange +x
         for px, py, pz in GRIPPER_PADS:
             gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
         gripper_builder = SurfaceGripperBuilder()
@@ -390,18 +402,9 @@ class Example:
         self.gripper_control = self.gripper_model.control()
         self.gripper_control.pad_grip_control.fill_(1.0)  # full suction command
 
-        # gripper g owns pads [pad_offsets[g], pad_offsets[g+1]). One 4-pad
-        # gripper here -> [0, 4]; command_seal_kernel launches one thread per gripper over these ranges.
-        self.seal_engaged = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)
-        self.pad_offsets = wp.array([0, len(GRIPPER_PADS)], dtype=wp.int32)
-        self.seal_broken = wp.zeros(self.pad_offsets.shape[0] - 1, dtype=wp.bool)  # [grippers] latched break
-        self.seal_break_count = wp.zeros(len(GRIPPER_PADS), dtype=wp.int32)  # consecutive over-threshold steps, per pad
-        # The seal grips the panel (cycle 0), then a fresh crate each cycle. seal_body_b is retargeted in
-        # step() as each crate is moved into place; it is captured by reference, so the in-place assign
-        # takes on the next graph launch.
-        self.seal_body_b = wp.full(len(GRIPPER_PADS), panel_body, dtype=wp.int32)
+        self.pad_body_b = wp.full(len(GRIPPER_PADS), panel_body_id, dtype=wp.int32)
         # Moves each parked crate onto the pick pallet on its disengagement cue (see CratePlayback).
-        self.crates = CratePlayback(self.playback, self.model, crate_bodies, crate_grip_poses)
+        self.crate_playback = CratePlayback(self.robot_arm_playback, self.model, crate_body_ids, crate_grip_poses)
 
         # The seal's spring-damper modes depend on the gripped box (see seal_modes_for); precompute a set
         # per box, shown in the side panel with the active one selected as the seal retargets (gui()).
@@ -411,7 +414,7 @@ class Example:
 
         # Start the arm at the first recorded pose. Set only the arm DOFs; the pick box's free-joint
         # DOFs keep their built-in rest pose (from add_body), so it starts resting on the static box.
-        initial_arm_q = self.playback.rec_targets_wp.numpy()[0]  # drive target at t=0, the start pose
+        initial_arm_q = self.robot_arm_playback.rec_targets_wp.numpy()[0]  # drive target at t=0, the start pose
         joint_q = self.state_0.joint_q.numpy()
         joint_q[:NUM_ARM_DOFS] = initial_arm_q
         self.state_0.joint_q.assign(joint_q)
@@ -446,43 +449,45 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             # Interpolate the arm drive targets (joint_target_q) and sample the engagement command
-            # (engaged_wp) at the current sim time (sim_step_count_wp*sim_dt), advance the search index
-            # (last_lo_wp), and advance sim time (sim_step_count_wp) for the next sub-step.
-            self.playback.advance(
+            # (gripper_command_engaged_wp) at the current sim time (sim_step_count_wp*sim_dt)
+            # Advance the search index (last_lo_wp) through the recording, 
+            # and advance sim time (sim_step_count_wp) for the next sub-step.
+            self.robot_arm_playback.step(
                 self.sim_step_count_wp,  # in/out: read as the current time, then advanced in place
                 self.last_lo_wp,  # in/out: forward-search index, resumed and cached
                 self.sim_dt,
                 self.control.joint_target_q,
-                self.engaged_wp,
+                self.gripper_command_engaged_wp,
             )
             self.state_0.clear_forces()  # zero body_f each sub-step (the suction cup accumulates into it)
 
-            # Suction seal: command all pads from the recorded ro[0] (engaged_wp) OR-ed with a physics
-            # break (break metric from the previous sub-step's force eval), latch onto the pick box on
-            # the rising edge, then accumulate the seal wrench into body_f before stepping.
+            # Break the gripper (and per pad) seal based on pad_break_metric and a threshold time for 
+            # pad_break_metric being continuously True.
             wp.launch(
-                command_seal_kernel,
-                dim=self.seal_broken.shape[0],  # one thread per gripper
+                update_seal_break_kernel,
+                dim=self.gripper_seal_broken_wp.shape[0],  # one thread per gripper
                 inputs=[
-                    self.engaged_wp,
+                    self.gripper_command_engaged_wp,
                     self.gripper_state.pad_break_metric,
                     self.gripper_state.pad_engaged,
                     float(BREAK_THRESHOLD),
                     int(self.break_hold_steps),
                     self.pad_offsets,
-                    self.seal_break_count,
-                    self.seal_broken,
+                    self.pad_seal_break_count_wp,
+                    self.gripper_seal_broken_wp,
                 ],
-                outputs=[self.seal_engaged],
+                outputs=[self.pad_seal_engaged_wp],
             )
-            latch_engagement(
+            # Commit this sub-step's per-pad seal command into the gripper state: set pad_engaged, and on
+            # each pad's rising edge cache its seal anchor frame relative to its target body (pad_body_b).
+            attach_seal(
                 self.model,
                 self.state_0,
                 self.contacts,
                 self.gripper_model,
                 self.gripper_state,
-                self.seal_engaged,
-                self.seal_body_b,
+                self.pad_seal_engaged_wp,
+                self.pad_body_b,
             )
             if ENABLE_GRIPPER and SEAL_RESET_ON_CONTACT:
                 reset_seal_on_contact(self.model, self.state_0, self.contacts, self.gripper_model, self.gripper_state)
@@ -494,20 +499,20 @@ class Example:
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             if RECORD_DEBUG and not wp.get_device().is_cuda:
-                self.accel_recorder.record(self.state_0, self.state_1, self.engaged_wp, self.sim_step_count_wp)
-                self.drive_target_recorder.record(self.engaged_wp, self.control.joint_target_q, self.sim_step_count_wp)
+                self.accel_recorder.record(self.state_0, self.state_1, self.gripper_command_engaged_wp, self.sim_step_count_wp)
+                self.drive_target_recorder.record(self.gripper_command_engaged_wp, self.control.joint_target_q, self.sim_step_count_wp)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         # the target kernel interpolates and applies the drive targets and advances the sub-step
         # counter before each physics sub-step, so step() just runs one frame.
         # On each crate's disengagement cue, move it onto the pick pallet and retarget the seal to it.
-        # seal_body_b and the crate free-joint DOFs are captured by reference, so the in-place assigns
+        # pad_body_b and the crate free-joint DOFs are captured by reference, so the in-place assigns
         # take effect on the next graph launch.
         sim_time = int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt
-        active_crate = self.crates.advance(sim_time, self.state_0)
+        active_crate = self.crate_playback.step(sim_time, self.state_0)
         if active_crate is not None:
-            self.seal_body_b.assign(np.full(len(GRIPPER_PADS), active_crate, dtype=np.int32))
+            self.pad_body_b.assign(np.full(len(GRIPPER_PADS), active_crate, dtype=np.int32))
             self.seal_modes = self.crate_seal_modes  # side-panel modes now describe the crate
         if self.graph:
             wp.capture_launch(self.graph)
@@ -524,10 +529,10 @@ class Example:
 
     def gui(self, ui):
         # commanded suction (recorded ro[0], sampled per sub-step by sample_playback_kernel) vs the
-        # actual latched seal (command AND-ed with the break/proximity logic in command_seal_kernel /
-        # latch_engagement) -- the two differ if a seal fractured or failed to grab.
-        commanded = bool(self.engaged_wp.numpy()[0])
-        held = int(self.seal_engaged.numpy().sum())
+        # actual latched seal (command AND-ed with the break/proximity logic in update_seal_break_kernel /
+        # attach_seal) -- the two differ if a seal fractured or failed to grab.
+        commanded = bool(self.gripper_command_engaged_wp.numpy()[0])
+        held = int(self.pad_seal_engaged_wp.numpy().sum())
         ui.text(f"Suction cmd:  {'On' if commanded else 'Off'}  (recording)")
         ui.text(f"Seal engaged: {held}/{len(GRIPPER_PADS)} pads  (actual)")
         # seal spring-damper modes for the picked box (constant): natural frequency and damping ratio

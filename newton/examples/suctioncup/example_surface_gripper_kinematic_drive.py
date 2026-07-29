@@ -41,9 +41,9 @@ from newton.examples.suctioncup.surface_gripper import (
     PadShape,
     SurfaceGripper,
     SurfaceGripperBuilder,
+    attach_seal,
     evaluate_gripper_force,
     evaluate_seal,
-    latch_engagement,
 )
 
 FPS = 60  # fixed render frame rate; the run length (num_frames) is derived from the profile
@@ -616,7 +616,7 @@ class Example:
             # surface gripper -- Phase 1 (seal series -> engaged flag, above) then Phase 2 (wrench).
             # clear body_f right before writing the seal wrench, since eval_pad_force accumulates.
             self.state_0.clear_forces()
-            latch_engagement(self.state_0, self.gripper_model, self.gripper_state, self.seal_engaged, self.seal_body_b)
+            attach_seal(self.state_0, self.gripper_model, self.gripper_state, self.seal_engaged, self.seal_body_b)
             evaluate_gripper_force(
                 self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control
             )

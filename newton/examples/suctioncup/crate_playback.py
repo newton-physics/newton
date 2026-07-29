@@ -48,7 +48,7 @@ class CratePlayback:
         # The time of every release (disengagement) event, in order. playback.falling lists the release
         # frames: falling[0] releases the panel, falling[1] releases crate 0, falling[2] crate 1, ...
         # The nth release is the cue to move the nth crate onto the pick pallet (crate 0 on the panel's
-        # release), so its time is that crate's threshold. advance() pairs releases to crates in order
+        # release), so its time is that crate's threshold. step() pairs releases to crates in order
         # and stops when either runs out, so no assumption about their counts matching is needed.
         rec_times = playback.rec_times_wp.numpy()  # rec_times[frame] = that frame's time [s]
         self._disengage_times = []
@@ -72,7 +72,7 @@ class CratePlayback:
             self._dof.append((int(joint_q_start[j]), int(joint_qd_start[j])))
         self._next = 0
 
-    def advance(self, sim_time, state):
+    def step(self, sim_time, state):
         """Move every crate whose disengagement time has passed from its waiting pose to its grip pose.
 
         Returns the body id of the last crate moved this call (so the caller can retarget the seal to
