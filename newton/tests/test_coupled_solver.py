@@ -15,6 +15,7 @@ from newton._src.geometry.flags import ParticleFlags, ShapeFlags
 from newton._src.solvers.coupled.interface import CouplingEndpointKind, CouplingInterface
 from newton._src.solvers.coupled.solver_coupled import _filter_soft_contacts_global_shape_ids_kernel
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
+from newton._src.solvers.mujoco.kernels import eval_mujoco_coupling_gravity_acceleration_kernel
 from newton.solvers import (
     SolverBase,
     SolverImplicitMPM,
@@ -1655,6 +1656,34 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
 class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
     """MuJoCo-specific coupling hook behavior."""
+
+    def test_gravity_acceleration_kernel_uses_global_gravity(self):
+        """Use dedicated global gravity in the multi-world coupling kernel."""
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                gravity = wp.array(
+                    ((0.0, 0.0, -1.0), (0.0, 0.0, -5.0), (0.0, 0.0, -3.0)),
+                    dtype=wp.vec3,
+                    device=device,
+                )
+                body_world = wp.array((-1, 0, 1), dtype=wp.int32, device=device)
+                mjc_body_to_newton = wp.array(((1,), (2,)), dtype=wp.int32, device=device)
+                body_gravcomp = wp.array(((0.0,), (0.5,)), dtype=float, device=device)
+                acceleration = wp.empty(3, dtype=wp.vec3, device=device)
+
+                wp.launch(
+                    eval_mujoco_coupling_gravity_acceleration_kernel,
+                    dim=3,
+                    inputs=[gravity, body_world, mjc_body_to_newton, body_gravcomp],
+                    outputs=[acceleration],
+                    device=device,
+                )
+
+                np.testing.assert_allclose(
+                    acceleration.numpy(),
+                    ((0.0, 0.0, -3.0), (0.0, 0.0, -1.0), (0.0, 0.0, -2.5)),
+                    atol=1.0e-6,
+                )
 
     def test_effective_inertia_preserves_anisotropic_free_body_inertia(self):
         try:

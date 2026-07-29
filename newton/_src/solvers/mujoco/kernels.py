@@ -254,7 +254,7 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
             world = int(-1)
 
     g = wp.vec3(0.0, 0.0, 0.0)
-    if world >= 0 and world < gravity.shape[0]:
+    if world >= -1 and world < gravity.shape[0]:
         g = gravity[world]
 
     gravcomp = float(0.0)

@@ -1370,7 +1370,7 @@ def forward_step(
             displacements_out[particle] = wp.vec3(0.0, 0.0, 0.0)
         return
     world_idx = particle_world[particle]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
     vel_new = vel[particle] + (world_g + external_force[particle] * inv_mass[particle]) * dt
     inertia = pos[particle] + vel_new * dt
     inertia_out[particle] = inertia

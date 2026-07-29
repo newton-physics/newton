@@ -42,13 +42,13 @@ def compute_sensor_imu_kernel(
 
     if body_idx < 0:
         world_idx = shape_world[site_idx]
-        world_g = gravity[wp.max(world_idx, 0)]
+        world_g = gravity[world_idx]
         accelerometer[sensor_idx] = wp.quat_rotate_inv(site_transform.q, -world_g)
         gyroscope[sensor_idx] = wp.vec3(0.0)
         return
 
     world_idx = body_world[body_idx]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     body_acc = body_qdd[body_idx]
 

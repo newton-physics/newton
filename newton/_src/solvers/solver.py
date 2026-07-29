@@ -43,7 +43,7 @@ def integrate_particles(
 
     inv_mass = w[tid]
     world_idx = particle_world[tid]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     # simple semi-implicit Euler. v1 = v0 + a dt, x1 = x0 + v1 dt
     v1 = v0 + (f0 * inv_mass + world_g * wp.step(-inv_mass)) * dt
@@ -148,7 +148,7 @@ def integrate_bodies(
 
     com = body_com[tid]
     world_idx = body_world[tid]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     q_new, qd_new = integrate_rigid_body(
         q,

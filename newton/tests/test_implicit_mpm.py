@@ -643,6 +643,7 @@ def test_multiworld_global_particles_rejected(test, device):
 def test_single_world_global_particles_supported(test, device):
     """Verify single world global particles supported."""
     model = _make_mpm_particle_builder().finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0), world=0)
     config = _make_mpm_config()
     config.collider_basis = "pic"
     config.strain_basis = "pic"
@@ -650,6 +651,7 @@ def test_single_world_global_particles_supported(test, device):
     solver, state = _step_mpm(model, config, step_count=1)
     test.assertTrue(np.isfinite(state.particle_q.numpy()).all())
     np.testing.assert_array_equal(model.particle_world.numpy(), -1)
+    test.assertTrue(np.all(state.particle_qd.numpy()[:, 1] < 0.0))
 
     impulse = solver._last_step_data.ws_impulse_field.dof_values
     stress = solver._last_step_data.ws_stress_field.dof_values

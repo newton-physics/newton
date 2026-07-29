@@ -467,7 +467,7 @@ def _coupling_eval_body_gravity_acceleration_kernel(
     out: wp.array[wp.vec3],
 ):
     i = wp.tid()
-    out[i] = gravity[wp.max(body_world[i], 0)]
+    out[i] = gravity[body_world[i]]
 
 
 @wp.kernel(enable_backward=False)
@@ -477,7 +477,7 @@ def _coupling_eval_particle_gravity_acceleration_kernel(
     out: wp.array[wp.vec3],
 ):
     i = wp.tid()
-    out[i] = gravity[wp.max(particle_world[i], 0)]
+    out[i] = gravity[particle_world[i]]
 
 
 @wp.func

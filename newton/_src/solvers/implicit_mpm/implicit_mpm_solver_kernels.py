@@ -153,7 +153,7 @@ def integrate_velocity(
 
     vel_adv = velocities[s.qp_index]
     world_idx = particle_world[s.qp_index]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     rho = particle_density[s.qp_index]
     vel_adv = wp.where(
