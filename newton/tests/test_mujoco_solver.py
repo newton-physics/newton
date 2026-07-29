@@ -2409,8 +2409,8 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
                 )
                 self.assertEqual(actual, expected, f"MuJoCo pair {(shape_a, shape_b)}")
 
-    def test_warns_when_exact_masks_exceed_32_bits(self):
-        """Warn before falling back for a graph that provably needs 33 mask bits."""
+    def test_falls_back_when_exact_masks_exceed_32_bits(self):
+        """Fall back for a graph that provably needs 33 mask bits."""
         builder = newton.ModelBuilder()
         for index, group in enumerate(np.repeat(np.arange(1, 34), 2)):
             body = builder.add_link(label=f"body_{index}")
@@ -2419,8 +2419,10 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             cfg = newton.ModelBuilder.ShapeConfig(collision_group=int(group))
             builder.add_shape_sphere(body, radius=0.1, cfg=cfg, label=f"shape_{index}")
 
-        with self.assertWarnsRegex(UserWarning, "does not fit the MuJoCo 32-bit"):
-            SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", message=r"The selected Newton collision graph.*")
+            solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
+        self.assertEqual(solver.mj_model.ngeom, 66)
 
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):

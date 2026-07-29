@@ -457,11 +457,11 @@ compiles the signed collision groups and pair filters into MuJoCo mask bits.
 Each bit represents a complete bipartite collision subgraph, so the conversion
 is exact only when the Newton pair graph has a biclique cover of at most
 32 bits. The compiler is guaranteed to find an exact representation for up to
-33 selected shapes, and commonly fits much larger group-structured models. If
-a larger arbitrary graph does not fit, the solver warns before using the
-legacy graph-color approximation, which may admit extra contacts. To bound the
-dense pair-matrix work, graphs above 256 selected shapes or 1,024 sparse
-filters skip directly to that established fallback without a warning.
+33 selected shapes, and commonly fits much larger group-structured models.
+Graphs that do not fit use the established legacy graph-color approximation,
+which may admit extra contacts. To bound the dense pair-matrix work, graphs
+above 256 selected shapes or 1,024 sparse filters skip directly to that
+fallback.
 
 .. _mujoco-margin-gap-mapping:
 

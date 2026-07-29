@@ -5441,14 +5441,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
                 compiled_collision_affinity[colliding_shapes] = compiled_masks.collision_affinity
             else:
-                if self._use_mujoco_contacts and not disable_contacts and not compiled_masks.skipped:
-                    warnings.warn(
-                        "The selected Newton collision graph does not fit the MuJoCo 32-bit "
-                        f"contype/conaffinity representation; {compiled_masks.uncovered_pair_count} "
-                        "required pair(s) remained after 32 exact bicliques. Falling back to the "
-                        "legacy graph-color approximation, which may admit additional contacts.",
-                        stacklevel=2,
-                    )
                 shape_color = self._color_collision_shapes(
                     model,
                     colliding_shapes,
