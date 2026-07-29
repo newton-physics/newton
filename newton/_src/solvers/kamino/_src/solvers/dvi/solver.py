@@ -16,7 +16,7 @@ from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
-from ...linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LLTBlockedSolver
+from ...linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo, LLTBlockedRCMSolver, LLTBlockedSolver
 from ..common import (
     WarmStartMode,
     apply_dual_preconditioner_to_solution,
@@ -101,7 +101,7 @@ class DVISolver:
         self._collect_info: bool = False
         self._size: SizeKamino | None = None
         self._data: DVIData | None = None
-        self._bilateral_solver: LLTBlockedSolver | None = None
+        self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | None = None
         self._max_block_iterations: int = 1
         self._max_contact_iterations: int = 1
         self._max_iterations: int = 1
@@ -262,17 +262,25 @@ class DVISolver:
         )
         operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
         self._data.bilateral_operator = operator
-        # The factorization and the single-RHS solve tile the same dense factor
-        # independently. A larger factorization block size cuts the panel count and
-        # measurably speeds up the once-per-step factorization. The solve keeps the
-        # smaller default tile for its single-column RHS, but uses more tile threads
-        # to better hide latency across DVI's repeated bilateral solves.
-        self._bilateral_solver = LLTBlockedSolver(
-            operator=operator,
-            device=self._device,
-            factorize_block_size=64,
-            solve_block_dim=256,
-        )
+        first_config = self._config[0]
+        if any(
+            config.bilateral_solver_type != first_config.bilateral_solver_type
+            or config.bilateral_solver_kwargs != first_config.bilateral_solver_kwargs
+            for config in self._config[1:]
+        ):
+            raise ValueError("All worlds must use the same DVI bilateral solver configuration.")
+
+        solver_type = first_config.bilateral_solver_type
+        kwargs = dict(first_config.bilateral_solver_kwargs)
+        if solver_type == "LLTB":
+            # A larger factorization tile reduces panel count, while the
+            # single-RHS solve benefits from more threads on its smaller tile.
+            kwargs.setdefault("factorize_block_size", 64)
+            kwargs.setdefault("solve_block_dim", 256)
+            solver_class = LLTBlockedSolver
+        else:
+            solver_class = LLTBlockedRCMSolver
+        self._bilateral_solver = solver_class(operator=operator, device=self._device, **kwargs)
 
     @staticmethod
     def _check_config(
