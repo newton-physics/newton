@@ -5,7 +5,7 @@ from .actuator import Actuator
 from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
 from .delay import Delay
-from .implicit import ActuatorImplicitOptions, ResponseOracle
+from .effort_mode_implicit import ActuatorImplicitOptions, ResponseOracle
 from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
 
 __all__ = [

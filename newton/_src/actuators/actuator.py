@@ -12,8 +12,8 @@ import warp as wp
 from .clamping.base import Clamping
 from .controllers.base import Controller
 from .delay import Delay
-from .effort_explicit import _EffortExplicit
-from .implicit import ActuatorImplicitOptions, ResponseOracle, _EffortImplicit
+from .effort_mode_explicit import _EffortModeExplicit
+from .effort_mode_implicit import ActuatorImplicitOptions, ResponseOracle, _EffortModeImplicit
 
 
 @wp.kernel
@@ -55,10 +55,10 @@ class Actuator:
 
     Effort is computed explicitly by default (control law evaluated at the
     current state, zero-order hold over the step). For stiff gains at large
-    timesteps, switch to the implicit (Stable-PD) strategy::
+    timesteps, switch to the implicit effort mode::
 
         oracle = ResponseOracle(model)
-        actuator.set_strategy_implicit(effective_inv_mass=oracle)
+        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
 
         # Simulation loop
         oracle.refresh(state)  # refresh effective masses at the current pose
@@ -219,32 +219,25 @@ class Actuator:
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
 
-        self._strategy = _EffortExplicit(controller, self.clamping, self.device)
+        self._effort_mode = _EffortModeExplicit(controller, self.clamping, self.device)
 
-    def set_strategy_implicit(
+    def set_effort_mode_implicit(
         self,
         effective_inv_mass: ResponseOracle,
         options: ActuatorImplicitOptions | None = None,
     ) -> None:
-        """Switch effort computation to the implicit (Stable-PD) strategy.
+        """Switch effort computation to implicit mode.
 
         The control law is solved against the predicted end-of-step state
-        before the solver runs, keeping stiff gains stable at large
-        timesteps. Every controller is solved by the same fused kernel over
-        its in-kernel force law (:attr:`Controller.evaluate_force`); a neural
-        controller supplies that law by linearizing itself about the current
-        state each step (:meth:`Controller.prepare_implicit`). Requires a
-        ``dt`` passed to :meth:`step`. The prediction is contact-blind:
-        expect transients (not instability) during impacts. Strategies can be
-        switched at any time; see :meth:`set_strategy_explicit`.
+        before the solver runs.
 
         Args:
             effective_inv_mass: :class:`~newton.actuators.ResponseOracle` providing
-                the effective inverse mass [1/kg or 1/(kg·m²)] the actuator
-                works against, indexed by global DOF index. Its ``alpha``
-                buffer is read by the solve; keep it current by calling
-                ``oracle.refresh(state)`` once per step before :meth:`step`,
-                or by writing values into ``oracle.alpha`` directly.
+                the coupled effective inverse mass [1/kg or 1/(kg·m²)] the
+                actuator works against. Keep it current by calling
+                ``oracle.refresh(state)`` once per step before :meth:`step`.
+                For a singleton actuator group, writing its exact diagonal
+                response into ``oracle.alpha`` is also sufficient.
             options: Solver options; defaults to
                 :class:`ActuatorImplicitOptions`.
         """
@@ -255,7 +248,7 @@ class Actuator:
                 device=self.device,
                 requires_grad=self.requires_grad,
             )
-        self._strategy = _EffortImplicit(
+        self._effort_mode = _EffortModeImplicit(
             self.controller,
             self.clamping,
             effective_inv_mass,
@@ -264,9 +257,9 @@ class Actuator:
             self.device,
         )
 
-    def set_strategy_explicit(self) -> None:
-        """Switch effort computation back to the default explicit strategy."""
-        self._strategy = _EffortExplicit(self.controller, self.clamping, self.device)
+    def set_effort_mode_explicit(self) -> None:
+        """Switch effort computation back to the default explicit mode."""
+        self._effort_mode = _EffortModeExplicit(self.controller, self.clamping, self.device)
 
     def is_stateful(self) -> bool:
         """Return True if delay or controller maintains internal state."""
@@ -274,7 +267,7 @@ class Actuator:
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return self._strategy.is_graphable()
+        return self._effort_mode.is_graphable()
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
@@ -300,9 +293,9 @@ class Actuator:
         1. **Delay read** — read per-DOF delayed targets from
            ``current_state`` (falls back to current targets when
            the buffer is empty).
-        2. **Effort strategy** — compute raw effort into ``_computed_forces``
+        2. **Effort mode** — compute raw effort into ``_computed_forces``
            (explicit control law, or the implicit end-of-step solve).
-        3. **Clamping** — the strategy clamps effort computed → ``_applied_forces``.
+        3. **Clamping** — the effort mode clamps computed effort → ``_applied_forces``.
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
@@ -349,9 +342,9 @@ class Actuator:
             target_pos_indices = self._sequential_indices
             target_vel_indices = self._sequential_indices
 
-        # --- 2+3. Effort strategy: compute raw effort and clamp ---
+        # --- 2+3. Effort mode: compute raw effort and clamp ---
         ctrl_state = current_act_state.controller_state if current_act_state else None
-        output_forces = self._strategy.compute_force(
+        output_forces = self._effort_mode.compute_force(
             sim_state,
             positions,
             velocities,

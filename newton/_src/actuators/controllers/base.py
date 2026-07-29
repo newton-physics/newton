@@ -112,7 +112,7 @@ class Controller:
 
     evaluate_force: ClassVar[wp.Function | None] = None
     """``@wp.func`` form of this controller's force law, called inside the
-    implicit solve kernel (see :meth:`Actuator.set_strategy_implicit`).
+    implicit solve kernel (see :meth:`Actuator.set_effort_mode_implicit`).
     ``None`` means the controller does not support implicit actuation.
 
     Required signature (``float64``)::
@@ -121,29 +121,26 @@ class Controller:
                        params: wp.array2d[float], i: int) -> wp.float64
 
     ``params[i]`` holds the controller's parameters for actuator slot ``i``;
-    see :meth:`force_params`.
+    see :meth:`bind_params`.
     """
 
-    def force_params(self) -> wp.array[float] | None:
-        """Per-actuator parameter pack for :attr:`evaluate_force`.
+    def bind_params(self) -> wp.array2d[float] | None:
+        """Build the per-actuator parameter pack and wire attributes to it.
 
-        Shape ``(num_actuators, P)``; row ``i`` belongs to actuator slot
-        ``i``. The layout is controller-defined — the implicit solver
-        forwards the array without interpreting it. ``None`` means implicit
-        actuation is unsupported.
+        Called once when the implicit effort mode is installed. Override to:
+
+        1. Pack the controller's parameters into a contiguous
+           ``(num_actuators, P)`` array — row ``i`` for actuator slot ``i``,
+           layout matching :attr:`evaluate_force`.
+        2. Re-point the controller's user-facing parameter arrays (e.g.
+           ``kp``) to column views of that pack, so later writes stay visible
+           to the solve kernel and to the selection API.
+        3. Return the pack; the strategy adopts it as the kernel input.
+
+        ``None`` (the default) means the controller does not support implicit
+        actuation.
         """
         return None
-
-    def bind_params(self, params: wp.array2d[float]) -> None:
-        """Re-point parameter attributes to views into the packed pack.
-
-        The implicit strategy holds the array returned by
-        :meth:`force_params` and passes it back here. Override to replace
-        the controller's user-facing parameter arrays with column views of
-        *params*, so that writes to them (e.g. ``controller.kp``) stay
-        visible to the solve kernel. The default keeps the original arrays:
-        the solve then reads a frozen copy of the construction-time values.
-        """
 
     def prepare_implicit(
         self,
@@ -159,13 +156,14 @@ class Controller:
         dt: float,
         device: wp.Device | None = None,
     ) -> None:
-        """Refresh :meth:`force_params` before an implicit solve step.
+        """Refresh the parameter pack before an implicit solve step.
 
-        Called by the implicit strategy once per step, before the solve
+        Called by the implicit effort mode once per step, before the solve
         kernel. Controllers whose :attr:`evaluate_force` law needs per-step
         preparation (e.g. a neural network linearized about the current
-        state) override this to rewrite their parameter pack. The default is
-        a no-op — parameter-static laws like PD need nothing here.
+        state) override this to rewrite the pack built by :meth:`bind_params`
+        in place. The default is a no-op — parameter-static laws like PD need
+        nothing here.
         """
 
     def is_stateful(self) -> bool:

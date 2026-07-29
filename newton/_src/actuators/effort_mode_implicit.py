@@ -1,49 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Implicit (Stable-PD style) effort strategy for actuators.
+"""Coupled implicit effort mode for actuators.
 
-One solve runs per actuated 1-DOF joint (``REVOLUTE`` / ``PRISMATIC``). The
-unknown is the impulse ``p = h * effort``. The solve finds the root of the
-residual
+For each articulation, the mode solves for the actuator impulse ``p`` at the
+predicted end-of-step state:
 
-    ``r(p) = p - h * g(q(p), qd(p))``
+    ``r(p) = p - h g(q(p), qd(p)) = 0``
 
-where ``g`` is the force law and the predicted end-of-step state is
+    ``qd(p) = qd + A p``
 
-    ``qd(p) = qd + alpha * p`` — velocity after applying the impulse,
-    ``q(p) = q + h * qd(p)`` — position after moving with that velocity.
+    ``q(p) = q + h qd(p)``
 
-``alpha`` is the joint's effective inverse mass: how much its velocity
-changes per unit of impulse. It is the only quantity the solve needs from
-the simulator and enters as a :class:`ResponseOracle` through the
-``effective_inv_mass`` argument of :meth:`Actuator.set_strategy_implicit`.
-The oracle owns one global per-DOF buffer shared by any number of actuators;
-keep it current either by calling ``oracle.refresh(state)`` once per step
-(before the actuators) or by writing values into ``oracle.alpha`` directly.
-
-:class:`_EffortImplicit` solves in-kernel force laws: the controller provides
-its law as a ``@wp.func`` (:attr:`Controller.evaluate_force`) with an opaque
-parameter pack (:meth:`Controller.force_params`), and each thread of one
-generated kernel Newton-iterates on its slot's residual with a
-finite-difference slope. Clamps provide their own ``@wp.func``
-(:attr:`Clamping.evaluate_clamp`) and are composed into the residual, so
-limits are enforced against the predicted state — a DC-motor envelope, for
-example, sees the end-of-step velocity.
-
-With ``options.block_solve`` the same class instead groups the actuator's DOFs
-by articulation and solves each group as a coupled block, predicting the
-group's end-of-step state through the oracle's inverse-mass block so the
-inertial cross terms are kept. Reduces to the scalar solve for isolated DOFs;
-requires ``oracle.refresh(state, blocks=True)`` each step.
-
-Neural-network controllers also solve in-kernel: they cannot run their law
-inside the kernel, so each step they linearize the network about the current
-state (:meth:`Controller.prepare_implicit`) and expose the linear force law
-``tau = c + a*q + b*qd`` through the same :attr:`~Controller.evaluate_force`
-/ :meth:`~Controller.force_params` interface as PD.
-
-See the design report: https://reports.mmacklin.com/implicit-actuation-newton/
+Here ``h`` is the timestep, ``g`` is the controller force law with clamping,
+and ``A`` is the coupled inverse-mass response supplied by
+:class:`ResponseOracle`. Controller integration is defined by
+:class:`Controller`; solver configuration is provided by
+:class:`ActuatorImplicitOptions`.
 """
 
 from __future__ import annotations
@@ -66,20 +39,17 @@ __all__ = ["ActuatorImplicitOptions", "ResponseOracle"]
 
 @dataclass
 class ActuatorImplicitOptions:
-    """Configuration for implicit actuation; see :meth:`Actuator.set_strategy_implicit`.
+    """Configuration for implicit actuation; see :meth:`Actuator.set_effort_mode_implicit`.
 
     Args:
-        max_iters: Maximum Newton iterations per DOF (in-kernel strategy).
-        residual_tol: Stop when the residual magnitude falls below this.
-        update_tol: Stop when the impulse update magnitude falls below this.
+        max_iters: Maximum Newton iterations per articulation group.
+        residual_tol: Stop when the residual vector norm falls below this.
+        update_tol: Stop when the impulse-update vector norm falls below this.
         fd_epsilon: Relative forward finite-difference step in impulse space.
-        derivative_floor: Stop when ``|dr/dp|`` falls below this (flat residual).
+        derivative_floor: Minimum absolute Jacobian pivot used during
+            elimination.
         warm_start: Initial impulse guess: ``"explicit"`` starts from the
             explicit force impulse, ``"zero"`` starts from zero.
-        block_solve: Solve coupled DOF groups (DOFs sharing an articulation)
-            as a block instead of independent scalars, recovering the
-            inertial cross terms. Requires ``oracle.refresh(state,
-            blocks=True)`` each step.
     """
 
     max_iters: int = 4
@@ -88,7 +58,6 @@ class ActuatorImplicitOptions:
     fd_epsilon: float = 1.0e-4
     derivative_floor: float = 1.0e-8
     warm_start: str = "explicit"
-    block_solve: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -127,140 +96,23 @@ def _chain_clamp(inner: wp.Function, func: wp.Function, base: int) -> wp.Functio
 
 
 # ---------------------------------------------------------------------------
-# Solve kernel
+# Coupled solve kernel
 # ---------------------------------------------------------------------------
 
-_solve_kernel_cache: dict[tuple[Any, Any], wp.Kernel] = {}
+_coupled_kernel_cache: dict[tuple[Any, Any], wp.Kernel] = {}
 
 
-def _build_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Function, cache_key: tuple):
-    """Build (or reuse) the solve kernel for one (force law, clamp chain) pair.
+def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Function, cache_key: tuple):
+    """Build or reuse the coupled solve kernel for a force law and clamp chain.
 
-    One thread solves one actuator slot with Newton's method:
+    One thread handles each articulation group. It predicts the group state
+    with its inverse-mass response, evaluates the force laws and clamps, forms
+    a finite-difference Jacobian, and applies a dense Newton update. Groups
+    with one actuator use the response stored in :attr:`ResponseOracle.alpha`.
 
-    1. Predict the end-of-step state for the current impulse guess ``p``.
-    2. Evaluate the clamped force law there and form the residual
-       ``r(p) = p - h * g(q(p), qd(p))``.
-    3. Estimate the slope ``dr/dp`` with a forward finite difference.
-    4. Take the Newton step ``p -= r / (dr/dp)``; repeat until converged.
-
-    Why float64: at stiff gains the residual is a small difference of large
-    numbers; in float32 the finite-difference slope would drown in rounding
-    error.
+    Float64 avoids loss of precision when finite differencing stiff residuals.
     """
-    cached = _solve_kernel_cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    @wp.kernel
-    def solve(
-        pos_indices: wp.array[wp.uint32],
-        vel_indices: wp.array[wp.uint32],
-        target_pos_indices: wp.array[wp.uint32],
-        target_vel_indices: wp.array[wp.uint32],
-        inv_mass: wp.array[float],
-        positions: wp.array[float],
-        velocities: wp.array[float],
-        target_pos: wp.array[float],
-        target_vel: wp.array[float],
-        feedforward: wp.array[float],
-        params: wp.array2d[float],
-        h: float,
-        max_iters: int,
-        residual_tol: float,
-        update_tol: float,
-        fd_epsilon: float,
-        derivative_floor: float,
-        warm_zero: int,
-        clamp_params: wp.array2d[float],
-        computed_efforts: wp.array[float],
-        applied_efforts: wp.array[float],
-    ):
-        i = wp.tid()
-
-        # Gather this slot's inputs and promote to float64.
-        a = wp.float64(inv_mass[vel_indices[i]])
-        q0 = wp.float64(positions[pos_indices[i]])
-        qd_free = wp.float64(velocities[vel_indices[i]])
-        tq = wp.float64(target_pos[target_pos_indices[i]])
-        tqd = wp.float64(target_vel[target_vel_indices[i]])
-        ff = wp.float64(0.0)
-        if feedforward:
-            ff = wp.float64(feedforward[target_vel_indices[i]])
-        hd = wp.float64(h)
-
-        res_tol = wp.float64(residual_tol)
-        upd_tol = wp.float64(update_tol)
-        fd_eps = wp.float64(fd_epsilon)
-        deriv_floor = wp.float64(derivative_floor)
-
-        # Warm start: the clamped explicit impulse, or zero.
-        if warm_zero != 0:
-            p = wp.float64(0.0)
-        else:
-            tau0 = evaluate_force(q0, qd_free, tq, tqd, ff, params, i)
-            p = hd * clamp_chain(tau0, q0, qd_free, clamp_params, i)
-
-        for _ in range(max_iters):
-            # Residual at the current impulse guess.
-            qd_n = qd_free + a * p
-            q_n = q0 + hd * qd_n
-            f_n = clamp_chain(evaluate_force(q_n, qd_n, tq, tqd, ff, params, i), q_n, qd_n, clamp_params, i)
-            r = p - hd * f_n
-            if wp.abs(r) < res_tol:
-                break
-
-            # Residual at a perturbed impulse; the step scales with |p|.
-            eps = fd_eps * (wp.float64(1.0) + wp.abs(p))
-            pe = p + eps
-            qd_ne = qd_free + a * pe
-            q_ne = q0 + hd * qd_ne
-            f_ne = clamp_chain(evaluate_force(q_ne, qd_ne, tq, tqd, ff, params, i), q_ne, qd_ne, clamp_params, i)
-            re = pe - hd * f_ne
-
-            # Newton step on the finite-difference slope.
-            drdp = (re - r) / eps
-            if wp.abs(drdp) < deriv_floor:
-                break
-            dp = -r / drdp
-            p = p + dp
-            if wp.abs(dp) < upd_tol:
-                break
-
-        # Re-clamp at the final predicted state: a no-op at convergence, and a
-        # hard-limit guarantee when max_iters cut the iteration short.
-        qd_f = qd_free + a * p
-        q_f = q0 + hd * qd_f
-        raw_effort = evaluate_force(q_f, qd_f, tq, tqd, ff, params, i)
-        tau_out = clamp_chain(p / hd, q_f, qd_f, clamp_params, i)
-
-        computed_efforts[i] = wp.float32(raw_effort)
-        applied_efforts[i] = wp.float32(tau_out)
-
-    _solve_kernel_cache[cache_key] = solve
-    return solve
-
-
-# ---------------------------------------------------------------------------
-# Block solve kernel (coupled DOF groups)
-# ---------------------------------------------------------------------------
-
-_block_kernel_cache: dict[tuple[Any, Any], wp.Kernel] = {}
-
-
-def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Function, cache_key: tuple):
-    """Build (or reuse) the block solve kernel for one (force law, clamp chain) pair.
-
-    One thread solves one coupled group with Newton's method: predict the
-    group's end-of-step state through the block response ``A_g`` (a submatrix of
-    ``oracle.inverse_blocks``, keeping the off-diagonal inertial cross terms),
-    evaluate the clamped force law per DOF, form the block residual and its
-    finite-difference Jacobian, and take a dense Gauss-elimination Newton step.
-    Reduces to the scalar solve for a group size of one. Float64 for the same
-    reason as the scalar solve — the FD slope is a small difference of large
-    numbers.
-    """
-    cached = _block_kernel_cache.get(cache_key)
+    cached = _coupled_kernel_cache.get(cache_key)
     if cached is not None:
         return cached
 
@@ -270,6 +122,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
         group_art: wp.array[wp.int32],
         group_slot: wp.array2d[wp.int32],
         group_local: wp.array2d[wp.int32],
+        inv_mass: wp.array[float],
         inverse_blocks: wp.array3d[float],
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
@@ -327,8 +180,11 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
                 si = group_slot[g, i]
                 li = group_local[g, i]
                 qd_i = wp.float64(velocities[vel_indices[si]])
-                for jj in range(ng):
-                    qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
+                if ng == 1:
+                    qd_i += wp.float64(inv_mass[vel_indices[si]]) * pbuf[g, 0]
+                else:
+                    for jj in range(ng):
+                        qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
                 q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
                 tq = wp.float64(target_pos[target_pos_indices[si]])
                 tqd = wp.float64(target_vel[target_vel_indices[si]])
@@ -352,8 +208,11 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
                     si = group_slot[g, i]
                     li = group_local[g, i]
                     qd_i = wp.float64(velocities[vel_indices[si]])
-                    for jj in range(ng):
-                        qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
+                    if ng == 1:
+                        qd_i += wp.float64(inv_mass[vel_indices[si]]) * pbuf[g, 0]
+                    else:
+                        for jj in range(ng):
+                            qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
                     q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
                     tq = wp.float64(target_pos[target_pos_indices[si]])
                     tqd = wp.float64(target_vel[target_vel_indices[si]])
@@ -395,8 +254,11 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
             si = group_slot[g, i]
             li = group_local[g, i]
             qd_i = wp.float64(velocities[vel_indices[si]])
-            for jj in range(ng):
-                qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
+            if ng == 1:
+                qd_i += wp.float64(inv_mass[vel_indices[si]]) * pbuf[g, 0]
+            else:
+                for jj in range(ng):
+                    qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
             q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
             tq = wp.float64(target_pos[target_pos_indices[si]])
             tqd = wp.float64(target_vel[target_vel_indices[si]])
@@ -407,32 +269,25 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
             computed_efforts[si] = wp.float32(raw_effort)
             applied_efforts[si] = wp.float32(clamp_chain(pbuf[g, i] / hd, q_i, qd_i, clamp_params, si))
 
-    _block_kernel_cache[cache_key] = solve
+    _coupled_kernel_cache[cache_key] = solve
     return solve
 
 
 # ---------------------------------------------------------------------------
-# The strategy object installed by Actuator.set_strategy_implicit
+# The mode object installed by Actuator.set_effort_mode_implicit
 # ---------------------------------------------------------------------------
 
 
-class _EffortImplicit:
-    """Implicit (Stable-PD) effort strategy and in-kernel solver.
+class _EffortModeImplicit:
+    """Implicit effort mode and in-kernel solver.
 
-    Owns everything the fused solve needs: the controller's force-law
-    ``@wp.func`` and parameter pack, the compiled solve kernel, the resolved
-    effective-inverse-mass buffer, and the composed in-solve clamp chain.
-
-    ``options.block_solve`` selects between two solves that share the force law
-    and clamp chain: the default per-DOF scalar solve, and a coupled block
-    solve that groups the actuator's DOFs by articulation and predicts each
-    group's state through the oracle's inverse-mass block, keeping the
-    off-diagonal inertial cross terms (see :meth:`_compute_force_block`).
+    Groups actuator DOFs by articulation and solves each group using the
+    response provided by :class:`ResponseOracle`. The generated kernel
+    combines the controller force law, controller parameters, and clamps.
 
     Before each solve, :meth:`compute_force` calls the controller's
-    :meth:`~Controller.prepare_implicit` hook so state-dependent laws (a
-    network linearized about the current state) can refresh their parameter
-    pack; parameter-static laws like PD leave it a no-op.
+    :meth:`~Controller.prepare_implicit` hook to update state-dependent
+    controller parameters.
     """
 
     def __init__(
@@ -450,27 +305,26 @@ class _EffortImplicit:
         if not isinstance(effective_inv_mass, ResponseOracle):
             raise ValueError(
                 "Implicit actuation requires effective_inv_mass to be a ResponseOracle; "
-                "build one with newton.actuators.ResponseOracle(model). For constant "
-                "values, write them into oracle.alpha instead of calling refresh()."
+                "build one with newton.actuators.ResponseOracle(model)."
             )
         self._inv_mass = effective_inv_mass.alpha
-        self._response = effective_inv_mass  # oracle; block solves also read .inverse_blocks
+        self._response = effective_inv_mass
         self._controller = controller
-        self._block = bool(self._options.block_solve)
         self._init_solver(controller, clamping)
 
     def _resolve_force_law(self, controller):
-        """Validate the controller's in-kernel force law and bind its params."""
-        params = controller.force_params()
+        """Validate the controller's in-kernel force law and adopt its params.
+
+        ``bind_params`` builds the pack and re-points the controller's
+        parameter attributes to views into it, so later writes stay live.
+        """
+        params = controller.bind_params()
         if controller.evaluate_force is None or params is None:
             raise NotImplementedError(
                 f"{type(controller).__name__} does not support implicit actuation "
-                "(Controller.evaluate_force / force_params() unavailable)"
+                "(Controller.evaluate_force / bind_params() unavailable)"
             )
         self._params = params
-        # The controller re-binds its parameter attributes as views into the
-        # pack, keeping user writes live.
-        controller.bind_params(self._params)
 
     def _pack_clamps(self, clamping):
         """Pack every clamp's params side by side, bind views, compose one @wp.func.
@@ -503,19 +357,12 @@ class _EffortImplicit:
         return _compose_clamps(tuple(entries)), tuple(entries)
 
     def _init_solver(self, controller, clamping) -> None:
-        """Build the in-kernel solve from the controller and clamps.
-
-        ``options.block_solve`` selects the coupled block kernel; otherwise the
-        per-DOF scalar kernel. Both share the force law and clamp chain.
-        """
+        """Build the coupled in-kernel solve from the controller and clamps."""
         self._resolve_force_law(controller)
         chain, entries = self._pack_clamps(clamping)
         key = (controller.evaluate_force, entries)
-        if self._block:
-            self._kernel = _build_block_solve_kernel(controller.evaluate_force, chain, key)
-            self._groups_built = False
-        else:
-            self._kernel = _build_solve_kernel(controller.evaluate_force, chain, key)
+        self._kernel = _build_coupled_solve_kernel(controller.evaluate_force, chain, key)
+        self._groups_built = False
 
     def _build_groups(self, vel_indices) -> None:
         """Map actuator DOFs to (articulation, local index) and group by articulation."""
@@ -543,7 +390,7 @@ class _EffortImplicit:
         for slot, dof in enumerate(dofs):
             a = find_art(int(dof))
             if a < 0:
-                raise ValueError(f"Block implicit actuation: DOF {int(dof)} is not in an articulation")
+                raise ValueError(f"Implicit actuation: DOF {int(dof)} is not in an articulation")
             groups.setdefault(a, []).append((slot, int(dof) - art_base[a]))
 
         arts = sorted(groups)
@@ -602,8 +449,7 @@ class _EffortImplicit:
             raise ValueError("Implicit actuation requires dt")
         if applied_forces is None:
             raise RuntimeError("Implicit actuation requires an applied-effort buffer")
-        # Parameter-static laws (PD) no-op here; a network relinearizes about
-        # the current state and rewrites its parameter pack in place.
+        # Update state-dependent controller parameters before solving.
         self._controller.prepare_implicit(
             positions,
             velocities,
@@ -617,72 +463,9 @@ class _EffortImplicit:
             float(dt),
             self._device,
         )
-        if self._block:
-            return self._compute_force_block(
-                positions,
-                velocities,
-                target_pos,
-                target_vel,
-                feedforward,
-                pos_indices,
-                vel_indices,
-                target_pos_indices,
-                target_vel_indices,
-                computed_forces,
-                applied_forces,
-                float(dt),
-            )
-        opts = self._options
-        wp.launch(
-            self._kernel,
-            dim=self._num_actuators,
-            inputs=[
-                pos_indices,
-                vel_indices,
-                target_pos_indices,
-                target_vel_indices,
-                self._inv_mass,
-                positions,
-                velocities,
-                target_pos,
-                target_vel,
-                feedforward,
-                self._params,
-                float(dt),
-                int(opts.max_iters),
-                float(opts.residual_tol),
-                float(opts.update_tol),
-                float(opts.fd_epsilon),
-                float(opts.derivative_floor),
-                1 if opts.warm_start == "zero" else 0,
-                self._clamp_params,
-            ],
-            outputs=[computed_forces, applied_forces],
-            device=self._device,
-        )
-        return applied_forces
-
-    def _compute_force_block(
-        self,
-        positions,
-        velocities,
-        target_pos,
-        target_vel,
-        feedforward,
-        pos_indices,
-        vel_indices,
-        target_pos_indices,
-        target_vel_indices,
-        computed_forces,
-        applied_forces,
-        dt: float,
-    ) -> wp.array[float]:
-        """Coupled-block solve path (``options.block_solve``)."""
         if not self._groups_built:
             self._build_groups(vel_indices)
         inverse_blocks = self._response.inverse_blocks
-        if inverse_blocks is None:
-            raise ValueError("Block implicit actuation requires oracle.refresh(state, blocks=True) before step()")
 
         opts = self._options
         wp.launch(
@@ -693,6 +476,7 @@ class _EffortImplicit:
                 self._group_art,
                 self._group_slot,
                 self._group_local,
+                self._inv_mass,
                 inverse_blocks,
                 pos_indices,
                 vel_indices,
@@ -704,7 +488,7 @@ class _EffortImplicit:
                 target_vel,
                 feedforward,
                 self._params,
-                dt,
+                float(dt),
                 int(opts.max_iters),
                 float(opts.residual_tol),
                 float(opts.update_tol),

@@ -241,7 +241,7 @@ class ControllerNeuralMLP(Controller):
     Implicit actuation linearizes the network about the current state each
     step (:meth:`prepare_implicit`) and enters the shared implicit solve as
     the linear force law ``tau = c + a*q + b*qd`` (see :attr:`evaluate_force`
-    / :meth:`force_params`). Supported only on the Warp-NN backend with
+    / :meth:`bind_params`). Supported only on the Warp-NN backend with
     ``history_length == 1``.
     """
 
@@ -405,17 +405,15 @@ class ControllerNeuralMLP(Controller):
     def _implicit_supported(self) -> bool:
         return not self._is_torch_checkpoint and self.history_length == 1 and self._network is not None
 
-    def force_params(self) -> wp.array2d[float] | None:
+    def bind_params(self) -> wp.array2d[float] | None:
         """Linearization pack ``[c, a, b]`` per actuator; ``None`` if implicit unsupported.
 
-        Refreshed each step by :meth:`prepare_implicit`. ``None`` for Torch
-        checkpoints or ``history_length > 1`` (implicit needs a single-step,
-        Warp-NN-backed net).
+        The pack is allocated in :meth:`finalize` and rewritten in place each
+        step by :meth:`prepare_implicit`, so binding just hands it to the
+        strategy. ``None`` for Torch checkpoints or ``history_length > 1``
+        (implicit needs a single-step, Warp-NN-backed net).
         """
         return self._lin_params if self._implicit_supported() else None
-
-    def bind_params(self, params: wp.array2d[float]) -> None:
-        self._lin_params = params
 
     def _ensure_grad_setup(self) -> None:
         if self._grad_seed is None:
@@ -445,7 +443,7 @@ class ControllerNeuralMLP(Controller):
 
         One network forward + autodiff backward at the current per-slot state
         gives ``tau0, d(tau)/dq, d(tau)/dqd``; these are packed as ``[c, a, b]``
-        into :meth:`force_params`, which the general implicit kernel then reads
+        into :meth:`bind_params`, which the general implicit kernel then reads
         through :func:`_mlp_linear_force`. Called once per step before the solve.
         """
         device = device or self._device
@@ -489,7 +487,7 @@ class ControllerNeuralMLP(Controller):
         """One network forward + autodiff backward at the given per-slot state.
 
         Writes the physical effort and its derivatives w.r.t. position and
-        velocity; the implicit strategy's Newton loop consumes them.
+        velocity; the implicit effort mode's Newton loop consumes them.
         """
         n = self._num_actuators
         device = self._device

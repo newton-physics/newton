@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Explicit effort strategy: control law at the current state, then clamps."""
+"""Explicit effort mode: control law at the current state, then clamps."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from .clamping.base import Clamping
 from .controllers.base import Controller
 
 
-class _EffortExplicit:
-    """Explicit effort strategy: control law at the current state, then clamps."""
+class _EffortModeExplicit:
+    """Explicit effort mode: control law at the current state, then clamps."""
 
     def __init__(self, controller: Controller, clamping: list[Clamping], device: wp.Device):
         self._controller = controller

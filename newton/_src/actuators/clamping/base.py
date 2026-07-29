@@ -50,7 +50,7 @@ class Clamping:
     evaluate_clamp: ClassVar[wp.Function | None] = None
     """``@wp.func`` evaluating this clamp inside the implicit solve kernel.
 
-    The implicit strategy composes the ``evaluate_clamp`` of every capable
+    The implicit effort mode composes the ``evaluate_clamp`` of every capable
     clamp into its Newton residual, so the clamp sees the *predicted*
     end-of-step state. Required signature, evaluated in ``float64``::
 
@@ -58,7 +58,7 @@ class Clamping:
 
     where ``params[i, base:]`` holds this clamp's packed per-actuator
     parameters (see :meth:`clamp_params`). ``None`` (the default) means the
-    clamp cannot run inside the solve; the implicit strategy rejects such
+    clamp cannot run inside the solve; the implicit mode rejects such
     clamps at install time.
     """
 
@@ -74,7 +74,7 @@ class Clamping:
     def bind_params(self, block: wp.array2d[float]) -> None:
         """Re-point parameter attributes to views into the packed block.
 
-        The implicit strategy copies :meth:`clamp_params` into one packed
+        The implicit effort mode copies :meth:`clamp_params` into one packed
         array and passes this clamp's ``(N, P)`` slice of it here. Override
         to replace the clamp's user-facing parameter arrays with column views
         of *block*, so that writes to them (e.g. ``clamp.max_effort``) stay

@@ -18,6 +18,14 @@ from ..utils import (
 )
 from .base import Controller
 
+# Generic linearization helpers shared with the MLP controller: gather per-slot
+# state, pack [c, a, b], and the linear force law tau = c + a*q + b*qd.
+from .controller_neural_mlp import (
+    _assemble_linear_params_kernel,
+    _gather_slot_state_kernel,
+    _mlp_linear_force,
+)
+
 if typing.TYPE_CHECKING:
     import torch
 
@@ -65,6 +73,45 @@ def _zero_masked_3d_kernel(buf: wp.array3d[float], mask: wp.array[wp.bool]):
         buf[layer, b, h] = 0.0
 
 
+@wp.kernel(enable_backward=False)
+def _assemble_scaled_input_3d_kernel(
+    q: wp.array[float],
+    qd: wp.array[float],
+    target_q: wp.array[float],
+    target_qd: wp.array[float],
+    pos_scale: float,
+    vel_scale: float,
+    net_input: wp.array3d[float],
+):
+    """Scaled (pos_error, vel_error) LSTM input ``(1, N, 2)`` from per-slot state."""
+    i = wp.tid()
+    net_input[0, i, 0] = (target_q[i] - q[i]) * pos_scale
+    net_input[0, i, 1] = (target_qd[i] - qd[i]) * vel_scale
+
+
+@wp.kernel(enable_backward=False)
+def _lstm_output_grads_kernel(
+    net_output: wp.array2d[float],
+    in_grad: wp.array3d[float],
+    pos_scale: float,
+    vel_scale: float,
+    effort_scale: float,
+    tau: wp.array[float],
+    dtau_dq: wp.array[float],
+    dtau_dqd: wp.array[float],
+):
+    """Effort and its state derivatives from the net output and input gradients.
+
+    The net reads scaled errors (e_q = tq - q, e_qd = tqd - qd), so the chain
+    rule gives ``d(tau)/dq = -s_t s_p d(net)/d(in_pos)`` and
+    ``d(tau)/d(qd) = -s_t s_v d(net)/d(in_vel)``.
+    """
+    i = wp.tid()
+    tau[i] = net_output[i, 0] * effort_scale
+    dtau_dq[i] = -in_grad[0, i, 0] * pos_scale * effort_scale
+    dtau_dqd[i] = -in_grad[0, i, 1] * vel_scale * effort_scale
+
+
 class ControllerNeuralLSTM(Controller):
     """LSTM-based neural network controller.
 
@@ -78,15 +125,14 @@ class ControllerNeuralLSTM(Controller):
     must have three graph outputs: effort, hidden output, and cell output.
     Metadata properties map those names to controller roles.
 
-    Implicit actuation is not supported (:meth:`Controller.force_params`
-    returns ``None``): the hidden/cell state makes the force law's local
-    linearization depend on gradients through the recurrent step, and the
-    Warp-NN LSTM op path additionally lacks ``requires_grad`` on its cached
-    tensors and reshaped views.
-
-    TODO: implicit support — decide how to linearize around the recurrent
-    state (freeze hidden/cell within the step?) and fix the warp-nn LSTM
-    autodiff path first.
+    Implicit actuation linearizes the network about the current state each
+    step, holding the incoming hidden/cell state fixed
+    (:meth:`prepare_implicit`), and enters the shared implicit solve as the
+    linear force law ``tau = c + a*q + b*qd`` (like :class:`ControllerNeuralMLP`).
+    Supported on the Warp-NN backend. Depends on a workaround for warp-nn
+    allocating its tensors without ``requires_grad``; until the warp-nn LSTM
+    autodiff path is fixed upstream the state gradients may return zero, in
+    which case the law degrades to a per-step constant.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -214,6 +260,7 @@ class ControllerNeuralLSTM(Controller):
         self._net_input: wp.array3d[float] | None = None
         self._next_hidden: wp.array3d[float] | None = None
         self._next_cell: wp.array3d[float] | None = None
+        self._grad_seed: wp.array2d[float] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         self._device = device
@@ -264,11 +311,145 @@ class ControllerNeuralLSTM(Controller):
             (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
         )
 
+        # Implicit path: per-step linearization packed as [c, a, b] and the
+        # per-slot scratch it is assembled from (see prepare_implicit).
+        self._lin_params = wp.zeros((num_actuators, 3), dtype=wp.float32, device=device)
+        self._q0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._qd0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._tq0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._tqd0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._tau0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._dtau_dq = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._dtau_dqd = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+
     def is_stateful(self) -> bool:
         return True
 
     def is_graphable(self) -> bool:
         return not self._is_torch_checkpoint
+
+    #: The network enters the general implicit solve as a per-step-linearized
+    #: in-kernel law (see :meth:`prepare_implicit`), like any other controller.
+    evaluate_force = _mlp_linear_force
+
+    def _implicit_supported(self) -> bool:
+        return not self._is_torch_checkpoint and self._network is not None
+
+    def bind_params(self) -> wp.array2d[float] | None:
+        """Linearization pack ``[c, a, b]`` per actuator; ``None`` if implicit unsupported.
+
+        The pack is allocated in :meth:`finalize` and rewritten in place each
+        step by :meth:`prepare_implicit`. ``None`` for the Torch backend.
+        """
+        return self._lin_params if self._implicit_supported() else None
+
+    def _ensure_grad_setup(self) -> None:
+        if self._grad_seed is None:
+            self._net_input.requires_grad = True
+            self._grad_seed = wp.full((self._num_actuators, 1), 1.0, dtype=wp.float32, device=self._device)
+            # Tape gradients are zero unless every intermediate tensor carries
+            # requires_grad; warp-nn allocates them without it.
+            for tensor in self._network._tensors.values():
+                if isinstance(tensor, wp.array) and not tensor.requires_grad:
+                    tensor.requires_grad = True
+
+    def prepare_implicit(
+        self,
+        positions,
+        velocities,
+        target_pos,
+        target_vel,
+        pos_indices,
+        vel_indices,
+        target_pos_indices,
+        target_vel_indices,
+        ctrl_state,
+        dt,
+        device=None,
+    ) -> None:
+        """Refresh the linearization of the network about the current state.
+
+        One forward + autodiff backward at the current per-slot state, with the
+        incoming hidden/cell state held fixed, gives ``tau0, d(tau)/dq,
+        d(tau)/dqd``, packed as ``[c, a, b]`` into :meth:`bind_params`. The
+        forward also advances hidden/cell for :meth:`update_state`.
+        """
+        if ctrl_state is None:
+            raise RuntimeError("Implicit ControllerNeuralLSTM requires controller state (hidden/cell)")
+        device = device or self._device
+        n = self._num_actuators
+        self._ensure_grad_setup()
+        wp.launch(
+            _gather_slot_state_kernel,
+            dim=n,
+            inputs=[
+                positions,
+                velocities,
+                target_pos,
+                target_vel,
+                pos_indices,
+                vel_indices,
+                target_pos_indices,
+                target_vel_indices,
+            ],
+            outputs=[self._q0, self._qd0, self._tq0, self._tqd0],
+            device=device,
+        )
+        self._force_and_grad(
+            self._q0,
+            self._qd0,
+            self._tq0,
+            self._tqd0,
+            ctrl_state.hidden,
+            ctrl_state.cell,
+            self._tau0,
+            self._dtau_dq,
+            self._dtau_dqd,
+        )
+        wp.launch(
+            _assemble_linear_params_kernel,
+            dim=n,
+            inputs=[self._tau0, self._dtau_dq, self._dtau_dqd, self._q0, self._qd0],
+            outputs=[self._lin_params],
+            device=device,
+        )
+
+    def _force_and_grad(self, q, qd, target_q, target_qd, hidden, cell, tau, dtau_dq, dtau_dqd) -> None:
+        """One LSTM forward + autodiff backward at the given per-slot state.
+
+        Writes the effort and its derivatives w.r.t. position and velocity, and
+        captures the new hidden/cell state for :meth:`update_state`.
+        """
+        n = self._num_actuators
+        device = self._device
+        wp.launch(
+            _assemble_scaled_input_3d_kernel,
+            dim=n,
+            inputs=[q, qd, target_q, target_qd, self.pos_scale, self.vel_scale],
+            outputs=[self._net_input],
+            device=device,
+        )
+        self._net_input.grad.zero_()
+        tape = wp.Tape()
+        with tape:
+            out = self._network(
+                {
+                    self._input_name: self._net_input,
+                    self._hidden_in_name: hidden,
+                    self._cell_in_name: cell,
+                }
+            )
+            effort = out[self._output_name]
+        tape.backward(grads={effort: self._grad_seed})
+        wp.launch(
+            _lstm_output_grads_kernel,
+            dim=n,
+            inputs=[effort, self._net_input.grad, self.pos_scale, self.vel_scale, self.effort_scale],
+            outputs=[tau, dtau_dq, dtau_dqd],
+            device=device,
+        )
+        wp.copy(self._next_hidden, out[self._hidden_out_name].reshape((self._num_layers, n, self._hidden_size)))
+        wp.copy(self._next_cell, out[self._cell_out_name].reshape((self._num_layers, n, self._hidden_size)))
 
     def state(self, num_actuators: int, device: wp.Device) -> ControllerNeuralLSTM.State:
         if self._is_torch_checkpoint:

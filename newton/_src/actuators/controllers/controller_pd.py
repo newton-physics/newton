@@ -107,17 +107,15 @@ class ControllerPD(Controller):
 
     evaluate_force = _pd_evaluate_force
 
-    def force_params(self) -> wp.array[float]:
+    def bind_params(self) -> wp.array2d[float]:
         kp = self.kp.numpy()
         kd = self.kd.numpy()
         const = self.const_effort.numpy() if self.const_effort is not None else np.zeros_like(kp)
-        pack = np.stack([kp, kd, const], axis=1).astype(np.float32)
-        return wp.array(pack, dtype=float, device=self.kp.device)
-
-    def bind_params(self, params: wp.array2d[float]) -> None:
-        self.kp = params[:, 0]
-        self.kd = params[:, 1]
-        self.const_effort = params[:, 2]
+        pack = wp.array(np.stack([kp, kd, const], axis=1).astype(np.float32), dtype=float, device=self.kp.device)
+        self.kp = pack[:, 0]
+        self.kd = pack[:, 1]
+        self.const_effort = pack[:, 2]
+        return pack
 
     def is_stateful(self) -> bool:
         return False

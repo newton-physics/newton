@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the scalar implicit (Stable-PD) actuation mode."""
+"""Tests for the coupled implicit effort mode."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from newton.actuators import (
     ClampingPositionBased,
     Controller,
     ControllerPD,
+    ControllerPID,
     ResponseOracle,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -42,7 +43,7 @@ def _make_actuator(model, device, kp, kd, max_effort=None, **kwargs):
         control_target_pos_attr="joint_target_q",
         control_target_vel_attr="joint_target_qd",
     )
-    actuator.set_strategy_implicit(**kwargs)
+    actuator.set_effort_mode_implicit(**kwargs)
     actuator._test_oracle = eim if isinstance(eim, ResponseOracle) else None
     return actuator
 
@@ -111,7 +112,7 @@ def test_provider_matches_inverse_mass(test, device):
 
 
 def test_inverse_blocks_match_dense_inverse(test, device):
-    """refresh(blocks=True) fills the full per-articulation inverse mass block.
+    """refresh() fills the full per-articulation inverse mass block.
 
     inverse_blocks[a] must equal inv(H_a), and its diagonal must equal alpha.
     """
@@ -121,7 +122,7 @@ def test_inverse_blocks_match_dense_inverse(test, device):
     state.joint_q.assign(np.array([0.3, -0.8], dtype=np.float32))
 
     oracle = ResponseOracle(model)
-    oracle.refresh(state, blocks=True)
+    oracle.refresh(state)
 
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     H = newton.eval_mass_matrix(model, state).numpy()[0, :n, :n]
@@ -133,13 +134,10 @@ def test_inverse_blocks_match_dense_inverse(test, device):
 
 
 def test_alpha_direct_write_from_solver(test, device):
-    """Alternative to refresh(): write solver-computed inverse masses into oracle.alpha.
+    """Use a solver-computed inverse mass for a singleton actuator group.
 
-    Demonstrates the second way to keep the oracle current: instead of
-    calling ``oracle.refresh(state)`` (dense recompute from the Newton
-    model), take the effective inverse mass the solver already computed —
-    here MuJoCo's ``dof_invweight0`` — and write it into ``oracle.alpha``
-    in place. The implicit solve reads whatever the buffer holds.
+    MuJoCo's ``dof_invweight0`` provides the effective inverse mass written to
+    ``oracle.alpha``. The implicit solve reads this response directly.
     """
     h = 0.01
     kp_val, kd_val = 500.0, 5.0
@@ -176,15 +174,14 @@ def test_alpha_direct_write_from_solver(test, device):
     test.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
 
 
-def test_alpha_from_mujoco_mass_matrix(test, device):
-    """Fill oracle.alpha from MuJoCo's per-step mass matrix instead of refresh().
+def test_response_from_mujoco_mass_matrix(test, device):
+    """Fill the oracle response from MuJoCo's per-step mass matrix.
 
     MuJoCo rebuilds ``qM`` at the step-start pose every step, so — unlike the
-    compile-time ``dof_invweight0`` — its inverse diagonal tracks the current
-    configuration. This test poses a two-link chain away from the reference
-    configuration, extracts ``alpha = diag(qM^-1)`` from the solver (remapped
-    to Newton DOF order), checks it against the oracle's own dense recompute,
-    and drives the implicit solve with it.
+    compile-time ``dof_invweight0`` — its complete inverse tracks inertial
+    coupling at the current configuration. This test remaps that inverse to
+    Newton DOF order, checks it against the built-in oracle, and drives the
+    coupled implicit solve with it.
     """
     h = 0.01
     kp = np.array([300.0, 200.0], dtype=np.float32)
@@ -208,24 +205,31 @@ def test_alpha_from_mujoco_mass_matrix(test, device):
     test.assertEqual(nv, n)
     # dense layout for this small model; the allocation is padded, so slice to nv
     qM = solver.mjw_data.qM.numpy()[0][:nv, :nv]
-    alpha_mjc = np.diag(np.linalg.inv(qM))
+    response_mjc = np.linalg.inv(qM)
 
     # Remap MuJoCo DOF order to Newton DOF order.
-    alpha_newton = np.zeros(n, dtype=np.float32)
+    response_newton = np.zeros((n, n), dtype=np.float32)
     mapping = solver.mjc_dof_to_newton_dof
     if mapping is not None:
-        for mjc_dof, newton_dof in enumerate(mapping.numpy()[0]):
-            if 0 <= newton_dof < n:
-                alpha_newton[newton_dof] = alpha_mjc[mjc_dof]
+        mapping_np = mapping.numpy()[0]
+        for mjc_i, newton_i in enumerate(mapping_np):
+            for mjc_j, newton_j in enumerate(mapping_np):
+                if 0 <= newton_i < n and 0 <= newton_j < n:
+                    response_newton[newton_i, newton_j] = response_mjc[mjc_i, mjc_j]
     else:
-        alpha_newton[:] = alpha_mjc
+        response_newton[:] = response_mjc
 
     # The solver's mass matrix must agree with the oracle's own dense recompute.
-    np.testing.assert_allclose(alpha_newton, _alpha_reference(model, state), rtol=1e-4)
+    oracle_ref = ResponseOracle(model)
+    oracle_ref.refresh(state)
+    np.testing.assert_allclose(response_newton, oracle_ref.inverse_blocks.numpy()[0, :n, :n], rtol=1e-4)
 
     # Drive the implicit solve with the solver-provided values (no refresh()).
     oracle = ResponseOracle(model)
-    oracle.alpha.assign(alpha_newton)
+    blocks = np.zeros(oracle.inverse_blocks.shape, dtype=np.float32)
+    blocks[0, :n, :n] = response_newton
+    oracle.inverse_blocks.assign(blocks)
+    oracle.alpha.assign(np.diag(response_newton))
     actuator = _make_actuator(
         model,
         device,
@@ -236,20 +240,17 @@ def test_alpha_from_mujoco_mass_matrix(test, device):
     control.joint_f.zero_()
     actuator.step(state, control, dt=h)
 
-    joint_f = control.joint_f.numpy()
-    for i in range(n):
-        e_q = target[i] - q0[i]
-        a = float(alpha_newton[i])
-        expected = kp[i] * e_q / (1.0 + a * h * kd[i] + a * h * h * kp[i])
-        test.assertAlmostEqual(joint_f[i], expected, places=3)
+    f0 = kp * (target - q0)
+    jacobian = np.eye(n) + h * np.diag(h * kp + kd) @ response_newton
+    expected = np.linalg.solve(jacobian, h * f0) / h
+    np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
 
 
-def test_alpha_from_featherstone_impulse_probe(test, device):
-    """ResponseOracle.refresh_from_forward_dynamics: alpha via unit-impulse probe.
+def test_response_from_featherstone_impulse_probe(test, device):
+    """Probe the complete coupled response through Featherstone dynamics.
 
-    A unit generalized force at DOF i gives ``qdd = M^-1 e_i``, so
-    ``qdd_i = (M^-1)_ii = alpha_i`` — no dense mass matrix formed. Checks it
-    matches the dense recompute and drives the implicit solve.
+    A unit generalized force at DOF i gives one column of ``M^-1``. Check that
+    all probed columns match the dense response and drive the implicit solve.
     """
     h = 0.01
     kp = np.array([300.0, 200.0], dtype=np.float32)
@@ -269,8 +270,10 @@ def test_alpha_from_featherstone_impulse_probe(test, device):
     oracle = ResponseOracle(model)
     oracle.refresh_from_forward_dynamics(solver, state)
 
-    # The impulse-probe alpha must match the dense diag(M^-1).
-    np.testing.assert_allclose(oracle.alpha.numpy(), _alpha_reference(model, state), rtol=1e-4)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    H = newton.eval_mass_matrix(model, state).numpy()[0, :n, :n]
+    response = np.linalg.inv(H)
+    np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], response, rtol=1e-4)
 
     actuator = _make_actuator(
         model,
@@ -282,26 +285,23 @@ def test_alpha_from_featherstone_impulse_probe(test, device):
     control.joint_f.zero_()
     actuator.step(state, control, dt=h)
 
-    alpha = oracle.alpha.numpy()
-    joint_f = control.joint_f.numpy()
-    for i in range(n):
-        e_q = target[i] - q0[i]
-        a = float(alpha[i])
-        expected = kp[i] * e_q / (1.0 + a * h * kd[i] + a * h * h * kp[i])
-        test.assertAlmostEqual(joint_f[i], expected, places=3)
+    f0 = kp * (target - q0)
+    jacobian = np.eye(n) + h * np.diag(h * kp + kd) @ response
+    expected = np.linalg.solve(jacobian, h * f0) / h
+    np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
 
 
-def test_full_loop_alpha_from_mujoco_matches_refresh(test, device):
-    """Closed-loop actuator+solver run with per-step alpha from MuJoCo's qM.
+def test_full_loop_response_from_mujoco_matches_refresh(test, device):
+    """Closed-loop run with the coupled response from MuJoCo's qM.
 
-    Runs the same simulation twice, updating ``oracle.alpha`` every step
+    Runs the same simulation twice, updating the oracle response every step
     either from the solver's own mass matrix (``mjw_data.qM``, device-side
     Cholesky kernel — the "solver-owned oracle" path) or with the built-in
     ``oracle.refresh()``. The refresh is scheduled at the same one-step-stale
     phase as the qM data, so the trajectories must coincide. On CUDA the
-    whole step (actuator + solver + alpha update) is graph-captured.
+    whole step (actuator + solver + response update) is graph-captured.
     """
-    from newton._src.actuators.response_oracle import _alpha_from_mass_matrix_kernel  # noqa: PLC0415
+    from newton._src.actuators.response_oracle import _inverse_block_from_mass_matrix_kernel  # noqa: PLC0415
 
     h = 0.005
     outer_iters = 30
@@ -336,16 +336,15 @@ def test_full_loop_alpha_from_mujoco_matches_refresh(test, device):
         art_start = wp.array([0], dtype=wp.int32, device=device)
         art_count = wp.array([nv], dtype=wp.int32, device=device)
         chol_l = wp.zeros((1, qm_pad, qm_pad), dtype=wp.float32, device=device)
-        chol_y = wp.zeros((1, qm_pad), dtype=wp.float32, device=device)
 
-        def update_alpha(state_prev):
+        def update_response(state_prev):
             if use_qm:
-                # alpha = diag(qM^-1) from the solver's matrix (pose of the
-                # step that just ran) — same staleness as refresh(state_prev)
+                # Full inverse response from the solver's matrix at the pose
+                # of the step that just ran — same staleness as refresh(state_prev).
                 wp.launch(
-                    _alpha_from_mass_matrix_kernel,
+                    _inverse_block_from_mass_matrix_kernel,
                     dim=1,
-                    inputs=[solver.mjw_data.qM, art_start, art_count, chol_l, chol_y],
+                    inputs=[solver.mjw_data.qM, art_start, art_count, chol_l, oracle.inverse_blocks],
                     outputs=[oracle.alpha],
                     device=device,
                 )
@@ -357,14 +356,14 @@ def test_full_loop_alpha_from_mujoco_matches_refresh(test, device):
                 control.joint_f.zero_()
                 actuator.step(states[0], control, dt=h)
                 solver.step(states[0], states[1], control, None, h)
-                update_alpha(states[0])  # states[0] still holds the pre-step pose
+                update_response(states[0])  # states[0] still holds the pre-step pose
                 states[0], states[1] = states[1], states[0]
 
         def reset():
             states[0].joint_q.assign(q_init)
             states[0].joint_qd.zero_()
             newton.eval_fk(model, states[0].joint_q, states[0].joint_qd, states[0])
-            oracle.refresh(states[0])  # prime alpha at the initial pose
+            oracle.refresh(states[0])  # prime the response at the initial pose
 
         reset()
         two_steps()  # warm-up: module loads and lazy allocations before capture
@@ -389,13 +388,12 @@ def test_full_loop_alpha_from_mujoco_matches_refresh(test, device):
     np.testing.assert_allclose(traj_qm, traj_ref, atol=1e-4)
 
 
-def test_pd_block_solve_matches_reference(test, device):
-    """Block solve on a coupled chain matches the dense block reference, and differs from scalar.
+def test_pd_coupled_solve_matches_reference(test, device):
+    """The implicit solve on a coupled chain matches the dense block reference.
 
-    For a PD actuator driving both DOFs of a two-link chain, the block solve
-    couples them through A = inv(H). The result must equal the numpy block
-    solution J p = h f0 (J = I + h(h Kp + Kd) A), and must differ from the
-    scalar solve, which drops the off-diagonal (M^-1)_12.
+    For a PD actuator driving both DOFs of a two-link chain, the solve couples
+    them through A = inv(H). The result must equal the NumPy solution
+    J p = h f0 (J = I + h(h Kp + Kd) A).
     """
     from newton.actuators import ActuatorImplicitOptions  # noqa: PLC0415
 
@@ -412,7 +410,7 @@ def test_pd_block_solve_matches_reference(test, device):
     control = model.control()
     control.joint_target_q.assign(target)
 
-    # Dense reference: full block solve with A = inv(H).
+    # Dense reference: coupled solve with A = inv(H).
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     H = newton.eval_mass_matrix(model, state).numpy()[0, :n, :n]
     A = np.linalg.inv(H)
@@ -428,24 +426,16 @@ def test_pd_block_solve_matches_reference(test, device):
         kp=wp.array(kp, dtype=float, device=device),
         kd=wp.array(kd, dtype=float, device=device),
         effective_inv_mass=oracle,
-        options=ActuatorImplicitOptions(max_iters=1, warm_start="zero", block_solve=True),
+        options=ActuatorImplicitOptions(max_iters=1, warm_start="zero"),
     )
-    oracle.refresh(state, blocks=True)
+    oracle.refresh(state)
     control.joint_f.zero_()
     actuator.step(state, control, dt=h)
-    tau_block = control.joint_f.numpy()
-
-    np.testing.assert_allclose(tau_block, tau_ref, rtol=1e-3, atol=1e-3)
-
-    # Scalar solve drops the cross term → different result.
-    tau_scalar = np.array(
-        [kp[i] * (target[i] - q0[i]) / (1.0 + A[i, i] * h * kd[i] + A[i, i] * h * h * kp[i]) for i in range(n)]
-    )
-    test.assertGreater(np.max(np.abs(tau_block - tau_scalar)), 1e-2 * np.max(np.abs(tau_block)))
+    np.testing.assert_allclose(control.joint_f.numpy(), tau_ref, rtol=1e-3, atol=1e-3)
 
 
-def test_block_solve_clamp_in_residual(test, device):
-    """Block solve composes the clamp into the residual per DOF (generic, not PD-specific).
+def test_coupled_solve_clamp_in_residual(test, device):
+    """The coupled solve composes the clamp into the residual per DOF.
 
     A tight max-effort clamp on one DOF of a coupled block must bind exactly at
     the limit — the clamp is evaluated inside the block Newton, not applied
@@ -473,9 +463,8 @@ def test_block_solve_clamp_in_residual(test, device):
         kp=wp.array(kp, dtype=float, device=device),
         kd=wp.array(kd, dtype=float, device=device),
         effective_inv_mass=oracle,
-        options=ActuatorImplicitOptions(block_solve=True),
     )
-    oracle.refresh(state, blocks=True)
+    oracle.refresh(state)
     control.joint_f.zero_()
     actuator.step(state, control, dt=h)
     unclamped0 = float(control.joint_f.numpy()[0])
@@ -488,9 +477,8 @@ def test_block_solve_clamp_in_residual(test, device):
         kd=wp.array(kd, dtype=float, device=device),
         max_effort=np.array([limit, 1.0e6], dtype=np.float32),
         effective_inv_mass=oracle,
-        options=ActuatorImplicitOptions(block_solve=True),
     )
-    oracle.refresh(state, blocks=True)
+    oracle.refresh(state)
     control.joint_f.zero_()
     clamped.step(state, control, dt=h)
     joint_f = control.joint_f.numpy()
@@ -562,7 +550,7 @@ def test_high_gain_stability(test, device):
 
 
 def test_two_link_indexing(test, device):
-    """Per-DOF solve uses the correct articulation-local column for both joints."""
+    """The coupled solve uses the correct articulation-local indices."""
     h = 0.01
     kp = np.array([300.0, 200.0], dtype=np.float32)
     kd = np.array([3.0, 2.0], dtype=np.float32)
@@ -586,12 +574,12 @@ def test_two_link_indexing(test, device):
     control.joint_f.zero_()
     _step(actuator, state, control, h)
 
-    alpha = _alpha_reference(model, state)
-    joint_f = control.joint_f.numpy()
-    for i in range(2):
-        e_q = target[i] - q0[i]
-        expected = kp[i] * e_q / (1.0 + alpha[i] * h * kd[i] + alpha[i] * h * h * kp[i])
-        test.assertAlmostEqual(joint_f[i], expected, places=3)
+    oracle = actuator._test_oracle
+    response = oracle.inverse_blocks.numpy()[0, :2, :2]
+    f0 = kp * (target - q0)
+    jacobian = np.eye(2) + h * np.diag(h * kp + kd) @ response
+    expected = np.linalg.solve(jacobian, h * f0) / h
+    np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
 
 
 def test_end_to_end_stable_convergence(test, device):
@@ -685,7 +673,7 @@ def test_effort_limit_clamps_force(test, device):
 def test_live_param_update_through_views(test, device):
     """Writes through the usual parameter attributes reach the installed implicit solve.
 
-    After set_strategy_implicit, controller and clamp parameter attributes
+    After set_effort_mode_implicit, controller and clamp parameter attributes
     are views into the packed kernel arrays: writing to them must change the
     next solve, and reading them back must return the written values.
     """
@@ -787,7 +775,7 @@ def test_dc_motor_clamp_is_implicit(test, device):
         control_target_vel_attr="joint_target_qd",
     )
     oracle = ResponseOracle(model)
-    actuator.set_strategy_implicit(effective_inv_mass=oracle)
+    actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
     actuator._test_oracle = oracle
     control.joint_f.zero_()
     _step(actuator, state, control, h)
@@ -832,7 +820,7 @@ def test_position_clamp_is_implicit(test, device):
         control_target_vel_attr="joint_target_qd",
     )
     oracle = ResponseOracle(model)
-    actuator.set_strategy_implicit(effective_inv_mass=oracle)
+    actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
     actuator._test_oracle = oracle
     control.joint_f.zero_()
     _step(actuator, state, control, h)
@@ -848,8 +836,8 @@ def test_position_clamp_is_implicit(test, device):
     test.assertAlmostEqual(tau, tau_ref, delta=abs(tau_ref) * 1e-3)
 
 
-def test_strategy_switch_roundtrip(test, device):
-    """Strategies are interchangeable at runtime: implicit -> explicit -> implicit."""
+def test_effort_mode_switch_roundtrip(test, device):
+    """Effort modes are interchangeable at runtime: implicit -> explicit -> implicit."""
     h = 0.01
     kp_val, kd_val = 500.0, 5.0
     q0, target = 0.2, 1.0
@@ -870,14 +858,14 @@ def test_strategy_switch_roundtrip(test, device):
     _step(actuator, state, control, h)
     implicit_tau = float(control.joint_f.numpy()[0])
 
-    actuator.set_strategy_explicit()
+    actuator.set_effort_mode_explicit()
     control.joint_f.zero_()
     _step(actuator, state, control, h)
     explicit_tau = float(control.joint_f.numpy()[0])
     test.assertAlmostEqual(explicit_tau, kp_val * (target - q0), delta=1e-3)
     test.assertLess(implicit_tau, explicit_tau)
 
-    actuator.set_strategy_implicit(effective_inv_mass=actuator._test_oracle)
+    actuator.set_effort_mode_implicit(effective_inv_mass=actuator._test_oracle)
     control.joint_f.zero_()
     _step(actuator, state, control, h)
     test.assertAlmostEqual(float(control.joint_f.numpy()[0]), implicit_tau, delta=abs(implicit_tau) * 1e-5)
@@ -925,7 +913,7 @@ def test_neural_mlp_implicit_linear_net(test, device):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_strategy_implicit(effective_inv_mass=oracle)
+        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
         test.assertTrue(actuator.is_graphable())
 
         oracle.refresh(state)
@@ -1013,12 +1001,68 @@ def test_neural_mlp_implicit_nonlinear_linearized(test, device):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_strategy_implicit(effective_inv_mass=oracle)
+        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
         oracle.refresh(state)
         sa, sb = actuator.state(), actuator.state()
         control.joint_f.zero_()
         actuator.step(state, control, sa, sb, dt=h)
         test.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected_tau, delta=abs(expected_tau) * 3e-3)
+
+
+def test_neural_lstm_implicit_linearized(test, device):
+    """An LSTM controller enters the solve as a per-step linearization.
+
+    The hidden/cell state is held fixed while the network is linearized about
+    the current state, ``tau ~= c + a*q + b*qd``; the implicit solve must match
+    the closed-form solution of that linear system, and the recurrent state
+    must advance. Robust to warp-nn returning zero state gradients (then
+    ``a = b = 0`` and the law is the constant ``c``).
+    """
+    import tempfile  # noqa: PLC0415
+
+    from newton.actuators import ControllerNeuralLSTM  # noqa: PLC0415
+    from newton.tests.test_actuators import _build_lstm_onnx  # noqa: PLC0415
+
+    h = 0.01
+    q0, qd0, target = 0.2, 0.0, 1.0
+
+    model = _build_single_revolute(device)
+    state = model.state()
+    state.joint_q.assign(np.array([q0], dtype=np.float32))
+    state.joint_qd.assign(np.array([qd0], dtype=np.float32))
+    control = model.control()
+    control.joint_target_q.assign(np.array([target], dtype=np.float32))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = f"{tmp}/lstm.onnx"
+        _build_lstm_onnx(path, hidden_size=8, metadata={"effort_scale": 10.0})
+
+        controller = ControllerNeuralLSTM(model_path=path)
+        oracle = ResponseOracle(model)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=device),
+            controller=controller,
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        test.assertTrue(actuator.is_graphable())
+        test.assertIsNotNone(controller.bind_params())
+
+        oracle.refresh(state)
+        sa, sb = actuator.state(), actuator.state()
+        control.joint_f.zero_()
+        actuator.step(state, control, sa, sb, dt=h)
+
+        c, a, b = (float(x) for x in controller._lin_params.numpy()[0])
+        alpha = _alpha_reference(model, state)[0]
+        # Solve p/h from the linear law about (q0, qd0); reduces to c when a=b=0.
+        tau0 = c + a * q0 + b * qd0
+        expected = tau0 / (1.0 - alpha * h * (a * h + b))
+        tau = float(control.joint_f.numpy()[0])
+        test.assertTrue(np.isfinite(tau))
+        test.assertAlmostEqual(tau, expected, delta=abs(expected) * 3e-3 + 1e-6)
+        test.assertTrue(np.any(sb.controller_state.hidden.numpy() != 0.0))
 
 
 def test_unsupported_controller_raises(test, device):
@@ -1040,7 +1084,7 @@ def test_unsupported_controller_raises(test, device):
         control_target_vel_attr="joint_target_qd",
     )
     with test.assertRaises(NotImplementedError):
-        actuator.set_strategy_implicit(effective_inv_mass=ResponseOracle(model))
+        actuator.set_effort_mode_implicit(effective_inv_mass=ResponseOracle(model))
 
 
 def test_validation_errors(test, device):
@@ -1057,11 +1101,57 @@ def test_validation_errors(test, device):
         control_target_vel_attr="joint_target_qd",
     )
     with test.assertRaisesRegex(ValueError, "effective_inv_mass"):
-        actuator.set_strategy_implicit(effective_inv_mass=None)
+        actuator.set_effort_mode_implicit(effective_inv_mass=None)
 
     actuator = _make_actuator(model, device, kp=kp, kd=kd)
     with test.assertRaisesRegex(ValueError, "requires dt"):
         actuator.step(model.state(), model.control())
+
+
+def test_pid_implicit_matches_reference(test, device):
+    """Implicit PID: full effort solved implicitly, integral computed upfront.
+
+    With the integral advanced from the current-step error and folded in as a
+    constant, one step must match the closed-form Stable-PD solution
+    ``tau = e_q*(kp + ki*h) / (1 + alpha*h*(kp*h + kd))`` and the integral state
+    must advance to ``e_q*h``.
+    """
+    h = 0.01
+    kp_val, ki_val, kd_val = 400.0, 50.0, 6.0
+    q0, target = 0.2, 1.0
+
+    model = _build_single_revolute(device)
+    state = model.state()
+    state.joint_q.assign(np.array([q0], dtype=np.float32))
+    control = model.control()
+    control.joint_target_q.assign(np.array([target], dtype=np.float32))
+
+    oracle = ResponseOracle(model)
+    controller = ControllerPID(
+        kp=wp.array([kp_val], dtype=float, device=device),
+        ki=wp.array([ki_val], dtype=float, device=device),
+        kd=wp.array([kd_val], dtype=float, device=device),
+        integral_max=wp.array([1.0e9], dtype=float, device=device),
+    )
+    actuator = Actuator(
+        indices=wp.array([0], dtype=wp.uint32, device=device),
+        controller=controller,
+        control_target_pos_attr="joint_target_q",
+        control_target_vel_attr="joint_target_qd",
+    )
+    actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+    test.assertTrue(actuator.is_graphable())
+
+    oracle.refresh(state)
+    sa, sb = actuator.state(), actuator.state()
+    control.joint_f.zero_()
+    actuator.step(state, control, sa, sb, dt=h)
+
+    alpha = _alpha_reference(model, state)[0]
+    e_q = target - q0
+    expected = e_q * (kp_val + ki_val * h) / (1.0 + alpha * h * (kp_val * h + kd_val))
+    test.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
+    test.assertAlmostEqual(sb.controller_state.integral.numpy()[0], e_q * h, delta=abs(e_q * h) * 1e-5)
 
 
 devices = get_test_devices()
@@ -1082,14 +1172,14 @@ add_function_test(
 )
 add_function_test(
     TestActuatorImplicit,
-    "test_pd_block_solve_matches_reference",
-    test_pd_block_solve_matches_reference,
+    "test_pd_coupled_solve_matches_reference",
+    test_pd_coupled_solve_matches_reference,
     devices=devices,
 )
 add_function_test(
     TestActuatorImplicit,
-    "test_block_solve_clamp_in_residual",
-    test_block_solve_clamp_in_residual,
+    "test_coupled_solve_clamp_in_residual",
+    test_coupled_solve_clamp_in_residual,
     devices=devices,
 )
 add_function_test(
@@ -1103,20 +1193,20 @@ add_function_test(
 )
 add_function_test(
     TestActuatorImplicit,
-    "test_alpha_from_mujoco_mass_matrix",
-    test_alpha_from_mujoco_mass_matrix,
+    "test_response_from_mujoco_mass_matrix",
+    test_response_from_mujoco_mass_matrix,
     devices=devices,
 )
 add_function_test(
     TestActuatorImplicit,
-    "test_alpha_from_featherstone_impulse_probe",
-    test_alpha_from_featherstone_impulse_probe,
+    "test_response_from_featherstone_impulse_probe",
+    test_response_from_featherstone_impulse_probe,
     devices=devices,
 )
 add_function_test(
     TestActuatorImplicit,
-    "test_full_loop_alpha_from_mujoco_matches_refresh",
-    test_full_loop_alpha_from_mujoco_matches_refresh,
+    "test_full_loop_response_from_mujoco_matches_refresh",
+    test_full_loop_response_from_mujoco_matches_refresh,
     devices=devices,
 )
 add_function_test(TestActuatorImplicit, "test_high_gain_stability", test_high_gain_stability, devices=devices)
@@ -1141,7 +1231,7 @@ add_function_test(
     TestActuatorImplicit, "test_position_clamp_is_implicit", test_position_clamp_is_implicit, devices=devices
 )
 add_function_test(
-    TestActuatorImplicit, "test_strategy_switch_roundtrip", test_strategy_switch_roundtrip, devices=devices
+    TestActuatorImplicit, "test_effort_mode_switch_roundtrip", test_effort_mode_switch_roundtrip, devices=devices
 )
 add_function_test(
     TestActuatorImplicit, "test_unsupported_controller_raises", test_unsupported_controller_raises, devices=devices
@@ -1159,6 +1249,15 @@ if _HAS_ONNX and _HAS_WARP_NN:
         test_neural_mlp_implicit_nonlinear_linearized,
         devices=devices,
     )
+    add_function_test(
+        TestActuatorImplicit,
+        "test_neural_lstm_implicit_linearized",
+        test_neural_lstm_implicit_linearized,
+        devices=devices,
+    )
+add_function_test(
+    TestActuatorImplicit, "test_pid_implicit_matches_reference", test_pid_implicit_matches_reference, devices=devices
+)
 add_function_test(TestActuatorImplicit, "test_validation_errors", test_validation_errors, devices=devices)
 
 
