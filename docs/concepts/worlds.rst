@@ -149,8 +149,23 @@ world and after the last local world:
 * ``[world_start[-2], world_start[-1])`` contains global entities added at the
   back.
 
-Use the corresponding per-entity ``*_world == -1`` values when a single
-selection must cover both ranges.
+For example, the shape arrays in the scene above have this layout:
+
+.. code-block:: text
+
+   shape index:        0   1   2   3   4   5
+   shape_world:       -1   0   0   1   1  -1
+   shape_world_start: [1, 3, 5, 6]
+
+World ``0`` occupies shape indices ``[1, 3)`` and world ``1`` occupies
+``[3, 5)``. The two global shapes are split between index ``0`` at the front
+and index ``5`` at the back, so no single slice from ``shape_world_start``
+selects both. To select every global shape, test the per-shape world indices:
+
+.. code-block:: python
+
+   global_shape_mask = model.shape_world.numpy() == -1
+   # [True, False, False, False, False, True]
 
 Continuing the same example, we can compute the per-world shape counts as follows:
 
