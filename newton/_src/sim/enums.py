@@ -192,24 +192,20 @@ class JointType(IntEnum):
         Notes:
             - For PRISMATIC and REVOLUTE joints, both values are 1 (single axis).
             - For BALL joints, dof_count is 3 (angular velocity), coord_count is 4 (quaternion).
-            - For FREE and DISTANCE joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
+            - For FREE, DISTANCE, and CABLE joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
             - For FIXED joints, both values are 0.
-            - For CABLE joints, dof_count is 6 and coord_count is 7.
         """
         dof_count = num_axes
         coord_count = num_axes
         if self == JointType.BALL:
             dof_count = 3
             coord_count = 4
-        elif self == JointType.FREE or self == JointType.DISTANCE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.CABLE:
             dof_count = 6
             coord_count = 7
         elif self == JointType.FIXED:
             dof_count = 0
             coord_count = 0
-        elif self == JointType.CABLE:
-            dof_count = 6
-            coord_count = 7
         return dof_count, coord_count
 
     def constraint_count(self, num_axes: int) -> int:

@@ -125,7 +125,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
           for REVOLUTE, PRISMATIC, and D6 joints.
-        - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
+        - :attr:`~newton.Control.joint_f` (feedforward forces) is supported,
+          including six-component world-frame wrenches for CABLE joints.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           :attr:`~newton.Model.joint_target_mode`, equality constraints, mimic constraints.
@@ -1377,12 +1378,24 @@ class SolverVBD(SolverBase, CouplingInterface):
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
                             f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
                         )
+                    if (
+                        jtarget_ke[dof0] != jtarget_ke[dof0 + 1]
+                        or jtarget_kd[dof0] != jtarget_kd[dof0 + 1]
+                        or jtarget_ke[angular_dof] != jtarget_ke[angular_dof + 1]
+                        or jtarget_kd[angular_dof] != jtarget_kd[angular_dof + 1]
+                    ):
+                        raise ValueError(
+                            "SolverVBD requires isotropic CABLE shear and bend coefficients about the local +Z "
+                            f"material tangent; X and Y stiffness/damping entries differ for joint {j}."
+                        )
                     stretch_slot = c0
                     shear_slot = c0 + 1
                     bend_slot = c0 + 2
                     twist_slot = c0 + 3
 
-                    # Cable anchors use local +Z as the material tangent.
+                    # Cable anchors use local +Z as the material tangent, so Z carries
+                    # stretch/twist. Shear and bend are isotropic about that tangent,
+                    # so the validated X entry represents both transverse axes.
                     shear_dof = dof0
                     stretch_dof = dof0 + 2
                     bend_dof = angular_dof
@@ -2380,6 +2393,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.joint_dof_dim,
                         model.joint_axis,
                         control.joint_f,
+                        True,  # apply_cable_forces
                         dt,
                     ],
                     outputs=[

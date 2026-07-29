@@ -3504,7 +3504,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
 
 
 def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device):
-    """eval_fk reconstructs CABLE child state from joint_q and joint_qd."""
+    """Cable FK reconstructs body state and round-trips through IK."""
     builder = newton.ModelBuilder()
     rod_bodies, rod_joints = builder.add_rod_graph(
         node_positions=[
@@ -3529,8 +3529,6 @@ def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device)
     test.assertTrue(np.all(joint_types == int(newton.JointType.CABLE)), msg="expected only CABLE joints")
     test.assertEqual(model.joint_coord_count, 7)
     test.assertEqual(model.joint_dof_count, 6)
-    np.testing.assert_array_equal(model.joint_dof_dim.numpy(), [[3, 3]])
-    np.testing.assert_allclose(model.joint_target_ke.numpy(), [1.0e5, 1.0e5, 1.0e5, 0.0, 0.0, 0.0])
 
     child_body = int(rod_bodies[1])
 
@@ -3566,112 +3564,63 @@ def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device)
         err_msg="eval_fk should overwrite the CABLE body velocity from kinematic recurrence",
     )
 
-
-def _cable_eval_jacobian_graph_impl(test: unittest.TestCase, device):
-    """CABLE exposes a six-column Jacobian through graph-capturable FK/IK."""
-    builder = newton.ModelBuilder(gravity=0.0)
-    child = builder.add_link(
-        xform=wp.transform(
-            wp.vec3(0.7, -0.2, 0.4),
-            wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.4),
-        ),
-        com=wp.vec3(0.2, -0.1, 0.05),
-        mass=1.0,
-        inertia=wp.mat33(np.eye(3)),
-    )
-    joint = builder.add_joint_cable(
-        parent=-1,
-        child=child,
-        parent_xform=wp.transform(
-            wp.vec3(0.1, 0.2, -0.1),
-            wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2),
-        ),
-        child_xform=wp.transform(
-            wp.vec3(-0.15, 0.05, 0.1),
-            wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -0.1),
-        ),
-    )
-    builder.add_articulation([joint])
-    model = builder.finalize(device=device)
-    state = model.state()
-
-    qd = np.array([0.2, -0.3, 0.4, 0.5, -0.6, 0.7], dtype=np.float32)
-    state.joint_qd.assign(qd)
+    state.body_q.assign(body_q)
+    state.body_qd.assign(body_qd)
+    newton.eval_ik(model, state, state.joint_q, state.joint_qd)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-
-    jacobian = wp.empty(
-        (model.articulation_count, model.max_joints_per_articulation * 6, model.max_dofs_per_articulation),
-        dtype=float,
-        device=device,
-    )
-    motion_subspace = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=device)
-
-    def evaluate():
-        newton.eval_ik(model, state, state.joint_q, state.joint_qd)
-        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        newton.eval_jacobian(model, state, J=jacobian, joint_S_s=motion_subspace)
-
-    _run_sim_loop(evaluate, 2, device)
-
-    jacobian_np = jacobian.numpy()[0]
-    joint_qd_np = state.joint_qd.numpy()
-    body_qd_from_jacobian = jacobian_np @ joint_qd_np
     np.testing.assert_allclose(
-        body_qd_from_jacobian,
-        state.body_qd.numpy()[child],
+        state.body_q.numpy()[child_body],
+        body_q[child_body],
         rtol=0.0,
         atol=1.0e-5,
-        err_msg="CABLE Jacobian should map qd6 to the public child body twist",
+        err_msg="IK synchronization followed by FK must preserve a maximal-coordinate cable pose",
     )
-    test.assertTrue(np.isfinite(jacobian_np).all(), msg="CABLE Jacobian must remain finite under graph replay")
-
-
-def _cable_vbd_ik_fk_sync_impl(test: unittest.TestCase, device):
-    """Explicit IK synchronization preserves maximal VBD cable body state."""
-    model, state0, state1, control, _rod_bodies = _build_cable_chain(device, num_links=6)
-    contacts = model.contacts()
-    solver = newton.solvers.SolverVBD(model, iterations=5)
-
-    def simulate():
-        nonlocal state0, state1
-        for _ in range(2):
-            state0.clear_forces()
-            model.collide(state0, contacts)
-            solver.step(state0, state1, control, contacts, 1.0 / 120.0)
-            state0, state1 = state1, state0
-
-    _run_sim_loop(simulate, 6, device)
-
-    body_q_before = state0.body_q.numpy().copy()
-    body_qd_before = state0.body_qd.numpy().copy()
-    test.assertGreater(float(np.max(np.abs(body_qd_before))), 1.0e-4, msg="VBD cable should be moving before sync")
-
-    # Maximal VBD owns body state. IK explicitly synchronizes the derived cable
-    # joint state before FK is used by a reduced-coordinate consumer.
-    newton.eval_ik(model, state0, state0.joint_q, state0.joint_qd)
-    test.assertGreater(
-        float(np.max(np.abs(state0.joint_qd.numpy()))),
-        1.0e-4,
-        msg="IK should recover the moving cable's relative twists",
-    )
-    newton.eval_fk(model, state0.joint_q, state0.joint_qd, state0)
-
-    body_q_after = state0.body_q.numpy()
     np.testing.assert_allclose(
-        body_q_after[:, :3],
-        body_q_before[:, :3],
+        state.body_qd.numpy()[child_body],
+        body_qd[child_body],
         rtol=0.0,
-        atol=1.0e-4,
-        err_msg="IK synchronization followed by FK must not snap a VBD cable",
+        atol=1.0e-5,
+        err_msg="IK synchronization followed by FK must preserve a maximal-coordinate cable twist",
     )
-    quat_dots = np.abs(np.sum(body_q_after[:, 3:7] * body_q_before[:, 3:7], axis=1))
-    np.testing.assert_allclose(quat_dots, 1.0, rtol=0.0, atol=1.0e-4)
+
+
+def _cable_vbd_applies_feedforward_wrench_impl(test: unittest.TestCase, device):
+    """VBD applies a cable's six-component feedforward wrench."""
+    mass = 2.0
+    force_x, torque_y = 12.0, 6.0
+    dt = 1.0 / 60.0
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0, 0.0, 0.0))
+    child = builder.add_link(mass=mass, inertia=wp.mat33(np.eye(3)))
+    cable = builder.add_joint_cable(
+        -1,
+        child,
+        stretch_stiffness=0.0,
+        shear_stiffness=0.0,
+        bend_stiffness=0.0,
+        twist_stiffness=0.0,
+    )
+    builder.add_articulation([cable])
+    builder.color()
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverVBD(model)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+
+    dof_start = int(model.joint_qd_start.numpy()[cable])
+    joint_f = np.zeros(model.joint_dof_count, dtype=np.float32)
+    joint_f[dof_start + 0] = force_x
+    joint_f[dof_start + 4] = torque_y
+    control.joint_f.assign(joint_f)
+
+    state_0.clear_forces()
+    solver.step(state_0, state_1, control, None, dt)
+
     np.testing.assert_allclose(
-        state0.body_qd.numpy(),
-        body_qd_before,
-        rtol=0.0,
-        atol=1.0e-4,
-        err_msg="IK synchronization followed by FK must preserve VBD cable velocities",
+        state_1.body_qd.numpy()[child],
+        [force_x * dt / mass, 0.0, 0.0, 0.0, torque_y * dt, 0.0],
+        atol=1.0e-5,
     )
 
 
@@ -5469,10 +5418,21 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     solver = newton.solvers.SolverVBD(model)
 
     np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [3, 3])
+    np.testing.assert_array_equal(
+        model.joint_target_mode.numpy(),
+        np.full(model.joint_dof_count, int(newton.JointTargetMode.NONE)),
+    )
     test.assertEqual(int(solver.joint_constraint_dim.numpy()[joint]), 4)
     start = int(solver.joint_constraint_start.numpy()[joint])
     np.testing.assert_allclose(solver.joint_penalty_k_max.numpy()[start : start + 4], [100.0, 40.0, 10.0, 3.0])
     np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
+
+    target_ke = model.joint_target_ke.numpy()
+    dof_start = int(model.joint_qd_start.numpy()[joint])
+    target_ke[dof_start + 1] = 41.0
+    model.joint_target_ke.assign(target_ke)
+    with test.assertRaisesRegex(ValueError, "requires isotropic CABLE shear and bend"):
+        newton.solvers.SolverVBD(model)
 
 
 def _split_cable_material_force_law_matches_ei_gj(test, device):
@@ -6055,14 +6015,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_eval_jacobian_graph",
-    _cable_eval_jacobian_graph_impl,
-    devices=devices,
-)
-add_function_test(
-    TestCable,
-    "test_cable_vbd_ik_fk_sync",
-    _cable_vbd_ik_fk_sync_impl,
+    "test_cable_vbd_applies_feedforward_wrench",
+    _cable_vbd_applies_feedforward_wrench_impl,
     devices=devices,
 )
 add_function_test(

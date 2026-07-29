@@ -148,6 +148,10 @@ class IKOptimizerLM:
             integrated joints (free/ball/distance) must be masked
             all-or-nothing, which the constructor enforces. The mask array must
             not be modified after construction.
+
+    Raises:
+        ValueError: If ``model`` contains a :attr:`~newton.JointType.CABLE`
+            joint, which is not yet supported by this optimizer.
     """
 
     TILE_N_DOFS = None
@@ -162,6 +166,9 @@ class IKOptimizerLM:
         *a: Any,
         **kw: Any,
     ) -> IKOptimizerLM:
+        if model.joint_count > 0 and JointType.CABLE in model.joint_type.numpy():
+            raise ValueError("IKOptimizerLM does not support JointType.CABLE joints.")
+
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
         arch = model.device.arch

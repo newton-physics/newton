@@ -1000,8 +1000,16 @@ def jcalc_motion_subspace(
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
 
-        CABLE joints use the same six-dimensional motion subspace as
-        FREE/DISTANCE joints.
+        CABLE joints share the FREE/DISTANCE subspace because they share the FK
+        map: they impose no kinematic constraint, so their six columns are the
+        derivative of the same parent-anchor pose recurrence. The stretch/shear/
+        bend/twist behavior is a material force law layered on that unconstrained
+        motion (see :class:`newton.solvers.SolverVBD`), not a narrower subspace.
+
+        The Featherstone counterpart ``jcalc_motion`` deliberately does not
+        dispatch CABLE: the inverse-dynamics entry points reject cable models
+        outright, so it can never observe one. Only this Jacobian path is reachable
+        with a cable, which is why the dispatch is asymmetric.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1394,7 +1402,7 @@ def eval_articulation_inverse_dynamics_force_kernel(
     Evaluates ``tau = M(q)*joint_qdd + C(q,q_dot)*q_dot + g(q)`` per DOF,
     with the mass-matrix term and bias terms supplied explicitly.
 
-    For any FREE/DISTANCE/CABLE joint, the mass matrix is in the joint's parent frame
+    For any FREE/DISTANCE joint, the mass matrix is in the joint's parent frame
     while the bias terms are in world frame, so the six ``M @ joint_qdd``
     components are rotated to world before summing.
 
@@ -1427,15 +1435,15 @@ def eval_articulation_inverse_dynamics_force_kernel(
             sum_val += mass_matrix[art_idx, i, j] * joint_qdd[dof_start + j]
         tau[dof_start + i] = sum_val
 
-    # Rotate every FREE/DISTANCE/CABLE wrench from parent frame to world so it
+    # Rotate every FREE/DISTANCE wrench from parent frame to world so it
     # matches the world-frame bias terms. M @ joint_qdd is conjugate to the
     # parent-frame joint_qdd convention used internally; coriolis_force and
     # gravity_force already use the world-frame CoM-wrench convention of
-    # Control.joint_f. Any FREE/DISTANCE/CABLE joint in the articulation tree
+    # Control.joint_f. Any FREE/DISTANCE joint in the articulation tree
     # (not only the root) needs this rotation.
     for ji in range(joint_start, joint_end):
         jtype = joint_type[ji]
-        if jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.CABLE:
+        if jtype == JointType.FREE or jtype == JointType.DISTANCE:
             jdof = joint_qd_start[ji]
             X_wpj = joint_X_p[ji]
             parent = joint_parent[ji]
@@ -1534,7 +1542,7 @@ def eval_inverse_dynamics_force(
         ValueError: If the model contains a :attr:`~newton.JointType.CABLE`
             joint or an input, output, or mask has an unexpected shape.
     """
-    if model._has_cable_joints:  # pyright: ignore[reportPrivateUsage]
+    if model.joint_count > 0 and JointType.CABLE in model.joint_type.numpy():
         raise ValueError("eval_inverse_dynamics_force() does not support JointType.CABLE joints.")
 
     if model.articulation_count == 0:

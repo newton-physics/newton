@@ -28,10 +28,9 @@ Each rigid body's pose is represented by 7 parameters (3D position and XYZW quat
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 The linear component of :attr:`newton.State.body_qd` is the world-frame velocity
 of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``CABLE``
-joints,
-:attr:`newton.State.joint_qd` stores the child-COM twist in the joint parent
-frame: the linear slice is child-COM velocity and the angular slice is angular
-velocity in that same frame.
+joints, :attr:`newton.State.joint_qd` stores the child-COM twist in the joint
+parent frame: the linear slice is child-COM velocity and the angular slice is
+angular velocity in that same frame.
 For floating-base articulations, the root ``FREE`` joint usually has the world
 as parent, so this parent-frame twist matches the world-frame body twist in
 practice.
@@ -54,6 +53,16 @@ Cable joints
 pose (3D translation and a quaternion), while ``joint_qd`` stores the 6-DoF
 relative twist. :func:`newton.eval_fk` and
 :func:`newton.eval_ik` convert between this joint state and body state.
+
+:class:`newton.solvers.SolverVBD` separately maps the six per-axis entries of
+:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd` to
+its stretch, shear, bend, and twist response. Each anchor's local ``+Z`` is the
+material tangent, so those entries are ordered
+``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``. The transverse X/Y
+shear entries must match, as must the X/Y bend entries, because these responses
+are isotropic about that tangent. They are material coefficients rather than
+drive gains, so every cable axis uses actuator mode
+:attr:`~newton.JointTargetMode.NONE`.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:

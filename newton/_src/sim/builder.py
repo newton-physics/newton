@@ -2458,7 +2458,7 @@ class ModelBuilder:
     def joint_target_pos(self) -> list[float]:
         """Deprecated alias for :attr:`joint_target_q` (DOF-shape).
 
-        Returns a fresh DOF-shaped list — for FREE/BALL/DISTANCE the quat-w
+        Returns a fresh DOF-shaped list — for FREE/BALL/DISTANCE/CABLE the quat-w
         slot is dropped; other joints copy verbatim. Mutating the returned
         list does not propagate back; assign to this alias to update the
         underlying targets during the deprecation window. Raises
@@ -4461,6 +4461,10 @@ class ModelBuilder:
         """
         Generic method to add any type of joint to this ModelBuilder.
 
+        :attr:`~newton.JointType.CABLE` requires three linear and three angular
+        axes. Prefer :meth:`add_joint_cable`, which creates the canonical
+        material-axis layout and disables joint-drive modes for those axes.
+
         Args:
             joint_type: The type of joint to add (see :ref:`Joint types`).
             parent: The index of the parent body (-1 is the world).
@@ -4485,6 +4489,33 @@ class ModelBuilder:
             linear_axes = []
         if angular_axes is None:
             angular_axes = []
+
+        if joint_type == JointType.CABLE:
+            # SolverVBD indexes the six per-axis material slots positionally, so the axis
+            # set is fixed rather than free-form.
+            if len(linear_axes) != 3 or len(angular_axes) != 3:
+                raise ValueError(
+                    "JointType.CABLE requires exactly three linear and three angular axes; "
+                    "use ModelBuilder.add_joint_cable() to construct the canonical layout."
+                )
+            expected_axes = (
+                axis_to_vec3(Axis.X),
+                axis_to_vec3(Axis.Y),
+                axis_to_vec3(Axis.Z),
+            )
+            for configured, expected in zip(
+                (*linear_axes, *angular_axes), (*expected_axes, *expected_axes), strict=True
+            ):
+                if any(abs(float(configured.axis[k]) - float(expected[k])) > 1.0e-6 for k in range(3)):
+                    raise ValueError(
+                        "JointType.CABLE requires canonical XYZ linear and XYZ angular axis ordering; "
+                        "use ModelBuilder.add_joint_cable() to construct the canonical layout."
+                    )
+                if configured.actuator_mode is not None and configured.actuator_mode != JointTargetMode.NONE:
+                    raise ValueError(
+                        "JointType.CABLE axes carry material coefficients rather than drive gains, so "
+                        f"actuator_mode must be JointTargetMode.NONE; got {configured.actuator_mode!r}."
+                    )
 
         if collision_filter_parent is None:
             collision_filter_parent = self._default_filter_parent(joint_type, parent)
@@ -4542,7 +4573,11 @@ class ModelBuilder:
             self.joint_target_qd.append(dim.target_vel)
 
             # Use actuator_mode if explicitly set, otherwise infer from gains
-            if dim.actuator_mode is not None:
+            if joint_type == JointType.CABLE:
+                # Cable gains are material coefficients, so the inference below would read
+                # them as evidence of a drive. Any conflicting mode is rejected above.
+                mode = int(JointTargetMode.NONE)
+            elif dim.actuator_mode is not None:
                 mode = int(dim.actuator_mode)
             else:
                 # Infer has_drive from whether gains are non-zero: non-zero gains imply a drive exists.
@@ -4986,6 +5021,23 @@ class ModelBuilder:
 
         return joint_index
 
+    def _init_free_layout_joint_q(self, joint_id: int, parent: int, child: int) -> None:
+        """Initialize the 7 pose coordinates so FK reproduces the authored child pose.
+
+        Shared by the joint types whose ``joint_q`` is a parent-anchor-relative pose, so
+        they cannot drift on the convention :func:`newton.eval_fk` inverts.
+
+        Args:
+            joint_id: Index of the joint whose coordinates are initialized.
+            parent: Parent body index, or ``-1`` for the world frame.
+            child: Child body index.
+        """
+        q_start = self.joint_q_start[joint_id]
+        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
+        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
+        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
+        self.joint_q[q_start : q_start + 7] = list(joint_q)
+
     @deprecate_nonkeyword_arguments
     def add_joint_free(
         self,
@@ -5039,12 +5091,7 @@ class ModelBuilder:
             ],
             custom_attributes=custom_attributes,
         )
-        q_start = self.joint_q_start[joint_id]
-        # Initialize the coordinates so FK preserves the authored child pose.
-        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
-        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
-        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
-        self.joint_q[q_start : q_start + 7] = list(joint_q)
+        self._init_free_layout_joint_q(joint_id, parent, child)
         return joint_id
 
     @deprecate_nonkeyword_arguments
@@ -5277,15 +5324,19 @@ class ModelBuilder:
                 "add_joint_cable: stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness must be >= 0"
             )
 
+        material_axis = functools.partial(
+            ModelBuilder.JointDofConfig,
+            actuator_mode=JointTargetMode.NONE,
+        )
         linear_axes = [
-            ModelBuilder.JointDofConfig(axis=Axis.X, target_ke=shear_ke, target_kd=shear_kd),
-            ModelBuilder.JointDofConfig(axis=Axis.Y, target_ke=shear_ke, target_kd=shear_kd),
-            ModelBuilder.JointDofConfig(axis=Axis.Z, target_ke=stretch_ke, target_kd=stretch_kd),
+            material_axis(axis=Axis.X, target_ke=shear_ke, target_kd=shear_kd),
+            material_axis(axis=Axis.Y, target_ke=shear_ke, target_kd=shear_kd),
+            material_axis(axis=Axis.Z, target_ke=stretch_ke, target_kd=stretch_kd),
         ]
         angular_axes = [
-            ModelBuilder.JointDofConfig(axis=Axis.X, target_ke=bend_ke, target_kd=bend_kd),
-            ModelBuilder.JointDofConfig(axis=Axis.Y, target_ke=bend_ke, target_kd=bend_kd),
-            ModelBuilder.JointDofConfig(axis=Axis.Z, target_ke=twist_ke, target_kd=twist_kd),
+            material_axis(axis=Axis.X, target_ke=bend_ke, target_kd=bend_kd),
+            material_axis(axis=Axis.Y, target_ke=bend_ke, target_kd=bend_kd),
+            material_axis(axis=Axis.Z, target_ke=twist_ke, target_kd=twist_kd),
         ]
 
         joint_id = self.add_joint(
@@ -5302,12 +5353,7 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
             **kwargs,
         )
-        q_start = self.joint_q_start[joint_id]
-        # Initialize the coordinates so FK preserves the authored child pose.
-        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
-        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
-        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
-        self.joint_q[q_start : q_start + 7] = list(joint_q)
+        self._init_free_layout_joint_q(joint_id, parent, child)
         return joint_id
 
     def add_constraint_mimic(
@@ -5835,6 +5881,7 @@ class ModelBuilder:
             if joint["child"] not in velocity_updated_bodies or joint["type"] not in (
                 JointType.FREE,
                 JointType.DISTANCE,
+                JointType.CABLE,
             ):
                 continue
 
@@ -11941,7 +11988,6 @@ class ModelBuilder:
                 m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
 
             # joints
-            m._has_cable_joints = JointType.CABLE in self.joint_type  # pyright: ignore[reportPrivateUsage]
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)

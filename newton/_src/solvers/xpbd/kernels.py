@@ -956,15 +956,24 @@ def apply_joint_forces(
     joint_dof_dim: wp.array2d[int],
     joint_axis: wp.array[wp.vec3],
     joint_f: wp.array[float],
+    apply_cable_forces: bool,
     dt: float,
     body_f: wp.array[wp.spatial_vector],
     joint_impulse: wp.array[wp.spatial_vector],
 ):
+    """Accumulate ``Control.joint_f`` into body wrenches.
+
+    Args:
+        apply_cable_forces: Whether to apply CABLE wrenches. CABLE shares the
+            free-layout wrench convention, so the handling is identical; a solver
+            that does not simulate cable joints passes ``False`` so that it makes
+            no partial-support claim.
+    """
     tid = wp.tid()
     type = joint_type[tid]
     if not joint_enabled[tid]:
         return
-    if type == JointType.FIXED or type == JointType.CABLE:
+    if type == JointType.FIXED or (type == JointType.CABLE and not apply_cable_forces):
         return
 
     # rigid body indices of the child and parent
@@ -1003,11 +1012,12 @@ def apply_joint_forces(
     t_total = wp.vec3()
     f_total = wp.vec3()
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
         f_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
         t_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
-        # Interpret free-joint forces as spatial wrench at the COM (same as body_f).
-        # Avoid adding a moment arm that would introduce torque for pure forces.
+        # These types share the 6-DoF free layout, so joint_f is a spatial wrench at
+        # the COM (same as body_f). Avoid adding a moment arm that would introduce
+        # torque for pure forces.
         wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total))
         if id_p >= 0:
             wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
@@ -1226,7 +1236,7 @@ def solve_simple_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE:
+    if type == JointType.FREE or type == JointType.CABLE:
         return
     if type == JointType.DISTANCE:
         return
@@ -1546,7 +1556,7 @@ def solve_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE:
+    if type == JointType.FREE or type == JointType.CABLE:
         return
     # if type == JointType.FIXED:
     #     return
