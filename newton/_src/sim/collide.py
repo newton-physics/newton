@@ -563,11 +563,12 @@ def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]
 
 
 def _count_soft_particle_rigid_contact_pairs(model: Model) -> int:
-    """Count the pairs :func:`_build_soft_particle_rigid_contact_pairs` would emit for ``model``.
+    """Count exactly how many pairs :func:`_build_soft_particle_rigid_contact_pairs` emits for ``model``.
 
     Reads only the per-world start offsets, so solvers can pre-size soft-contact buffers without
-    downloading per-entity world ids. Excludes the full-surface edge/face headroom, which only
-    :class:`CollisionPipeline` knows about.
+    downloading per-entity world ids. This is not :attr:`CollisionPipeline.soft_contact_max`, which
+    additionally reserves edge/face headroom when ``enable_rigid_soft_full_surface_contact`` is set.
+    Reads host arrays, so it is not graph-capture-safe; call at solver construction.
     """
     particle_start = model.particle_world_start.numpy()
     shape_start = model.shape_world_start.numpy()
@@ -1201,7 +1202,8 @@ class CollisionPipeline:
     def soft_rigid_contact_pair_count(self) -> int:
         """Number of precomputed soft-rigid (particle-shape) pairs launched for soft contacts.
 
-        This is the default capacity used for ``soft_contact_max``.
+        This is the base of the default ``soft_contact_max``, which additionally reserves
+        edge/face headroom when ``enable_rigid_soft_full_surface_contact`` is set.
         """
         return self._soft_rigid_contact_pair_count
 
