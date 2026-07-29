@@ -735,7 +735,12 @@ def compute_and_write_joint_implicit_dynamics(
     data_joint_dq_b_j: wp.array[wp.float32],
 ):
     q_error = wp.vec3f(0.0)
-    if dof_type == JointDoFType.ROTATION_VECTOR:
+    uses_position_target = (
+        act_type == JointActuationType.POSITION
+        or act_type == JointActuationType.POSITION_VELOCITY
+        or act_type == JointActuationType.POSITION_VELOCITY_FORCE
+    )
+    if dof_type == JointDoFType.ROTATION_VECTOR and uses_position_target:
         q = wp.vec3f(
             data_joint_q_j[coords_offset],
             data_joint_q_j[coords_offset + 1],
@@ -753,8 +758,6 @@ def compute_and_write_joint_implicit_dynamics(
 
     # Iterate over the dynamic constraints of the joint and
     # compute and store the implicit dynamics intermediates
-    # TODO: We currently do not handle implicit dynamics of
-    # multi-dof joints, but we should generalize this.
     for j in range(num_dynamic_cts):
         coords_offset_j = coords_offset + j
         dofs_offset_j = dofs_offset + j

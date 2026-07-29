@@ -51,6 +51,7 @@ __all__ = [
     "build_unary_cylindrical_joint_test",
     "build_unary_prismatic_joint_test",
     "build_unary_revolute_joint_test",
+    "build_unary_rotation_vector_joint_test",
     "build_unary_spherical_joint_test",
     "build_unary_universal_joint_test",
     "make_shape_pairs_builder",
@@ -1119,6 +1120,89 @@ def build_binary_spherical_joint_test(
         )
 
     # Return the populated builder
+    return _builder
+
+
+def build_unary_rotation_vector_joint_test(
+    builder: ModelBuilderKamino | None = None,
+    z_offset: float = 0.0,
+    new_world: bool = True,
+    limits: bool = True,
+    ground: bool = True,
+    dynamic: bool = False,
+    implicit_pd: bool = False,
+    world_index: int = 0,
+) -> ModelBuilderKamino:
+    """Build a world containing one unary rotation-vector joint.
+
+    Args:
+        builder: Optional builder to populate.
+        z_offset: Vertical body offset.
+        new_world: Whether to create a new world.
+        limits: Whether to enable joint limits.
+        ground: Whether to include a ground geometry.
+        dynamic: Whether to enable implicit joint dynamics.
+        implicit_pd: Whether to enable implicit PD control.
+        world_index: Existing world index used when ``new_world`` is ``False``.
+
+    Returns:
+        The populated model builder.
+    """
+    if builder is None:
+        _builder = ModelBuilderKamino(default_world=False)
+    else:
+        _builder = builder
+
+    if new_world or builder is None:
+        world_index = _builder.add_world(name="unary_rotation_vector_joint_test")
+
+    bid_F = _builder.add_rigid_body(
+        name="follower",
+        m_i=1.0,
+        i_I_i=I_3,
+        q_i_0=wp.transformf(wp.vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0),
+        world_index=world_index,
+    )
+    _builder.add_joint(
+        name="world_to_follower_rotation_vector",
+        dof_type=JointDoFType.ROTATION_VECTOR,
+        act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
+        bid_B=-1,
+        bid_F=bid_F,
+        B_r_Bj=wp.vec3f(0.25, -0.25, -0.25),
+        F_r_Fj=wp.vec3f(-0.25, -0.25, -0.25),
+        X_Bj=axis_to_mat33(Axis.X),
+        q_j_min=[-0.6 * math.pi] * 3 if limits else None,
+        q_j_max=[0.6 * math.pi] * 3 if limits else None,
+        a_j=[0.1, 0.2, 0.3] if dynamic else None,
+        b_j=[0.01, 0.02, 0.03] if dynamic else None,
+        k_p_j=[10.0, 20.0, 30.0] if implicit_pd else None,
+        k_d_j=[0.01, 0.02, 0.03] if implicit_pd else None,
+        world_index=world_index,
+    )
+    _builder.add_geometry(
+        name="base/box",
+        body=-1,
+        shape=BoxShape(0.25, 0.25, 0.25),
+        world_index=world_index,
+        group=2,
+        collides=2,
+    )
+    _builder.add_geometry(
+        name="follower/box",
+        body=bid_F,
+        shape=BoxShape(0.25, 0.25, 0.25),
+        world_index=world_index,
+    )
+    if ground:
+        _builder.add_geometry(
+            body=-1,
+            shape=BoxShape(10.0, 10.0, 0.5),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            world_index=world_index,
+        )
+
     return _builder
 
 

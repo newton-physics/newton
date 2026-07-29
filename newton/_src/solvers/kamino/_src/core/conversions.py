@@ -352,7 +352,10 @@ def joint_conversion_kernel(
         limit_upper_j[i] = joint_limit_upper[dofs_start_j + i]
         limit_lower_j[i] = joint_limit_lower[dofs_start_j + i]
     dof_type_j = JointDoFType.from_newton_wp(type_j, q_count_j, qd_count_j, dof_dim_j, limit_lower_j, limit_upper_j)
-    assert dof_type_j >= 0, "Joint DoF type must be valid"
+    joint_dof_type[joint_id] = dof_type_j
+    if dof_type_j < 0:
+        # Host-side conversion reports unsupported configurations with joint context.
+        return
 
     # Get joint type properties
     ncoords_j = JointDoFType.num_coords_wp(dof_type_j)
@@ -361,7 +364,6 @@ def joint_conversion_kernel(
     assert ncoords_j >= 0, "Number of joint coordinates must be valid"
     assert ndofs_j >= 0, "Number of joint DoFs must be valid"
     assert ncts_j >= 0, "Number of joint constraints must be valid"
-    joint_dof_type[joint_id] = dof_type_j
     joint_num_coords[joint_id] = ncoords_j
     joint_num_dofs[joint_id] = ndofs_j
 
@@ -889,6 +891,27 @@ def convert_model_joint_actuation(model: Model, joints: JointsModel) -> None:
     )
 
 
+def _validate_joint_axes(model: Model, joint_dof_type: np.ndarray) -> None:
+    """Raise if Newton joint axes violate Kamino's joint-frame assumptions."""
+    joint_qd_start = model.joint_qd_start.numpy()
+    joint_axis = model.joint_axis.numpy()
+    validation_errors = []
+    for joint_id, dof_type_value in enumerate(joint_dof_type):
+        label = model.joint_label[joint_id]
+        if dof_type_value < 0:
+            validation_errors.append(f"joint {joint_id} ('{label}'): unsupported Newton joint configuration")
+            continue
+        dof_type = JointDoFType(int(dof_type_value))
+        dofs_start = joint_qd_start[joint_id]
+        dofs_end = joint_qd_start[joint_id + 1]
+        error = JointDoFType.validate_axes(dof_type, joint_axis[dofs_start:dofs_end])
+        if error is not None:
+            validation_errors.append(f"joint {joint_id} ('{label}', {dof_type.name}): {error}")
+    if validation_errors:
+        details = "\n".join(f"  - {error}" for error in validation_errors)
+        raise ValueError(f"Invalid joint configuration for SolverKamino:\n{details}")
+
+
 def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     """
     Converts the joint model parameterization of Newton's to Kamino's format.
@@ -904,6 +927,7 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
         The output JointsModel instance where the converted joint data will be stored.
         This function modifies the `joints` object in-place.
     """
+    _validate_joint_axes(model, joints.dof_type.numpy())
     wp.launch(
         kernel=joint_frame_conversion_kernel,
         dim=model.joint_count,
@@ -1191,6 +1215,11 @@ def convert_joints(
         device=model.device,
     )
 
+    # Validate on the host before frame conversion. Warp assertions are disabled
+    # in release mode and therefore cannot enforce these structural assumptions.
+    joint_dof_type_np = joint_dof_type.numpy()
+    _validate_joint_axes(model, joint_dof_type_np)
+
     wp.launch(
         kernel=joint_frame_conversion_kernel,
         dim=model.joint_count,
@@ -1335,10 +1364,8 @@ def convert_joints(
     base_body_idx_np = np.full((model.world_count,), -1, dtype=int)
     base_joint_idx_np = np.full((model.world_count,), -1, dtype=int)
     body_world_start_np = model.body_world_start.numpy()
-    joint_world_start_np = model.joint_world_start.numpy()
     joint_child_np = model.joint_child.numpy()
     joint_parent_np = model.joint_parent.numpy()
-    joint_dof_type_np = joint_dof_type.numpy()
 
     # Assign base bodies based on articulation roots (if articulations are present)
     world_has_non_floating_root = np.zeros((model.world_count,), dtype=bool)

@@ -13,7 +13,10 @@ from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointActuationType, compute_joints_data
-from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
+from newton._src.solvers.kamino._src.models.builders.testing import (
+    build_unary_revolute_joint_test,
+    build_unary_rotation_vector_joint_test,
+)
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
@@ -110,6 +113,27 @@ def _set_joint_follower_body_state(
     state_body_u_i[bid_F] = wp.spatial_vectorf(*v_F_new, *omega_F_new)
 
 
+@wp.kernel
+def _set_rotation_vector_joint_state(
+    model_joint_bid_F: wp.array[wp.int32],
+    model_joint_B_r_Bj: wp.array[wp.vec3f],
+    model_joint_F_r_Fj: wp.array[wp.vec3f],
+    model_joint_X_Bj: wp.array[wp.mat33f],
+    model_joint_X_Fj: wp.array[wp.mat33f],
+    rotation_vector: wp.vec3f,
+    state_body_q_i: wp.array[wp.transformf],
+    state_body_u_i: wp.array[wp.spatial_vectorf],
+):
+    """Set a unary joint body to a requested relative rotation."""
+    jid = wp.tid()
+    bid_F = model_joint_bid_F[jid]
+    R_F = model_joint_X_Bj[jid] @ wp.quat_to_matrix(quat_exp(rotation_vector)) @ wp.transpose(model_joint_X_Fj[jid])
+    q_F = wp.quat_from_matrix(R_F)
+    r_F = model_joint_B_r_Bj[jid] - R_F @ model_joint_F_r_Fj[jid]
+    state_body_q_i[bid_F] = wp.transformation(r_F, q_F, dtype=wp.float32)
+    state_body_u_i[bid_F] = wp.spatial_vectorf(0.0)
+
+
 ###
 # Launchers
 ###
@@ -130,6 +154,50 @@ def set_joint_follower_body_state(model: ModelKamino, data: DataKamino):
         ],
         device=model.device,
     )
+
+
+def set_rotation_vector_joint_state(model: ModelKamino, data: DataKamino, rotation_vector: np.ndarray):
+    """Set the body state for a unary rotation-vector joint."""
+    wp.launch(
+        _set_rotation_vector_joint_state,
+        dim=model.size.sum_of_num_joints,
+        inputs=[
+            model.joints.bid_F,
+            model.joints.B_r_Bj,
+            model.joints.F_r_Fj,
+            model.joints.X_Bj,
+            model.joints.X_Fj,
+            wp.vec3f(*rotation_vector),
+            data.bodies.q_i,
+            data.bodies.u_i,
+        ],
+        device=model.device,
+    )
+
+
+def rotation_vector_error(current: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Compute ``log(exp(target) * inverse(exp(current)))`` independently."""
+
+    def quat_exp_np(vector: np.ndarray) -> np.ndarray:
+        angle = np.linalg.norm(vector)
+        if angle < 1e-12:
+            return np.array([0.5 * vector[0], 0.5 * vector[1], 0.5 * vector[2], 1.0])
+        return np.concatenate((np.sin(0.5 * angle) * vector / angle, [np.cos(0.5 * angle)]))
+
+    def quat_multiply_np(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+        imaginary = left[3] * right[:3] + right[3] * left[:3] + np.cross(left[:3], right[:3])
+        real = left[3] * right[3] - np.dot(left[:3], right[:3])
+        return np.concatenate((imaginary, [real]))
+
+    q_target = quat_exp_np(target)
+    q_current_inv = quat_exp_np(-current)
+    q_error = quat_multiply_np(q_target, q_current_inv)
+    if q_error[3] < 0.0:
+        q_error = -q_error
+    imaginary_norm = np.linalg.norm(q_error[:3])
+    if imaginary_norm < 1e-12:
+        return 2.0 * q_error[:3]
+    return 2.0 * np.arctan2(imaginary_norm, q_error[3]) * q_error[:3] / imaginary_norm
 
 
 ###
@@ -528,6 +596,57 @@ class TestKinematicsJoints(unittest.TestCase):
         inv_m_j_np = data.joints.inv_m_j.numpy().copy()
         self.assertTrue(m_j_np[0] > 0, "Internal effective inertia should be positive.")
         self.assertFalse(math.isnan(inv_m_j_np[0]), "Inverse internal effective inertia should be valid number.")
+
+    def test_06_rotation_vector_implicit_pd_error(self):
+        """Apply implicit PD using the left rotation-vector error."""
+        builder = build_unary_rotation_vector_joint_test(
+            dynamic=True,
+            implicit_pd=True,
+            limits=False,
+            ground=False,
+        )
+        model = builder.finalize(device=self.default_device)
+        data = model.data(device=self.default_device)
+        model.time.set_uniform_timestep(0.01)
+        data.joints.tau_j.zero_()
+        data.joints.dq_j_ref.zero_()
+
+        cases = (
+            (
+                np.array([0.4, -0.2, 0.1], dtype=np.float32),
+                np.array([-0.1, 0.3, 0.2], dtype=np.float32),
+            ),
+            (
+                np.array([0.2, -0.1, 0.3], dtype=np.float32),
+                np.array([0.2, -0.1, 0.3], dtype=np.float32),
+            ),
+            (
+                np.array([0.2, 0.0, 0.0], dtype=np.float32),
+                np.array([0.5, 0.0, 0.0], dtype=np.float32),
+            ),
+        )
+
+        dt = float(model.time.dt.numpy()[0])
+        a_j = model.joints.a_j.numpy()
+        b_j = model.joints.b_j.numpy()
+        k_p_j = model.joints.k_p_j.numpy()
+        k_d_j = model.joints.k_d_j.numpy()
+        m_j_expected = a_j + dt * (b_j + k_d_j) + dt * dt * k_p_j
+        inv_m_j_expected = 1.0 / m_j_expected
+
+        for current, target in cases:
+            with self.subTest(current=current, target=target):
+                set_rotation_vector_joint_state(model, data, current)
+                data.joints.q_j_ref.assign(target)
+                compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
+
+                error = rotation_vector_error(current, target)
+                dq_b_j_expected = dt * k_p_j * error * inv_m_j_expected
+                np.testing.assert_allclose(data.joints.q_j.numpy(), current, atol=1e-6)
+                np.testing.assert_allclose(data.joints.dq_j.numpy(), 0.0, atol=1e-6)
+                np.testing.assert_allclose(data.joints.m_j.numpy(), m_j_expected, atol=1e-6)
+                np.testing.assert_allclose(data.joints.inv_m_j.numpy(), inv_m_j_expected, atol=1e-6)
+                np.testing.assert_allclose(data.joints.dq_b_j.numpy(), dq_b_j_expected, atol=1e-6)
 
 
 ###

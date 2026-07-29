@@ -265,6 +265,8 @@ class JointCorrectionMode(IntEnum):
 @wp.func
 def _axis_rotmatn_from_vec3f(vec: wp.vec3f) -> wp.mat33f:
     n = wp.norm_l2(vec)
+    # Host-side conversion validates this in `JointDoFType.validate_axes`;
+    # retain the assertion as debug-mode redundancy.
     assert n >= 1e-12, "Joint axis cannot have near-zero length"
     ax = vec / n
     dominant = wp.int32(wp.argmax(wp.abs(ax)))
@@ -423,11 +425,16 @@ class JointDoFType(IntEnum):
     A 3-DoF D6 joint using canonical exponential-map coordinates.
 
     Coordinates:
-        3D rotation vector about the local x, y, and z axes
+        Principal rotation vector ``log(q_rel)`` about the local x, y, and z axes,
+        with norm in ``[0, pi]``. This differs from Newton's intrinsic-XYZ D6
+        coordinates and is discontinuous at rotations of ``pi`` radians.
     DoFs:
         3D relative angular velocity about the local x, y, and z axes
     Constraints:
         3D vector: {`T_x`, `T_y`, `T_z`}
+
+    Do not estimate angular velocity by differencing these coordinates across
+    the principal-logarithm discontinuity.
     """
 
     ###
@@ -448,6 +455,67 @@ class JointDoFType(IntEnum):
     def is_pure_three_dof_rotation(self) -> bool:
         """Whether the joint has exactly three rotational DoFs and no translational DoFs."""
         return self.num_dofs == 3 and self.dofs_axes == (3, 4, 5)
+
+    @staticmethod
+    def validate_axes(dof_type: JointDoFType, axes: np.ndarray, tolerance: float = 1e-6) -> str | None:
+        """Return an error message if joint axes violate Kamino's frame assumptions.
+
+        Args:
+            dof_type: Kamino joint DoF type.
+            axes: Joint DoF axes in Newton storage order, shape ``(num_dofs, 3)``.
+            tolerance: Absolute tolerance for axis comparisons.
+
+        Returns:
+            An error message for invalid axes, otherwise ``None``.
+        """
+        axes = np.asarray(axes, dtype=np.float64)
+        expected_shape = (dof_type.num_dofs, 3)
+        if axes.shape != expected_shape:
+            return f"expected axes with shape {expected_shape}, got {axes.shape}"
+        if not np.all(np.isfinite(axes)):
+            return "joint axes must contain only finite values"
+
+        if dof_type == JointDoFType.FIXED:
+            return None
+
+        if dof_type in (JointDoFType.REVOLUTE, JointDoFType.PRISMATIC):
+            if np.linalg.norm(axes[0]) < 1e-12:
+                return "primary joint axis must have nonzero length"
+            return None
+
+        if dof_type == JointDoFType.CYLINDRICAL:
+            if np.linalg.norm(axes[0]) < 1e-12:
+                return "primary joint axis must have nonzero length"
+            if not np.allclose(axes[0], axes[1], atol=tolerance, rtol=0.0):
+                return "cylindrical joint linear and angular axes must match"
+            return None
+
+        if dof_type == JointDoFType.UNIVERSAL:
+            gram = axes @ axes.T
+            if not np.allclose(gram, np.eye(2), atol=tolerance, rtol=0.0):
+                return "universal joint axes must be unit length and mutually orthogonal"
+            return None
+
+        if dof_type == JointDoFType.FREE:
+            linear_axes = axes[:3]
+            angular_axes = axes[3:]
+            if not np.allclose(linear_axes, angular_axes, atol=tolerance, rtol=0.0):
+                return "free joint linear and angular axes must match"
+            basis = linear_axes
+        elif dof_type in (JointDoFType.SPHERICAL, JointDoFType.CARTESIAN):
+            basis = axes
+        elif dof_type == JointDoFType.ROTATION_VECTOR:
+            if not np.allclose(axes, np.eye(3), atol=tolerance, rtol=0.0):
+                return "rotation-vector joint axes must be canonical +X/+Y/+Z"
+            return None
+        else:
+            return f"unsupported joint DoF type {dof_type}"
+
+        if not np.allclose(basis @ basis.T, np.eye(3), atol=tolerance, rtol=0.0):
+            return "joint axes must form an orthonormal basis"
+        if not np.isclose(np.linalg.det(basis), 1.0, atol=tolerance, rtol=0.0):
+            return "joint axes must form a right-handed basis"
+        return None
 
     @property
     def num_coords(self) -> int:
@@ -677,6 +745,7 @@ class JointDoFType(IntEnum):
         elif self.value == self.SPHERICAL:
             return [JOINT_QMAX] * 4
         elif self.value == self.ROTATION_VECTOR:
+            # The principal logarithm is bounded by norm, not independently per component.
             return [wp.pi] * 3
         elif self.value == self.CARTESIAN:
             return [JOINT_QMAX] * 3
@@ -1039,6 +1108,8 @@ class JointDoFType(IntEnum):
         elif dof_type == JointDoFType.SPHERICAL:
             R_axis_j = wp.matrix_from_cols(dof_axes[0], dof_axes[1], dof_axes[2])
         elif dof_type == JointDoFType.ROTATION_VECTOR:
+            # Host-side conversion validates this in `JointDoFType.validate_axes`;
+            # retain the assertion as debug-mode redundancy.
             axis_x_is_canonical = (
                 wp.abs(dof_axes[0][0] - 1.0) < 1e-6 and wp.abs(dof_axes[0][1]) < 1e-6 and wp.abs(dof_axes[0][2]) < 1e-6
             )
@@ -1053,6 +1124,8 @@ class JointDoFType(IntEnum):
         elif dof_type == JointDoFType.CARTESIAN:
             R_axis_j = wp.matrix_from_cols(dof_axes[0], dof_axes[1], dof_axes[2])
         elif dof_type == JointDoFType.FREE:
+            # Host-side conversion validates this in `JointDoFType.validate_axes`;
+            # retain the assertions as debug-mode redundancy.
             assert wp.norm_l2(dof_axes[0] - dof_axes[3]) < 1e-6, "Linear and rotational axes for free joint must match"
             assert wp.norm_l2(dof_axes[1] - dof_axes[4]) < 1e-6, "Linear and rotational axes for free joint must match"
             assert wp.norm_l2(dof_axes[2] - dof_axes[5]) < 1e-6, "Linear and rotational axes for free joint must match"
