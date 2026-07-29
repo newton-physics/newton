@@ -148,6 +148,31 @@ class TestSensorIMU(unittest.TestCase):
         np.testing.assert_allclose(acc, -gravity, atol=1e-5)
         np.testing.assert_allclose(gyro, [0, 0, 0], atol=1e-5)
 
+    def test_sensor_world_frame_sites_use_per_world_gravity(self):
+        """Use each world-local site's gravity for body-less IMUs."""
+        builder = newton.ModelBuilder()
+
+        builder.begin_world(gravity=(0.0, 0.0, -1.0))
+        site_0 = builder.add_site(-1)
+        builder.end_world()
+
+        builder.begin_world(gravity=(0.0, 0.0, -5.0))
+        site_1 = builder.add_site(-1)
+        builder.end_world()
+
+        model = builder.finalize()
+        sensor = SensorIMU(model, sites=[site_0, site_1])
+        state = model.state()
+
+        state.body_qdd.zero_()
+        sensor.update(state)
+
+        np.testing.assert_allclose(
+            sensor.accelerometer.numpy(),
+            [[0.0, 0.0, 1.0], [0.0, 0.0, 5.0]],
+            atol=1e-5,
+        )
+
     def test_sensor_rotated_site(self):
         """Test IMU with rotated site frame."""
         builder = newton.ModelBuilder()
