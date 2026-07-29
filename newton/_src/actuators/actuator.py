@@ -199,10 +199,8 @@ class Actuator:
         self._computed_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
-        self._applied_forces = (
-            wp.zeros(self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
-            if self.clamping
-            else None
+        self._applied_forces = wp.zeros(
+            self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
 
         controller.finalize(self.device, self.num_actuators)
@@ -228,18 +226,13 @@ class Actuator:
                 the coupled effective inverse mass [1/kg or 1/(kg·m²)] the
                 actuator works against. Keep it current by calling
                 ``oracle.refresh(state)`` once per step before :meth:`step`.
-                For a singleton actuator group, writing its exact diagonal
-                response into ``oracle.alpha`` is also sufficient.
+                Values may also be written directly: the solve reads
+                ``oracle.alpha`` for a group driving one DOF of an
+                articulation, and ``oracle.inverse_blocks`` for a group
+                spanning several.
             options: Solver options; defaults to
                 :class:`ActuatorImplicitOptions`.
         """
-        if self._applied_forces is None:
-            self._applied_forces = wp.zeros(
-                self.num_actuators,
-                dtype=wp.float32,
-                device=self.device,
-                requires_grad=self.requires_grad,
-            )
         self._effort_mode = _EffortModeImplicit(
             self.controller,
             self.clamping,
@@ -285,9 +278,11 @@ class Actuator:
         1. **Delay read** — read per-DOF delayed targets from
            ``current_state`` (falls back to current targets when
            the buffer is empty).
-        2. **Effort mode** — compute raw effort into ``_computed_forces``
-           (explicit control law, or the implicit end-of-step solve).
-        3. **Clamping** — the effort mode clamps computed effort → ``_applied_forces``.
+        2. **Effort** — raw effort into ``_computed_forces`` (explicit control
+           law, or the implicit end-of-step solve).
+        3. **Clamping** — bounded effort into ``_applied_forces``. Explicit
+           clamps after the control law; implicit enforces them inside the
+           solve. Steps 2 and 3 are one call into the installed effort mode.
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.

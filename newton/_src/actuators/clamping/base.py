@@ -48,39 +48,27 @@ class Clamping:
         """
 
     evaluate_clamp: ClassVar[wp.Function | None] = None
-    """``@wp.func`` evaluating this clamp inside the implicit solve kernel.
-
-    The implicit effort mode composes the ``evaluate_clamp`` of every capable
-    clamp into its Newton residual, so the clamp sees the *predicted*
-    end-of-step state. Required signature, evaluated in ``float64``::
+    """``@wp.func`` bounding effort inside the implicit solve, at the predicted
+    end-of-step state. ``None`` means the clamp has no implicit form::
 
         evaluate_clamp(value, q, qd, params: wp.array2d[float], i: int, base: int) -> wp.float64
 
-    where ``params[i, base:]`` holds this clamp's packed per-actuator
-    parameters (see :meth:`clamp_params`). ``None`` (the default) means the
-    clamp cannot run inside the solve; the implicit mode rejects such
-    clamps at install time.
+    ``params[i, base:]`` holds this clamp's parameters; see :meth:`bind_params`.
     """
 
-    def clamp_params(self) -> wp.array[float] | wp.array2d[float]:
-        """Return the per-actuator parameter block for :attr:`evaluate_clamp`.
-
-        Shape ``(N,)`` or ``(N, P)``, indexed by actuator slot; the implicit
-        strategy packs the blocks of all capable clamps into one array and
-        hands each clamp its column offset.
-        """
-        raise NotImplementedError(f"{type(self).__name__} does not expose clamp_params")
+    def param_width(self) -> int:
+        """Columns this clamp occupies in the packed parameter array."""
+        return 0
 
     def bind_params(self, block: wp.array2d[float]) -> None:
-        """Re-point parameter attributes to views into the packed block.
+        """Fill *block* with this clamp's parameters and wire attributes to it.
 
-        The implicit effort mode copies :meth:`clamp_params` into one packed
-        array and passes this clamp's ``(N, P)`` slice of it here. Override
-        to replace the clamp's user-facing parameter arrays with column views
-        of *block*, so that writes to them (e.g. ``clamp.max_effort``) stay
-        visible to the solve kernel. The default keeps the original arrays:
-        the solve then reads a frozen copy of the construction-time values.
+        *block* is this clamp's ``(N, param_width())`` slice of the effort
+        mode's packed array. Re-pointing the user-facing arrays (e.g.
+        ``clamp.max_effort``) at its columns keeps later writes visible to the
+        solve kernel.
         """
+        raise NotImplementedError(f"{type(self).__name__} does not support implicit actuation")
 
     def modify_forces(
         self,

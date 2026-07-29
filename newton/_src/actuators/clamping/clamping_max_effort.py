@@ -11,17 +11,6 @@ import warp as wp
 from .base import Clamping
 
 
-@wp.kernel
-def _box_clamp_kernel(
-    max_effort: wp.array[float],
-    src: wp.array[float],
-    dst: wp.array[float],
-):
-    """Clamp src efforts to ±max_effort, write to dst."""
-    i = wp.tid()
-    dst[i] = wp.clamp(src[i], -max_effort[i], max_effort[i])
-
-
 @wp.func
 def _evaluate_max_effort_clamp(
     value: wp.float64,
@@ -34,6 +23,17 @@ def _evaluate_max_effort_clamp(
     """Implicit-solve entry point; params row is ``[max_effort]``."""
     limit = wp.float64(params[i, base])
     return wp.clamp(value, -limit, limit)
+
+
+@wp.kernel
+def _box_clamp_kernel(
+    max_effort: wp.array[float],
+    src: wp.array[float],
+    dst: wp.array[float],
+):
+    """Clamp src efforts to ±max_effort, write to dst."""
+    i = wp.tid()
+    dst[i] = wp.clamp(src[i], -max_effort[i], max_effort[i])
 
 
 class ClampingMaxEffort(Clamping):
@@ -59,10 +59,11 @@ class ClampingMaxEffort(Clamping):
 
     evaluate_clamp = _evaluate_max_effort_clamp
 
-    def clamp_params(self) -> wp.array[float]:
-        return self.max_effort
+    def param_width(self) -> int:
+        return 1
 
     def bind_params(self, block: wp.array2d[float]) -> None:
+        block[:, 0].assign(self.max_effort)
         self.max_effort = block[:, 0]
 
     def modify_forces(

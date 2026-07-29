@@ -327,33 +327,29 @@ class _EffortModeImplicit:
         self._params = params
 
     def _pack_clamps(self, clamping):
-        """Pack every clamp's params side by side, bind views, compose one @wp.func.
+        """Allocate one packed clamp-param array, bind each clamp to its slice.
 
         Sets :attr:`_clamp_params` and returns ``(chain, entries)`` for the
-        solve-kernel cache key. Each clamp re-binds its parameter attributes as
-        views into its slice, so user writes (e.g. ``clamp.max_effort``) stay
-        visible to the solve kernel.
+        solve-kernel cache key. ``bind_params`` fills each slice and re-points
+        the clamp's parameter attributes at it, so user writes (e.g.
+        ``clamp.max_effort``) stay visible to the solve kernel.
         """
         entries: list[tuple[wp.Function, int]] = []
-        blocks = []
+        widths: list[int] = []
         col = 0
         for clamp in clamping or []:
             func = clamp.evaluate_clamp
             if func is None:
                 raise NotImplementedError(
-                    f"{type(clamp).__name__} does not support implicit actuation "
-                    "(Clamping.evaluate_clamp / clamp_params() unavailable)"
+                    f"{type(clamp).__name__} does not support implicit actuation (Clamping.evaluate_clamp unavailable)"
                 )
-            block = clamp.clamp_params().numpy().reshape(self._num_actuators, -1).astype(np.float32)
+            width = clamp.param_width()
             entries.append((func, col))
-            col += block.shape[1]
-            blocks.append(block)
-        if blocks:
-            self._clamp_params = wp.array(np.hstack(blocks), dtype=float, device=self._device)
-            for clamp, (_func, base), block in zip(clamping, entries, blocks, strict=True):
-                clamp.bind_params(self._clamp_params[:, base : base + block.shape[1]])
-        else:
-            self._clamp_params = wp.zeros((self._num_actuators, 1), dtype=float, device=self._device)
+            widths.append(width)
+            col += width
+        self._clamp_params = wp.zeros((self._num_actuators, max(col, 1)), dtype=float, device=self._device)
+        for clamp, (_func, base), width in zip(clamping or [], entries, widths, strict=True):
+            clamp.bind_params(self._clamp_params[:, base : base + width])
         return _compose_clamps(tuple(entries)), tuple(entries)
 
     def _init_solver(self, controller, clamping) -> None:
