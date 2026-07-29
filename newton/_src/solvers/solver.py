@@ -382,10 +382,10 @@ class SolverBase:
 
     def _validate_reset_world_mask(
         self,
-        world_mask: wp.array | None,
+        world_mask: wp.array[wp.bool] | None,
         *,
         allow_legacy: bool = False,
-    ) -> wp.array | None:
+    ) -> wp.array[wp.bool] | None:
         """Validate a reset mask against the shared solver contract."""
         return validate_reset_world_mask(
             world_mask,

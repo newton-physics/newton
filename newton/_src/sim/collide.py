@@ -1226,7 +1226,19 @@ class CollisionPipeline:
         return contacts
 
     def reset_contact_matching(self, world_mask: wp.array[wp.bool] | None = None) -> None:
-        """Clear all or reset-selected previous-frame contact history."""
+        """Clear all or reset-selected previous-frame contact history.
+
+        Masked selections accumulate until the next :meth:`collide` call
+        consumes them.
+
+        Args:
+            world_mask: Optional one-dimensional Warp boolean mask on the
+                model device. Shape ``(model.world_count,)`` selects local
+                worlds; shape ``(model.world_count + 1,)`` uses the final
+                entry for global entities whose world index is ``-1``. If
+                ``None``, clear all previous-frame contact history
+                immediately.
+        """
         world_mask = validate_reset_world_mask(
             world_mask,
             world_count=int(self.model.world_count),

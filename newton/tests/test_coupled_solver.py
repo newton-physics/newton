@@ -3199,6 +3199,8 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         self.assertNotIn("equality_constraint_body1", view.overrides)
 
     def test_metadata_projects_nonprefix_custom_references(self):
+        """Project custom-frequency metadata without claiming reset ownership."""
+
         builder = newton.ModelBuilder()
         for frequency in ("linkage", "entity", "link"):
             builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name=frequency, namespace="test"))
@@ -3218,6 +3220,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         add_attribute("linkage_body0", "test:linkage", wp.int32, references="body")
         add_attribute("linkage_body1", "test:linkage", wp.int32, references="body")
         add_attribute("linkage_bodies", "test:linkage", wp.vec2i, references="body")
+        add_attribute("linkage_world", "test:linkage", wp.int32, references="world")
         add_attribute("linkage_weight", "test:linkage", wp.float32)
         add_attribute("linkage_history", "test:linkage", wp.float32, assignment=newton.Model.AttributeAssignment.STATE)
         add_attribute("entity_body", "test:entity", wp.int32, references="body")
@@ -3242,6 +3245,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 "test:linkage_body0": 0,
                 "test:linkage_body1": 2,
                 "test:linkage_bodies": wp.vec2i(0, 2),
+                "test:linkage_world": 0,
                 "test:linkage_weight": 2.0,
                 "test:linkage_history": 20.0,
             }
@@ -3251,6 +3255,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 "test:linkage_body0": 1,
                 "test:linkage_body1": 3,
                 "test:linkage_bodies": wp.vec2i(1, 3),
+                "test:linkage_world": 0,
                 "test:linkage_weight": 4.0,
                 "test:linkage_history": 40.0,
             }
@@ -3260,6 +3265,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 "test:linkage_body0": -1,
                 "test:linkage_body1": 1,
                 "test:linkage_bodies": wp.vec2i(-1, 1),
+                "test:linkage_world": 0,
                 "test:linkage_weight": 6.0,
                 "test:linkage_history": 60.0,
             }
@@ -3293,13 +3299,17 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
             newton.Model.AttributeFrequency.JOINT_COORD,
         )
 
-        coupled = SolverCoupled(
-            model=model,
-            entries=[
-                SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[0, 2]),
-                SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[1, 3]),
-            ],
-        )
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled", level="WARNING") as logs:
+            coupled = SolverCoupled(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[0, 2]),
+                    SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[1, 3]),
+                ],
+            )
+        self.assertNotIn("test:linkage_history", coupled._reset_state_attributes)
+        self.assertIn("test:state_seed", coupled._reset_state_attributes)
+        self.assertIn("test:linkage_history", "\n".join(logs.output))
         view = coupled.view("dst")
 
         self.assertEqual(view.test.linkage_count, 2)

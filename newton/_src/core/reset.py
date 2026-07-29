@@ -17,12 +17,12 @@ def reset_world_selected(world: int, world_mask: wp.array[wp.bool], world_count:
 
 
 def validate_reset_world_mask(
-    world_mask: wp.array | None,
+    world_mask: wp.array[wp.bool] | None,
     *,
     world_count: int,
     device: wp.Device,
     allow_legacy: bool = False,
-) -> wp.array | None:
+) -> wp.array[wp.bool] | None:
     """Validate a reset mask without reading its device values.
 
     By default, only the canonical ``world_count + 1`` shape is accepted.

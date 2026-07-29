@@ -254,9 +254,11 @@ class CouplingInterface:
     ) -> None:
         """Synchronize solver-owned state after a masked coupled reset.
 
-        Public and registered ``STATE`` arrays with row-to-world metadata are
-        synchronized by the coupled solver. Override this hook only for
-        persistent arrays that cannot use that generic mapping.
+        Public and registered ``STATE`` arrays on frequencies with explicit
+        coupled-entry ownership are synchronized by the coupled solver. This
+        hook synchronizes only the entry input and output states; reconciling
+        other frequencies into the parent state requires coupler-specific
+        logic.
 
         Args:
             state_in: Reset entry input state.

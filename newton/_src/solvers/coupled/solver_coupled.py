@@ -261,7 +261,7 @@ class SolverEntry:
     joint_dof_global_to_local: wp.array
     attribute_projections: dict[Model.AttributeFrequency | str, _CompactIndexProjection]
     attribute_local_to_global: dict[Model.AttributeFrequency | str, wp.array]
-    attribute_owned_rows: dict[Model.AttributeFrequency | str, tuple[wp.array, wp.array]]
+    attribute_owned_rows: dict[Model.AttributeFrequency | str, tuple[wp.array[int], wp.array[int]]]
     in_place: bool
     state_0: State | None = None
     state_1: State | None = None
@@ -290,6 +290,17 @@ _RESET_TRANSIENT_FIELDS = (
     ("particle_f", Model.AttributeFrequency.PARTICLE),
     ("body_qdd", Model.AttributeFrequency.BODY),
     ("body_parent_f", Model.AttributeFrequency.BODY),
+)
+_RESET_RECONCILABLE_FREQUENCIES = frozenset(
+    {
+        Model.AttributeFrequency.BODY,
+        Model.AttributeFrequency.PARTICLE,
+        Model.AttributeFrequency.JOINT,
+        Model.AttributeFrequency.SHAPE,
+        Model.AttributeFrequency.JOINT_COORD,
+        Model.AttributeFrequency.JOINT_DOF,
+        Model.AttributeFrequency.JOINT_CONSTRAINT,
+    }
 )
 
 
@@ -441,13 +452,27 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _build_reset_state_attributes(
         self,
     ) -> dict[str, tuple[Model.AttributeFrequency | str, StateFlags | None]]:
-        """Select public and registered state arrays from unified metadata."""
-        return {
-            full_name: (spec.frequency, _CORE_RESET_STATE_FLAGS.get(full_name))
-            for full_name, spec in self.model._iter_attribute_specs()
-            if full_name in _CORE_RESET_STATE_FLAGS or spec.assignment == Model.AttributeAssignment.STATE
-            if not self._is_deprecated_namespace_alias(full_name)
-        }
+        """Select reset-managed state arrays with explicit entry ownership."""
+        attributes = {}
+        unsupported = []
+        for full_name, spec in self.model._iter_attribute_specs():
+            flag = _CORE_RESET_STATE_FLAGS.get(full_name)
+            if flag is None and spec.assignment != Model.AttributeAssignment.STATE:
+                continue
+            if self._is_deprecated_namespace_alias(full_name):
+                continue
+            if flag is None and spec.frequency not in _RESET_RECONCILABLE_FREQUENCIES:
+                unsupported.append((full_name, spec.frequency))
+                continue
+            attributes[full_name] = (spec.frequency, flag)
+
+        if unsupported:
+            details = ", ".join(f"{name!r} ({frequency!r})" for name, frequency in unsupported)
+            logger.warning(
+                "SolverCoupled generic reset reconciliation skips STATE attributes "
+                f"whose frequencies do not define entry ownership: {details}."
+            )
+        return attributes
 
     def _build_reset_input_attributes(self) -> dict[str, Model.AttributeFrequency | str]:
         """Add public force inputs to the arrays distributed before reset."""
@@ -458,7 +483,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return attributes
 
     @staticmethod
-    def _row_worlds_from_starts(starts: wp.array, count: int, world_count: int) -> np.ndarray:
+    def _row_worlds_from_starts(starts: wp.array[wp.int32], count: int, world_count: int) -> np.ndarray:
         """Expand a per-world start array into one world id per row."""
         row_world = np.full(int(count), -1, dtype=np.int32)
         starts_host = starts.numpy()
@@ -466,7 +491,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             row_world[int(starts_host[world]) : int(starts_host[world + 1])] = world
         return row_world
 
-    def _build_reset_row_world_maps(self) -> dict[Model.AttributeFrequency | str, wp.array]:
+    def _build_reset_row_world_maps(self) -> dict[Model.AttributeFrequency | str, wp.array[wp.int32]]:
         """Precompute immutable parent row-to-world maps used by masked reset."""
         model = self.model
         frequency = model.AttributeFrequency
@@ -478,8 +503,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             frequency.PARTICLE: model.particle_world,
             frequency.JOINT: model.joint_world,
             frequency.SHAPE: model.shape_world,
-            frequency.ARTICULATION: model.articulation_world,
-            frequency.CONSTRAINT_MIMIC: model.constraint_mimic_world,
         }
         world_starts = {
             frequency.JOINT_COORD: model.joint_coord_world_start,
@@ -495,32 +518,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 result[item_frequency] = row_world
                 continue
             starts = world_starts.get(item_frequency)
-            if isinstance(starts, wp.array):
-                host = self._row_worlds_from_starts(starts, count, model.world_count)
-            elif item_frequency == frequency.ONCE:
-                host = np.full(count, -1, dtype=np.int32)
-            elif item_frequency == frequency.WORLD:
-                host = np.arange(count, dtype=np.int32)
-            else:
-                host = self._custom_frequency_row_worlds(item_frequency, count)
-                if host is None:
-                    continue
+            if not isinstance(starts, wp.array):
+                raise ValueError(f"Cannot map reset rows for unsupported frequency {item_frequency!r}.")
+            host = self._row_worlds_from_starts(starts, count, model.world_count)
             result[item_frequency] = wp.array(host, dtype=wp.int32, device=model.device)
         return result
-
-    def _custom_frequency_row_worlds(
-        self,
-        frequency: Model.AttributeFrequency | str,
-        count: int,
-    ) -> np.ndarray | None:
-        """Resolve a custom frequency through an attribute referencing WORLD."""
-        for full_name, spec in self.model._iter_attribute_specs():
-            if spec.frequency != frequency or spec.references != Model.AttributeFrequency.WORLD:
-                continue
-            value = self._model_attribute_value(full_name)
-            if isinstance(value, wp.array) and value.ndim == 1 and value.shape[0] == count:
-                return value.numpy().astype(np.int32, copy=False)
-        return None
 
     def _is_deprecated_namespace_alias(self, full_name: str) -> bool:
         """Return whether metadata names a warning-producing namespace alias."""
@@ -753,8 +755,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self,
         cfg: SolverCoupled.Entry,
         frequency: Model.AttributeFrequency | str,
-        joint_q_indices: wp.array,
-        joint_qd_indices: wp.array,
+        joint_q_indices: wp.array[int],
+        joint_qd_indices: wp.array[int],
     ) -> list[int]:
         """Return parent-global rows owned by an entry for one state frequency."""
         model_frequency = self.model.AttributeFrequency
@@ -2158,6 +2160,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ) -> None:
         """Reset coupled sub-solvers and clear coupled-solver transient state.
 
+        Generic reconciliation of registered ``STATE`` attributes is limited
+        to body, particle, joint, shape, joint-coordinate, joint-DOF, and
+        joint-constraint frequencies, whose rows have explicit entry
+        ownership. Other frequencies require coupler-specific parent
+        reconciliation.
+
         Args:
             state: Parent-model simulation state to reset (modified in place).
             world_mask: Optional boolean mask of shape ``(world_count + 1,)``
@@ -2224,7 +2232,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         kernel,
         entry: SolverEntry,
         frequency: Model.AttributeFrequency | str,
-        world_mask: wp.array,
+        world_mask: wp.array[wp.bool],
         *inputs,
     ) -> None:
         """Launch a masked operation over every row in an entry view."""
@@ -2249,9 +2257,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self,
         entry: SolverEntry,
         frequency: Model.AttributeFrequency | str,
-        world_mask: wp.array,
-        src: wp.array,
-        dst: wp.array,
+        world_mask: wp.array[wp.bool],
+        src: wp.array[Any],
+        dst: wp.array[Any],
     ) -> None:
         """Copy selected entry-owned rows into a parent state."""
         owned_rows = entry.attribute_owned_rows.get(frequency)
@@ -2277,7 +2285,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _sync_entry_reset_state(
         self,
         entry: SolverEntry,
-        world_mask: wp.array,
+        world_mask: wp.array[wp.bool],
         flags: StateFlags | int | None,
     ) -> None:
         """Synchronize selected public and solver-owned output history."""
@@ -2327,7 +2335,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         del state, world_mask, flags
 
     @staticmethod
-    def _reset_collision_provider_contact_matching(pipeline: object, world_mask: wp.array | None) -> None:
+    def _reset_collision_provider_contact_matching(
+        pipeline: object,
+        world_mask: wp.array[wp.bool] | None,
+    ) -> None:
         """Reset an optional provider's contact history using the shared mask contract."""
         reset_contact_matching = getattr(pipeline, "reset_contact_matching", None)
         if callable(reset_contact_matching):
@@ -2369,7 +2380,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _distribute_reset_state(
         self,
         state_in: State,
-        world_mask: wp.array,
+        world_mask: wp.array[wp.bool],
     ) -> None:
         """Copy reset-selected parent rows into entry input states."""
         for entry in self._entries.values():
@@ -2485,7 +2496,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _reconcile_reset_state(
         self,
         state_out: State,
-        world_mask: wp.array,
+        world_mask: wp.array[wp.bool],
         flags: StateFlags | int | None,
     ) -> None:
         """Merge reset-selected entry input rows into the parent state."""
