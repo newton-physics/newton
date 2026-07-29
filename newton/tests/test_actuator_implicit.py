@@ -428,7 +428,7 @@ def test_pd_block_solve_matches_reference(test, device):
         kp=wp.array(kp, dtype=float, device=device),
         kd=wp.array(kd, dtype=float, device=device),
         effective_inv_mass=oracle,
-        options=ActuatorImplicitOptions(block_solve=True),
+        options=ActuatorImplicitOptions(max_iters=1, warm_start="zero", block_solve=True),
     )
     oracle.refresh(state, blocks=True)
     control.joint_f.zero_()
@@ -668,9 +668,18 @@ def test_effort_limit_clamps_force(test, device):
         kd=wp.array([kd_val], dtype=float, device=device),
         max_effort=np.array([max_effort], dtype=np.float32),
     )
+    control.raw_joint_f = wp.zeros(model.joint_dof_count, dtype=float, device=device)
+    actuator_clamped.control_computed_output_attr = "raw_joint_f"
     _step(actuator_clamped, state, control, h)
     clamped = float(control.joint_f.numpy()[0])
+    computed = float(control.raw_joint_f.numpy()[0])
     test.assertAlmostEqual(clamped, max_effort, delta=max_effort * 1e-5)
+    alpha = float(_alpha_reference(model, state)[0])
+    qd_pred = alpha * h * clamped
+    q_pred = q0 + h * qd_pred
+    expected_computed = kp_val * (target - q_pred) - kd_val * qd_pred
+    test.assertAlmostEqual(computed, expected_computed, delta=abs(expected_computed) * 1e-4)
+    test.assertGreater(computed, clamped)
 
 
 def test_live_param_update_through_views(test, device):

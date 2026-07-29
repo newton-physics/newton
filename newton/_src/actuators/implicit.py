@@ -173,7 +173,8 @@ def _build_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Function, c
         derivative_floor: float,
         warm_zero: int,
         clamp_params: wp.array2d[float],
-        efforts: wp.array[float],
+        computed_efforts: wp.array[float],
+        applied_efforts: wp.array[float],
     ):
         i = wp.tid()
 
@@ -230,9 +231,11 @@ def _build_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Function, c
         # hard-limit guarantee when max_iters cut the iteration short.
         qd_f = qd_free + a * p
         q_f = q0 + hd * qd_f
+        raw_effort = evaluate_force(q_f, qd_f, tq, tqd, ff, params, i)
         tau_out = clamp_chain(p / hd, q_f, qd_f, clamp_params, i)
 
-        efforts[i] = wp.float32(tau_out)
+        computed_efforts[i] = wp.float32(raw_effort)
+        applied_efforts[i] = wp.float32(tau_out)
 
     _solve_kernel_cache[cache_key] = solve
     return solve
@@ -289,7 +292,8 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
         pbuf: wp.array2d[wp.float64],
         rbuf: wp.array2d[wp.float64],
         jbuf: wp.array3d[wp.float64],
-        efforts: wp.array[float],
+        computed_efforts: wp.array[float],
+        applied_efforts: wp.array[float],
     ):
         g = wp.tid()
         ng = group_size[g]
@@ -380,6 +384,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
                 for j in range(i + 1, ng):
                     s -= jbuf[g, i, j] * rbuf[g, j]
                 dv = s / jbuf[g, i, i]
+                rbuf[g, i] = dv
                 pbuf[g, i] += dv
                 dpn += dv * dv
             if dpn < upd_tol * upd_tol:
@@ -393,7 +398,14 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
             for jj in range(ng):
                 qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
             q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
-            efforts[si] = wp.float32(clamp_chain(pbuf[g, i] / hd, q_i, qd_i, clamp_params, si))
+            tq = wp.float64(target_pos[target_pos_indices[si]])
+            tqd = wp.float64(target_vel[target_vel_indices[si]])
+            ff = wp.float64(0.0)
+            if feedforward:
+                ff = wp.float64(feedforward[target_vel_indices[si]])
+            raw_effort = evaluate_force(q_i, qd_i, tq, tqd, ff, params, si)
+            computed_efforts[si] = wp.float32(raw_effort)
+            applied_efforts[si] = wp.float32(clamp_chain(pbuf[g, i] / hd, q_i, qd_i, clamp_params, si))
 
     _block_kernel_cache[cache_key] = solve
     return solve
@@ -580,13 +592,16 @@ class _EffortImplicit:
         ctrl_state: Any,
         dt: float | None,
     ) -> wp.array[float]:
-        """Solve the implicit effort into *computed_forces* and return it.
+        """Solve implicit effort and return the applied-effort buffer.
 
-        Clamps are enforced inside the solve against the predicted
-        end-of-step state.
+        The controller law at the final predicted state is written to
+        *computed_forces*. Clamps are enforced inside the solve against that
+        state, and the solved effort is written to *applied_forces*.
         """
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
+        if applied_forces is None:
+            raise RuntimeError("Implicit actuation requires an applied-effort buffer")
         # Parameter-static laws (PD) no-op here; a network relinearizes about
         # the current state and rewrites its parameter pack in place.
         self._controller.prepare_implicit(
@@ -614,6 +629,7 @@ class _EffortImplicit:
                 target_pos_indices,
                 target_vel_indices,
                 computed_forces,
+                applied_forces,
                 float(dt),
             )
         opts = self._options
@@ -641,10 +657,10 @@ class _EffortImplicit:
                 1 if opts.warm_start == "zero" else 0,
                 self._clamp_params,
             ],
-            outputs=[computed_forces],
+            outputs=[computed_forces, applied_forces],
             device=self._device,
         )
-        return computed_forces
+        return applied_forces
 
     def _compute_force_block(
         self,
@@ -658,6 +674,7 @@ class _EffortImplicit:
         target_pos_indices,
         target_vel_indices,
         computed_forces,
+        applied_forces,
         dt: float,
     ) -> wp.array[float]:
         """Coupled-block solve path (``options.block_solve``)."""
@@ -699,7 +716,7 @@ class _EffortImplicit:
                 self._rbuf,
                 self._jbuf,
             ],
-            outputs=[computed_forces],
+            outputs=[computed_forces, applied_forces],
             device=self._device,
         )
-        return computed_forces
+        return applied_forces

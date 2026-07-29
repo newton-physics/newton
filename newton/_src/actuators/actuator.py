@@ -248,6 +248,13 @@ class Actuator:
             options: Solver options; defaults to
                 :class:`ActuatorImplicitOptions`.
         """
+        if self._applied_forces is None:
+            self._applied_forces = wp.zeros(
+                self.num_actuators,
+                dtype=wp.float32,
+                device=self.device,
+                requires_grad=self.requires_grad,
+            )
         self._strategy = _EffortImplicit(
             self.controller,
             self.clamping,
