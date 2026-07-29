@@ -198,7 +198,9 @@ class SurfaceGripper:
         d_couple = self.d_normal * sum_r2
         return n, k_tilt, d_couple, i_tilt
 
-    def peel_damping_for_ratio(self, inertia: float, mass: float, damping_ratio: float, com_offset: float = 0.0) -> float:
+    def peel_damping_for_ratio(
+        self, inertia: float, mass: float, damping_ratio: float, com_offset: float = 0.0
+    ) -> float:
         """Per-pad ``d_peel`` [N.m.s/rad] giving a target tilt-mode damping ratio for a picked object.
 
         Inverts ``zeta = D / (2*sqrt(K*I_tilt))`` for the tilt (peel) mode (:meth:`_tilt_mode`). Call
@@ -629,13 +631,13 @@ def latch_engagement_kernel(
         b = body_b[pad]
         t_as = gripper_xform[g] * pad_xform[pad]  # TAS: seal frame in body A
         pad_anchor_b[pad] = wp.transform_inverse(body_q[b]) * (body_q[gripper_body_id[g]] * t_as)
- 
-        # Cache the external objects touched by the gripped object. 
-        # For a short time after that initial engagement we want to 
+
+        # Cache the external objects touched by the gripped object.
+        # For a short time after that initial engagement we want to
         # ignore contact between the picked object and the cached external objects.
-        # If we don't ignore those cached external objects we will recompute the seal 
-        # frame immediately after engagement. This will make the grip appear 
-        # loose and unconvincing.         
+        # If we don't ignore those cached external objects we will recompute the seal
+        # frame immediately after engagement. This will make the grip appear
+        # loose and unconvincing.
         cap = pad_ignore.shape[1]
         for k in range(cap):
             pad_ignore[pad, k] = -2
@@ -649,7 +651,7 @@ def latch_engagement_kernel(
             if b1 == b and slot < cap and not in_ignore_set(b0, pad, pad_ignore):
                 pad_ignore[pad, slot] = b0
                 slot += 1
- 
+
     pad_body_b[pad] = body_b[pad]
     pad_engaged[pad] = engaged[pad]
 
@@ -726,8 +728,18 @@ def is_body_b_struck_by_external_object(
         )
         if hit_b:
             gap, closing = eval_contact_gap_and_speed(
-                c, contact_shape0, contact_shape1, shape_body, contact_point0, contact_point1,
-                contact_normal, contact_margin0, contact_margin1, body_q, body_qd, body_com,
+                c,
+                contact_shape0,
+                contact_shape1,
+                shape_body,
+                contact_point0,
+                contact_point1,
+                contact_normal,
+                contact_margin0,
+                contact_margin1,
+                body_q,
+                body_qd,
+                body_com,
             )
             if gap < CONTACT_TOUCH_GAP and closing > CONTACT_IMPACT_SPEED:
                 return True
@@ -765,14 +777,26 @@ def reset_seal_on_contact_kernel(
 
     # Recompute the seal frame when body b is struck by an external object.
     # The goal is to prevent a battle between contact and gripper forces.
-    # Contact will "win" in the solver stsep and the gripped object will 
+    # Contact will "win" in the solver stsep and the gripped object will
     # no longer track the surface gripper. This will lead to large biases
-    # on the gripper, which will lead to large gripper forces, which 
+    # on the gripper, which will lead to large gripper forces, which
     # will lead to numerical instabilities.
     if is_body_b_struck_by_external_object(
-        b, pad, pad_ignore, contact_count, contact_shape0, contact_shape1, shape_body,
-        contact_point0, contact_point1, contact_normal, contact_margin0, contact_margin1,
-        body_q, body_qd, body_com,
+        b,
+        pad,
+        pad_ignore,
+        contact_count,
+        contact_shape0,
+        contact_shape1,
+        shape_body,
+        contact_point0,
+        contact_point1,
+        contact_normal,
+        contact_margin0,
+        contact_margin1,
+        body_q,
+        body_qd,
+        body_com,
     ):
         # TBS = TB^-1 * TA * TAS (seal frame in body B, re-cached at the current relative pose).
         g = pad_gripper[pad]
@@ -780,8 +804,8 @@ def reset_seal_on_contact_kernel(
         t_as = gripper_xform[g] * pad_xform[pad]  # TAS: seal frame in body A
         pad_anchor_b[pad] = wp.transform_inverse(body_q[b]) * (body_q[a] * t_as)
 
-    # Evict the cached external objects from the cache as soon as 
-    # they are no longer in contact with the gripped object. 
+    # Evict the cached external objects from the cache as soon as
+    # they are no longer in contact with the gripped object.
     for k in range(pad_ignore.shape[1]):
         ib = pad_ignore[pad, k]
         if ib != -2 and not body_touches(b, ib, contact_count, contact_shape0, contact_shape1, shape_body):

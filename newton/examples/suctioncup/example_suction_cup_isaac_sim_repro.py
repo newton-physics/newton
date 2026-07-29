@@ -169,7 +169,6 @@ class GripperParams:
 # stiffness is bounded by explicit stability at 240 Hz (omega*dt must stay well below 2, or the seal
 # rings): k ~ 6000 tracks the box with ~mm lag while staying smooth.
 GRIPPER_PARAMS = GripperParams(
-
     # Normal - translation - z
     k_normal=96000.0,  # stiff, like a vacuum cup on rigid tooling; sets the tilt tracking (peel angle ~0.2deg)
     d_normal=40.0,  # low: the wide-cup couple amplifies damping into the explicit-integrator limit at 240 Hz
@@ -178,7 +177,6 @@ GRIPPER_PARAMS = GripperParams(
     # and the brittle-break trips only on genuine peel/overload, not on the panel's overhang transient.
     f_normal_max=2000.0,  # per-pad normal hold / break threshold [N]
     f_grip_max=50.0,  # per-pad suction preload [N]; gentle baseline push + shear/peel capacity floor
-
     # Shear - translation - x,y
     k_shear_x=6000.0,
     k_shear_y=6000.0,
@@ -192,7 +190,6 @@ GRIPPER_PARAMS = GripperParams(
     # tight cluster) and overshoots the explicit-integrator limit at 240 Hz if raised much above ~30.
     d_shear_x=20.0,
     d_shear_y=20.0,
-
     # peel rotation- x,y. Small, for the same explicit-integrator reason as the shear/normal damping
     # above (the wide cup couple amplifies it); the wide-set cups need little peel damping to stay put.
     d_peel_x=0.5,
@@ -258,7 +255,11 @@ def seal_modes_for(gripper, spec):
     (_hx, hy, hz), mass = spec
     ixx = mass / 3.0 * (hy * hy + hz * hz)
     return (
-        ("peel", gripper.peel_natural_frequency(ixx, mass, hz), gripper.peel_damping_ratio(ixx, mass, GRIPPER_PARAMS.d_peel_x, hz)),
+        (
+            "peel",
+            gripper.peel_natural_frequency(ixx, mass, hz),
+            gripper.peel_damping_ratio(ixx, mass, GRIPPER_PARAMS.d_peel_x, hz),
+        ),
         ("normal", gripper.normal_natural_frequency(mass), gripper.normal_damping_ratio(mass, GRIPPER_PARAMS.d_normal)),
         ("shear", gripper.shear_natural_frequency(mass), gripper.shear_damping_ratio(mass, GRIPPER_PARAMS.d_shear_x)),
     )
@@ -484,9 +485,7 @@ class Example:
                 self.seal_body_b,
             )
             if ENABLE_GRIPPER and SEAL_RESET_ON_CONTACT:
-                reset_seal_on_contact(
-                    self.model, self.state_0, self.contacts, self.gripper_model, self.gripper_state
-                )
+                reset_seal_on_contact(self.model, self.state_0, self.contacts, self.gripper_model, self.gripper_state)
             if ENABLE_GRIPPER:
                 evaluate_gripper_force(
                     self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control, self.sim_dt

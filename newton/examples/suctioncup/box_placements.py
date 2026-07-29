@@ -64,9 +64,15 @@ def _solid_box_inertia(spec):
     """Diagonal inertia of a uniform solid box ``spec = ((hx, hy, hz), mass)`` about its center."""
     (hx, hy, hz), mass = spec
     return wp.mat33(
-        mass / 3.0 * (hy * hy + hz * hz), 0.0, 0.0,
-        0.0, mass / 3.0 * (hx * hx + hz * hz), 0.0,
-        0.0, 0.0, mass / 3.0 * (hx * hx + hy * hy),
+        mass / 3.0 * (hy * hy + hz * hz),
+        0.0,
+        0.0,
+        0.0,
+        mass / 3.0 * (hx * hx + hz * hz),
+        0.0,
+        0.0,
+        0.0,
+        mass / 3.0 * (hx * hx + hy * hy),
     )
 
 
