@@ -2782,13 +2782,15 @@ def _body_particle_contact_lists_skip_static_kinematic(test, device):
     test.assertEqual(int(overflow_max.numpy()[0]), 0)
 
 
-def _build_multi_world_particle_shape_scene(world_count, device):
+def _build_multi_world_particle_shape_scene(world_count, device, global_ground=False):
     """Build ``world_count`` replicas of a sub-world holding one shape and several free particles."""
     sub = newton.ModelBuilder()
     sub.add_shape_sphere(body=-1, radius=0.5)
     for i in range(8):
         sub.add_particle(pos=wp.vec3(0.1 * i, 0.0, 2.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
     builder = newton.ModelBuilder()
+    if global_ground:
+        builder.add_ground_plane()
     for _ in range(world_count):
         builder.add_world(sub)
     builder.color()
@@ -2797,14 +2799,19 @@ def _build_multi_world_particle_shape_scene(world_count, device):
 
 def _soft_contact_presize_is_world_aware(test, device):
     """Verify SolverVBD pre-sizes body-particle buffers from world-compatible pairs, not the dense product."""
-    sizes = {}
-    for world_count in (1, 4):
-        model = _build_multi_world_particle_shape_scene(world_count, device)
-        # Constructed before any CollisionPipeline exists, as downstream users (Isaac Lab) do.
-        solver = newton.solvers.SolverVBD(model)
-        sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
-        test.assertEqual(sizes[world_count], newton.CollisionPipeline(model, broad_phase="nxn").soft_contact_max)
-    test.assertEqual(sizes[4], 4 * sizes[1])
+    for global_ground in (False, True):
+        sizes = {}
+        for world_count in (1, 4):
+            model = _build_multi_world_particle_shape_scene(world_count, device, global_ground=global_ground)
+            # Constructed before any CollisionPipeline exists, as downstream users (Isaac Lab) do.
+            solver = newton.solvers.SolverVBD(model)
+            sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
+            test.assertEqual(
+                sizes[world_count],
+                newton.CollisionPipeline(model, broad_phase="nxn").soft_contact_max,
+                f"{global_ground=} {world_count=}",
+            )
+        test.assertEqual(sizes[4], 4 * sizes[1], f"{global_ground=}")
 
 
 class TestSolverVBD(unittest.TestCase):

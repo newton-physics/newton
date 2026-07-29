@@ -546,31 +546,6 @@ def _world_compatible_pairs(
     return _pairs(np.concatenate(f_cols), np.concatenate(s_cols))
 
 
-def _count_world_compatible_pairs(
-    feature_world: np.ndarray,
-    shape_world: np.ndarray,
-    world_count: int,
-    shape_ok: np.ndarray | None = None,
-) -> int:
-    """Count the pairs :func:`_world_compatible_pairs` would emit, in O(features + shapes)."""
-    n_features, n_shapes = len(feature_world), len(shape_world)
-    if n_features == 0 or n_shapes == 0:
-        return 0
-    s_ok = np.ones(n_shapes, dtype=bool) if shape_ok is None else np.asarray(shape_ok, dtype=bool)
-    f_local = (feature_world >= 0) & (feature_world < world_count)
-    s_local = (shape_world >= 0) & (shape_world < world_count) & s_ok
-    # 1. Global features pair with every shape.
-    total = int(np.count_nonzero(feature_world < 0)) * int(np.count_nonzero(s_ok))
-    # 2. Local features additionally pair with every global shape.
-    total += int(np.count_nonzero(f_local)) * int(np.count_nonzero((shape_world < 0) & s_ok))
-    # 3. Local features pair with the shapes sharing their world.
-    features_per_world = np.bincount(feature_world[f_local], minlength=world_count)
-    shapes_per_world = np.bincount(shape_world[s_local], minlength=world_count)
-    return total + int(
-        np.dot(features_per_world[:world_count].astype(np.int64), shapes_per_world[:world_count].astype(np.int64))
-    )
-
-
 def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
     """Build the soft-rigid (particle-shape) candidate pairs for ``model``.
 
@@ -590,10 +565,22 @@ def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]
 def _count_soft_particle_rigid_contact_pairs(model: Model) -> int:
     """Count the pairs :func:`_build_soft_particle_rigid_contact_pairs` would emit for ``model``.
 
-    Lets solvers pre-size soft-contact buffers without building a :class:`CollisionPipeline`. Excludes
-    the full-surface edge/face headroom, which only the pipeline knows about.
+    Reads only the per-world start offsets, so solvers can pre-size soft-contact buffers without
+    downloading per-entity world ids. Excludes the full-surface edge/face headroom, which only
+    :class:`CollisionPipeline` knows about.
     """
-    return _count_world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), model.world_count)
+    particle_start = model.particle_world_start.numpy()
+    shape_start = model.shape_world_start.numpy()
+    global_particles = int(particle_start[-1] - particle_start[-2] + particle_start[0])
+    global_shapes = int(shape_start[-1] - shape_start[-2] + shape_start[0])
+    # Global particles pair with every shape; local particles additionally pair with global shapes.
+    total = global_particles * model.shape_count
+    total += (model.particle_count - global_particles) * global_shapes
+    # Local particles pair with the shapes sharing their world.
+    per_world = slice(0, model.world_count + 1)
+    return total + int(
+        np.dot(np.diff(particle_start[per_world]).astype(np.int64), np.diff(shape_start[per_world]).astype(np.int64))
+    )
 
 
 def _build_soft_face_rigid_contact_pairs(

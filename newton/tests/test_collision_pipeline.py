@@ -36,9 +36,7 @@ from newton._src.sim.collide import (
     _build_soft_edge_rigid_contact_pairs,
     _build_soft_face_rigid_contact_pairs,
     _compute_per_world_shape_pairs_max,
-    _count_world_compatible_pairs,
     _estimate_rigid_contact_max,
-    _world_compatible_pairs,
 )
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
@@ -1708,22 +1706,6 @@ class TestParticleShapeContacts(unittest.TestCase):
 
         self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
-
-    def test_world_compatible_pair_count_matches_materialized_pairs(self):
-        """Verify the count-only pair helper agrees with the materialized pair list.
-
-        Sweeps global (-1) entries, out-of-range world ids, empty arrays and the ``shape_ok`` filter.
-        """
-        rng = np.random.default_rng(0)
-        for world_count in (0, 1, 3):
-            for n_features, n_shapes in ((0, 4), (4, 0), (1, 1), (7, 5), (23, 11)):
-                feature_world = rng.integers(-2, world_count + 2, size=n_features).astype(np.int32)
-                shape_world = rng.integers(-2, world_count + 2, size=n_shapes).astype(np.int32)
-                for shape_ok in (None, rng.random(n_shapes) < 0.7):
-                    pairs = _world_compatible_pairs(feature_world, shape_world, world_count, "cpu", shape_ok=shape_ok)
-                    count = _count_world_compatible_pairs(feature_world, shape_world, world_count, shape_ok=shape_ok)
-                    msg = f"{world_count=} {n_features=} {n_shapes=} filtered={shape_ok is not None}"
-                    self.assertEqual(count, len(pairs), msg)
 
 
 class TestContactEstimator(unittest.TestCase):
