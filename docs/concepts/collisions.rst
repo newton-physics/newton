@@ -1567,7 +1567,7 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
    their contact band.
 
 Hydroelastic contacts use the same three margin-and-gap bands described in
-:ref:`margin-gap-semantics`:
+:ref:`margin-and-gap semantics <margin-gap-semantics>`:
 
 .. list-table::
    :header-rows: 1
