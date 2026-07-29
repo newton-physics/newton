@@ -616,9 +616,17 @@ class Example:
             # surface gripper -- Phase 1 (seal series -> engaged flag, above) then Phase 2 (wrench).
             # clear body_f right before writing the seal wrench, since eval_pad_force accumulates.
             self.state_0.clear_forces()
-            attach_seal(self.state_0, self.gripper_model, self.gripper_state, self.seal_engaged, self.seal_body_b)
+            attach_seal(
+                self.model,
+                self.state_0,
+                self.contacts,
+                self.gripper_model,
+                self.gripper_state,
+                self.seal_engaged,
+                self.seal_body_b,
+            )
             evaluate_gripper_force(
-                self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control
+                self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control, self.sim_dt
             )
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
