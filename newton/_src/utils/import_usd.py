@@ -4864,6 +4864,12 @@ def parse_usd(
             continue
         coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0", default=0.0)
         coef1 = usd.get_attribute(joint_prim, "newton:mimicCoef1", default=1.0)
+        # NewtonMimicAPI documents newton:mimicCoef0 in the follower's position units,
+        # which is degrees for an angular joint. Newton mimic constraints operate on
+        # joint coordinates, so an angular follower needs radians. coef1 is
+        # dimensionless and is not scaled.
+        if builder.joint_type[joint_idx] in (JointType.REVOLUTE, JointType.BALL):
+            coef0 *= DegreesToRadian
         leader_idx = path_joint_map[leader_path_str]
         builder.add_constraint_mimic(
             joint0=joint_idx,

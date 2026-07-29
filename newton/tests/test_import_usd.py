@@ -9276,8 +9276,67 @@ def Xform "Articulation" (
         joint2_idx = path_joint_map["/World/Articulation/Joint2"]
         self.assertEqual(model.constraint_mimic_joint0.numpy()[0], joint2_idx)
         self.assertEqual(model.constraint_mimic_joint1.numpy()[0], joint1_idx)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], 0.5, places=5)
+        # newton:mimicCoef0 is authored in degrees for an angular follower; Newton
+        # mimic constraints use joint coordinates, so it arrives in radians.
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], math.radians(0.5), places=6)
+        # coef1 is dimensionless and is passed through unscaled.
         self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 2.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mimic_coef0_units_follow_the_follower_joint(self):
+        """newton:mimicCoef0 is degrees for an angular follower and distance for a linear one.
+
+        NewtonMimicAPI documents the offset in the follower's position units. Newton
+        mimic constraints operate on joint coordinates, so an angular follower has to be
+        converted to radians while a prismatic one passes through untouched.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def build(joint_cls):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            root = UsdGeom.Xform.Define(stage, "/World/Root").GetPrim()
+            UsdPhysics.ArticulationRootAPI.Apply(root)
+            links = []
+            for name in ("Link1", "Link2"):
+                link = UsdGeom.Cube.Define(stage, f"/World/Root/{name}").GetPrim()
+                UsdPhysics.RigidBodyAPI.Apply(link)
+                UsdPhysics.CollisionAPI.Apply(link)
+                links.append(link)
+
+            def joint(path, body0, body1):
+                j = joint_cls.Define(stage, path)
+                if body0 is not None:
+                    j.CreateBody0Rel().SetTargets([body0.GetPath()])
+                j.CreateBody1Rel().SetTargets([body1.GetPath()])
+                j.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                j.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                j.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                j.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                j.CreateAxisAttr().Set("Z")
+                return j
+
+            leader = joint("/World/Root/Leader", root, links[0])
+            follower = joint("/World/Root/Follower", links[0], links[1])
+            prim = follower.GetPrim()
+            prim.ApplyAPI("NewtonMimicAPI")
+            prim.GetRelationship("newton:mimicJoint").SetTargets([leader.GetPrim().GetPath()])
+            prim.GetAttribute("newton:mimicCoef0").Set(0.5)
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            return builder.finalize()
+
+        angular = build(UsdPhysics.RevoluteJoint)
+        self.assertEqual(angular.constraint_mimic_count, 1)
+        self.assertAlmostEqual(angular.constraint_mimic_coef0.numpy()[0], math.radians(0.5), places=6)
+
+        linear = build(UsdPhysics.PrismaticJoint)
+        self.assertEqual(linear.constraint_mimic_count, 1)
+        self.assertAlmostEqual(linear.constraint_mimic_coef0.numpy()[0], 0.5, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_joint_parsing(self):
