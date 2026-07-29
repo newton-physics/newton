@@ -1233,6 +1233,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         actuation_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION]
         invalid_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE]
         axis_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES]
+        gimbal_handedness_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
@@ -1267,6 +1268,14 @@ class SolverKamino(SolverBase, CouplingInterface):
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
                 "universal and gimbal axes must be unit length and orthogonal"
+            )
+
+        if gimbal_handedness_joint != sentinel:
+            joint = int(gimbal_handedness_joint)
+            raise ValueError(
+                f"Invalid joint configuration for SolverKamino:\n"
+                f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
+                "gimbal axes must preserve the solver's original handedness"
             )
 
     def _update_actuation_types(self) -> None:

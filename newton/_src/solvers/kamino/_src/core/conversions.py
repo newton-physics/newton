@@ -63,7 +63,8 @@ JOINT_UPDATE_VIOLATION_LIMIT_FINITE = 1
 JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION = 2
 JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE = 3
 JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES = 4
-JOINT_UPDATE_VIOLATION_COUNT = 5
+JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS = 5
+JOINT_UPDATE_VIOLATION_COUNT = 6
 
 ###
 # Kernels
@@ -274,7 +275,7 @@ def validate_joint_axes_kernel(
     # Outputs:
     violations: wp.array[wp.int32],
 ):
-    """Find the first universal or gimbal joint whose axes are not orthonormal."""
+    """Find the first universal or gimbal joint with invalid axis configuration."""
     joint = wp.tid()
     dof_type = joint_dof_type[joint]
     is_universal = dof_type == JointDoFType.UNIVERSAL
@@ -307,6 +308,12 @@ def validate_joint_axes_kernel(
             and wp.abs(wp.dot(axis_0, axis_2)) <= 1.0e-6
             and wp.abs(wp.dot(axis_1, axis_2)) <= 1.0e-6
         )
+        if valid:
+            left_handed = wp.dot(wp.cross(axis_0, axis_1), axis_2) < 0.0
+            expected_left_handed = dof_type == JointDoFType.GIMBAL_LEFT_HANDED
+            if left_handed != expected_left_handed:
+                wp.atomic_min(violations, JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS, joint)
+                return
     if not valid:
         wp.atomic_min(violations, JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES, joint)
 
@@ -876,6 +883,7 @@ def validate_model_joint_updates(
     - :data:`JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION`: passive/actuated partition changed
     - :data:`JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE`: unsupported target-mode combination
     - :data:`JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
+    - :data:`JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS`: gimbal axis handedness changed
 
     An entry equal to the maximum of the joint and DoF counts indicates that no
     violation of that type was found.
@@ -993,6 +1001,13 @@ def _validate_joint_axes(
             f"Invalid joint configuration for SolverKamino:\n"
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
             "universal and gimbal axes must be unit length and orthogonal"
+        )
+    invalid_joint = int(violations.numpy()[JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS])
+    if invalid_joint < model.joint_count:
+        raise ValueError(
+            f"Invalid joint configuration for SolverKamino:\n"
+            f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
+            "gimbal axes must preserve the solver's original handedness"
         )
 
 

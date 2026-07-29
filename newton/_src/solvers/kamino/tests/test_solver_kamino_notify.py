@@ -556,14 +556,24 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         """Reject nonorthogonal gimbal axes when DoF properties are updated."""
         model, gimbal = _build_gimbal()
         solver = SolverKamino(model)
-        assert model.joint_qd_start is not None
-        assert model.joint_axis is not None
         qd_start = model.joint_qd_start.numpy()[gimbal]
         axes = model.joint_axis.numpy()
         axes[qd_start + 1] = [1.0, 0.0, 0.0]
         model.joint_axis.assign(axes)
 
         with self.assertRaisesRegex(ValueError, "gimbal axes must be unit length and orthogonal"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_gimbal_handedness_change_raises(self):
+        """Reject reflected gimbal axes that flip handedness while staying orthonormal."""
+        model, gimbal = _build_gimbal()
+        solver = SolverKamino(model)
+        qd_start = model.joint_qd_start.numpy()[gimbal]
+        axes = model.joint_axis.numpy()
+        axes[qd_start + 2] = -axes[qd_start + 2]
+        model.joint_axis.assign(axes)
+
+        with self.assertRaisesRegex(ValueError, "gimbal axes must preserve the solver's original handedness"):
             solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_actuation_mode_change_raises(self):
