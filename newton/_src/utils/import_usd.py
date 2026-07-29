@@ -154,6 +154,31 @@ def _cache_path_for_absolute_usd_reference(url: str) -> str:
     return posixpath.join("_external_usd", digest, basename)
 
 
+def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
+    """Warn when a rigid body prim has an improper (mirrored) world transform.
+
+    Improper transforms (negative determinant) have no unique rotation
+    decomposition: the USD physics parser's ``rotation`` and
+    ``usd.get_transform()`` may absorb the reflection on different axes, and
+    their disagreement becomes a spurious constant rotation injected into the
+    imported body and joint frames via the incoming-xform rebase.
+
+    Args:
+        usd_prim: The rigid body ``Usd.Prim``.
+        key: Prim path string used in the warning message.
+        xform_cache: ``UsdGeom.XformCache`` for world transform lookup.
+    """
+    if xform_cache.GetLocalToWorldTransform(usd_prim).GetDeterminant() < 0.0:
+        warnings.warn(
+            f"Rigid body prim {key} has a mirrored (negative-determinant) "
+            "world transform. Imported body and joint frames may acquire a "
+            "spurious rotation. Bake the reflection into the mesh geometry "
+            "(negate vertices, flip triangle winding) and re-author the body "
+            "with a proper transform before import.",
+            stacklevel=_external_stacklevel(),
+        )
+
+
 def _external_stacklevel() -> int:
     """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
     frame = inspect.currentframe()
@@ -1518,6 +1543,7 @@ def parse_usd(
         if incoming_xform is not None:
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
+        _warn_mirrored_body_transform(prim, path, xform_cache)
 
         is_kinematic = rigid_body_desc.kinematicBody
         linear_velocity = wp.transform_vector(origin, wp.vec3(*rigid_body_desc.linearVelocity))

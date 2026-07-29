@@ -4,6 +4,7 @@
 
 ### Added
 
+- Break the viewer's shape count down into visual and collision shapes. The two are listed under `Shapes` in the stats overlay and need not sum to the total, since a shape can be both.
 - Add selection of the shapes included in model shape BVHs through `Model.bvh_build_shapes(shape_flags=...)` and `ModelBuilder.default_bvh_cfg.shape_flags`, e.g. `ShapeFlags.VISIBLE | ShapeFlags.COLLIDE_SHAPES` to also include collision shapes.
 - Add a `damping` parameter to `ModelBuilder.add_joint_ball()` that applies passive angular damping to all three ball-joint DOFs; when omitted, `ModelBuilder.default_joint_cfg.damping` applies.
 - Add per-world `xforms` argument to `ModelBuilder.replicate()` for batching explicitly positioned worlds.
@@ -28,6 +29,7 @@
 - Add opt-in DVI forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="dvi")`, with sparse and dense execution, DVI-specific diagnostics, and warm-starting. PADMM remains the default.
 - Add opt-in DVI forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="dvi")`, with sparse and dense execution, DVI-specific convergence diagnostics, warm-starting, bounded contact-recovery controls, and RCM-reordered bilateral factorization with reusable ordering and panel-parallel numeric factorization for large systems. PADMM remains the default.
 - Add SDF contact support for convex-hull shapes with mesh-attached SDFs and opt-in SDF contact generation for box shapes.
+- Warn in `ModelBuilder.add_usd()` when a rigid body prim has a mirrored (negative-determinant) world transform. Improper transforms have no unique rotation decomposition, so imported body and joint frames can acquire a spurious constant rotation (common with mirror-scaled CAD exports); the warning recommends baking the reflection into the mesh geometry before import.
 - Add opt-in filtering of static-static, static-kinematic, and kinematic-kinematic contacts during broad-phase collision detection. Set `CollisionPipeline(include_static_kinematic_pairs=False)` to enable filtering; the default preserves existing contact generation. `Model.shape_contact_pairs` remains an unfiltered superset for direct consumers such as `SolverKamino` and hydroelastic SDF setup.
 - Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
 - Add `sign_method` argument to `Mesh.build_sdf` and `SDF.create_from_mesh` support for a `"normal"` (angle-weighted pseudo-normal) sign strategy, for selecting the inside/outside sign of the baked SDF (`"auto"`, `"parity"`, `"winding"`, or `"normal"`).
@@ -53,6 +55,7 @@
 - Improve `SolverKamino` GPU simulation and kernel compilation performance.
 - Speed up `Mesh.create_heightfield()` and `Mesh.create_terrain()` by building the vertex and index buffers in place, substantially reducing construction time and peak memory for large terrain grids such as those used by Isaac Lab.
 - Load solver backends lazily on first access to speed up `import newton`; access solver classes through `newton.solvers` as before, and import solver modules explicitly if module-level side effects are required.
+- Speed up USD mesh import for faceVarying normals by resolving the common single-cluster case for all vertices at once instead of clustering every face corner in Python; the split vertices, indices, normals, and UVs are unchanged, except that a corner sitting exactly at `vertex_splitting_angle_threshold_deg` from its cluster may now cluster differently.
 - Speed up `ModelBuilder.replicate()` for large world counts by merging all copies in one pass; it no longer calls `add_world()` or `add_builder()` per copy, so `ModelBuilder` subclass overrides of those methods are not invoked during replication.
 - Treat `BodyFlags.KINEMATIC` bodies as zero-effective-mass implicit-MPM colliders when `SolverImplicitMPM.setup_collider()` is called without `body_mass`. Pass an explicit `body_mass` array to override the model-derived collider masses.
 
