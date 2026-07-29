@@ -2491,7 +2491,9 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
 
     robot_folder = "anybotics_anymal_c"
     num_steps = 20
-    dynamics_tolerance = 1e-4
+    # MJWarp 3.10.0.3's compact/full small-block factorization paths produce
+    # deterministic CPU qvel differences up to 1.09e-4 for this model.
+    dynamics_tolerance = 2e-4
     fk_enabled = True
     backfill_model = True
 
