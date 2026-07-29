@@ -928,14 +928,6 @@ class JointDoFType(IntEnum):
 
     @staticmethod
     @wp.func
-    def gimbal_third_axis_sign(dof_type: int) -> float:
-        """Return the authored-to-canonical sign for a gimbal third axis."""
-        if dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
-            return -1.0
-        return 1.0
-
-    @staticmethod
-    @wp.func
     def num_coords_wp(dof_type: int) -> int:
         """
         Returns the number of generalized coordinates defined by the joint DoF type.
@@ -1536,7 +1528,7 @@ class JointDescriptor(Descriptor):
         # Validate that the specified parameters are valid
         self._check_parameter_values()
 
-        # TODO: Add support for dynamic multi-dof joints in the future.
+        # TODO: Add support for missing multi-DOF joint types in the future.
         # Ensure that only revolute and prismatic joints are dynamically constrained
         supported_implicit_joint_types = (
             JointDoFType.REVOLUTE,

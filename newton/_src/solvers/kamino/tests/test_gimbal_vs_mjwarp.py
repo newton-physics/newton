@@ -172,10 +172,7 @@ def _run(
     )
 
 
-@unittest.skipUnless(
-    wp.get_cuda_device_count(),
-    "set NEWTON_RUN_MJWARP_CONFORMANCE=1 on a CUDA host to run MJWarp D6 conformance",
-)
+@unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
 class TestGimbalMJWarp(unittest.TestCase):
     """Compare Kamino and MJWarp through the public Newton state layout."""
 

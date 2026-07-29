@@ -837,9 +837,7 @@ def compute_and_write_joint_implicit_dynamics(
     data_joint_dq_b_j: wp.array[wp.float32],
 ):
     # Iterate over the dynamic constraints of the joint and
-    # compute and store the implicit dynamics intermediates
-    # TODO: We currently do not handle implicit dynamics of
-    # multi-dof joints, but we should generalize this.
+    # compute and store the implicit dynamics intermediates.
     for j in range(num_dynamic_cts):
         coords_offset_j = coords_offset + j
         dofs_offset_j = dofs_offset + j

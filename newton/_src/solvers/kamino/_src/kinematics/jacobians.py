@@ -117,12 +117,14 @@ def build_full_joint_jacobian(
             )
             R_intermediate = compute_intermediate_body_frame_universal_joint(j_q_j)
             R_X_bar_j = concat6d(R_X_j, R_X_j @ R_intermediate)
+        # Gimbal joint: replace R_X_j with the frame of the reciprocal axes
         else:
+            third_axis_sign = -1.0 if dof_type == JointDoFType.GIMBAL_LEFT_HANDED else 1.0
             coords_offset = model_joints_coords_offset[joint_id]
             coords = wp.vec3f(
                 state_joints_q[coords_offset], state_joints_q[coords_offset + 1], state_joints_q[coords_offset + 2]
             )
-            reciprocal = gimbal_reciprocal_axes(coords, JointDoFType.gimbal_third_axis_sign(dof_type))
+            reciprocal = gimbal_reciprocal_axes(coords, third_axis_sign)
             R_X_bar_j = concat6d(R_X_j, R_X_j @ reciprocal)
 
         # Compute the extended jacobians, i.e. without the selection-matrix multiplication
