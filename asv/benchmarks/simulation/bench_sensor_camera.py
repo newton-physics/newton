@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rendering benchmarks for the shape-backed camera sensor.
+"""Rendering benchmarks for the site-backed camera sensor.
 
 ``FastSensorCamera`` and ``FastSensorCameraPixel`` measure Isaac Lab's Franka
 cabinet scene with tiled and pixel-priority rendering in CI. The other scene
@@ -245,7 +245,7 @@ def _look_at_transform(
 
 
 class _SensorCameraSceneRig:
-    """A scene replicated across worlds with a shape-backed camera sensor ready to render."""
+    """A scene replicated across worlds with a site-backed camera sensor ready to render."""
 
     def __init__(
         self,
@@ -266,7 +266,7 @@ class _SensorCameraSceneRig:
             )
         )
         camera = _look_at_transform(preset.camera_eye, preset.camera_target)
-        world.add_shape_camera(camera=self.sensor, xform=camera)
+        world.add_site(camera=self.sensor, xform=camera)
 
         scene = newton.ModelBuilder()
         scene.default_bvh_cfg.mesh_constructor = "cubql"
@@ -290,6 +290,7 @@ class _SensorCameraSceneRig:
             shape_indices=np.arange(self.model.shape_count, dtype=np.int32)
         )
         self.sensor.render_context = self.render_context
+        self.sensor.finalize()
 
         self.color_image = self.sensor.create_color_image_output()
         self.depth_image = self.sensor.create_depth_image_output()

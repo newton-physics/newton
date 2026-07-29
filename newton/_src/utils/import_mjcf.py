@@ -19,7 +19,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
-from ..sensors.sensor_camera import SensorCamera
+from ..sensors.sensor_camera import CameraPinholeSpec, CameraSpec
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -198,7 +198,7 @@ def parse_mjcf(
     path_resolver: Callable[[str | None, str], str] | None = None,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
-):
+) -> dict[str, Any]:
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
     MuJoCo-specific custom attributes are registered on the builder automatically.
@@ -316,6 +316,11 @@ def parse_mjcf(
             where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
             Use for MJCF files authored against MuJoCo <= 3.8. Defaults
             to False (identity translation matching MuJoCo 3.9 semantics).
+
+    Returns:
+        Import result maps. ``path_camera_map`` maps MJCF camera labels to the
+        created site indices, and ``path_camera_spec_map`` maps those labels to
+        resolved :class:`~newton.CameraSpec` values.
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -1339,8 +1344,8 @@ def parse_mjcf(
         label_prefix: str = "",
         incoming_xform: wp.transform | None = None,
     ) -> list[int]:
-        """Parse camera elements from MJCF as shape-backed camera sensors."""
-        camera_shapes = []
+        """Parse camera elements from MJCF as sites with resolved camera specs."""
+        camera_sites = []
         for camera_index, camera in enumerate(parent_element.findall("camera")):
             camera_defaults = incoming_defaults
             if "class" in camera.attrib:
@@ -1361,13 +1366,13 @@ def parse_mjcf(
             if camera_mode is not None and camera_mode != "fixed":
                 warnings.warn(
                     f"MJCF camera '{camera_name}' has mode={camera_mode!r}; authored camera mode is ignored "
-                    "and a fixed pinhole SensorCamera is imported.",
+                    "and a fixed pinhole camera site/spec is imported.",
                     stacklevel=2,
                 )
             if camera_attrib.get("orthographic", "false").lower() == "true":
                 warnings.warn(
                     f"MJCF camera '{camera_name}' has orthographic='true'; authored camera projection is ignored "
-                    "and a fixed pinhole SensorCamera is imported.",
+                    "and a fixed pinhole camera site/spec is imported.",
                     stacklevel=2,
                 )
 
@@ -1378,23 +1383,24 @@ def parse_mjcf(
                 camera_xform = incoming_xform * camera_xform
 
             width, height = _parse_camera_resolution(camera_attrib)
-            camera_rays = SensorCamera.compute_camera_rays_pinhole(
-                width,
-                height,
-                _parse_camera_fov(camera_attrib, (width, height)),
-                device="cpu",
-            )
-            sensor_camera = SensorCamera(camera_rays)
             camera_label = f"{label_prefix}/{camera_name}" if label_prefix else camera_name
-            camera_shape = builder.add_shape_camera(
+            camera_spec = CameraSpec(
+                width=width,
+                height=height,
+                model=CameraPinholeSpec(camera_fov=_parse_camera_fov(camera_attrib, (width, height))),
+                source_format="mjcf",
+                source_path=camera_label,
+            )
+            camera_site = builder.add_site(
                 body=body,
                 xform=camera_xform,
-                camera=sensor_camera,
                 label=camera_label,
             )
-            camera_shapes.append(camera_shape)
+            path_camera_map[camera_label] = camera_site
+            path_camera_spec_map[camera_label] = camera_spec
+            camera_sites.append(camera_site)
 
-        return camera_shapes
+        return camera_sites
 
     def get_frame_xform(frame_element, incoming_xform: wp.transform) -> wp.transform:
         """Compute composed transform for a frame element."""
@@ -2471,6 +2477,8 @@ def parse_mjcf(
     body_name_to_idx: dict[str, int] = {}
     site_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
+    path_camera_map: dict[str, int] = {}
+    path_camera_spec_map: dict[str, CameraSpec] = {}
 
     # Extract articulation label early for hierarchical label construction
     articulation_label = root.attrib.get("model")
@@ -3191,3 +3199,8 @@ def parse_mjcf(
         builder.collapse_fixed_joints()
     elif collapse_massless_fixed_root:
         collapse_massless_fixed_root_joints(builder, joint_indices)
+
+    return {
+        "path_camera_map": path_camera_map,
+        "path_camera_spec_map": path_camera_spec_map,
+    }

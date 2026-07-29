@@ -10,7 +10,7 @@ import newton
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 
-def _camera_shapes(model: newton.Model) -> list[int]:
+def _sensor_camera_sites(model: newton.Model) -> list[int]:
     return [i for i, source in enumerate(model.shape_source) if isinstance(source, newton.SensorCamera)]
 
 
@@ -71,6 +71,26 @@ def _make_render_stage():
     return stage
 
 
+def _make_site_stage():
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdPhysics.Scene.Define(stage, "/physicsScene")
+    UsdGeom.Xform.Define(stage, "/World")
+
+    body = UsdGeom.Xform.Define(stage, "/World/Body")
+    body.AddTranslateOp().Set(Gf.Vec3d(1.0, 0.0, 0.0))
+    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+    site = UsdGeom.Sphere.Define(stage, "/World/Body/CameraMount")
+    site.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcSiteAPI"]))
+    site.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.25))
+    site.GetRadiusAttr().Set(0.01)
+
+    return stage
+
+
 def _make_articulated_camera_stage():
     from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -121,8 +141,8 @@ def _make_articulated_camera_stage():
 
 class TestImportUsdCameras(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_import_usd_adds_camera_sensors_as_shapes(self) -> None:
-        """Verify USD camera prims import as shape-backed camera sensors."""
+    def test_import_usd_adds_camera_specs_as_sites(self) -> None:
+        """Verify USD camera prims import as sites with camera specs."""
         from pxr import UsdGeom
 
         stage = _make_stage()
@@ -134,30 +154,43 @@ class TestImportUsdCameras(unittest.TestCase):
         self.assertIn("/World/Overview", result["path_camera_map"])
         self.assertIn("/World/Body/Camera", result["path_camera_map"])
         self.assertNotIn("/World/Ortho", result["path_camera_map"])
+        self.assertIn("/World/Overview", result["path_camera_spec_map"])
+        self.assertIn("/World/Body/Camera", result["path_camera_spec_map"])
+        self.assertNotIn("/World/Ortho", result["path_camera_spec_map"])
 
         overview = result["path_camera_map"]["/World/Overview"]
         body_camera = result["path_camera_map"]["/World/Body/Camera"]
         self.assertEqual(result["path_shape_map"]["/World/Overview"], overview)
         self.assertEqual(result["path_shape_map"]["/World/Body/Camera"], body_camera)
 
-        self.assertEqual(int(model.shape_type.numpy()[overview]), int(newton.GeoType.CAMERA))
-        self.assertIsInstance(model.shape_source[overview], newton.SensorCamera)
-        self.assertEqual(model.shape_source[overview].width, 640)
-        self.assertEqual(model.shape_source[overview].height, 480)
+        shape_type = model.shape_type.numpy()
+        shape_flags = model.shape_flags.numpy()
+        self.assertEqual(int(shape_type[overview]), int(newton.GeoType.SPHERE))
+        self.assertEqual(int(shape_type[body_camera]), int(newton.GeoType.SPHERE))
+        self.assertTrue(int(shape_flags[overview]) & int(newton.ShapeFlags.SITE))
+        self.assertTrue(int(shape_flags[body_camera]) & int(newton.ShapeFlags.SITE))
+        self.assertIsNone(model.shape_source[overview])
+        self.assertIsNone(model.shape_source[body_camera])
+        self.assertIsInstance(result["path_camera_spec_map"]["/World/Overview"], newton.CameraSpec)
+        self.assertEqual(result["path_camera_spec_map"]["/World/Overview"].width, 640)
+        self.assertEqual(result["path_camera_spec_map"]["/World/Overview"].height, 480)
         self.assertEqual(int(model.shape_body.numpy()[overview]), -1)
         self.assertGreaterEqual(int(model.shape_body.numpy()[body_camera]), 0)
 
         np.testing.assert_allclose(model.shape_transform.numpy()[overview][:3], [1.0, 2.0, 3.0])
         np.testing.assert_allclose(model.shape_transform.numpy()[body_camera][:3], [0.0, 0.0, 0.5])
-        np.testing.assert_array_equal(model.shape_source[body_camera].shape_indices.numpy(), [body_camera])
 
         expected_rays = newton.SensorCamera.compute_camera_rays_usd_pinhole(
-            model.shape_source[overview].width,
-            model.shape_source[overview].height,
+            result["path_camera_spec_map"]["/World/Overview"].width,
+            result["path_camera_spec_map"]["/World/Overview"].height,
             UsdGeom.Camera(stage.GetPrimAtPath("/World/Overview")),
             device="cpu",
         )
-        np.testing.assert_allclose(model.shape_source[overview].rays.numpy(), expected_rays.numpy(), atol=1.0e-6)
+        np.testing.assert_allclose(
+            result["path_camera_spec_map"]["/World/Overview"].compute_rays(device="cpu").numpy(),
+            expected_rays.numpy(),
+            atol=1.0e-6,
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_rebases_cameras_with_override_root_xform(self) -> None:
@@ -187,26 +220,29 @@ class TestImportUsdCameras(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         self.assertEqual(result["path_camera_map"], {})
-        self.assertEqual(_camera_shapes(model), [])
+        self.assertEqual(result["path_camera_spec_map"], {})
+        self.assertEqual(_sensor_camera_sites(model), [])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_import_usd_camera_sensor_renders_scene(self) -> None:
-        """Verify an imported USD camera sensor renders imported geometry."""
+    def test_import_usd_camera_spec_renders_scene_when_attached(self) -> None:
+        """Verify a USD camera spec renders after explicit sensor attachment."""
         builder = newton.ModelBuilder()
         result = builder.add_usd(_make_render_stage())
+        camera_site = result["path_camera_map"]["/World/Camera"]
+        camera_spec = result["path_camera_spec_map"]["/World/Camera"]
+        camera_sensor = newton.SensorCamera(camera_spec.compute_rays(device="cpu"))
+        builder.set_site_camera(camera_site, camera_sensor)
         model = builder.finalize(device="cpu")
         state = model.state()
 
         target_shape = result["path_shape_map"]["/World/Body/Target"]
-        camera_shape = result["path_camera_map"]["/World/Camera"]
-        camera_sensor = model.shape_source[camera_shape]
-        self.assertIsInstance(camera_sensor, newton.SensorCamera)
-
-        depth = camera_sensor.create_depth_image_output()
-        shape_index = camera_sensor.create_shape_index_image_output()
 
         render_context = newton.RenderContext(model)
         camera_sensor.render_context = render_context
+        camera_sensor.finalize()
+        depth = camera_sensor.create_depth_image_output()
+        shape_index = camera_sensor.create_shape_index_image_output()
+
         render_context.update(state)
         camera_sensor.update(state, depth_image=depth, shape_index_image=shape_index)
 
@@ -215,6 +251,27 @@ class TestImportUsdCameras(unittest.TestCase):
         center = (0, camera_sensor.height // 2, camera_sensor.width // 2)
         self.assertGreater(float(depth_np[center]), 0.0)
         self.assertEqual(int(shape_index_np[center]), target_shape)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_set_site_camera_attaches_to_imported_usd_site(self) -> None:
+        """Verify users can attach a SensorCamera to a USD-imported site."""
+        site_path = "/World/Body/CameraMount"
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(_make_site_stage(), load_cameras=False)
+        site = result["path_shape_map"][site_path]
+
+        camera = newton.SensorCamera(
+            newton.SensorCamera.compute_camera_rays_pinhole(4, 3, np.deg2rad(45.0), device="cpu")
+        )
+        attached_site = builder.set_site_camera(site, camera)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(attached_site, site)
+        self.assertTrue(int(model.shape_flags.numpy()[site]) & int(newton.ShapeFlags.SITE))
+        self.assertIs(model.shape_source[site], camera)
+        self.assertEqual(camera.view_count, 0)
+        camera.finalize(model=model)
+        np.testing.assert_array_equal(camera.shape_indices.numpy(), [site])
 
 
 if __name__ == "__main__":

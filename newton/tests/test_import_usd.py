@@ -2690,8 +2690,8 @@ class TestImportUsdPhysics(unittest.TestCase):
             collapse_fixed_joints=True,
         )
         self.assertEqual(builder.body_count, 1)
-        camera_shapes = [i for i, source in enumerate(builder.shape_source) if isinstance(source, newton.SensorCamera)]
-        self.assertEqual(len(camera_shapes), 1)
+        self.assertEqual(len(import_results["path_camera_map"]), 1)
+        self.assertEqual(len(import_results["path_camera_spec_map"]), 1)
         self.assertEqual(builder.shape_count, 3)
         self.assertEqual(builder.joint_count, 1)
 

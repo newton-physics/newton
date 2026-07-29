@@ -12,7 +12,14 @@ import newton
 import newton._src.render as internal_render
 import newton.geometry as geometry
 from newton._src.render.utils import Utils
-from newton.sensors import SensorCamera
+from newton.sensors import (
+    CameraFisheyeFThetaSpec,
+    CameraFisheyeKannalaBrandtSpec,
+    CameraFisheyeOpenCVSpec,
+    CameraPinholeSpec,
+    CameraSpec,
+    SensorCamera,
+)
 
 
 class TestSensorCamera(unittest.TestCase):
@@ -36,11 +43,14 @@ class TestSensorCamera(unittest.TestCase):
 
         camera_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()))
         camera = camera or TestSensorCamera._make_pinhole_camera(width, height)
-        builder.add_shape_camera(body=camera_body, camera=camera, label=camera_label)
+        builder.add_site(body=camera_body, camera=camera, label=camera_label)
 
         model = builder.finalize(device="cpu")
         if assign_render_context:
             camera.render_context = newton.RenderContext(model)
+            camera.finalize()
+        else:
+            camera.finalize(model=model)
         return model, camera
 
     @staticmethod
@@ -54,13 +64,23 @@ class TestSensorCamera(unittest.TestCase):
         builder.add_shape_sphere(sphere_body, radius=0.75, color=(0.25, 0.5, 0.75))
 
         camera_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()))
-        builder.add_shape_camera(body=camera_body, camera=camera, label=camera_label)
+        builder.add_site(body=camera_body, camera=camera, label=camera_label)
 
         return builder
 
     def test_sensor_camera_public_imports_resolve_to_same_class(self) -> None:
         """Verify public SensorCamera imports and removed helpers."""
         self.assertIs(newton.SensorCamera, SensorCamera)
+        self.assertIs(newton.CameraFisheyeFThetaSpec, CameraFisheyeFThetaSpec)
+        self.assertIs(newton.CameraFisheyeKannalaBrandtSpec, CameraFisheyeKannalaBrandtSpec)
+        self.assertIs(newton.CameraFisheyeOpenCVSpec, CameraFisheyeOpenCVSpec)
+        self.assertIs(newton.CameraPinholeSpec, CameraPinholeSpec)
+        self.assertIs(newton.CameraSpec, CameraSpec)
+        self.assertIs(newton.sensors.CameraFisheyeFThetaSpec, CameraFisheyeFThetaSpec)
+        self.assertIs(newton.sensors.CameraFisheyeKannalaBrandtSpec, CameraFisheyeKannalaBrandtSpec)
+        self.assertIs(newton.sensors.CameraFisheyeOpenCVSpec, CameraFisheyeOpenCVSpec)
+        self.assertIs(newton.sensors.CameraPinholeSpec, CameraPinholeSpec)
+        self.assertIs(newton.sensors.CameraSpec, CameraSpec)
         self.assertIs(newton.RenderContext, newton.render.RenderContext)
         self.assertNotIn("RenderContext", internal_render.__all__)
         self.assertFalse(hasattr(internal_render, "RenderContext"))
@@ -93,6 +113,7 @@ class TestSensorCamera(unittest.TestCase):
         self.assertFalse(hasattr(SensorCamera, "_bind_model"))
         self.assertFalse(hasattr(SensorCamera, "_ensure_shape_index_by_world"))
         self.assertFalse(hasattr(SensorCamera, "_ensure_render_buffers"))
+        self.assertFalse(hasattr(newton.ModelBuilder, "add_shape_camera"))
         self.assertEqual(int(newton.WorldRenderFlag.ENABLE), 1)
         self.assertEqual(int(newton.WorldRenderFlag.DISABLE_CLEAR), 2)
         self.assertEqual(int(newton.WorldRenderFlag.DISABLE_PRESERVE), 0)
@@ -183,6 +204,39 @@ class TestSensorCamera(unittest.TestCase):
         self.assertIs(rays, out_rays)
         self.assertFalse(np.allclose(rays.numpy(), 0.0))
 
+    def test_camera_specs_compute_rays(self) -> None:
+        """Verify camera specs compute rays through their camera models."""
+        width, height = 4, 3
+        fov = math.radians(45.0)
+        spec = CameraSpec(width=width, height=height, model=CameraPinholeSpec(camera_fov=fov))
+
+        rays = spec.compute_rays(device="cpu")
+        expected_rays = SensorCamera.compute_camera_rays_pinhole(width, height, fov, device="cpu")
+
+        self.assertEqual(rays.shape, (height, width, 2))
+        np.testing.assert_allclose(rays.numpy(), expected_rays.numpy(), rtol=1.0e-6, atol=1.0e-6)
+
+        fisheye_specs = (
+            CameraSpec(
+                width=width,
+                height=height,
+                model=CameraFisheyeOpenCVSpec(fx=1.0, fy=1.0, cx=1.5, cy=1.5),
+            ),
+            CameraSpec(
+                width=width,
+                height=height,
+                model=CameraFisheyeFThetaSpec(optical_center_x=1.5, optical_center_y=1.5),
+            ),
+            CameraSpec(
+                width=width,
+                height=height,
+                model=CameraFisheyeKannalaBrandtSpec(optical_center_x=1.5, optical_center_y=1.5),
+            ),
+        )
+        for fisheye_spec in fisheye_specs:
+            with self.subTest(model=type(fisheye_spec.model).__name__):
+                self.assertEqual(fisheye_spec.compute_rays(device="cpu").shape, (height, width, 2))
+
     def test_camera_ray_helpers_reject_batched_inputs(self) -> None:
         """Verify camera ray helpers accept only single-camera parameters."""
         width, height = 4, 3
@@ -219,9 +273,9 @@ class TestSensorCamera(unittest.TestCase):
         """Verify finalized SensorCamera instances own render utility state."""
         width, height = 4, 3
         camera = self._make_pinhole_camera(width, height)
-        with self.assertRaisesRegex(RuntimeError, "finalized into a model"):
+        with self.assertRaisesRegex(RuntimeError, "SensorCamera.finalize"):
             _ = camera.utils
-        with self.assertRaisesRegex(RuntimeError, "finalized into a model"):
+        with self.assertRaisesRegex(RuntimeError, "SensorCamera.finalize"):
             camera.create_image_output(wp.float32)
 
         model, camera = self._build_sphere_camera_scene(width, height, camera=camera)
@@ -293,6 +347,41 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(render_context.light_count, 1)
         render_context.assign_checkerboard_material(shape_indices=[0])
 
+    def test_set_site_camera_attaches_existing_site(self) -> None:
+        """Verify a SensorCamera can be attached to an existing site."""
+        camera = self._make_pinhole_camera(2, 2)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        site = builder.add_site(label="camera_mount")
+
+        attached_site = builder.set_site_camera("camera_mount", camera)
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(attached_site, site)
+        self.assertIs(model.shape_source[site], camera)
+        self.assertEqual(camera.view_count, 0)
+        camera.finalize(model=model)
+        np.testing.assert_array_equal(camera.shape_indices.numpy(), [site])
+
+    def test_set_site_camera_rejects_non_site_shape(self) -> None:
+        """Verify SensorCamera cannot be attached to a non-site shape."""
+        camera = self._make_pinhole_camera(2, 2)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        shape = builder.add_shape_sphere(body=-1, radius=0.1)
+
+        with self.assertRaisesRegex(ValueError, "is not a site"):
+            builder.set_site_camera(shape, camera)
+
+    def test_sensor_camera_source_requires_site_marker(self) -> None:
+        """Verify SensorCamera sources require primitive site marker shapes."""
+        camera = self._make_pinhole_camera(2, 2)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+
+        with self.assertRaisesRegex(ValueError, "must be attached to site"):
+            builder.add_shape(body=-1, type=newton.GeoType.SPHERE, src=camera)
+
+        with self.assertRaisesRegex(ValueError, "marker type must be a primitive"):
+            builder.add_site(type=newton.GeoType.MESH, camera=camera)
+
     def test_shape_index_by_world_rejects_negative_indices(self) -> None:
         """Verify SensorCamera rejects negative shape indices."""
         with self.assertRaisesRegex(ValueError, "shape_indices must be non-negative"):
@@ -328,11 +417,15 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(camera._camera_transforms.device, expected_device)
         self.assertEqual(camera._all_world_render_flags.device, expected_device)
 
-    def test_update_renders_from_shape_transform(self) -> None:
-        """Verify SensorCamera renders from model shape transforms."""
+    def test_update_renders_from_site_transform(self) -> None:
+        """Verify SensorCamera renders from model site transforms."""
         width, height = 16, 12
         model, camera = self._build_sphere_camera_scene(width, height)
         state = model.state()
+
+        camera_site = int(camera.shape_indices.numpy()[0])
+        self.assertTrue(int(model.shape_flags.numpy()[camera_site]) & int(newton.ShapeFlags.SITE))
+        self.assertEqual(int(model.shape_type.numpy()[camera_site]), int(newton.GeoType.SPHERE))
 
         depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
         shape_index = wp.zeros((model.world_count, height, width), dtype=wp.uint32, device="cpu")
@@ -357,6 +450,7 @@ class TestSensorCamera(unittest.TestCase):
         model = scene.finalize(device="cpu")
         state = model.state()
 
+        camera.finalize(model=model)
         camera.clear_data = newton.ClearData(clear_depth=-2.0, clear_shape_index=123)
         world_render_flags = wp.array(
             [int(newton.WorldRenderFlag.ENABLE), int(newton.WorldRenderFlag.DISABLE_CLEAR)],
@@ -402,6 +496,7 @@ class TestSensorCamera(unittest.TestCase):
         model = scene.finalize(device="cpu")
         state = model.state()
 
+        camera.finalize(model=model)
         world_render_flags = wp.array(
             [int(newton.WorldRenderFlag.ENABLE), int(newton.WorldRenderFlag.DISABLE_PRESERVE)],
             dtype=wp.int32,
@@ -493,8 +588,8 @@ class TestSensorCamera(unittest.TestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         sphere_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()))
         builder.add_shape_sphere(sphere_body, radius=0.75, color=(0.25, 0.5, 0.75))
-        builder.add_shape_camera(camera=camera_a, label="camera_a")
-        builder.add_shape_camera(camera=camera_b, label="camera_b")
+        builder.add_site(camera=camera_a, label="camera_a")
+        builder.add_site(camera=camera_b, label="camera_b")
         model = builder.finalize(device="cpu")
         state = model.state()
 
@@ -504,6 +599,8 @@ class TestSensorCamera(unittest.TestCase):
         render_context = newton.RenderContext(model)
         camera_a.render_context = render_context
         camera_b.render_context = render_context
+        camera_a.finalize()
+        camera_b.finalize()
 
         render_context.update(state)
         camera_a.update(state, depth_image=depth_a)

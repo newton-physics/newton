@@ -29,6 +29,11 @@ newton
 
    Axis
    BodyFlags
+   CameraFisheyeFThetaSpec
+   CameraFisheyeKannalaBrandtSpec
+   CameraFisheyeOpenCVSpec
+   CameraPinholeSpec
+   CameraSpec
    ClearData
    CollisionPipeline
    Contacts

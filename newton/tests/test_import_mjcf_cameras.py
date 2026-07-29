@@ -10,13 +10,13 @@ import numpy as np
 import newton
 
 
-def _camera_shapes(model: newton.Model) -> list[int]:
+def _sensor_camera_sites(model: newton.Model) -> list[int]:
     return [i for i, source in enumerate(model.shape_source) if isinstance(source, newton.SensorCamera)]
 
 
 class TestImportMjcfCameras(unittest.TestCase):
-    def test_import_mjcf_adds_camera_sensors_as_shapes(self) -> None:
-        """Verify MJCF camera elements import as shape-backed camera sensors."""
+    def test_import_mjcf_adds_camera_specs_as_sites(self) -> None:
+        """Verify MJCF camera elements import as sites with camera specs."""
         mjcf = """
 <mujoco model="camera_import">
     <default>
@@ -37,18 +37,24 @@ class TestImportMjcfCameras(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
+        result = builder.add_mjcf(mjcf)
         model = builder.finalize(device="cpu")
 
-        cameras = _camera_shapes(model)
+        cameras = list(result["path_camera_map"].values())
         self.assertEqual(len(cameras), 3)
-        cameras_by_label = {model.shape_label[i]: i for i in cameras}
 
-        overview = cameras_by_label["camera_import/worldbody/overview"]
-        frame_cam = cameras_by_label["camera_import/worldbody/frame_cam"]
-        body_cam = cameras_by_label["camera_import/worldbody/base/body_cam"]
+        overview = result["path_camera_map"]["camera_import/worldbody/overview"]
+        frame_cam = result["path_camera_map"]["camera_import/worldbody/frame_cam"]
+        body_cam = result["path_camera_map"]["camera_import/worldbody/base/body_cam"]
 
-        self.assertEqual(int(model.shape_type.numpy()[overview]), int(newton.GeoType.CAMERA))
+        shape_type = model.shape_type.numpy()
+        shape_flags = model.shape_flags.numpy()
+        self.assertEqual(int(shape_type[overview]), int(newton.GeoType.SPHERE))
+        self.assertEqual(int(shape_type[frame_cam]), int(newton.GeoType.SPHERE))
+        self.assertEqual(int(shape_type[body_cam]), int(newton.GeoType.SPHERE))
+        self.assertTrue(int(shape_flags[overview]) & int(newton.ShapeFlags.SITE))
+        self.assertTrue(int(shape_flags[frame_cam]) & int(newton.ShapeFlags.SITE))
+        self.assertTrue(int(shape_flags[body_cam]) & int(newton.ShapeFlags.SITE))
         self.assertEqual(int(model.shape_body.numpy()[overview]), -1)
         self.assertEqual(int(model.shape_body.numpy()[frame_cam]), -1)
         self.assertGreaterEqual(int(model.shape_body.numpy()[body_cam]), 0)
@@ -57,11 +63,16 @@ class TestImportMjcfCameras(unittest.TestCase):
         np.testing.assert_allclose(model.shape_transform.numpy()[frame_cam][:3], [0.0, 0.0, 1.5])
         np.testing.assert_allclose(model.shape_transform.numpy()[body_cam][:3], [0.0, 0.0, 0.3])
 
-        self.assertEqual(model.shape_source[overview].width, 320)
-        self.assertEqual(model.shape_source[overview].height, 240)
-        self.assertEqual(model.shape_source[body_cam].width, 16)
-        self.assertEqual(model.shape_source[body_cam].height, 8)
-        np.testing.assert_array_equal(model.shape_source[body_cam].shape_indices.numpy(), [body_cam])
+        self.assertIsNone(model.shape_source[overview])
+        self.assertIsNone(model.shape_source[frame_cam])
+        self.assertIsNone(model.shape_source[body_cam])
+        self.assertEqual(_sensor_camera_sites(model), [])
+
+        self.assertIsInstance(result["path_camera_spec_map"]["camera_import/worldbody/overview"], newton.CameraSpec)
+        self.assertEqual(result["path_camera_spec_map"]["camera_import/worldbody/overview"].width, 320)
+        self.assertEqual(result["path_camera_spec_map"]["camera_import/worldbody/overview"].height, 240)
+        self.assertEqual(result["path_camera_spec_map"]["camera_import/worldbody/base/body_cam"].width, 16)
+        self.assertEqual(result["path_camera_spec_map"]["camera_import/worldbody/base/body_cam"].height, 8)
 
     def test_import_mjcf_warns_for_ignored_camera_mode_and_projection(self) -> None:
         """Verify MJCF camera import warns when authored camera attributes are ignored."""
@@ -77,7 +88,7 @@ class TestImportMjcfCameras(unittest.TestCase):
 
         with warnings.catch_warnings(record=True) as caught_warnings:
             warnings.simplefilter("always")
-            builder.add_mjcf(mjcf)
+            result = builder.add_mjcf(mjcf)
 
         messages = [str(warning.message) for warning in caught_warnings]
         self.assertTrue(
@@ -88,7 +99,9 @@ class TestImportMjcfCameras(unittest.TestCase):
         )
 
         model = builder.finalize(device="cpu")
-        self.assertEqual(len(_camera_shapes(model)), 2)
+        self.assertEqual(len(result["path_camera_map"]), 2)
+        self.assertEqual(len(result["path_camera_spec_map"]), 2)
+        self.assertEqual(len(_sensor_camera_sites(model)), 0)
 
     def test_import_mjcf_camera_uses_focalpixel_intrinsics(self) -> None:
         """Verify MJCF camera focalpixel intrinsics set the imported FOV."""
@@ -100,14 +113,17 @@ class TestImportMjcfCameras(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize(device="cpu")
+        result = builder.add_mjcf(mjcf)
 
-        camera_shape = model.shape_label.index("camera_focalpixel/worldbody/cam")
-        camera_sensor = model.shape_source[camera_shape]
+        camera_spec = result["path_camera_spec_map"]["camera_focalpixel/worldbody/cam"]
         expected_rays = newton.SensorCamera.compute_camera_rays_pinhole(4, 2, math.radians(90.0), device="cpu")
 
-        np.testing.assert_allclose(camera_sensor.rays.numpy(), expected_rays.numpy(), rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(
+            camera_spec.compute_rays(device="cpu").numpy(),
+            expected_rays.numpy(),
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
 
     def test_import_mjcf_camera_rejects_unsupported_intrinsics(self) -> None:
         """Verify unsupported MJCF camera intrinsic combinations fail explicitly."""
@@ -138,8 +154,8 @@ class TestImportMjcfCameras(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     builder.add_mjcf(mjcf)
 
-    def test_import_mjcf_camera_sensor_renders_scene(self) -> None:
-        """Verify an imported MJCF camera sensor renders imported geometry."""
+    def test_import_mjcf_camera_spec_renders_scene_when_attached(self) -> None:
+        """Verify an MJCF camera spec renders after explicit sensor attachment."""
         mjcf = """
 <mujoco model="render_camera">
     <worldbody>
@@ -149,20 +165,22 @@ class TestImportMjcfCameras(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
+        result = builder.add_mjcf(mjcf)
+        camera_site = result["path_camera_map"]["render_camera/worldbody/cam"]
+        camera_spec = result["path_camera_spec_map"]["render_camera/worldbody/cam"]
+        camera_sensor = newton.SensorCamera(camera_spec.compute_rays(device="cpu"))
+        builder.set_site_camera(camera_site, camera_sensor)
         model = builder.finalize(device="cpu")
         state = model.state()
 
         target_shape = model.shape_label.index("render_camera/worldbody/target")
-        camera_shape = model.shape_label.index("render_camera/worldbody/cam")
-        camera_sensor = model.shape_source[camera_shape]
-        self.assertIsInstance(camera_sensor, newton.SensorCamera)
-
-        depth = camera_sensor.create_depth_image_output()
-        shape_index = camera_sensor.create_shape_index_image_output()
 
         render_context = newton.RenderContext(model)
         camera_sensor.render_context = render_context
+        camera_sensor.finalize()
+        depth = camera_sensor.create_depth_image_output()
+        shape_index = camera_sensor.create_shape_index_image_output()
+
         render_context.update(state)
         camera_sensor.update(state, depth_image=depth, shape_index_image=shape_index)
 

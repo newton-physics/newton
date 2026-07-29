@@ -13,6 +13,11 @@ newton.sensors
    :toctree: _generated
    :nosignatures:
 
+   CameraFisheyeFThetaSpec
+   CameraFisheyeKannalaBrandtSpec
+   CameraFisheyeOpenCVSpec
+   CameraPinholeSpec
+   CameraSpec
    SensorCamera
    SensorContact
    SensorFrameTransform

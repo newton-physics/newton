@@ -31,7 +31,7 @@ class RenderOrder(enum.IntEnum):
 
 
 class WorldRenderFlag(enum.IntFlag):
-    """Per-world rendering behavior for shape-backed camera sensors."""
+    """Per-world rendering behavior for site-backed camera sensors."""
 
     DISABLE_PRESERVE = 0
     """Skip rendering and leave output pixels unchanged."""

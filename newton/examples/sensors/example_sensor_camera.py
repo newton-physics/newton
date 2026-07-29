@@ -80,15 +80,15 @@ def animate_franka(
 
 
 @wp.kernel(enable_backward=False)
-def update_camera_shape_transforms(
+def update_camera_site_transforms(
     camera_transform: wp.transformf,
-    camera_shape_indices: wp.array[wp.int32],
+    camera_site_indices: wp.array[wp.int32],
     shape_transform: wp.array[wp.transform],
 ):
     tid = wp.tid()
 
-    shape_index = camera_shape_indices[tid]
-    shape_transform[shape_index] = wp.transform(
+    site_index = camera_site_indices[tid]
+    shape_transform[site_index] = wp.transform(
         wp.transform_get_translation(camera_transform),
         wp.transform_get_rotation(camera_transform),
     )
@@ -142,8 +142,8 @@ class Example:
 
         semantic_colors = []
         robot_shape_indices: list[int] = []
-        camera_shape_indices: list[int] = []
-        robot_camera_shape_indices: list[int] = []
+        camera_site_indices: list[int] = []
+        robot_camera_site_indices: list[int] = []
 
         rng = random.Random(1234)
         for world_index in range(self.world_count_total):
@@ -201,16 +201,16 @@ class Example:
             builder.add_builder(robot_builder, xform=wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity()))
             robot_shape_indices.extend(range(robot_shape_start, robot_shape_start + robot_builder.shape_count))
             semantic_colors.extend([SEMANTIC_COLOR_ROBOT] * robot_builder.shape_count)
-            camera_shape_indices.append(
-                builder.add_shape_camera(
+            camera_site_indices.append(
+                builder.add_site(
                     camera=self.sensor_camera,
                     xform=self._get_camera_transform(),
                     label=f"camera_{world_index}",
                 )
             )
             semantic_colors.append(SEMANTIC_COLOR_CAMERA)
-            robot_camera_shape_indices.append(
-                builder.add_shape_camera(
+            robot_camera_site_indices.append(
+                builder.add_site(
                     body=robot_body_start + robot_camera_body,
                     camera=self.robot_sensor_camera,
                     xform=self._get_robot_camera_transform(),
@@ -227,8 +227,8 @@ class Example:
         self.state = self.model.state()
         self.robot_shape_indices = np.asarray(robot_shape_indices, dtype=np.uint32)
         self.ground_shape_indices = np.asarray([ground_shape_index], dtype=np.uint32)
-        self.camera_shape_indices = wp.array(camera_shape_indices, dtype=wp.int32, device=self.model.device)
-        self.robot_camera_shape_indices = wp.array(robot_camera_shape_indices, dtype=wp.int32, device=self.model.device)
+        self.camera_site_indices = wp.array(camera_site_indices, dtype=wp.int32, device=self.model.device)
+        self.robot_camera_site_indices = wp.array(robot_camera_site_indices, dtype=wp.int32, device=self.model.device)
         self.disable_clear_world_indices = np.arange(self.worlds_per_row, dtype=np.int32)
         self.disable_preserve_world_indices = np.arange(self.worlds_per_row, 2 * self.worlds_per_row, dtype=np.int32)
         self.world_render_flags_np = np.full(
@@ -273,6 +273,8 @@ class Example:
         self.render_context.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
         self.sensor_camera.render_context = self.render_context
         self.robot_sensor_camera.render_context = self.render_context
+        self.sensor_camera.finalize()
+        self.robot_sensor_camera.finalize()
 
         self.sensor_camera_color_image = self.sensor_camera.create_color_image_output()
         self.sensor_camera_albedo_image = self.sensor_camera.create_albedo_image_output()
@@ -327,7 +329,7 @@ class Example:
         self.viewer.end_frame()
 
     def render_sensors(self):
-        self._update_camera_shape_transforms()
+        self._update_camera_site_transforms()
         self.model.bvh_refit_shapes(self.state)
         self.model.bvh_refit_particles(self.state)
         self.render_context.update(self.state)
@@ -359,11 +361,11 @@ class Example:
         self.viewer.log_image("shape_index", self.shape_rgba)
         self.viewer.log_image("semantic", self.semantic_rgba)
 
-    def _update_camera_shape_transforms(self):
+    def _update_camera_site_transforms(self):
         wp.launch(
-            update_camera_shape_transforms,
+            update_camera_site_transforms,
             dim=self.world_count_total,
-            inputs=[self._get_camera_transform(), self.camera_shape_indices, self.model.shape_transform],
+            inputs=[self._get_camera_transform(), self.camera_site_indices, self.model.shape_transform],
             device=self.model.device,
         )
 

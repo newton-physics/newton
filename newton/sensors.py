@@ -2,6 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from ._src.sensors.sensor_camera import (
+    CameraFisheyeFThetaSpec,
+    CameraFisheyeKannalaBrandtSpec,
+    CameraFisheyeOpenCVSpec,
+    CameraPinholeSpec,
+    CameraSpec,
     SensorCamera,
 )
 
@@ -26,6 +31,11 @@ from ._src.sensors.sensor_tiled_camera import (
 )
 
 __all__ = [
+    "CameraFisheyeFThetaSpec",
+    "CameraFisheyeKannalaBrandtSpec",
+    "CameraFisheyeOpenCVSpec",
+    "CameraPinholeSpec",
+    "CameraSpec",
     "SensorCamera",
     "SensorContact",
     "SensorFrameTransform",

@@ -142,6 +142,25 @@ __all__ += [
 ]
 
 # ==================================================================================
+# sensors
+# ==================================================================================
+from ._src.sensors import (  # noqa: E402
+    CameraFisheyeFThetaSpec,
+    CameraFisheyeKannalaBrandtSpec,
+    CameraFisheyeOpenCVSpec,
+    CameraPinholeSpec,
+    CameraSpec,
+)
+
+__all__ += [
+    "CameraFisheyeFThetaSpec",
+    "CameraFisheyeKannalaBrandtSpec",
+    "CameraFisheyeOpenCVSpec",
+    "CameraPinholeSpec",
+    "CameraSpec",
+]
+
+# ==================================================================================
 # submodule APIs
 # ==================================================================================
 from . import actuators, geometry, ik, math, render, selection, sensors, solvers, usd, utils, viewer  # noqa: E402

@@ -3528,7 +3528,7 @@ class ModelBuilder:
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-            load_cameras: If True, perspective ``UsdGeom.Camera`` prims are loaded as shape-backed camera sensors. Default is True.
+            load_cameras: If True, perspective ``UsdGeom.Camera`` prims are loaded as sites with camera specs. Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
                 have visual-only geometry are hidden unconditionally, regardless of
                 whether the collider has authored PBR material data. Default is False.
@@ -3606,7 +3606,9 @@ class ModelBuilder:
                 * - ``"path_shape_map"``
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_camera_map"``
-                  - Mapping from prim path (str) of a perspective ``UsdGeom.Camera`` prim to its camera shape index in :class:`~newton.ModelBuilder`
+                  - Mapping from prim path (str) of a perspective ``UsdGeom.Camera`` prim to its camera site index in :class:`~newton.ModelBuilder`
+                * - ``"path_camera_spec_map"``
+                  - Mapping from prim path (str) of a perspective ``UsdGeom.Camera`` prim to its resolved :class:`~newton.CameraSpec`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
                 * - ``"path_cable_map"``
@@ -3718,7 +3720,7 @@ class ModelBuilder:
         path_resolver: Callable[[str | None, str], str] | None = None,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
-    ):
+    ) -> dict[str, Any]:
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
         MuJoCo-specific custom attributes are registered on the builder automatically.
@@ -3835,6 +3837,11 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
                 Use for MJCF files authored against MuJoCo <= 3.8. Defaults
                 to False (identity translation matching MuJoCo 3.9 semantics).
+
+        Returns:
+            Import result maps. ``path_camera_map`` maps MJCF camera labels to
+            created site indices, and ``path_camera_spec_map`` maps those labels
+            to resolved :class:`~newton.CameraSpec` values.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -6381,6 +6388,11 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         cfg.validate(shape_type=type)
+        if isinstance(src, SensorCamera):
+            if not cfg.is_site:
+                raise ValueError("SensorCamera sources must be attached to site shapes.")
+            if type in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.HFIELD, GeoType.GAUSSIAN):
+                raise ValueError("SensorCamera site marker type must be a primitive shape.")
         # Both raw meshes and convex-mesh approximations share the mesh-backed
         # SDF code path; cfg.sdf_* fields belong on Mesh.build_sdf, not the
         # ShapeConfig, so reject them for both shape types up front instead of
@@ -6423,7 +6435,6 @@ class ModelBuilder:
             GeoType.ELLIPSOID,
             GeoType.PLANE,
             GeoType.GAUSSIAN,
-            GeoType.CAMERA,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
         elif type == GeoType.CONE:
@@ -6468,9 +6479,6 @@ class ModelBuilder:
                     f"Sites do not participate in collision detection. "
                     f"Got collision_group={cfg.collision_group}"
                 )
-
-        if type == GeoType.CAMERA and (cfg.has_shape_collision or cfg.has_particle_collision or cfg.density != 0.0):
-            raise ValueError("Camera shapes must be non-colliding and have zero density.")
 
         self.shape_body.append(body)
         shape = self.shape_count
@@ -7158,7 +7166,7 @@ class ModelBuilder:
                 - ``"convex_hull"``: auto-generate convex hull from Gaussian positions.
                 - A :class:`Mesh` instance: use the provided mesh as collision proxy.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
-            label: Optional unique label for identifying the shape.
+            label: Optional unique label for identifying the site.
             custom_attributes: Dictionary of custom attribute values for SHAPE
                 frequency attributes.
 
@@ -7213,69 +7221,66 @@ class ModelBuilder:
             color=color,
         )
 
-    @deprecate_nonkeyword_arguments
-    def add_shape_camera(
-        self,
-        body: int = -1,
-        *,
-        xform: Transform | None = None,
-        camera: SensorCamera | None = None,
-        cfg: ShapeConfig | None = None,
-        color: Vec3 | None = None,
-        label: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
-    ) -> int:
-        """Adds a camera sensor shape to a body.
+    def set_site_camera(self, site: int | str, camera: SensorCamera, *, replace: bool = False) -> int:
+        """Attach a camera sensor to an existing site.
+
+        The sensor is attached for lookup on the finalized model, but it is not
+        finalized by :meth:`ModelBuilder.finalize`. Call
+        :meth:`~newton.SensorCamera.finalize` after finalizing the model.
 
         Args:
-            body: The index of the parent body this camera belongs to. Use
-                ``-1`` for a world-fixed camera.
-            xform: Camera transform in the parent body's local frame.
-            camera: The :class:`~newton.SensorCamera` ray bundle asset.
-            cfg: Shape configuration. If ``None``, a non-colliding,
-                invisible, zero-density site configuration is used.
-            color: Optional display RGB color with values in [0, 1].
-            label: Optional unique label for identifying the shape.
-            custom_attributes: Dictionary of custom attribute values for SHAPE
-                frequency attributes.
+            site: Site shape index or exact site label.
+            camera: The :class:`~newton.SensorCamera` ray bundle asset attached
+                to the site.
+            replace: If ``True``, replace an existing camera sensor attached to
+                the site. Defaults to ``False``.
 
         Returns:
-            The index of the camera shape.
+            The site shape index.
         """
-        if camera is None:
-            raise TypeError("'camera' is required when adding a camera sensor shape.")
+        if not isinstance(camera, SensorCamera):
+            raise TypeError("'camera' must be a SensorCamera instance.")
 
-        if cfg is None:
-            cfg = self.default_site_cfg.copy()
-            cfg.is_visible = False
+        if isinstance(site, str):
+            matches = [i for i, label in enumerate(self.shape_label) if label == site]
+            if not matches:
+                raise ValueError(f"No site with label {site!r} exists.")
+            if len(matches) > 1:
+                raise ValueError(f"Site label {site!r} matched multiple shapes; pass a site index instead.")
+            site_index = matches[0]
         else:
-            cfg = cfg.copy()
-            cfg.mark_as_site()
-            cfg.is_visible = False
+            site_index = int(site)
 
-        return self.add_shape(
-            body=body,
-            type=GeoType.CAMERA,
-            xform=xform,
-            cfg=cfg,
-            scale=(0.0, 0.0, 0.0),
-            src=camera,
-            is_static=True,
-            label=label,
-            custom_attributes=custom_attributes,
-            color=color,
-        )
+        if site_index < 0 or site_index >= self.shape_count:
+            raise ValueError(f"Site index {site_index} is out of range.")
+        if not (self.shape_flags[site_index] & int(ShapeFlags.SITE)):
+            raise ValueError(f"Shape {site_index} is not a site.")
+        if self.shape_type[site_index] in (
+            GeoType.MESH,
+            GeoType.CONVEX_MESH,
+            GeoType.HFIELD,
+            GeoType.GAUSSIAN,
+        ):
+            raise ValueError("SensorCamera site marker type must be a primitive shape.")
+
+        existing = self.shape_source[site_index]
+        if existing is not None and existing is not camera and not replace:
+            raise ValueError(f"Site {site_index} already has an attached source; pass replace=True to replace it.")
+
+        self.shape_source[site_index] = camera
+        return site_index
 
     @deprecate_nonkeyword_arguments
     def add_site(
         self,
-        body: int,
+        body: int = -1,
         *,
         xform: Transform | None = None,
         type: int = GeoType.SPHERE,
         scale: Vec3 = (0.01, 0.01, 0.01),
         label: str | None = None,
         visible: bool = False,
+        camera: SensorCamera | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a site (non-colliding reference point) to a body.
@@ -7294,6 +7299,11 @@ class ModelBuilder:
             scale: The scale/size of the site for visualization. Defaults to `(0.01, 0.01, 0.01)`.
             label: An optional unique label for identifying the site. If `None`, a default label is automatically generated. Defaults to `None`.
             visible: If True, the site will be visible for debugging. If False (default), the site is hidden.
+            camera: Optional :class:`~newton.SensorCamera` attached to this
+                site. The site defines the camera transform; the sensor defines
+                rays and render settings. Call
+                :meth:`~newton.SensorCamera.finalize` after finalizing the
+                model.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -7320,6 +7330,7 @@ class ModelBuilder:
             xform=xform,
             cfg=cfg,
             scale=scale,
+            src=camera,
             label=label,
             custom_attributes=custom_attributes,
         )
@@ -11147,13 +11158,8 @@ class ModelBuilder:
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             heightfield_meshes = []
-            camera_shape_indices = {}
-            for shape_index, geo in enumerate(generated_shape_sources):
-                if isinstance(geo, SensorCamera):
-                    camera_shape_indices.setdefault(id(geo), []).append(shape_index)
-
             for geo in generated_shape_sources:
-                if not geo:
+                if not geo or isinstance(geo, SensorCamera):
                     geo_sources.append(0)
                     continue
 
@@ -11193,13 +11199,6 @@ class ModelBuilder:
                         finalized_geos[geo_hash] = len(gaussians)
                         gaussians.append(
                             geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
-                        )
-                    elif isinstance(geo, SensorCamera):
-                        finalized_geos[geo_hash] = geo.finalize(
-                            device=device,
-                            shape_indices=camera_shape_indices[id(geo)],
-                            shape_world=self.shape_world,
-                            world_count=self.world_count,
                         )
                     else:
                         finalized_geos[geo_hash] = geo.finalize()

@@ -27,7 +27,7 @@ from newton.solvers import SolverMuJoCo
 
 _UNSUPPORTED_CAMERA_WARNING = (
     r"MJCF camera '.+' has (?:mode='[^']+'|orthographic='true'); authored camera "
-    r"(?:mode|projection) is ignored and a fixed pinhole SensorCamera is imported\."
+    r"(?:mode|projection) is ignored and a fixed pinhole camera site/spec is imported\."
 )
 
 
@@ -3471,7 +3471,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
         # Test 1: Load all (default behavior)
         builder_all = newton.ModelBuilder()
-        _add_mjcf_ignoring_unsupported_camera_warnings(
+        result_all = _add_mjcf_ignoring_unsupported_camera_warnings(
             builder_all, mjcf_filename, ignore_names=["floor", "ground"], up_axis="Z"
         )
         count_all = builder_all.shape_count
@@ -3511,10 +3511,10 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             up_axis="Z",
         )
         count_physics_only = builder_physics_only.shape_count
-        camera_count = sum(1 for source in builder_all.shape_source if isinstance(source, newton.SensorCamera))
+        camera_count = len(result_all["path_camera_map"])
 
         # Verify behavior
-        self.assertEqual(camera_count, 2, "Test asset should import 2 camera sensor shapes")
+        self.assertEqual(camera_count, 2, "Test asset should import 2 camera sites")
 
         # When loading all, should have most shapes
         self.assertEqual(count_all, 43, "Loading all should give 43 shapes (sites + cameras + visuals + collision)")

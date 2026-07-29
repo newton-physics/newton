@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -19,6 +20,7 @@ from ..render.types import (
 
 if TYPE_CHECKING:
     from ..render.render_context import RenderContext
+    from ..sim.model import Model
     from ..sim.state import State
 
 
@@ -66,6 +68,239 @@ def _validate_camera_ray_output(
     return width, height, out_rays, out_rays.device
 
 
+@dataclass(frozen=True)
+class CameraPinholeSpec:
+    """Pinhole camera model parameters."""
+
+    camera_fov: float | None = None
+    """Vertical field of view [rad]."""
+    focal_length: float | None = None
+    """Focal length in the same units as aperture dimensions."""
+    horizontal_aperture: float | None = None
+    """Horizontal aperture in the same units as focal length."""
+    vertical_aperture: float | None = None
+    """Vertical aperture in the same units as focal length."""
+    horizontal_aperture_offset: float = 0.0
+    """Horizontal aperture offset in the same units as focal length."""
+    vertical_aperture_offset: float = 0.0
+    """Vertical aperture offset in the same units as focal length."""
+
+    def compute_rays(
+        self,
+        width: int,
+        height: int,
+        *,
+        out_rays: wp.array3d[wp.vec3f] | None = None,
+        device: Devicelike = None,
+    ) -> wp.array3d[wp.vec3f]:
+        """Compute camera-space rays for this camera model."""
+        return SensorCamera.compute_camera_rays_pinhole(
+            width,
+            height,
+            self.camera_fov,
+            focal_length=self.focal_length,
+            horizontal_aperture=self.horizontal_aperture,
+            vertical_aperture=self.vertical_aperture,
+            horizontal_aperture_offset=self.horizontal_aperture_offset,
+            vertical_aperture_offset=self.vertical_aperture_offset,
+            out_rays=out_rays,
+            device=device,
+        )
+
+
+@dataclass(frozen=True)
+class CameraFisheyeOpenCVSpec:
+    """OpenCV fisheye camera model parameters."""
+
+    fx: float
+    """Horizontal focal length [px]."""
+    fy: float
+    """Vertical focal length [px]."""
+    cx: float
+    """Horizontal optical center [px]."""
+    cy: float
+    """Vertical optical center [px]."""
+    image_width: float | None = None
+    """Nominal image width [px]."""
+    image_height: float | None = None
+    """Nominal image height [px]."""
+    k1: float = 0.0
+    """First radial distortion coefficient."""
+    k2: float = 0.0
+    """Second radial distortion coefficient."""
+    k3: float = 0.0
+    """Third radial distortion coefficient."""
+    k4: float = 0.0
+    """Fourth radial distortion coefficient."""
+    max_fov: float = 2.0 * math.pi
+    """Maximum field of view [rad]."""
+
+    def compute_rays(
+        self,
+        width: int,
+        height: int,
+        *,
+        out_rays: wp.array3d[wp.vec3f] | None = None,
+        device: Devicelike = None,
+    ) -> wp.array3d[wp.vec3f]:
+        """Compute camera-space rays for this camera model."""
+        return SensorCamera.compute_camera_rays_fisheye_opencv(
+            width,
+            height,
+            self.fx,
+            self.fy,
+            self.cx,
+            self.cy,
+            image_width=self.image_width,
+            image_height=self.image_height,
+            k1=self.k1,
+            k2=self.k2,
+            k3=self.k3,
+            k4=self.k4,
+            max_fov=self.max_fov,
+            out_rays=out_rays,
+            device=device,
+        )
+
+
+@dataclass(frozen=True)
+class CameraFisheyeFThetaSpec:
+    """F-theta fisheye camera model parameters."""
+
+    optical_center_x: float
+    """Horizontal optical center [px]."""
+    optical_center_y: float
+    """Vertical optical center [px]."""
+    image_width: float | None = None
+    """Nominal image width [px]."""
+    image_height: float | None = None
+    """Nominal image height [px]."""
+    nominal_width: float | None = None
+    """Legacy nominal image width [px]."""
+    nominal_height: float | None = None
+    """Legacy nominal image height [px]."""
+    k0: float = 0.0
+    """Constant F-theta polynomial coefficient."""
+    k1: float = 1.0
+    """Linear F-theta polynomial coefficient."""
+    k2: float = 0.0
+    """Quadratic F-theta polynomial coefficient."""
+    k3: float = 0.0
+    """Cubic F-theta polynomial coefficient."""
+    k4: float = 0.0
+    """Quartic F-theta polynomial coefficient."""
+    max_fov: float = 2.0 * math.pi
+    """Maximum field of view [rad]."""
+
+    def compute_rays(
+        self,
+        width: int,
+        height: int,
+        *,
+        out_rays: wp.array3d[wp.vec3f] | None = None,
+        device: Devicelike = None,
+    ) -> wp.array3d[wp.vec3f]:
+        """Compute camera-space rays for this camera model."""
+        return SensorCamera.compute_camera_rays_fisheye_ftheta(
+            width,
+            height,
+            self.optical_center_x,
+            self.optical_center_y,
+            image_width=self.image_width,
+            image_height=self.image_height,
+            nominal_width=self.nominal_width,
+            nominal_height=self.nominal_height,
+            k0=self.k0,
+            k1=self.k1,
+            k2=self.k2,
+            k3=self.k3,
+            k4=self.k4,
+            max_fov=self.max_fov,
+            out_rays=out_rays,
+            device=device,
+        )
+
+
+@dataclass(frozen=True)
+class CameraFisheyeKannalaBrandtSpec:
+    """Kannala-Brandt fisheye camera model parameters."""
+
+    optical_center_x: float
+    """Horizontal optical center [px]."""
+    optical_center_y: float
+    """Vertical optical center [px]."""
+    image_width: float | None = None
+    """Nominal image width [px]."""
+    image_height: float | None = None
+    """Nominal image height [px]."""
+    nominal_width: float | None = None
+    """Legacy nominal image width [px]."""
+    nominal_height: float | None = None
+    """Legacy nominal image height [px]."""
+    k0: float = 1.0
+    """Linear Kannala-Brandt polynomial coefficient."""
+    k1: float = 0.0
+    """Cubic Kannala-Brandt polynomial coefficient."""
+    k2: float = 0.0
+    """Quintic Kannala-Brandt polynomial coefficient."""
+    k3: float = 0.0
+    """Septic Kannala-Brandt polynomial coefficient."""
+    max_fov: float = 2.0 * math.pi
+    """Maximum field of view [rad]."""
+
+    def compute_rays(
+        self,
+        width: int,
+        height: int,
+        *,
+        out_rays: wp.array3d[wp.vec3f] | None = None,
+        device: Devicelike = None,
+    ) -> wp.array3d[wp.vec3f]:
+        """Compute camera-space rays for this camera model."""
+        return SensorCamera.compute_camera_rays_fisheye_kannala_brandt(
+            width,
+            height,
+            self.optical_center_x,
+            self.optical_center_y,
+            image_width=self.image_width,
+            image_height=self.image_height,
+            nominal_width=self.nominal_width,
+            nominal_height=self.nominal_height,
+            k0=self.k0,
+            k1=self.k1,
+            k2=self.k2,
+            k3=self.k3,
+            max_fov=self.max_fov,
+            out_rays=out_rays,
+            device=device,
+        )
+
+
+@dataclass(frozen=True)
+class CameraSpec:
+    """Resolved camera import metadata used to build camera-space rays."""
+
+    width: int
+    """Image width [px]."""
+    height: int
+    """Image height [px]."""
+    model: CameraPinholeSpec | CameraFisheyeOpenCVSpec | CameraFisheyeFThetaSpec | CameraFisheyeKannalaBrandtSpec
+    """Camera model parameters."""
+    source_format: str = ""
+    """Source format that authored this camera."""
+    source_path: str = ""
+    """Source path or label that authored this camera."""
+
+    def compute_rays(
+        self,
+        *,
+        out_rays: wp.array3d[wp.vec3f] | None = None,
+        device: Devicelike = None,
+    ) -> wp.array3d[wp.vec3f]:
+        """Compute camera-space rays for this imported camera."""
+        return self.model.compute_rays(self.width, self.height, out_rays=out_rays, device=device)
+
+
 @wp.kernel(enable_backward=False)
 def _compute_camera_transforms(
     shape_index_by_world: wp.array[wp.int32],
@@ -89,12 +324,12 @@ def _compute_camera_transforms(
 
 
 class SensorCamera:
-    """Camera ray bundle asset for shape-backed rendering.
+    """Camera ray bundle asset for site-backed rendering.
 
-    A camera sensor can be attached to a model as a ``GeoType.CAMERA`` shape.
-    The shape supplies the camera transform, parent body, world, label, and
-    custom attributes; this object supplies the image resolution and camera-space
-    rays used for rendering.
+    A camera sensor can be attached to a model site. The site supplies the
+    camera transform, parent body, world, label, and custom attributes; this
+    object supplies the image resolution and camera-space rays used for
+    rendering.
     """
 
     def __init__(self, rays: wp.array | np.ndarray, render_context: RenderContext | None = None):
@@ -111,7 +346,7 @@ class SensorCamera:
         self.render_context = render_context
         """Render context shared by camera sensors rendering the same model."""
         self.shape_indices = wp.array([], dtype=wp.int32, device=self.rays.device)
-        """Indices into the owning model's ``shape_*`` arrays for this camera."""
+        """Indices into the owning model's ``shape_*`` arrays for this camera's sites."""
 
         self.clear_data: ClearData | None = ClearData()
         """Values used to clear output images before rendering."""
@@ -161,7 +396,7 @@ class SensorCamera:
 
     def _ensure_finalized(self) -> None:
         if self.view_count == 0:
-            raise RuntimeError("SensorCamera utilities are available after the sensor has been finalized into a model.")
+            raise RuntimeError("SensorCamera utilities are available after SensorCamera.finalize() has been called.")
 
     def create_image_output(self, dtype: Any) -> wp.array:
         """Create an output image array with shape ``(view_count, height, width)``."""
@@ -445,23 +680,53 @@ class SensorCamera:
 
     def finalize(
         self,
+        model: Model | Devicelike | None = None,
+        *,
         device: Devicelike = None,
         shape_indices: Sequence[int] | None = None,
-        shape_world: Sequence[int] | np.ndarray | None = None,
+        shape_world: Sequence[int] | np.ndarray | wp.array[wp.int32] | None = None,
         world_count: int | None = None,
     ) -> int:
         """Move rays and allocate per-world render buffers.
 
         Args:
-            device: Target model device.
+            model: Optional finalized model. If provided, or if this camera has
+                a render context, ``device``, ``shape_indices``, ``shape_world``,
+                and ``world_count`` are inferred when omitted.
+            device: Target model device. Defaults to ``model.device`` when a
+                model is available, otherwise to the rays device.
             shape_indices: Indices into the owning model's ``shape_*`` arrays
-                whose source is this camera.
+                whose source is this camera. Inferred from ``model.shape_source``
+                when a model is available.
             shape_world: World index for each model shape.
             world_count: Number of worlds in the owning model.
 
         Returns:
             Zero, because camera sensors do not need a ``shape_source_ptr``.
         """
+        if model is not None and not hasattr(model, "shape_world"):
+            if device is not None:
+                raise TypeError("Pass either a model or a device as the first positional argument, not both.")
+            device = model
+            model = None
+
+        if model is None and self.render_context is not None:
+            model = self.render_context.model
+
+        if model is not None:
+            model_device = model.device
+            if device is not None and wp.get_device(device) != model_device:
+                raise ValueError(f"device must match model.device ({model_device}), got {wp.get_device(device)}.")
+            device = model_device
+            if shape_world is None:
+                shape_world = model.shape_world
+            if world_count is None:
+                world_count = model.world_count
+            if shape_indices is None:
+                shape_indices = [i for i, source in enumerate(model.shape_source) if source is self]
+                if not shape_indices:
+                    raise ValueError("SensorCamera is not attached to any site in the provided model.")
+
         effective_device = wp.get_device(device) if device is not None else self.rays.device
         if device is not None and self.rays.device != effective_device:
             self.rays = wp.clone(self.rays, device=effective_device)
@@ -507,12 +772,15 @@ class SensorCamera:
     def _compute_shape_index_by_world(
         *,
         shape_indices: np.ndarray,
-        shape_world: Sequence[int] | np.ndarray,
+        shape_world: Sequence[int] | np.ndarray | wp.array[wp.int32],
         world_count: int,
     ) -> np.ndarray:
         shape_index_by_world = np.full(world_count, -1, dtype=np.int32)
         global_shape_index = -1
-        shape_world = np.asarray(shape_world, dtype=np.int32)
+        if isinstance(shape_world, wp.array):
+            shape_world = shape_world.numpy().astype(np.int32, copy=False)
+        else:
+            shape_world = np.asarray(shape_world, dtype=np.int32)
 
         for shape_index in shape_indices:
             if shape_index < 0:
@@ -522,19 +790,19 @@ class SensorCamera:
                 if global_shape_index >= 0:
                     raise RuntimeError(
                         "SensorCamera output has no camera axis; attach each SensorCamera to at most one "
-                        "global camera shape."
+                        "global camera site."
                     )
                 global_shape_index = int(shape_index)
             elif world_index >= world_count:
                 raise RuntimeError(
-                    f"SensorCamera shape {int(shape_index)} references world {world_index}, but model has "
+                    f"SensorCamera site {int(shape_index)} references world {world_index}, but model has "
                     f"{world_count} worlds."
                 )
             else:
                 if shape_index_by_world[world_index] >= 0:
                     raise RuntimeError(
                         "SensorCamera output has no camera axis; attach each SensorCamera to at most one "
-                        "camera shape per world."
+                        "camera site per world."
                     )
                 shape_index_by_world[world_index] = int(shape_index)
 
@@ -593,11 +861,11 @@ class SensorCamera:
         world_render_flags: wp.array[wp.int32] | None = None,
         kernel_block_dim: int = 64,
     ) -> None:
-        """Render this camera sensor from its shape transforms.
+        """Render this camera sensor from its site transforms.
 
         Output arrays must have shape ``(view_count, height, width)``. The
-        render context's model supplies camera transforms and world indices
-        from its ``shape_*`` arrays.
+        render context's model supplies site transforms and world indices from
+        its ``shape_*`` arrays.
 
         Args:
             state: Simulation state with body and particle transforms.
@@ -620,10 +888,12 @@ class SensorCamera:
         render_context = self._get_render_context()
         model = render_context.model
         if self.rays.device != model.device:
-            raise RuntimeError("SensorCamera rays are not on the model device; finalize the model with this camera.")
+            raise RuntimeError(
+                "SensorCamera rays are not on the model device; call SensorCamera.finalize() for this model."
+            )
         if self.shape_indices.device != model.device:
             raise RuntimeError(
-                "SensorCamera shape indices are not on the model device; finalize the model with this camera."
+                "SensorCamera shape indices are not on the model device; call SensorCamera.finalize() for this model."
             )
 
         self._update_transforms(state)

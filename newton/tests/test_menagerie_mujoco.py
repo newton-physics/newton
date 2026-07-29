@@ -76,7 +76,7 @@ NEWTON_MENAGERIE_PATH_ENV = "NEWTON_MENAGERIE_PATH"
 
 _UNSUPPORTED_CAMERA_WARNING = (
     r"MJCF camera '.+' has (?:mode='[^']+'|orthographic='true'); authored camera "
-    r"(?:mode|projection) is ignored and a fixed pinhole SensorCamera is imported\."
+    r"(?:mode|projection) is ignored and a fixed pinhole camera site/spec is imported\."
 )
 
 
@@ -364,9 +364,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Lights: Newton doesn't parse lights from MJCF
     "light_",
     "nlight",
-    # Cameras: dedicated camera-import tests cover SensorCamera creation. These
+    # Cameras: dedicated camera-import tests cover camera site/spec creation. These
     # comparisons skip native MuJoCo camera fields because SolverMuJoCo does not
-    # represent SensorCamera shapes as MuJoCo cameras.
+    # represent imported camera sites as MuJoCo cameras.
     "cam_",
     "ncam",
     # Sensors: Newton doesn't parse sensors from MJCF
@@ -1807,7 +1807,7 @@ class TestMenagerieBase(unittest.TestCase):
     def _effective_model_skip_fields(self) -> set[str]:
         """Return model fields to skip for the currently loaded Newton model."""
         skip_fields = set(self.model_skip_fields)
-        if any(isinstance(source, newton.SensorCamera) for source in self._newton_model.shape_source):
+        if np.any(self._newton_model.shape_flags.numpy() & int(newton.ShapeFlags.SITE)):
             skip_fields.update({"nsite", "site_"})
         return skip_fields
 
