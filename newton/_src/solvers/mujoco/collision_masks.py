@@ -9,9 +9,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
-import warp as wp
-
-from ...sim import Model, ModelBuilder
 
 MUJOCO_COLLISION_MASK_UNSET = np.iinfo(np.int64).min
 """Sentinel for Newton shapes without preserved MuJoCo collision masks."""
@@ -21,34 +18,6 @@ def mujoco_mask_to_signed(value: int) -> int:
     """Return a 32-bit MuJoCo mask as its signed integer representation."""
     normalized = np.asarray(int(value) & 0xFFFFFFFF, dtype=np.uint32)
     return int(normalized.view(np.int32))
-
-
-def register_collision_mask_attributes(builder: ModelBuilder) -> None:
-    """Register custom attributes that preserve authored MuJoCo masks."""
-    builder.add_custom_attribute(
-        ModelBuilder.CustomAttribute(
-            name="contype",
-            frequency=Model.AttributeFrequency.SHAPE,
-            assignment=Model.AttributeAssignment.MODEL,
-            dtype=wp.int64,
-            default=MUJOCO_COLLISION_MASK_UNSET,
-            namespace="mujoco",
-            usd_attribute_name="mjc:contype",
-            mjcf_attribute_name="contype",
-        )
-    )
-    builder.add_custom_attribute(
-        ModelBuilder.CustomAttribute(
-            name="conaffinity",
-            frequency=Model.AttributeFrequency.SHAPE,
-            assignment=Model.AttributeAssignment.MODEL,
-            dtype=wp.int64,
-            default=MUJOCO_COLLISION_MASK_UNSET,
-            namespace="mujoco",
-            usd_attribute_name="mjc:conaffinity",
-            mjcf_attribute_name="conaffinity",
-        )
-    )
 
 
 @dataclass(frozen=True)
@@ -863,7 +832,6 @@ __all__ = [
     "compile_collision_masks",
     "compile_newton_collision_graph",
     "mujoco_mask_to_signed",
-    "register_collision_mask_attributes",
     "verify_collision_mask_compilation",
     "verify_newton_collision_graph_compilation",
 ]

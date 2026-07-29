@@ -21,7 +21,7 @@ from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
-from ..solvers.mujoco.collision_masks import compile_collision_masks, register_collision_mask_attributes
+from ..solvers.mujoco.collision_masks import compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_KD,
     DEFAULT_LIMIT_KE,
@@ -362,12 +362,9 @@ def parse_mjcf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
-    # The equality custom attributes are declared by ModelBuilder.__init__; register the remaining
-    # MuJoCo custom attributes (geom/actuator/solver options) needed to parse and convert the model.
-    # register_custom_attributes is idempotent, so re-registering the equality fields is a no-op.
-    register_collision_mask_attributes(builder)
-    if convert_mjc_equality_constraints:
-        SolverMuJoCo.register_custom_attributes(builder)
+    # Direct parse_mjcf() calls need the same MuJoCo schema as ModelBuilder.add_mjcf().
+    # Registration is idempotent when the builder entry point already declared it.
+    SolverMuJoCo.register_custom_attributes(builder)
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(

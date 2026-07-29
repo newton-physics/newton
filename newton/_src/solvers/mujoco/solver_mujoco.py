@@ -44,7 +44,6 @@ from .collision_masks import (
     MUJOCO_COLLISION_MASK_UNSET,
     compile_newton_collision_graph,
     mujoco_mask_to_signed,
-    register_collision_mask_attributes,
 )
 from .constants import (
     DEFAULT_LIMIT_GAIN_RTOL,
@@ -820,7 +819,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # endregion custom frequencies
 
         # region geom attributes
-        register_collision_mask_attributes(builder)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="contype",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int64,
+                default=MUJOCO_COLLISION_MASK_UNSET,
+                namespace="mujoco",
+                usd_attribute_name="mjc:contype",
+                mjcf_attribute_name="contype",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="conaffinity",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int64,
+                default=MUJOCO_COLLISION_MASK_UNSET,
+                namespace="mujoco",
+                usd_attribute_name="mjc:conaffinity",
+                mjcf_attribute_name="conaffinity",
+            )
+        )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="condim",
