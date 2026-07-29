@@ -925,6 +925,23 @@ MJCF_SITE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+MJCF_SITE_ACTUATOR_WITH_REFSITE = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_site_actuator_refsite">
+    <worldbody>
+        <body name="base">
+            <freejoint/>
+            <geom type="sphere" size="0.05" mass="1"/>
+            <site name="target_site" pos="0.1 0 0"/>
+            <site name="reference_site" pos="0 0.1 0"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="relative_site_motor" site="target_site" refsite="reference_site"
+                 gear="1 0 0 0 0 0"/>
+    </actuator>
+</mujoco>
+"""
+
 
 class TestMuJoCoSiteActuators(unittest.TestCase):
     """Tests for site-targeted actuator support in SolverMuJoCo."""
@@ -1007,6 +1024,22 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
                 newton_mj.actuator_biasprm[i, :3],
                 atol=1e-5,
             )
+
+    def test_site_actuator_refsite_matches_native_mujoco(self):
+        """Preserve the reference site of a site actuator."""
+        native_model = SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(MJCF_SITE_ACTUATOR_WITH_REFSITE)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_SITE_ACTUATOR_WITH_REFSITE, ctrl_direct=True)
+        model = builder.finalize()
+        imported_trnid = model.mujoco.actuator_trnid.numpy()[0]
+
+        target_shape = model.shape_label.index("test_site_actuator_refsite/worldbody/base/target_site")
+        reference_shape = model.shape_label.index("test_site_actuator_refsite/worldbody/base/reference_site")
+        np.testing.assert_array_equal(imported_trnid, [target_shape, reference_shape])
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, include_sites=False)
+        np.testing.assert_array_equal(solver.mj_model.actuator_trnid[0], native_model.actuator_trnid[0])
 
     def test_site_actuator_with_include_sites_false(self):
         """Site actuator is resolved even when include_sites=False."""
