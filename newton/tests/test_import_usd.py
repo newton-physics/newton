@@ -9286,13 +9286,13 @@ def Xform "Articulation" (
     def test_mimic_coef0_units_follow_the_follower_joint(self):
         """newton:mimicCoef0 is degrees for an angular follower and distance for a linear one.
 
-        NewtonMimicAPI documents the offset in the follower's position units. Newton
-        mimic constraints operate on joint coordinates, so an angular follower has to be
-        converted to radians while a prismatic one passes through untouched.
+        NewtonMimicAPI documents the offset in the follower's position units. Newton mimic
+        constraints operate on joint coordinates, so an angular follower is converted to
+        radians while a prismatic one passes through. The leader's type is irrelevant.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
-        def build(joint_cls):
+        def build(leader_cls, follower_cls):
             stage = Usd.Stage.CreateInMemory()
             UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
             UsdGeom.SetStageMetersPerUnit(stage, 1.0)
@@ -9307,7 +9307,7 @@ def Xform "Articulation" (
                 UsdPhysics.CollisionAPI.Apply(link)
                 links.append(link)
 
-            def joint(path, body0, body1):
+            def joint(joint_cls, path, body0, body1):
                 j = joint_cls.Define(stage, path)
                 if body0 is not None:
                     j.CreateBody0Rel().SetTargets([body0.GetPath()])
@@ -9319,8 +9319,8 @@ def Xform "Articulation" (
                 j.CreateAxisAttr().Set("Z")
                 return j
 
-            leader = joint("/World/Root/Leader", root, links[0])
-            follower = joint("/World/Root/Follower", links[0], links[1])
+            leader = joint(leader_cls, "/World/Root/Leader", root, links[0])
+            follower = joint(follower_cls, "/World/Root/Follower", links[0], links[1])
             prim = follower.GetPrim()
             prim.ApplyAPI("NewtonMimicAPI")
             prim.GetRelationship("newton:mimicJoint").SetTargets([leader.GetPrim().GetPath()])
@@ -9330,13 +9330,130 @@ def Xform "Articulation" (
             builder.add_usd(stage)
             return builder.finalize()
 
-        angular = build(UsdPhysics.RevoluteJoint)
-        self.assertEqual(angular.constraint_mimic_count, 1)
-        self.assertAlmostEqual(angular.constraint_mimic_coef0.numpy()[0], math.radians(0.5), places=6)
+        revolute = UsdPhysics.RevoluteJoint
+        prismatic = UsdPhysics.PrismaticJoint
 
-        linear = build(UsdPhysics.PrismaticJoint)
-        self.assertEqual(linear.constraint_mimic_count, 1)
-        self.assertAlmostEqual(linear.constraint_mimic_coef0.numpy()[0], 0.5, places=6)
+        # Cross the pairs so a conversion keyed on the leader would fail here.
+        for leader_cls, follower_cls, expected in (
+            (revolute, revolute, math.radians(0.5)),
+            (prismatic, revolute, math.radians(0.5)),
+            (prismatic, prismatic, 0.5),
+            (revolute, prismatic, 0.5),
+        ):
+            with self.subTest(leader=leader_cls.__name__, follower=follower_cls.__name__):
+                model = build(leader_cls, follower_cls)
+                self.assertEqual(model.constraint_mimic_count, 1)
+                self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], expected, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mimic_coef0_units_survive_joint_merging(self):
+        """An angular follower merged into a D6 is still converted from degrees.
+
+        Single-DOF prims sharing a body pair are merged into one D6 joint, so the
+        follower's builder joint type is D6 rather than REVOLUTE. The authored USD prim
+        is what carries the unit, and a warning notes the widened constraint.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        root = UsdGeom.Xform.Define(stage, "/World/Root").GetPrim()
+        UsdPhysics.ArticulationRootAPI.Apply(root)
+        links = []
+        for name in ("Link1", "Link2"):
+            link = UsdGeom.Cube.Define(stage, f"/World/Root/{name}").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(link)
+            UsdPhysics.CollisionAPI.Apply(link)
+            links.append(link)
+
+        def joint(joint_cls, path, body0, body1, axis):
+            j = joint_cls.Define(stage, path)
+            j.CreateBody0Rel().SetTargets([body0.GetPath()])
+            j.CreateBody1Rel().SetTargets([body1.GetPath()])
+            j.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            j.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            j.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            j.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            j.CreateAxisAttr().Set(axis)
+            return j
+
+        leader = joint(UsdPhysics.RevoluteJoint, "/World/Root/Leader", root, links[0], "Z")
+        # Two single-DOF prims on the same body pair are merged into one D6.
+        follower = joint(UsdPhysics.RevoluteJoint, "/World/Root/Follower", links[0], links[1], "Z")
+        joint(UsdPhysics.PrismaticJoint, "/World/Root/FollowerSlide", links[0], links[1], "X")
+
+        prim = follower.GetPrim()
+        prim.ApplyAPI("NewtonMimicAPI")
+        prim.GetRelationship("newton:mimicJoint").SetTargets([leader.GetPrim().GetPath()])
+        prim.GetAttribute("newton:mimicCoef0").Set(0.5)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        follower_idx = result["path_joint_map"]["/World/Root/Follower"]
+        self.assertEqual(builder.joint_type[follower_idx], newton.JointType.D6)
+        self.assertEqual(model.constraint_mimic_count, 1)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], math.radians(0.5), places=6)
+        self.assertTrue(
+            any("merged into a multi-DOF joint" in str(w.message) for w in caught),
+            "expected a warning that the mimic constraint was widened to the merged joint",
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mimic_coef0_warns_for_multi_dof_follower(self):
+        """A spherical follower has no scalar angle, so the offset is passed through with a warning."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        root = UsdGeom.Xform.Define(stage, "/World/Root").GetPrim()
+        UsdPhysics.ArticulationRootAPI.Apply(root)
+        links = []
+        for name in ("Link1", "Link2"):
+            link = UsdGeom.Cube.Define(stage, f"/World/Root/{name}").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(link)
+            UsdPhysics.CollisionAPI.Apply(link)
+            links.append(link)
+
+        def joint(joint_cls, path, body0, body1):
+            j = joint_cls.Define(stage, path)
+            j.CreateBody0Rel().SetTargets([body0.GetPath()])
+            j.CreateBody1Rel().SetTargets([body1.GetPath()])
+            j.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            j.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            j.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            j.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            j.CreateAxisAttr().Set("Z")
+            return j
+
+        leader = joint(UsdPhysics.SphericalJoint, "/World/Root/Leader", root, links[0])
+        follower = joint(UsdPhysics.SphericalJoint, "/World/Root/Follower", links[0], links[1])
+        prim = follower.GetPrim()
+        prim.ApplyAPI("NewtonMimicAPI")
+        prim.GetRelationship("newton:mimicJoint").SetTargets([leader.GetPrim().GetPath()])
+        prim.GetAttribute("newton:mimicCoef0").Set(0.5)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        model = builder.finalize()
+
+        # A ball joint's coordinates are a quaternion, so no scalar conversion applies.
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], 0.5, places=6)
+        self.assertTrue(
+            any("no defined unit" in str(w.message) for w in caught),
+            "expected a warning that the offset has no defined unit for a multi-DOF follower",
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_joint_parsing(self):
