@@ -12,6 +12,7 @@ _DVI_QUALITY_TESTS = (
     "test_00a_multiworld_status_reduction_requires_all_worlds_converged",
     "test_01_dvi_solve_dense_dual_problem",
     "test_02_public_solver_step_with_dvi",
+    "test_02a_public_solver_reset_accepts_global_mask_slot",
     "test_03_dvi_solve_single_contact",
     "test_03a_sparse_dvi_filtered_matvec_matches_full_rows",
     "test_03b_dvi_contact_block_preconditioner_smoke",

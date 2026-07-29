@@ -1919,15 +1919,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         Args:
             state: Parent-model simulation state to reset (modified in place).
-            world_mask: Optional boolean mask of shape ``(world_count,)``
-                selecting which worlds to reset. If ``None``, all worlds are
-                reset.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
+                selecting which worlds to reset. The final entry selects global
+                entities whose world is ``-1``. If ``None``, all local and
+                global entities are reset. Passing the deprecated shape
+                ``(world_count,)`` selects local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling
                 which state quantities sub-solvers should reset. If ``None``,
                 all state quantities are reset.
         """
         if state is None:
             raise ValueError("'state' argument is required.")
+        world_mask = self._normalize_reset_world_mask(world_mask)
 
         self._distribute_state(state, iteration_restart=True)
         for entry in self._entries.values():

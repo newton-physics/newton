@@ -1814,7 +1814,7 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
     state_in.body_qd.zero_()
     coupled.reset(
         state_in,
-        world_mask=wp.array([False, True], dtype=wp.bool, device=device),
+        world_mask=wp.array([False, True, False], dtype=wp.bool, device=device),
         flags=0,
     )
     steps_before = coupled.solver("copy").step_count
@@ -2050,7 +2050,7 @@ def _assert_proxy_reset_buffers(test, model, coupled, mapping, entity_world):
 
     coupled.reset(
         model.state(),
-        world_mask=wp.array((True, False), dtype=wp.bool, device=model.device),
+        world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
         flags=0,
     )
 
@@ -2380,6 +2380,73 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
 
         mapping = coupled._proxy_particle_mappings[0]
         _assert_proxy_reset_buffers(self, model, coupled, mapping, model.particle_world)
+
+    def test_global_mask_resets_global_proxy_history(self):
+        """Reset global proxy history through the final world-mask entry."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        source_particle = builder.add_particle(
+            pos=(-1.0, 0.0, 0.0),
+            vel=(0.0, 0.0, 0.0),
+            mass=1.0,
+            radius=0.0,
+        )
+        builder.begin_world()
+        builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
+        builder.end_world()
+        proxy_particle = builder.add_particle(
+            pos=(1.0, 0.0, 0.0),
+            vel=(0.0, 0.0, 0.0),
+            mass=1.0,
+            radius=0.0,
+        )
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_array_equal(model.particle_world.numpy(), (-1, 0, -1))
+        np.testing.assert_array_equal(model.particle_world_start.numpy(), (1, 2, 3))
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, particles=[source_particle]),
+                SolverCoupled.Entry(name="dst", solver=_StepCountingCopySolver),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        particles=[source_particle],
+                        proxy_particles=[proxy_particle],
+                        proxy_relaxation=0.5,
+                        proxy_relaxation_mode="aitken",
+                    )
+                ]
+            ),
+        )
+        mapping = coupled._proxy_particle_mappings[0]
+        for values in (
+            mapping.coupling_forces,
+            mapping.coupling_forces_previous,
+            mapping.aitken_residual_previous,
+            mapping.proxy_qd_before,
+        ):
+            values.fill_(1.0)
+
+        coupled.reset(
+            model.state(),
+            world_mask=wp.array((False, True), dtype=wp.bool, device=model.device),
+            flags=0,
+        )
+
+        coupling_forces = np.ones_like(mapping.coupling_forces.numpy())
+        coupling_forces[mapping.proxy_ids_global.numpy()] = 0.0
+        np.testing.assert_array_equal(mapping.coupling_forces.numpy(), coupling_forces)
+        np.testing.assert_array_equal(mapping.coupling_forces_previous.numpy(), 0.0)
+        np.testing.assert_array_equal(mapping.aitken_residual_previous.numpy(), 0.0)
+
+        proxy_qd_before = np.ones_like(mapping.proxy_qd_before.numpy())
+        proxy_qd_before[mapping.proxy_ids_local.numpy()] = 0.0
+        np.testing.assert_array_equal(mapping.proxy_qd_before.numpy(), proxy_qd_before)
 
     def test_cross_world_particle_proxy_mapping_is_rejected(self):
         """Verify cross world particle proxy mapping is rejected."""

@@ -413,6 +413,30 @@ class TestDVISolver(unittest.TestCase):
         self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
         self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
 
+    def test_02a_public_solver_reset_accepts_global_mask_slot(self):
+        """Accept a global reset slot as a no-op for Kamino state."""
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.begin_world()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        builder.end_world()
+        model = builder.finalize(device=self.device)
+        solver = SolverKamino(model)
+        state = model.state()
+
+        body_q = state.body_q.numpy()
+        body_q[:, 0] += 1.0
+        state.body_q.assign(body_q)
+        solver.reset(
+            state,
+            world_mask=wp.array((False, True), dtype=wp.bool, device=self.device),
+            flags=0,
+        )
+
+        np.testing.assert_array_equal(state.body_q.numpy(), body_q)
+
     def test_03_dvi_solve_single_contact(self):
         builder = basics.build_box_on_plane()
         model, data, state, limits, detector, jacobians = make_containers(

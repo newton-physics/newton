@@ -784,8 +784,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         Args:
             state: The simulation state to reset (modified in place).
             world_mask: Optional array of per-world masks indicating which
-                worlds should be reset.
-                Shape of ``(num_worlds,)``.
+                worlds should be reset. Shape ``(world_count + 1,)``, with the
+                final entry representing global world ``-1``. The global entry
+                is a no-op because Kamino does not support global dynamic
+                objects. Passing the deprecated shape ``(world_count,)`` selects
+                local worlds only.
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
@@ -801,6 +804,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         if state is None:
             raise ValueError("'state' argument is required.")
+        world_mask = self._normalize_reset_world_mask(world_mask)
+        local_world_mask = None if world_mask is None else world_mask[: self.model.world_count]
 
         # Process None arguments
         state_flags = int(StateFlags.ALL if flags is None else flags)
@@ -817,7 +822,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q_com=state_kamino.q_i,
             body_q=state_kamino.q_i,
-            world_mask=world_mask if not has_callbacks else None,
+            world_mask=local_world_mask if not has_callbacks else None,
             body_wid=self._model_kamino.bodies.wid,
         )
         # Note: we convert all worlds if callbacks are set, so they see the full state correctly
@@ -852,7 +857,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         # to write the reset state to `state_kamino`.
         self._solver_kamino.reset(
             state=state_kamino,
-            world_mask=world_mask,
+            world_mask=local_world_mask,
             config=config,
             success_mask=success_mask,
         )
@@ -866,7 +871,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q_com=state_kamino.q_i,
             body_q=state_kamino.q_i,
-            world_mask=world_mask if not has_callbacks else None,
+            world_mask=local_world_mask if not has_callbacks else None,
             body_wid=self._model_kamino.bodies.wid,
         )
 
