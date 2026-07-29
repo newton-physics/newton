@@ -31,14 +31,14 @@ class TestUSDDeformableCable(unittest.TestCase):
     """Curve-deformable (cable) parsing into rods of capsule bodies + cable joints."""
 
     @staticmethod
-    def _author_attached_cable_pair(*, gap, stiffness=None, damping=None):
+    def _author_attached_cable_pair(*, gap, stiffness=None, damping=None, collision=True):
         """Two 4-point cables separated by ``gap`` in y with a point->point attachment
         (P0 of B onto P0 of A); returns the stage."""
         stage = _deformable_stage()
         pts_a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         pts_b = [(0.0, gap, 1.0), (0.1, gap, 1.0), (0.2, gap, 1.0), (0.3, gap, 1.0)]
-        _add_cable_curve(stage, "/World/CableA", pts_a)
-        _add_cable_curve(stage, "/World/CableB", pts_b)
+        _add_cable_curve(stage, "/World/CableA", pts_a, collision=collision)
+        _add_cable_curve(stage, "/World/CableB", pts_b, collision=collision)
         _add_physics_attachment(
             stage,
             "/World/Junction",
@@ -52,6 +52,13 @@ class TestUSDDeformableCable(unittest.TestCase):
             damping=damping,
         )
         return stage
+
+    @staticmethod
+    def _shape_pair(builder, body_a, body_b):
+        """Canonical (min, max) shape-filter pair for the first shapes of two bodies."""
+        s1 = builder.body_shapes[body_a][0]
+        s2 = builder.body_shapes[body_b][0]
+        return (min(s1, s2), max(s1, s2))
 
     def test_attachment_weld_policy_rejects_compliant_or_apart(self):
         """A curve-to-curve attachment welds only when hard AND coincident: a compliant
@@ -947,59 +954,103 @@ class TestUSDDeformableCable(unittest.TestCase):
         """newton:selfCollisionEnabled=False filters non-adjacent cable segment shape pairs.
 
         Adjacent segments are already filtered by the CABLE joints; the flag extends the
-        filtering to non-adjacent pairs, mirroring the general rigid importer. The default
-        (flag True or unauthored) leaves those pairs unfiltered.
+        filtering to non-adjacent pairs, mirroring the general rigid importer. An authored value
+        beats the ``enable_self_collisions`` argument, which only applies when the cable authors
+        nothing, and a non-colliding cable emits no filter pairs at all.
         """
         from pxr import Sdf
 
         # 5 points -> 4 segment bodies, so there are non-adjacent pairs to check.
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.4, 0.0, 1.0)]
-        for case, self_collision in (("disabled", False), ("enabled", True), ("unauthored", None)):
+        for case, authored, default, collision, expect_filtered in (
+            ("authored_disabled", False, True, True, True),
+            ("unauthored", None, True, True, False),
+            ("default_disabled", None, False, True, True),
+            ("authored_beats_default", True, False, True, False),
+            ("non_colliding", False, True, False, False),
+        ):
             with self.subTest(case=case):
                 stage = _deformable_stage()
-                curve = _add_cable_curve(stage, "/World/Cable", pts)
-                if self_collision is not None:
+                curve = _add_cable_curve(stage, "/World/Cable", pts, collision=collision)
+                if authored is not None:
                     curve.GetPrim().CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(
-                        self_collision
+                        authored
                     )
                 builder = newton.ModelBuilder()
-                builder.add_usd(stage)
+                builder.add_usd(stage, enable_self_collisions=default)
                 b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
                 self.assertEqual(b1 - b0, 4)
                 # A non-adjacent segment pair (bodies b0 and b0+2).
-                s1 = builder.body_shapes[b0][0]
-                s2 = builder.body_shapes[b0 + 2][0]
-                pair = (min(s1, s2), max(s1, s2))
+                pair = self._shape_pair(builder, b0, b0 + 2)
                 pairs = set(builder.shape_collision_filter_pairs)
-                if case == "disabled":
+                if expect_filtered:
                     self.assertIn(pair, pairs)
                 else:
                     self.assertNotIn(pair, pairs)
+                if not collision:
+                    # Non-colliding shapes never reach the broad phase, so the filter is skipped
+                    # entirely (a colliding cable always emits the adjacent joint pairs).
+                    self.assertEqual(pairs, set())
+
+    def test_cable_self_collision_physx_fallback_needs_resolver(self):
+        """physxArticulation:enabledSelfCollisions gates a cable only with the PhysX resolver.
+
+        The default resolver list is Newton-only, so the PhysX articulation attribute is
+        silently ignored unless the caller opts in via ``schema_resolvers``.
+        """
+        from pxr import Sdf
+
+        # 5 points -> 4 segment bodies, so there is a non-adjacent pair to check.
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.4, 0.0, 1.0)]
+
+        def non_adjacent_pair_filtered(**add_usd_kwargs):
+            stage = _deformable_stage()
+            curve = _add_cable_curve(stage, "/World/Cable", pts)
+            curve.GetPrim().CreateAttribute("physxArticulation:enabledSelfCollisions", Sdf.ValueTypeNames.Bool).Set(
+                False
+            )
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage, **add_usd_kwargs)
+            b0, _ = group_range(builder, "cable", "/World/Cable", "body")
+            return self._shape_pair(builder, b0, b0 + 2) in set(builder.shape_collision_filter_pairs)
+
+        self.assertTrue(non_adjacent_pair_filtered(schema_resolvers=[SchemaResolverPhysx()]))
+        self.assertFalse(non_adjacent_pair_filtered())
 
     def test_welded_graph_self_collision_disabled_filters_non_adjacent_pairs(self):
         """A welded cable graph honors newton:selfCollisionEnabled=False on any member curve.
 
         Disabling self-collision on one welded member filters non-adjacent segment shape pairs
         across the whole graph articulation (both within a curve and between welded curves), and
-        the importer warns that the mixed authoring resolves to self-collision disabled.
+        the importer warns only when colliding members author disagreeing values. Only authored
+        values count, so an unauthored sibling never lets the ``enable_self_collisions`` default
+        override them, and a non-colliding graph emits no filter pairs and no warning at all.
         """
         from pxr import Sdf
 
-        for case, author in (("disabled", True), ("default", False)):
+        for case, author_a, author_b, default, collision, expect_filtered in (
+            ("disabled", False, None, True, True, True),
+            ("all_disabled", False, False, True, True, True),
+            ("mixed", False, True, True, True, True),
+            ("default", None, None, True, True, False),
+            ("authored_beats_default", True, None, False, True, False),
+            ("non_colliding_mixed", False, True, True, False, False),
+        ):
             with self.subTest(case=case):
                 # Hard, coincident junction welds CableA and CableB into one graph articulation.
-                stage = self._author_attached_cable_pair(gap=0.0)
-                if author:
-                    stage.GetPrimAtPath("/World/CableA").CreateAttribute(
-                        "newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool
-                    ).Set(False)
+                stage = self._author_attached_cable_pair(gap=0.0, collision=collision)
+                for path, authored in (("/World/CableA", author_a), ("/World/CableB", author_b)):
+                    if authored is not None:
+                        stage.GetPrimAtPath(path).CreateAttribute(
+                            "newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool
+                        ).Set(authored)
                 builder = newton.ModelBuilder()
-                if author:
-                    # Members disagree (CableB unauthored -> default True), so the importer warns.
-                    with self.assertWarnsRegex(UserWarning, "disables self-collision"):
-                        builder.add_usd(stage)
-                else:
-                    builder.add_usd(stage)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_usd(stage, enable_self_collisions=default)
+                # Only genuinely disagreeing authored values warn.
+                warned = any("disables self-collision" in str(w.message) for w in caught)
+                self.assertEqual(warned, case == "mixed")
                 self.assertEqual(builder.articulation_count, 1)
                 a0, _ = group_range(builder, "cable", "/World/CableA", "body")
                 b0, _ = group_range(builder, "cable", "/World/CableB", "body")
@@ -1007,12 +1058,16 @@ class TestUSDDeformableCable(unittest.TestCase):
                 # A within-curve non-adjacent pair and a cross-curve non-adjacent pair.
                 within = self._shape_pair(builder, a0, a0 + 2)
                 cross = self._shape_pair(builder, a0 + 2, b0 + 2)
-                if case == "disabled":
+                if expect_filtered:
                     self.assertIn(within, pairs)
                     self.assertIn(cross, pairs)
                 else:
                     self.assertNotIn(within, pairs)
                     self.assertNotIn(cross, pairs)
+                if not collision:
+                    # Non-colliding shapes never reach the broad phase, so the filter is skipped
+                    # entirely (a colliding graph always emits the adjacent joint pairs).
+                    self.assertEqual(pairs, set())
 
     def test_self_collision_disabled_does_not_filter_across_curves_in_one_prim(self):
         """A multi-curve BasisCurves prim filters each curve's own segments, not across curves.
@@ -1057,13 +1112,6 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertIn(self._shape_pair(builder, b0, b0 + 2), pairs)
         # Across the two curves (separate articulations), nothing is filtered.
         self.assertNotIn(self._shape_pair(builder, b0, b0 + 3), pairs)
-
-    @staticmethod
-    def _shape_pair(builder, body_a, body_b):
-        """Canonical (min, max) shape-filter pair for the first shapes of two bodies."""
-        s1 = builder.body_shapes[body_a][0]
-        s2 = builder.body_shapes[body_b][0]
-        return (min(s1, s2), max(s1, s2))
 
     def test_neg_inf_junction_stiffness_does_not_weld(self):
         """-inf is the material sentinel, not the attachment one (+inf = hard): a

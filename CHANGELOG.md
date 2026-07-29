@@ -117,7 +117,7 @@
 - Fix incorrect hydroelastic contact surfaces for primitive shapes. (#3150, #3239)
 - Fix masked `SolverCoupledProxy.reset()` calls clearing proxy feedback history for unselected worlds.
 - Fix MJCF, URDF, and USD imports rendering collision-only bodies as visuals when the asset authors visual geometry elsewhere. (#3291)
-- Fix `ModelBuilder.add_usd()` ignoring `newton:selfCollisionEnabled` on imported cables; a cable articulation with self-collision disabled now filters collisions between its non-adjacent segments.
+- Fix `ModelBuilder.add_usd()` ignoring cable self-collision settings: `newton:selfCollisionEnabled` on a cable prim and the `enable_self_collisions` argument now both apply, so a cable articulation with self-collision disabled filters collisions between its non-adjacent segments.
 - Fix `SchemaResolverPhysx` reading every D6 translational limit gain from the `linear` instance instead of its `transX`, `transY`, or `transZ` instance.
 - Fix USD capsule, cylinder, and cone visuals and sites without authored `radius`/`height` to use the UsdGeom schema fallbacks, matching collision shapes.
 - Fix `ViewerUSD` texture consumers observing partially written PNGs by publishing generated textures atomically (#3288)
