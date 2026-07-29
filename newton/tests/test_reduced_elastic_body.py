@@ -9,6 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.sim.modal import _estimate_sample_psi
+from newton._src.solvers.vbd.reduced_elastic_kernels import create_solve_elastic_body_tiled
 from newton.examples.basic._reduced_elastic import (
     beam_render_sample_points,
     beam_torsion_linear_modal_properties,
@@ -1586,9 +1587,10 @@ def test_vbd_elastic_contact_solves_modal_penetration(test, device):
     for values in metrics.values():
         test.assertEqual(values.shape, (1,))
         test.assertTrue(bool(np.isfinite(values).all()))
-    test.assertGreater(float(metrics["initial_residual_norm"][0]), 0.0)
-    test.assertLess(float(metrics["solve_residual_norm"][0]), 1.0e-5)
-    test.assertLess(float(metrics["applied_residual_norm"][0]), 1.0e-5)
+    initial_residual = float(metrics["initial_residual_norm"][0])
+    test.assertGreater(initial_residual, 0.0)
+    test.assertLess(float(metrics["solve_residual_norm"][0]) / initial_residual, 1.0e-6)
+    test.assertLess(float(metrics["applied_residual_norm"][0]) / initial_residual, 1.0e-6)
     test.assertGreater(float(metrics["update_norm"][0]), 1.0e-4)
     test.assertLess(float(metrics["update_norm"][0]), 1.0e-2)
 
@@ -2041,7 +2043,18 @@ def test_elastic_euler_modal_force(test, device):
     coupling_angular = np.array(basis.mode_coupling_angular[0], dtype=np.float64)
     coupling_centrifugal = np.array(basis.mode_coupling_centrifugal[0], dtype=np.float64)
 
-    solver = newton.solvers.SolverVBD(model, iterations=24)
+    joint_k = 1.0e7
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=24,
+        rigid_joint_linear_k_start=joint_k,
+        rigid_joint_angular_k_start=joint_k,
+        rigid_joint_linear_ke=joint_k,
+        rigid_joint_angular_ke=joint_k,
+        rigid_joint_linear_kd=0.0,
+        rigid_joint_angular_kd=0.0,
+        rigid_joint_adaptive_stiffness=False,
+    )
     dt = 1.0 / 480.0
     alpha = 2.0
 
@@ -2506,6 +2519,146 @@ def test_vbd_elastic_modal_force_matches_joint_projection(test, device):
     _assert_elastic_modal_projection_matches_joint_force(test, device, "revolute", elastic_side="parent")
 
 
+def test_vbd_elastic_joint_assembles_one_coupled_block(test, device):
+    dt = 0.01
+    joint_k = 1000.0
+    frame_x = 0.1
+    mode_q = -0.04
+    basis = newton.ModalBasis(
+        sample_points=[[0.0, 0.0, 0.0]],
+        sample_phi=[[[1.0, 0.0, 0.0]]],
+        sample_mass=[1.0],
+        mode_stiffness=[0.0],
+        mode_damping=[0.0],
+    )
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    body = builder.add_body_elastic(
+        xform=wp.transform(wp.vec3(frame_x, 0.0, 0.0), wp.quat_identity()),
+        mass=3.0,
+        inertia=_identity_inertia(),
+        mode_q=[mode_q],
+        modal_basis=basis,
+    )
+    builder.add_joint_fixed(parent=-1, child=body)
+    builder.color()
+    model = builder.finalize(device=device)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=1,
+        rigid_joint_linear_k_start=joint_k,
+        rigid_joint_angular_k_start=joint_k,
+        rigid_joint_linear_ke=joint_k,
+        rigid_joint_angular_ke=joint_k,
+        rigid_joint_linear_kd=0.0,
+        rigid_joint_angular_kd=0.0,
+        rigid_joint_adaptive_stiffness=False,
+    )
+    solver._solve_elastic_body_tiled = create_solve_elastic_body_tiled(solver.elastic_body_block_width)
+    solver.step(state_0, state_1, model.control(), None, dt)
+
+    matrix_upper = solver.elastic_body_block_matrix.numpy()[0]
+    matrix = np.triu(matrix_upper) + np.triu(matrix_upper, 1).T
+    grad = solver.elastic_body_block_grad.numpy()[0]
+    delta = solver.elastic_body_block_delta.numpy()[0]
+    expected_frame_diagonal = 3.0 / (dt * dt) + joint_k
+    expected_cross = 1.0 / (dt * dt) + joint_k
+    expected_modal_diagonal = 1.0 / (dt * dt) + joint_k
+
+    test.assertTrue(bool(solver.elastic_implicit_mass_coupling.numpy()[0]))
+    np.testing.assert_allclose(matrix[0, 0], expected_frame_diagonal, rtol=1.0e-6)
+    np.testing.assert_allclose(matrix[0, 6], expected_cross, rtol=1.0e-6)
+    np.testing.assert_allclose(matrix[6, 6], expected_modal_diagonal, rtol=1.0e-6)
+    np.testing.assert_allclose(delta, np.linalg.solve(matrix, -grad), rtol=2.0e-6, atol=1.0e-8)
+
+    body_x = float(state_1.body_q.numpy()[body, 0])
+    owner_joint = int(model.elastic_joint.numpy()[0])
+    q_start = int(model.joint_q_start.numpy()[owner_joint])
+    solved_mode_q = float(state_1.joint_q.numpy()[q_start + 7])
+    np.testing.assert_allclose(body_x, frame_x + delta[0], rtol=1.0e-6, atol=1.0e-7)
+    np.testing.assert_allclose(solved_mode_q, mode_q + delta[6], rtol=1.0e-6, atol=1.0e-7)
+
+
+def test_vbd_implicit_mass_coupling_requires_spd_block(test, device):
+    basis = newton.ModalBasis(
+        sample_points=[[0.0, 0.0, 0.0]],
+        sample_phi=[[[1.0, 0.0, 0.0]]],
+        sample_mass=[2.0],
+        mode_stiffness=[1.0],
+    )
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_body_elastic(mass=1.0, inertia=_identity_inertia(), modal_basis=basis, label="indefinite")
+    builder.add_body_elastic(mass=3.0, inertia=_identity_inertia(), modal_basis=basis, label="positive_definite")
+    builder.color()
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+    np.testing.assert_array_equal(solver.elastic_implicit_mass_coupling.numpy(), [False, True])
+
+
+def test_vbd_craig_bampton_coupled_solve_iteration_invariant(test, device):
+    def run(iterations: int) -> np.ndarray:
+        interface_positions, mass, stiffness, damping, sample_points, recovery, _ = _build_craig_bampton_test_data()
+        generator = newton.ModalGeneratorCraigBampton(
+            interface_positions=interface_positions,
+            interface_names=["left", "right"],
+            mass_matrix=mass,
+            stiffness_matrix=stiffness,
+            damping_matrix=damping,
+            sample_points=sample_points,
+            recovery_matrix=recovery,
+        )
+        basis = generator.build()
+        mode_qd = np.zeros(basis.mode_count, dtype=np.float32)
+        mode_qd[0] = 1.0
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        body = builder.add_body_elastic(
+            mass=generator.mass,
+            com=wp.vec3(*generator.com),
+            inertia=wp.mat33(*generator.inertia.flatten()),
+            modal_basis=basis,
+            mode_qd=mode_qd,
+        )
+        for position in interface_positions:
+            xform = wp.transform(wp.vec3(*position), wp.quat_identity())
+            builder.add_joint_fixed(parent=-1, child=body, parent_xform=xform, child_xform=xform)
+        builder.color()
+        model = builder.finalize(device=device)
+
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=iterations,
+            rigid_joint_linear_k_start=1.0e6,
+            rigid_joint_angular_k_start=1.0e6,
+            rigid_joint_linear_ke=1.0e6,
+            rigid_joint_angular_ke=1.0e6,
+            rigid_joint_linear_kd=0.0,
+            rigid_joint_angular_kd=0.0,
+            rigid_joint_adaptive_stiffness=False,
+        )
+
+        owner_joint = int(model.elastic_joint.numpy()[0])
+        q_start = int(model.joint_q_start.numpy()[owner_joint]) + 7
+        trajectory = []
+        for _ in range(40):
+            solver.step(state_0, state_1, control, None, 1.0e-3)
+            state_0, state_1 = state_1, state_0
+            trajectory.append(state_0.joint_q.numpy()[q_start : q_start + basis.mode_count].copy())
+        return np.asarray(trajectory)
+
+    one_iteration = run(1)
+    eight_iterations = run(8)
+    relative_difference = np.linalg.norm(one_iteration - eight_iterations) / np.linalg.norm(eight_iterations)
+    test.assertLess(relative_difference, 5.0e-5)
+
+
 def test_vbd_elastic_modal_joint_damping_projection(test, device):
     dt = 0.01
     mode_mass = 1.0
@@ -2702,8 +2855,8 @@ def test_vbd_elastic_angular_projection_uses_exponential_jacobian(test, device):
     projector = np.diag([0.0, 1.0, 1.0])
     expected_grad = angular_k * psi @ projector @ theta
     expected_hessian = np.diag(mode_mass / (dt * dt)) + angular_k * psi @ projector @ psi.T
-    actual_grad = solver.elastic_mode_block_grad.numpy()[:2]
-    actual_hessian = solver.elastic_mode_block_matrix.numpy()[:4].reshape((2, 2))
+    actual_grad = solver.elastic_body_block_grad.numpy()[0, 6:8]
+    actual_hessian = solver.elastic_body_block_matrix.numpy()[0, 6:8, 6:8]
     np.testing.assert_allclose(actual_grad, expected_grad, rtol=5.0e-4, atol=2.0e-2)
     np.testing.assert_allclose(actual_hessian, expected_hessian, rtol=1.0e-5, atol=6.0e-2)
 
@@ -3510,6 +3663,24 @@ for device in devices:
         TestReducedElasticBody,
         "test_vbd_elastic_modal_force_matches_joint_projection",
         test_vbd_elastic_modal_force_matches_joint_projection,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
+        "test_vbd_elastic_joint_assembles_one_coupled_block",
+        test_vbd_elastic_joint_assembles_one_coupled_block,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
+        "test_vbd_implicit_mass_coupling_requires_spd_block",
+        test_vbd_implicit_mass_coupling_requires_spd_block,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
+        "test_vbd_craig_bampton_coupled_solve_iteration_invariant",
+        test_vbd_craig_bampton_coupled_solve_iteration_invariant,
         devices=[device],
     )
     add_function_test(

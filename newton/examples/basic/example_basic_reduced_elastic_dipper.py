@@ -213,8 +213,8 @@ class Example:
             inertia=arm_inertia,
             mode_q=[0.0, 0.0, 0.0, 0.0],
             mode_mass=[0.16, 0.09, 0.07, 0.055],
-            mode_stiffness=[1.8e5, 11.0, 6.4e4, 2.0e5],
-            mode_damping=[4.0, 0.95, 0.60, 0.85],
+            mode_stiffness=[1.8e5, 264.0, 6.4e4, 2.0e5],
+            mode_damping=[4.0, 4.65, 0.60, 0.85],
             modal_basis=arm_basis,
             label="flexible_dipper_arm",
         )

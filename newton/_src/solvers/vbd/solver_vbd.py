@@ -68,6 +68,7 @@ from .reduced_elastic_kernels import (
     assemble_elastic_joints,
     copy_body_frame_to_elastic_joint,
     copy_elastic_joint_frame_to_body,
+    create_solve_elastic_body_tiled,
     integrate_elastic_modes_implicit,
     solve_elastic_body,
 )
@@ -365,12 +366,26 @@ class SolverVBD(SolverBase):
         # Cached empty arrays for kernels that require wp.array arguments even when counts are zero.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
         self.elastic_contact_count_zero = wp.zeros(1, dtype=int, device=self.device)
-        elastic_block_width = int(getattr(model, "elastic_max_mode_count", 0) or 0)
-        elastic_block_vec_count = int(getattr(model, "elastic_body_count", 0) or 0) * elastic_block_width
-        elastic_block_mat_count = elastic_block_vec_count * elastic_block_width
-        self.elastic_mode_block_grad = wp.empty(elastic_block_vec_count, dtype=float, device=self.device)
-        self.elastic_mode_block_delta = wp.empty(elastic_block_vec_count, dtype=float, device=self.device)
-        self.elastic_mode_block_matrix = wp.empty(elastic_block_mat_count, dtype=float, device=self.device)
+        elastic_body_count = int(getattr(model, "elastic_body_count", 0) or 0)
+        self.elastic_body_block_width = int(getattr(model, "elastic_max_mode_count", 0) or 0) + 6
+        self.elastic_body_block_grad = wp.empty(
+            (elastic_body_count, self.elastic_body_block_width), dtype=float, device=self.device
+        )
+        self.elastic_body_block_delta = wp.empty(
+            (elastic_body_count, self.elastic_body_block_width), dtype=float, device=self.device
+        )
+        self.elastic_body_block_matrix = wp.empty(
+            (elastic_body_count, self.elastic_body_block_width, self.elastic_body_block_width),
+            dtype=float,
+            device=self.device,
+        )
+        self.elastic_body_block_factor = wp.empty_like(self.elastic_body_block_matrix)
+        self.elastic_implicit_mass_coupling = self._build_elastic_implicit_mass_coupling_flags(model)
+        self._solve_elastic_body_tiled = (
+            create_solve_elastic_body_tiled(self.elastic_body_block_width)
+            if elastic_body_count > 0 and self.device.is_cuda
+            else None
+        )
         self.elastic_mode_block_initial_residual_norm = wp.zeros(
             model.elastic_body_count, dtype=float, device=self.device
         )
@@ -382,6 +397,44 @@ class SolverVBD(SolverBase):
         )
         self.elastic_mode_block_update_norm = wp.zeros(model.elastic_body_count, dtype=float, device=self.device)
         self.elastic_mode_block_update_max = wp.zeros(model.elastic_body_count, dtype=float, device=self.device)
+
+    def _build_elastic_implicit_mass_coupling_flags(self, model: Model) -> wp.array:
+        """Identify elastic bodies whose stored frame/modal mass block is SPD."""
+        elastic_body_count = int(getattr(model, "elastic_body_count", 0) or 0)
+        if elastic_body_count == 0:
+            return wp.empty(0, dtype=bool, device=self.device)
+
+        elastic_body = model.elastic_body.numpy()
+        mode_start = model.elastic_mode_start.numpy()
+        mode_count = model.elastic_mode_count.numpy()
+        mode_mass = model.elastic_mode_mass.numpy()
+        coupling_linear = model.elastic_mode_coupling_linear.numpy()
+        coupling_angular = model.elastic_mode_coupling_angular.numpy()
+        body_mass = model.body_mass.numpy()
+        body_inertia = model.body_inertia.numpy()
+        body_com = model.body_com.numpy()
+
+        flags = np.zeros(elastic_body_count, dtype=bool)
+        for elastic_index, body in enumerate(elastic_body):
+            count = int(mode_count[elastic_index])
+            if count == 0:
+                continue
+            start = int(mode_start[elastic_index])
+            frame_mass = np.zeros((6, 6), dtype=np.float64)
+            frame_mass[:3, :3] = float(body_mass[body]) * np.eye(3)
+            frame_mass[3:, 3:] = np.asarray(body_inertia[body], dtype=np.float64)
+            cross_mass = np.zeros((6, count), dtype=np.float64)
+            for mode in range(count):
+                linear = np.asarray(coupling_linear[start + mode], dtype=np.float64)
+                angular = np.asarray(coupling_angular[start + mode], dtype=np.float64)
+                cross_mass[:3, mode] = linear
+                cross_mass[3:, mode] = -(angular + np.cross(body_com[body], linear))
+            modal_mass = np.diag(np.asarray(mode_mass[start : start + count], dtype=np.float64))
+            reduced_mass = np.block([[frame_mass, cross_mass], [cross_mass.T, modal_mass]])
+            diagonal_scale = max(float(np.max(np.abs(np.diag(reduced_mass)))), 1.0)
+            flags[elastic_index] = float(np.linalg.eigvalsh(reduced_mass)[0]) > 1.0e-8 * diagonal_scale
+
+        return wp.array(flags, dtype=bool, device=self.device)
 
     def _init_particle_system(
         self,
@@ -1455,7 +1508,8 @@ class SolverVBD(SolverBase):
 
         for iter_num in range(self.iterations):
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
-            self._solve_elastic_body_iteration(state_in, state_out, control, contacts, dt)
+            if self.integrate_with_external_rigid_solver:
+                self._solve_elastic_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
         self._finalize_rigid_bodies(state_out, dt)
@@ -1543,6 +1597,74 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
+    def _launch_elastic_body_solve(
+        self,
+        body_ids: wp.array,
+        solve_frame: bool,
+        state_in: State,
+        state_out: State,
+        relaxation: float,
+        dt: float,
+    ):
+        model = self.model
+        common_inputs = [
+            dt,
+            solve_frame,
+            body_ids,
+            model.body_elastic_index,
+            model.elastic_joint,
+            model.elastic_mode_count,
+        ]
+        body_q_current = state_in.body_q if solve_frame else state_out.body_q
+        trailing_inputs = [
+            self.body_inv_mass_effective,
+            model.body_com,
+            body_q_current,
+            model.joint_q_start,
+            model.joint_qd_start,
+            state_in.joint_q,
+            self.elastic_body_block_grad,
+            self.elastic_body_block_delta,
+            self.elastic_body_block_matrix,
+        ]
+        metric_inputs = [
+            self.elastic_mode_block_initial_residual_norm,
+            self.elastic_mode_block_solve_residual_norm,
+            self.elastic_mode_block_applied_residual_norm,
+            self.elastic_mode_block_update_norm,
+            self.elastic_mode_block_update_max,
+            relaxation,
+        ]
+        outputs = [
+            state_out.body_q,
+            state_out.joint_q,
+            state_out.joint_qd,
+        ]
+
+        if self._solve_elastic_body_tiled is not None:
+            wp.launch_tiled(
+                kernel=self._solve_elastic_body_tiled,
+                dim=[body_ids.size],
+                inputs=common_inputs + trailing_inputs + metric_inputs,
+                outputs=outputs,
+                block_dim=32,
+                device=self.device,
+            )
+        else:
+            wp.launch(
+                kernel=solve_elastic_body,
+                dim=body_ids.size,
+                inputs=[
+                    *common_inputs,
+                    model.elastic_max_mode_count,
+                    *trailing_inputs,
+                    self.elastic_body_block_factor,
+                    *metric_inputs,
+                ],
+                outputs=outputs,
+                device=self.device,
+            )
+
     def _solve_elastic_body_iteration(
         self, state_in: State, state_out: State, control: Control, contacts: Contacts | None, dt: float
     ):
@@ -1570,6 +1692,7 @@ class SolverVBD(SolverBase):
             dim=model.elastic_body_count,
             inputs=[
                 dt,
+                False,
                 model.elastic_body,
                 model.elastic_joint,
                 model.elastic_mode_start,
@@ -1581,10 +1704,8 @@ class SolverVBD(SolverBase):
                 model.elastic_mode_coupling_angular,
                 model.elastic_mode_coupling_centrifugal,
                 model.elastic_mode_coupling_coriolis,
-                model.elastic_endpoint_count,
-                model.elastic_endpoint_joint,
-                model.elastic_endpoint_side,
-                model.elastic_endpoint_body,
+                self.elastic_implicit_mass_coupling,
+                self.rigid_adjacency,
                 model.elastic_endpoint_phi,
                 model.elastic_endpoint_psi,
                 model.elastic_max_mode_count,
@@ -1592,9 +1713,18 @@ class SolverVBD(SolverBase):
                 state_out.body_q,
                 self.body_q_prev,
                 model.body_q,
+                model.body_mass,
+                self.body_inv_mass_effective,
+                model.body_inertia,
+                self.body_inertia_q,
                 model.body_com,
                 model.body_world,
                 model.gravity,
+                self.body_forces,
+                self.body_torques,
+                self.body_hessian_ll,
+                self.body_hessian_al,
+                self.body_hessian_aa,
                 model.joint_type,
                 model.joint_enabled,
                 model.joint_parent,
@@ -1605,6 +1735,8 @@ class SolverVBD(SolverBase):
                 self.joint_constraint_start,
                 self.joint_penalty_k,
                 self.joint_penalty_kd,
+                self.joint_sigma_start,
+                self.joint_C_fric,
                 model.joint_target_ke,
                 model.joint_target_kd,
                 control.joint_target_pos,
@@ -1613,6 +1745,7 @@ class SolverVBD(SolverBase):
                 model.joint_limit_upper,
                 model.joint_limit_ke,
                 model.joint_limit_kd,
+                model.joint_dof_dim,
                 self.joint_rest_angle,
                 model.joint_parent_elastic_endpoint,
                 model.joint_child_elastic_endpoint,
@@ -1624,9 +1757,9 @@ class SolverVBD(SolverBase):
                 state_out.joint_q,
             ],
             outputs=[
-                self.elastic_mode_block_grad,
-                self.elastic_mode_block_delta,
-                self.elastic_mode_block_matrix,
+                self.elastic_body_block_grad,
+                self.elastic_body_block_delta,
+                self.elastic_body_block_matrix,
             ],
             device=self.device,
         )
@@ -1637,11 +1770,13 @@ class SolverVBD(SolverBase):
                 dim=model.elastic_body_count * _NUM_ELASTIC_CONTACT_THREADS_PER_BODY,
                 inputs=[
                     dt,
+                    False,
                     model.elastic_body,
                     model.elastic_joint,
                     model.elastic_mode_count,
                     model.elastic_max_mode_count,
                     model.body_elastic_index,
+                    self.body_inv_mass_effective,
                     state_out.body_q,
                     self.body_q_prev,
                     model.body_com,
@@ -1671,38 +1806,19 @@ class SolverVBD(SolverBase):
                     state_out.joint_q,
                 ],
                 outputs=[
-                    self.elastic_mode_block_grad,
-                    self.elastic_mode_block_matrix,
+                    self.elastic_body_block_grad,
+                    self.elastic_body_block_matrix,
                 ],
                 device=self.device,
             )
 
-        wp.launch(
-            kernel=solve_elastic_body,
-            dim=model.elastic_body_count,
-            inputs=[
-                dt,
-                model.elastic_joint,
-                model.elastic_mode_count,
-                model.elastic_max_mode_count,
-                model.joint_q_start,
-                model.joint_qd_start,
-                state_in.joint_q,
-                self.elastic_mode_block_grad,
-                self.elastic_mode_block_delta,
-                self.elastic_mode_block_matrix,
-                self.elastic_mode_block_initial_residual_norm,
-                self.elastic_mode_block_solve_residual_norm,
-                self.elastic_mode_block_applied_residual_norm,
-                self.elastic_mode_block_update_norm,
-                self.elastic_mode_block_update_max,
-                elastic_mode_relaxation,
-            ],
-            outputs=[
-                state_out.joint_q,
-                state_out.joint_qd,
-            ],
-            device=self.device,
+        self._launch_elastic_body_solve(
+            model.elastic_body,
+            False,
+            state_in,
+            state_out,
+            elastic_mode_relaxation,
+            dt,
         )
 
     def _penetration_free_truncation(self, particle_q_out=None):
@@ -2299,6 +2415,17 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
+        rigid_contact_max = 0
+        rigid_contact_count = self.elastic_contact_count_zero
+        if (
+            contacts is not None
+            and getattr(model, "elastic_shape_vertex_total_count", 0) > 0
+            and contacts.rigid_contact_max > 0
+        ):
+            rigid_contact_max = contacts.rigid_contact_max
+            rigid_contact_count = contacts.rigid_contact_count
+        elastic_body_relaxation = self.elastic_contact_relaxation if rigid_contact_max > 0 else 1.0
+
         body_color_groups = model.body_color_groups
 
         # Gauss-Seidel-style per-color updates
@@ -2405,10 +2532,137 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
+            if getattr(model, "elastic_body_count", 0) > 0:
+                wp.launch(
+                    kernel=assemble_elastic_joints,
+                    dim=color_group.size,
+                    inputs=[
+                        dt,
+                        True,
+                        color_group,
+                        model.elastic_joint,
+                        model.elastic_mode_start,
+                        model.elastic_mode_count,
+                        model.elastic_mode_mass,
+                        model.elastic_mode_stiffness,
+                        model.elastic_mode_damping,
+                        model.elastic_mode_coupling_linear,
+                        model.elastic_mode_coupling_angular,
+                        model.elastic_mode_coupling_centrifugal,
+                        model.elastic_mode_coupling_coriolis,
+                        self.elastic_implicit_mass_coupling,
+                        self.rigid_adjacency,
+                        model.elastic_endpoint_phi,
+                        model.elastic_endpoint_psi,
+                        model.elastic_max_mode_count,
+                        model.body_elastic_index,
+                        state_in.body_q,
+                        self.body_q_prev,
+                        model.body_q,
+                        model.body_mass,
+                        self.body_inv_mass_effective,
+                        model.body_inertia,
+                        self.body_inertia_q,
+                        model.body_com,
+                        model.body_world,
+                        model.gravity,
+                        self.body_forces,
+                        self.body_torques,
+                        self.body_hessian_ll,
+                        self.body_hessian_al,
+                        self.body_hessian_aa,
+                        model.joint_type,
+                        model.joint_enabled,
+                        model.joint_parent,
+                        model.joint_child,
+                        model.joint_X_p,
+                        model.joint_X_c,
+                        model.joint_axis,
+                        self.joint_constraint_start,
+                        self.joint_penalty_k,
+                        self.joint_penalty_kd,
+                        self.joint_sigma_start,
+                        self.joint_C_fric,
+                        model.joint_target_ke,
+                        model.joint_target_kd,
+                        control.joint_target_pos,
+                        control.joint_target_vel,
+                        model.joint_limit_lower,
+                        model.joint_limit_upper,
+                        model.joint_limit_ke,
+                        model.joint_limit_kd,
+                        model.joint_dof_dim,
+                        self.joint_rest_angle,
+                        model.joint_parent_elastic_endpoint,
+                        model.joint_child_elastic_endpoint,
+                        model.joint_q_start,
+                        model.joint_qd_start,
+                        control.joint_f,
+                        state_in.joint_q,
+                        state_in.joint_qd,
+                        state_out.joint_q,
+                    ],
+                    outputs=[
+                        self.elastic_body_block_grad,
+                        self.elastic_body_block_delta,
+                        self.elastic_body_block_matrix,
+                    ],
+                    device=self.device,
+                )
+
+                if rigid_contact_max > 0:
+                    wp.launch(
+                        kernel=assemble_elastic_contacts,
+                        dim=color_group.size * _NUM_ELASTIC_CONTACT_THREADS_PER_BODY,
+                        inputs=[
+                            dt,
+                            True,
+                            color_group,
+                            model.elastic_joint,
+                            model.elastic_mode_count,
+                            model.elastic_max_mode_count,
+                            model.body_elastic_index,
+                            self.body_inv_mass_effective,
+                            state_in.body_q,
+                            self.body_q_prev,
+                            model.body_com,
+                            model.shape_body,
+                            rigid_contact_max,
+                            rigid_contact_count,
+                            contacts.rigid_contact_shape0,
+                            contacts.rigid_contact_shape1,
+                            contacts.rigid_contact_point0,
+                            contacts.rigid_contact_point1,
+                            contacts.rigid_contact_normal,
+                            contacts.rigid_contact_margin0,
+                            contacts.rigid_contact_margin1,
+                            contacts.rigid_contact_elastic_sample0,
+                            contacts.rigid_contact_elastic_sample1,
+                            self.body_body_contact_material_ke,
+                            self.body_body_contact_material_kd,
+                            self.body_body_contact_material_mu,
+                            self.friction_epsilon,
+                            self.body_body_contact_buffer_pre_alloc,
+                            self.body_body_contact_counts,
+                            self.body_body_contact_indices,
+                            model.joint_q_start,
+                            model.elastic_shape_vertex_local,
+                            model.elastic_shape_vertex_phi,
+                            state_in.joint_q,
+                            state_out.joint_q,
+                        ],
+                        outputs=[
+                            self.elastic_body_block_grad,
+                            self.elastic_body_block_matrix,
+                        ],
+                        device=self.device,
+                    )
+
             wp.launch(
                 kernel=solve_rigid_body,
                 inputs=[
                     dt,
+                    True,
                     color_group,
                     state_in.body_q,
                     self.body_q_prev,
@@ -2467,6 +2721,16 @@ class SolverVBD(SolverBase):
                 dim=color_group.size,
                 device=self.device,
             )
+
+            if getattr(model, "elastic_body_count", 0) > 0:
+                self._launch_elastic_body_solve(
+                    color_group,
+                    True,
+                    state_in,
+                    state_out,
+                    elastic_body_relaxation,
+                    dt,
+                )
 
             wp.launch(
                 kernel=copy_rigid_body_transforms_back,

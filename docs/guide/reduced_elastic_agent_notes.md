@@ -37,11 +37,30 @@ they are a checklist for future agentic work on this subsystem.
 - Mass normalization alone does not remove off-diagonal mass terms for arbitrary
   nonuniform samples or nonorthogonal exemplar bases. A future dense reduced
   model should store `M_ij = phi_i^T M phi_j` per modal basis.
-- VBD can still keep the current cheap diagonal update as a Jacobi-style
-  preconditioner while evaluating the RHS/residual with the full reduced mass
-  matrix. Under fixed-point convergence, that targets the coupled reduced system
-  rather than the diagonal approximation. The same pattern can later extend to
-  dense reduced `K` and `C` matrices.
+- The VBD elastic-body solve assembles the floating frame and modal coordinates
+  into one `(6 + mode_count)` block. This removes the frame/modal fixed-point
+  iteration that previously made the response depend strongly on the requested
+  VBD iteration count.
+- Include the frame/modal inertial cross block implicitly only when the stored
+  frame mass/inertia, modal mass, and coupling integrals form an SPD reduced mass
+  matrix. Imported bases should satisfy this naturally. Some legacy examples use
+  independently authored frame and sampled masses; retain their existing
+  explicit coupling when that combined mass matrix is indefinite.
+
+## Coupled Joint Assembly
+
+- Use `evaluate_joint_force_hessian()` as the canonical joint evaluator. For an
+  elastic body, evaluate each adjacent joint once and project that result into
+  the frame block, frame/modal cross block, modal block, and both residual
+  components.
+- Find adjacent joints through the rigid solver's existing CSR adjacency. Do not
+  scan all elastic endpoints for every body.
+- Skip elastic bodies in the legacy rigid-body solve. Otherwise the same joint
+  would be evaluated once for the rigid frame and again for the coupled elastic
+  block.
+- Keep contacts in their specialized assembly kernel. Joint and contact source
+  bookkeeping differ enough that a unified source representation is not needed
+  to share the joint constitutive logic.
 
 ## Force Consistency Invariants
 

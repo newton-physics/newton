@@ -59,6 +59,9 @@
 
 ### Fixed
 
+- Solve each reduced elastic body's floating frame and modal coordinates in one
+  coupled VBD block so joint response no longer depends on slow frame/modal
+  fixed-point convergence.
 - Resolve USD asset references recursively in `resolve_usd_from_url` so nested stages are fully downloaded
 - Unify CPU and GPU inertia validation to produce identical results for zero-mass bodies with `bound_mass`, singular inertia, non-symmetric tensors, and triangle-inequality boundary cases
 - Fix `UnboundLocalError` crash in detailed inertia validation when eigenvalue decomposition encounters NaN/Inf input
