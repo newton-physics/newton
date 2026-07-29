@@ -38,6 +38,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton.examples.suctioncup.box_placements import PlacementConfig, compute_box_placements
+from newton.examples.suctioncup.crate_playback import CratePlayback
 from newton.examples.suctioncup.robot_playback import RobotPlayback
 from newton.examples.suctioncup.surface_gripper import (
     PadShape,
@@ -485,41 +486,11 @@ class Example:
         self.seal_broken = wp.zeros(self.pad_offsets.shape[0] - 1, dtype=wp.bool)  # [grippers] latched break
         self.seal_break_count = wp.zeros(len(GRIPPER_PADS), dtype=wp.int32)  # consecutive over-threshold steps, per pad
         # The seal grips the panel (cycle 0), then a fresh crate each cycle. seal_body_b is retargeted in
-        # step() during each idle gap; it is captured by reference, so the in-place assign takes on the
-        # next graph launch.
+        # step() as each crate is moved into place; it is captured by reference, so the in-place assign
+        # takes on the next graph launch.
         self.seal_body_b = wp.full(len(GRIPPER_PADS), panel_body, dtype=wp.int32)
-        self.crate_bodies = crate_bodies
-
-        # Per-crate free-joint DOF slices, so a spare can be teleported onto the pick pallet at runtime
-        # (7 joint_q = [pos, quat xyzw], 6 joint_qd) without disturbing the arm or the other bodies.
-        joint_child = self.model.joint_child.numpy()
-        joint_q_start = self.model.joint_q_start.numpy()
-        joint_qd_start = self.model.joint_qd_start.numpy()
-        self.crate_dof = []
-        for b in crate_bodies:
-            # each crate body is the child of exactly one (free) joint; find that joint's index
-            j = int(np.where(joint_child == b)[0][0])
-            q_start = int(joint_q_start[j])  # where this crate's 7 joint_q (pos + quat xyzw) begin
-            qd_start = int(joint_qd_start[j])  # where its 6 joint_qd begin
-            self.crate_dof.append((q_start, qd_start))
-        # Each crate's pick pose as free-joint DOFs [pos, quat xyzw]; the crate is teleported here to be
-        # gripped. Computed per crate in crate_grip_poses (see compute_box_placements); the crates all pick
-        # from the same conveyor spot, so these differ only by a few mm in the smoothed grip z, which
-        # settles out on the (snug) shared pick pallet before the grip.
-        self.crate_grip_q = np.array(
-            [[*wp.transform_get_translation(t), *wp.transform_get_rotation(t)] for t in crate_grip_poses],
-            dtype=np.float32,
-        )
-        # Schedule: in the idle gap before crate cycle c (1..NUM_CRATES) -- the midpoint between the
-        # previous release (falling[c-1]) and this pick (rising[c]) -- retarget the seal to crate c-1 and
-        # move it from its waiting spot to its pick pose (step()). Each entry is (time [s], crate index).
-        rising, falling = self.playback.rising, self.playback.falling  # engage / disengage frame indices
-        rec_times = self.playback.rec_times_wp.numpy()  # [N] sample times [s]
-        self.seal_schedule = [
-            (0.5 * (float(rec_times[falling[c - 1]]) + float(rec_times[rising[c]])), c - 1)
-            for c in range(1, len(rising))
-        ]
-        self.next_switch = 0
+        # Moves each parked crate onto the pick pallet on its disengagement cue (see CratePlayback).
+        self.crates = CratePlayback(self.playback, self.model, crate_bodies, crate_grip_poses)
 
         # The seal's spring-damper modes depend on the gripped box (see seal_modes_for); precompute a set
         # per box, shown in the side panel with the active one selected as the seal retargets (gui()).
@@ -621,23 +592,14 @@ class Example:
     def step(self):
         # the target kernel interpolates and applies the drive targets and advances the sub-step
         # counter before each physics sub-step, so step() just runs one frame.
-        # In each idle gap, retarget the seal to the next box (panel -> crate 0 -> crate 1 -> ...) and
-        # teleport the next spare crate onto the pick pallet. seal_body_b and the crate free-joint DOFs are
-        # captured by reference, so the in-place assigns take effect on the next graph launch.
+        # On each crate's disengagement cue, move it onto the pick pallet and retarget the seal to it.
+        # seal_body_b and the crate free-joint DOFs are captured by reference, so the in-place assigns
+        # take effect on the next graph launch.
         sim_time = int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt
-        while self.next_switch < len(self.seal_schedule) and sim_time >= self.seal_schedule[self.next_switch][0]:
-            crate_idx = self.seal_schedule[self.next_switch][1]
-            self.seal_body_b.assign(np.full(len(GRIPPER_PADS), self.crate_bodies[crate_idx], dtype=np.int32))
+        active_crate = self.crates.advance(sim_time, self.state_0)
+        if active_crate is not None:
+            self.seal_body_b.assign(np.full(len(GRIPPER_PADS), active_crate, dtype=np.int32))
             self.seal_modes = self.crate_seal_modes  # side-panel modes now describe the crate
-            # move the crate from its waiting spot to its pick pose so the arm can grip it
-            qs, qds = self.crate_dof[crate_idx]
-            q = self.state_0.joint_q.numpy()
-            qd = self.state_0.joint_qd.numpy()
-            q[qs : qs + 7] = self.crate_grip_q[crate_idx]
-            qd[qds : qds + 6] = 0.0
-            self.state_0.joint_q.assign(q)
-            self.state_0.joint_qd.assign(qd)
-            self.next_switch += 1
         if self.graph:
             wp.capture_launch(self.graph)
         else:
