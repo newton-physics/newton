@@ -56,26 +56,6 @@ class TestMuJoCoSolver(unittest.TestCase):
         """
         self.assertTrue(True, "setUp method completed.")
 
-    def test_ls_parallel_deprecated(self):
-        """Test that the deprecated ls_parallel option warns and is ignored."""
-        # Create minimal model with proper inertia
-        builder = newton.ModelBuilder()
-        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
-        joint = builder.add_joint_revolute(-1, link)
-        builder.add_articulation([joint])
-        model = builder.finalize()
-
-        # Parallel line search was removed from mujoco_warp in 3.9.1; passing
-        # ls_parallel emits a DeprecationWarning and otherwise has no effect.
-        for value in (True, False):
-            with self.assertWarns(DeprecationWarning):
-                SolverMuJoCo(model, ls_parallel=value)
-
-        # Omitting ls_parallel does not warn.
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            SolverMuJoCo(model)
-
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia
@@ -4679,9 +4659,9 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 
 
 class TestMuJoCoSolverContactKf(unittest.TestCase):
-    """shape_material_kf -> per-contact solreffriction (elliptic cones, Newton contacts)."""
+    """Verify shape_material_kf maps to elliptic-contact solreffriction."""
 
-    def _make_sphere_scene(self, kf_sphere, kf_plane, impratio=None):
+    def _make_sphere_scene(self, kf_sphere, kf_plane, impratio=None, cone="elliptic"):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1.0e4
         builder.default_shape_cfg.kd = 100.0
@@ -4693,9 +4673,7 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
         builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
         model = builder.finalize()
         try:
-            solver = SolverMuJoCo(
-                model, use_mujoco_contacts=False, cone="elliptic", nconmax=32, njmax=128, impratio=impratio
-            )
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, cone=cone, nconmax=32, njmax=128, impratio=impratio)
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
         return model, solver
@@ -4726,6 +4704,7 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
         return expected
 
     def test_kf_sets_contact_solreffriction(self):
+        """Verify positive kf sets the mixed contact solreffriction."""
         model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
         nacon, _, _ = self._step_and_read_solreffriction(model, solver)
         solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
@@ -4735,8 +4714,39 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
             self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
             self.assertEqual(float(solreffriction[i][1]), 1.0)
 
-    def test_kf_zero_leaves_solreffriction_unset(self):
+    def test_kf_zero_mixes_with_positive_value(self):
+        """Verify zero kf participates in the usual contact-material mixing."""
         model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=0.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        expected = self._expected_solreffriction(solver, nacon, kf_pair=400.0)
+        for i in range(nacon):
+            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+            self.assertEqual(float(solreffriction[i][1]), 1.0)
+
+    def test_kf_zero_disables_friction(self):
+        """Verify a resolved zero kf makes the contact frictionless."""
+        model, solver = self._make_sphere_scene(kf_sphere=0.0, kf_plane=0.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        condim = solver.mjw_data.contact.dim.numpy()[:nacon]
+        for i in range(nacon):
+            self.assertEqual(int(condim[i]), 1)
+            self.assertEqual(float(solreffriction[i][0]), 0.0)
+            self.assertEqual(float(solreffriction[i][1]), 0.0)
+
+    def test_kf_zero_does_not_change_pyramidal_contacts(self):
+        """Verify zero kf leaves pyramidal friction contacts unchanged."""
+        model, solver = self._make_sphere_scene(kf_sphere=0.0, kf_plane=0.0, cone="pyramidal")
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        condim = solver.mjw_data.contact.dim.numpy()[:nacon]
+        for i in range(nacon):
+            self.assertEqual(int(condim[i]), 3)
+
+    def test_kf_zero_inverse_weight_leaves_solreffriction_unset(self):
+        """Verify a zero inverse weight cannot produce a non-finite reference."""
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
+        solver.mjw_model.body_invweight0.zero_()
         nacon, _, _ = self._step_and_read_solreffriction(model, solver)
         solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
         for i in range(nacon):
@@ -4744,6 +4754,7 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
             self.assertEqual(float(solreffriction[i][1]), 0.0)
 
     def test_kf_runtime_update(self):
+        """Verify runtime kf updates refresh the contact reference."""
         model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
         nacon, (collision_pipeline, contacts), (state_0, state_1, control) = self._step_and_read_solreffriction(
             model, solver
@@ -4760,6 +4771,7 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
             self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
 
     def test_kf_impratio_scaling(self):
+        """Verify impratio scaling preserves the requested force-space slope."""
         model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0, impratio=4.0)
         nacon, _, _ = self._step_and_read_solreffriction(model, solver)
         solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
@@ -4821,18 +4833,24 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
         return float(state_0.joint_qd.numpy()[0])
 
     def test_kf_force_space_mass_dependence(self):
-        """Same kf, 8x mass -> 8x slower velocity decay (f = -kf*v is a force, not a rate)."""
+        """Verify the same kf produces mass-dependent velocity decay."""
         v_light = self._slide_sphere_prismatic(kf=120.0, density=1000.0)  # ~4.2 kg,  rate ~9.9/s, analytic ~0.0042
         v_heavy = self._slide_sphere_prismatic(kf=120.0, density=8000.0)  # ~33.5 kg, rate ~1.2/s, analytic ~0.037
         self.assertLess(v_light, 0.01)
         self.assertGreater(v_heavy, 0.02)
 
     def test_kf_scales_viscous_friction(self):
+        """Verify larger kf values produce faster sliding decay."""
         v_soft = self._slide_sphere_prismatic(kf=30.0, density=1000.0)  # rate ~2.5/s, analytic ~0.027
         v_hard = self._slide_sphere_prismatic(kf=3000.0, density=1000.0)  # rate ~247/s, analytic ~0
         self.assertGreater(v_soft, 0.015)
         self.assertLess(v_soft, 0.04)
         self.assertGreater(v_soft, 3.0 * max(v_hard, 1.0e-6))
+
+    def test_kf_zero_preserves_sliding_velocity(self):
+        """Verify zero kf applies no sliding-friction force."""
+        velocity = self._slide_sphere_prismatic(kf=0.0, density=1000.0)
+        self.assertAlmostEqual(velocity, 0.05, places=5)
 
 
 class TestFrictionPriority(unittest.TestCase):

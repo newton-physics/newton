@@ -81,10 +81,6 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
         allegro_hand.default_shape_cfg.ke = 1.0e3
         allegro_hand.default_shape_cfg.kd = 1.0e2
-        # kf = 0 keeps MuJoCo's near-rigid contact friction; a finite kf maps to
-        # viscous friction whose slope saturates far too low for these light
-        # bodies, letting the grasped cubes creep out of the hand.
-        allegro_hand.default_shape_cfg.kf = 0.0
         allegro_hand.default_shape_cfg.margin = 0.005
         allegro_hand.default_shape_cfg.gap = 0.015
 
@@ -141,7 +137,9 @@ class Example:
             njmax=200,
             nconmax=max_contacts_per_world,
             impratio=20.0,
-            cone="elliptic",
+            # Preserve the example's solref-inherited grasp friction; its
+            # purpose is articulation control rather than kf mapping.
+            cone="pyramidal",
             iterations=100,
             ls_iterations=50,
             use_mujoco_contacts=False,
