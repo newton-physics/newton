@@ -2647,7 +2647,7 @@ def _build_multi_world_particle_shape_scene(world_count, device, globals_kind="n
 
 
 def _soft_contact_presize_is_world_aware(test, device):
-    """Verify SolverVBD pre-sizes body-particle buffers from world-compatible pairs, not the dense product."""
+    """Verify SolverVBD pre-sizes body-particle buffers from world-compatible pairs, not every particle-shape pair."""
     for globals_kind in ("none", "shapes", "particles"):
         sizes = {}
         for world_count in (1, 4):

@@ -820,8 +820,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Zero-length body poses for static-shape contact kernels when State.body_q is absent.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
         if model.particle_count > 0 and model.shape_count > 0:
-            # shape_count * particle_count is quadratic in world count and can exceed Warp's int32 array shape limit.
-            # A hint only: the first step grows this to contacts.soft_contact_max, raising if capture cannot allocate.
+            # Not shape_count * particle_count: that counts cross-world pairs, so it is quadratic in
+            # world count and can exceed Warp's int32 array shape limit. A hint only -- the first step
+            # grows this to contacts.soft_contact_max, raising if capture cannot allocate.
             self._init_body_particle_contact_state(_count_soft_particle_rigid_contact_pairs(model))
 
         # Kinematic body support: create effective inv_mass / inv_inertia arrays
