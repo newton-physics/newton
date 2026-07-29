@@ -435,14 +435,15 @@ def test_pd_coupled_solve_matches_reference(test, device):
 
 
 def test_coupled_solve_clamp_in_residual(test, device):
-    """The coupled solve composes the clamp into the residual per DOF.
+    """The clamp is composed into the coupled residual, not applied afterwards.
 
-    A tight max-effort clamp on one DOF of a coupled block must bind exactly at
-    the limit — the clamp is evaluated inside the block Newton, not applied
-    afterwards — while the coupled DOF still solves against the block.
+    A tight max-effort clamp on DOF 0 of a two-link block must bind exactly at
+    the limit, and — because the clamp lives inside the block Newton — DOF 1
+    must re-solve against the *clamped* DOF-0 impulse through the off-diagonal
+    coupling. A post-hoc clamp would leave DOF 1 at its unclamped value, so the
+    test asserts DOF 1 both moves away from that value and matches the analytic
+    solution of the pinned system.
     """
-    from newton.actuators import ActuatorImplicitOptions  # noqa: PLC0415
-
     h = 0.01
     kp = np.array([4000.0, 3000.0], dtype=np.float32)
     kd = np.array([40.0, 30.0], dtype=np.float32)
@@ -455,7 +456,12 @@ def test_coupled_solve_clamp_in_residual(test, device):
     control = model.control()
     control.joint_target_q.assign(target)
 
-    # Unclamped block force to size a binding limit on DOF 0.
+    # Coupled response A = inv(H) at this pose.
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    H = newton.eval_mass_matrix(model, state).numpy()[0, :2, :2]
+    A = np.linalg.inv(H)
+
+    # Unclamped block solve, to size a binding limit on DOF 0.
     oracle = ResponseOracle(model)
     actuator = _make_actuator(
         model,
@@ -467,8 +473,8 @@ def test_coupled_solve_clamp_in_residual(test, device):
     oracle.refresh(state)
     control.joint_f.zero_()
     actuator.step(state, control, dt=h)
-    unclamped0 = float(control.joint_f.numpy()[0])
-    limit = 0.5 * abs(unclamped0)
+    unclamped = control.joint_f.numpy().copy()
+    limit = 0.5 * abs(unclamped[0])
 
     clamped = _make_actuator(
         model,
@@ -482,7 +488,21 @@ def test_coupled_solve_clamp_in_residual(test, device):
     control.joint_f.zero_()
     clamped.step(state, control, dt=h)
     joint_f = control.joint_f.numpy()
+
+    # DOF 0 binds exactly at the limit (same sign as the unclamped force).
     test.assertAlmostEqual(abs(joint_f[0]), limit, delta=limit * 1e-3)
+
+    # Analytic DOF-1 solve with DOF 0 pinned at its clamped impulse p0 = h*tau0.
+    # qd1(p) = A10*p0 + A11*p1, q1(p) = q0[1] + h*qd1; PD with qd0 = target_vel = 0:
+    #   tau1 = [kp1*(t1 - q0[1]) - (h*kp1 + kd1)*A10*p0] / (1 + h*(h*kp1 + kd1)*A11)
+    tau0_clamped = np.sign(unclamped[0]) * limit
+    p0 = h * tau0_clamped
+    g1 = h * kp[1] + kd[1]
+    tau1_ref = (kp[1] * (target[1] - q0[1]) - g1 * A[1, 0] * p0) / (1.0 + h * g1 * A[1, 1])
+    test.assertAlmostEqual(joint_f[1], tau1_ref, delta=abs(tau1_ref) * 1e-3)
+
+    # And DOF 1 genuinely responded to DOF 0's saturation (a post-hoc clamp would not).
+    test.assertGreater(abs(joint_f[1] - unclamped[1]), abs(unclamped[1]) * 1e-3)
 
 
 def test_pd_denominator_equivalence(test, device):
@@ -798,7 +818,7 @@ def test_position_clamp_is_implicit(test, device):
     kp_val = 5.0e4
     q0 = 0.2
     lookup_positions = (0.0, 1.0)
-    lookup_efforts = (20.0, 0.0)  # limit(q) = 20 * (1 - q)
+    lookup_efforts = (20.0, 0.0)  # effort limit falls linearly with position
 
     model = _build_single_revolute(device)
     state = model.state()
@@ -826,13 +846,17 @@ def test_position_clamp_is_implicit(test, device):
     _step(actuator, state, control, h)
     tau = float(control.joint_f.numpy()[0])
 
+    # The limit is the actuator's own lookup table, interpolated at position.
+    def limit_at(q):
+        return float(np.interp(q, lookup_positions, lookup_efforts))
+
     # Self-consistent saturated solution via fixed point in numpy:
-    # tau = limit(q_p) with q_p = q0 + h * (qd0 + alpha*h*tau).
+    # tau = limit(q_p) with q_p = q0 + h * (qd0 + alpha*h*tau), qd0 = 0.
     alpha = float(_alpha_reference(model, state)[0])
-    tau_ref = 20.0 * (1.0 - q0)
+    tau_ref = limit_at(q0)
     for _ in range(50):
         q_p = q0 + h * (alpha * h * tau_ref)
-        tau_ref = 20.0 * (1.0 - q_p)
+        tau_ref = limit_at(q_p)
     test.assertAlmostEqual(tau, tau_ref, delta=abs(tau_ref) * 1e-3)
 
 
