@@ -322,6 +322,19 @@ class TestNewtonCollisionGraphCompiler(unittest.TestCase):
             compile_newton_collision_graph([1.0])
         with self.assertRaises(ValueError):
             compile_newton_collision_graph([[1]])
+        for kwargs in (
+            {"max_bits": 1.5},
+            {"max_bits": np.nan},
+            {"max_bits": True},
+            {"max_shape_count": 1.5},
+            {"max_shape_count": np.nan},
+            {"max_shape_count": True},
+            {"max_excluded_pair_count": 1.5},
+            {"max_excluded_pair_count": np.nan},
+            {"max_excluded_pair_count": True},
+        ):
+            with self.subTest(**kwargs), self.assertRaises(TypeError):
+                compile_newton_collision_graph([1], **kwargs)
         with self.assertRaises(ValueError):
             compile_newton_collision_graph([1], max_bits=33)
         with self.assertRaises(ValueError):

@@ -666,6 +666,16 @@ def compile_newton_collision_graph(
     Returns:
         The exact masks when they fit, or an inexact diagnostic result.
     """
+    if isinstance(max_bits, bool) or not isinstance(max_bits, (int, np.integer)):
+        raise TypeError(f"max_bits must be an integer, got {max_bits!r}")
+    if max_shape_count is not None and (
+        isinstance(max_shape_count, bool) or not isinstance(max_shape_count, (int, np.integer))
+    ):
+        raise TypeError(f"max_shape_count must be an integer or None, got {max_shape_count!r}")
+    if max_excluded_pair_count is not None and (
+        isinstance(max_excluded_pair_count, bool) or not isinstance(max_excluded_pair_count, (int, np.integer))
+    ):
+        raise TypeError(f"max_excluded_pair_count must be an integer or None, got {max_excluded_pair_count!r}")
     if max_bits <= 0 or max_bits > 32:
         raise ValueError(f"max_bits must be in [1, 32], got {max_bits}")
     if max_shape_count is not None and max_shape_count <= 0:
