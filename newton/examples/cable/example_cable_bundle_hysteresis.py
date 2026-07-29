@@ -37,6 +37,7 @@ def move_obstacles_triwave(
     release_time: float,
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
+    body_qd0: wp.array[wp.spatial_vector],
 ):
     """Move obstacles in a triangle wave pattern in Y direction with phase transitions."""
     i = wp.tid()
@@ -46,6 +47,7 @@ def move_obstacles_triwave(
     q = wp.transform_get_rotation(X)
 
     cur_t = t[0]
+    linear_velocity = wp.vec3(0.0)
 
     # Phase 3: Release - teleport obstacles far away
     if cur_t >= release_time:
@@ -77,10 +79,15 @@ def move_obstacles_triwave(
         pz = init_z[i]
         y0 = init_y[i]
         new_p = wp.vec3(px, tri * (y0 * amp_scale), pz)
+        tri_slope = 4.0 / period
+        if frac >= 0.5:
+            tri_slope = -tri_slope
+        linear_velocity = wp.vec3(0.0, y0 * amp_scale * tri_slope, 0.0)
 
     T = wp.transform(new_p, q)
     body_q0[b] = T
     body_q1[b] = T
+    body_qd0[b] = wp.spatial_vector(linear_velocity, wp.vec3(0.0))
 
 
 @wp.kernel
@@ -261,6 +268,7 @@ class Example:
             )
 
             # Make obstacle kinematic
+            builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
             builder.body_inertia[body] = wp.mat33(0.0)
@@ -358,6 +366,7 @@ class Example:
                     float(self.obstacle_release_time),
                     self.state_0.body_q,
                     self.state_1.body_q,
+                    self.state_0.body_qd,
                 ],
                 device=self.solver.device,
             )

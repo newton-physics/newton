@@ -45,6 +45,7 @@ def _spin_roots_kernel(
     dt: float,
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
+    body_qd0: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     body_id = body_indices[tid]
@@ -57,6 +58,7 @@ def _spin_roots_kernel(
     X_new = wp.transform(pos, wp.mul(dq, rot))
     body_q0[body_id] = X_new
     body_q1[body_id] = X_new
+    body_qd0[body_id] = wp.spatial_vector(wp.vec3(0.0), axis_world * twist_rate[0])
 
 
 class Example:
@@ -109,13 +111,14 @@ class Example:
             )
             root_body = int(bodies[0])
             tip_body = int(bodies[-1])
+            builder.add_articulation(list(joints), label=f"twist_transfer_{label}_articulation")
             for body in (root_body, tip_body):
+                builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
                 builder.body_mass[body] = 0.0
                 builder.body_inv_mass[body] = 0.0
                 builder.body_inertia[body] = wp.mat33(0.0)
                 builder.body_inv_inertia[body] = wp.mat33(0.0)
 
-            builder.add_articulation(list(joints), label=f"twist_transfer_{label}_articulation")
             self.cases.append(
                 {
                     "label": label,
@@ -250,7 +253,7 @@ class Example:
                 _spin_roots_kernel,
                 dim=len(self.cases),
                 inputs=[self._root_indices, self._twist_rate_wp, self.sim_dt],
-                outputs=[self.state_0.body_q, self.state_1.body_q],
+                outputs=[self.state_0.body_q, self.state_1.body_q, self.state_0.body_qd],
             )
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)

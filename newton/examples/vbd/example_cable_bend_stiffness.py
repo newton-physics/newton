@@ -106,8 +106,9 @@ class Example:
                 label=f"cantilever_k{int(bend_stiffness)}",
                 body_frame_origin="com",
             )
-            # Zero mass + zero inertia in Newton's VBD makes the root kinematic.
+            # Prescribe the fixed root pose.
             root_body = rod_bodies[0]
+            builder.body_flags[root_body] = int(newton.BodyFlags.KINEMATIC)
             builder.body_mass[root_body] = 0.0
             builder.body_inv_mass[root_body] = 0.0
             builder.body_inertia[root_body] = wp.mat33(0.0)

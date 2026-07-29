@@ -56,6 +56,7 @@ def drive_input_pulleys(
     target_table_xy: wp.array[wp.float32],
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
+    body_qd0: wp.array[wp.spatial_vector],
 ):
     """Drive the two blue input pulleys along the rectangular table path."""
     tid = wp.tid()
@@ -68,26 +69,37 @@ def drive_input_pulleys(
     # slide and table are moved only by the cable and passive pulleys. In
     # this layout, a direct cable-drive command maps approximately to world
     # (x, y) = (command_y, -command_x), so invert that mapping first.
-    ramp = wp.clamp(t / START_RAMP_DURATION, 0.0, 1.0)
-    ramp = ramp * ramp * (3.0 - 2.0 * ramp)
+    ramp_u = wp.clamp(t / START_RAMP_DURATION, 0.0, 1.0)
+    ramp = ramp_u * ramp_u * (3.0 - 2.0 * ramp_u)
+    ramp_rate = 0.0
+    if t > 0.0 and t < START_RAMP_DURATION:
+        ramp_rate = 6.0 * ramp_u * (1.0 - ramp_u) / START_RAMP_DURATION
     phase_time = t - wp.floor(t / TABLE_RECT_PERIOD) * TABLE_RECT_PERIOD
     side = 4.0 * phase_time / TABLE_RECT_PERIOD
 
     table_x = -TABLE_RECT_HALF_X
     table_y = -TABLE_RECT_HALF_Y
+    table_vx = 0.0
+    table_vy = 0.0
     if side < 1.0:
         table_x = -TABLE_RECT_HALF_X + 2.0 * TABLE_RECT_HALF_X * side
+        table_vx = 8.0 * TABLE_RECT_HALF_X / TABLE_RECT_PERIOD
     elif side < 2.0:
         table_x = TABLE_RECT_HALF_X
         table_y = -TABLE_RECT_HALF_Y + 2.0 * TABLE_RECT_HALF_Y * (side - 1.0)
+        table_vy = 8.0 * TABLE_RECT_HALF_Y / TABLE_RECT_PERIOD
     elif side < 3.0:
         table_x = TABLE_RECT_HALF_X - 2.0 * TABLE_RECT_HALF_X * (side - 2.0)
         table_y = TABLE_RECT_HALF_Y
+        table_vx = -8.0 * TABLE_RECT_HALF_X / TABLE_RECT_PERIOD
     else:
         table_y = TABLE_RECT_HALF_Y - 2.0 * TABLE_RECT_HALF_Y * (side - 3.0)
+        table_vy = -8.0 * TABLE_RECT_HALF_Y / TABLE_RECT_PERIOD
 
     target_x = ramp * table_x
     target_y = ramp * table_y
+    target_vx = ramp_rate * table_x + ramp * table_vx
+    target_vy = ramp_rate * table_y + ramp * table_vy
     if tid == 0:
         target_table_xy[0] = target_x
         target_table_xy[1] = target_y
@@ -95,19 +107,24 @@ def drive_input_pulleys(
     command_y = target_x
     q_left = (command_x + command_y) / input_drive_radius
     q_right = (command_y - command_x) / input_drive_radius
+    qd_left = (target_vx - target_vy) / input_drive_radius
+    qd_right = (target_vx + target_vy) / input_drive_radius
 
     p = wp.transform_get_translation(base_xform)
     q = wp.transform_get_rotation(base_xform)
 
     angle = q_left
+    angle_rate = qd_left
     if tid == 1:
         angle = q_right
+        angle_rate = qd_right
     input_pulley_angles[tid] = angle
     q = wp.mul(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle), q)
 
     xform = wp.transform(p, q)
     body_q0[body] = xform
     body_q1[body] = xform
+    body_qd0[body] = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0, 0.0, angle_rate))
 
 
 @wp.kernel
@@ -155,7 +172,8 @@ def _dim_color(color: tuple[float, float, float], scale: float) -> tuple[float, 
 
 
 def _make_body_kinematic(builder: newton.ModelBuilder, body: int):
-    """Clear body mass properties so the solver treats the body as kinematic."""
+    """Mark a body kinematic and clear its mass properties."""
+    builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
     builder.body_mass[body] = 0.0
     builder.body_inv_mass[body] = 0.0
     builder.body_inertia[body] = wp.mat33(0.0)
@@ -813,7 +831,6 @@ class Example:
             ],
             device=self.model.device,
         )
-        self.solver.body_q_prev = wp.clone(self.state_0.body_q, device=self.solver.device)
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
 
         # Viewer setup.
@@ -856,6 +873,7 @@ class Example:
                     self.target_table_xy,
                     self.state_0.body_q,
                     self.state_1.body_q,
+                    self.state_0.body_qd,
                 ],
                 device=self.model.device,
             )

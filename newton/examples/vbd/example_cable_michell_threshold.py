@@ -193,6 +193,7 @@ class Example:
     def _make_bodies_kinematic(builder: newton.ModelBuilder, bodies) -> None:
         for body_id in bodies:
             body = int(body_id)
+            builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
             builder.body_inertia[body] = wp.mat33(0.0)

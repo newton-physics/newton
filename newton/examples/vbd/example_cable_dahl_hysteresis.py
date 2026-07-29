@@ -41,15 +41,21 @@ from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 def _set_kinematic_targets_kernel(
     body_indices: wp.array[wp.int32],
     positions: wp.array[wp.vec3],
-    rotations: wp.array[wp.quat],
+    rest_rotations: wp.array[wp.quat],
+    twist_angles: wp.array[wp.float32],
+    twist_rates: wp.array[wp.float32],
+    substep: int,
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
+    body_qd0: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     body = body_indices[tid]
-    target = wp.transform(positions[tid], rotations[tid])
+    twist = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), twist_angles[substep])
+    target = wp.transform(positions[tid], wp.mul(twist, rest_rotations[tid]))
     body_q0[body] = target
     body_q1[body] = target
+    body_qd0[body] = wp.spatial_vector(wp.vec3(0.0), wp.vec3(twist_rates[substep], 0.0, 0.0))
 
 
 class Example:
@@ -150,12 +156,16 @@ class Example:
             [case["tip_rest_pos"] for case in self.twist_cases],
             dtype=np.float32,
         )
-        self._kinematic_rot_np = np.asarray(
+        kinematic_rest_rot_np = np.asarray(
             [case["tip_rest_q"] for case in self.twist_cases],
             dtype=np.float32,
         )
         self._kinematic_pos = wp.array(self._kinematic_pos_np, dtype=wp.vec3)
-        self._kinematic_rot = wp.array(self._kinematic_rot_np, dtype=wp.quat)
+        self._kinematic_rest_rot = wp.array(kinematic_rest_rot_np, dtype=wp.quat)
+        self._twist_angles_np = np.zeros(self.sim_substeps, dtype=np.float32)
+        self._twist_rates_np = np.zeros(self.sim_substeps, dtype=np.float32)
+        self._twist_angles = wp.array(self._twist_angles_np, dtype=wp.float32)
+        self._twist_rates = wp.array(self._twist_rates_np, dtype=wp.float32)
 
         self.viewer.set_model(self.model)
         set_viewer_camera(
@@ -221,6 +231,7 @@ class Example:
         if mode == "twist":
             kinematic_bodies.append(int(rod_bodies[-1]))
         for body in kinematic_bodies:
+            builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
             builder.body_inertia[body] = wp.mat33(0.0)
@@ -251,6 +262,8 @@ class Example:
         self.model.vbd.dahl_tau.assign(tau)
 
     def _drive_at_time(self, t: float) -> float:
+        if t <= 0.0:
+            return 0.0
         if t >= self.cycle_duration:
             return 0.0
         phase = t / self.PHASE_DURATION
@@ -300,16 +313,17 @@ class Example:
         s = math.sin(0.5 * angle)
         return np.array([axis[0] * s, axis[1] * s, axis[2] * s, math.cos(0.5 * angle)], dtype=np.float64)
 
-    def _update_twist_targets(self, twist_target: float) -> None:
-        for i, case in enumerate(self.twist_cases):
-            q_twist = self._axis_quat(np.array([1.0, 0.0, 0.0], dtype=np.float64), twist_target)
-            self._kinematic_pos_np[i] = case["tip_rest_pos"].astype(np.float32)
-            self._kinematic_rot_np[i] = self._quat_mul(q_twist, case["tip_rest_q"]).astype(np.float32)
-        self._kinematic_pos.assign(self._kinematic_pos_np)
-        self._kinematic_rot.assign(self._kinematic_rot_np)
+    def _update_twist_motion(self) -> None:
+        previous_target = self.TWIST_TARGET_MAX * self._drive_at_time(self.sim_time - self.sim_dt)
+        for i in range(self.sim_substeps):
+            target = self.TWIST_TARGET_MAX * self._drive_at_time(self.sim_time + i * self.sim_dt)
+            self._twist_angles_np[i] = target
+            self._twist_rates_np[i] = (target - previous_target) / self.sim_dt
+            previous_target = target
+        self._twist_angles.assign(self._twist_angles_np)
+        self._twist_rates.assign(self._twist_rates_np)
 
-    def _update_drive_targets(self, force_now: float, twist_target: float) -> None:
-        self._update_twist_targets(twist_target)
+    def _update_drive_force(self, force_now: float) -> None:
         self._wrench_np.fill(0.0)
         for case in self.cases:
             if case["mode"] == "bend":
@@ -317,14 +331,21 @@ class Example:
         self.tip_wrench.assign(self._wrench_np)
 
     def _simulate_substeps(self) -> None:
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.state_0.body_f.assign(self.tip_wrench)
             wp.launch(
                 _set_kinematic_targets_kernel,
                 dim=len(self.twist_cases),
-                inputs=[self._kinematic_indices, self._kinematic_pos, self._kinematic_rot],
-                outputs=[self.state_0.body_q, self.state_1.body_q],
+                inputs=[
+                    self._kinematic_indices,
+                    self._kinematic_pos,
+                    self._kinematic_rest_rot,
+                    self._twist_angles,
+                    self._twist_rates,
+                    substep,
+                ],
+                outputs=[self.state_0.body_q, self.state_1.body_q, self.state_0.body_qd],
             )
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
@@ -338,8 +359,8 @@ class Example:
         else:
             self.graph = None
 
-    def simulate(self, force_now: float, twist_target: float) -> None:
-        self._update_drive_targets(force_now, twist_target)
+    def simulate(self, force_now: float) -> None:
+        self._update_drive_force(force_now)
         if self.graph:
             wp.capture_launch(self.graph)
         else:
@@ -348,9 +369,10 @@ class Example:
     def step(self) -> None:
         drive = self._drive_at_time(self.sim_time)
         force_now = self.TIP_FORCE_MAX * drive
-        twist_target = self.TWIST_TARGET_MAX * drive
-        self.simulate(force_now, twist_target)
+        self._update_twist_motion()
+        self.simulate(force_now)
         self.sim_time += self.frame_dt
+        twist_target = float(self._twist_angles_np[-1])
         self._record_frame(force_now, twist_target)
 
     def _record_frame(self, force_now: float, twist_target: float) -> None:

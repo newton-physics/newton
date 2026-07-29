@@ -111,7 +111,7 @@ The protocol currently covers these concepts:
 - ``coupling_notify_input_state_update()`` tells a solver that public state
   arrays or force-input buffers were changed by the coupler. Its ``flags``
   argument uses :class:`newton.StateFlags`. VBD uses this to realign private
-  previous-pose state after proxy synchronization or ADMM iteration restarts.
+  coupling-frame state after proxy synchronization or ADMM iteration restarts.
   MPM uses it to keep collider caches consistent.
 - ``coupling_eval_gravity_acceleration()`` lets a solver report the body and
   particle acceleration that it applies internally for gravity-like forces.
@@ -331,7 +331,7 @@ Coupled solvers rely on solver-specific hooks only where generic public
 model/state behavior is insufficient.
 
 VBD uses proxy contact preparation, body-proxy harvesting, and input-state
-notifications. The notification hook keeps private previous-body state aligned
+notifications. The notification hook keeps private coupling-frame state aligned
 when proxy poses are synchronized or ADMM iterations restart. The harvest path
 reduces final rigid-rigid and body-particle contact forces onto proxy bodies
 instead of relying on aggregate momentum differences. VBD also supports proxy

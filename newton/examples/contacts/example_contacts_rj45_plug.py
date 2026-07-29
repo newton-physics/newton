@@ -23,7 +23,7 @@ import newton
 import newton.examples
 import newton.usd
 import newton.utils
-from newton.math import quat_between_vectors_robust
+from newton.math import quat_velocity
 from newton.solvers import SolverVBD
 
 CONTACT_KE = 1.0e5
@@ -121,12 +121,21 @@ def _apply_gizmo_force(
 def _sync_cable_anchors(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
     plug_idx: int,
     anchor_indices: wp.array[int],
     anchor_offsets: wp.array[wp.vec3],
     anchor_rotations: wp.array[wp.quat],
+    anchor_q_prev: wp.array[wp.transform],
+    dt: float,
 ):
-    """Copy the plug transform into kinematic cable bodies."""
+    """Author plug-relative cable-anchor poses and the velocity that produced them.
+
+    Differencing the previously authored pose is exact, where transferring the plug's
+    instantaneous velocity is only first order: :class:`~newton.solvers.SolverVBD`
+    inverts ``body_qd`` to place a kinematic body's previous pose, so contacts and the
+    cable-boundary joint see precisely the authored motion.
+    """
     tid = wp.tid()
     plug_tf = body_q[plug_idx]
     plug_pos = wp.transform_get_translation(plug_tf)
@@ -134,44 +143,16 @@ def _sync_cable_anchors(
     idx = anchor_indices[tid]
     anchor_world = plug_pos + wp.quat_rotate(plug_rot, anchor_offsets[tid])
     cable_rot = wp.normalize(wp.mul(plug_rot, anchor_rotations[tid]))
-    body_q[idx] = wp.transform(anchor_world, cable_rot)
-    body_qd[idx] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    pose = wp.transform(anchor_world, cable_rot)
 
+    pose_prev = anchor_q_prev[tid]
+    com = body_com[idx]
+    cable_linear_velocity = (wp.transform_point(pose, com) - wp.transform_point(pose_prev, com)) / dt
+    cable_angular_velocity = quat_velocity(cable_rot, wp.transform_get_rotation(pose_prev), dt)
 
-@wp.kernel
-def _align_cable_orientations(
-    body_q: wp.array[wp.transform],
-    cable_body_idx: wp.array[int],
-    cable_next_idx: wp.array[int],
-    cable_next_start_offsets: wp.array[wp.vec3],
-):
-    """Swing-correct each dynamic cable capsule to its deformed segment direction.
-
-    Keeps the body origin (capsule midpoint/COM) fixed and only updates
-    the rotation so +Z points toward the next capsule's start endpoint.
-    """
-    tid = wp.tid()
-    bi = cable_body_idx[tid]
-    bi_next = cable_next_idx[tid]
-
-    tf = body_q[bi]
-    pos = wp.transform_get_translation(tf)
-    rot = wp.transform_get_rotation(tf)
-
-    next_tf = body_q[bi_next]
-    next_pos = wp.transform_get_translation(next_tf)
-    next_rot = wp.transform_get_rotation(next_tf)
-    seg = next_pos + wp.quat_rotate(next_rot, cable_next_start_offsets[tid]) - pos
-    seg_len = wp.length(seg)
-    if seg_len < 1.0e-10:
-        return
-    d = seg / seg_len
-
-    z_current = wp.quat_rotate(rot, wp.vec3(0.0, 0.0, 1.0))
-    q_swing = quat_between_vectors_robust(z_current, d)
-    rot_new = wp.normalize(wp.mul(q_swing, rot))
-
-    body_q[bi] = wp.transform(pos, rot_new)
+    body_q[idx] = pose
+    body_qd[idx] = wp.spatial_vector(cable_linear_velocity, cable_angular_velocity)
+    anchor_q_prev[tid] = pose
 
 
 def _load_mesh(stage, prim_path: str) -> tuple[newton.Mesh, wp.vec3]:
@@ -341,6 +322,8 @@ class Example:
                     builder.add_shape_collision_filter_pair(cable_shape, conn_shape)
 
         # Lock the kinematic prefix and the far cable end.
+        for idx in rod_bodies[:CABLE_KINEMATIC_COUNT]:
+            builder.body_flags[idx] = int(newton.BodyFlags.KINEMATIC)
         for idx in (*rod_bodies[:CABLE_KINEMATIC_COUNT], rod_bodies[-1]):
             builder.body_mass[idx] = 0.0
             builder.body_inv_mass[idx] = 0.0
@@ -359,24 +342,10 @@ class Example:
         self._cable_anchor_indices = wp.array(anchor_body_ids, dtype=int, device=self.model.device)
         self._cable_anchor_offsets = wp.array(anchor_offsets, dtype=wp.vec3, device=self.model.device)
         self._cable_anchor_rotations = wp.array(anchor_rots, dtype=wp.quat, device=self.model.device)
-
-        # Endpoint alignment: include the last kinematic body so it aims toward
-        # the first dynamic body's start endpoint after deformation. The
-        # kinematic prefix is reset by _sync_cable_anchors before each solve;
-        # dynamic body rotations carry into the next collision pass.
-        align_start = max(CABLE_KINEMATIC_COUNT - 1, 0)
-        align_bodies = tuple(rod_bodies[align_start:-1])
-        align_next = tuple(rod_bodies[align_start + 1 :])
-        align_next_start_offsets = tuple(
-            wp.vec3(0.0, 0.0, -0.5 * float(wp.length(cable_points[i + 2] - cable_points[i + 1])))
-            for i in range(align_start, len(rod_bodies) - 1)
+        # Pose each anchor was last authored with, differenced into its velocity next substep.
+        self._cable_anchor_prev_q = wp.array(
+            self.model.body_q.numpy()[list(anchor_body_ids)], dtype=wp.transform, device=self.model.device
         )
-        self._cable_align_indices = wp.array(align_bodies, dtype=int, device=self.model.device)
-        self._cable_align_next = wp.array(align_next, dtype=int, device=self.model.device)
-        self._cable_align_next_start_offsets = wp.array(
-            align_next_start_offsets, dtype=wp.vec3, device=self.model.device
-        )
-        self._cable_align_count = len(align_bodies)
 
         self.viewer.set_model(self.model)
         self.viewer.picking_enabled = True
@@ -440,39 +409,26 @@ class Example:
             )
             self.viewer.apply_forces(self.state_0)
 
-            # Teleport kinematic cable bodies to follow the plug before the
-            # solver runs, so joint constraints at the boundary see the
-            # correct anchor positions and rest-relative rotations.
+            # Keep cable anchors consistent with plug motion before solving.
             wp.launch(
                 kernel=_sync_cable_anchors,
                 dim=CABLE_KINEMATIC_COUNT,
                 inputs=(
                     self.state_0.body_q,
                     self.state_0.body_qd,
+                    self.model.body_com,
                     self._plug_body,
                     self._cable_anchor_indices,
                     self._cable_anchor_offsets,
                     self._cable_anchor_rotations,
+                    self._cable_anchor_prev_q,
+                    self.sim_dt,
                 ),
                 device=self.model.device,
             )
             self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
-
-            # Snap each capsule's +Z to the next capsule's start endpoint so
-            # collision/render geometry follows the deformed centerline.
-            wp.launch(
-                kernel=_align_cable_orientations,
-                dim=self._cable_align_count,
-                inputs=(
-                    self.state_0.body_q,
-                    self._cable_align_indices,
-                    self._cable_align_next,
-                    self._cable_align_next_start_offsets,
-                ),
-                device=self.model.device,
-            )
 
     def step(self):
         gp = wp.transform_get_translation(self.gizmo_tf)

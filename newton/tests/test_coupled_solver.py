@@ -1742,8 +1742,8 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
         )
 
 
-def _coupled_vbd_reset_preserves_pose_history(test, device):
-    """Preserve VBD pose history across coupled masked/full resets and restarts."""
+def _coupled_vbd_entry_pose_baseline_and_kinematic_velocity(test, device):
+    """Rebuild VBD entry baselines across coupled restarts and resets."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     def add_free_body(*, is_kinematic=False):
@@ -1774,6 +1774,7 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
                 solver=lambda view: SolverVBD(view, iterations=0),
                 bodies=[dynamic_body, kinematic_body],
                 joints=[dynamic_joint, kinematic_joint],
+                substeps=2,
             ),
             SolverCoupled.Entry(name="copy", solver=_StepCountingCopySolver),
         ],
@@ -1796,22 +1797,36 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
     dt = 1.0e-2
     model_q = model.body_q.numpy().copy()
     model_qd = model.body_qd.numpy().copy()
+    vbd = coupled.solver("vbd")
 
-    # Establish VBD's first-step pose baseline away from the model defaults.
     initial_q = model_q.copy()
     initial_q[source_bodies, 0] = [3.0, 4.0]
+    initial_qd = model_qd.copy()
+    initial_qd[source_bodies, 0] = [0.75, -1.25]
     state_in.body_q.assign(initial_q)
-    state_in.body_qd.zero_()
+    state_in.body_qd.assign(initial_qd)
     coupled.step(state_in, state_out, None, None, dt)
-    np.testing.assert_allclose(state_out.body_q.numpy()[source_bodies], initial_q[source_bodies], atol=1.0e-6)
-    np.testing.assert_allclose(state_out.body_qd.numpy()[source_bodies], 0.0, atol=1.0e-5)
+    expected_q = initial_q.copy()
+    expected_q[dynamic_body, 0] += initial_qd[dynamic_body, 0] * dt
+    np.testing.assert_allclose(state_out.body_q.numpy()[source_bodies], expected_q[source_bodies], atol=1.0e-6)
+    np.testing.assert_allclose(
+        state_out.body_qd.numpy()[source_bodies], initial_qd[source_bodies], rtol=5.0e-5, atol=1.0e-6
+    )
+    expected_step_prev = initial_q[source_bodies].copy()
+    expected_step_prev[0, 0] += initial_qd[dynamic_body, 0] * dt / 2.0
+    expected_step_prev[1, 0] -= initial_qd[kinematic_body, 0] * dt / 2.0
+    np.testing.assert_allclose(vbd.body_q_prev.numpy(), expected_step_prev, rtol=1.0e-5, atol=1.0e-6)
+    expected_frame_start = initial_q[source_bodies].copy()
+    expected_frame_start[1, 0] -= initial_qd[kinematic_body, 0] * dt
+    np.testing.assert_allclose(vbd._coupling_body_q_frame_start.numpy(), expected_frame_start, rtol=1.0e-5, atol=1.0e-6)
     state_in, state_out = state_out, state_in
 
-    # Reset world 1 while retaining world 0's authored displacement as motion.
     moved_q = state_in.body_q.numpy().copy()
-    moved_q[source_bodies, 0] += 1.0
+    moved_q[source_bodies, 0] += [1.0, 1.5]
+    moved_qd = model_qd.copy()
+    moved_qd[source_bodies, 0] = [-0.5, 0.25]
     state_in.body_q.assign(moved_q)
-    state_in.body_qd.zero_()
+    state_in.body_qd.assign(moved_qd)
     coupled.reset(
         state_in,
         world_mask=wp.array([False, True], dtype=wp.bool, device=device),
@@ -1821,12 +1836,20 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
     coupled.step(state_in, state_out, None, None, dt)
     test.assertEqual(coupled.solver("copy").step_count, steps_before + 2)
 
-    np.testing.assert_allclose(state_out.body_q.numpy()[source_bodies], moved_q[source_bodies], atol=1.0e-6)
-    qd = state_out.body_qd.numpy()
-    np.testing.assert_allclose(qd[dynamic_body, 0], 1.0 / dt, rtol=1.0e-5, atol=1.0e-3)
-    np.testing.assert_allclose(qd[kinematic_body], 0.0, atol=1.0e-5)
+    expected_q = moved_q.copy()
+    expected_q[dynamic_body, 0] += moved_qd[dynamic_body, 0] * dt
+    np.testing.assert_allclose(state_out.body_q.numpy()[source_bodies], expected_q[source_bodies], atol=1.0e-6)
+    np.testing.assert_allclose(
+        state_out.body_qd.numpy()[source_bodies], moved_qd[source_bodies], rtol=5.0e-5, atol=1.0e-6
+    )
+    expected_step_prev = moved_q[source_bodies].copy()
+    expected_step_prev[0, 0] += moved_qd[dynamic_body, 0] * dt / 2.0
+    expected_step_prev[1, 0] -= moved_qd[kinematic_body, 0] * dt / 2.0
+    np.testing.assert_allclose(vbd.body_q_prev.numpy(), expected_step_prev, rtol=1.0e-5, atol=1.0e-6)
+    expected_frame_start = moved_q[source_bodies].copy()
+    expected_frame_start[1, 0] -= moved_qd[kinematic_body, 0] * dt
+    np.testing.assert_allclose(vbd._coupling_body_q_frame_start.numpy(), expected_frame_start, rtol=1.0e-5, atol=1.0e-6)
 
-    # Default reset restores model state and rebaselines both source bodies.
     state_in, state_out = state_out, state_in
     coupled.reset(state_in)
     coupled.step(state_in, state_out, None, None, dt)
@@ -1836,6 +1859,38 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
 
 class TestSolverVBDCouplingHooks(unittest.TestCase):
     """VBD-specific coupling hook behavior."""
+
+    def test_reset_distribution_preserves_accepted_proxy_pose(self):
+        """Preserve accepted proxy poses during a zero-dt reset distribution."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.color()
+        model = builder.finalize(device="cpu")
+        solver = SolverVBD(model, iterations=0)
+        state = model.state()
+
+        accepted_q = model.body_q.numpy().copy()
+        accepted_q[:, 0] = 2.0
+        frame_start_q = model.body_q.numpy().copy()
+        frame_start_q[:, 0] = 1.0
+        solver._coupling_body_q_accepted.assign(accepted_q)
+        solver._coupling_body_q_frame_start.assign(frame_start_q)
+
+        solver.coupling_notify_input_state_update(
+            state,
+            newton.StateFlags.BODY_Q,
+            iteration_restart=True,
+            dt=0.0,
+        )
+        np.testing.assert_array_equal(solver._coupling_body_q_accepted.numpy(), accepted_q)
+
+        solver.coupling_notify_input_state_update(
+            state,
+            newton.StateFlags.BODY_Q,
+            iteration_restart=True,
+            dt=1.0e-2,
+        )
+        np.testing.assert_array_equal(solver._coupling_body_q_accepted.numpy(), frame_start_q)
 
     def test_external_rigid_solver_harvests_particle_soft_contacts(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -3099,8 +3154,8 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
 
 add_function_test(
     TestSolverVBDCouplingHooks,
-    "test_reset_preserves_pose_history",
-    _coupled_vbd_reset_preserves_pose_history,
+    "test_entry_pose_baseline_and_kinematic_velocity",
+    _coupled_vbd_entry_pose_baseline_and_kinematic_velocity,
     devices=get_test_devices(mode="basic"),
 )
 

@@ -29,27 +29,32 @@ import newton.examples
 def spin_first_capsules_kernel(
     body_indices: wp.array[wp.int32],
     twist_rates: wp.array[float],  # radians per second per body
-    dt: float,
+    base_xforms: wp.array[wp.transform],
+    sim_time: wp.array[wp.float32],
     body_q0: wp.array[wp.transform],
-    body_q1: wp.array[wp.transform],
+    body_qd0: wp.array[wp.spatial_vector],
 ):
     """Apply continuous twist to the first segment of each cable."""
     tid = wp.tid()
     body_id = body_indices[tid]
 
-    t = body_q0[body_id]
-    pos = wp.transform_get_translation(t)
-    rot = wp.transform_get_rotation(t)
+    base_xform = base_xforms[tid]
+    pos = wp.transform_get_translation(base_xform)
+    base_rot = wp.transform_get_rotation(base_xform)
 
     # Local capsule axis is +Z in body frame; convert to world axis
-    axis_world = wp.quat_rotate(rot, wp.vec3(0.0, 0.0, 1.0))
-    angle = twist_rates[tid] * dt
+    axis_world = wp.quat_rotate(base_rot, wp.vec3(0.0, 0.0, 1.0))
+    angle = twist_rates[tid] * sim_time[0]
     dq = wp.quat_from_axis_angle(axis_world, angle)
-    rot_new = wp.mul(dq, rot)
+    rot_new = wp.mul(dq, base_rot)
 
-    T = wp.transform(pos, rot_new)
-    body_q0[body_id] = T
-    body_q1[body_id] = T
+    body_q0[body_id] = wp.transform(pos, rot_new)
+    body_qd0[body_id] = wp.spatial_vector(wp.vec3(0.0), axis_world * twist_rates[tid])
+
+
+@wp.kernel
+def advance_time(sim_time: wp.array[wp.float32], dt: float):
+    sim_time[0] += dt
 
 
 class Example:
@@ -185,6 +190,7 @@ class Example:
 
             # Fix the first body to make it kinematic
             first_body = rod_bodies[0]
+            builder.body_flags[first_body] = int(newton.BodyFlags.KINEMATIC)
             builder.body_mass[first_body] = 0.0
             builder.body_inv_mass[first_body] = 0.0
             builder.body_inertia[first_body] = wp.mat33(0.0)
@@ -222,6 +228,10 @@ class Example:
         # Twist rates for first segments (radians per second)
         twist_rates = np.full(len(kinematic_body_indices), 0.5, dtype=np.float32)
         self.first_twist_rates = wp.array(twist_rates, dtype=wp.float32)
+        self.first_body_base_xforms = wp.array(
+            self.model.body_q.numpy()[kinematic_body_indices], dtype=wp.transform, device=self.model.device
+        )
+        self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
 
         self.capture()
 
@@ -240,8 +250,13 @@ class Example:
             wp.launch(
                 kernel=spin_first_capsules_kernel,
                 dim=self.kinematic_bodies.shape[0],
-                inputs=[self.kinematic_bodies, self.first_twist_rates, self.sim_dt],
-                outputs=[self.state_0.body_q, self.state_1.body_q],
+                inputs=[
+                    self.kinematic_bodies,
+                    self.first_twist_rates,
+                    self.first_body_base_xforms,
+                    self.sim_time_wp,
+                ],
+                outputs=[self.state_0.body_q, self.state_0.body_qd],
             )
 
             # Apply forces to the model
@@ -263,6 +278,7 @@ class Example:
 
             # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
+            wp.launch(advance_time, dim=1, inputs=[self.sim_time_wp, self.sim_dt], device=self.model.device)
 
     def step(self):
         """Advance simulation by one frame."""

@@ -21,7 +21,7 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL
 from newton._src.math import quat_velocity
-from newton._src.sim import JointType
+from newton._src.sim import BodyFlags, JointType
 from newton._src.sim.contacts import contact_surface_point, contact_surface_separation
 from newton._src.solvers.solver import integrate_rigid_body
 
@@ -2674,13 +2674,36 @@ def _fill_adjacent_joints(
 # -----------------------------
 # Pre-iteration kernels (once per step)
 # -----------------------------
+@wp.func
+def _integrate_kinematic_body_pose(
+    q: wp.transform,
+    com: wp.vec3,
+    qd: wp.spatial_vector,
+    dt: float,
+) -> wp.transform:
+    """Advance a pose by a constant ``body_qd`` about the COM, without forces or inertia.
+
+    Exact axis-angle rotation, so a negative ``dt`` exactly inverts a forward step.
+    """
+    rotation = wp.transform_get_rotation(q)
+    com_world = wp.transform_point(q, com)
+    v = wp.spatial_top(qd)
+    w = wp.spatial_bottom(qd)
+    rotation_new = rotation
+    w_length = wp.length(w)
+    if w_length > 0.0:
+        rotation_new = wp.normalize(wp.quat_from_axis_angle(w / w_length, w_length * dt) * rotation)
+    com_world_new = com_world + v * dt
+    return wp.transform(com_world_new - wp.quat_rotate(rotation_new, com), rotation_new)
+
+
 @wp.kernel
 def forward_step_rigid_bodies(
     # Inputs
     dt: float,
     gravity: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
-    pose_rebaseline_mask: wp.array[wp.bool],
+    body_flags: wp.array[wp.int32],
     body_f: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     body_inertia: wp.array[wp.mat33],
@@ -2698,32 +2721,37 @@ def forward_step_rigid_bodies(
         dt: Time step [s].
         gravity: Gravity vector array (world frame).
         body_world: World index for each body.
-        pose_rebaseline_mask: Per-world flags for the ``body_q_prev`` rebaseline below.
+        body_flags: Per-body flags.
         body_f: External forces on bodies (spatial wrenches, world frame).
         body_com: Centers of mass (local body frame).
         body_inertia: Inertia tensors (local body frame).
-        body_inv_mass: Inverse masses (0 for kinematic bodies).
+        body_inv_mass: Effective inverse masses.
         body_inv_inertia: Inverse inertia tensors (local body frame).
-        body_q: Body transforms (input: start-of-step pose, output: integrated pose).
+        body_q: Body transforms (input: current pose, output: integrated dynamic pose).
         body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
-        body_q_prev: Previous body transforms (output). Rebaselined to the current
-            pre-step pose for worlds selected by ``pose_rebaseline_mask`` (first step
-            after construction or reset); left unchanged otherwise.
+        body_q_prev: Per-step motion baselines the solve differences against (output).
+            Dynamic and static bodies use the current pose; kinematic bodies, which
+            never move during the step, use the authored pose minus ``body_qd * dt``.
         body_inertia_q: Inertial target body transforms for the AVBD solve (output).
     """
     tid = wp.tid()
 
-    world_idx = body_world[tid]
     q_current = body_q[tid]
-    if _world_selected(world_idx, pose_rebaseline_mask):
-        # The constructor or reset() may precede state pose preparation.
-        body_q_prev[tid] = q_current
 
-    # Early exit for kinematic bodies (inv_mass == 0).
+    if (body_flags[tid] & int(BodyFlags.KINEMATIC)) != 0:
+        # Prescribed motion: hold the authored pose and place the previous pose one step
+        # behind it, so contact friction and damping observe the qd*dt displacement.
+        body_q_prev[tid] = _integrate_kinematic_body_pose(q_current, body_com[tid], body_qd[tid], -dt)
+        body_inertia_q[tid] = q_current
+        return
+
+    body_q_prev[tid] = q_current
     inv_m = body_inv_mass[tid]
     if inv_m == 0.0:
         body_inertia_q[tid] = q_current
         return
+
+    world_idx = body_world[tid]
 
     # Read body state (only for dynamic bodies)
     qd_current = body_qd[tid]
@@ -4933,41 +4961,50 @@ def update_duals_body_particle_contacts(
 @wp.kernel
 def update_body_velocity(
     dt: float,
+    body_flags: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_qd_mirror: wp.array[wp.spatial_vector],
     body_q_out: wp.array[wp.transform],
+    body_q_accepted: wp.array[wp.transform],
 ):
     """
-    Update body velocities from position changes (world frame).
+    Finalize rigid-body poses and velocities after VBD iterations.
 
-    Computes linear and angular velocities using finite differences.
-    Also transfers the final body poses to body_q_out (fused copy from
-    the in-place Gauss-Seidel iteration buffer to state_out).
+    Non-kinematic bodies use finite-difference velocities; kinematic bodies retain
+    their prescribed velocity.
 
     Linear: v = (com_current - com_prev) / dt
     Angular: omega from quaternion difference dq = q * q_prev^-1
 
     Args:
         dt: Time step.
+        body_flags: Per-body flags.
         body_q: Current body transforms (world), from state_in (in-place iteration buffer).
         body_com: Center of mass offsets (local frame).
-        body_q_prev: Previous body transforms (input/output), advanced to the
-            current pose for the next step. ``SolverVBD.reset()`` is the supported
-            way to establish a new baseline after a discontinuous pose change.
+        body_q_prev: Per-step body motion baselines (read-only).
         body_qd: Output body velocities (spatial vectors, world frame), bound to state_out.
         body_qd_mirror: Output body velocities, bound to state_in. Mirrors body_qd so the
             next step's forward integrator sees the finalized velocity even when the
             caller's Python-level state swap is not recorded in a captured CUDA graph.
+            Kinematic bodies read their prescribed velocity from it instead.
         body_q_out: Output body transforms (state_out), fused copy of body_q.
+        body_q_accepted: Accepted body transforms retained for coupling.
     """
     tid = wp.tid()
 
     # Read transforms
     pose = body_q[tid]
     pose_prev = body_q_prev[tid]
+
+    if (body_flags[tid] & int(BodyFlags.KINEMATIC)) != 0:
+        # Prescribed motion: publish the authored pose and the caller's velocity.
+        body_qd[tid] = body_qd_mirror[tid]
+        body_q_out[tid] = pose
+        body_q_accepted[tid] = pose
+        return
 
     x = wp.transform_get_translation(pose)
     x_prev = wp.transform_get_translation(pose_prev)
@@ -4987,13 +5024,13 @@ def update_body_velocity(
 
     body_qd[tid] = wp.spatial_vector(v, omega)
 
-    # Mirror to state_in (CUDA-graph-capture safety).
+    # Mirror the accepted velocity and pose to state_in (CUDA-graph-capture safety):
+    # a graph replayed with fixed bindings must start the next step from them.
     body_qd_mirror[tid] = wp.spatial_vector(v, omega)
-
-    # Advance body_q_prev for next step (for kinematic bodies this is the only write).
-    body_q_prev[tid] = pose
+    body_q[tid] = pose
 
     body_q_out[tid] = pose
+    body_q_accepted[tid] = pose
 
 
 @wp.kernel

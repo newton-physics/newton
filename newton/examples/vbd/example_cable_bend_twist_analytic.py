@@ -59,14 +59,20 @@ def _set_kinematic_targets_kernel(
     body_indices: wp.array[wp.int32],
     positions: wp.array[wp.vec3],
     rotations: wp.array[wp.quat],
+    velocities: wp.array[wp.spatial_vector],
+    target_count: int,
+    substep: int,
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
+    body_qd0: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
     b = body_indices[tid]
-    T = wp.transform(positions[tid], rotations[tid])
+    target = substep * target_count + tid
+    T = wp.transform(positions[target], rotations[target])
     body_q0[b] = T
     body_q1[b] = T
+    body_qd0[b] = velocities[target]
 
 
 class Example:
@@ -124,9 +130,9 @@ class Example:
                     twist_stiffness=1000.0,
                     label=f"analytic_bend_{int(math.degrees(target))}",
                 )
+                builder.add_articulation(joints, label=f"analytic_bend_articulation_{i}")
                 self._make_kinematic(builder, bodies[0])
                 self._make_kinematic(builder, bodies[-1])
-                builder.add_articulation(joints, label=f"analytic_bend_articulation_{i}")
                 self.bend_cases.append({"target": target, "bodies": bodies, "tip": bodies[-1]})
 
         if mode in ("all", "twist", "twist_max"):
@@ -141,9 +147,9 @@ class Example:
                     twist_stiffness=self.TWIST_STIFFNESS,
                     label=f"analytic_twist_{int(math.degrees(target))}",
                 )
+                builder.add_articulation(joints, label=f"analytic_twist_articulation_{i}")
                 self._make_kinematic(builder, bodies[0])
                 self._make_kinematic(builder, bodies[-1])
-                builder.add_articulation(joints, label=f"analytic_twist_articulation_{i}")
                 self.twist_cases.append({"target": target, "bodies": bodies, "tip": bodies[-1]})
 
         builder.color()
@@ -166,10 +172,18 @@ class Example:
             [case["tip"] for case in self.bend_cases + self.twist_cases],
             dtype=wp.int32,
         )
-        self._kinematic_pos_np = np.zeros((len(self.bend_cases) + len(self.twist_cases), 3), dtype=np.float32)
-        self._kinematic_rot_np = np.zeros((len(self.bend_cases) + len(self.twist_cases), 4), dtype=np.float32)
+        kinematic_q = body_q[[case["tip"] for case in self.bend_cases + self.twist_cases]]
+        self._kinematic_target_count = len(kinematic_q)
+        initial_pos = np.asarray(kinematic_q[:, :3], dtype=np.float32)
+        initial_rot = np.asarray(kinematic_q[:, 3:7], dtype=np.float32)
+        self._kinematic_pos_np = np.tile(initial_pos, (self.sim_substeps, 1))
+        self._kinematic_rot_np = np.tile(initial_rot, (self.sim_substeps, 1))
         self._kinematic_pos = wp.array(self._kinematic_pos_np, dtype=wp.vec3)
         self._kinematic_rot = wp.array(self._kinematic_rot_np, dtype=wp.quat)
+        self._kinematic_qd_np = np.zeros((self.sim_substeps * self._kinematic_target_count, 6), dtype=np.float32)
+        self._kinematic_qd = wp.array(self._kinematic_qd_np, dtype=wp.spatial_vector)
+        self._kinematic_pos_prev_np = initial_pos.copy()
+        self._kinematic_rot_prev_np = initial_rot.copy()
 
         self.viewer.set_model(self.model)
         set_viewer_camera(
@@ -216,6 +230,7 @@ class Example:
         return list(bodies), list(joints)
 
     def _make_kinematic(self, builder, body_index: int) -> None:
+        builder.body_flags[body_index] = int(newton.BodyFlags.KINEMATIC)
         builder.body_mass[body_index] = 0.0
         builder.body_inv_mass[body_index] = 0.0
         builder.body_inertia[body_index] = wp.mat33(0.0)
@@ -291,38 +306,66 @@ class Example:
             offsets.append(offset_distance * normal)
         return np.asarray(offsets, dtype=np.float64)
 
-    def _update_kinematic_targets(self, scale: float) -> None:
+    def _write_kinematic_targets(self, scale: float, positions: np.ndarray, rotations: np.ndarray) -> None:
         row = 0
         for case in self.bend_cases:
             target = case["target"] * scale
             points = self._analytic_bend_points(case["rest_points"], case["target"], scale)
             q_bend = self._axis_quat(np.array([0.0, 1.0, 0.0]), target)
             rot = self._quat_mul(q_bend, case["tip_rest_q"])
-            self._kinematic_pos_np[row] = com_from_node(points[-1], rot, self.SEGMENT_LENGTH).astype(np.float32)
-            self._kinematic_rot_np[row] = rot.astype(np.float32)
+            positions[row] = com_from_node(points[-1], rot, self.SEGMENT_LENGTH).astype(np.float32)
+            rotations[row] = rot.astype(np.float32)
             row += 1
 
         for case in self.twist_cases:
             target = case["target"] * scale
             q_twist = self._axis_quat(np.array([1.0, 0.0, 0.0]), target)
             rot = self._quat_mul(q_twist, case["tip_rest_q"])
-            self._kinematic_pos_np[row] = com_from_node(case["rest_points"][-1], rot, self.SEGMENT_LENGTH).astype(
-                np.float32
-            )
-            self._kinematic_rot_np[row] = rot.astype(np.float32)
+            positions[row] = com_from_node(case["rest_points"][-1], rot, self.SEGMENT_LENGTH).astype(np.float32)
+            rotations[row] = rot.astype(np.float32)
             row += 1
+
+    def _update_kinematic_targets(self) -> None:
+        previous_pos = self._kinematic_pos_prev_np
+        previous_rot = self._kinematic_rot_prev_np
+        for substep in range(self.sim_substeps):
+            start = substep * self._kinematic_target_count
+            end = start + self._kinematic_target_count
+            positions = self._kinematic_pos_np[start:end]
+            rotations = self._kinematic_rot_np[start:end]
+            velocities = self._kinematic_qd_np[start:end]
+            self._write_kinematic_targets(self._load_scale(self.sim_time + substep * self.sim_dt), positions, rotations)
+
+            velocities[:, :3] = (positions - previous_pos) / self.sim_dt
+            for i, (rotation, rotation_prev) in enumerate(zip(rotations, previous_rot, strict=True)):
+                delta = self._quat_mul(rotation.astype(np.float64), self._quat_conj(rotation_prev))
+                delta /= max(np.linalg.norm(delta), 1.0e-12)
+                axis, angle = self._quat_axis_angle(delta)
+                velocities[i, 3:] = axis * (angle / self.sim_dt)
+            previous_pos = positions
+            previous_rot = rotations
 
         self._kinematic_pos.assign(self._kinematic_pos_np)
         self._kinematic_rot.assign(self._kinematic_rot_np)
+        self._kinematic_qd.assign(self._kinematic_qd_np)
+        self._kinematic_pos_prev_np[:] = previous_pos
+        self._kinematic_rot_prev_np[:] = previous_rot
 
     def _simulate_substeps(self) -> None:
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             wp.launch(
                 _set_kinematic_targets_kernel,
-                dim=len(self._kinematic_pos_np),
-                inputs=[self._kinematic_indices, self._kinematic_pos, self._kinematic_rot],
-                outputs=[self.state_0.body_q, self.state_1.body_q],
+                dim=self._kinematic_target_count,
+                inputs=[
+                    self._kinematic_indices,
+                    self._kinematic_pos,
+                    self._kinematic_rot,
+                    self._kinematic_qd,
+                    self._kinematic_target_count,
+                    substep,
+                ],
+                outputs=[self.state_0.body_q, self.state_1.body_q, self.state_0.body_qd],
             )
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
@@ -336,15 +379,15 @@ class Example:
         else:
             self.graph = None
 
-    def simulate(self, scale: float) -> None:
-        self._update_kinematic_targets(scale)
+    def simulate(self) -> None:
         if self.graph:
             wp.capture_launch(self.graph)
         else:
             self._simulate_substeps()
 
     def step(self):
-        self.simulate(self._load_scale(self.sim_time))
+        self._update_kinematic_targets()
+        self.simulate()
         self.sim_time += self.frame_dt
 
     def _rod_points(self, bodies: list[int]) -> np.ndarray:
