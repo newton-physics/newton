@@ -148,6 +148,36 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
     )
 
 
+def test_distance_joint_limits(test, device):
+    def solve(initial_distance, min_distance, max_distance):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(
+            xform=wp.transform(wp.vec3(initial_distance, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_shape_sphere(body, radius=0.1)
+        joint = builder.add_joint_distance(
+            -1,
+            body,
+            parent_xform=wp.transform(
+                wp.vec3(0.0),
+                wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
+            ),
+            min_distance=min_distance,
+            max_distance=max_distance,
+        )
+        builder.add_articulation([joint])
+
+        model = builder.finalize(device=device)
+        state_in = model.state()
+        state_out = model.state()
+        solver = newton.solvers.SolverXPBD(model, iterations=10)
+        solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+        return np.linalg.norm(state_out.body_q.numpy()[body, :3])
+
+    test.assertGreaterEqual(solve(0.25, 1.0, -1.0), 0.99)
+    test.assertLessEqual(solve(2.0, -1.0, 1.0), 1.01)
+
+
 def test_optional_control_and_contacts(test, device):
     """Test that XPBD accepts omitted control and contact data.
 
@@ -1584,6 +1614,14 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_particle_friction_uses_relative_velocity",
     test_particle_particle_friction_uses_relative_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_distance_joint_limits",
+    test_distance_joint_limits,
     devices=devices,
     check_output=False,
 )

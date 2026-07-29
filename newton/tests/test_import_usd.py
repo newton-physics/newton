@@ -1022,26 +1022,46 @@ def Xform "World"
 
 class TestImportUsdJoints(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_distance_joint_label(self):
+    def test_distance_joint(self):
+        """Import independently enabled distance-joint limits."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
-        stage = Usd.Stage.CreateInMemory()
-        articulation = UsdGeom.Xform.Define(stage, "/World")
-        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        def import_limits(min_distance=None, max_distance=None):
+            stage = Usd.Stage.CreateInMemory()
+            articulation = UsdGeom.Xform.Define(stage, "/World")
+            UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
 
-        body0 = UsdGeom.Xform.Define(stage, "/World/Body0")
-        UsdPhysics.RigidBodyAPI.Apply(body0.GetPrim())
-        body1 = UsdGeom.Xform.Define(stage, "/World/Body1")
-        UsdPhysics.RigidBodyAPI.Apply(body1.GetPrim())
+            body0 = UsdGeom.Xform.Define(stage, "/World/Body0")
+            UsdPhysics.RigidBodyAPI.Apply(body0.GetPrim())
+            body1 = UsdGeom.Xform.Define(stage, "/World/Body1")
+            UsdPhysics.RigidBodyAPI.Apply(body1.GetPrim())
 
-        joint = UsdPhysics.DistanceJoint.Define(stage, "/World/DistanceJoint")
-        joint.CreateBody0Rel().SetTargets([body0.GetPath()])
-        joint.CreateBody1Rel().SetTargets([body1.GetPath()])
+            joint = UsdPhysics.DistanceJoint.Define(stage, "/World/DistanceJoint")
+            joint.CreateBody0Rel().SetTargets([body0.GetPath()])
+            joint.CreateBody1Rel().SetTargets([body1.GetPath()])
+            if min_distance is not None:
+                joint.CreateMinDistanceAttr(min_distance)
+            if max_distance is not None:
+                joint.CreateMaxDistanceAttr(max_distance)
 
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
 
-        self.assertIn("/World/DistanceJoint", builder.joint_label)
+            joint_index = builder.joint_label.index("/World/DistanceJoint")
+            dof_index = builder.joint_qd_start[joint_index]
+            return builder.joint_limit_lower[dof_index], builder.joint_limit_upper[dof_index]
+
+        cases = (
+            ("no limits", None, None, -1.0, -1.0),
+            ("minimum only", 0.25, None, 0.25, -1.0),
+            ("maximum only", None, 1.5, -1.0, 1.5),
+            ("both limits", 0.25, 1.5, 0.25, 1.5),
+            ("disabled minimum", -0.25, None, -1.0, -1.0),
+            ("disabled maximum", None, -0.25, -1.0, -1.0),
+        )
+        for name, min_distance, max_distance, expected_min, expected_max in cases:
+            with self.subTest(name=name):
+                self.assertEqual(import_limits(min_distance, max_distance), (expected_min, expected_max))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_collision_enabled(self):

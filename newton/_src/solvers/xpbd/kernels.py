@@ -1604,7 +1604,7 @@ def solve_body_joints(
     rel_p = wp.transform_get_translation(rel_pose)
 
     # joint connection points
-    # x_p = wp.transform_get_translation(X_wp)
+    x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
 
     linear_compliance = joint_linear_compliance
@@ -1620,28 +1620,28 @@ def solve_body_joints(
 
     # handle positional constraints
     if type == JointType.DISTANCE:
-        r_p = wp.transform_get_translation(X_wp) - world_com_p
-        r_c = wp.transform_get_translation(X_wc) - world_com_c
+        r_p = x_p - world_com_p
+        r_c = x_c - world_com_c
         lower = joint_limit_lower[axis_start]
         upper = joint_limit_upper[axis_start]
         if lower < 0.0 and upper < 0.0:
             # no limits
             return
-        d = wp.length(rel_p)
+        anchor_delta = x_c - x_p
+        d = wp.length(anchor_delta)
         err = 0.0
         if lower >= 0.0 and d < lower:
             err = d - lower
-            # use a more descriptive direction vector for the constraint
-            # in case the joint parent and child anchors are very close
-            rel_p = err * wp.normalize(world_com_c - world_com_p)
         elif upper >= 0.0 and d > upper:
             err = d - upper
 
         if wp.abs(err) > 1e-9:
             # compute gradients
-            linear_c = rel_p
+            if d > 1e-9:
+                linear_c = anchor_delta / d
+            else:
+                linear_c = wp.normalize(world_com_c - world_com_p)
             linear_p = -linear_c
-            r_c = x_c - world_com_c
             angular_p = -wp.cross(r_p, linear_c)
             angular_c = wp.cross(r_c, linear_c)
             # constraint time derivative
