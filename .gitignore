@@ -33,6 +33,7 @@ rspec.xml
 # Claude Code
 .claude/settings.local.json
 .claude/worktrees/
+.worktrees/
 .mcp.json
 
 # Claude Code sandbox artifacts (empty placeholder files created in repo root)
