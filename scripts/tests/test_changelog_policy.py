@@ -14,41 +14,7 @@ from pathlib import Path, PurePosixPath
 
 from scripts import changelog_policy
 
-TOWNCRIER_CONFIG = """\
-[tool.towncrier]
-directory = "changelog.d"
-filename = "CHANGELOG.md"
-start_string = "<!-- towncrier release notes start -->\\n"
-title_format = "## [{version}] - {project_date}"
-issue_format = "[#{issue}](https://github.com/newton-physics/newton/issues/{issue})"
-issue_pattern = "\\\\d+"
-wrap = false
-
-[[tool.towncrier.type]]
-directory = "added"
-name = "Added"
-showcontent = true
-
-[[tool.towncrier.type]]
-directory = "changed"
-name = "Changed"
-showcontent = true
-
-[[tool.towncrier.type]]
-directory = "deprecated"
-name = "Deprecated"
-showcontent = true
-
-[[tool.towncrier.type]]
-directory = "removed"
-name = "Removed"
-showcontent = true
-
-[[tool.towncrier.type]]
-directory = "fixed"
-name = "Fixed"
-showcontent = true
-"""
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 INITIAL_CHANGELOG = """\
 # Changelog
@@ -215,7 +181,7 @@ class TowncrierWorkflowTest(unittest.TestCase):
         self.temp_directory = tempfile.TemporaryDirectory()
         self.repository = Path(self.temp_directory.name)
         (self.repository / "changelog.d").mkdir()
-        (self.repository / "pyproject.toml").write_text(TOWNCRIER_CONFIG, encoding="utf-8")
+        shutil.copyfile(REPOSITORY_ROOT / "pyproject.toml", self.repository / "pyproject.toml")
         (self.repository / "CHANGELOG.md").write_text(INITIAL_CHANGELOG, encoding="utf-8")
         self._git("init", "-b", "main")
         self._git("config", "user.name", "Newton Test")
