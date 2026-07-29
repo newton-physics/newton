@@ -195,6 +195,38 @@ state objects — simply omit them:
 
    m2.actuators[0].step(m2.state(), m2.control())
 
+Effort Modes
+------------
+
+By default an actuator computes effort **explicitly**: the control law is
+evaluated at the current state and held constant over the step (zero-order
+hold). At stiff gains and large timesteps this can overshoot or go unstable.
+
+The **implicit** effort mode instead solves the control law against the
+predicted end-of-step state (a Stable-PD style solve), which stays stable at
+much higher gains. It needs the joint-space effective inverse mass, supplied by
+a :class:`~newton.actuators.ResponseOracle` and refreshed once per step at the
+current pose:
+
+.. code-block:: python
+
+   from newton.actuators import ResponseOracle
+
+   oracle = ResponseOracle(model)
+   actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+
+   # Simulation loop
+   oracle.refresh(state)  # refresh effective masses at the current pose
+   actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
+
+The solve couples the DOFs of each articulation, so the response is the full
+per-articulation inverse mass rather than a per-DOF scalar. Call
+:meth:`~newton.actuators.Actuator.set_effort_mode_explicit` to switch back;
+tuning lives in :class:`~newton.actuators.ActuatorImplicitOptions`. Every
+controller except the Torch-backed neural checkpoints supports the implicit
+mode — neural controllers enter the solve through a per-step linearization of
+the network about the current state.
+
 Differentiability and Graph Capture
 -----------------------------------
 

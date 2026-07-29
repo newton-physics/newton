@@ -54,15 +54,7 @@ class Actuator:
         actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
 
     Effort is computed explicitly by default (control law evaluated at the
-    current state, zero-order hold over the step). For stiff gains at large
-    timesteps, switch to the implicit effort mode::
-
-        oracle = ResponseOracle(model)
-        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
-
-        # Simulation loop
-        oracle.refresh(state)  # refresh effective masses at the current pose
-        actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
+    current state, zero-order hold over the step).
     """
 
     @dataclass

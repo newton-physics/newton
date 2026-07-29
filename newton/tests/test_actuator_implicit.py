@@ -1112,7 +1112,7 @@ def test_unsupported_controller_raises(test, device):
 
 
 def test_validation_errors(test, device):
-    """Missing inv-mass / dt and non-scalar joints raise clearly."""
+    """A non-ResponseOracle inverse mass and a missing dt raise clearly."""
     model = _build_single_revolute(device)
     indices = wp.array(np.arange(model.joint_dof_count, dtype=np.uint32), device=device)
     kp = wp.array([100.0], dtype=float, device=device)
@@ -1176,6 +1176,107 @@ def test_pid_implicit_matches_reference(test, device):
     expected = e_q * (kp_val + ki_val * h) / (1.0 + alpha * h * (kp_val * h + kd_val))
     test.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
     test.assertAlmostEqual(sb.controller_state.integral.numpy()[0], e_q * h, delta=abs(e_q * h) * 1e-5)
+
+
+def test_pid_implicit_multistep_antiwindup(test, device):
+    """The integral accumulates across steps and saturates at integral_max.
+
+    Held at a fixed pose, the integral grows by ``e_q*h`` each step until it
+    hits ``integral_max`` (anti-windup binds). Each step's effort matches the
+    Stable-PD solution with that step's (possibly saturated) integral folded in:
+    ``tau = (kp*e_q + ki*I_k) / (1 + alpha*h*(kp*h + kd))``.
+    """
+    h = 0.01
+    kp_val, ki_val, kd_val = 400.0, 50.0, 6.0
+    q0, target = 0.2, 1.0
+    e_q = target - q0
+    integral_max = 0.02  # e_q*h = 0.008 per step, so anti-windup binds on step 3
+
+    model = _build_single_revolute(device)
+    state = model.state()
+    state.joint_q.assign(np.array([q0], dtype=np.float32))
+    control = model.control()
+    control.joint_target_q.assign(np.array([target], dtype=np.float32))
+
+    oracle = ResponseOracle(model)
+    controller = ControllerPID(
+        kp=wp.array([kp_val], dtype=float, device=device),
+        ki=wp.array([ki_val], dtype=float, device=device),
+        kd=wp.array([kd_val], dtype=float, device=device),
+        integral_max=wp.array([integral_max], dtype=float, device=device),
+    )
+    actuator = Actuator(
+        indices=wp.array([0], dtype=wp.uint32, device=device),
+        controller=controller,
+        control_target_pos_attr="joint_target_q",
+        control_target_vel_attr="joint_target_qd",
+    )
+    actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+    oracle.refresh(state)  # pose is fixed, so alpha is constant across steps
+    alpha = _alpha_reference(model, state)[0]
+    denom = 1.0 + alpha * h * (kp_val * h + kd_val)
+
+    # sa is the current state (integral_prev), sb receives the advanced integral.
+    sa, sb = actuator.state(), actuator.state()
+    for k in range(5):
+        control.joint_f.zero_()
+        actuator.step(state, control, sa, sb, dt=h)
+        integral = min((k + 1) * e_q * h, integral_max)  # accumulate, then saturate
+        expected = (kp_val * e_q + ki_val * integral) / denom
+        test.assertAlmostEqual(sb.controller_state.integral.numpy()[0], integral, delta=abs(integral) * 1e-4)
+        test.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
+        sa, sb = sb, sa  # next step reads the integral just written
+
+    # Anti-windup genuinely bound: the final integral is capped below raw accumulation.
+    final_integral = float(sa.controller_state.integral.numpy()[0])
+    test.assertLess(final_integral, 5 * e_q * h)
+    test.assertAlmostEqual(final_integral, integral_max, delta=integral_max * 1e-4)
+
+
+def test_selection_api_updates_implicit_solve(test, device):
+    """Writing a gain through the selection API reaches the installed implicit solve.
+
+    ``set_actuator_parameter`` scatters into the packed parameter views that
+    ``set_effort_mode_implicit`` binds, so the next solve must use the new gain.
+    This exercises the masked-scatter write path, not the direct ``.assign`` one.
+    """
+    from newton._src.utils.selection import ArticulationView  # noqa: PLC0415
+
+    h = 0.01
+    kp1, kp2, kd_val = 500.0, 2000.0, 5.0
+    q0, target = 0.2, 1.0
+
+    model = _build_single_revolute(device)
+    state = model.state()
+    state.joint_q.assign(np.array([q0], dtype=np.float32))
+    control = model.control()
+    control.joint_target_q.assign(np.array([target], dtype=np.float32))
+
+    oracle = ResponseOracle(model)
+    actuator = Actuator(
+        indices=wp.array([0], dtype=wp.uint32, device=device),
+        controller=ControllerPD(
+            kp=wp.array([kp1], dtype=float, device=device),
+            kd=wp.array([kd_val], dtype=float, device=device),
+        ),
+        control_target_pos_attr="joint_target_q",
+        control_target_vel_attr="joint_target_qd",
+    )
+    actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+
+    view = ArticulationView(model, "*", verbose=False)
+    np.testing.assert_allclose(view.get_actuator_parameter(actuator, actuator.controller, "kp").numpy(), [[kp1]])
+    view.set_actuator_parameter(actuator, actuator.controller, "kp", wp.array([[kp2]], dtype=float, device=device))
+    np.testing.assert_allclose(actuator.controller.kp.numpy(), [kp2])
+
+    def expected(kp):
+        alpha = _alpha_reference(model, state)[0]
+        return kp * (target - q0) / (1.0 + alpha * h * kd_val + alpha * h * h * kp)
+
+    oracle.refresh(state)
+    control.joint_f.zero_()
+    actuator.step(state, control, dt=h)
+    test.assertAlmostEqual(control.joint_f.numpy()[0], expected(kp2), delta=abs(expected(kp2)) * 1e-4)
 
 
 devices = get_test_devices()
@@ -1281,6 +1382,18 @@ if _HAS_ONNX and _HAS_WARP_NN:
     )
 add_function_test(
     TestActuatorImplicit, "test_pid_implicit_matches_reference", test_pid_implicit_matches_reference, devices=devices
+)
+add_function_test(
+    TestActuatorImplicit,
+    "test_pid_implicit_multistep_antiwindup",
+    test_pid_implicit_multistep_antiwindup,
+    devices=devices,
+)
+add_function_test(
+    TestActuatorImplicit,
+    "test_selection_api_updates_implicit_solve",
+    test_selection_api_updates_implicit_solve,
+    devices=devices,
 )
 add_function_test(TestActuatorImplicit, "test_validation_errors", test_validation_errors, devices=devices)
 
