@@ -318,6 +318,7 @@ def joint_conversion_kernel(
     model_joint_dof_dim: wp.array2d[wp.int32],
     model_joint_q_start: wp.array[wp.int32],
     model_joint_qd_start: wp.array[wp.int32],
+    model_joint_axis: wp.array[wp.vec3f],
     model_joint_armature: wp.array[wp.float32],
     model_joint_damping: wp.array[wp.float32],
     model_joint_target_ke: wp.array[wp.float32],
@@ -348,10 +349,14 @@ def joint_conversion_kernel(
     qd_count_j = model_joint_qd_start[joint_id + 1] - dofs_start_j
     limit_upper_j = vec6f()
     limit_lower_j = vec6f()
+    dof_axes_j = mat63f()
     for i in range(qd_count_j):
         limit_upper_j[i] = joint_limit_upper[dofs_start_j + i]
         limit_lower_j[i] = joint_limit_lower[dofs_start_j + i]
-    dof_type_j = JointDoFType.from_newton_wp(type_j, q_count_j, qd_count_j, dof_dim_j, limit_lower_j, limit_upper_j)
+        dof_axes_j[i] = model_joint_axis[dofs_start_j + i]
+    dof_type_j = JointDoFType.from_newton_wp(
+        type_j, q_count_j, qd_count_j, dof_dim_j, limit_lower_j, limit_upper_j, dof_axes_j
+    )
     assert dof_type_j >= 0, "Joint DoF type must be valid"
 
     # Get joint type properties
@@ -889,6 +894,30 @@ def convert_model_joint_actuation(model: Model, joints: JointsModel) -> None:
     )
 
 
+def _validate_joint_axes(model: Model, joint_dof_type: np.ndarray) -> None:
+    """Validate Newton joint axes before Warp frame conversion."""
+    joint_qd_start = model.joint_qd_start.numpy()
+    joint_axis = model.joint_axis.numpy()
+    errors = []
+    for joint_id, dof_type_value in enumerate(joint_dof_type):
+        if dof_type_value < 0:
+            errors.append(f"joint {joint_id} ({model.joint_label[joint_id]!r}): unsupported joint configuration")
+            continue
+        dof_type = JointDoFType(int(dof_type_value))
+        axes = joint_axis[joint_qd_start[joint_id] : joint_qd_start[joint_id + 1]]
+        if axes.shape != (dof_type.num_dofs, 3) or not np.all(np.isfinite(axes)):
+            errors.append(f"joint {joint_id} ({model.joint_label[joint_id]!r}): invalid joint axes")
+            continue
+        if dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+            gram = axes @ axes.T
+            if not np.allclose(gram, np.eye(3), atol=1e-6, rtol=0.0):
+                errors.append(
+                    f"joint {joint_id} ({model.joint_label[joint_id]!r}): gimbal axes must be unit length and orthogonal"
+                )
+    if errors:
+        raise ValueError("Invalid joint configuration for SolverKamino:\n  - " + "\n  - ".join(errors))
+
+
 def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     """
     Converts the joint model parameterization of Newton's to Kamino's format.
@@ -904,6 +933,7 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
         The output JointsModel instance where the converted joint data will be stored.
         This function modifies the `joints` object in-place.
     """
+    _validate_joint_axes(model, joints.dof_type.numpy())
     wp.launch(
         kernel=joint_frame_conversion_kernel,
         dim=model.joint_count,
@@ -1172,6 +1202,7 @@ def convert_joints(
             model.joint_dof_dim,
             model.joint_q_start,
             model.joint_qd_start,
+            model.joint_axis,
             model.joint_armature,
             model.joint_damping,
             model.joint_target_ke,
@@ -1190,6 +1221,8 @@ def convert_joints(
         ],
         device=model.device,
     )
+
+    _validate_joint_axes(model, joint_dof_type.numpy())
 
     wp.launch(
         kernel=joint_frame_conversion_kernel,

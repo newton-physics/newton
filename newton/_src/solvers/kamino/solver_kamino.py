@@ -1148,7 +1148,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - distance, cable, or gimbal joints
+        - distance or cable joints
 
         Args:
             model: The Newton model to validate.
@@ -1174,27 +1174,17 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Check for unsupported joint types
         if model.joint_count > 0:
             joint_type_np = model.joint_type.numpy()
-            joint_dof_dim_np = model.joint_dof_dim.numpy()
-            joint_q_start_np = model.joint_q_start.numpy()
-            joint_qd_start_np = model.joint_qd_start.numpy()
 
             unsupported_joint_types = {}
 
             for j in range(model.joint_count):
                 joint_type = int(joint_type_np[j])
-                dof_dim = (int(joint_dof_dim_np[j][0]), int(joint_dof_dim_np[j][1]))
-                q_count = int(joint_q_start_np[j + 1] - joint_q_start_np[j])
-                qd_count = int(joint_qd_start_np[j + 1] - joint_qd_start_np[j])
 
                 # Check for explicitly unsupported joint types
                 if joint_type == JointType.DISTANCE:
                     unsupported_joint_types["DISTANCE"] = unsupported_joint_types.get("DISTANCE", 0) + 1
                 elif joint_type == JointType.CABLE:
                     unsupported_joint_types["CABLE"] = unsupported_joint_types.get("CABLE", 0) + 1
-                # Check for GIMBAL configuration (3 coords, 3 DoFs, 0 linear/3 angular)
-                elif joint_type == JointType.D6 and q_count == 3 and qd_count == 3 and dof_dim == (0, 3):
-                    unsupported_joint_types["D6 (GIMBAL)"] = unsupported_joint_types.get("D6 (GIMBAL)", 0) + 1
-
             if len(unsupported_joint_types) > 0:
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
