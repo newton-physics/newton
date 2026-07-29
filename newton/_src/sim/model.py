@@ -1967,7 +1967,7 @@ class Model:
         Set gravity for runtime modification.
 
         Args:
-            gravity: Gravity vector with shape ``(3,)``, a local-world array with shape
+            gravity: Gravity vector [m/s²] with shape ``(3,)``, a local-world array with shape
                 ``(world_count, 3)``, or a local-and-global array with shape
                 ``(world_count + 1, 3)``. A single vector updates every local world and
                 the global world. A local-world array preserves the global gravity.
