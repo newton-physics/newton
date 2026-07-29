@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...geometry import Gaussian, GeoType
-from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
+from ..geometry import Gaussian, GeoType
+from ..utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
-from .types import ClearData, MeshData, RenderOrder, TextureData, WorldRenderFlag
+from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData, WorldRenderFlag
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -28,9 +28,7 @@ def _srgb_packed_rgba_to_linear(packed: int) -> int:
     return (a << 24) | (lb << 16) | (lg << 8) | lr
 
 
-def create_kernel(
-    config: RenderContext.Config, state: RenderContext.RenderState, clear_data: RenderContext.ClearData
-) -> wp.kernel:
+def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_data: ClearData) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
 
     if (

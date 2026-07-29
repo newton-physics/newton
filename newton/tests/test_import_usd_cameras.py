@@ -205,8 +205,10 @@ class TestImportUsdCameras(unittest.TestCase):
         depth = camera_sensor.create_depth_image_output()
         shape_index = camera_sensor.create_shape_index_image_output()
 
-        model.update_render_context(state)
-        camera_sensor.update(model, state, depth_image=depth, shape_index_image=shape_index)
+        render_context = newton.RenderContext(model)
+        camera_sensor.render_context = render_context
+        render_context.update(state)
+        camera_sensor.update(state, depth_image=depth, shape_index_image=shape_index)
 
         depth_np = depth.numpy()
         shape_index_np = shape_index.numpy()

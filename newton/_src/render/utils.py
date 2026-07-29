@@ -8,7 +8,7 @@ from typing import Any
 
 import warp as wp
 
-from ...core import MAXVAL
+from ..core import MAXVAL
 
 
 @wp.kernel(enable_backward=False)

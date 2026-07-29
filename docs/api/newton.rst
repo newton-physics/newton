@@ -13,6 +13,7 @@ newton
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
 - :doc:`newton.math <newton_math>`
+- :doc:`newton.render <newton_render>`
 - :doc:`newton.selection <newton_selection>`
 - :doc:`newton.sensors <newton_sensors>`
 - :doc:`newton.solvers <newton_solvers>`
@@ -28,26 +29,33 @@ newton
 
    Axis
    BodyFlags
+   ClearData
    CollisionPipeline
    Contacts
    Control
    EqType
    Gaussian
+   GaussianRenderMode
    GeoType
    Heightfield
    JointTargetMode
    JointType
+   LightType
    Mesh
    Model
    ModelBuilder
    ModelFlags
    ParticleFlags
+   RenderConfig
+   RenderContext
+   RenderOrder
    SDF
    SensorCamera
    ShapeFlags
    State
    StateFlags
    TetMesh
+   WorldRenderFlag
 
 .. rubric:: Functions
 

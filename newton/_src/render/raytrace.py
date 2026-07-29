@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...geometry import Gaussian, GeoType, raycast
+from ..geometry import Gaussian, GeoType, raycast
 from . import gaussians
-from .types import MeshData
+from .types import MeshData, RenderConfig
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -76,7 +76,7 @@ def get_group_roots(group_roots: wp.array[wp.int32], world_index: wp.int32, want
     return group_roots[world_index]
 
 
-def create_closest_hit_function(config: RenderContext.Config, state: RenderContext.RenderState) -> wp.Function:
+def create_closest_hit_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
     shade_gaussians = gaussians.create_shade_function(config, state)
 
     @wp.func
@@ -345,9 +345,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
     return closest_hit
 
 
-def create_closest_hit_depth_only_function(
-    config: RenderContext.Config, state: RenderContext.RenderState
-) -> wp.Function:
+def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
     shade_gaussians = gaussians.create_shade_function(config, state)
 
     @wp.func
@@ -584,7 +582,7 @@ def create_closest_hit_depth_only_function(
     return closest_hit_depth_only
 
 
-def create_first_hit_function(config: RenderContext.Config, state: RenderContext.RenderState) -> wp.Function:
+def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
     @wp.func
     def first_hit_shape(
         bvh_shapes_size: wp.int32,

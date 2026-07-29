@@ -11,17 +11,14 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from .sensor_camera_renderer.types import (
+from ..render.types import (
     ClearData,
-    GaussianRenderMode,
     RenderConfig,
-    RenderLightType,
-    RenderOrder,
     WorldRenderFlag,
 )
 
 if TYPE_CHECKING:
-    from ..sim.model import Model
+    from ..render.render_context import RenderContext
     from ..sim.state import State
 
 
@@ -100,21 +97,19 @@ class SensorCamera:
     rays used for rendering.
     """
 
-    RenderConfig = RenderConfig
-    ClearData = ClearData
-    GaussianRenderMode = GaussianRenderMode
-    RenderLightType = RenderLightType
-    RenderOrder = RenderOrder
-    WorldRenderFlag = WorldRenderFlag
-
-    def __init__(self, rays: wp.array | np.ndarray):
+    def __init__(self, rays: wp.array | np.ndarray, render_context: RenderContext | None = None):
         """Construct a camera sensor from a ray bundle.
 
         Args:
             rays: Camera-space ray origins and directions, shape
                 ``(height, width, 2)`` of ``vec3f``.
+            render_context: Render context used by :meth:`update`. This can be
+                assigned after construction for cameras attached before
+                :class:`~newton.ModelBuilder.finalize`.
         """
         self.rays = self._coerce_rays(rays)
+        self.render_context = render_context
+        """Render context shared by camera sensors rendering the same model."""
         self.shape_indices = wp.array([], dtype=wp.int32, device=self.rays.device)
         """Indices into the owning model's ``shape_*`` arrays for this camera."""
 
@@ -160,7 +155,7 @@ class SensorCamera:
         """Renderer utility helpers for this finalized camera sensor."""
         self._ensure_finalized()
 
-        from .sensor_camera_renderer import Utils  # noqa: PLC0415
+        from ..render import Utils  # noqa: PLC0415
 
         return Utils(view_count=self.view_count, device=self.device)
 
@@ -230,7 +225,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one pinhole camera."""
-        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
 
@@ -287,7 +282,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one USD pinhole camera."""
-        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         camera_utils.compute_camera_rays_usd_pinhole(
@@ -320,7 +315,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one OpenCV fisheye camera."""
-        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         image_width = float(width) if image_width is None else float(image_width)
@@ -371,7 +366,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one F-theta fisheye camera."""
-        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
@@ -420,7 +415,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one Kannala-Brandt fisheye camera."""
-        from .sensor_camera_renderer import camera_utils  # noqa: PLC0415
+        from ..render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
@@ -548,8 +543,15 @@ class SensorCamera:
 
         return shape_index_by_world
 
-    def _update_transforms(self, model: Model, state: State) -> None:
+    def _get_render_context(self) -> RenderContext:
+        if self.render_context is None:
+            raise RuntimeError("SensorCamera.update() requires a RenderContext.")
+        return self.render_context
+
+    def _update_transforms(self, state: State) -> None:
         self._ensure_finalized()
+        render_context = self._get_render_context()
+        model = render_context.model
         transforms_shape = (model.world_count,)
         if (
             self._shape_index_by_world is None
@@ -579,7 +581,6 @@ class SensorCamera:
 
     def update(
         self,
-        model: Model,
         state: State,
         *,
         color_image: wp.array3d[wp.uint32] | None = None,
@@ -595,11 +596,10 @@ class SensorCamera:
         """Render this camera sensor from its shape transforms.
 
         Output arrays must have shape ``(view_count, height, width)``. The
-        owning model supplies camera transforms and world indices from its
-        ``shape_*`` arrays.
+        render context's model supplies camera transforms and world indices
+        from its ``shape_*`` arrays.
 
         Args:
-            model: Simulation model whose shapes will be rendered.
             state: Simulation state with body and particle transforms.
             color_image: Output RGBA color buffer (packed ``uint32``).
             depth_image: Output depth buffer [m].
@@ -609,13 +609,16 @@ class SensorCamera:
             albedo_image: Output albedo buffer (packed ``uint32``).
             hdr_color_image: Output linear HDR color buffer.
             world_render_flags: Optional per-world render flags, shape
-                ``(view_count,)``. Use :attr:`WorldRenderFlag.ENABLE` to
-                render a world, :attr:`WorldRenderFlag.DISABLE_CLEAR` to skip
+                ``(view_count,)``. Use :attr:`~newton.WorldRenderFlag.ENABLE`
+                to render a world,
+                :attr:`~newton.WorldRenderFlag.DISABLE_CLEAR` to skip
                 rendering and clear outputs, and
-                :attr:`WorldRenderFlag.DISABLE_PRESERVE` to skip rendering without
-                touching outputs.
+                :attr:`~newton.WorldRenderFlag.DISABLE_PRESERVE` to skip
+                rendering without touching outputs.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``.
         """
+        render_context = self._get_render_context()
+        model = render_context.model
         if self.rays.device != model.device:
             raise RuntimeError("SensorCamera rays are not on the model device; finalize the model with this camera.")
         if self.shape_indices.device != model.device:
@@ -623,13 +626,11 @@ class SensorCamera:
                 "SensorCamera shape indices are not on the model device; finalize the model with this camera."
             )
 
-        render_context = model.init_render_context()
-        self._update_transforms(model, state)
+        self._update_transforms(state)
         if world_render_flags is None:
             world_render_flags = self._all_world_render_flags
 
         render_context.render(
-            model,
             state,
             camera_transforms=self._camera_transforms,
             camera_rays=self.rays,

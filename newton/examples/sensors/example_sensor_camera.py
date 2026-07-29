@@ -233,7 +233,7 @@ class Example:
         self.disable_preserve_world_indices = np.arange(self.worlds_per_row, 2 * self.worlds_per_row, dtype=np.int32)
         self.world_render_flags_np = np.full(
             self.world_count_total,
-            int(SensorCamera.WorldRenderFlag.ENABLE),
+            int(newton.WorldRenderFlag.ENABLE),
             dtype=np.int32,
         )
         self.world_render_flags = wp.array(self.world_render_flags_np, dtype=wp.int32, device=self.model.device)
@@ -266,11 +266,13 @@ class Example:
         for sensor_camera in (self.sensor_camera, self.robot_sensor_camera):
             sensor_camera.render_config.enable_shadows = True
             sensor_camera.render_config.enable_textures = True
-            sensor_camera.clear_data = SensorCamera.ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
+            sensor_camera.clear_data = newton.ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
-        render_context = self.model.init_render_context()
-        render_context.create_default_light(enable_shadows=True)
-        render_context.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
+        self.render_context = newton.RenderContext(self.model)
+        self.render_context.create_default_light(enable_shadows=True)
+        self.render_context.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
+        self.sensor_camera.render_context = self.render_context
+        self.robot_sensor_camera.render_context = self.render_context
 
         self.sensor_camera_color_image = self.sensor_camera.create_color_image_output()
         self.sensor_camera_albedo_image = self.sensor_camera.create_albedo_image_output()
@@ -328,11 +330,10 @@ class Example:
         self._update_camera_shape_transforms()
         self.model.bvh_refit_shapes(self.state)
         self.model.bvh_refit_particles(self.state)
-        self.model.update_render_context(self.state)
+        self.render_context.update(self.state)
         self._update_world_render_flags()
         sensor_camera = self.robot_sensor_camera if self.show_robot_camera else self.sensor_camera
         sensor_camera.update(
-            self.model,
             self.state,
             color_image=self.sensor_camera_color_image,
             albedo_image=self.sensor_camera_albedo_image,
@@ -370,14 +371,12 @@ class Example:
         if not self._world_render_flags_dirty:
             return
 
-        self.world_render_flags_np.fill(int(SensorCamera.WorldRenderFlag.ENABLE))
+        self.world_render_flags_np.fill(int(newton.WorldRenderFlag.ENABLE))
         if self.disable_clear_worlds:
-            self.world_render_flags_np[self.disable_clear_world_indices] = int(
-                SensorCamera.WorldRenderFlag.DISABLE_CLEAR
-            )
+            self.world_render_flags_np[self.disable_clear_world_indices] = int(newton.WorldRenderFlag.DISABLE_CLEAR)
         if self.disable_preserve_worlds:
             self.world_render_flags_np[self.disable_preserve_world_indices] = int(
-                SensorCamera.WorldRenderFlag.DISABLE_PRESERVE
+                newton.WorldRenderFlag.DISABLE_PRESERVE
             )
 
         self.world_render_flags.assign(self.world_render_flags_np)
@@ -448,12 +447,9 @@ class Example:
         self.render_sensors()
 
         world_render_flags = self.world_render_flags.numpy()
+        assert np.all(world_render_flags[self.disable_clear_world_indices] == int(newton.WorldRenderFlag.DISABLE_CLEAR))
         assert np.all(
-            world_render_flags[self.disable_clear_world_indices] == int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR)
-        )
-        assert np.all(
-            world_render_flags[self.disable_preserve_world_indices]
-            == int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE)
+            world_render_flags[self.disable_preserve_world_indices] == int(newton.WorldRenderFlag.DISABLE_PRESERVE)
         )
 
         depth_image = self.sensor_camera_depth_image.numpy()
@@ -499,18 +495,18 @@ class Example:
 
         if ui.radio_button(
             "Gaussians: Fast",
-            render_config.gaussians_mode == SensorCamera.GaussianRenderMode.FAST,
+            render_config.gaussians_mode == newton.GaussianRenderMode.FAST,
         ):
-            if render_config.gaussians_mode != SensorCamera.GaussianRenderMode.FAST:
-                render_config.gaussians_mode = SensorCamera.GaussianRenderMode.FAST
+            if render_config.gaussians_mode != newton.GaussianRenderMode.FAST:
+                render_config.gaussians_mode = newton.GaussianRenderMode.FAST
                 show_compile_kernel_info = True
 
         if ui.radio_button(
             "Gaussians: Quality",
-            render_config.gaussians_mode == SensorCamera.GaussianRenderMode.QUALITY,
+            render_config.gaussians_mode == newton.GaussianRenderMode.QUALITY,
         ):
-            if render_config.gaussians_mode != SensorCamera.GaussianRenderMode.QUALITY:
-                render_config.gaussians_mode = SensorCamera.GaussianRenderMode.QUALITY
+            if render_config.gaussians_mode != newton.GaussianRenderMode.QUALITY:
+                render_config.gaussians_mode = newton.GaussianRenderMode.QUALITY
                 show_compile_kernel_info = True
 
         changed, value = ui.slider_float(

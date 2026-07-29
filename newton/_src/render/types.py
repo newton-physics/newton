@@ -6,10 +6,10 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from ...utils.color import ColorSpace
+from ..utils.color import ColorSpace
 
 
-class RenderLightType(enum.IntEnum):
+class LightType(enum.IntEnum):
     """Light types supported by the Warp raytracer."""
 
     SPOTLIGHT = 0

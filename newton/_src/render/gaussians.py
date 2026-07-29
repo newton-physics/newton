@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...geometry import Gaussian
-from ...geometry.bvh import compute_ellipsoid_bounds
-from ...geometry.raycast import map_ray_to_local
-from ...math import safe_div
-from .types import GaussianRenderMode
+from ..geometry import Gaussian
+from ..geometry.bvh import compute_ellipsoid_bounds
+from ..geometry.raycast import map_ray_to_local
+from ..math import safe_div
+from .types import GaussianRenderMode, RenderConfig
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -123,7 +123,7 @@ def ray_gsplat_hit_response(
     return 0.0, -1.0
 
 
-def create_shade_function(config: RenderContext.Config, state: RenderContext.RenderState) -> wp.Function:
+def create_shade_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
     @wp.func
     def shade(
         transform: wp.transformf,

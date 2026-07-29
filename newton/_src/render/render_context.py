@@ -9,18 +9,15 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from ...core import Axis
-from ...geometry import Gaussian, GeoType, Mesh
-from ...sim import Model, State
-from ...utils import load_texture, normalize_texture
+from ..core import Axis
+from ..geometry import GeoType, Mesh
+from ..sim import Model, State
+from ..utils import load_texture, normalize_texture
 from .render import create_kernel
-from .types import ClearData, MeshData, RenderConfig, RenderLightType, RenderOrder, TextureData
+from .types import ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
 
 
 class RenderContext:
-    Config = RenderConfig
-    ClearData = ClearData
-
     @dataclass(unsafe_hash=True)
     class RenderState:
         """Mutable flags tracking which render outputs are active."""
@@ -36,58 +33,10 @@ class RenderContext:
         render_hdr_color: bool = False
 
     DEFAULT_CLEAR_DATA = ClearData()
-    DEFAULT_RENDER_CONFIG = Config()
+    DEFAULT_RENDER_CONFIG = RenderConfig()
 
-    def __init__(self, world_count: int = 1, device: str | None = None):
-        """Create a new render context.
-
-        Args:
-            world_count: Number of simulation worlds to render.
-            device: Warp device string (e.g. ``"cuda:0"``). If ``None``,
-                the default Warp device is used.
-        """
-        self.device: str | None = device
-        self.state = RenderContext.RenderState()
-
-        self.kernel_cache: dict[int, wp.Kernel] = {}
-
-        self.world_count: int = world_count
-        self.up_axis: Axis = Axis.Z
-
-        self.triangle_mesh: wp.Mesh | None = None
-        self.triangle_mesh_group_roots: wp.array[wp.int32] = wp.full(
-            self.world_count + 1, value=-1, dtype=wp.int32, device=self.device
-        )
-
-        self.__triangle_points: wp.array[wp.vec3f] | None = None
-        self.__triangle_indices: wp.array[wp.int32] | None = None
-        self.__topology_particle_mask: wp.array[wp.bool] | None = None
-
-        self.__gaussians_data: wp.array[Gaussian.Data] | None = None
-        self.__has_particles: bool = False
-
-        self.shape_count_total: int = 0
-        self.shape_world_index: wp.array[wp.int32] | None = None
-        self.shape_colors: wp.array[wp.vec3f] | None = None
-        self.shape_source_ptr: wp.array[wp.uint64] | None = None
-        self.shape_texture_ids: wp.array[wp.int32] | None = None
-        self.shape_mesh_data_ids: wp.array[wp.int32] | None = None
-        self.shape_render_type: wp.array[wp.int32] | None = None
-
-        self.mesh_data: wp.array[MeshData] | None = None
-        self.texture_data: wp.array[TextureData] | None = None
-        self._texture_data_source: list[TextureData] = []
-
-        self.particle_world: wp.array[wp.int32] | None = None
-
-        self.lights_active: wp.array[wp.bool] | None = None
-        self.lights_type: wp.array[wp.int32] | None = None
-        self.lights_cast_shadow: wp.array[wp.bool] | None = None
-        self.lights_position: wp.array[wp.vec3f] | None = None
-        self.lights_orientation: wp.array[wp.vec3f] | None = None
-
-    def init_from_model(self, model: Model, load_textures: bool = True):
-        """Initialize render context state from a Newton simulation model.
+    def __init__(self, model: Model, load_textures: bool = True):
+        """Create a render context for a Newton simulation model.
 
         Populates shape, triangle, and texture data from *model*. BVH
         acceleration structures for shapes and particles live on
@@ -102,21 +51,36 @@ class RenderContext:
             load_textures: Load mesh textures from disk. Set False for
                 checkerboard or custom texture workflows.
         """
+        self._model = model
+        self._render_state = RenderContext.RenderState()
 
-        self.world_count = model.world_count
-        self.up_axis = Axis.from_any(model.up_axis)
-        self.triangle_mesh = None
-        self.triangle_mesh_group_roots = wp.full(self.world_count + 1, value=-1, dtype=wp.int32, device=self.device)
-        self.__triangle_points = None
-        self.__triangle_indices = None
-        self.__topology_particle_mask = None
-        self.__has_particles = False
-        self.state.has_particles = False
+        self._kernel_cache: dict[int, wp.Kernel] = {}
 
-        self.shape_count_total = model.shape_count
-        self.shape_world_index = model.shape_world
-        self.shape_source_ptr = model.shape_source_ptr
-        self._texture_data_source = []
+        self._triangle_mesh: wp.Mesh | None = None
+        self._triangle_mesh_group_roots: wp.array[wp.int32] = wp.full(
+            model.world_count + 1, value=-1, dtype=wp.int32, device=self.device
+        )
+
+        self._triangle_points: wp.array[wp.vec3f] | None = None
+        self._triangle_indices: wp.array[wp.int32] | None = None
+        self._topology_particle_mask: wp.array[wp.bool] | None = None
+
+        self._has_particles: bool = False
+
+        self._shape_texture_ids: wp.array[wp.int32] | None = None
+        self._shape_mesh_data_ids: wp.array[wp.int32] | None = None
+        self._shape_render_type: wp.array[wp.int32] | None = None
+
+        self._mesh_data: wp.array[MeshData] | None = None
+        self._texture_data: wp.array[TextureData] | None = None
+        self._texture_data_source: list[TextureData] = []
+        self._mesh_data_source: list[MeshData] = []
+
+        self._lights_active: wp.array[wp.bool] | None = None
+        self._lights_type: wp.array[wp.int32] | None = None
+        self._lights_cast_shadow: wp.array[wp.bool] | None = None
+        self._lights_position: wp.array[wp.vec3f] | None = None
+        self._lights_orientation: wp.array[wp.vec3f] | None = None
 
         # Heightfields are triangulated meshes (their wp.Mesh lives in
         # shape_source_ptr), so the renderer treats them as meshes: it reuses
@@ -125,17 +89,16 @@ class RenderContext:
         # register/occupancy cost). The remapped type array is what the render
         # kernel dispatches on; model.shape_type (HFIELD) is left untouched for
         # collision and BVH bounds.
-        self.shape_render_type = model.shape_type
         if model.shape_type is not None:
             shape_type_np = model.shape_type.numpy()
             if np.any(shape_type_np == int(GeoType.HFIELD)):
                 shape_type_np = shape_type_np.copy()
                 shape_type_np[shape_type_np == int(GeoType.HFIELD)] = int(GeoType.MESH)
-                self.shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
+                self._shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
 
         if model.particle_q is not None and model.particle_q.shape[0]:
-            self.__has_particles = True
-            self.state.has_particles = True
+            self._has_particles = True
+            self._render_state.has_particles = True
             topology_particle_mask = np.zeros(model.particle_q.shape[0], dtype=bool)
 
             def mask_topology_particles(indices: wp.array[wp.int32] | None):
@@ -143,23 +106,43 @@ class RenderContext:
                     topology_particle_mask[indices.numpy().reshape(-1)] = True
 
             if model.tri_indices is not None and model.tri_indices.shape[0]:
-                self.triangle_points = model.particle_q
-                self.triangle_indices = model.tri_indices.flatten()
-                self.particle_world = model.particle_world
+                self._set_triangle_points(model.particle_q)
+                self._set_triangle_indices(model.tri_indices.flatten())
                 # Deformable-owned vertices render through the triangle mesh; tet indices catch
                 # interior volume particles that are not referenced by boundary triangles.
                 mask_topology_particles(model.tri_indices)
                 mask_topology_particles(model.tet_indices)
-            self.__topology_particle_mask = wp.array(
+            self._topology_particle_mask = wp.array(
                 topology_particle_mask, dtype=wp.bool, device=model.particle_q.device
             )
 
-        self.shape_colors = model.shape_color
-        self.gaussians_data = model.gaussians_data
+        if model.gaussians_data is not None:
+            self._render_state.num_gaussians = model.gaussians_data.shape[0]
 
-        self.__load_texture_and_mesh_data(model, load_textures)
+        self._load_texture_and_mesh_data(model, load_textures)
 
-    def update(self, model: Model, state: State):
+    @property
+    def model(self) -> Model:
+        return self._model
+
+    @property
+    def device(self) -> wp.Device:
+        return self.model.device
+
+    @property
+    def world_count(self) -> int:
+        return self.model.world_count
+
+    @property
+    def up_axis(self) -> Axis:
+        return Axis.from_any(self.model.up_axis)
+
+    def _get_shape_render_type(self) -> wp.array[wp.int32] | None:
+        if self._shape_render_type is not None:
+            return self._shape_render_type
+        return self.model.shape_type
+
+    def update(self, state: State):
         """Synchronize triangle-mesh points from the current simulation state.
 
         Shape and particle BVHs are built by :meth:`~newton.ModelBuilder.finalize`
@@ -167,12 +150,11 @@ class RenderContext:
         :meth:`~newton.Model.bvh_refit_particles`.
 
         Args:
-            model: Newton simulation model (for shape metadata).
             state: Current simulation state with particle positions.
         """
 
-        if self.has_triangle_mesh:
-            self.triangle_points = state.particle_q
+        if self._has_triangle_mesh:
+            self._set_triangle_points(state.particle_q)
             self._sync_triangle_mesh()
 
     def create_default_light(
@@ -187,11 +169,11 @@ class RenderContext:
             direction: Normalized light direction. If ``None``, defaults to
                 (normalized ``(-1, 1, -1)``).
         """
-        self.lights_active = wp.array([True], dtype=wp.bool, device=self.device)
-        self.lights_type = wp.array([RenderLightType.DIRECTIONAL], dtype=wp.int32, device=self.device)
-        self.lights_cast_shadow = wp.array([enable_shadows], dtype=wp.bool, device=self.device)
-        self.lights_position = wp.array([wp.vec3f(0.0)], dtype=wp.vec3f, device=self.device)
-        self.lights_orientation = wp.array(
+        self._lights_active = wp.array([True], dtype=wp.bool, device=self.device)
+        self._lights_type = wp.array([LightType.DIRECTIONAL], dtype=wp.int32, device=self.device)
+        self._lights_cast_shadow = wp.array([enable_shadows], dtype=wp.bool, device=self.device)
+        self._lights_position = wp.array([wp.vec3f(0.0)], dtype=wp.vec3f, device=self.device)
+        self._lights_orientation = wp.array(
             [direction if direction is not None else wp.vec3f(-0.57735026, 0.57735026, -0.57735026)],
             dtype=wp.vec3f,
             device=self.device,
@@ -212,7 +194,7 @@ class RenderContext:
             checker_size: Size of each checkerboard square in pixels.
         """
         shape_indices = np.asarray(shape_indices, dtype=np.int64).reshape(-1)
-        invalid = (shape_indices < 0) | (shape_indices >= self.shape_count_total)
+        invalid = (shape_indices < 0) | (shape_indices >= self.model.shape_count)
         if invalid.any():
             raise ValueError("shape_indices contains an out-of-range shape index")
 
@@ -222,7 +204,7 @@ class RenderContext:
 
         pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32)
 
-        texture_ids = np.full(self.shape_count_total, fill_value=-1, dtype=np.int32)
+        texture_ids = np.full(self.model.shape_count, fill_value=-1, dtype=np.int32)
         texture_ids[shape_indices] = 0
 
         checkerboard_data = TextureData()
@@ -239,12 +221,11 @@ class RenderContext:
         checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
         self._texture_data_source = [checkerboard_data]
-        self.texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
-        self.shape_texture_ids = wp.array(texture_ids, dtype=wp.int32, device=self.device)
+        self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
+        self._shape_texture_ids = wp.array(texture_ids, dtype=wp.int32, device=self.device)
 
     def render(
         self,
-        model: Model,
         state: State,
         *,
         camera_transforms: wp.array[wp.transformf],
@@ -257,8 +238,8 @@ class RenderContext:
         shape_index_image: wp.array3d[wp.uint32] | None = None,
         normal_image: wp.array3d[wp.vec3f] | None = None,
         albedo_image: wp.array3d[wp.uint32] | None = None,
-        clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
-        config: RenderContext.Config | None = DEFAULT_RENDER_CONFIG,
+        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
+        config: RenderConfig | None = DEFAULT_RENDER_CONFIG,
         kernel_block_dim: int = 64,
     ):
         """Raytrace the scene into the provided output images.
@@ -267,7 +248,7 @@ class RenderContext:
         output arrays must have shape
         ``(world_count, height, width)``.
 
-        Shape and particle BVHs on *model* are built for the initial state by
+        Shape and particle BVHs on the model are built for the initial state by
         :meth:`~newton.ModelBuilder.finalize`. Before later frames that change
         geometry, refit them via
         :meth:`~newton.Model.bvh_refit_shapes` and
@@ -275,7 +256,6 @@ class RenderContext:
         method.
 
         Args:
-            model: Simulation model providing shape metadata and BVHs.
             state: Current simulation state (for particle positions).
             camera_transforms: Per-world camera transforms, shape
                 ``(world_count,)``.
@@ -283,7 +263,7 @@ class RenderContext:
                 ``(height, width, 2)``.
             world_render_flags: Per-world render flags, shape
                 ``(world_count,)``. Values come from
-                :class:`~newton.sensors.SensorCamera.WorldRenderFlag`.
+                :class:`~newton.WorldRenderFlag`.
             color_image: Output RGBA color buffer (packed ``uint32``).
             depth_image: Output depth buffer [m].
             forward_depth_image: Output forward-depth buffer [m].
@@ -298,6 +278,7 @@ class RenderContext:
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
+        model = self.model
         if config is None:
             config = RenderContext.DEFAULT_RENDER_CONFIG
 
@@ -313,8 +294,8 @@ class RenderContext:
 
         has_particles = (
             config.enable_particles
-            and self.state.has_particles
-            and self.__has_particles
+            and self._render_state.has_particles
+            and self._has_particles
             and state.particle_q is not None
             and state.particle_q.shape[0] > 0
         )
@@ -324,20 +305,20 @@ class RenderContext:
                 "call model.bvh_build_particles(state) for manually populated models."
             )
 
-        if has_shapes or has_particles or self.has_triangle_mesh or self.has_gaussians:
+        if has_shapes or has_particles or self._has_triangle_mesh or self._has_gaussians:
             height = camera_rays.shape[0]
             width = camera_rays.shape[1]
 
             if clear_data is None:
                 clear_data = RenderContext.DEFAULT_CLEAR_DATA
 
-            self.state.render_color = color_image is not None
-            self.state.render_depth = depth_image is not None
-            self.state.render_forward_depth = forward_depth_image is not None
-            self.state.render_shape_index = shape_index_image is not None
-            self.state.render_normal = normal_image is not None
-            self.state.render_albedo = albedo_image is not None
-            self.state.render_hdr_color = hdr_color_image is not None
+            self._render_state.render_color = color_image is not None
+            self._render_state.render_depth = depth_image is not None
+            self._render_state.render_forward_depth = forward_depth_image is not None
+            self._render_state.render_shape_index = shape_index_image is not None
+            self._render_state.render_normal = normal_image is not None
+            self._render_state.render_albedo = albedo_image is not None
+            self._render_state.render_hdr_color = hdr_color_image is not None
 
             assert camera_transforms.shape == (self.world_count,), (
                 f"camera_transforms size must match {self.world_count}"
@@ -407,11 +388,11 @@ class RenderContext:
             if hdr_color_image is not None:
                 hdr_color_image = hdr_color_image.reshape(total_pixels)
 
-            kernel_cache_key = hash((config, self.state, clear_data))
-            render_kernel = self.kernel_cache.get(kernel_cache_key)
+            kernel_cache_key = hash((config, self._render_state, clear_data))
+            render_kernel = self._kernel_cache.get(kernel_cache_key)
             if render_kernel is None:
-                render_kernel = create_kernel(config, self.state, clear_data)
-                self.kernel_cache[kernel_cache_key] = render_kernel
+                render_kernel = create_kernel(config, self._render_state, clear_data)
+                self._kernel_cache[kernel_cache_key] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
 
@@ -440,13 +421,13 @@ class RenderContext:
                     model.bvh_shapes_group_roots,
                     # Shapes
                     model.bvh_shape_enabled,
-                    self.shape_render_type,  # HFIELD remapped to MESH; renderer treats heightfields as meshes
+                    self._get_shape_render_type(),  # HFIELD remapped to MESH; renderer treats heightfields as meshes
                     model.shape_scale,
-                    self.shape_colors,
+                    model.shape_color,
                     model.bvh_shape_world_transforms,
-                    self.shape_source_ptr,
-                    self.shape_texture_ids,
-                    self.shape_mesh_data_ids,
+                    model.shape_source_ptr,
+                    self._shape_texture_ids,
+                    self._shape_mesh_data_ids,
                     # Particle BVH
                     particle_count,
                     model.bvh_particles.id if model.bvh_particles is not None else 0,
@@ -454,22 +435,22 @@ class RenderContext:
                     # Particles
                     state.particle_q if has_particles else None,
                     model.particle_radius if has_particles else None,
-                    self.__topology_particle_mask if has_particles else None,
+                    self._topology_particle_mask if has_particles else None,
                     # Triangle Mesh
-                    self.triangle_mesh.id if self.triangle_mesh is not None else 0,
-                    self.triangle_mesh_group_roots,
+                    self._triangle_mesh.id if self._triangle_mesh is not None else 0,
+                    self._triangle_mesh_group_roots,
                     # Meshes
-                    self.mesh_data,
+                    self._mesh_data,
                     # Gaussians
-                    self.gaussians_data,
+                    model.gaussians_data,
                     # Textures
-                    self.texture_data,
+                    self._texture_data,
                     # Lights
-                    self.lights_active,
-                    self.lights_type,
-                    self.lights_cast_shadow,
-                    self.lights_position,
-                    self.lights_orientation,
+                    self._lights_active,
+                    self._lights_type,
+                    self._lights_cast_shadow,
+                    self._lights_position,
+                    self._lights_orientation,
                     # Outputs
                     color_image,
                     depth_image,
@@ -485,90 +466,58 @@ class RenderContext:
 
     @property
     def light_count(self) -> int:
-        if self.lights_active is not None:
-            return self.lights_active.shape[0]
+        if self._lights_active is not None:
+            return self._lights_active.shape[0]
         return 0
 
     @property
-    def gaussians_count_total(self) -> int:
-        if self.gaussians_data is not None:
-            return self.gaussians_data.shape[0]
-        return 0
+    def _has_triangle_mesh(self) -> bool:
+        return self._triangle_points is not None and self._triangle_indices is not None
 
     @property
-    def has_particles(self) -> bool:
-        return self.__has_particles
+    def _has_gaussians(self) -> bool:
+        return self.model.gaussians_data is not None
 
-    @property
-    def has_triangle_mesh(self) -> bool:
-        return self.__triangle_points is not None and self.__triangle_indices is not None
+    def _set_triangle_points(self, triangle_points: wp.array[wp.vec3f]) -> None:
+        if self._triangle_points is None or self._triangle_points.ptr != triangle_points.ptr:
+            self._triangle_mesh = None
+        self._triangle_points = triangle_points
 
-    @property
-    def has_gaussians(self) -> bool:
-        return self.gaussians_data is not None
-
-    @property
-    def triangle_points(self) -> wp.array[wp.vec3f]:
-        return self.__triangle_points
-
-    @triangle_points.setter
-    def triangle_points(self, triangle_points: wp.array[wp.vec3f]):
-        if self.__triangle_points is None or self.__triangle_points.ptr != triangle_points.ptr:
-            self.triangle_mesh = None
-        self.__triangle_points = triangle_points
-
-    @property
-    def triangle_indices(self) -> wp.array[wp.int32]:
-        return self.__triangle_indices
-
-    @triangle_indices.setter
-    def triangle_indices(self, triangle_indices: wp.array[wp.int32]):
-        if self.__triangle_indices is None or self.__triangle_indices.ptr != triangle_indices.ptr:
-            self.triangle_mesh = None
-        self.__triangle_indices = triangle_indices
+    def _set_triangle_indices(self, triangle_indices: wp.array[wp.int32]) -> None:
+        if self._triangle_indices is None or self._triangle_indices.ptr != triangle_indices.ptr:
+            self._triangle_mesh = None
+        self._triangle_indices = triangle_indices
 
     def _sync_triangle_mesh(self):
-        if self.triangle_mesh is None:
-            triangle_indices_np = self.triangle_indices.reshape((-1, 3)).numpy()
-            particle_world_np = self.particle_world.numpy()
+        if self._triangle_mesh is None:
+            triangle_indices_np = self._triangle_indices.reshape((-1, 3)).numpy()
+            particle_world_np = self.model.particle_world.numpy()
             triangle_world_np = particle_world_np[triangle_indices_np[:, 0]]
             triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(np.int32)
             triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
 
-            self.triangle_mesh = wp.Mesh(
-                self.triangle_points, self.triangle_indices, groups=triangle_groups, bvh_constructor="sah"
+            self._triangle_mesh = wp.Mesh(
+                self._triangle_points, self._triangle_indices, groups=triangle_groups, bvh_constructor="sah"
             )
 
             wp.launch(
                 kernel=RenderContext._compute_mesh_group_roots,
                 dim=self.world_count + 1,
-                inputs=[self.triangle_mesh.id, self.triangle_mesh_group_roots],
+                inputs=[self._triangle_mesh.id, self._triangle_mesh_group_roots],
                 device=self.device,
             )
         else:
-            self.triangle_mesh.refit()
+            self._triangle_mesh.refit()
 
     @wp.kernel(enable_backward=False)
     def _compute_mesh_group_roots(mesh_id: wp.uint64, out_group_roots: wp.array[wp.int32]):
         group = wp.tid()
         out_group_roots[group] = wp.mesh_get_group_root(mesh_id, group)
 
-    @property
-    def gaussians_data(self) -> wp.array[Gaussian.Data]:
-        return self.__gaussians_data
-
-    @gaussians_data.setter
-    def gaussians_data(self, gaussians_data: wp.array[Gaussian.Data]):
-        self.__gaussians_data = gaussians_data
-        if gaussians_data is None:
-            self.state.num_gaussians = 0
-        else:
-            self.state.num_gaussians = gaussians_data.shape[0]
-
-    def __load_texture_and_mesh_data(self, model: Model, load_textures: bool):
+    def _load_texture_and_mesh_data(self, model: Model, load_textures: bool):
         """Load mesh UV/normal data and textures from *model*.
 
-        Populates :attr:`mesh_data`, :attr:`texture_data`, and the
+        Populates mesh data, texture data, and the
         per-shape texture/mesh-data index arrays. Textures and mesh
         data are deduplicated by hash/identity.
 
@@ -577,8 +526,8 @@ class RenderContext:
             load_textures: If ``True``, load image textures from disk;
                 otherwise assign ``-1`` texture IDs to all shapes.
         """
-        self.__mesh_data = []
-        self.__texture_data = []
+        self._mesh_data_source = []
+        self._texture_data_source = []
 
         texture_hashes = {}
         mesh_hashes = {}
@@ -599,7 +548,7 @@ class RenderContext:
                         if pixels.dtype != np.uint8:
                             pixels = pixels.astype(np.uint8, copy=False)
 
-                        texture_hashes[shape.texture_hash] = len(self.__texture_data)
+                        texture_hashes[shape.texture_hash] = len(self._texture_data_source)
 
                         data = TextureData()
                         data.texture = wp.Texture2D(
@@ -612,7 +561,7 @@ class RenderContext:
                             device=self.device,
                         )
                         data.repeat = wp.vec2f(1.0, 1.0)
-                        self.__texture_data.append(data)
+                        self._texture_data_source.append(data)
 
                     texture_data_ids.append(texture_hashes[shape.texture_hash])
                 else:
@@ -620,14 +569,14 @@ class RenderContext:
 
                 if shape.uvs is not None or shape.normals is not None:
                     if shape not in mesh_hashes:
-                        mesh_hashes[shape] = len(self.__mesh_data)
+                        mesh_hashes[shape] = len(self._mesh_data_source)
 
                         data = MeshData()
                         if shape.uvs is not None:
                             data.uvs = wp.array(shape.uvs, dtype=wp.vec2f, device=self.device)
                         if shape.normals is not None:
                             data.normals = wp.array(shape.normals, dtype=wp.vec3f, device=self.device)
-                        self.__mesh_data.append(data)
+                        self._mesh_data_source.append(data)
 
                     mesh_data_ids.append(mesh_hashes[shape])
                 else:
@@ -636,8 +585,8 @@ class RenderContext:
                 texture_data_ids.append(-1)
                 mesh_data_ids.append(-1)
 
-        self.texture_data = wp.array(self.__texture_data, dtype=TextureData, device=self.device)
-        self.shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
+        self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
+        self._shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
 
-        self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
-        self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
+        self._mesh_data = wp.array(self._mesh_data_source, dtype=MeshData, device=self.device)
+        self._shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)

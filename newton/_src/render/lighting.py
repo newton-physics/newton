@@ -7,14 +7,15 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ...core import MAXVAL
+from ..core import MAXVAL
 from . import raytrace
+from .types import RenderConfig
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
-def create_compute_lighting_function(config: RenderContext.Config, state: RenderContext.RenderState) -> wp.Function:
+def create_compute_lighting_function(config: RenderConfig, state: RenderContext.RenderState) -> wp.Function:
     raytrace_first_hit = raytrace.create_first_hit_function(config, state)
 
     @wp.func

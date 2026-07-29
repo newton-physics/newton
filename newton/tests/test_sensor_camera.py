@@ -4,14 +4,14 @@
 import inspect
 import math
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+import newton._src.render as internal_render
 import newton.geometry as geometry
-from newton._src.sensors.sensor_camera_renderer.utils import Utils
+from newton._src.render.utils import Utils
 from newton.sensors import SensorCamera
 
 
@@ -28,6 +28,7 @@ class TestSensorCamera(unittest.TestCase):
         *,
         camera: SensorCamera | None = None,
         camera_label: str = "camera",
+        assign_render_context: bool = True,
     ) -> tuple[newton.Model, SensorCamera]:
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         sphere_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()))
@@ -37,7 +38,10 @@ class TestSensorCamera(unittest.TestCase):
         camera = camera or TestSensorCamera._make_pinhole_camera(width, height)
         builder.add_shape_camera(body=camera_body, camera=camera, label=camera_label)
 
-        return builder.finalize(device="cpu"), camera
+        model = builder.finalize(device="cpu")
+        if assign_render_context:
+            camera.render_context = newton.RenderContext(model)
+        return model, camera
 
     @staticmethod
     def _build_sphere_world(
@@ -57,15 +61,41 @@ class TestSensorCamera(unittest.TestCase):
     def test_sensor_camera_public_imports_resolve_to_same_class(self) -> None:
         """Verify public SensorCamera imports and removed helpers."""
         self.assertIs(newton.SensorCamera, SensorCamera)
+        self.assertIs(newton.RenderContext, newton.render.RenderContext)
+        self.assertNotIn("RenderContext", internal_render.__all__)
+        self.assertFalse(hasattr(internal_render, "RenderContext"))
+        self.assertIs(newton.ClearData, newton.render.ClearData)
+        self.assertIs(newton.GaussianRenderMode, newton.render.GaussianRenderMode)
+        self.assertIs(newton.LightType, newton.render.LightType)
+        self.assertIs(newton.RenderConfig, newton.render.RenderConfig)
+        self.assertIs(newton.RenderOrder, newton.render.RenderOrder)
+        self.assertIs(newton.WorldRenderFlag, newton.render.WorldRenderFlag)
+        self.assertFalse(hasattr(newton, "RenderLightType"))
+        self.assertFalse(hasattr(newton.render, "RenderLightType"))
+        self.assertIsInstance(newton.RenderContext.DEFAULT_RENDER_CONFIG, newton.RenderConfig)
+        self.assertIsInstance(newton.RenderContext.DEFAULT_CLEAR_DATA, newton.ClearData)
+        self.assertFalse(hasattr(newton.RenderContext, "Config"))
+        self.assertFalse(hasattr(newton.RenderContext, "ClearData"))
+        self.assertFalse(hasattr(newton.RenderContext, "RenderConfig"))
         self.assertIs(geometry.SensorCamera, SensorCamera)
+        for attr in (
+            "ClearData",
+            "GaussianRenderMode",
+            "LightType",
+            "RenderConfig",
+            "RenderLightType",
+            "RenderOrder",
+            "WorldRenderFlag",
+        ):
+            self.assertFalse(hasattr(SensorCamera, attr), attr)
         self.assertFalse(hasattr(SensorCamera, "create_pinhole"))
         self.assertFalse(hasattr(SensorCamera, "get_render_utils"))
         self.assertFalse(hasattr(SensorCamera, "_bind_model"))
         self.assertFalse(hasattr(SensorCamera, "_ensure_shape_index_by_world"))
         self.assertFalse(hasattr(SensorCamera, "_ensure_render_buffers"))
-        self.assertEqual(int(SensorCamera.WorldRenderFlag.ENABLE), 1)
-        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR), 2)
-        self.assertEqual(int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE), 0)
+        self.assertEqual(int(newton.WorldRenderFlag.ENABLE), 1)
+        self.assertEqual(int(newton.WorldRenderFlag.DISABLE_CLEAR), 2)
+        self.assertEqual(int(newton.WorldRenderFlag.DISABLE_PRESERVE), 0)
 
     def test_constructor_derives_dimensions_from_rays(self) -> None:
         """Verify SensorCamera derives read-only image dimensions from rays."""
@@ -76,6 +106,7 @@ class TestSensorCamera(unittest.TestCase):
 
         self.assertEqual(camera.width, width)
         self.assertEqual(camera.height, height)
+        self.assertIsNone(camera.render_context)
         self.assertEqual(camera.rays.shape, (height, width, 2))
         with self.assertRaises(AttributeError):
             camera.width = 1
@@ -200,7 +231,8 @@ class TestSensorCamera(unittest.TestCase):
         self.assertIsInstance(utils, Utils)
         self.assertIsNot(camera.utils, utils)
         self.assertFalse(hasattr(utils, "_Utils__sensor_camera"))
-        self.assertIsNone(model.render_context)
+        self.assertFalse(hasattr(model, "render_context"))
+        self.assertIs(camera.render_context.model, model)
         self.assertEqual(camera.device, model.device)
         self.assertFalse(hasattr(camera, "_model_ref"))
         self.assertIsNotNone(camera._shape_index_by_world)
@@ -211,7 +243,7 @@ class TestSensorCamera(unittest.TestCase):
         self.assertEqual(camera._all_world_render_flags.shape, (camera.view_count,))
         np.testing.assert_array_equal(
             camera._all_world_render_flags.numpy(),
-            np.full(camera.view_count, int(SensorCamera.WorldRenderFlag.ENABLE), dtype=np.int32),
+            np.full(camera.view_count, int(newton.WorldRenderFlag.ENABLE), dtype=np.int32),
         )
         output_specs = (
             (camera.create_image_output(wp.float32), wp.float32),
@@ -230,11 +262,36 @@ class TestSensorCamera(unittest.TestCase):
                 self.assertEqual(output.device, model.device)
         color_rgba = utils.to_rgba_from_color(camera.create_color_image_output())
         self.assertEqual(color_rgba.shape, (camera.view_count, height, width, 4))
-        render_context = model.init_render_context()
+        render_context = camera.render_context
+        self.assertIsNotNone(render_context)
+        self.assertEqual(render_context.world_count, model.world_count)
+        self.assertEqual(render_context.device, model.device)
+        for attr in (
+            "state",
+            "kernel_cache",
+            "triangle_mesh",
+            "triangle_mesh_group_roots",
+            "shape_texture_ids",
+            "shape_mesh_data_ids",
+            "mesh_data",
+            "texture_data",
+            "lights_active",
+            "lights_type",
+            "lights_cast_shadow",
+            "lights_position",
+            "lights_orientation",
+            "shape_render_type",
+            "has_particles",
+            "has_triangle_mesh",
+            "has_gaussians",
+            "gaussians_count_total",
+            "triangle_points",
+            "triangle_indices",
+        ):
+            self.assertFalse(hasattr(render_context, attr), attr)
         render_context.create_default_light(enable_shadows=True)
         self.assertEqual(render_context.light_count, 1)
         render_context.assign_checkerboard_material(shape_indices=[0])
-        self.assertEqual(len(model.render_context._texture_data_source), 1)
 
     def test_shape_index_by_world_rejects_negative_indices(self) -> None:
         """Verify SensorCamera rejects negative shape indices."""
@@ -280,14 +337,14 @@ class TestSensorCamera(unittest.TestCase):
         depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
         shape_index = wp.zeros((model.world_count, height, width), dtype=wp.uint32, device="cpu")
 
-        model.update_render_context(state)
-        camera.update(model, state, depth_image=depth, shape_index_image=shape_index)
+        camera.render_context.update(state)
+        camera.update(state, depth_image=depth, shape_index_image=shape_index)
 
         depth_np = depth.numpy()
         shape_index_np = shape_index.numpy()
         self.assertGreater(float(depth_np[0, height // 2, width // 2]), 0.0)
         self.assertTrue(np.any(shape_index_np != 0xFFFFFFFF))
-        self.assertIsNotNone(model.render_context)
+        self.assertFalse(hasattr(model, "render_context"))
 
     def test_update_respects_disable_clear_flag(self) -> None:
         """Verify SensorCamera clears output images for DISABLE_CLEAR worlds."""
@@ -300,18 +357,18 @@ class TestSensorCamera(unittest.TestCase):
         model = scene.finalize(device="cpu")
         state = model.state()
 
-        camera.clear_data = SensorCamera.ClearData(clear_depth=-2.0, clear_shape_index=123)
+        camera.clear_data = newton.ClearData(clear_depth=-2.0, clear_shape_index=123)
         world_render_flags = wp.array(
-            [int(SensorCamera.WorldRenderFlag.ENABLE), int(SensorCamera.WorldRenderFlag.DISABLE_CLEAR)],
+            [int(newton.WorldRenderFlag.ENABLE), int(newton.WorldRenderFlag.DISABLE_CLEAR)],
             dtype=wp.int32,
             device="cpu",
         )
         depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
         shape_index = wp.zeros((model.world_count, height, width), dtype=wp.uint32, device="cpu")
 
-        model.update_render_context(state)
+        camera.render_context = newton.RenderContext(model)
+        camera.render_context.update(state)
         camera.update(
-            model,
             state,
             depth_image=depth,
             shape_index_image=shape_index,
@@ -323,6 +380,16 @@ class TestSensorCamera(unittest.TestCase):
         self.assertGreater(float(depth_np[0, height // 2, width // 2]), 0.0)
         self.assertEqual(float(depth_np[1, height // 2, width // 2]), -2.0)
         self.assertEqual(int(shape_index_np[1, height // 2, width // 2]), 123)
+
+    def test_update_requires_render_context(self) -> None:
+        """Verify SensorCamera rendering requires an explicit render context."""
+        width, height = 8, 6
+        model, camera = self._build_sphere_camera_scene(width, height, assign_render_context=False)
+        state = model.state()
+        depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
+
+        with self.assertRaisesRegex(RuntimeError, "requires a RenderContext"):
+            camera.update(state, depth_image=depth)
 
     def test_update_respects_disable_preserve_flag(self) -> None:
         """Verify SensorCamera preserves output images for DISABLE_PRESERVE worlds."""
@@ -336,16 +403,16 @@ class TestSensorCamera(unittest.TestCase):
         state = model.state()
 
         world_render_flags = wp.array(
-            [int(SensorCamera.WorldRenderFlag.ENABLE), int(SensorCamera.WorldRenderFlag.DISABLE_PRESERVE)],
+            [int(newton.WorldRenderFlag.ENABLE), int(newton.WorldRenderFlag.DISABLE_PRESERVE)],
             dtype=wp.int32,
             device="cpu",
         )
         depth = wp.full((model.world_count, height, width), value=42.0, dtype=wp.float32, device="cpu")
         shape_index = wp.full((model.world_count, height, width), value=456, dtype=wp.uint32, device="cpu")
 
-        model.update_render_context(state)
+        camera.render_context = newton.RenderContext(model)
+        camera.render_context.update(state)
         camera.update(
-            model,
             state,
             depth_image=depth,
             shape_index_image=shape_index,
@@ -367,9 +434,9 @@ class TestSensorCamera(unittest.TestCase):
         default_world_render_flags = camera._all_world_render_flags
 
         self.assertIsNotNone(default_world_render_flags)
-        model.update_render_context(state)
-        camera.update(model, state, depth_image=depth)
-        camera.update(model, state, depth_image=depth)
+        camera.render_context.update(state)
+        camera.update(state, depth_image=depth)
+        camera.update(state, depth_image=depth)
         self.assertIs(camera._all_world_render_flags, default_world_render_flags)
 
     def test_update_uses_instance_render_settings(self) -> None:
@@ -379,22 +446,23 @@ class TestSensorCamera(unittest.TestCase):
         self.assertNotIn("render_config", parameters)
         self.assertNotIn("load_textures", parameters)
         self.assertNotIn("world_enabled", parameters)
+        self.assertNotIn("model", parameters)
         self.assertIn("world_render_flags", parameters)
 
         width, height = 16, 12
         model, camera = self._build_sphere_camera_scene(width, height)
         state = model.state()
 
-        camera.clear_data = SensorCamera.ClearData(clear_depth=-2.0, clear_shape_index=123)
-        camera.render_config = SensorCamera.RenderConfig(max_distance=0.1)
+        camera.clear_data = newton.ClearData(clear_depth=-2.0, clear_shape_index=123)
+        camera.render_config = newton.RenderConfig(max_distance=0.1)
         self.assertFalse(hasattr(camera, "load_textures"))
 
         depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
         shape_index = wp.zeros((model.world_count, height, width), dtype=wp.uint32, device="cpu")
 
-        model.init_render_context(load_textures=False)
-        model.update_render_context(state)
-        camera.update(model, state, depth_image=depth, shape_index_image=shape_index)
+        camera.render_context = newton.RenderContext(model, load_textures=False)
+        camera.render_context.update(state)
+        camera.update(state, depth_image=depth, shape_index_image=shape_index)
 
         self.assertEqual(float(depth.numpy()[0, height // 2, width // 2]), -2.0)
         self.assertEqual(int(shape_index.numpy()[0, height // 2, width // 2]), 123)
@@ -403,21 +471,21 @@ class TestSensorCamera(unittest.TestCase):
         """Verify SensorCamera renders every render order into 3-D outputs."""
         width, height = 16, 12
 
-        for render_order in SensorCamera.RenderOrder:
+        for render_order in newton.RenderOrder:
             with self.subTest(render_order=render_order):
                 model, camera = self._build_sphere_camera_scene(width, height)
                 state = model.state()
-                camera.render_config = SensorCamera.RenderConfig(render_order=render_order)
+                camera.render_config = newton.RenderConfig(render_order=render_order)
 
                 depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
 
-                model.update_render_context(state)
-                camera.update(model, state, depth_image=depth)
+                camera.render_context.update(state)
+                camera.update(state, depth_image=depth)
 
                 self.assertGreater(float(depth.numpy()[0, height // 2, width // 2]), 0.0)
 
-    def test_multiple_sensor_cameras_share_model_render_context(self) -> None:
-        """Verify multiple SensorCamera instances share model render context."""
+    def test_multiple_sensor_cameras_share_explicit_render_context(self) -> None:
+        """Verify multiple SensorCamera instances share an explicit render context."""
         width, height = 8, 6
         camera_a = self._make_pinhole_camera(width, height)
         camera_b = self._make_pinhole_camera(width, height)
@@ -433,15 +501,16 @@ class TestSensorCamera(unittest.TestCase):
         depth_a = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
         depth_b = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
 
-        model.update_render_context(state)
-        camera_a.update(model, state, depth_image=depth_a)
-        render_context = model.render_context
+        render_context = newton.RenderContext(model)
+        camera_a.render_context = render_context
+        camera_b.render_context = render_context
 
-        with mock.patch.object(render_context, "update", wraps=render_context.update) as update_mock:
-            camera_b.update(model, state, depth_image=depth_b)
-            update_mock.assert_not_called()
+        render_context.update(state)
+        camera_a.update(state, depth_image=depth_a)
+        camera_b.update(state, depth_image=depth_b)
 
-        self.assertIs(model.render_context, render_context)
+        self.assertIs(camera_a.render_context, render_context)
+        self.assertIs(camera_b.render_context, render_context)
         self.assertGreater(float(depth_a.numpy()[0, height // 2, width // 2]), 0.0)
         self.assertGreater(float(depth_b.numpy()[0, height // 2, width // 2]), 0.0)
 
