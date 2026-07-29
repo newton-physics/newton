@@ -12465,34 +12465,36 @@ class ModelBuilder:
                 self._iter_validated_shape_collision_filter_pairs((*filter_pairs.explicit_pairs, *floating_block_pairs))
             )
 
-        # Builder-side compact blocks are valid only while they describe the
-        # model's filters exactly; otherwise the general path queries the model.
-        use_filter_blocks = bool(world_filter_blocks) and allow_filter_blocks
-        if use_filter_blocks:
+        # Builder-side storage is valid only while it describes the model's
+        # filters exactly; otherwise the general path queries the model.
+        use_world_templates = (
+            allow_filter_blocks and self.world_count > 0 and isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs)
+        )
+        if use_world_templates:
             shape_world_np = np.asarray(self.shape_world, dtype=np.int32)
             starts = self.shape_world_start
             if len(starts) != self.world_count + 2:
-                use_filter_blocks = False
+                use_world_templates = False
             else:
                 segment_worlds = np.full(self.shape_count, -1, dtype=np.int32)
                 for world in range(self.world_count):
                     segment_worlds[starts[world] : starts[world + 1]] = world
-                use_filter_blocks = np.array_equal(segment_worlds, shape_world_np)
+                use_world_templates = np.array_equal(segment_worlds, shape_world_np)
 
-        if use_filter_blocks:
+        if use_world_templates:
             blocks_by_world = {}
             global_filter_pairs = set()
             explicit_filters_by_world = {}
             for block in world_filter_blocks:
                 world = block.world
                 if world < 0 or world >= self.world_count:
-                    use_filter_blocks = False
+                    use_world_templates = False
                     break
 
                 world_start = self.shape_world_start[world]
                 world_end = self.shape_world_start[world + 1]
                 if block.shape_start < world_start or block.shape_start + block.shape_count > world_end:
-                    use_filter_blocks = False
+                    use_world_templates = False
                     break
 
                 # Store block starts as world-local offsets for the template cache
@@ -12501,7 +12503,7 @@ class ModelBuilder:
                     (block.shape_start - world_start, block.shape_count, block.local_pairs)
                 )
 
-            if use_filter_blocks:
+            if use_world_templates:
                 # Residual explicit filters may involve global shapes, so split
                 # them into globally keyed filters and per-world local filters.
                 for shape_a, shape_b in explicit_filter_pairs:
@@ -12525,7 +12527,7 @@ class ModelBuilder:
                         )
                     # Cross-world pairs never collide, so filtering them is a no-op.
 
-            if use_filter_blocks:
+            if use_world_templates:
                 contact_pairs = []
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0

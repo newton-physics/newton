@@ -438,6 +438,28 @@ Newton's pipeline supports non-convex meshes, SDF-based contacts, and
 hydroelastic contacts, which are not available through MuJoCo's collision
 detection.
 
+Collision filtering
+~~~~~~~~~~~~~~~~~~~
+
+MJCF import compiles the effective ``contype`` / ``conaffinity`` pair matrix
+into Newton collision groups plus exact sparse exclusions. The original
+32-bit values are also retained as ``model.mujoco.contype`` and
+``model.mujoco.conaffinity`` custom attributes. When every selected collision
+shape has those imported attributes,
+``use_mujoco_contacts=True`` forwards them verbatim; they are authoritative
+over Newton collision-group or partial pair-filter edits. Body-wide Newton
+filters are still emitted as MuJoCo ``<exclude>`` elements, which preserves
+imported MJCF body exclusions.
+
+For native Newton models, :class:`~newton.solvers.SolverMuJoCo` instead
+compiles the signed collision groups and pair filters into MuJoCo mask bits.
+Each bit represents a complete bipartite collision subgraph, so the conversion
+is exact only when the Newton pair graph has a biclique cover of at most
+32 bits. The compiler is guaranteed to find an exact representation for up to
+33 selected shapes, and commonly fits much larger group-structured models. If
+a larger arbitrary graph does not fit, the solver warns before using the
+legacy graph-color approximation, which may admit extra contacts.
+
 .. _mujoco-margin-gap-mapping:
 
 Margin and gap mapping
@@ -669,16 +691,11 @@ Caveats
   prescribed. The user-supplied armature on those DOFs is silently
   discarded. See `Kinematic links and fixed roots`_.
 
-**Collision filtering bitmask fallback.**
-  Newton's :attr:`~newton.Model.shape_collision_group` (see
-  :ref:`Collision Groups`) is translated to MuJoCo's ``contype`` /
-  ``conaffinity`` via graph coloring
-  (:github:`newton/_src/sim/graph_coloring.py`). Up to 32 colors are
-  supported (one per ``contype`` bit). If the filtering graph requires
-  more, shapes with color index ≥ 32 fall back to ``contype=1`` /
-  ``conaffinity=1`` and silently collide with every other shape,
-  bypassing the intended filtering and adding extra contact pairs to
-  the broadphase.
+**Collision filtering has a 32-bit capacity.**
+  Native Newton collision groups and pair filters are compiled into an exact
+  MuJoCo biclique cover when possible. See `Collision filtering`_ for imported
+  mask precedence and the warned fallback used when an arbitrary larger graph
+  does not fit 32 bits.
 
 
 .. _mujoco-kinematic-links-and-fixed-roots:

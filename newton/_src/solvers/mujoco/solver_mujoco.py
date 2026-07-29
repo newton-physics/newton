@@ -40,6 +40,12 @@ from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..solver import SolverBase
 from . import kernels
+from .collision_masks import (
+    MUJOCO_COLLISION_MASK_UNSET,
+    compile_newton_collision_graph,
+    mujoco_mask_to_signed,
+    register_collision_mask_attributes,
+)
 from .constants import (
     DEFAULT_LIMIT_GAIN_RTOL,
     DEFAULT_LIMIT_KD,
@@ -814,6 +820,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # endregion custom frequencies
 
         # region geom attributes
+        register_collision_mask_attributes(builder)
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="condim",
@@ -4650,6 +4657,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return [(selected_bodies[bodies_a[k]], selected_bodies[bodies_b[k]]) for k in np.flatnonzero(excluded)]
 
     @staticmethod
+    def _compile_newton_collision_masks(model: Model, selected_shapes: np.ndarray):
+        """Compile selected Newton groups and filters into MuJoCo masks."""
+        local_a, local_b = np.triu_indices(selected_shapes.shape[0], 1)
+        candidate_pairs = np.column_stack((selected_shapes[local_a], selected_shapes[local_b]))
+        filtered = model.shape_collision_filter_mask(candidate_pairs)
+        local_filter_pairs = np.column_stack((local_a[filtered], local_b[filtered]))
+        groups = model.shape_collision_group.numpy()[selected_shapes]
+        return compile_newton_collision_graph(groups, excluded_pairs=local_filter_pairs)
+
+    @staticmethod
     def _color_collision_shapes(
         model: Model, selected_shapes: np.ndarray, visualize_graph: bool = False, shape_labels: list[str] | None = None
     ) -> np.ndarray:
@@ -4682,7 +4699,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         candidate_pairs = np.stack((selected_shapes[shape_a], selected_shapes[shape_b]), axis=1)
         filtered = model.shape_collision_filter_mask(candidate_pairs)
         group_a, group_b = cgroup[shape_a], cgroup[shape_b]
-        edge_mask = ~filtered & ((group_a == group_b) | (group_a == -1) | (group_b == -1))
+        group_allowed = (group_a != 0) & (group_b != 0)
+        group_allowed &= ((group_a > 0) & ((group_a == group_b) | (group_b < 0))) | (
+            (group_a < 0) & (group_a != group_b)
+        )
+        edge_mask = ~filtered & group_allowed
         graph_edges = np.stack((shape_a[edge_mask], shape_b[edge_mask]), axis=1).astype(np.int32)
         shape_color = np.zeros(model.shape_count, dtype=np.int32)
         if len(graph_edges) > 0:
@@ -5086,6 +5107,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return None
             return attr.numpy()
 
+        shape_mjc_contype = get_custom_attribute("contype")
+        shape_mjc_conaffinity = get_custom_attribute("conaffinity")
         shape_condim = get_custom_attribute("condim")
         shape_geom_group = get_custom_attribute("geom_group")
         shape_priority = get_custom_attribute("geom_priority")
@@ -5352,9 +5375,37 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             colliding_shapes,
         )
 
-        shape_color = self._color_collision_shapes(
-            model, colliding_shapes, visualize_graph=False, shape_labels=model.shape_label
+        use_preserved_collision_masks = (
+            shape_mjc_contype is not None
+            and shape_mjc_conaffinity is not None
+            and np.all(shape_mjc_contype[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
+            and np.all(shape_mjc_conaffinity[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
         )
+        compiled_collision_type = None
+        compiled_collision_affinity = None
+        shape_color = None
+        if not use_preserved_collision_masks:
+            compiled_masks = self._compile_newton_collision_masks(model, colliding_shapes)
+            if compiled_masks.exact:
+                compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
+                compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
+                compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
+                compiled_collision_affinity[colliding_shapes] = compiled_masks.collision_affinity
+            else:
+                if self._use_mujoco_contacts and not disable_contacts:
+                    warnings.warn(
+                        "The selected Newton collision graph does not fit the MuJoCo 32-bit "
+                        f"contype/conaffinity representation; {compiled_masks.uncovered_pair_count} "
+                        "required pair(s) remained after 32 exact bicliques. Falling back to the "
+                        "legacy graph-color approximation, which may admit additional contacts.",
+                        stacklevel=2,
+                    )
+                shape_color = self._color_collision_shapes(
+                    model,
+                    colliding_shapes,
+                    visualize_graph=False,
+                    shape_labels=model.shape_label,
+                )
 
         selected_shapes_set = set(selected_shapes)
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -5572,7 +5623,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
                     vertices, indices, maxhullvert, is_planar = mesh_export
                     uses_mujoco_contacts = (
-                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) and int(shape_collision_group[shape]) != 0
+                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
+                        and (
+                            (
+                                use_preserved_collision_masks
+                                and bool(int(shape_mjc_contype[shape]) | int(shape_mjc_conaffinity[shape]))
+                            )
+                            or (not use_preserved_collision_masks and int(shape_collision_group[shape]) != 0)
+                        )
                     ) or shape in mujoco_pair_contact_shapes
                     if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
                         raise ValueError(
@@ -5603,11 +5661,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     geom_params["rgba"] = [0.0, 0.3, 0.6, 1.0]
 
                 # encode collision filtering information
-                if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) or shape_collision_group[shape] == 0:
-                    # Non-colliding shape, or collision_group=0 (e.g. MJCF contype=conaffinity=0
-                    # geoms that only participate in explicit <pair> contacts)
+                if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
+                    # Visual-only Newton shapes never participate in automatic
+                    # MuJoCo contacts, even if source metadata carried masks.
                     geom_params["contype"] = 0
                     geom_params["conaffinity"] = 0
+                elif use_preserved_collision_masks:
+                    geom_params["contype"] = mujoco_mask_to_signed(int(shape_mjc_contype[shape]))
+                    geom_params["conaffinity"] = mujoco_mask_to_signed(int(shape_mjc_conaffinity[shape]))
+                elif shape_collision_group[shape] == 0:
+                    geom_params["contype"] = 0
+                    geom_params["conaffinity"] = 0
+                elif compiled_collision_type is not None and compiled_collision_affinity is not None:
+                    geom_params["contype"] = mujoco_mask_to_signed(int(compiled_collision_type[shape]))
+                    geom_params["conaffinity"] = mujoco_mask_to_signed(int(compiled_collision_affinity[shape]))
                 else:
                     color = shape_color[shape]
                     if color < 32:
