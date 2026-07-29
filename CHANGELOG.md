@@ -1,5 +1,19 @@
 # Changelog
 
+## [isaacsim-6.0.1-dev] - 2026-07-29
+
+### Features
+
+- Add a source-verified Isaac Sim 6.0.1 development launcher and lit Newton CUDA rigid-body demo.
+
+### Design Rationale
+
+- Load the checkout through an early Kit extension so development never overwrites Isaac Sim's bundled Newton package.
+
+### Notes & Caveats
+
+- Keep this compatibility branch on Newton 1.2.1 dependencies; current upstream `main` requires a separate Isaac Sim integration migration.
+
 ## [1.2.1] - 2026-06-04
 
 ### Added
