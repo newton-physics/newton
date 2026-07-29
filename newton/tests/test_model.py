@@ -215,6 +215,7 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         builder.default_bvh_cfg.mesh_constructor = "cubql"
         builder.default_bvh_cfg.gaussian_constructor = "sah"
         builder.default_bvh_cfg.shape_constructor = "lbvh"
+        builder.default_bvh_cfg.shape_flags = newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES
 
         mesh = newton.Mesh(
             vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
@@ -239,7 +240,12 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         wp_mesh.assert_called_once()
         self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], "cubql")
         finalize.assert_called_once_with(gaussian, device="cpu", bvh_constructor="sah")
-        build_shapes.assert_called_once_with(model, model, bvh_constructor="lbvh")
+        build_shapes.assert_called_once_with(
+            model,
+            model,
+            bvh_constructor="lbvh",
+            shape_flags=newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES,
+        )
 
     def test_gaussian_finalize_forwards_bvh_constructor_to_warp_bvh(self):
         gaussian = newton.Gaussian(
@@ -1577,6 +1583,72 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn("shape_body", error_msg)
         self.assertIn("test_shape", error_msg)
         self.assertIn("999", error_msg)
+
+
+class TestShapeConfigValidation(unittest.TestCase):
+    def test_shape_config_rejects_invalid_density(self):
+        """Reject negative and non-finite density values."""
+        for density in (-1.0, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(density=density):
+                cfg = newton.ModelBuilder.ShapeConfig(density=density)
+
+                with self.assertRaisesRegex(ValueError, "density must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
+        """Reject non-positive and non-finite target voxel sizes."""
+        for target_voxel_size in (0.0, -0.01, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(target_voxel_size=target_voxel_size):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_target_voxel_size=target_voxel_size)
+
+                with self.assertRaisesRegex(ValueError, "sdf_target_voxel_size must be finite and > 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_padding(self):
+        """Reject negative and non-finite SDF padding values."""
+        for padding in (-0.1, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(padding=padding):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_padding=padding)
+
+                with self.assertRaisesRegex(ValueError, "sdf_padding must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_narrow_band_range(self):
+        """Reject malformed and non-finite SDF narrow-band ranges."""
+        cases = [
+            (0.1, 0.2),
+            (-0.1, -0.01),
+            (0.1, -0.1),
+            (-0.1,),
+            (float("nan"), 0.1),
+            (-0.1, float("nan")),
+            (float("-inf"), 0.1),
+            (-0.1, float("inf")),
+        ]
+
+        for narrow_band_range in cases:
+            with self.subTest(narrow_band_range=narrow_band_range):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=narrow_band_range)
+
+                with self.assertRaisesRegex(ValueError, "sdf_narrow_band_range"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_accepts_list_sdf_narrow_band_range(self):
+        """Accept list-based SDF narrow-band ranges."""
+        cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=[-0.1, 0.1])
+
+        cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_max_resolution(self):
+        """Reject invalid SDF maximum resolutions."""
+        cases = [0, -8, 10, 1 << 16]
+
+        for max_resolution in cases:
+            with self.subTest(max_resolution=max_resolution):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=max_resolution)
+
+                with self.assertRaisesRegex(ValueError, "sdf_max_resolution"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
 
 
 class TestModelJoints(unittest.TestCase):

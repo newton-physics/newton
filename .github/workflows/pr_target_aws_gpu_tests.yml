@@ -96,7 +96,17 @@ jobs:
     needs:
       - check-author-membership
       - require-approval
-    if: github.repository == 'newton-physics/newton' && (!cancelled())
+    if: >-
+      github.repository == 'newton-physics/newton' &&
+      !cancelled() &&
+      needs.check-author-membership.result == 'success' &&
+      (
+        needs.require-approval.result == 'success' ||
+        (
+          needs.require-approval.result == 'skipped' &&
+          needs.check-author-membership.outputs.membership_status == 'CONFIRMED_MEMBER'
+        )
+      )
     uses: ./.github/workflows/aws_gpu_tests.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}

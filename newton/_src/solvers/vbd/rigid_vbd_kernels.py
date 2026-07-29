@@ -51,12 +51,6 @@ _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 _NUM_CONTACT_THREADS_PER_BODY = wp.constant(4)
 """Threads per body for contact accumulation using strided iteration"""
 
-_STICK_FLAG_ANCHOR = wp.constant(1)
-"""contact_stick_flag value: frozen anchor (sticking kinematic/static contacts)"""
-
-_STICK_FLAG_DEADZONE = wp.constant(2)
-"""contact_stick_flag value: anti-creep deadzone (sticking dynamic-dynamic contacts)"""
-
 # DER bend-twist strain measure tolerances (curvature binormal + Bishop transport).
 _CABLE_KB_FOLD_EPS = wp.constant(1.0e-12)
 """Degenerate-fold scale and denominator floor for the DER curvature binormal.
@@ -88,12 +82,7 @@ _CABLE_TWIST_ATAN2_DENOM_EPS = wp.constant(1.0e-12)
 @wp.struct
 class RigidContactHistory:
     lambda_: wp.array[wp.vec3]
-    stick_flag: wp.array[wp.int32]
     penalty_k: wp.array[float]
-    point0: wp.array[wp.vec3]
-    point1: wp.array[wp.vec3]
-    offset0: wp.array[wp.vec3]
-    offset1: wp.array[wp.vec3]
     normal: wp.array[wp.vec3]
 
 
@@ -3128,11 +3117,6 @@ def init_body_body_contacts_avbd(
     body_world: wp.array[wp.int32],
     # Scalar parameters
     k_start: float,
-    # In/out: replayed only for matched hard contacts that were sticking.
-    rigid_contact_point0: wp.array[wp.vec3],
-    rigid_contact_point1: wp.array[wp.vec3],
-    rigid_contact_offset0: wp.array[wp.vec3],
-    rigid_contact_offset1: wp.array[wp.vec3],
     # Outputs
     contact_penalty_k: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
@@ -3142,13 +3126,13 @@ def init_body_body_contacts_avbd(
 ):
     """Restore body-body contact state from match indices.
 
-    For hard contacts: restores lambda (rotated from old to new contact frame),
-    penalty_k, and stick-anchor points when the previous matched contact stuck.
-    For soft contacts: restores penalty_k only; lambda stays zero because the
-    soft path is penalty-only.
-    Sticky hard contacts may overwrite rigid_contact_point0/1 and
-    rigid_contact_offset0/1 in place with the previously saved contact anchors.
-    C0 and decay are handled by step_body_body_contact_C0_lambda.
+    For hard contacts, restores lambda (rotated from the previous to the current
+    contact frame) and penalty_k. For soft contacts, restores penalty_k only;
+    lambda stays zero because the soft path is penalty-only. Contact geometry is
+    owned entirely by the collision pipeline: ``"latest"`` matching supplies
+    fresh geometry and ``"sticky"`` matching replays persistent geometry before
+    the solver runs. C0 and decay are handled by
+    :func:`step_body_body_contact_C0_lambda`.
 
     match_index[i] addresses saved contact rows from the last snapshot.
     Negative values (-1 unmatched, -2 broken) cold-start identically.
@@ -3192,16 +3176,6 @@ def init_body_body_contacts_avbd(
             lam_t_old = lam_hist - n_old * lam_n
             lam_t_new = lam_t_old - n_new * wp.dot(lam_t_old, n_new)
             contact_lambda[i] = n_new * lam_n + lam_t_new
-
-            stick_flag = history.stick_flag[slot]
-            # Replay saved points and offsets only for contacts whose saved
-            # state was sticking. Point and offset must move together; the
-            # surface anchor is ``point + offset``.
-            if stick_flag == _STICK_FLAG_ANCHOR or stick_flag == _STICK_FLAG_DEADZONE:
-                rigid_contact_point0[i] = history.point0[slot]
-                rigid_contact_point1[i] = history.point1[slot]
-                rigid_contact_offset0[i] = history.offset0[slot]
-                rigid_contact_offset1[i] = history.offset1[slot]
         else:
             contact_lambda[i] = wp.vec3(0.0)
     else:
@@ -3212,22 +3186,12 @@ def init_body_body_contacts_avbd(
 @wp.kernel
 def snapshot_body_body_contact_history(
     rigid_contact_count: wp.array[int],
-    rigid_contact_point0: wp.array[wp.vec3],
-    rigid_contact_point1: wp.array[wp.vec3],
-    rigid_contact_offset0: wp.array[wp.vec3],
-    rigid_contact_offset1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
-    contact_stick_flag: wp.array[wp.int32],
     contact_penalty_k: wp.array[float],
     # Persistent outputs, in RigidContactHistory order
     prev_lambda: wp.array[wp.vec3],
-    prev_stick_flag: wp.array[wp.int32],
     prev_penalty_k: wp.array[float],
-    prev_point0: wp.array[wp.vec3],
-    prev_point1: wp.array[wp.vec3],
-    prev_offset0: wp.array[wp.vec3],
-    prev_offset1: wp.array[wp.vec3],
     prev_normal: wp.array[wp.vec3],
 ):
     """Snapshot converged contact state by contact row.
@@ -3240,12 +3204,7 @@ def snapshot_body_body_contact_history(
         return
 
     prev_lambda[i] = contact_lambda[i]
-    prev_stick_flag[i] = contact_stick_flag[i]
     prev_penalty_k[i] = contact_penalty_k[i]
-    prev_point0[i] = rigid_contact_point0[i]
-    prev_point1[i] = rigid_contact_point1[i]
-    prev_offset0[i] = rigid_contact_offset0[i]
-    prev_offset1[i] = rigid_contact_offset1[i]
     prev_normal[i] = rigid_contact_normal[i]
 
 
@@ -4811,16 +4770,12 @@ def update_duals_body_body_contacts(
     contact_material_mu: wp.array[float],
     contact_C0: wp.array[wp.vec3],
     avbd_alpha: float,
-    stick_motion_eps: float,
     hard_contacts: int,
-    body_inv_mass: wp.array[float],
     contact_material_ke: wp.array[float],
     beta: float,
     # Input/output
     contact_penalty_k: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
-    # Output
-    contact_stick_flag: wp.array[wp.int32],
 ):
     """
     Update AVBD augmented-Lagrangian duals for contact constraints (per-iteration).
@@ -4896,24 +4851,6 @@ def update_duals_body_body_contacts(
         if lam_t_len > cone_limit and lam_t_len > 0.0:
             lam_t_new = lam_t_new * (cone_limit / lam_t_len)
         contact_lambda[idx] = n * lam_n_new + lam_t_new
-
-        has_kinematic = int(0)
-        if body_id_0 < 0 or body_id_1 < 0:
-            has_kinematic = int(1)
-        elif body_id_0 >= 0 and body_inv_mass[body_id_0] == 0.0:
-            has_kinematic = int(1)
-        elif body_id_1 >= 0 and body_inv_mass[body_id_1] == 0.0:
-            has_kinematic = int(1)
-
-        flag = int(0)
-        if lam_n_new > 0.0 and lam_t_len <= cone_limit and wp.length(tangent_residual) < stick_motion_eps:
-            if has_kinematic == 1:
-                flag = _STICK_FLAG_ANCHOR
-            else:
-                flag = _STICK_FLAG_DEADZONE
-        contact_stick_flag[idx] = flag
-    else:
-        contact_stick_flag[idx] = int(0)
 
     C_n = -contact_surface_separation(p0_world, p1_world, n, rigid_contact_margin0[idx], rigid_contact_margin1[idx])
     if C_n > 0.0:
@@ -4998,13 +4935,6 @@ def update_body_velocity(
     dt: float,
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
-    body_contact_buffer_pre_alloc: int,
-    body_contact_counts: wp.array[wp.int32],
-    body_contact_indices: wp.array[wp.int32],
-    contact_stick_flag: wp.array[wp.int32],
-    apply_stick_deadzone: int,
-    stick_freeze_translation_eps: float,
-    stick_freeze_angular_eps: float,
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_qd_mirror: wp.array[wp.spatial_vector],
@@ -5013,8 +4943,6 @@ def update_body_velocity(
     """
     Update body velocities from position changes (world frame).
 
-    Optionally applies a tiny body-level stick-contact deadzone before
-    finite-difference velocity computation.
     Computes linear and angular velocities using finite differences.
     Also transfers the final body poses to body_q_out (fused copy from
     the in-place Gauss-Seidel iteration buffer to state_out).
@@ -5026,15 +4954,6 @@ def update_body_velocity(
         dt: Time step.
         body_q: Current body transforms (world), from state_in (in-place iteration buffer).
         body_com: Center of mass offsets (local frame).
-        body_contact_buffer_pre_alloc: Per-body contact-list capacity.
-        body_contact_counts: Number of body-body contacts adjacent to each body.
-        body_contact_indices: Flat per-body contact index lists.
-        contact_stick_flag: Per-contact flag (0=none, ANCHOR=sticking kinematic/static,
-            DEADZONE=sticking dynamic-dynamic).
-        apply_stick_deadzone: If nonzero, enable anti-creep deadzone for bodies whose
-            contacts carry DEADZONE but not ANCHOR.
-        stick_freeze_translation_eps: Translation deadzone [m] for anti-creep snapping.
-        stick_freeze_angular_eps: Angular deadzone [rad] for anti-creep snapping.
         body_q_prev: Previous body transforms (input/output), advanced to the
             current pose for the next step. ``SolverVBD.reset()`` is the supported
             way to establish a new baseline after a discontinuous pose change.
@@ -5054,27 +4973,6 @@ def update_body_velocity(
     x_prev = wp.transform_get_translation(pose_prev)
     q = wp.transform_get_rotation(pose)
     q_prev = wp.transform_get_rotation(pose_prev)
-
-    if apply_stick_deadzone != 0:
-        count = wp.min(body_contact_counts[tid], body_contact_buffer_pre_alloc)
-        offset = tid * body_contact_buffer_pre_alloc
-        has_anchor = int(0)
-        has_deadzone = int(0)
-        for i in range(count):
-            contact_idx = body_contact_indices[offset + i]
-            f = contact_stick_flag[contact_idx]
-            if f == _STICK_FLAG_ANCHOR:
-                has_anchor = int(1)
-            elif f == _STICK_FLAG_DEADZONE:
-                has_deadzone = int(1)
-
-        if has_deadzone != 0 and has_anchor == 0:
-            translation_delta = wp.length(x - x_prev)
-            angular_delta = wp.length(quat_velocity(q, q_prev, 1.0))  # dt=1 gives angular displacement [rad]
-            if translation_delta < stick_freeze_translation_eps and angular_delta < stick_freeze_angular_eps:
-                pose = pose_prev
-                x = x_prev
-                q = q_prev
 
     # Compute COM positions
     com_local = body_com[tid]

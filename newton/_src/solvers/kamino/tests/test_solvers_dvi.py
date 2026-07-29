@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -16,7 +17,7 @@ from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions, update_constraints_info
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians
-from newton._src.solvers.kamino._src.linalg import LLTBlockedSolver
+from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.models.builders import basics, testing
 from newton._src.solvers.kamino._src.models.builders import utils as builder_utils
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
@@ -189,6 +190,8 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(default_config.dvi.block_iterations, 32)
         self.assertEqual(default_config.dvi.contact_iterations, 4)
         self.assertEqual(default_config.dvi.bilateral_solve_period, 1)
+        self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
+        self.assertEqual(default_config.dvi.bilateral_solver_kwargs, {})
         self.assertEqual(default_config.dvi.contact_jacobi_omega, 0.3)
         self.assertEqual(default_config.dvi.contact_jacobi_relaxation, 0.9)
 
@@ -242,6 +245,7 @@ class TestDVISolver(unittest.TestCase):
             {"block_iterations": 0},
             {"contact_iterations": 0},
             {"bilateral_solve_period": 0},
+            {"bilateral_solver_type": "invalid"},
             {"contact_jacobi_omega": 0.0},
             {"contact_jacobi_omega": 2.1},
             {"contact_jacobi_relaxation": 0.0},
@@ -263,12 +267,43 @@ class TestDVISolver(unittest.TestCase):
             with self.assertRaises(ValueError):
                 kamino_config.DVISolverConfig(contact_warmstart_method=method)
 
-        from types import SimpleNamespace  # noqa: PLC0415
-
         model_with_attrs = SimpleNamespace(
             kamino=SimpleNamespace(max_solver_iterations=wp.array([37], dtype=wp.int32, device=self.device))
         )
         self.assertEqual(kamino_config.DVISolverConfig.from_model(model_with_attrs).max_iterations, 37)
+
+    def test_00b_bilateral_solver_selection(self):
+        """Verify DVI constructs and validates the configured bilateral solver."""
+
+        def make_model(dimensions):
+            return SimpleNamespace(
+                size=SimpleNamespace(sum_of_num_joint_cts=sum(dimensions)),
+                info=SimpleNamespace(
+                    num_joint_cts=wp.array(dimensions, dtype=wp.int32, device=self.device),
+                    joint_cts_offset=wp.array(np.cumsum([0, *dimensions[:-1]]), dtype=wp.int32, device=self.device),
+                ),
+            )
+
+        config = kamino_config.DVISolverConfig(
+            bilateral_solver_type="LLTBRCM",
+            bilateral_solver_kwargs={"block_size": 16, "reuse_permutation": True},
+        )
+        solver = DVISolver()
+        solver._config = [config]
+        solver._data = SimpleNamespace(bilateral_operator=None)
+        solver._device = self.device
+        solver._allocate_bilateral_solver(make_model([3]))
+
+        self.assertIsInstance(solver._bilateral_solver, LLTBlockedRCMSolver)
+        self.assertEqual(solver._bilateral_solver._block_size, 16)
+        self.assertTrue(solver._bilateral_solver._reuse_permutation)
+
+        solver._config = [
+            kamino_config.DVISolverConfig(bilateral_solver_type="LLTB"),
+            kamino_config.DVISolverConfig(bilateral_solver_type="LLTBRCM"),
+        ]
+        with self.assertRaisesRegex(ValueError, "All worlds must use the same"):
+            solver._allocate_bilateral_solver(make_model([3, 3]))
 
     def test_00a_multiworld_status_reduction_requires_all_worlds_converged(self):
         status = np.array(
