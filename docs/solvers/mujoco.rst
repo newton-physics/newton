@@ -446,10 +446,11 @@ into Newton collision groups plus exact sparse exclusions. The original
 32-bit values are also retained as ``model.mujoco.contype`` and
 ``model.mujoco.conaffinity`` custom attributes. When every selected collision
 shape has those imported attributes,
-``use_mujoco_contacts=True`` forwards them verbatim; they are authoritative
-over Newton collision-group or partial pair-filter edits. Body-wide Newton
-filters are still emitted as MuJoCo ``<exclude>`` elements, which preserves
-imported MJCF body exclusions.
+``use_mujoco_contacts=True`` forwards them verbatim when all Newton pair
+filters are already covered by the masks, same-body filtering, or body-wide
+MuJoCo ``<exclude>`` elements. A narrower Newton pair filter instead triggers
+the exact native-graph conversion below. Preserved masks remain authoritative
+over later Newton collision-group edits.
 
 For native Newton models, :class:`~newton.solvers.SolverMuJoCo` instead
 compiles the signed collision groups and pair filters into MuJoCo mask bits.
@@ -458,7 +459,9 @@ is exact only when the Newton pair graph has a biclique cover of at most
 32 bits. The compiler is guaranteed to find an exact representation for up to
 33 selected shapes, and commonly fits much larger group-structured models. If
 a larger arbitrary graph does not fit, the solver warns before using the
-legacy graph-color approximation, which may admit extra contacts.
+legacy graph-color approximation, which may admit extra contacts. To bound the
+dense pair-matrix work, graphs above 256 selected shapes or 1,024 sparse
+filters skip directly to that established fallback without a warning.
 
 .. _mujoco-margin-gap-mapping:
 

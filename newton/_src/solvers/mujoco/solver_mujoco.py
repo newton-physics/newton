@@ -4667,6 +4667,48 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return compile_newton_collision_graph(groups, excluded_pairs=local_filter_pairs)
 
     @staticmethod
+    def _preserved_masks_cover_collision_filters(
+        model: Model,
+        selected_shapes: np.ndarray,
+        collision_type: np.ndarray,
+        collision_affinity: np.ndarray,
+        body_filters: Iterable[tuple[int, int]],
+    ) -> bool:
+        """Return whether preserved masks and body excludes cover Newton pair filters."""
+        filter_pairs = model.shape_collision_filter_pairs_array()
+        if filter_pairs.shape[0] == 0:
+            return True
+
+        selected = np.zeros(model.shape_count, dtype=bool)
+        selected[selected_shapes] = True
+        filter_pairs = filter_pairs[selected[filter_pairs[:, 0]] & selected[filter_pairs[:, 1]]]
+        if filter_pairs.shape[0] == 0:
+            return True
+
+        collision_type = (collision_type.astype(np.int64, copy=False) & np.int64(0xFFFFFFFF)).astype(np.uint32)
+        collision_affinity = (collision_affinity.astype(np.int64, copy=False) & np.int64(0xFFFFFFFF)).astype(np.uint32)
+        shape_a = filter_pairs[:, 0]
+        shape_b = filter_pairs[:, 1]
+        raw_masks_allow = ((collision_type[shape_a] & collision_affinity[shape_b]) != 0) | (
+            (collision_type[shape_b] & collision_affinity[shape_a]) != 0
+        )
+        remaining_pairs = filter_pairs[raw_masks_allow]
+        if remaining_pairs.shape[0] == 0:
+            return True
+
+        body_filter_set = {tuple(sorted((int(body_a), int(body_b)))) for body_a, body_b in body_filters}
+        shape_body = model.shape_body.numpy()
+        for shape_a, shape_b in remaining_pairs:
+            body_a = int(shape_body[shape_a])
+            body_b = int(shape_body[shape_b])
+            # MuJoCo never generates automatic contacts between geoms on the
+            # same body; whole-body Newton filters are emitted as excludes.
+            if body_a == body_b or tuple(sorted((body_a, body_b))) in body_filter_set:
+                continue
+            return False
+        return True
+
+    @staticmethod
     def _color_collision_shapes(
         model: Model, selected_shapes: np.ndarray, visualize_graph: bool = False, shape_labels: list[str] | None = None
     ) -> np.ndarray:
@@ -5380,6 +5422,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             and shape_mjc_conaffinity is not None
             and np.all(shape_mjc_contype[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
             and np.all(shape_mjc_conaffinity[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
+            and self._preserved_masks_cover_collision_filters(
+                model,
+                colliding_shapes,
+                shape_mjc_contype,
+                shape_mjc_conaffinity,
+                body_filters,
+            )
         )
         compiled_collision_type = None
         compiled_collision_affinity = None
@@ -5392,7 +5441,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
                 compiled_collision_affinity[colliding_shapes] = compiled_masks.collision_affinity
             else:
-                if self._use_mujoco_contacts and not disable_contacts:
+                if self._use_mujoco_contacts and not disable_contacts and not compiled_masks.skipped:
                     warnings.warn(
                         "The selected Newton collision graph does not fit the MuJoCo 32-bit "
                         f"contype/conaffinity representation; {compiled_masks.uncovered_pair_count} "

@@ -297,6 +297,25 @@ class TestNewtonCollisionGraphCompiler(unittest.TestCase):
         self.assertEqual(result.bit_count, 33)
         self.assertGreater(result.uncovered_pair_count, 0)
 
+    def test_large_graph_skips_reverse_compilation(self):
+        """Skip reverse compilation before allocating a large pair matrix."""
+        groups = np.ones(257, dtype=np.int32)
+        result = compile_newton_collision_graph(groups, max_shape_count=256)
+
+        self.assertFalse(result.exact)
+        self.assertTrue(result.skipped)
+        self.assertIsNone(result.uncovered_pair_count)
+
+    def test_heavily_filtered_graph_skips_reverse_compilation(self):
+        """Skip reverse compilation when sparse filters exceed its work budget."""
+        groups = np.ones(47, dtype=np.int32)
+        exclusions = list(itertools.combinations(range(47), 2))[:1025]
+        result = compile_newton_collision_graph(groups, excluded_pairs=exclusions)
+
+        self.assertFalse(result.exact)
+        self.assertTrue(result.skipped)
+        self.assertIsNone(result.uncovered_pair_count)
+
     def test_rejects_invalid_reverse_inputs(self):
         """Reject malformed Newton graphs and invalid mask capacities."""
         with self.assertRaises(TypeError):
@@ -307,6 +326,10 @@ class TestNewtonCollisionGraphCompiler(unittest.TestCase):
             compile_newton_collision_graph([1], max_bits=33)
         with self.assertRaises(ValueError):
             compile_newton_collision_graph([1], excluded_pairs=[(0, 1)])
+        with self.assertRaises(ValueError):
+            compile_newton_collision_graph([1], max_shape_count=0)
+        with self.assertRaises(ValueError):
+            compile_newton_collision_graph([1], max_excluded_pair_count=-1)
 
 
 if __name__ == "__main__":

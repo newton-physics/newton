@@ -90,8 +90,11 @@ class CollisionGraphCompileResult:
     exact: bool
     """Whether the masks exactly represent every Newton shape pair."""
 
-    uncovered_pair_count: int
-    """Number of Newton collision pairs not covered when ``exact`` is false."""
+    uncovered_pair_count: int | None
+    """Number of uncovered Newton pairs, or ``None`` when compilation was skipped."""
+
+    skipped: bool
+    """Whether compilation was skipped before constructing the pair graph."""
 
 
 def _group_pair_allowed(group_a: int, group_b: int) -> bool:
@@ -629,6 +632,8 @@ def compile_newton_collision_graph(
     *,
     excluded_pairs: Sequence[tuple[int, int]] | np.ndarray = (),
     max_bits: int = 32,
+    max_shape_count: int | None = 256,
+    max_excluded_pair_count: int | None = 1024,
 ) -> CollisionGraphCompileResult:
     """Compile Newton groups and exclusions into exact MuJoCo masks when possible.
 
@@ -646,26 +651,49 @@ def compile_newton_collision_graph(
     minimum biclique cover is NP-hard, so failure for a larger graph does not
     prove that no alternative 32-bit cover exists.
 
+    The greedy cover uses a dense shape-pair matrix and repeatedly scores its
+    candidates. Large shape sets and heavily filtered graphs are therefore
+    left to the caller's fallback without constructing that matrix.
+
     Args:
         collision_groups: Newton signed collision group per shape.
         excluded_pairs: Canonical or noncanonical Newton exclusion pairs.
         max_bits: Maximum MuJoCo mask bits available.
+        max_shape_count: Largest graph to compile, or ``None`` for no limit.
+        max_excluded_pair_count: Largest sparse filter set to compile, or
+            ``None`` for no limit.
 
     Returns:
         The exact masks when they fit, or an inexact diagnostic result.
     """
     if max_bits <= 0 or max_bits > 32:
         raise ValueError(f"max_bits must be in [1, 32], got {max_bits}")
+    if max_shape_count is not None and max_shape_count <= 0:
+        raise ValueError(f"max_shape_count must be positive or None, got {max_shape_count}")
+    if max_excluded_pair_count is not None and max_excluded_pair_count < 0:
+        raise ValueError(f"max_excluded_pair_count must be nonnegative or None, got {max_excluded_pair_count}")
 
     collision_groups = _normalize_collision_groups(collision_groups)
     shape_count = collision_groups.shape[0]
     excluded_pairs = _normalize_prefiltered_pairs(excluded_pairs, shape_count)
-    allowed = _newton_collision_matrix(collision_groups, excluded_pairs)
-    allowed_flat = allowed.reshape(-1)
-    uncovered = np.triu(allowed, 1).reshape(-1).copy()
 
     collision_type = np.zeros(shape_count, dtype=np.uint32)
     collision_affinity = np.zeros(shape_count, dtype=np.uint32)
+    if (max_shape_count is not None and shape_count > max_shape_count) or (
+        max_excluded_pair_count is not None and excluded_pairs.shape[0] > max_excluded_pair_count
+    ):
+        return CollisionGraphCompileResult(
+            collision_type=collision_type,
+            collision_affinity=collision_affinity,
+            bit_count=0,
+            exact=False,
+            uncovered_pair_count=None,
+            skipped=True,
+        )
+
+    allowed = _newton_collision_matrix(collision_groups, excluded_pairs)
+    allowed_flat = allowed.reshape(-1)
+    uncovered = np.triu(allowed, 1).reshape(-1).copy()
     if not np.any(uncovered):
         return CollisionGraphCompileResult(
             collision_type=collision_type,
@@ -673,6 +701,7 @@ def compile_newton_collision_graph(
             bit_count=0,
             exact=True,
             uncovered_pair_count=0,
+            skipped=False,
         )
 
     candidates: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
@@ -787,6 +816,7 @@ def compile_newton_collision_graph(
         bit_count=len(selected) if exact else min(max_bits + 1, len(selected) + 1),
         exact=exact,
         uncovered_pair_count=uncovered_pair_count,
+        skipped=False,
     )
 
 
