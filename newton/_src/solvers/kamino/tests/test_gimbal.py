@@ -81,6 +81,45 @@ class TestGimbal(unittest.TestCase):
         solver = SolverKamino(model)
         self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[d6], JointDoFType.GIMBAL_LEFT_HANDED)
 
+    def test_gimbal_rejects_nonorthogonal_axes(self):
+        """Reject a gimbal whose axes are not an orthonormal basis."""
+        model, d6 = _build_rotational_d6((newton.Axis.X, newton.Axis.Y, newton.Axis.Z))
+        assert model.joint_qd_start is not None
+        assert model.joint_axis is not None
+        qd_start = model.joint_qd_start.numpy()[d6]
+        axes = model.joint_axis.numpy()
+        axes[qd_start + 1] = [1.0, 0.0, 0.0]
+        model.joint_axis.assign(axes)
+
+        with self.assertRaisesRegex(ValueError, "gimbal axes must be unit length and orthogonal"):
+            SolverKamino(model)
+
+    def test_universal_rejects_nonorthogonal_axes(self):
+        """Reject a universal joint whose axes are not perpendicular."""
+        builder = newton.ModelBuilder()
+        parent = builder.add_link()
+        child = builder.add_link()
+        root = builder.add_joint_fixed(-1, parent)
+        universal = builder.add_joint_d6(
+            parent,
+            child,
+            angular_axes=[
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
+            ],
+        )
+        builder.add_articulation([root, universal])
+        model = builder.finalize(device="cpu")
+        assert model.joint_qd_start is not None
+        assert model.joint_axis is not None
+        qd_start = model.joint_qd_start.numpy()[universal]
+        axes = model.joint_axis.numpy()
+        axes[qd_start + 1] = [1.0, 0.0, 0.0]
+        model.joint_axis.assign(axes)
+
+        with self.assertRaisesRegex(ValueError, "universal and gimbal axes must be unit length and orthogonal"):
+            SolverKamino(model)
+
     def test_from_newton_derives_gimbal_handedness(self):
         """Derive the gimbal type from the orientation of its three axes."""
         limits = np.zeros(3, dtype=np.float32)

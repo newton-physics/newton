@@ -698,7 +698,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         )
 
         # Scratch array for notify validation
-        self._notify_violations = wp.empty(4, dtype=wp.int32, device=model.device)
+        self._notify_violations = wp.empty(
+            self._kamino.JOINT_UPDATE_VIOLATION_COUNT,
+            dtype=wp.int32,
+            device=model.device,
+        )
 
         # Cache one representative shape per material.
         self._material_first_shape = self._kamino.compute_material_first_shape(
@@ -973,8 +977,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             # q_i_0 is derived from both model.body_q and model.body_com.
             self._update_body_initial_pose()
 
-        if flags & (ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.JOINT_PROPERTIES):
-            # Joint transforms are derived from body_com and joint_X_p / joint_X_c.
+        if flags & (
+            ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES
+        ):
+            # Joint frames are derived from body_com, anchor transforms, and DoF axes.
             self._update_joint_transforms()
 
         if flags & (ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.SHAPE_PROPERTIES):
@@ -1208,7 +1214,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         check_dof = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
         check_actuation = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES))
-        if not check_dof and not check_actuation:
+        check_axes = check_dof
+        if not check_dof and not check_actuation and not check_axes:
             return
 
         sentinel = self._kamino.validate_model_joint_updates(
@@ -1218,8 +1225,14 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._notify_violations,
             check_dof=check_dof,
             check_actuation=check_actuation,
+            check_axes=check_axes,
         )
-        dynamic_joint, limit_dof, actuation_joint, invalid_joint = self._notify_violations.numpy()
+        violations = self._notify_violations.numpy()
+        dynamic_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_DYNAMIC_CTS]
+        limit_dof = violations[self._kamino.JOINT_UPDATE_VIOLATION_LIMIT_FINITE]
+        actuation_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION]
+        invalid_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE]
+        axis_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
@@ -1247,6 +1260,14 @@ class SolverKamino(SolverBase, CouplingInterface):
         if invalid_joint != sentinel:
             joint = int(invalid_joint)
             raise ValueError(f"Unsupported joint target mode for joint {joint}")
+
+        if axis_joint != sentinel:
+            joint = int(axis_joint)
+            raise ValueError(
+                f"Invalid joint configuration for SolverKamino:\n"
+                f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
+                "universal and gimbal axes must be unit length and orthogonal"
+            )
 
     def _update_actuation_types(self) -> None:
         """Refresh actuation modes without changing the passive/actuated layout."""

@@ -13,6 +13,12 @@ from .core.bodies import (
 )
 from .core.control import ControlKamino
 from .core.conversions import (
+    JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION,
+    JOINT_UPDATE_VIOLATION_COUNT,
+    JOINT_UPDATE_VIOLATION_DYNAMIC_CTS,
+    JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE,
+    JOINT_UPDATE_VIOLATION_LIMIT_FINITE,
+    JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES,
     compute_material_first_shape,
     convert_model_joint_actuation,
     convert_model_joint_transforms,
@@ -38,6 +44,12 @@ from .utils import logger as msg
 __all__ = [
     "JOINT_QMAX",
     "JOINT_QMIN",
+    "JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION",
+    "JOINT_UPDATE_VIOLATION_COUNT",
+    "JOINT_UPDATE_VIOLATION_DYNAMIC_CTS",
+    "JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE",
+    "JOINT_UPDATE_VIOLATION_LIMIT_FINITE",
+    "JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES",
     "CollisionDetector",
     "ContactsKamino",
     "ControlKamino",
