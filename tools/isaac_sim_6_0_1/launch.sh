@@ -21,5 +21,9 @@ if [[ -z "${warp_root}" || ! -d "${prebundle}" ]]; then
 fi
 
 export PYTHONPATH="${repo_root}:${script_dir}:${warp_root}:${prebundle}${PYTHONPATH:+:${PYTHONPATH}}"
+export NEWTON_DEV_REPO="${repo_root}"
 "${isaac_root}/python.sh" "${script_dir}/verify_source.py" --expected-repo "${repo_root}"
-exec env -u OMNI_KIT_ACCEPT_EULA "${isaac_root}/isaac-sim.newton.sh" "$@"
+exec env -u OMNI_KIT_ACCEPT_EULA "${isaac_root}/isaac-sim.newton.sh" \
+    --ext-folder "${script_dir}/exts" \
+    --enable newton.dev.source \
+    "$@"
