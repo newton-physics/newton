@@ -113,3 +113,43 @@ class DriveTargetRecorder:
             for t, q in zip(self.time_log, self.target_log, strict=True):
                 writer.writerow([t, *q])
         print(f"wrote {len(self.time_log)} rows to {path}")
+
+
+class PadBreakMetricRecorder:
+    """Records each pad's brittle break metric every sim step over the whole run, then writes it to CSV
+    once playback ends.
+
+    Gated by the caller (see the record calls in ``simulate``). Host-side (reads state each sub-step),
+    so CPU only. Unlike the other recorders it logs the entire recording (not just the first engaged
+    window), so it dumps when the sim clock passes ``rec_duration``.
+    """
+
+    def __init__(self, sim_dt, rec_duration, num_pads):
+        self.sim_dt = sim_dt
+        self.rec_duration = rec_duration
+        self.num_pads = num_pads
+        self.metric_log = []  # per-pad break metric each sub-step
+        self.time_log = []  # matching sim time [s]
+        self.done = False  # set True once the recording has been dumped
+
+    def record(self, pad_break_metric, sim_step_count):
+        """Record one sub-step. ``pad_break_metric`` / ``sim_step_count`` are device arrays for the
+        per-pad break metric (from the previous force eval) and the sub-step counter.
+        """
+        if self.done:
+            return
+        t = float(sim_step_count.numpy()[0]) * self.sim_dt
+        self.metric_log.append(list(pad_break_metric.numpy()[: self.num_pads]))
+        self.time_log.append(t)
+        if t >= self.rec_duration:  # playback finished -> dump once
+            self.done = True
+            self._dump()
+
+    def _dump(self, path="pad_break_metrics.csv"):
+        """Write the break-metric log (time + one column per pad) to CSV."""
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["time_s"] + [f"pad{i}" for i in range(self.num_pads)])
+            for t, m in zip(self.time_log, self.metric_log, strict=True):
+                writer.writerow([t, *m])
+        print(f"wrote {len(self.time_log)} rows to {path}")

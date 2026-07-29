@@ -38,7 +38,11 @@ import newton
 import newton.examples
 from newton.examples.suctioncup.box_placements import PlacementConfig, compute_box_placements
 from newton.examples.suctioncup.crate_playback import CratePlayback
-from newton.examples.suctioncup.debug_recorders import DriveTargetRecorder, EndEffectorAccelerationRecorder
+from newton.examples.suctioncup.debug_recorders import (
+    DriveTargetRecorder,
+    EndEffectorAccelerationRecorder,
+    PadBreakMetricRecorder,
+)
 from newton.examples.suctioncup.robot_playback import RobotPlayback
 from newton.examples.suctioncup.surface_gripper import (
     PadShape,
@@ -434,6 +438,9 @@ class Example:
         if RECORD_DEBUG and not wp.get_device().is_cuda:
             self.accel_recorder = EndEffectorAccelerationRecorder(ee_body, self.sim_dt)
             self.drive_target_recorder = DriveTargetRecorder(self.sim_dt, NUM_ARM_DOFS)
+            self.pad_break_recorder = PadBreakMetricRecorder(
+                self.sim_dt, self.robot_arm_playback.rec_duration, len(GRIPPER_PADS)
+            )
 
     def capture(self):
         # capturing runs one frame for real, which advances the device sub-step counter and search
@@ -501,6 +508,7 @@ class Example:
             if RECORD_DEBUG and not wp.get_device().is_cuda:
                 self.accel_recorder.record(self.state_0, self.state_1, self.gripper_command_engaged_wp, self.sim_step_count_wp)
                 self.drive_target_recorder.record(self.gripper_command_engaged_wp, self.control.joint_target_q, self.sim_step_count_wp)
+                self.pad_break_recorder.record(self.gripper_state.pad_break_metric, self.sim_step_count_wp)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
