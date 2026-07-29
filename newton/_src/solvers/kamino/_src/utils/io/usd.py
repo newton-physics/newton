@@ -457,6 +457,20 @@ class USDImporter:
             return False
         return imageable.ComputeVisibility() != self.UsdGeom.Tokens.invisible
 
+    def _is_viewport_drawn(self, prim) -> bool:
+        """Return whether a prim is drawn under viewport semantics.
+
+        USD viewports draw the ``default`` and ``proxy`` purposes and hide ``guide`` and
+        ``render``. ``force_show_colliders`` is the explicit override for inspecting
+        collision geometry that is not otherwise viewport-drawn.
+        """
+        if not self._is_effectively_visible(prim):
+            return False
+        return self.UsdGeom.Imageable(prim).ComputePurpose() in (
+            self.UsdGeom.Tokens.default_,
+            self.UsdGeom.Tokens.proxy,
+        )
+
     def _parse_material(
         self,
         material_prim,
@@ -1693,12 +1707,13 @@ class USDImporter:
                     geom_collides += cgroup
             msg.debug(f"[{name}]: geom_collides: {geom_collides}")
 
-        # Explicit hide_collision_shapes overrides material-based visibility:
+        # Explicit hide_collision_shapes overrides drawability:
         # if the body already has visual shapes, hide its colliders unconditionally.
-        collider_is_visible = force_show_colliders and not hide_collision_shapes
-        collider_is_visible = collider_is_visible and self._is_effectively_visible(geom_prim)
+        # A collider is drawn when USD says it is drawn, or when force_show_colliders
+        # overrides authored invisibility (e.g. guide/invisible collision geometry).
+        collider_is_visible = (force_show_colliders or self._is_viewport_drawn(geom_prim)) and not hide_collision_shapes
 
-        # Set the geom to be visible if it is a non-collidable mesh and we are forcing show colliders
+        # Set the geom to be visible when the collider display policy says it should be drawn.
         if collider_is_visible:
             geom_flags = geom_flags | ShapeFlags.VISIBLE
 
