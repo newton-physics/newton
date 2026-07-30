@@ -2587,6 +2587,9 @@ def parse_mjcf(
 
             # Parse attributes using the standard custom attribute parsing
             pair_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_pair, parsing_mode="mjcf")
+            for distance_key in ("mujoco:pair_margin", "mujoco:pair_gap"):
+                if distance_key in pair_attrs:
+                    pair_attrs[distance_key] *= scale
 
             # Build values dict for all pair attributes
             pair_values: dict[str, Any] = {

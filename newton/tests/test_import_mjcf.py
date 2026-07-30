@@ -8515,6 +8515,31 @@ class TestContypeConaffinityZero(unittest.TestCase):
             ],
         )
 
+    def test_explicit_pair_scales_inherited_distances(self):
+        """Scale contact pair distances inherited from a named default."""
+        mjcf = """
+<mujoco>
+    <default>
+        <default class="scaled_pair">
+            <pair geom1="a" geom2="b" margin="0.1" gap="0.02"/>
+        </default>
+    </default>
+    <worldbody>
+        <geom name="a" type="sphere" size="0.1"/>
+        <geom name="b" type="sphere" size="0.1" pos="0 0 1"/>
+    </worldbody>
+    <contact>
+        <pair class="scaled_pair"/>
+    </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, scale=10.0)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.mujoco.pair_margin.numpy(), [1.0])
+        np.testing.assert_allclose(model.mujoco.pair_gap.numpy(), [0.2])
+
     def test_explicit_pair_retains_unclassified_geoms_without_visuals(self):
         """Pair-referenced zero-mask geoms survive parse_visuals=False."""
         mjcf = """<mujoco>
