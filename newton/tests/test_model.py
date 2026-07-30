@@ -975,9 +975,12 @@ class TestModelMesh(unittest.TestCase):
 
         vertices_a, faces_a = cube()
         vertices_b, faces_b = cube(offset=(3.0, 0.0, 0.0), start=len(vertices_a))
+        vertices = np.concatenate((vertices_a, vertices_b), axis=0)
         mesh = newton.Mesh(
-            np.concatenate((vertices_a, vertices_b), axis=0),
+            vertices,
             np.concatenate((faces_a, faces_b), axis=0).flatten(),
+            normals=np.ones_like(vertices),
+            uvs=np.ones((len(vertices), 2), dtype=np.float32),
             compute_inertia=False,
         )
 
@@ -1018,6 +1021,109 @@ class TestModelMesh(unittest.TestCase):
                 self.assertEqual(builder.shape_type[1], newton.GeoType.CONVEX_MESH)
                 centers_x = sorted(float(np.mean(source.vertices[:, 0])) for source in builder.shape_source)
                 np.testing.assert_allclose(centers_x, [0.5, 3.5], atol=1e-6, rtol=1e-6)
+                for source in builder.shape_source:
+                    self.assertIsNone(source.normals)
+                    self.assertIsNone(source.uvs)
+
+    def test_mesh_approximation_convex_decomposition_keeps_coincident_vertices_connected(self):
+        """Keep duplicated seam vertices in one decomposition component."""
+
+        mesh = newton.Mesh.create_box(1.0)
+        self.assertEqual(len(mesh.vertices), 24)
+
+        class FakeBackendMesh:
+            def __init__(self, vertices, faces):
+                self.vertices = vertices
+                self.faces = faces
+
+        for method in ("coacd", "vhacd"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+                calls = []
+
+                def fake_decompose(backend_mesh, _backend_method=method, _calls=calls, **_kwargs):
+                    _calls.append((len(backend_mesh.vertices), len(backend_mesh.faces)))
+                    vertices = np.asarray(backend_mesh.vertices).copy()
+                    faces = np.asarray(backend_mesh.faces).copy()
+                    if _backend_method == "coacd":
+                        return [(vertices, faces)]
+                    return [{"vertices": vertices, "faces": faces}]
+
+                if method == "coacd":
+                    fake_backend = SimpleNamespace(Mesh=FakeBackendMesh, run_coacd=fake_decompose)
+                    module_name = "coacd"
+                else:
+                    fake_backend = SimpleNamespace(
+                        Trimesh=FakeBackendMesh,
+                        decomposition=SimpleNamespace(convex_decomposition=fake_decompose),
+                    )
+                    module_name = "trimesh"
+
+                with patch_sys_module(module_name, fake_backend):
+                    builder.approximate_meshes(method=method, shape_indices=[shape], raise_on_failure=True)
+
+                self.assertEqual(calls, [(8, 12)])
+                self.assertEqual(builder.shape_count, 1)
+
+    def test_mesh_approximation_convex_decomposition_preserves_shape_settings(self):
+        """Preserve source settings without adding mass to extra convex parts."""
+
+        class FakeCoacdMesh:
+            def __init__(self, vertices, faces):
+                self.vertices = vertices
+                self.faces = faces
+
+        def fake_decompose(backend_mesh, **_kwargs):
+            vertices = np.asarray(backend_mesh.vertices)
+            faces = np.asarray(backend_mesh.faces)
+            return [(vertices.copy(), faces.copy()), (vertices.copy(), faces.copy())]
+
+        fake_coacd = SimpleNamespace(Mesh=FakeCoacdMesh, run_coacd=fake_decompose)
+        mesh = newton.Mesh.create_box(
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+        )
+
+        for collision_filter_parent in (False, True):
+            with self.subTest(collision_filter_parent=collision_filter_parent):
+                builder = ModelBuilder()
+                parent = builder.add_link()
+                child = builder.add_link()
+                joint_free = builder.add_joint_free(parent=-1, child=parent)
+                joint_child = builder.add_joint_revolute(parent=parent, child=child, axis=(0.0, 0.0, 1.0))
+                builder.add_articulation([joint_free, joint_child])
+                parent_shape = builder.add_shape_sphere(body=parent, radius=0.1)
+                cfg = ModelBuilder.ShapeConfig(
+                    density=4.0,
+                    ke=321.0,
+                    kd=32.0,
+                    mu=0.4,
+                    gap=0.123,
+                    collision_group=7,
+                    collision_filter_parent=collision_filter_parent,
+                )
+                shape = builder.add_shape_mesh(body=child, mesh=mesh, cfg=cfg)
+                body_mass = builder.body_mass[child]
+
+                with patch_sys_module("coacd", fake_coacd):
+                    builder.approximate_meshes(method="coacd", shape_indices=[shape], raise_on_failure=True)
+
+                extra_shape = shape + 1
+                self.assertAlmostEqual(builder.body_mass[child], body_mass)
+                self.assertEqual(builder.shape_flags[extra_shape], builder.shape_flags[shape])
+                self.assertEqual(builder.shape_gap[extra_shape], builder.shape_gap[shape])
+                self.assertEqual(builder.shape_collision_group[extra_shape], builder.shape_collision_group[shape])
+                self.assertEqual(builder.shape_material_ke[extra_shape], builder.shape_material_ke[shape])
+                self.assertEqual(builder.shape_material_kd[extra_shape], builder.shape_material_kd[shape])
+                self.assertEqual(builder.shape_material_mu[extra_shape], builder.shape_material_mu[shape])
+
+                filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
+                self.assertIn(tuple(sorted((shape, extra_shape))), filter_pairs)
+                parent_pair = tuple(sorted((parent_shape, extra_shape)))
+                self.assertEqual(parent_pair in filter_pairs, collision_filter_parent)
 
     def test_approximate_meshes_collision_filter_child_bodies(self):
         def normalize_pair(a, b):

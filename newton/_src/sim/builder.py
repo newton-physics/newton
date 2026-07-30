@@ -53,7 +53,7 @@ from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import deprecate_nonkeyword_arguments
-from ..utils.mesh import MeshAdjacency
+from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -7339,6 +7339,8 @@ class ModelBuilder:
 
             The ``coacd`` and ``vhacd`` methods require additional dependencies (``coacd`` or ``trimesh`` and ``vhacdx`` respectively) to be installed.
             The convex hull approximation requires ``scipy`` to be installed.
+            For ``coacd`` and ``vhacd``, each geometrically connected component
+            is decomposed separately and may produce one or more convex shapes.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -7392,49 +7394,6 @@ class ModelBuilder:
                 and shape in custom_attr.values
             }
             return custom_attributes or None
-
-        # Decomposition backends may merge disconnected convex parts into one hull.
-        def split_mesh_components(mesh: Mesh) -> list[tuple[np.ndarray, np.ndarray]]:
-            """Split mesh faces into vertex-connected components."""
-            faces = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
-            if len(faces) <= 1:
-                return [(mesh.vertices, faces)]
-
-            parents = np.arange(len(mesh.vertices), dtype=np.int32)
-            left = np.concatenate((faces[:, 0], faces[:, 0]))
-            right = np.concatenate((faces[:, 1], faces[:, 2]))
-            # Vectorized root hooking avoids a Python graph walk for the common connected-mesh case.
-            while True:
-                previous_parents = parents.copy()
-                parents = parents[parents]
-                left_roots = parents[left]
-                right_roots = parents[right]
-                high_roots = np.maximum(left_roots, right_roots)
-                low_roots = np.minimum(left_roots, right_roots)
-                np.minimum.at(parents, high_roots, low_roots)
-                parents = parents[parents]
-                if np.array_equal(parents, previous_parents):
-                    break
-
-            face_roots = parents[faces[:, 0]]
-            component_roots, first_faces, component_sizes = np.unique(face_roots, return_index=True, return_counts=True)
-            if len(component_roots) == 1:
-                return [(mesh.vertices, faces)]
-
-            face_order = np.argsort(face_roots, kind="stable")
-            component_offsets = np.concatenate(([0], np.cumsum(component_sizes)))
-            split_components = []
-            for component_index in np.argsort(first_faces):
-                component_face_indices = face_order[
-                    component_offsets[component_index] : component_offsets[component_index + 1]
-                ]
-                component_faces = faces[component_face_indices]
-                used_vertices, inverse = np.unique(component_faces.reshape(-1), return_inverse=True)
-                component_vertices = mesh.vertices[used_vertices]
-                component_faces = inverse.astype(np.int32, copy=False).reshape(-1, 3)
-                split_components.append((component_vertices, component_faces))
-
-            return split_components
 
         if shape_indices is None:
             shape_indices = [
@@ -7520,6 +7479,7 @@ class ModelBuilder:
                         decomposition = decompositions[hash_m]
                     else:
                         decomposition = []
+                        # Decomposition backends may merge disconnected convex parts into one hull.
                         for component_vertices, component_faces in split_mesh_components(mesh):
                             if method == "coacd":
                                 cmesh = coacd.Mesh(component_vertices, component_faces)
@@ -7547,9 +7507,13 @@ class ModelBuilder:
                     if len(decomposition) == 0:
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
-                    self.shape_source[shape] = self.shape_source[shape].copy(
+                    replacement_mesh = self.shape_source[shape].copy(
                         vertices=decomposition[0][0], indices=decomposition[0][1]
                     )
+                    # Decomposition outputs do not provide attributes remapped to the new vertices.
+                    replacement_mesh._normals = None
+                    replacement_mesh._uvs = None
+                    self.shape_source[shape] = replacement_mesh
                     # mark as convex mesh type
                     self.shape_type[shape] = GeoType.CONVEX_MESH
                     if len(decomposition) > 1:
@@ -7557,8 +7521,18 @@ class ModelBuilder:
                         xform = self.shape_transform[shape]
                         color = self.shape_color[shape]
                         custom_attributes = get_shape_custom_attributes(shape)
+                        filtered_shapes = []
+                        for shape_a, shape_b in self.shape_collision_filter_pairs:
+                            if shape_a == shape:
+                                filtered_shape = shape_b
+                            elif shape_b == shape:
+                                filtered_shape = shape_a
+                            else:
+                                continue
+                            if self.shape_body[filtered_shape] != body:
+                                filtered_shapes.append(filtered_shape)
+                        filtered_shapes = sorted(set(filtered_shapes))
                         cfg = ModelBuilder.ShapeConfig(
-                            density=0.0,  # do not add extra mass / inertia
                             ke=self.shape_material_ke[shape],
                             kd=self.shape_material_kd[shape],
                             kf=self.shape_material_kf[shape],
@@ -7570,13 +7544,15 @@ class ModelBuilder:
                             kh=self.shape_material_kh[shape],
                             margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
-                            collision_group=self.shape_collision_group[shape],
-                            collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
                         )
                         cfg.flags = self.shape_flags[shape]
+                        cfg.density = 0.0  # do not add extra mass / inertia
+                        cfg.gap = self.shape_gap[shape]
+                        cfg.collision_group = self.shape_collision_group[shape]
+                        cfg.collision_filter_parent = False
                         for i in range(1, len(decomposition)):
                             # add additional convex parts as convex meshes
-                            self.add_shape_convex_hull(
+                            extra_shape = self.add_shape_convex_hull(
                                 body=body,
                                 xform=xform,
                                 mesh=Mesh(decomposition[i][0], decomposition[i][1]),
@@ -7586,6 +7562,8 @@ class ModelBuilder:
                                 label=f"{self.shape_label[shape]}_convex_{i}",
                                 custom_attributes=custom_attributes,
                             )
+                            for filtered_shape in filtered_shapes:
+                                self.add_shape_collision_filter_pair(filtered_shape, extra_shape)
                     remeshed_shapes.add(shape)
             except Exception as e:
                 if raise_on_failure:
