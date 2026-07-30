@@ -217,8 +217,11 @@ class TestParallelJointWarning(unittest.TestCase):
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0, label="Sun")
 
-        with self.assertWarnsRegex(UserWarning, r"Sun.*FREE.*inconsistent"):
+        expected_warning_line = inspect.currentframe().f_lineno + 2
+        with self.assertWarnsRegex(UserWarning, r"Sun.*FREE.*inconsistent") as warning:
             builder.add_joint_revolute(parent=-1, child=body)
+        self.assertEqual(warning.filename, __file__)
+        self.assertEqual(warning.lineno, expected_warning_line)
 
     def test_non_free_parallel_warns_undefined(self):
         """Warn when two non-FREE joints connect the same bodies."""
@@ -226,8 +229,11 @@ class TestParallelJointWarning(unittest.TestCase):
         link = builder.add_link(mass=1.0)
         builder.add_joint_revolute(parent=-1, child=link)
 
-        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+        expected_warning_line = inspect.currentframe().f_lineno + 2
+        with self.assertWarnsRegex(UserWarning, "undefined semantics") as warning:
             builder.add_joint_prismatic(parent=-1, child=link)
+        self.assertEqual(warning.filename, __file__)
+        self.assertEqual(warning.lineno, expected_warning_line)
 
     def test_reversed_parent_child_warns_undefined(self):
         """Warn when reversed joints connect the same bodies."""

@@ -10,6 +10,7 @@ import ctypes
 import functools
 import inspect
 import math
+import os
 import warnings
 import weakref
 from collections import Counter, deque
@@ -79,6 +80,8 @@ if TYPE_CHECKING:
 else:
     UsdStage = Any
 
+
+_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 _SCALAR_GRAVITY_DEPRECATION_MSG = (
     "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
@@ -374,7 +377,7 @@ class ModelBuilder:
         frame = frame.f_back
         stacklevel = 1
         try:
-            while frame is not None and frame.f_code.co_filename == __file__:
+            while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
                 frame = frame.f_back
                 stacklevel += 1
             return stacklevel
@@ -4593,7 +4596,7 @@ class ModelBuilder:
                     f"bodies. A FREE joint parallel to another joint is inconsistent. Use add_link() "
                     f"with the appropriate joint type instead of add_body().",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=self._external_warning_stacklevel(),
                 )
             else:
                 warnings.warn(
@@ -4602,7 +4605,7 @@ class ModelBuilder:
                     f"bodies. Parallel joints between the same pair of bodies have undefined semantics and may not "
                     f"behave as expected.",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=self._external_warning_stacklevel(),
                 )
 
         self.joint_type.append(joint_type)
