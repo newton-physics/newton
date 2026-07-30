@@ -8120,6 +8120,85 @@ class TestMjcfPositionDampratioParsing(unittest.TestCase):
         self.assertAlmostEqual(float(biasprm[1, 2]), -3.0, places=6)
 
 
+class TestMjcfPositionDampratioResolvedForJointTarget(unittest.TestCase):
+    """Regression for #3698: <position dampratio> must reach joint_target_kd.
+
+    The importer stores an unresolved dampratio as a positive biasprm[2]
+    placeholder because the reflected inertia is only known after MuJoCo
+    compiles the model. CTRL_DIRECT actuators are resolved by mj_setConst,
+    but JOINT_TARGET actuators read joint_target_kd directly, so a drive the
+    asset author tuned to be critically damped used to import with kd == 0.
+    """
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="link">
+                <joint name="hinge" type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="1"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="motor" joint="hinge" kp="100" dampratio="1"/>
+        </actuator>
+    </mujoco>
+    """
+
+    @staticmethod
+    def _expected_kd(kp, dampratio, acc0):
+        # MuJoCo: kv = 2 * dampratio * sqrt(kp * dof_M0), with dof_M0 == 1 / acc0.
+        return 2.0 * dampratio * np.sqrt(kp / acc0)
+
+    def test_dampratio_resolved_into_joint_target_kd(self):
+        """A dampratio-only position actuator must not import undamped."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.MJCF)
+        model = builder.finalize()
+
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[0]), 0.0, places=6)
+
+        solver = newton.solvers.SolverMuJoCo(model)
+        kd = float(model.joint_target_kd.numpy()[0])
+
+        self.assertGreater(kd, 0.0, "dampratio was dropped; drive imported undamped")
+        expected = self._expected_kd(100.0, 1.0, float(solver.mj_model.actuator_acc0[0]))
+        self.assertAlmostEqual(kd, expected, places=4)
+
+    def test_matches_native_mujoco(self):
+        """The resolved kd must match MuJoCo's own compile-time value."""
+        import mujoco
+
+        mj_model = mujoco.MjModel.from_xml_string(self.MJCF)
+        native_kv = -float(mj_model.actuator_biasprm[0][2])
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.MJCF)
+        model = builder.finalize()
+        newton.solvers.SolverMuJoCo(model)
+
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[0]), native_kv, places=4)
+
+    def test_explicit_kv_is_not_overwritten(self):
+        """An explicit kv must still win; dampratio must not clobber it."""
+        mjcf = self.MJCF.replace('kp="100" dampratio="1"', 'kp="100" kv="3.0" dampratio="1"')
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        newton.solvers.SolverMuJoCo(model)
+
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[0]), 3.0, places=6)
+
+    def test_no_dampratio_stays_undamped(self):
+        """Neither kv nor dampratio authored => kd stays zero."""
+        mjcf = self.MJCF.replace('kp="100" dampratio="1"', 'kp="100"')
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        newton.solvers.SolverMuJoCo(model)
+
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[0]), 0.0, places=6)
+
+
 class TestActuatorDefaultKpKv(unittest.TestCase):
     """Regression: position/velocity actuators must default kp=1/kv=1.
 

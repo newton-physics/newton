@@ -6564,6 +6564,70 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mj_data = mujoco.MjData(self.mj_model)
         mujoco.mj_setConst(self.mj_model, self.mj_data)
 
+        # Resolve <position dampratio="..."> for JOINT_TARGET actuators.
+        #
+        # The MJCF importer stores an unresolved dampratio as a positive
+        # ``mujoco:actuator_biasprm[2]`` placeholder and leaves
+        # ``joint_target_kd`` at zero, because the reflected inertia needed to
+        # turn a ratio into a gain is only known once MuJoCo has compiled the
+        # model. CTRL_DIRECT actuators get resolved by ``mj_setConst`` above,
+        # but JOINT_TARGET actuators read ``joint_target_kd`` directly (both
+        # here and in ``update_axis_properties_kernel``), so without this step
+        # a drive authored as critically damped imports completely undamped.
+        #
+        # ``actuator_acc0`` is MuJoCo's unit-force acceleration for the
+        # actuator, i.e. 1 / dof_M0, so MuJoCo's compile-time formula
+        # ``kv = 2 * dampratio * sqrt(kp * dof_M0)`` becomes
+        # ``2 * dampratio * sqrt(kp / acc0)``.
+        if mujoco_attrs is not None:
+            act_biasprm = get_custom_attribute("actuator_biasprm")
+            act_gainprm = get_custom_attribute("actuator_gainprm")
+            act_trnid = get_custom_attribute("actuator_trnid")
+            act_ctrl_source = get_custom_attribute("ctrl_source")
+            act_ctrl_type = get_custom_attribute("ctrl_type")
+            if (
+                act_biasprm is not None
+                and act_gainprm is not None
+                and act_trnid is not None
+                and act_ctrl_source is not None
+                and act_ctrl_type is not None
+            ):
+                resolved_kd: dict[int, float] = {}
+                for row in range(len(act_biasprm)):
+                    if int(act_ctrl_source[row]) != int(SolverMuJoCo.CtrlSource.JOINT_TARGET):
+                        continue
+                    if int(act_ctrl_type[row]) != int(SolverMuJoCo.CtrlType.POSITION):
+                        continue
+                    dampratio = float(act_biasprm[row][2])
+                    # Negative encodes an explicit kv, zero means neither was authored.
+                    if dampratio <= 0.0:
+                        continue
+                    kp = float(act_gainprm[row][0])
+                    if kp <= 0.0:
+                        continue
+                    joint_idx = int(act_trnid[row][0])
+                    if joint_idx < 0 or joint_idx >= len(joint_qd_start):
+                        continue
+                    dof_start = int(joint_qd_start[joint_idx])
+                    lin_dofs, ang_dofs = joint_dof_dim[joint_idx]
+                    for dof in range(dof_start, dof_start + int(lin_dofs) + int(ang_dofs)):
+                        mjc_actuator = int(axis_to_actuator[dof, 0]) if dof < len(axis_to_actuator) else -1
+                        if mjc_actuator < 0:
+                            continue
+                        acc0 = float(self.mj_model.actuator_acc0[mjc_actuator])
+                        if acc0 <= 0.0:
+                            continue
+                        resolved_kd[dof] = 2.0 * dampratio * np.sqrt(kp / acc0)
+                if resolved_kd:
+                    kd_host = model.joint_target_kd.numpy()
+                    for dof, kd_value in resolved_kd.items():
+                        # An explicit kv, or a kd already set by a velocity
+                        # actuator on the same DOF, takes precedence.
+                        if kd_host[dof] == 0.0:
+                            kd_host[dof] = kd_value
+                            joint_target_kd[dof] = kd_value
+                    model.joint_target_kd.assign(wp.array(kd_host, dtype=float, device=model.device))
+
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.
         # These map Newton template joint index → MuJoCo qpos/qvel start.
         # Loop joints get -1 (they have no MuJoCo qpos/qvel slots).
