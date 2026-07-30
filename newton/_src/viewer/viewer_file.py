@@ -17,6 +17,7 @@ from warp._src import types as warp_types
 from ..core.types import override
 from ..geometry import Mesh
 from ..sim import Model, State
+from ..sim.deformable_visual import DeformableVisualBinding, DeformableVisualMesh
 from .viewer import ViewerBase
 
 # Optional CBOR2 support
@@ -807,6 +808,52 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                     deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache),
                 )
             return ns
+
+        if type_name == "DeformableVisualBinding" and data.get("__module__") == DeformableVisualBinding.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            return DeformableVisualBinding(
+                kind=attributes["kind"],
+                parent=attributes["parent"],
+                weights=attributes.get("weights"),
+                local_offsets=attributes.get("local_offsets"),
+            )
+
+        if type_name == "DeformableVisualMesh" and data.get("__module__") == DeformableVisualMesh.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            binding = attributes.get("binding")
+            parent = attributes.get("parent")
+            weights = attributes.get("weights")
+            local_offsets = attributes.get("local_offsets")
+            if isinstance(binding, DeformableVisualBinding):
+                if parent is None:
+                    parent = binding.parent
+                if weights is None:
+                    weights = binding.weights
+                if local_offsets is None:
+                    local_offsets = binding.local_offsets
+            return DeformableVisualMesh(
+                kind=attributes["kind"],
+                rest_vertices=attributes["rest_vertices"],
+                indices=attributes["indices"],
+                parent=parent,
+                weights=weights,
+                local_offsets=local_offsets,
+                uvs=attributes.get("uvs"),
+                texture=attributes.get("texture"),
+                world=attributes.get("world", -1),
+                label=attributes.get("label", ""),
+                index=attributes.get("index", -1),
+                body_path=attributes.get("body_path"),
+                sim_path=attributes.get("sim_path"),
+                graphics_path=attributes.get("graphics_path"),
+            )
+
         # Fallback: return a flat dict of decoded attributes for other custom classes.
         return {
             attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)

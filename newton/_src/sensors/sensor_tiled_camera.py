@@ -9,7 +9,7 @@ from typing import Any
 
 import warp as wp
 
-from ..sim import Model, State
+from ..sim import DeformableVisuals, Model, State
 from .warp_raytrace import (
     ClearData,
     GaussianRenderMode,
@@ -134,7 +134,12 @@ class SensorTiledCamera:
         )
         self.__utils = Utils(self.__render_context, self.default_render_config)
 
-        self.__render_context.init_from_model(self.model, load_textures)
+        self.__render_context.init_from_model(
+            self.model,
+            load_textures,
+            enable_simulation_triangles=self.default_render_config.enable_simulation_triangles,
+        )
+        self.__deformable_visuals = self.model.deformable_visuals() if self.model.deformable_visual_mesh_count else None
 
     @property
     def default_render_config(self) -> RenderConfig:
@@ -154,7 +159,7 @@ class SensorTiledCamera:
         """
         return self.__default_clear_data
 
-    def sync_transforms(self, state: State):
+    def sync_transforms(self, state: State, deformable_visuals: DeformableVisuals | None = None):
         """Synchronize triangle-mesh points from the simulation state.
 
         :meth:`update` calls this automatically when *state* is not None.
@@ -168,8 +173,25 @@ class SensorTiledCamera:
 
         Args:
             state: The current simulation state containing particle positions.
+            deformable_visuals: Precomputed visual data to share with other
+                render consumers. When omitted, the sensor updates its own
+                reusable visual data.
         """
-        self.__render_context.update(self.model, state)
+        if deformable_visuals is None:
+            deformable_visuals = self.__deformable_visuals
+            if deformable_visuals is not None:
+                self.model.update_deformable_visuals(state, deformable_visuals)
+        else:
+            if not isinstance(deformable_visuals, DeformableVisuals):
+                raise TypeError(
+                    f"deformable_visuals must be DeformableVisuals, got {type(deformable_visuals).__name__}"
+                )
+            deformable_visuals._validate_model(self.model)
+            deformable_visuals._require_updated(state)
+
+        if deformable_visuals is not None:
+            deformable_visuals.wait()
+        self.__render_context.update(self.model, state, deformable_visuals)
 
     def update(
         self,
@@ -186,6 +208,7 @@ class SensorTiledCamera:
         albedo_image: wp.array4d[wp.uint32] | None = None,
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
+        deformable_visuals: DeformableVisuals | None = None,
         kernel_block_dim: int = 64,
     ):
         """Render output images for all worlds and cameras.
@@ -223,6 +246,9 @@ class SensorTiledCamera:
             hdr_color_image: Output for linear HDR color. None to skip.
             render_config: Render settings for this update. If ``None``, uses
                 :attr:`default_render_config`.
+            deformable_visuals: Precomputed deformable visual points and
+                normals to share with another render consumer. When omitted,
+                the sensor evaluates its own reusable visual data.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
@@ -230,7 +256,7 @@ class SensorTiledCamera:
         with wp.ScopedTimer(
             "Newton::SensorTiledCamera::update", active=PROFILE_ENABLED, use_nvtx=True, synchronize=True
         ):
-            self.sync_transforms(state)
+            self.sync_transforms(state, deformable_visuals)
 
             self.__render_context.render(
                 self.model,

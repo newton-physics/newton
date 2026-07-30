@@ -48,6 +48,23 @@ def sample_texture_mesh(
 
 
 @wp.func
+def sample_texture_dynamic_triangle_mesh(
+    bary_u: wp.float32,
+    bary_v: wp.float32,
+    face_id: wp.int32,
+    mesh_id: wp.uint64,
+    uvs: wp.array[wp.vec2f],
+    texture_data: TextureData,
+) -> wp.vec3f:
+    bary_w = 1.0 - bary_u - bary_v
+    uv0 = wp.mesh_get_index(mesh_id, face_id * 3 + 0)
+    uv1 = wp.mesh_get_index(mesh_id, face_id * 3 + 1)
+    uv2 = wp.mesh_get_index(mesh_id, face_id * 3 + 2)
+    uv = uvs[uv0] * bary_u + uvs[uv1] * bary_v + uvs[uv2] * bary_w
+    return sample_texture_2d(flip_v(wp.cw_mul(uv, texture_data.repeat)), texture_data)
+
+
+@wp.func
 def sample_texture(
     shape_type: wp.int32,
     shape_transform: wp.transformf,
