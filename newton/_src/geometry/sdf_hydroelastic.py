@@ -316,7 +316,7 @@ class HydroelasticSDF:
         unreduced contacts. Automatically enables ``anchor_contact``.
         Only active when reduce_contacts is True."""
         margin_contact_area: float = 1e-2
-        """Deprecated speculative-contact area [m²] retained for compatibility.
+        """Deprecated speculative-contact area [m^2] retained for compatibility.
 
         .. deprecated:: 1.5
 

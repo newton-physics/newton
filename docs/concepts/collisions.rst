@@ -1581,10 +1581,10 @@ Hydroelastic contacts use the same three margin-and-gap bands described in
    * - ``d > gap_a + gap_b``
      - No contact.
 
-Speculative contacts carry an activation stiffness based on
-``margin_contact_area``. This allows a compatible solver to activate a cached
-contact after closing motion without treating the speculative contact as a
-current force.
+Contacts in the gap region are speculative. Their separation is nonnegative,
+so they do not produce force in the current state. Newton assigns them a contact
+stiffness using the two materials' hydroelastic stiffness and the deprecated
+``margin_contact_area`` compatibility setting.
 
 To recover the closest equivalent of the earlier geometric-surface behavior,
 set both ``margin=0.0`` and ``gap=0.0`` on the participating shapes. This is a

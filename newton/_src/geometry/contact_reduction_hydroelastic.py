@@ -532,8 +532,8 @@ def create_export_hydroelastic_reduced_contacts_kernel(
 
     Args:
         writer_func: A warp function with signature (ContactData, writer_data, int) -> None
-        margin_contact_area: Deprecated compatibility area for speculative
-            contact activation stiffness.
+        margin_contact_area: Deprecated compatibility area [m^2] for
+            speculative contact activation stiffness.
         normal_matching: If True, rotate contact normals so their weighted sum aligns with aggregate force
         anchor_contact: If True, add an anchor contact at the center of pressure for each entry
         moment_matching: If True, adjust per-contact friction scales so that
@@ -977,8 +977,8 @@ class HydroelasticReductionConfig:
         moment_matching: If True, adjust per-contact friction scales so that the
             maximum friction moment per normal bin is preserved between reduced
             and unreduced contacts. Automatically enables ``anchor_contact``.
-        margin_contact_area: Deprecated compatibility area for speculative
-            contact activation stiffness.
+        margin_contact_area: Deprecated compatibility area [m^2] for
+            speculative contact activation stiffness.
         hashtable_size_factor: Multiplier applied to the contact buffer capacity
             when allocating the reduction hashtable. Must be positive.
     """
