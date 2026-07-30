@@ -1048,6 +1048,25 @@ class Mesh:
         self.sdf = None
         self._collision_edges = None
 
+    def invalidate_cache(self) -> None:
+        """Invalidate all cached data derived from the mesh geometry.
+
+        Drops the cached mesh hash, edge data, watertightness flag, and the
+        finalized Warp meshes returned by :meth:`finalize`, so they are
+        recomputed from the current :attr:`vertices` and :attr:`indices` on
+        next access.
+
+        Assigning new arrays to :attr:`vertices` or :attr:`indices` calls this
+        method automatically. Call it explicitly after modifying those arrays
+        in place (e.g. ``mesh.vertices[0] = ...``), which bypasses the
+        property setters and would otherwise leave stale cached data.
+        """
+        self._cached_hash = None
+        self._edges = None
+        self._collision_edges = None
+        self._is_watertight = None
+        self._finalized_meshes = {}
+
     @property
     def vertices(self):
         return self._vertices
@@ -1055,11 +1074,7 @@ class Mesh:
     @vertices.setter
     def vertices(self, value):
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
-        self._cached_hash = None
-        self._edges = None
-        self._collision_edges = None
-        self._is_watertight = None
-        self._finalized_meshes = {}
+        self.invalidate_cache()
 
     @property
     def indices(self):
@@ -1068,11 +1083,7 @@ class Mesh:
     @indices.setter
     def indices(self, value):
         self._indices = np.array(value, dtype=np.int32).flatten()
-        self._cached_hash = None
-        self._edges = None
-        self._collision_edges = None
-        self._is_watertight = None
-        self._finalized_meshes = {}
+        self.invalidate_cache()
 
     def _canonical_vertex_ids(self) -> np.ndarray:
         """Per-vertex canonical IDs that fold geometrically coincident vertices
@@ -1466,7 +1477,8 @@ class Mesh:
         :meth:`ModelBuilder.replicate` or :meth:`ModelBuilder.add_builder`) return
         the same Warp Mesh instead of releasing the one referenced by previously
         finalized models. The cache is invalidated when ``vertices`` or
-        ``indices`` are reassigned.
+        ``indices`` are reassigned; after modifying those arrays in place, call
+        :meth:`invalidate_cache` to avoid finalizing stale geometry.
 
         Args:
             device: Device on which to allocate mesh buffers.
