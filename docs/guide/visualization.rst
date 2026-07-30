@@ -379,8 +379,8 @@ To try the complete workflow with the built-in examples:
 
 .. code-block:: bash
 
-    uv run -m newton.examples recording
-    uv run -m newton.examples replay_viewer
+    uv run --extra examples -m newton.examples recording
+    uv run --extra examples -m newton.examples replay_viewer
 
 The first command writes ``humanoid_recording.bin`` using the example's default
 multi-world scene. In the replay viewer, select that file to scrub through the
