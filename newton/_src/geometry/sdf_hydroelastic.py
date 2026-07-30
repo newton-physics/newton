@@ -171,7 +171,7 @@ def mc_calc_face_texture(
         p_0 = wp.vec3f(corner_offsets_table[v_idx_from])
         p_1 = wp.vec3f(corner_offsets_table[v_idx_to])
         val_diff = wp.float32(val_1 - val_0)
-        if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
+        if wp.abs(val_diff) < MC_EDGE_VAL_DIFF_EPS:
             t = float(0.5)
         else:
             # Clamp t away from cube corners to prevent vertex collapse when
@@ -194,7 +194,7 @@ def mc_calc_face_texture(
 
     n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
     n_sq = wp.dot(n, n)
-    if n_sq < wp.static(MC_DEGENERATE_N_SQ_EPS):
+    if n_sq < MC_DEGENERATE_N_SQ_EPS:
         # Degenerate triangle — return zero area with a valid (non-NaN) normal.
         area = 0.0
         normal = wp.vec3(0.0, 0.0, 1.0)
@@ -580,16 +580,15 @@ class HydroelasticSDF:
         """
         shape_flags = model.shape_flags.numpy()
 
-        # Check if any shapes have hydroelastic flag
-        has_hydroelastic = any((flags & ShapeFlags.HYDROELASTIC) for flags in shape_flags)
-        if not has_hydroelastic:
+        # Check if any shapes have hydroelastic flag.
+        is_hydroelastic = (shape_flags & int(ShapeFlags.HYDROELASTIC)) != 0
+        if not is_hydroelastic.any():
             return None
 
-        shape_pairs = model.shape_contact_pairs.numpy()
-        num_hydroelastic_pairs = 0
-        for shape_a, shape_b in shape_pairs:
-            if (shape_flags[shape_a] & ShapeFlags.HYDROELASTIC) and (shape_flags[shape_b] & ShapeFlags.HYDROELASTIC):
-                num_hydroelastic_pairs += 1
+        shape_pairs = model.shape_contact_pairs.numpy().reshape(-1, 2)
+        num_hydroelastic_pairs = int(
+            np.count_nonzero(is_hydroelastic[shape_pairs[:, 0]] & is_hydroelastic[shape_pairs[:, 1]])
+        )
 
         if num_hydroelastic_pairs == 0:
             return None

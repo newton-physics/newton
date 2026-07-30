@@ -418,6 +418,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_damping: wp.array[wp.float32],
     rigid_contact_friction: wp.array[wp.float32],
     shape_margin: wp.array[float],
+    shape_material_kf: wp.array[float],
+    opt_impratio_invsqrt: wp.array[float],
+    use_kf_mapping: bool,
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array[wp.int32],
     # Mujoco warp contacts
@@ -625,6 +628,26 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     friction[3],
                     friction[4],
                 )
+
+        # Match Newton's force-space friction slope using MuJoCo's inverse-weight
+        # approximation; positive solref lets refsafe limit overly stiff damping.
+        if shape_material_kf and use_kf_mapping:
+            kf1 = shape_material_kf[shape_a]
+            kf2 = shape_material_kf[shape_b]
+            kf = mix * kf1 + (1.0 - mix) * kf2
+            if kf > 0.0:
+                invw = body_invweight0[worldid, mj_body_a][0] + body_invweight0[worldid, mj_body_b][0]
+                ir = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+                imp = solimp[1]
+                denom = kf * invw * ((1.0 - imp) * ir * ir + imp)
+                if denom > 0.0 and wp.isfinite(denom):
+                    timeconst = 2.0 / denom
+                    if wp.isfinite(timeconst):
+                        solreffriction = wp.vec2(timeconst, 1.0)
+            elif kf == 0.0:
+                # A zero gain means no friction force in Newton, so omit all
+                # sliding, torsional, and rolling constraint rows.
+                condim = 1
 
         cid = wp.atomic_add(nacon_out, 0, 1)
         if cid >= naconmax:

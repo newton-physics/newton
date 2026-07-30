@@ -2771,7 +2771,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
     def test_compacted_custom_namespace_does_not_mutate_parent(self):
         """Compacted entry namespaces must be view-local, not parent aliases."""
         builder = newton.ModelBuilder()
-        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        SolverVBD.register_custom_attributes(builder)
         for _ in range(5):
             builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         soft_joint = builder.add_joint_fixed(parent=3, child=4, custom_attributes={"vbd:joint_is_hard": 0})
