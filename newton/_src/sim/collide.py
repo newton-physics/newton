@@ -847,8 +847,9 @@ class CollisionPipeline:
                 length directly) and for expert paths that pass a
                 pre-built ``narrow_phase``.
             deterministic: Sort contacts after the narrow phase so that results
-                are independent of GPU thread scheduling.  Adds a radix sort +
-                gather pass.  Hydroelastic contacts are not yet covered.
+                are independent of GPU thread scheduling. This also enables
+                deterministic hydroelastic accumulation and contact allocation.
+                Adds a radix sort + gather pass.
             contact_matching: Frame-to-frame contact matching mode.  One of
                 ``"disabled"``, ``"latest"``, or ``"sticky"``.  Any
                 non-disabled mode implies ``deterministic=True`` and
@@ -1039,6 +1040,7 @@ class CollisionPipeline:
                 model,
                 config=sdf_hydroelastic_config,
                 writer_func=write_contact,
+                deterministic=deterministic,
             )
 
             # Detect shape classes to optimize narrow-phase kernel launches.
