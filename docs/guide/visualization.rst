@@ -291,7 +291,7 @@ Recording and Offline Viewers
 Recording to File (ViewerFile)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The :class:`~newton.viewer.ViewerFile` backend records a model and state
+The :class:`~newton.viewer.ViewerFile` backend records model and state
 snapshots to JSON or binary files for later visual playback or programmatic
 inspection. This is useful for capturing simulation motion for debugging or
 sharing.
@@ -321,7 +321,7 @@ To use binary format, install the optional dependency:
 
     pip install cbor2
 
-**Recording a simulation:**
+**Recording static state snapshots:**
 
 .. testcode:: viewer-file
 
@@ -339,6 +339,7 @@ To use binary format, install the optional dependency:
     viewer.set_model(model)
 
     sim_time = 0.0
+    # Record five snapshots of the current static state
     for _ in range(5):
         viewer.begin_frame(sim_time)
         viewer.log_state(state)
@@ -352,6 +353,9 @@ To use binary format, install the optional dependency:
    :options: +NORMALIZE_WHITESPACE, +ELLIPSIS
 
     ...
+
+This minimal snippet records a static state to demonstrate the ``ViewerFile``
+API. Use the built-in recording example below to capture simulation motion.
 
 **Loading and playing back recordings:**
 
@@ -382,9 +386,9 @@ To try the complete workflow with the built-in examples:
     uv run --extra examples -m newton.examples recording
     uv run --extra examples -m newton.examples replay_viewer
 
-The first command writes ``humanoid_recording.bin`` using the example's default
-multi-world scene. In the replay viewer, select that file to scrub through the
-captured state snapshots.
+``example_recording.py`` simulates humanoids across multiple worlds and writes
+the model and state snapshots to ``humanoid_recording.bin``. In the replay
+viewer, select that file to scrub through the captured state snapshots.
 
 ``ViewerFile`` captures all direct Warp-array attributes of the logged
 ``State``, regardless of which worlds are selected with
