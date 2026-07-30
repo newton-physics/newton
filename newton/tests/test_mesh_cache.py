@@ -91,6 +91,24 @@ def test_index_reassignment_invalidates_finalized_mesh(test: TestMeshCache, devi
     test.assertEqual(len(mesh.edges), 3)
 
 
+def test_copy_does_not_share_finalized_meshes(test: TestMeshCache, device):
+    """Verify Mesh.copy() starts with an empty finalized-mesh cache.
+
+    A copy is an independent geometry object, so finalizing it must build its
+    own wp.Mesh rather than aliasing the original's cached buffers, even when
+    copy() carries other topology-derived caches forward.
+    """
+    mesh = _make_tet_mesh()
+    mesh_id = mesh.finalize(device=device)
+
+    copied = mesh.copy()
+    copy_id = copied.finalize(device=device)
+    test.assertNotEqual(copy_id, mesh_id)
+
+    # the original's cache entry is untouched by finalizing the copy
+    test.assertEqual(mesh.finalize(device=device), mesh_id)
+
+
 def test_in_place_edit_requires_invalidate_cache(test: TestMeshCache, device):
     """Verify invalidate_cache() refreshes the finalized mesh after in-place vertex edits.
 
@@ -121,6 +139,12 @@ add_function_test(
     TestMeshCache,
     "test_index_reassignment_invalidates_finalized_mesh",
     test_index_reassignment_invalidates_finalized_mesh,
+    devices=devices,
+)
+add_function_test(
+    TestMeshCache,
+    "test_copy_does_not_share_finalized_meshes",
+    test_copy_does_not_share_finalized_meshes,
     devices=devices,
 )
 add_function_test(
