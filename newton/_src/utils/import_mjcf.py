@@ -17,7 +17,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
-from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
+from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -538,25 +538,66 @@ def parse_mjcf(
                     raise ValueError(f"Inline MJCF mesh {name!r} must contain at least 3 vertices.")
                 vertices = vertices.reshape(-1, 3)
 
-                if "face" not in mesh_attrib:
-                    raise ValueError(f"Inline MJCF mesh {name!r} requires face data.")
-                try:
-                    faces = np.array(mesh_attrib["face"].split(), dtype=np.int32)
-                except ValueError as exc:
-                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid face data.") from exc
-                if len(faces) % 3 != 0:
-                    raise ValueError(
-                        f"Inline MJCF mesh {name!r} face data must contain a multiple of 3 values; got {len(faces)}."
-                    )
-                if len(faces) == 0:
-                    raise ValueError(f"Inline MJCF mesh {name!r} must contain at least one face.")
-                if np.any(faces < 0) or np.any(faces >= len(vertices)):
-                    raise ValueError(f"Inline MJCF mesh {name!r} face data contains an invalid vertex index.")
-                faces = faces.reshape(-1, 3)
+                faces = None
+                if mesh_attrib.get("face"):
+                    try:
+                        faces = np.array(mesh_attrib["face"].split(), dtype=np.int32)
+                    except ValueError as exc:
+                        raise ValueError(f"Inline MJCF mesh {name!r} has invalid face data.") from exc
+                    if len(faces) % 3 != 0:
+                        raise ValueError(
+                            f"Inline MJCF mesh {name!r} face data must contain a multiple of 3 values; got {len(faces)}."
+                        )
+                    if np.any(faces < 0) or np.any(faces >= len(vertices)):
+                        raise ValueError(f"Inline MJCF mesh {name!r} face data contains an invalid vertex index.")
+                    faces = faces.reshape(-1, 3)
+
+                normals = None
+                if "normal" in mesh_attrib:
+                    try:
+                        normals = np.array(mesh_attrib["normal"].split(), dtype=np.float32)
+                    except ValueError as exc:
+                        raise ValueError(f"Inline MJCF mesh {name!r} has invalid normal data.") from exc
+                    if len(normals) != 3 * len(vertices):
+                        raise ValueError(
+                            f"Inline MJCF mesh {name!r} normal data must contain 3 values per vertex; "
+                            f"got {len(normals)} values for {len(vertices)} vertices."
+                        )
+                    normals = normals.reshape(-1, 3)
+
+                texcoords = None
+                if "texcoord" in mesh_attrib:
+                    try:
+                        texcoords = np.array(mesh_attrib["texcoord"].split(), dtype=np.float32)
+                    except ValueError as exc:
+                        raise ValueError(f"Inline MJCF mesh {name!r} has invalid texcoord data.") from exc
+                    if len(texcoords) != 2 * len(vertices):
+                        raise ValueError(
+                            f"Inline MJCF mesh {name!r} texcoord data must contain 2 values per vertex; "
+                            f"got {len(texcoords)} values for {len(vertices)} vertices."
+                        )
+                    texcoords = texcoords.reshape(-1, 2)
+
+                refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
+                refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
+                if refpos.shape != (3,):
+                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must have 3 values.")
+                if refquat.shape != (4,):
+                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must have 4 values.")
+                refquat_norm = np.linalg.norm(refquat)
+                if not np.isfinite(refquat_norm) or refquat_norm == 0.0:
+                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must be finite and nonzero.")
+                if not np.all(np.isfinite(refpos)):
+                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must contain only finite values.")
+                refquat /= refquat_norm
 
                 mesh_assets[name] = {
                     "vertices": vertices,
                     "faces": faces,
+                    "normals": normals,
+                    "texcoords": texcoords,
+                    "refpos": refpos,
+                    "refquat": refquat,
                     "scale": mesh_scale,
                     "maxhullvert": maxhullvert,
                 }
@@ -631,12 +672,41 @@ def parse_mjcf(
                 override_texture=override_texture,
             )
 
-        vertices = mesh_asset["vertices"] * scaling
+        refquat = mesh_asset["refquat"]
+        rotation = np.asarray(
+            wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
+            dtype=np.float32,
+        ).reshape(3, 3)
+        vertices = ((mesh_asset["vertices"] - mesh_asset["refpos"]) @ rotation) * scaling
         faces = mesh_asset["faces"]
+        normals = mesh_asset["normals"]
+        texcoords = mesh_asset["texcoords"]
+        if normals is not None:
+            normals = (normals @ rotation) / scaling
+            lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+            normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
+
+        if faces is None:
+            hull_vertices, faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
+            source_index_by_vertex = {}
+            for index, vertex in enumerate(vertices):
+                source_index_by_vertex.setdefault(tuple(vertex), index)
+            source_indices = np.array(
+                [source_index_by_vertex[tuple(vertex)] for vertex in hull_vertices],
+                dtype=np.int32,
+            )
+            vertices = hull_vertices
+            if normals is not None:
+                normals = normals[source_indices]
+            if texcoords is not None:
+                texcoords = texcoords[source_indices]
+
         return [
             Mesh(
                 vertices,
                 faces,
+                normals=normals,
+                uvs=texcoords,
                 maxhullvert=maxhullvert,
                 color=override_color,
                 texture=override_texture,
