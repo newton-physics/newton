@@ -811,6 +811,33 @@ def _get_contact_distances(contacts, model, state):
     return np.einsum("ij,ij->i", point1 + offset1 - point0 - offset0, normal)
 
 
+def test_hydroelastic_pre_prune_writes_contact_fingerprints(test, device):
+    """Write stable fingerprints for every pre-pruned hydroelastic face."""
+    model, state, _ = _build_margin_gap_boxes(device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=True,
+            pre_prune_contacts=True,
+            buffer_fraction=1.0,
+        ),
+    )
+    contacts = pipeline.contacts()
+    reducer = pipeline.hydroelastic_sdf.contact_reduction.reducer
+    unwritten_fingerprint = -1
+    reducer.contact_fingerprints.fill_(unwritten_fingerprint)
+
+    pipeline.collide(state, contacts)
+
+    face_count = int(reducer.contact_count.numpy()[0])
+    test.assertGreater(face_count, 0)
+    fingerprints = reducer.contact_fingerprints.numpy()[:face_count]
+    test.assertFalse(np.any(fingerprints == unwritten_fingerprint))
+    test.assertEqual(len(np.unique(fingerprints)), face_count)
+
+
 def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
     """Generate penetrating, speculative, and absent hydroelastic contacts."""
     model, state, body_b = _build_margin_gap_boxes(device)
@@ -2167,6 +2194,13 @@ add_function_test(
     TestHydroelastic,
     "test_hydroelastic_attached_sdf_requires_padding_metadata",
     test_hydroelastic_attached_sdf_requires_padding_metadata,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_pre_prune_writes_contact_fingerprints",
+    test_hydroelastic_pre_prune_writes_contact_fingerprints,
     devices=cuda_devices,
 )
 

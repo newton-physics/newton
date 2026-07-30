@@ -1740,6 +1740,7 @@ def get_generate_contacts_kernel(
             best_pen0_depth = float(0.0)
             best_pen0_area = float(0.0)
             best_pen0_pressure = float(0.0)
+            best_pen0_fingerprint = int(0)
             best_pen0_normal = wp.vec3(0.0, 0.0, 1.0)
             best_pen0_center = wp.vec3(0.0, 0.0, 0.0)
             best_pen0_v0 = wp.vec3(0.0, 0.0, 0.0)
@@ -1751,6 +1752,7 @@ def get_generate_contacts_kernel(
             best_pen1_depth = float(0.0)
             best_pen1_area = float(0.0)
             best_pen1_pressure = float(0.0)
+            best_pen1_fingerprint = int(0)
             best_pen1_normal = wp.vec3(0.0, 0.0, 1.0)
             best_pen1_center = wp.vec3(0.0, 0.0, 0.0)
             best_pen1_v0 = wp.vec3(0.0, 0.0, 0.0)
@@ -1761,12 +1763,14 @@ def get_generate_contacts_kernel(
             best_nonpen_depth = float(MAXVAL)
             best_nonpen_area = float(0.0)
             best_nonpen_pressure = float(0.0)
+            best_nonpen_fingerprint = int(0)
             best_nonpen_normal = wp.vec3(0.0, 0.0, 1.0)
             best_nonpen_center = wp.vec3(0.0, 0.0, 0.0)
             best_nonpen_v0 = wp.vec3(0.0, 0.0, 0.0)
             best_nonpen_v1 = wp.vec3(0.0, 0.0, 0.0)
             best_nonpen_v2 = wp.vec3(0.0, 0.0, 0.0)
             for fi in range(num_faces):
+                face_fingerprint = tid * MAX_MC_FACES_PER_VOXEL + fi
                 force_area, geometric_area, normal, face_center, adjusted_sdf_shape_b, pair_separation, face_verts = (
                     mc_calc_face_texture(
                         flat_edge_verts_table,
@@ -1857,6 +1861,7 @@ def get_generate_contacts_kernel(
                         best_pen1_depth = best_pen0_depth
                         best_pen1_area = best_pen0_area
                         best_pen1_pressure = best_pen0_pressure
+                        best_pen1_fingerprint = best_pen0_fingerprint
                         best_pen1_normal = best_pen0_normal
                         best_pen1_center = best_pen0_center
                         best_pen1_v0 = best_pen0_v0
@@ -1868,6 +1873,7 @@ def get_generate_contacts_kernel(
                         best_pen0_depth = pair_separation
                         best_pen0_area = force_area
                         best_pen0_pressure = face_pressure
+                        best_pen0_fingerprint = face_fingerprint
                         best_pen0_normal = normal
                         best_pen0_center = face_center
                         best_pen0_v0 = face_verts[0]
@@ -1880,6 +1886,7 @@ def get_generate_contacts_kernel(
                             best_pen1_depth = pair_separation
                             best_pen1_area = force_area
                             best_pen1_pressure = face_pressure
+                            best_pen1_fingerprint = face_fingerprint
                             best_pen1_normal = normal
                             best_pen1_center = face_center
                             best_pen1_v0 = face_verts[0]
@@ -1892,6 +1899,7 @@ def get_generate_contacts_kernel(
                         best_nonpen_depth = pair_separation
                         best_nonpen_area = geometric_area
                         best_nonpen_pressure = face_pressure
+                        best_nonpen_fingerprint = face_fingerprint
                         best_nonpen_normal = normal
                         best_nonpen_center = face_center
                         best_nonpen_v0 = face_verts[0]
@@ -1922,6 +1930,7 @@ def get_generate_contacts_kernel(
                             reducer_data.shape_pairs[out_idx] = wp.vec2i(shape_a, shape_b)
                             reducer_data.contact_area[out_idx] = best_pen0_area
                             reducer_data.contact_pressure[out_idx] = best_pen0_pressure
+                            reducer_data.contact_fingerprints[out_idx] = best_pen0_fingerprint
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen0_v0)
                                 iso_vertex_point[3 * out_idx + 1] = wp.transform_point(X_ws_b, best_pen0_v1)
@@ -1939,6 +1948,7 @@ def get_generate_contacts_kernel(
                                 reducer_data.shape_pairs[out_idx] = wp.vec2i(shape_a, shape_b)
                                 reducer_data.contact_area[out_idx] = best_pen1_area
                                 reducer_data.contact_pressure[out_idx] = best_pen1_pressure
+                                reducer_data.contact_fingerprints[out_idx] = best_pen1_fingerprint
                                 if wp.static(output_vertices):
                                     iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen1_v0)
                                     iso_vertex_point[3 * out_idx + 1] = wp.transform_point(X_ws_b, best_pen1_v1)
@@ -1955,6 +1965,7 @@ def get_generate_contacts_kernel(
                             reducer_data.shape_pairs[out_idx] = wp.vec2i(shape_a, shape_b)
                             reducer_data.contact_area[out_idx] = best_nonpen_area
                             reducer_data.contact_pressure[out_idx] = best_nonpen_pressure
+                            reducer_data.contact_fingerprints[out_idx] = best_nonpen_fingerprint
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_nonpen_v0)
                                 iso_vertex_point[3 * out_idx + 1] = wp.transform_point(X_ws_b, best_nonpen_v1)
