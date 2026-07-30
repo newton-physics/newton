@@ -59,6 +59,65 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 
 
+@wp.func
+def build_full_joint_jacobian(
+    joint_id: wp.int32,
+    dof_type: wp.int32,
+    bid_B: wp.int32,
+    bid_F: wp.int32,
+    model_joints_X_Bj: wp.array[wp.mat33f],
+    model_joints_X_Fj: wp.array[wp.mat33f],
+    state_joints_p: wp.array[wp.transformf],
+    state_bodies_q: wp.array[wp.transformf],
+):
+    """
+    Computes the full (6x6) joint Jacobian (constraint and DoFs) for a specific joint.
+    """
+    # Retrieve the pose transform of the joint
+    T_j = state_joints_p[joint_id]
+    r_j = wp.transform_get_translation(T_j)
+    R_X_j = wp.quat_to_matrix(wp.transform_get_rotation(T_j))
+
+    # Retrieve the pose transforms of each body
+    T_B_j = wp.transform_identity()
+    if bid_B > -1:
+        T_B_j = state_bodies_q[bid_B]
+    T_F_j = state_bodies_q[bid_F]
+    r_B_j = wp.transform_get_translation(T_B_j)
+    r_F_j = wp.transform_get_translation(T_F_j)
+
+    if dof_type == JointDoFType.FREE:
+        # By Newton's convention, a free joint's twist and wrench (specified in `joint_qd` and
+        # `joint_f`) are both defined at the child's center of mass, with world-aligned axes. Since
+        # Kamino avoids a conversion, the change of reference frame needs to be taken into account
+        # in the Jacobian.
+        JT_F_j = wp.identity(n=6, dtype=wp.float32)
+        JT_B_j = -screw_transform_matrix_from_points(r_F_j, r_B_j)
+
+    else:
+        # Compute the wrench matrices
+        # TODO: Since the lever-arm is a relative position, can we just use B_r_Bj and F_r_Fj instead?
+        W_j_B = screw_transform_matrix_from_points(r_j, r_B_j)
+        W_j_F = screw_transform_matrix_from_points(r_j, r_F_j)
+
+        # General case: Compute the effective projector to joint frame and expand to 6D
+        if dof_type != JointDoFType.UNIVERSAL:
+            R_X_bar_j = expand6d(R_X_j)
+        # Universal joint: replace R_X_j with the frame of the intermediate body for rotation constraints
+        else:
+            j_q_j = compute_joint_relative_quaternion(
+                T_B_j, T_F_j, model_joints_X_Bj[joint_id], model_joints_X_Fj[joint_id]
+            )
+            R_intermediate = compute_intermediate_body_frame_universal_joint(j_q_j)
+            R_X_bar_j = concat6d(R_X_j, R_X_j @ R_intermediate)
+
+        # Compute the extended jacobians, i.e. without the selection-matrix multiplication
+        JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
+        JT_F_j = W_j_F @ R_X_bar_j  # Action is on the Follower body    ; (6 x 6)
+
+    return JT_B_j, JT_F_j
+
+
 def make_store_joint_jacobian_dense_func(axes: Any):
     """
     Generates a warp function to store body-pair Jacobian blocks into a target flat
@@ -472,36 +531,17 @@ def _build_joint_jacobians_dense(
     J_jdc_row_start = J_cjmio + nbd * (jdcgo + dyn_cts_offset_world)
     J_jkc_row_start = J_cjmio + nbd * (jkcgo + kin_cts_offset_world)
 
-    # Retrieve the pose transform of the joint
-    T_j = state_joints_p[jid]
-    r_j = wp.transform_get_translation(T_j)
-    R_X_j = wp.quat_to_matrix(wp.transform_get_rotation(T_j))
-
-    # Retrieve the pose transforms of each body
-    T_B_j = wp.transform_identity()
-    if bid_B > -1:
-        T_B_j = state_bodies_q[bid_B]
-    T_F_j = state_bodies_q[bid_F]
-    r_B_j = wp.transform_get_translation(T_B_j)
-    r_F_j = wp.transform_get_translation(T_F_j)
-
-    # Compute the wrench matrices
-    # TODO: Since the lever-arm is a relative position, can we just use B_r_Bj and F_r_Fj instead?
-    W_j_B = screw_transform_matrix_from_points(r_j, r_B_j)
-    W_j_F = screw_transform_matrix_from_points(r_j, r_F_j)
-
-    # General case: Compute the effective projector to joint frame and expand to 6D
-    if dof_type != JointDoFType.UNIVERSAL:
-        R_X_bar_j = expand6d(R_X_j)
-    # Universal joint: replace R_X_j with the frame of the intermediate body for rotation constraints
-    else:
-        j_q_j = compute_joint_relative_quaternion(T_B_j, T_F_j, model_joints_X_Bj[jid], model_joints_X_Fj[jid])
-        R_intermediate = compute_intermediate_body_frame_universal_joint(j_q_j)
-        R_X_bar_j = concat6d(R_X_j, R_X_j @ R_intermediate)
-
-    # Compute the extended jacobians, i.e. without the selection-matrix multiplication
-    JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
-    JT_F_j = W_j_F @ R_X_bar_j  # Action is on the Follower body    ; (6 x 6)
+    # Compute the full jacobians, i.e. without the selection-matrix multiplication
+    JT_B_j, JT_F_j = build_full_joint_jacobian(
+        jid,
+        dof_type,
+        bid_B,
+        bid_F,
+        model_joints_X_Bj,
+        model_joints_X_Fj,
+        state_joints_p,
+        state_bodies_q,
+    )
 
     # Store joint dynamic constraint jacobians if applicable
     # NOTE: We use the extraction method for DoFs since dynamic constraints are in DoF-space
@@ -561,36 +601,17 @@ def _build_joint_jacobians_sparse(
     bid_B = model_joints_bid_B[jid]
     bid_F = model_joints_bid_F[jid]
 
-    # Retrieve the pose transform of the joint
-    T_j = state_joints_p[jid]
-    r_j = wp.transform_get_translation(T_j)
-    R_X_j = wp.quat_to_matrix(wp.transform_get_rotation(T_j))
-
-    # Retrieve the pose transforms of each body
-    T_B_j = wp.transform_identity()
-    if bid_B > -1:
-        T_B_j = state_bodies_q[bid_B]
-    T_F_j = state_bodies_q[bid_F]
-    r_B_j = wp.transform_get_translation(T_B_j)
-    r_F_j = wp.transform_get_translation(T_F_j)
-
-    # Compute the wrench matrices
-    # TODO: Since the lever-arm is a relative position, can we just use B_r_Bj and F_r_Fj instead?
-    W_j_B = screw_transform_matrix_from_points(r_j, r_B_j)
-    W_j_F = screw_transform_matrix_from_points(r_j, r_F_j)
-
-    # General case: Compute the effective projector to joint frame and expand to 6D
-    if dof_type != JointDoFType.UNIVERSAL:
-        R_X_bar_j = expand6d(R_X_j)
-    # Universal joint: replace R_X_j with the frame of the intermediate body for rotation constraints
-    else:
-        j_q_j = compute_joint_relative_quaternion(T_B_j, T_F_j, model_joints_X_Bj[jid], model_joints_X_Fj[jid])
-        R_intermediate = compute_intermediate_body_frame_universal_joint(j_q_j)
-        R_X_bar_j = concat6d(R_X_j, R_X_j @ R_intermediate)
-
-    # Compute the extended jacobians, i.e. without the selection-matrix multiplication
-    JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
-    JT_F_j = W_j_F @ R_X_bar_j  # Action is on the Follower body    ; (6 x 6)
+    # Compute the full jacobians, i.e. without the selection-matrix multiplication
+    JT_B_j, JT_F_j = build_full_joint_jacobian(
+        jid,
+        dof_type,
+        bid_B,
+        bid_F,
+        model_joints_X_Bj,
+        model_joints_X_Fj,
+        state_joints_p,
+        state_bodies_q,
+    )
 
     # Store joint dynamic constraint jacobians if applicable
     # NOTE: We use the extraction method for DoFs since dynamic constraints are in DoF-space

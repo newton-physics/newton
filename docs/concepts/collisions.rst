@@ -1819,9 +1819,27 @@ The overhead is small: fingerprint storage per contact, modified packing in
 the reduction, and one radix sort + gather pass per frame.  The sort is
 fully CUDA-graph-capturable.
 
+Hydroelastic contacts are covered by the same two mechanisms, using the
+marching-cubes voxel and face index as the fingerprint.  They additionally need
+a third one, because hydroelastic reduction is the only contact path that sums
+contributions across threads:
+
+3. **Fixed-point aggregation** — the per-normal-bin aggregates (contact force,
+   center of pressure, depth volume, and friction moments) are accumulated as
+   int64 fixed point rather than with floating-point atomics.  Integer addition
+   is associative, so the sums are independent of the order in which threads
+   arrive and no ordering constraint is needed.  A first pass records the
+   largest contribution per bin as a binary exponent, which sizes that bin's
+   fixed-point grid; the mantissa width is derived from the contact buffer
+   capacity so the sum cannot overflow.
+
+Together these give bit-exact repeatability across runs on the same GPU
+architecture when the consuming solver is deterministic as well.
+
 .. note::
 
-   Hydroelastic contacts are not yet covered by deterministic ordering.
+   Deterministic mode disables hydroelastic pre-pruning, so the generated
+   contact set differs from the non-deterministic default.
 
 .. _Contact Matching:
 

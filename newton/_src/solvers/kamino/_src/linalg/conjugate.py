@@ -338,7 +338,7 @@ def _run_capturable_loop(
     maxiter: wp.array[int],
     atol_sq: wp.array[Any],
     callback: Callable | None,
-    use_cuda_graph: bool,
+    use_graph: bool,
     use_graph_conditionals: bool = True,
     maxiter_host: int | None = None,
     loop_granularity: int = 1,
@@ -384,7 +384,7 @@ def _run_capturable_loop(
         if callback_launch is not None:
             callback_launch.launch()
 
-    if use_cuda_graph and device.is_cuda and device.is_capturing:
+    if use_graph and device.is_capturing:
         if use_graph_conditionals:
             wp.capture_while(global_condition, do_cycle_with_condition)
         else:
@@ -541,7 +541,7 @@ class ConjugateSolver(Generic[ScalarType, IndexType]):
         maxiter: Maximum iterations per world. If None, defaults to 1.5 * maxdims.
         Mi: Operator applying the inverse preconditioner M^-1, such that Mi @ A has a smaller condition number than A.
         callback: Optional callback kernel invoked each iteration.
-        use_cuda_graph: Whether to use CUDA graph capture for the solve loop.
+        use_graph: Whether to use graph capture for the solve loop.
         loop_granularity: Number of iterations before termination criteria are checked.
     """
 
@@ -555,7 +555,7 @@ class ConjugateSolver(Generic[ScalarType, IndexType]):
         maxiter: wp.array[wp.int32] | None = None,
         Mi: BatchedLinearOperator[ScalarType, IndexType] | None = None,
         callback: Callable | None = None,
-        use_cuda_graph: bool = True,
+        use_graph: bool = True,
         use_graph_conditionals: bool = True,
         loop_granularity: int = 1,
     ):
@@ -593,7 +593,7 @@ class ConjugateSolver(Generic[ScalarType, IndexType]):
         self.loop_granularity = loop_granularity
 
         self.callback = callback
-        self.use_cuda_graph = use_cuda_graph
+        self.use_graph = use_graph
 
         self.dot_tile_size = min(2048, 2 ** math.ceil(math.log(self.maxdims, 2)))
         self.tiled_dot_kernel = make_dot_kernel(self.dot_tile_size, self.maxdims)
@@ -756,7 +756,7 @@ class CGSolver(ConjugateSolver[ScalarType, IndexType]):
             self.maxiter,
             self.atol_sq,
             self.callback,
-            self.use_cuda_graph,
+            self.use_graph,
             use_graph_conditionals=self.use_graph_conditionals,
             maxiter_host=self.maxiter_host,
             loop_granularity=min(self.loop_granularity, self.maxiter_host),
@@ -890,7 +890,7 @@ class CRSolver(ConjugateSolver[ScalarType, IndexType]):
             self.maxiter,
             self.atol_sq,
             self.callback,
-            self.use_cuda_graph,
+            self.use_graph,
             use_graph_conditionals=self.use_graph_conditionals,
             maxiter_host=self.maxiter_host,
             loop_granularity=min(self.loop_granularity, self.maxiter_host),

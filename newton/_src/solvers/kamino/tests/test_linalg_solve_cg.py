@@ -75,7 +75,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=maxiter,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         cur_iter, r_norm_sq, atol_sq = solver.solve(b_wp, x_wp)
 
@@ -138,6 +138,98 @@ class TestLinalgConjugate(unittest.TestCase):
         for problem_name, problem_params in self._problem_params().items():
             with self.subTest(problem=problem_name, solver=solver_cls.__name__):
                 self._test_solve(solver_cls, problem_params, device)
+
+    def _test_capture_replay_matches_eager(self, solver_cls, device):
+        """Regression: capture-and-replay must match an eager solve.
+
+        Guards against the class of bug where the capture-safe path in
+        ``_run_capturable_loop`` silently under-iterates. Concretely, if the
+        break decision is frozen at record time via a host readback of stale
+        pre-capture memory, the recorded graph bakes in a fixed cycle count
+        and ``cur_iter`` under capture will be far below the eager count.
+        """
+        device = wp.get_device(device)
+        problem = RandomProblemLLT(
+            maxdims=8,
+            dims=[5, 8],
+            seed=self.seed,
+            np_dtype=np.float32,
+            wp_dtype=wp.float32,
+            device=device,
+        )
+        n_worlds = problem.num_blocks
+
+        info = DenseSquareMultiLinearInfo()
+        info.finalize(dimensions=problem.maxdims, dtype=wp.float32, device=device)
+        info.dim = problem.dim_wp
+        operator = DenseLinearOperatorData(info=info, mat=problem.A_wp)
+        A = BatchedLinearOperator.from_dense(operator)
+
+        world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
+        maxdim = max(problem.maxdims)
+        atol = wp.full(n_worlds, 1.0e-4, dtype=problem.wp_dtype, device=device)
+        rtol = wp.full(n_worlds, 1.0e-5, dtype=problem.wp_dtype, device=device)
+        maxiter = wp.full(n_worlds, max(3 * maxdim, 50), dtype=int, device=device)
+
+        def new_solver(*, use_graph):
+            return solver_cls(
+                A=A,
+                world_active=world_active,
+                atol=atol,
+                rtol=rtol,
+                maxiter=maxiter,
+                Mi=None,
+                callback=None,
+                use_graph=use_graph,
+            )
+
+        # Eager reference.
+        x_eager = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
+        eager_cur, _, _ = new_solver(use_graph=False).solve(problem.b_wp, x_eager)
+
+        # Captured replay. Warm up outside capture so kernels compile before
+        # recording; zero the output between the warmup and the capture body
+        # so both solves see the same initial state.
+        solver = new_solver(use_graph=True)
+        x_capture = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
+        solver.solve(problem.b_wp, x_capture)
+        x_capture.zero_()
+        # Warp CPU graph capture currently rejects wp.copy() on non-contiguous
+        # arrays. Both the buggy pre-fix eager path (via strided
+        # ``dot_partial_sums[:, :, 0]`` in ``dot_product``) and the fixed
+        # capture path (via ``rz_old.assign(rz_new)`` in ``do_iteration``)
+        # hit that limitation on CPU, so the parity assertions below only
+        # activate once Warp lifts it. The CUDA counterparts exercise the
+        # same gate on a path where the dot buffer is contiguous and no
+        # skip is needed.
+        try:
+            with wp.ScopedCapture(device) as cap:
+                cap_cur, _, _ = solver.solve(problem.b_wp, x_capture)
+        except NotImplementedError as e:
+            if "non-contiguous" not in str(e):
+                raise
+            self.skipTest(f"Warp graph capture limitation on {device}: {e}")
+        assert cap.graph is not None
+        wp.capture_launch(cap.graph)
+
+        np.testing.assert_array_equal(cap_cur.numpy(), eager_cur.numpy())
+        np.testing.assert_array_equal(x_capture.numpy(), x_eager.numpy())
+
+    def test_capture_replay_cg_cpu(self):
+        self._test_capture_replay_matches_eager(CGSolver, "cpu")
+
+    def test_capture_replay_cr_cpu(self):
+        self._test_capture_replay_matches_eager(CRSolver, "cpu")
+
+    def test_capture_replay_cg_cuda(self):
+        if not wp.get_cuda_devices():
+            self.skipTest("No CUDA devices found")
+        self._test_capture_replay_matches_eager(CGSolver, wp.get_cuda_device())
+
+    def test_capture_replay_cr_cuda(self):
+        if not wp.get_cuda_devices():
+            self.skipTest("No CUDA devices found")
+        self._test_capture_replay_matches_eager(CRSolver, wp.get_cuda_device())
 
     def _test_sparse_solve(self, solver_cls, dims, block_size, device):
         """Test CG/CR with sparse matrices built from random SPD matrices.
@@ -223,7 +315,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=None,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver_dense.solve(b_wp, x_dense)
 
@@ -237,7 +329,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=None,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver_sparse.solve(b_wp, x_sparse)
 
@@ -335,7 +427,7 @@ class TestLinalgConjugate(unittest.TestCase):
             rtol=rtol,
             maxiter=None,
             Mi=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver.solve(b_wp, x_wp)
 
@@ -477,7 +569,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=maxiter,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver.solve(b, x_wp)
 
@@ -570,7 +662,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=maxiter,
             Mi=Mi,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver.solve(b, x_wp)
 
