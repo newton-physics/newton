@@ -47,7 +47,8 @@ def test_finalize_reuses_cached_mesh(test: TestMeshCache, device):
     """Verify finalize() reuses the cached Warp mesh only for identical arguments.
 
     Repeated calls with the same arguments must return the same Warp mesh,
-    while a differing ``requires_grad`` is a distinct cache entry.
+    while a differing ``requires_grad`` or ``bvh_constructor`` is a distinct
+    cache entry.
     """
     mesh = _make_tet_mesh()
     mesh_id_1 = mesh.finalize(device=device)
@@ -57,6 +58,10 @@ def test_finalize_reuses_cached_mesh(test: TestMeshCache, device):
     grad_mesh_id = mesh.finalize(device=device, requires_grad=True)
     test.assertNotEqual(grad_mesh_id, mesh_id_1)
     test.assertEqual(mesh.finalize(device=device, requires_grad=True), grad_mesh_id)
+
+    sah_mesh_id = mesh.finalize(device=device, bvh_constructor="sah")
+    test.assertEqual(mesh.finalize(device=device, bvh_constructor="sah"), sah_mesh_id)
+    test.assertNotEqual(mesh.finalize(device=device, bvh_constructor="median"), sah_mesh_id)
 
 
 def test_vertex_reassignment_invalidates_finalized_mesh(test: TestMeshCache, device):
