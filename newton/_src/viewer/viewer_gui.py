@@ -61,6 +61,10 @@ class ViewerGui:
         self._last_fps_time: float = perf_counter()
         self._fps_frame_count: int = 0
         self._current_fps: float = 0.0
+        # Visual / collision shape counts for the stats panel, refreshed by
+        # update_shape_counts() when the viewer is given a model.
+        self._shape_visual_count: int | None = None
+        self._shape_collision_count: int | None = None
 
         # Selection panel state (UI-local, not simulation state).
         self._selection_ui_state = {
@@ -903,6 +907,21 @@ class ViewerGui:
         imgui.text(f"Pitch: {cam.pitch:.1f} deg")
         imgui.text(f"Yaw: {cam.yaw:.1f} deg")
 
+    def update_shape_counts(self, model) -> None:
+        """Recompute the visual / collision shape counts shown in the stats overlay.
+
+        Called when the viewer is given a model. ``shape_flags`` is a device array, so
+        this is done once per model rather than while rendering the overlay.
+        """
+        flags_array = getattr(model, "shape_flags", None) if model is not None else None
+        if flags_array is None or len(flags_array) == 0:
+            self._shape_visual_count = None
+            self._shape_collision_count = None
+            return
+        flags = flags_array.numpy()
+        self._shape_visual_count = int(np.count_nonzero(flags & int(nt.ShapeFlags.VISIBLE)))
+        self._shape_collision_count = int(np.count_nonzero(flags & int(nt.ShapeFlags.COLLIDE_SHAPES)))
+
     def _render_stats_overlay(self):
         """Render performance overlay in the top-right corner."""
         if not self.is_available:
@@ -950,6 +969,12 @@ class ViewerGui:
                 imgui.text(f"Worlds: {viewer.model.world_count}")
                 imgui.text(f"Bodies: {viewer.model.body_count}")
                 imgui.text(f"Shapes: {viewer.model.shape_count}")
+                if self._shape_visual_count is not None:
+                    # Categories overlap when a shape carries both flags.
+                    imgui.indent()
+                    imgui.text(f"visual: {self._shape_visual_count}")
+                    imgui.text(f"collision: {self._shape_collision_count}")
+                    imgui.unindent()
                 imgui.text(f"Joints: {viewer.model.joint_count}")
                 imgui.text(f"Particles: {viewer.model.particle_count}")
                 imgui.text(f"Springs: {viewer.model.spring_count}")
