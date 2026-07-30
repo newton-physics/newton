@@ -539,9 +539,10 @@ def parse_mjcf(
                 vertices = vertices.reshape(-1, 3)
 
                 faces = None
-                if mesh_attrib.get("face"):
+                face_data = mesh_attrib.get("face", "").strip()
+                if face_data:
                     try:
-                        faces = np.array(mesh_attrib["face"].split(), dtype=np.int32)
+                        faces = np.array(face_data.split(), dtype=np.int32)
                     except ValueError as exc:
                         raise ValueError(f"Inline MJCF mesh {name!r} has invalid face data.") from exc
                     if len(faces) % 3 != 0:
@@ -578,8 +579,14 @@ def parse_mjcf(
                         )
                     texcoords = texcoords.reshape(-1, 2)
 
-                refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
-                refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
+                try:
+                    refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
+                except ValueError as exc:
+                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refpos data.") from exc
+                try:
+                    refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
+                except ValueError as exc:
+                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refquat data.") from exc
                 if refpos.shape != (3,):
                     raise ValueError(f"Inline MJCF mesh {name!r} refpos must have 3 values.")
                 if refquat.shape != (4,):

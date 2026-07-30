@@ -1325,7 +1325,7 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
 
     def test_inline_mesh_builds_convex_hull_without_faces(self):
         """Build a convex hull when inline mesh faces are absent or empty."""
-        for face_attribute in ("", ' face=""'):
+        for face_attribute in ("", ' face=""', ' face="   "'):
             with self.subTest(face_attribute=face_attribute):
                 mjcf = f"""
 <mujoco>
@@ -1437,6 +1437,8 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
         for attribute, message in (
             ('normal="0 0 1"', "normal.*3 values per vertex"),
             ('texcoord="0 0"', "texcoord.*2 values per vertex"),
+            ('refpos="invalid 0 0"', "Inline MJCF mesh 'bad'.*invalid refpos data"),
+            ('refquat="invalid 0 0 1"', "Inline MJCF mesh 'bad'.*invalid refquat data"),
         ):
             with self.subTest(attribute=attribute):
                 mjcf = f"""
