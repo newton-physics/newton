@@ -641,11 +641,8 @@ def _max_contacts_for_shape_pair_impl(type_a: int, type_b: int) -> tuple[int, in
     """
     Return the contact capacity for a canonical shape pair without reordering.
 
-    Noncanonical pairs return ``(0, 0)``.
+    This is used for testing purposes, asserting that type_a > type_b always returns (0, 0).
     """
-    if type_a > type_b:
-        return 0, 0
-
     if type_a == GeoType.SPHERE:
         return 1, 0
 
