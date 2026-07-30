@@ -774,12 +774,16 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
         return True
 
     def _create_solver(self, model):
+        # MuJoCo 3.11 can terminate before its first iteration, so require one
+        # iteration to exercise CONNECT constraint convergence in this test.
         return SolverMuJoCo(
             model,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,
             integrator="euler",
+            iterations=1,
+            tolerance=0.0,
         )
 
 

@@ -4506,7 +4506,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._sync_worldbody_geom_xposes()
                 self._sync_site_xposes()
 
-            if flags and not self._initial_model_sync:
+            if flags and getattr(self, "enable_sleeping", False) and not getattr(self, "_initial_model_sync", False):
                 # MuJoCo Warp cannot infer that Newton-side property updates
                 # invalidate sleeping islands, so explicitly wake them.
                 self._wake_sleeping_worlds()
