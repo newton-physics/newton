@@ -41,16 +41,15 @@ from newton.examples.suctioncup.crate_playback import CratePlayback
 from newton.examples.suctioncup.debug_recorders import (
     DriveTargetRecorder,
     EndEffectorAccelerationRecorder,
+    GripperForceRecorder,
     PadBreakMetricRecorder,
 )
 from newton.examples.suctioncup.robot_playback import RobotPlayback
 from newton.examples.suctioncup.surface_gripper import (
-    PadShape,
     SurfaceGripper,
     SurfaceGripperBuilder,
-    evaluate_gripper_force,
     attach_seal,
-    reset_seal_on_contact,
+    evaluate_gripper_force,
 )
 
 # assets live alongside this example
@@ -93,14 +92,9 @@ FINGER_HULL_DEEPEST_X = 0.3109
 ENABLE_GRIPPER = True
 
 # Enable the pick-box <-> gripper-geometry rigid contact. On: the box presses flush against the tool
-# and tipping is resisted by contact (matches a real vacuum grip on rigid tooling); pair with a
-# tension-only seal (surface_gripper.SEAL_TENSION_ONLY). Off: the soft seal alone owns the hold.
+# and tipping is resisted by contact (matches a real vacuum grip on rigid tooling). Off: the soft seal
+# alone owns the hold.
 ENABLE_PAD_BOX_CONTACT = False
-
-# When True, re-anchor a pad's seal frame whenever its held body is in external contact (e.g. a crate
-# lands on the held panel). The seal snaps to the current relative pose so it yields to the contact
-# instead of building a large elastic restoring spike. Uses the previous sub-step's contact set.
-SEAL_RESET_ON_CONTACT = True
 
 # Draw a small non-colliding disk at each suction cup (GRIPPER_PADS) so the cup layout is visible in
 # the viewer. Purely visual (has_shape_collision off); does not affect the physics.
@@ -139,69 +133,56 @@ GRIPPER_PADS = (
 
 
 @dataclass(frozen=True)
-class GripperParams:
-    """Per-pad suction-seal tuning (see :class:`~newton.examples.suctioncup.surface_gripper.SurfaceGripper`).
+class SimpleGripperParams:
+    """Per-pad tuning for the simple linear seal model (:class:`SurfaceGripper`).
 
-    Field-for-field the ``SurfaceGripper`` keyword arguments except the runtime ``body_id`` / ``xform``,
-    so it unpacks straight into the constructor (``SurfaceGripper(body_id=..., xform=..., **asdict(...))``).
+    Field-for-field the ``SurfaceGripper`` keyword arguments except ``body_id`` / ``xform``, so
+    it unpacks straight into the constructor. Each axis has an independent stiffness and damping; the
+    caps are per DOF-group -- one normal, one combined shear, one combined peel, one twist (0 =>
+    uncapped).
     """
 
+    f_grip_max: float  # suction preload [N]; f_min = control * f_grip_max, added on z
     k_normal: float  # normal stiffness [N/m]
     d_normal: float  # normal damping [N.s/m]
-    f_normal_max: float  # per-pad break threshold [N]
-    f_grip_max: float  # per-pad suction preload [N]
-    k_shear_x: float  # shear stiffness [N/m]
-    k_shear_y: float
-    mu_x: float  # shear friction coefficient
-    mu_y: float
-    d_peel_x: float  # peel damping [N.m.s/rad]
-    d_peel_y: float
-    shape: int  # PadShape
-    dim_a: float  # pad radius (CIRCLE) [m]
-    dim_b: float
-    d_shear_x: float = 0.0  # shear damping [N.s/m]; not in gripper.pdf, kept at 0
-    d_shear_y: float = 0.0
-    peel_capacity_scale: float = 1.0  # multiplies the geometric peel capacity (peel-limited lifts)
+    f_normal_max: float  # normal cap |fz| [N]; 0 => uncapped
+    k_shear_x: float  # shear-x stiffness [N/m]
+    d_shear_x: float  # shear-x damping [N.s/m]
+    k_shear_y: float  # shear-y stiffness [N/m]
+    d_shear_y: float  # shear-y damping [N.s/m]
+    f_shear_max: float  # combined shear cap sqrt(fx^2+fy^2) [N]; 0 => uncapped
+    k_peel_x: float  # peel-x stiffness [N.m/rad]
+    d_peel_x: float  # peel-x damping [N.m.s/rad]
+    k_peel_y: float  # peel-y stiffness [N.m/rad]
+    d_peel_y: float  # peel-y damping [N.m.s/rad]
+    f_peel_max: float  # combined peel cap sqrt(mx^2+my^2) [N.m]; 0 => uncapped
+    k_torsion: float  # twist stiffness [N.m/rad]
+    d_torsion: float  # twist damping [N.m.s/rad]
+    f_torsion_max: float  # twist cap |mz| [N.m]; 0 => uncapped
 
 
-# Tuned for the light pick box (~1 kg, weight ~10 N). Preload ~= box weight so the box rests against
-# the pads (constant contact); the break threshold is well above the carry loads so the seal holds.
-# Damped springs so the four redundant pads settle, not ring. Stiff seal so the box tracks the flange
-# rigidly (a soft seal lets it swing like a pendulum under the fast arm). The seal forces are applied
-# explicitly, so with the small box (m = 1, I ~ 4e-3) at 240 Hz: near-critical damping keeps k stable
-# up to ~m/dt^2, but the angular d_peel must stay tiny (dt < 2*I/d_peel) or it diverges. Seal
-# stiffness is bounded by explicit stability at 240 Hz (omega*dt must stay well below 2, or the seal
-# rings): k ~ 6000 tracks the box with ~mm lag while staying smooth.
-GRIPPER_PARAMS = GripperParams(
-    # Normal - translation - z
-    k_normal=96000.0,  # stiff, like a vacuum cup on rigid tooling; sets the tilt tracking (peel angle ~0.2deg)
-    d_normal=40.0,  # low: the wide-cup couple amplifies damping into the explicit-integrator limit at 240 Hz
-    # f_normal_max is the seal's real hold/break capacity: the clamp on fz, i.e. the most tension a cup
-    # can pull. 2000 N/cup sits well above any pick here (4 cups >> 100 kg), so the seal holds robustly
-    # and the brittle-break trips only on genuine peel/overload, not on the panel's overhang transient.
-    f_normal_max=2000.0,  # per-pad normal hold / break threshold [N]
-    f_grip_max=50.0,  # per-pad suction preload [N]; gentle baseline push + shear/peel capacity floor
-    # Shear - translation - x,y
+# Baseline for the simple model: the same normal/shear/peel/twist stiffness and damping the default
+# model presents for the CIRCLE pad (k_peel = k_normal * R^2/4, k_torsion = (k_shear_x+k_shear_y) *
+# R^2/4 with R = 0.03), so it holds like the default seal. Caps start uncapped (0) except the normal;
+# set f_shear_max / f_peel_max / f_torsion_max to add a limit.
+GRIPPER_PARAMS_SIMPLE = SimpleGripperParams(
+    f_grip_max=50.0,
+    k_normal=96000.0,
+    d_normal=40.0,
+    f_normal_max=2000.0,
     k_shear_x=6000.0,
-    k_shear_y=6000.0,
-    # High friction: when the arm holds the flange with the suction axis near-horizontal, the box
-    # weight is a pure shear load, and shear capacity = mu * |holding force|. High mu keeps ample
-    # margin through the arm's fast reorientation so the box doesn't slip and dangle.
-    mu_x=16.0,
-    mu_y=16.0,
-    # Shear damping must stay small with the wide-set cups: the far cups' tangential velocity scales
-    # with the cup spread, so d_shear's effective twist damping is amplified by ~Sigma r^2 (75x vs a
-    # tight cluster) and overshoots the explicit-integrator limit at 240 Hz if raised much above ~30.
     d_shear_x=20.0,
+    k_shear_y=6000.0,
     d_shear_y=20.0,
-    # peel rotation- x,y. Small, for the same explicit-integrator reason as the shear/normal damping
-    # above (the wide cup couple amplifies it); the wide-set cups need little peel damping to stay put.
+    f_shear_max=0.0,
+    k_peel_x=21.6,  # 96000 * 0.03^2 / 4
     d_peel_x=0.5,
+    k_peel_y=21.6,
     d_peel_y=0.5,
-    peel_capacity_scale=1.0,  # geometric capacity only; the real wide-set cups should hold without a fudge
-    shape=int(PadShape.CIRCLE),
-    dim_a=0.03,
-    dim_b=0.03,
+    f_peel_max=0.0,
+    k_torsion=2.7,  # (6000 + 6000) * 0.03^2 / 4
+    d_torsion=0.0,
+    f_torsion_max=0.0,
 )
 
 
@@ -247,23 +228,6 @@ def update_seal_break_kernel(
     hold = cmd and not gripper_seal_broken[g]  # whole gripper engages or releases as a unit
     for pad in range(lo, hi):
         pad_seal_engaged[pad] = hold
-
-
-def seal_modes_for(gripper, spec):
-    """The seal's three spring-damper modes for a gripped box ``spec = ((hx, hy, hz), mass)``, as
-    ``(name, omega_n [rad/s], zeta)`` per mode. ``ixx`` is the box's tilt inertia about a horizontal
-    grip axis; ``hz`` is the COM depth below the top-face grip. Shown in the side panel."""
-    (_hx, hy, hz), mass = spec
-    ixx = mass / 3.0 * (hy * hy + hz * hz)
-    return (
-        (
-            "peel",
-            gripper.peel_natural_frequency(ixx, mass, hz),
-            gripper.peel_damping_ratio(ixx, mass, GRIPPER_PARAMS.d_peel_x, hz),
-        ),
-        ("normal", gripper.normal_natural_frequency(mass), gripper.normal_damping_ratio(mass, GRIPPER_PARAMS.d_normal)),
-        ("shear", gripper.shear_natural_frequency(mass), gripper.shear_damping_ratio(mass, GRIPPER_PARAMS.d_shear_x)),
-    )
 
 
 class Example:
@@ -354,7 +318,7 @@ class Example:
 
         # Filter every pick box against the whole robot arm (bodies 0..ee_body): the seal owns the
         # hold, and the wide panel swings up against the wrist/forearm links during the carry, so
-        # letting them collide would fight the seal (see ENABLE_PAD_BOX_CONTACT / SEAL_TENSION_ONLY).
+        # letting them collide would fight the seal (see ENABLE_PAD_BOX_CONTACT).
         # Boxes still collide with the pallets, the panel, each other (so the crates stack), and the ground.
         if not ENABLE_PAD_BOX_CONTACT:
             for shape in range(len(builder.shape_body)):
@@ -364,7 +328,7 @@ class Example:
                         builder.add_shape_collision_filter_pair(cs, shape)
 
         # Cup markers: a thin non-colliding disk at each suction cup so the cup layout is visible in the
-        # viewer (radius = the modeled cup radius dim_a; oriented so the disk faces along the suction axis).
+        # viewer (0.03 m visual cup radius; oriented so the disk faces along the suction axis).
         if SHOW_CUP_MARKERS:
             marker_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # disk axis -> flange +x
             marker_cfg = builder.default_shape_cfg.copy()
@@ -374,7 +338,7 @@ class Example:
                 builder.add_shape_cylinder(
                     ee_body,
                     xform=wp.transform(wp.vec3(px, py, pz), marker_down),
-                    radius=GRIPPER_PARAMS.dim_a,
+                    radius=0.03,
                     half_height=0.004,
                     cfg=marker_cfg,
                 )
@@ -387,19 +351,18 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
-        # Suction gripper on the end-effector: one SurfaceGripper on the flange with four pads at the
-        # recorded finger offsets, suction axis along the flange +x (pad local +z rotated onto +x).
-        # Driven by the recorded ro[0] command -- all four pads engage/release together, sealing the
-        # dynamic pick box.
+        # Suction gripper on the end-effector: one SurfaceGripper on the flange with four pads at
+        # the recorded finger offsets, suction axis along the flange +x (pad local +z rotated onto +x).
+        # Driven by the recorded ro[0] command -- all four pads engage/release together, sealing the box.
         gripper = SurfaceGripper(
             body_id=ee_body,
             xform=wp.transform_identity(),  # gripper frame == flange body frame
-            **asdict(GRIPPER_PARAMS),
+            **asdict(GRIPPER_PARAMS_SIMPLE),
         )
+        gripper_builder = SurfaceGripperBuilder()
         pad_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # pad +z -> flange +x
         for px, py, pz in GRIPPER_PADS:
             gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
-        gripper_builder = SurfaceGripperBuilder()
         gripper_builder.add_gripper(gripper)
         self.gripper_model = gripper_builder.finalize(device=self.model.device)
         self.gripper_state = self.gripper_model.state()
@@ -409,12 +372,6 @@ class Example:
         self.pad_body_b = wp.full(len(GRIPPER_PADS), panel_body_id, dtype=wp.int32)
         # Moves each parked crate onto the pick pallet on its disengagement cue (see CratePlayback).
         self.crate_playback = CratePlayback(self.robot_arm_playback, self.model, crate_body_ids, crate_grip_poses)
-
-        # The seal's spring-damper modes depend on the gripped box (see seal_modes_for); precompute a set
-        # per box, shown in the side panel with the active one selected as the seal retargets (gui()).
-        self.panel_seal_modes = seal_modes_for(gripper, PANEL)
-        self.crate_seal_modes = seal_modes_for(gripper, CRATE)
-        self.seal_modes = self.panel_seal_modes  # panel is gripped first; swapped to the crate at the switch
 
         # Start the arm at the first recorded pose. Set only the arm DOFs; the pick box's free-joint
         # DOFs keep their built-in rest pose (from add_body), so it starts resting on the static box.
@@ -441,6 +398,8 @@ class Example:
             self.pad_break_recorder = PadBreakMetricRecorder(
                 self.sim_dt, self.robot_arm_playback.rec_duration, len(GRIPPER_PADS)
             )
+            # per-pad seal forces over the first lift (simple linear model only; see GripperForceRecorder)
+            self.gripper_force_recorder = GripperForceRecorder(self.sim_dt, len(GRIPPER_PADS))
 
     def capture(self):
         # capturing runs one frame for real, which advances the device sub-step counter and search
@@ -457,7 +416,7 @@ class Example:
         for _ in range(self.sim_substeps):
             # Interpolate the arm drive targets (joint_target_q) and sample the engagement command
             # (gripper_command_engaged_wp) at the current sim time (sim_step_count_wp*sim_dt)
-            # Advance the search index (last_lo_wp) through the recording, 
+            # Advance the search index (last_lo_wp) through the recording,
             # and advance sim time (sim_step_count_wp) for the next sub-step.
             self.robot_arm_playback.step(
                 self.sim_step_count_wp,  # in/out: read as the current time, then advanced in place
@@ -468,7 +427,7 @@ class Example:
             )
             self.state_0.clear_forces()  # zero body_f each sub-step (the suction cup accumulates into it)
 
-            # Break the gripper (and per pad) seal based on pad_break_metric and a threshold time for 
+            # Break the gripper (and per pad) seal based on pad_break_metric and a threshold time for
             # pad_break_metric being continuously True.
             wp.launch(
                 update_seal_break_kernel,
@@ -488,16 +447,12 @@ class Example:
             # Commit this sub-step's per-pad seal command into the gripper state: set pad_engaged, and on
             # each pad's rising edge cache its seal anchor frame relative to its target body (pad_body_b).
             attach_seal(
-                self.model,
                 self.state_0,
-                self.contacts,
                 self.gripper_model,
                 self.gripper_state,
                 self.pad_seal_engaged_wp,
                 self.pad_body_b,
             )
-            if ENABLE_GRIPPER and SEAL_RESET_ON_CONTACT:
-                reset_seal_on_contact(self.model, self.state_0, self.contacts, self.gripper_model, self.gripper_state)
             if ENABLE_GRIPPER:
                 evaluate_gripper_force(
                     self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control, self.sim_dt
@@ -509,6 +464,9 @@ class Example:
                 self.accel_recorder.record(self.state_0, self.state_1, self.gripper_command_engaged_wp, self.sim_step_count_wp)
                 self.drive_target_recorder.record(self.gripper_command_engaged_wp, self.control.joint_target_q, self.sim_step_count_wp)
                 self.pad_break_recorder.record(self.gripper_state.pad_break_metric, self.sim_step_count_wp)
+                self.gripper_force_recorder.record(
+                    self.gripper_command_engaged_wp, self.gripper_state.pad_dof_force, self.sim_step_count_wp
+                )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -521,7 +479,6 @@ class Example:
         active_crate = self.crate_playback.step(sim_time, self.state_0)
         if active_crate is not None:
             self.pad_body_b.assign(np.full(len(GRIPPER_PADS), active_crate, dtype=np.int32))
-            self.seal_modes = self.crate_seal_modes  # side-panel modes now describe the crate
         if self.graph:
             wp.capture_launch(self.graph)
         else:
@@ -543,10 +500,6 @@ class Example:
         held = int(self.pad_seal_engaged_wp.numpy().sum())
         ui.text(f"Suction cmd:  {'On' if commanded else 'Off'}  (recording)")
         ui.text(f"Seal engaged: {held}/{len(GRIPPER_PADS)} pads  (actual)")
-        # seal spring-damper modes for the picked box (constant): natural frequency and damping ratio
-        ui.text("Seal modes:")
-        for name, omega_n, zeta in self.seal_modes:
-            ui.text(f"  {name:6s} f_n={omega_n / (2.0 * np.pi):5.2f} Hz  zeta={zeta:.2f}")
 
     def test_final(self):
         # the fixed-base arm should hold together on its stiff joint drives: bodies stay at or above

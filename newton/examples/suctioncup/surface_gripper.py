@@ -22,443 +22,17 @@ Mirrors Newton's Builder -> Model -> State/Control layout::
     SurfaceGripperModel.state() / .control() -> SurfaceGripperState / SurfaceGripperControl
 """
 
-import math
-from enum import IntEnum
-
 import warp as wp
-
-# When True the normal seal is tension-only (pulls, never pushes): pair with an active pad<->box
-# contact that supplies the compression/tilt reaction (the box pressed flush against rigid tooling).
-# When False the seal is bidirectional (pushes and pulls) -- a stiff bilateral hold used when the
-# pad<->box contact is filtered out. Read at kernel-compile time.
-SEAL_TENSION_ONLY = False
-
-
-class PadShape(IntEnum):
-    CIRCLE = 0
-    ELLIPSE = 1
-    RECTANGLE = 2
-
-
-def _pad_geometry_factors(shape: int, a: float, b: float):
-    """Geometry-derived force factors for one pad (see gripper.pdf tables/appendices).
-
-    Returns ``(peel_ratio_x, peel_ratio_y, capacity_x, capacity_y, tw_x, tw_y)`` such that::
-
-        k_peel_x = k_normal * peel_ratio_x
-        k_peel_y = k_normal * peel_ratio_y
-        k_torsion = k_shear_x * peel_ratio_x + k_shear_y * peel_ratio_y
-        F_peel_x_max = N_f * capacity_x
-        F_peel_y_max = N_f * capacity_y
-        M_twist_max = F_sucker * (mu_x * tw_x + mu_y * tw_y)
-
-    Here ``peel_ratio = I / A`` (second area moment over area; sets peel/torsion stiffness),
-    ``capacity = (I / A) / c`` where ``c`` is the pad half-extent perpendicular to the tilt
-    axis -- the pull-off pressure vanishes at that trailing edge (Appendix 3) -- and ``tw`` is
-    the torsional-capacity factor derived from the first moment ``int r dA`` (Appendices 4-5).
-    """
-    if shape == int(PadShape.CIRCLE):
-        # circle of radius R = a; fully symmetric, so the x and y factors are identical.
-        radius = a
-        # peel/torsion stiffness factor I / A, with I = pi R^4 / 4 and A = pi R^2.
-        peel_ratio_x = radius * radius / 4.0
-        peel_ratio_y = radius * radius / 4.0
-        # peel capacity factor (I/A)/c with c = R (edge where the pull-off pressure vanishes,
-        # Appendix 3): (R^2/4) / R = R/4.
-        capacity_x = radius / 4.0
-        capacity_y = radius / 4.0
-        # twist factor: int r dA / A = 2R/3, split per axis by the mu_x/mu_y cos^2/sin^2
-        # integration, giving M_twist_max = (mu_x + mu_y)/3 * N_f * R -> R/3 per axis (Appendix 5).
-        tw_x = radius / 3.0
-        tw_y = radius / 3.0
-        return peel_ratio_x, peel_ratio_y, capacity_x, capacity_y, tw_x, tw_y
-
-    if shape == int(PadShape.ELLIPSE):
-        # ellipse with semi-axis a along x and b along y.
-        # stiffness factor I / A: I_x = pi a b^3 / 4 over A = pi a b gives b^2 / 4 (and a^2 / 4).
-        peel_ratio_x = b * b / 4.0
-        peel_ratio_y = a * a / 4.0
-        # peel capacity factor: b/4 about x, a/4 about y (Appendix 3).
-        capacity_x = b / 4.0
-        capacity_y = a / 4.0
-        # twist factor tw = J / (3 pi a b) with J_x = int R(phi)^3 sin^2(phi) dphi (Appendix 5).
-        # No closed form, so integrate numerically over phi in [0, 2 pi) with the midpoint rule.
-        num_samples = 256
-        d_phi = 2.0 * math.pi / float(num_samples)
-        j_x = 0.0
-        j_y = 0.0
-        for i in range(num_samples):
-            phi = (float(i) + 0.5) * d_phi  # sample the middle of each interval
-            cos_phi = math.cos(phi)
-            sin_phi = math.sin(phi)
-            # distance from the centre to the ellipse edge at angle phi
-            r_edge = a * b / math.sqrt(b * b * cos_phi * cos_phi + a * a * sin_phi * sin_phi)
-            j_x += r_edge**3 * sin_phi * sin_phi * d_phi
-            j_y += r_edge**3 * cos_phi * cos_phi * d_phi
-        twist_denom = 3.0 * math.pi * a * b
-        tw_x = j_x / twist_denom
-        tw_y = j_y / twist_denom
-        return peel_ratio_x, peel_ratio_y, capacity_x, capacity_y, tw_x, tw_y
-
-    # RECTANGLE with half-length a along x and b along y.
-    # stiffness factor I / A: I_x = 4 a b^3 / 3 over A = 4 a b gives b^2 / 3 (and a^2 / 3).
-    peel_ratio_x = b * b / 3.0
-    peel_ratio_y = a * a / 3.0
-    # peel capacity factor: b/3 about x, a/3 about y (Appendix 3).
-    capacity_x = b / 3.0
-    capacity_y = a / 3.0
-    # twist factor tw = U / (4 a b), with the closed-form integrals U_x, U_y (Appendix 5).
-    diagonal = math.sqrt(a * a + b * b)
-    u_x = (
-        (2.0 * a * b * diagonal) / 3.0 + (4.0 * b**3 / 3.0) * math.asinh(a / b) - (2.0 * a**3 / 3.0) * math.asinh(b / a)
-    )
-    u_y = (
-        (2.0 * a * b * diagonal) / 3.0 + (4.0 * a**3 / 3.0) * math.asinh(b / a) - (2.0 * b**3 / 3.0) * math.asinh(a / b)
-    )
-    area = 4.0 * a * b
-    tw_x = u_x / area
-    tw_y = u_y / area
-    return peel_ratio_x, peel_ratio_y, capacity_x, capacity_y, tw_x, tw_y
-
-
-class SurfaceGripper:
-    """An individual surface gripper (authoring object).
-
-    Holds one gripper's parameters and its pads. Author it directly and add pads
-    with :meth:`add_pad` -- no global indexing to worry about.
-    :meth:`SurfaceGripperBuilder.finalize` flattens a set of these into the model
-    arrays and resolves all the indexing.
-    """
-
-    def __init__(
-        self,
-        body_id: int,
-        xform: wp.transform,
-        k_normal: float,
-        d_normal: float,
-        f_normal_max: float,
-        f_grip_max: float,
-        k_shear_x: float,
-        k_shear_y: float,
-        mu_x: float,
-        mu_y: float,
-        d_peel_x: float,
-        d_peel_y: float,
-        shape: int,
-        dim_a: float,
-        dim_b: float,
-        d_shear_x: float = 0.0,
-        d_shear_y: float = 0.0,
-        peel_capacity_scale: float = 1.0,
-    ):
-        self.body_id = body_id
-        self.xform = xform
-        self.k_normal = k_normal
-        self.d_normal = d_normal
-        self.f_normal_max = f_normal_max
-        self.f_grip_max = f_grip_max
-        self.k_shear_x = k_shear_x
-        self.k_shear_y = k_shear_y
-        self.d_shear_x = d_shear_x  # shear (tangential) damping [N.s/m]; damps in-plane ringing
-        self.d_shear_y = d_shear_y
-        self.mu_x = mu_x
-        self.mu_y = mu_y
-        self.d_peel_x = d_peel_x
-        self.d_peel_y = d_peel_y
-        self.shape = shape
-        self.dim_a = dim_a
-        self.dim_b = dim_b
-        self.peel_capacity_scale = peel_capacity_scale  # multiplies the geometric peel capacity
-        self.pads: list[wp.transform] = []  # pad poses in the gripper frame
-
-    def add_pad(self, xform: wp.transform) -> int:
-        """Add a pad at ``xform`` (gripper frame). Returns its index within this gripper."""
-        self.pads.append(xform)
-        return len(self.pads) - 1
-
-    def _tilt_mode(self, inertia: float, mass: float, com_offset: float) -> tuple[int, float, float, float]:
-        """Tilt (peel) mode constants for a picked object held by this gripper's pads.
-
-        The object tilting on the pads is a torsional oscillator ``I_tilt*th'' + D*th' + K*th = 0``.
-        Returns ``(n_pads, k_tilt, d_couple, i_tilt)``: ``k_tilt`` sums the per-pad peel springs and
-        the normal-force couple across the pad separation, ``d_couple`` is that couple's damping
-        contribution, and ``i_tilt`` is the object's tilt inertia about the grip plane. Requires the
-        pads to have been added (see :meth:`add_pad`).
-        """
-        n = len(self.pads)
-        f = _pad_geometry_factors(self.shape, self.dim_a, self.dim_b)
-        k_peel = self.k_normal * 0.5 * (f[0] + f[1])  # mean peel stiffness over the two tilt axes
-        ys = [float(wp.transform_get_translation(t)[1]) for t in self.pads]  # pad y in the seal plane
-        zs = [float(wp.transform_get_translation(t)[2]) for t in self.pads]  # pad z in the seal plane
-        cy = sum(ys) / n
-        cz = sum(zs) / n
-        sum_r2 = sum((y - cy) ** 2 + (z - cz) ** 2 for y, z in zip(ys, zs, strict=True))  # couple lever^2
-        i_tilt = inertia + mass * com_offset * com_offset  # parallel-axis from COM to the grip plane
-        k_tilt = n * k_peel + self.k_normal * sum_r2
-        d_couple = self.d_normal * sum_r2
-        return n, k_tilt, d_couple, i_tilt
-
-    def peel_damping_for_ratio(
-        self, inertia: float, mass: float, damping_ratio: float, com_offset: float = 0.0
-    ) -> float:
-        """Per-pad ``d_peel`` [N.m.s/rad] giving a target tilt-mode damping ratio for a picked object.
-
-        Inverts ``zeta = D / (2*sqrt(K*I_tilt))`` for the tilt (peel) mode (:meth:`_tilt_mode`). Call
-        after the pads are added.
-
-        Args:
-            inertia: Object tilt inertia about its COM [kg.m^2].
-            mass: Object mass [kg].
-            damping_ratio: Target zeta (1 = critical; <1 underdamped/wobbly, >1 overdamped/sluggish).
-            com_offset: COM depth below the grip plane [m] (0 if the COM lies in the grip plane).
-
-        Returns:
-            The per-pad peel damping [N.m.s/rad] to set on both peel axes (>= 0).
-        """
-        n, k_tilt, d_couple, i_tilt = self._tilt_mode(inertia, mass, com_offset)
-        d_total = 2.0 * damping_ratio * math.sqrt(k_tilt * i_tilt)
-        return max(0.0, (d_total - d_couple) / n)
-
-    def peel_damping_ratio(self, inertia: float, mass: float, d_peel: float, com_offset: float = 0.0) -> float:
-        """Effective tilt-mode damping ratio a per-pad ``d_peel`` produces for a picked object.
-
-        Forward of :meth:`peel_damping_for_ratio`. Call after the pads are added.
-
-        Args:
-            inertia: Object tilt inertia about its COM [kg.m^2].
-            mass: Object mass [kg].
-            d_peel: Per-pad peel damping [N.m.s/rad].
-            com_offset: COM depth below the grip plane [m].
-
-        Returns:
-            The effective damping ratio zeta of the peel/tilt mode.
-        """
-        n, k_tilt, d_couple, i_tilt = self._tilt_mode(inertia, mass, com_offset)
-        return (n * d_peel + d_couple) / (2.0 * math.sqrt(k_tilt * i_tilt))
-
-    def peel_natural_frequency(self, inertia: float, mass: float, com_offset: float = 0.0) -> float:
-        """Undamped natural frequency [rad/s] of the tilt (peel) mode for a picked object.
-
-        ``omega_n = sqrt(K / I_tilt)`` for the tilt mode (:meth:`_tilt_mode`); divide by ``2*pi`` for
-        Hz. Call after the pads are added.
-
-        Args:
-            inertia: Object tilt inertia about its COM [kg.m^2].
-            mass: Object mass [kg].
-            com_offset: COM depth below the grip plane [m].
-
-        Returns:
-            The undamped natural frequency [rad/s].
-        """
-        _, k_tilt, _, i_tilt = self._tilt_mode(inertia, mass, com_offset)
-        return math.sqrt(k_tilt / i_tilt)
-
-    def normal_damping_for_ratio(self, mass: float, damping_ratio: float) -> float:
-        """Per-pad ``d_normal`` [N.s/m] giving a target normal-mode damping ratio for a picked object.
-
-        The object bouncing on the pad normal springs is ``m*z'' + D*z' + K*z = 0`` with
-        ``K = n*k_normal`` and ``D = n*d_normal``; inverts ``zeta = D / (2*sqrt(K*m))``. Call after the
-        pads are added.
-
-        Args:
-            mass: Object mass [kg].
-            damping_ratio: Target zeta (1 = critical).
-
-        Returns:
-            The per-pad normal damping [N.s/m] to set (>= 0).
-        """
-        n = len(self.pads)
-        d_total = 2.0 * damping_ratio * math.sqrt(n * self.k_normal * mass)
-        return max(0.0, d_total / n)
-
-    def normal_damping_ratio(self, mass: float, d_normal: float) -> float:
-        """Effective normal-mode damping ratio a per-pad ``d_normal`` produces for a picked object.
-
-        Forward of :meth:`normal_damping_for_ratio`. Call after the pads are added.
-
-        Args:
-            mass: Object mass [kg].
-            d_normal: Per-pad normal damping [N.s/m].
-
-        Returns:
-            The effective damping ratio zeta of the normal (bounce) mode.
-        """
-        n = len(self.pads)
-        return n * d_normal / (2.0 * math.sqrt(n * self.k_normal * mass))
-
-    def normal_natural_frequency(self, mass: float) -> float:
-        """Undamped natural frequency [rad/s] of the normal (bounce) mode for a picked object.
-
-        ``omega_n = sqrt(n*k_normal / m)``; divide by ``2*pi`` for Hz. Call after the pads are added.
-
-        Args:
-            mass: Object mass [kg].
-
-        Returns:
-            The undamped natural frequency [rad/s].
-        """
-        n = len(self.pads)
-        return math.sqrt(n * self.k_normal / mass)
-
-    def shear_damping_for_ratio(self, mass: float, damping_ratio: float) -> float:
-        """Per-pad ``d_shear`` [N.s/m] giving a target shear-mode damping ratio for a picked object.
-
-        The object sliding laterally on the pad shear springs is ``m*x'' + D*x' + K*x = 0`` with
-        ``K = n*k_shear`` and ``D = n*d_shear`` (``k_shear`` the mean of the two shear axes); inverts
-        ``zeta = D / (2*sqrt(K*m))``. Call after the pads are added.
-
-        Args:
-            mass: Object mass [kg].
-            damping_ratio: Target zeta (1 = critical).
-
-        Returns:
-            The per-pad shear damping [N.s/m] to set on both shear axes (>= 0).
-        """
-        n = len(self.pads)
-        k_shear = 0.5 * (self.k_shear_x + self.k_shear_y)  # mean over the two shear axes
-        d_total = 2.0 * damping_ratio * math.sqrt(n * k_shear * mass)
-        return max(0.0, d_total / n)
-
-    def shear_damping_ratio(self, mass: float, d_shear: float) -> float:
-        """Effective shear-mode damping ratio a per-pad ``d_shear`` produces for a picked object.
-
-        Forward of :meth:`shear_damping_for_ratio`. Call after the pads are added.
-
-        Args:
-            mass: Object mass [kg].
-            d_shear: Per-pad shear damping [N.s/m].
-
-        Returns:
-            The effective damping ratio zeta of the shear (lateral) mode.
-        """
-        n = len(self.pads)
-        k_shear = 0.5 * (self.k_shear_x + self.k_shear_y)  # mean over the two shear axes
-        return n * d_shear / (2.0 * math.sqrt(n * k_shear * mass))
-
-    def shear_natural_frequency(self, mass: float) -> float:
-        """Undamped natural frequency [rad/s] of the shear (lateral) mode for a picked object.
-
-        ``omega_n = sqrt(n*k_shear / m)`` with ``k_shear`` the mean of the two shear axes; divide by
-        ``2*pi`` for Hz. Call after the pads are added.
-
-        Args:
-            mass: Object mass [kg].
-
-        Returns:
-            The undamped natural frequency [rad/s].
-        """
-        n = len(self.pads)
-        k_shear = 0.5 * (self.k_shear_x + self.k_shear_y)  # mean over the two shear axes
-        return math.sqrt(n * k_shear / mass)
-
-
-class SurfaceGripperBuilder:
-    """Collects :class:`SurfaceGripper` objects and finalizes them into a
-    :class:`SurfaceGripperModel` (mirrors :class:`newton.ModelBuilder`).
-    """
-
-    def __init__(self):
-        self.grippers: list[SurfaceGripper] = []
-
-    def add_gripper(self, gripper: SurfaceGripper) -> int:
-        """Add an authored gripper. Returns its gripper index."""
-        self.grippers.append(gripper)
-        return len(self.grippers) - 1
-
-    def finalize(self, device=None) -> "SurfaceGripperModel":
-        """Flatten all grippers into a device-resident :class:`SurfaceGripperModel`."""
-        g = self.grippers
-        m = SurfaceGripperModel()
-        # per-gripper arrays (indexed by gripper id)
-        m.gripper_body_id = wp.array([x.body_id for x in g], dtype=wp.int32, device=device)
-        m.gripper_xform = wp.array([x.xform for x in g], dtype=wp.transform, device=device)
-        m.gripper_k_normal = wp.array([x.k_normal for x in g], dtype=wp.float32, device=device)
-        m.gripper_d_normal = wp.array([x.d_normal for x in g], dtype=wp.float32, device=device)
-        m.gripper_f_normal_max = wp.array([x.f_normal_max for x in g], dtype=wp.float32, device=device)
-        m.gripper_f_grip_max = wp.array([x.f_grip_max for x in g], dtype=wp.float32, device=device)
-        m.gripper_k_shear_x = wp.array([x.k_shear_x for x in g], dtype=wp.float32, device=device)
-        m.gripper_k_shear_y = wp.array([x.k_shear_y for x in g], dtype=wp.float32, device=device)
-        m.gripper_d_shear_x = wp.array([x.d_shear_x for x in g], dtype=wp.float32, device=device)
-        m.gripper_d_shear_y = wp.array([x.d_shear_y for x in g], dtype=wp.float32, device=device)
-        m.gripper_mu_x = wp.array([x.mu_x for x in g], dtype=wp.float32, device=device)
-        m.gripper_mu_y = wp.array([x.mu_y for x in g], dtype=wp.float32, device=device)
-        m.gripper_d_peel_x = wp.array([x.d_peel_x for x in g], dtype=wp.float32, device=device)
-        m.gripper_d_peel_y = wp.array([x.d_peel_y for x in g], dtype=wp.float32, device=device)
-        m.gripper_shape = wp.array([x.shape for x in g], dtype=wp.int32, device=device)
-        m.gripper_dim_a = wp.array([x.dim_a for x in g], dtype=wp.float32, device=device)
-        m.gripper_dim_b = wp.array([x.dim_b for x in g], dtype=wp.float32, device=device)
-        # geometry-derived force factors (see gripper.pdf), precomputed per gripper
-        factors = [_pad_geometry_factors(x.shape, x.dim_a, x.dim_b) for x in g]
-        # peel stiffness and torsional stiffness are constant per gripper (k * I/A), precompute
-        m.gripper_k_peel_x = wp.array(
-            [x.k_normal * f[0] for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device
-        )
-        m.gripper_k_peel_y = wp.array(
-            [x.k_normal * f[1] for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device
-        )
-        m.gripper_k_torsion = wp.array(
-            [x.k_shear_x * f[0] + x.k_shear_y * f[1] for x, f in zip(g, factors, strict=True)],
-            dtype=wp.float32,
-            device=device,
-        )
-        m.gripper_peel_capacity_x = wp.array(
-            [f[2] * x.peel_capacity_scale for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device
-        )
-        m.gripper_peel_capacity_y = wp.array(
-            [f[3] * x.peel_capacity_scale for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device
-        )
-        m.gripper_tw_x = wp.array([f[4] for f in factors], dtype=wp.float32, device=device)
-        m.gripper_tw_y = wp.array([f[5] for f in factors], dtype=wp.float32, device=device)
-        # per-pad arrays: flatten each gripper's pads, recording the owning gripper id
-        pad_gripper: list[int] = []
-        pad_xform: list[wp.transform] = []
-        for gi, x in enumerate(g):
-            for p in x.pads:
-                pad_gripper.append(gi)
-                pad_xform.append(p)
-        m.pad_gripper = wp.array(pad_gripper, dtype=wp.int32, device=device)
-        m.pad_xform = wp.array(pad_xform, dtype=wp.transform, device=device)
-        return m
-
-
-class SurfaceGripperModel:
-    """Finalized surface-gripper model (mirrors :class:`newton.Model`).
-
-    Constant device arrays. ``gripper_*`` are indexed by gripper id; ``pad_*`` by
-    pad id, with ``pad_gripper`` mapping each pad to its owning gripper.
-    """
-
-    def state(self) -> "SurfaceGripperState":
-        """Allocate a fresh per-pad :class:`SurfaceGripperState` for this model."""
-        s = SurfaceGripperState()
-        n = self.pad_xform.shape[0]
-        s.pad_shear_stick_point = wp.zeros(n, dtype=wp.vec2, device=self.pad_xform.device)
-        s.pad_theta_anchor = wp.zeros(n, dtype=wp.float32, device=self.pad_xform.device)
-        s.pad_break_metric = wp.zeros(n, dtype=wp.float32, device=self.pad_xform.device)
-        s.pad_engaged = wp.zeros(n, dtype=wp.bool, device=self.pad_xform.device)
-        s.pad_body_b = wp.full(n, -1, dtype=wp.int32, device=self.pad_xform.device)
-        s.pad_anchor_b = wp.zeros(n, dtype=wp.transform, device=self.pad_xform.device)
-        s.pad_ignore = wp.full((n, 8), -2, dtype=wp.int32, device=self.pad_xform.device)
-        return s
-
-    def control(self) -> "SurfaceGripperControl":
-        """Allocate a fresh per-pad :class:`SurfaceGripperControl` for this model."""
-        c = SurfaceGripperControl()
-        n = self.pad_xform.shape[0]
-        c.pad_grip_control = wp.zeros(n, dtype=wp.float32, device=self.pad_xform.device)
-        return c
 
 
 class SurfaceGripperState:
     """Mutable per-step gripper state (mirrors :class:`newton.State`). Per-pad arrays."""
 
-    pad_shear_stick_point: wp.array  # shear stick point [m], per pad (wp.vec2)
-    pad_theta_anchor: wp.array  # twist stick anchor [rad], per pad (float)
     pad_break_metric: wp.array  # brittle break envelope; > 1 => seal exceeded capacity (float)
+    pad_dof_force: wp.array  # per-DOF force telemetry (normal, shear mag, peel mag, twist), per pad (wp.vec4)
     pad_engaged: wp.array  # per-pad engaged/disengaged flag (bool)
     pad_body_b: wp.array  # gripped body index, valid when engaged (int)
     pad_anchor_b: wp.array  # TBS: seal frame in the gripped body's frame, cached at engagement (wp.transform)
-    pad_ignore: wp.array2d  # bodies the held body was already touching at engagement, per pad (int)
 
 
 class SurfaceGripperControl:
@@ -521,91 +95,6 @@ def evaluate_seal(gripper_model: "SurfaceGripperModel", gripper_state: "SurfaceG
     )
 
 
-@wp.func
-def in_ignore_set(body: int, pad: int, pad_ignore: wp.array2d[int]) -> bool:
-    """True if ``body`` is one of the bodies cached in this pad's engagement-time ignore set."""
-    for k in range(pad_ignore.shape[1]):
-        if pad_ignore[pad, k] == body:
-            return True
-    return False
-
-
-# A contact counts as a real touch only if the surface gap is below this tolerance [m]. The
-# collision pipeline emits candidate contacts for near AABB pairs while they are still centimetres
-# apart, so gate on the true separation (point gap minus the shapes' surface thicknesses/margins).
-CONTACT_TOUCH_GAP = 0.005
-
-# Only an impact re-anchors the seal: the two surfaces must be approaching along the contact normal
-# faster than this [m/s]. A dropped/landing object arrives fast (>1 m/s even from 0.1 m); a gripper
-# lowering its payload against the stack closes at only ~0.3 m/s, so it should not reset the seal.
-CONTACT_IMPACT_SPEED = 1.0
-
-
-@wp.func
-def eval_contact_gap_and_speed(
-    c: int,
-    contact_shape0: wp.array[int],
-    contact_shape1: wp.array[int],
-    shape_body: wp.array[int],
-    contact_point0: wp.array[wp.vec3],
-    contact_point1: wp.array[wp.vec3],
-    contact_normal: wp.array[wp.vec3],
-    contact_margin0: wp.array[float],
-    contact_margin1: wp.array[float],
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-    body_com: wp.array[wp.vec3],
-) -> tuple[float, float]:
-    """Signed surface gap [m] and closing speed [m/s] of contact ``c``, computed together since both
-    need the world contact points. Gap = ``dot(n, p1_world - p0_world) - (margin0 + margin1)``
-    (Newton's ``rigid_contact_diff_distance``; ``n`` points shape0 -> shape1). Closing speed =
-    ``dot(v1 - v0, n)`` with point velocity ``v_com + omega x (p - com)`` per body (>0 = approaching).
-    A static shape (body < 0) stores its point in world and is still: identity transform, zero
-    velocity (matching Newton's differentiable contact augmentation)."""
-    n = contact_normal[c]
-    b0 = shape_body[contact_shape0[c]]
-    b1 = shape_body[contact_shape1[c]]
-    x0 = wp.transform_identity()
-    if b0 >= 0:
-        x0 = body_q[b0]
-    x1 = wp.transform_identity()
-    if b1 >= 0:
-        x1 = body_q[b1]
-    w0 = wp.transform_point(x0, contact_point0[c])
-    w1 = wp.transform_point(x1, contact_point1[c])
-    v0 = wp.vec3(0.0, 0.0, 0.0)
-    if b0 >= 0:
-        v0 = wp.spatial_top(body_qd[b0]) + wp.cross(
-            wp.spatial_bottom(body_qd[b0]), w0 - wp.transform_point(x0, body_com[b0])
-        )
-    v1 = wp.vec3(0.0, 0.0, 0.0)
-    if b1 >= 0:
-        v1 = wp.spatial_top(body_qd[b1]) + wp.cross(
-            wp.spatial_bottom(body_qd[b1]), w1 - wp.transform_point(x1, body_com[b1])
-        )
-    gap = wp.dot(n, w1 - w0) - (contact_margin0[c] + contact_margin1[c])
-    closing = wp.dot(v1 - v0, n)
-    return gap, closing
-
-
-@wp.func
-def body_touches(
-    b: int,
-    other: int,
-    contact_count: wp.array[int],
-    contact_shape0: wp.array[int],
-    contact_shape1: wp.array[int],
-    shape_body: wp.array[int],
-) -> bool:
-    """True if bodies ``b`` and ``other`` are the two sides of any contact this sub-step."""
-    for c in range(contact_count[0]):
-        b0 = shape_body[contact_shape0[c]]
-        b1 = shape_body[contact_shape1[c]]
-        if (b0 == b and b1 == other) or (b1 == b and b0 == other):
-            return True
-    return False
-
-
 @wp.kernel
 def attach_seal_kernel(
     engaged: wp.array[wp.bool],  # [pads] fresh per-pad seal decision (from the seal logic)
@@ -615,15 +104,10 @@ def attach_seal_kernel(
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
-    contact_count: wp.array[int],
-    contact_shape0: wp.array[int],
-    contact_shape1: wp.array[int],
-    shape_body: wp.array[int],
     # outputs
     pad_engaged: wp.array[wp.bool],  # stored state, updated in place
     pad_body_b: wp.array[int],
     pad_anchor_b: wp.array[wp.transform],
-    pad_ignore: wp.array2d[int],
 ):
     pad = wp.tid()
     if engaged[pad] and not pad_engaged[pad]:
@@ -633,35 +117,13 @@ def attach_seal_kernel(
         t_as = gripper_xform[g] * pad_xform[pad]  # TAS: seal frame in body A
         pad_anchor_b[pad] = wp.transform_inverse(body_q[b]) * (body_q[gripper_body_id[g]] * t_as)
 
-        # Cache the external objects touched by the gripped object.
-        # For a short time after that initial engagement we want to
-        # ignore contact between the picked object and the cached external objects.
-        # If we don't ignore those cached external objects we will recompute the seal
-        # frame immediately after engagement. This will make the grip appear
-        # loose and unconvincing.
-        cap = pad_ignore.shape[1]
-        for k in range(cap):
-            pad_ignore[pad, k] = -2
-        slot = int(0)
-        for c in range(contact_count[0]):
-            b0 = shape_body[contact_shape0[c]]
-            b1 = shape_body[contact_shape1[c]]
-            if b0 == b and slot < cap and not in_ignore_set(b1, pad, pad_ignore):
-                pad_ignore[pad, slot] = b1
-                slot += 1
-            if b1 == b and slot < cap and not in_ignore_set(b0, pad, pad_ignore):
-                pad_ignore[pad, slot] = b0
-                slot += 1
-
     pad_body_b[pad] = body_b[pad]
     pad_engaged[pad] = engaged[pad]
 
 
 def attach_seal(
-    model,
     state,
-    contacts,
-    gripper_model: SurfaceGripperModel,
+    gripper_model: "SurfaceGripperModel",
     gripper_state: SurfaceGripperState,
     engaged,
     body_b,
@@ -670,9 +132,7 @@ def attach_seal(
 
     ``engaged`` / ``body_b`` are this step's fresh seal decision. On a disengaged ->
     engaged transition, TBS (the seal frame in body B's frame) is cached into
-    ``pad_anchor_b``, and the set of bodies B is already touching is cached into
-    ``pad_ignore`` (so :func:`reset_seal_on_contact` ignores B's support); ``pad_engaged`` /
-    ``pad_body_b`` are then updated to the decision.
+    ``pad_anchor_b``; ``pad_engaged`` / ``pad_body_b`` are then updated to the decision.
     """
     n_pads = gripper_model.pad_xform.shape[0]
     if n_pads == 0:
@@ -688,171 +148,9 @@ def attach_seal(
             gripper_model.pad_gripper,
             gripper_model.pad_xform,
             state.body_q,
-            contacts.rigid_contact_count,
-            contacts.rigid_contact_shape0,
-            contacts.rigid_contact_shape1,
-            model.shape_body,
             gripper_state.pad_engaged,
             gripper_state.pad_body_b,
             gripper_state.pad_anchor_b,
-            gripper_state.pad_ignore,
-        ],
-    )
-
-
-@wp.func
-def is_body_b_struck_by_external_object(
-    b: int,
-    pad: int,
-    pad_ignore: wp.array2d[int],
-    contact_count: wp.array[int],
-    contact_shape0: wp.array[int],
-    contact_shape1: wp.array[int],
-    shape_body: wp.array[int],
-    contact_point0: wp.array[wp.vec3],
-    contact_point1: wp.array[wp.vec3],
-    contact_normal: wp.array[wp.vec3],
-    contact_margin0: wp.array[float],
-    contact_margin1: wp.array[float],
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-    body_com: wp.array[wp.vec3],
-) -> bool:
-    """True if body ``b`` is hit by an object outside its ignore set: an actual touch
-    (gap < CONTACT_TOUCH_GAP) approaching as an impact (closing speed > CONTACT_IMPACT_SPEED), not
-    the payload being slowly lowered against the stack. Early-exits on the first such contact."""
-    for c in range(contact_count[0]):
-        b0 = shape_body[contact_shape0[c]]
-        b1 = shape_body[contact_shape1[c]]
-        hit_b = (b0 == b and not in_ignore_set(b1, pad, pad_ignore)) or (
-            b1 == b and not in_ignore_set(b0, pad, pad_ignore)
-        )
-        if hit_b:
-            gap, closing = eval_contact_gap_and_speed(
-                c,
-                contact_shape0,
-                contact_shape1,
-                shape_body,
-                contact_point0,
-                contact_point1,
-                contact_normal,
-                contact_margin0,
-                contact_margin1,
-                body_q,
-                body_qd,
-                body_com,
-            )
-            if gap < CONTACT_TOUCH_GAP and closing > CONTACT_IMPACT_SPEED:
-                return True
-    return False
-
-
-@wp.kernel
-def reset_seal_on_contact_kernel(
-    contact_count: wp.array[int],
-    contact_shape0: wp.array[int],
-    contact_shape1: wp.array[int],
-    shape_body: wp.array[int],
-    contact_point0: wp.array[wp.vec3],
-    contact_point1: wp.array[wp.vec3],
-    contact_normal: wp.array[wp.vec3],
-    contact_margin0: wp.array[float],
-    contact_margin1: wp.array[float],
-    gripper_body_id: wp.array[int],
-    gripper_xform: wp.array[wp.transform],
-    pad_gripper: wp.array[int],
-    pad_xform: wp.array[wp.transform],
-    pad_engaged: wp.array[wp.bool],
-    pad_body_b: wp.array[int],
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-    body_com: wp.array[wp.vec3],
-    # outputs
-    pad_anchor_b: wp.array[wp.transform],
-    pad_ignore: wp.array2d[int],
-):
-    pad = wp.tid()
-    if not pad_engaged[pad]:
-        return
-    b = pad_body_b[pad]  # the body this pad is gripping
-
-    # Recompute the seal frame when body b is struck by an external object.
-    # The goal is to prevent a battle between contact and gripper forces.
-    # Contact will "win" in the solver stsep and the gripped object will
-    # no longer track the surface gripper. This will lead to large biases
-    # on the gripper, which will lead to large gripper forces, which
-    # will lead to numerical instabilities.
-    if is_body_b_struck_by_external_object(
-        b,
-        pad,
-        pad_ignore,
-        contact_count,
-        contact_shape0,
-        contact_shape1,
-        shape_body,
-        contact_point0,
-        contact_point1,
-        contact_normal,
-        contact_margin0,
-        contact_margin1,
-        body_q,
-        body_qd,
-        body_com,
-    ):
-        # TBS = TB^-1 * TA * TAS (seal frame in body B, re-cached at the current relative pose).
-        g = pad_gripper[pad]
-        a = gripper_body_id[g]
-        t_as = gripper_xform[g] * pad_xform[pad]  # TAS: seal frame in body A
-        pad_anchor_b[pad] = wp.transform_inverse(body_q[b]) * (body_q[a] * t_as)
-
-    # Evict the cached external objects from the cache as soon as
-    # they are no longer in contact with the gripped object.
-    for k in range(pad_ignore.shape[1]):
-        ib = pad_ignore[pad, k]
-        if ib != -2 and not body_touches(b, ib, contact_count, contact_shape0, contact_shape1, shape_body):
-            pad_ignore[pad, k] = -2
-
-
-def reset_seal_on_contact(
-    model,
-    state,
-    contacts,
-    gripper_model: SurfaceGripperModel,
-    gripper_state: SurfaceGripperState,
-) -> None:
-    """Re-anchor the seal frame of any engaged pad whose held body is in external contact.
-
-    When the picked body has an external contact, snap the seal frame to the current
-    relative pose so the seal yields to the contact instead of fighting it with a
-    growing elastic spring.
-    """
-    n_pads = gripper_model.pad_xform.shape[0]
-    if n_pads == 0:
-        return
-    wp.launch(
-        reset_seal_on_contact_kernel,
-        dim=n_pads,
-        inputs=[
-            contacts.rigid_contact_count,
-            contacts.rigid_contact_shape0,
-            contacts.rigid_contact_shape1,
-            model.shape_body,
-            contacts.rigid_contact_point0,
-            contacts.rigid_contact_point1,
-            contacts.rigid_contact_normal,
-            contacts.rigid_contact_margin0,
-            contacts.rigid_contact_margin1,
-            gripper_model.gripper_body_id,
-            gripper_model.gripper_xform,
-            gripper_model.pad_gripper,
-            gripper_model.pad_xform,
-            gripper_state.pad_engaged,
-            gripper_state.pad_body_b,
-            state.body_q,
-            state.body_qd,
-            model.body_com,
-            gripper_state.pad_anchor_b,
-            gripper_state.pad_ignore,
         ],
     )
 
@@ -922,247 +220,6 @@ def eval_pad_relative_velocity(
 
 
 @wp.func
-def eval_normal_force(
-    grip_control: float,
-    f_grip_max: float,
-    k_normal: float,
-    d_normal: float,
-    f_normal_max: float,
-    pz: float,
-    vz: float,
-) -> tuple[float, float]:
-    """Normal (z) suction force: controllable preload + spring-damper, bidirectional.
-
-    ``F_normal = clamp(f_min + k_normal*pz + d_normal*vz, -F_normal_max, F_normal_max)`` with the
-    controllable preload ``f_min = grip_control * f_grip_max`` (the commanded fraction of the max
-    suction force dP*A). Deviation from gripper.pdf: the spring is bidirectional -- it pulls (tension)
-    when the seal frames separate and pushes (compression) when they close -- so the seal is a stiff
-    bilateral hold and its holding force ``|fz|`` (hence shear/peel capacity) does not collapse to zero
-    as the payload compresses through the anchor, which otherwise lets the box flail on the down-move.
-
-    Args:
-        grip_control: Grip command in [0, 1] (the control value).
-        f_grip_max: Maximum suction (preload) force [N].
-        k_normal: Normal stiffness [N/m].
-        d_normal: Normal damping [N.s/m].
-        f_normal_max: Maximum normal force magnitude [N] (break threshold in tension).
-        pz: Normal separation of the seal frames since engagement [m].
-        vz: Normal relative velocity of the seal point [m/s].
-
-    Returns:
-        ``(fz, fz_elastic)``: the applied normal force [N] (clamped to ``[-f_normal_max,
-        f_normal_max]``; positive is tension/suction, negative is the push) and the *elastic*
-        (preload + spring, no damping) demand [N] -- the latter feeds the brittle break envelope, so
-        fracture tracks seal stretch rather than transient damping spikes during fast motion.
-    """
-    f_min = grip_control * f_grip_max
-    fz_elastic = f_min + k_normal * pz  # elastic (preload + spring) demand; drives the brittle break
-    fz_unclamped = fz_elastic + d_normal * vz
-    if wp.static(SEAL_TENSION_ONLY):
-        fz = wp.clamp(fz_unclamped, 0.0, f_normal_max)  # tension-only: contact supplies the push
-    else:
-        fz = wp.clamp(fz_unclamped, -f_normal_max, f_normal_max)  # bidirectional: seal pushes and pulls
-    return fz, fz_elastic
-
-
-@wp.func
-def eval_shear_friction(
-    px: float,
-    py: float,
-    vx: float,
-    vy: float,
-    stick_x: float,
-    stick_y: float,
-    k_shear_x: float,
-    k_shear_y: float,
-    d_shear_x: float,
-    d_shear_y: float,
-    mu_x: float,
-    mu_y: float,
-    fz: float,
-) -> tuple[float, float, wp.vec2]:
-    """Anisotropic Coulomb shear friction (spring-damper) with stick-slip re-anchor.
-
-    Builds the trial shear force from the tangential spring between the current offset
-    ``(px, py)`` and the stick point ``(stick_x, stick_y)`` plus a viscous damper ``d_shear*v``,
-    then clamps it onto the elliptical cone ``(fx/(mu_x*fz))^2 + (fy/(mu_y*fz))^2 <= 1``. Outside
-    the cone the pad slips: the force is scaled back and the stick point slides to the offset that
-    reproduces the clamped force. With no normal force there is no friction to hold, so the force is
-    zero and the stick follows the current offset. The damping suppresses in-plane ringing of the
-    held payload (the seal has no other shear-velocity term).
-
-    Args:
-        px: Current shear offset along seal x [m].
-        py: Current shear offset along seal y [m].
-        vx: Shear velocity along seal x [m/s].
-        vy: Shear velocity along seal y [m/s].
-        stick_x: Stick point along seal x [m].
-        stick_y: Stick point along seal y [m].
-        k_shear_x: Shear stiffness along seal x [N/m].
-        k_shear_y: Shear stiffness along seal y [N/m].
-        d_shear_x: Shear damping along seal x [N.s/m].
-        d_shear_y: Shear damping along seal y [N.s/m].
-        mu_x: Friction coefficient along seal x.
-        mu_y: Friction coefficient along seal y.
-        fz: Normal (holding) force [N].
-
-    Returns:
-        ``(fx, fy, stick)``: the friction-limited shear force [N] and updated stick point [m].
-    """
-    fx = k_shear_x * (px - stick_x) + d_shear_x * vx
-    fy = k_shear_y * (py - stick_y) + d_shear_y * vy
-    stick = wp.vec2(stick_x, stick_y)  # unchanged while sticking
-    mux_n = mu_x * fz
-    muy_n = mu_y * fz
-    if mux_n > 0.0 and muy_n > 0.0:
-        e = wp.sqrt((fx / mux_n) * (fx / mux_n) + (fy / muy_n) * (fy / muy_n))
-        if e > 1.0:  # slip: scale onto the cone and re-anchor to the clamped force
-            fx = fx / e
-            fy = fy / e
-            new_ax = px
-            new_ay = py
-            if k_shear_x > 0.0:
-                new_ax = px - fx / k_shear_x
-            if k_shear_y > 0.0:
-                new_ay = py - fy / k_shear_y
-            stick = wp.vec2(new_ax, new_ay)
-    else:  # no normal force -> no friction to hold; anchor follows current offset
-        fx = 0.0
-        fy = 0.0
-        stick = wp.vec2(px, py)
-    return fx, fy, stick
-
-
-@wp.func
-def eval_peel_moment(
-    k_peel_x: float,
-    k_peel_y: float,
-    d_peel_x: float,
-    d_peel_y: float,
-    theta_x: float,
-    theta_y: float,
-    omega_x: float,
-    omega_y: float,
-    m_peel_x_max: float,
-    m_peel_y_max: float,
-) -> tuple[float, float]:
-    """Applied peel moments (spring + damper), capped onto the peel envelope.
-
-    The restoring peel moment about each tilt axis is ``k_peel*theta + d_peel*omega``. The
-    combined moment is then scaled onto the elliptical capacity envelope
-    ``(M_x/M_x_max)^2 + (M_y/M_y_max)^2 <= 1`` (gripper.pdf, Peel Force) so the applied moment
-    never exceeds capacity. Zero capacity (no holding force) supports no peel moment.
-
-    Args:
-        k_peel_x: Peel stiffness about x [N.m/rad].
-        k_peel_y: Peel stiffness about y [N.m/rad].
-        d_peel_x: Peel damping about x [N.m.s/rad].
-        d_peel_y: Peel damping about y [N.m.s/rad].
-        theta_x: Tilt angle about x [rad].
-        theta_y: Tilt angle about y [rad].
-        omega_x: Tilt rate about x [rad/s].
-        omega_y: Tilt rate about y [rad/s].
-        m_peel_x_max: Peel capacity about x, ``N_f * capacity_x`` [N.m].
-        m_peel_y_max: Peel capacity about y, ``N_f * capacity_y`` [N.m].
-
-    Returns:
-        ``(m_peel_x, m_peel_y)``: the capped peel moments to apply [N.m].
-    """
-    m_peel_x = k_peel_x * theta_x + d_peel_x * omega_x
-    m_peel_y = k_peel_y * theta_y + d_peel_y * omega_y
-    rx = float(0.0)
-    ry = float(0.0)
-    if m_peel_x_max > 0.0:
-        rx = m_peel_x / m_peel_x_max
-    else:
-        m_peel_x = 0.0
-    if m_peel_y_max > 0.0:
-        ry = m_peel_y / m_peel_y_max
-    else:
-        m_peel_y = 0.0
-    scale = wp.sqrt(rx * rx + ry * ry)
-    if scale > 1.0:
-        m_peel_x = m_peel_x / scale
-        m_peel_y = m_peel_y / scale
-    return m_peel_x, m_peel_y
-
-
-@wp.func
-def eval_break_metric(
-    fz_elastic: float,
-    f_normal_max: float,
-    k_peel_x: float,
-    k_peel_y: float,
-    theta_x: float,
-    theta_y: float,
-    m_peel_x_max: float,
-    m_peel_y_max: float,
-) -> float:
-    """Brittle break envelope of the seal (gripper.pdf, Break Forces).
-
-    ``env = (F_normal/F_max)^2 + (M_peel_x/M_peel_x_max)^2 + (M_peel_y/M_peel_y_max)^2``; ``env
-    > 1`` means the seal exceeded its brittle capacity. Only the brittle DOFs contribute --
-    shear/twist yield (return-mapping) rather than break. Both the normal and peel terms use the
-    *elastic* (preload + spring, no damping) demand and the normal term only in tension, since
-    fracture is driven by elastic stress, not transient damping spikes during fast motion.
-
-    Args:
-        fz_elastic: Elastic (preload + spring, no damping) normal force demand [N].
-        f_normal_max: Maximum (break-threshold) normal force [N].
-        k_peel_x: Peel stiffness about x [N.m/rad].
-        k_peel_y: Peel stiffness about y [N.m/rad].
-        theta_x: Tilt angle about x [rad].
-        theta_y: Tilt angle about y [rad].
-        m_peel_x_max: Peel capacity about x [N.m].
-        m_peel_y_max: Peel capacity about y [N.m].
-
-    Returns:
-        The break envelope ``env`` (dimensionless); ``> 1`` signals a broken seal.
-    """
-    env = float(0.0)
-    if f_normal_max > 0.0 and fz_elastic > 0.0:  # only tension loads the seal
-        rn = fz_elastic / f_normal_max
-        env += rn * rn
-    mpx_elastic = k_peel_x * theta_x
-    mpy_elastic = k_peel_y * theta_y
-    if m_peel_x_max > 0.0:
-        env += (mpx_elastic / m_peel_x_max) * (mpx_elastic / m_peel_x_max)
-    if m_peel_y_max > 0.0:
-        env += (mpy_elastic / m_peel_y_max) * (mpy_elastic / m_peel_y_max)
-    return env
-
-
-@wp.func
-def eval_twist_friction(
-    theta_z: float,
-    twist_stick: float,
-    k_torsion: float,
-    m_twist_max: float,
-) -> tuple[float, float]:
-    """Torsional Coulomb friction about z, with stick-slip re-anchor (rotational analog of shear).
-
-    The trial moment is ``k_torsion * (theta_z - twist_stick)``. If it exceeds the capacity
-    ``m_twist_max`` the pad slips: the moment is clamped and the stick angle slides to the angle
-    that reproduces the clamped moment (gripper.pdf, Torsional Force).
-
-    Args:
-        theta_z: Twist angle about z since engagement [rad].
-        twist_stick: Twist stick angle [rad].
-        k_torsion: Torsional stiffness [N.m/rad].
-        m_twist_max: Torsional friction capacity [N.m].
-
-    Returns:
-        ``(m_twist, twist_stick)``: the applied torsional moment [N.m] and updated stick angle [rad].
-    """
-    m_twist = k_torsion * (theta_z - twist_stick)
-    if wp.abs(m_twist) > m_twist_max:  # slip: clamp and re-anchor
-        m_twist = wp.sign(m_twist) * m_twist_max
-        if k_torsion > 0.0:
-            twist_stick = theta_z - m_twist / k_torsion
-    return m_twist, twist_stick
-
-
-@wp.func
 def apparent_mass(axis_w: wp.vec3, r: wp.vec3, q_b: wp.quat, inv_m: float, inv_inertia: wp.mat33) -> float:
     """Effective mass a rigid body presents to a force at offset ``r`` (world, COM->point) along the
     world unit direction ``axis_w``: ``1/m_app = 1/m + (r x n).I^-1.(r x n)`` -- translational compliance
@@ -1206,12 +263,14 @@ def eval_effective_damping(
     d_shear_y: float,
     d_peel_x: float,
     d_peel_y: float,
+    d_torsion: float,
     dt: float,
-) -> tuple[float, float, float, float, float]:
-    """Implicit (backward-Euler) damping coefficient for each of the five damped seal DOFs. Each raw
+) -> tuple[float, float, float, float, float, float]:
+    """Implicit (backward-Euler) damping coefficient for each of the six damped seal DOFs. Each raw
     damping is rescaled via :func:`effective_damping` using that DOF's effective mass at the seal point
-    (:func:`apparent_mass`, translation) or effective inertia about the seal axis, 1/(n.I^-1.n) (peel).
-    Returns ``(d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff)``.
+    (:func:`apparent_mass`, translation) or effective inertia about the seal axis, 1/(n.I^-1.n) (peel
+    and twist). Returns ``(d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff,
+    d_torsion_eff)``. Pass ``d_torsion = 0`` when the caller's twist DOF is not viscously damped.
     """
     # Step 1.
     # Implicit (backward-Euler) damping.
@@ -1287,40 +346,210 @@ def eval_effective_damping(
         m_app = apparent_mass(axes_w[i], r_body_b, q_body_b, inv_m, inv_inertia)
         d_trans_eff[i] = effective_damping(d_trans[i], m_app, dt)
 
-    # Combine Step 1 and 2 for rotational dofs
+    # Combine Step 1 and 2 for rotational dofs (peel about x/y, twist about z)
     # gamma_effective = gamma/[1 + gamma*dt/I_eff]
-    d_rot_eff = wp.vec2(0.0, 0.0)
-    d_rot = wp.vec2(d_peel_x, d_peel_y)
-    for i in range(2):
+    d_rot_eff = wp.vec3(0.0, 0.0, 0.0)
+    d_rot = wp.vec3(d_peel_x, d_peel_y, d_torsion)
+    for i in range(3):
         I_app = apparent_inertia(axes_w[i], q_body_b, inv_inertia)
         d_rot_eff[i] = effective_damping(d_rot[i], I_app, dt)
 
-    return d_trans_eff[2], d_trans_eff[0], d_trans_eff[1], d_rot_eff[0], d_rot_eff[1]
+    return d_trans_eff[2], d_trans_eff[0], d_trans_eff[1], d_rot_eff[0], d_rot_eff[1], d_rot_eff[2]
+
+
+# --------------------------------------------------------------------------------------------------
+# Simple linear seal model (SurfaceGripper)
+#
+# Every DOF is an independent linear spring-damper, F = k*delta + d*deltadot, with the normal DOF
+# adding a controllable preload F += control * f_grip_max. Each axis has its own stiffness and damping.
+# Four caps limit the result: normal to +/-f_normal_max, the two shear components together to
+# f_shear_max (combined magnitude), the two peel moments together to f_peel_max, and the twist to
+# +/-f_torsion_max (0 => uncapped). Stiffness/damping are set directly (no shape/geometry factors,
+# friction cones or stick-slip). Damping uses an implicit (backward-Euler) rescale
+# (:func:`effective_damping`). The brittle break metric is not evaluated (left at 0, so the seal never
+# fractures) -- to add later. Mirrors the Builder -> Model -> State/Control layout; the state/control are
+# the shared :class:`SurfaceGripperState` / :class:`SurfaceGripperControl`, so the engagement helper
+# (:func:`attach_seal`) works unchanged.
+# --------------------------------------------------------------------------------------------------
+
+
+class SurfaceGripper:
+    """An individual simple (linear) surface gripper (authoring object); see the section header.
+
+    Author it directly and add pads with :meth:`add_pad`. Every axis has an independent stiffness and
+    damping; the caps are per DOF-group (normal, combined shear, combined peel, twist). Flatten a set
+    with :class:`SurfaceGripperBuilder`.
+    """
+
+    def __init__(
+        self,
+        body_id: int,
+        xform: wp.transform,
+        f_grip_max: float,
+        k_normal: float,
+        d_normal: float,
+        f_normal_max: float,
+        k_shear_x: float,
+        d_shear_x: float,
+        k_shear_y: float,
+        d_shear_y: float,
+        f_shear_max: float,
+        k_peel_x: float,
+        d_peel_x: float,
+        k_peel_y: float,
+        d_peel_y: float,
+        f_peel_max: float,
+        k_torsion: float,
+        d_torsion: float,
+        f_torsion_max: float,
+    ):
+        self.body_id = body_id
+        self.xform = xform
+        self.f_grip_max = f_grip_max  # suction preload [N]; f_min = control * f_grip_max, added on z
+        # Independent stiffness and damping on every axis; the caps are per DOF-group: one for normal,
+        # one shared by the two shear axes (combined magnitude), one shared by the two peel axes, one
+        # for twist (0 => uncapped).
+        self.k_normal = k_normal
+        self.d_normal = d_normal
+        self.f_normal_max = f_normal_max
+        self.k_shear_x = k_shear_x
+        self.d_shear_x = d_shear_x
+        self.k_shear_y = k_shear_y
+        self.d_shear_y = d_shear_y
+        self.f_shear_max = f_shear_max  # combined shear cap sqrt(fx^2 + fy^2) [N]
+        self.k_peel_x = k_peel_x
+        self.d_peel_x = d_peel_x
+        self.k_peel_y = k_peel_y
+        self.d_peel_y = d_peel_y
+        self.f_peel_max = f_peel_max  # combined peel cap sqrt(mx^2 + my^2) [N.m]
+        self.k_torsion = k_torsion
+        self.d_torsion = d_torsion
+        self.f_torsion_max = f_torsion_max
+        self.pads: list[wp.transform] = []  # pad poses in the gripper frame
+
+    def add_pad(self, xform: wp.transform) -> int:
+        """Add a pad at ``xform`` (gripper frame). Returns its index within this gripper."""
+        self.pads.append(xform)
+        return len(self.pads) - 1
+
+
+class SurfaceGripperBuilder:
+    """Collects :class:`SurfaceGripper` objects and finalizes them into a
+    :class:`SurfaceGripperModel` (mirrors :class:`newton.ModelBuilder`).
+    """
+
+    def __init__(self):
+        self.grippers: list[SurfaceGripper] = []
+
+    def add_gripper(self, gripper: SurfaceGripper) -> int:
+        """Add an authored gripper. Returns its gripper index."""
+        self.grippers.append(gripper)
+        return len(self.grippers) - 1
+
+    def finalize(self, device=None) -> "SurfaceGripperModel":
+        """Flatten all grippers into a device-resident :class:`SurfaceGripperModel`."""
+        g = self.grippers
+        m = SurfaceGripperModel()
+        # per-gripper arrays (indexed by gripper id)
+        m.gripper_body_id = wp.array([x.body_id for x in g], dtype=wp.int32, device=device)
+        m.gripper_xform = wp.array([x.xform for x in g], dtype=wp.transform, device=device)
+        m.gripper_f_grip_max = wp.array([x.f_grip_max for x in g], dtype=wp.float32, device=device)
+        m.gripper_k_normal = wp.array([x.k_normal for x in g], dtype=wp.float32, device=device)
+        m.gripper_d_normal = wp.array([x.d_normal for x in g], dtype=wp.float32, device=device)
+        m.gripper_f_normal_max = wp.array([x.f_normal_max for x in g], dtype=wp.float32, device=device)
+        m.gripper_k_shear_x = wp.array([x.k_shear_x for x in g], dtype=wp.float32, device=device)
+        m.gripper_d_shear_x = wp.array([x.d_shear_x for x in g], dtype=wp.float32, device=device)
+        m.gripper_k_shear_y = wp.array([x.k_shear_y for x in g], dtype=wp.float32, device=device)
+        m.gripper_d_shear_y = wp.array([x.d_shear_y for x in g], dtype=wp.float32, device=device)
+        m.gripper_f_shear_max = wp.array([x.f_shear_max for x in g], dtype=wp.float32, device=device)
+        m.gripper_k_peel_x = wp.array([x.k_peel_x for x in g], dtype=wp.float32, device=device)
+        m.gripper_d_peel_x = wp.array([x.d_peel_x for x in g], dtype=wp.float32, device=device)
+        m.gripper_k_peel_y = wp.array([x.k_peel_y for x in g], dtype=wp.float32, device=device)
+        m.gripper_d_peel_y = wp.array([x.d_peel_y for x in g], dtype=wp.float32, device=device)
+        m.gripper_f_peel_max = wp.array([x.f_peel_max for x in g], dtype=wp.float32, device=device)
+        m.gripper_k_torsion = wp.array([x.k_torsion for x in g], dtype=wp.float32, device=device)
+        m.gripper_d_torsion = wp.array([x.d_torsion for x in g], dtype=wp.float32, device=device)
+        m.gripper_f_torsion_max = wp.array([x.f_torsion_max for x in g], dtype=wp.float32, device=device)
+        # per-pad arrays: flatten each gripper's pads, recording the owning gripper id
+        pad_gripper: list[int] = []
+        pad_xform: list[wp.transform] = []
+        for gi, x in enumerate(g):
+            for p in x.pads:
+                pad_gripper.append(gi)
+                pad_xform.append(p)
+        m.pad_gripper = wp.array(pad_gripper, dtype=wp.int32, device=device)
+        m.pad_xform = wp.array(pad_xform, dtype=wp.transform, device=device)
+        return m
+
+
+class SurfaceGripperModel:
+    """Finalized simple-gripper model (mirrors :class:`newton.Model`).
+
+    Constant device arrays; ``gripper_*`` indexed by gripper id, ``pad_*`` by pad id. Reuses the shared
+    :class:`SurfaceGripperState` / :class:`SurfaceGripperControl` so the engagement/attach helpers apply.
+    """
+
+    def state(self) -> "SurfaceGripperState":
+        """Allocate a fresh per-pad :class:`SurfaceGripperState` for this model."""
+        s = SurfaceGripperState()
+        n = self.pad_xform.shape[0]
+        s.pad_break_metric = wp.zeros(n, dtype=wp.float32, device=self.pad_xform.device)
+        s.pad_dof_force = wp.zeros(n, dtype=wp.vec4, device=self.pad_xform.device)
+        s.pad_engaged = wp.zeros(n, dtype=wp.bool, device=self.pad_xform.device)
+        s.pad_body_b = wp.full(n, -1, dtype=wp.int32, device=self.pad_xform.device)
+        s.pad_anchor_b = wp.zeros(n, dtype=wp.transform, device=self.pad_xform.device)
+        return s
+
+    def control(self) -> "SurfaceGripperControl":
+        """Allocate a fresh per-pad :class:`SurfaceGripperControl` for this model."""
+        c = SurfaceGripperControl()
+        n = self.pad_xform.shape[0]
+        c.pad_grip_control = wp.zeros(n, dtype=wp.float32, device=self.pad_xform.device)
+        return c
+
+
+@wp.func
+def clamp_symmetric(f: float, f_max: float) -> float:
+    """Clamp ``f`` to ``[-f_max, f_max]``. ``f_max <= 0`` means no cap (``f`` returned unchanged)."""
+    if f_max > 0.0:
+        return wp.clamp(f, -f_max, f_max)
+    return f
+
+
+@wp.func
+def clamp_magnitude_2d(fx: float, fy: float, f_max: float) -> tuple[float, float]:
+    """Scale the pair ``(fx, fy)`` onto the disk of radius ``f_max``: if ``sqrt(fx^2+fy^2) > f_max``
+    both components are scaled by ``f_max / mag``. ``f_max <= 0`` means no cap (returned unchanged)."""
+    if f_max > 0.0:
+        mag = wp.sqrt(fx * fx + fy * fy)
+        if mag > f_max:
+            s = f_max / mag
+            fx = fx * s
+            fy = fy * s
+    return fx, fy
 
 
 @wp.kernel
-def eval_pad_force(
+def eval_pad_force_linear(
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
+    gripper_f_grip_max: wp.array[float],
     gripper_k_normal: wp.array[float],
     gripper_d_normal: wp.array[float],
     gripper_f_normal_max: wp.array[float],
-    gripper_f_grip_max: wp.array[float],
     gripper_k_shear_x: wp.array[float],
-    gripper_k_shear_y: wp.array[float],
     gripper_d_shear_x: wp.array[float],
+    gripper_k_shear_y: wp.array[float],
     gripper_d_shear_y: wp.array[float],
-    gripper_mu_x: wp.array[float],
-    gripper_mu_y: wp.array[float],
-    gripper_d_peel_x: wp.array[float],
-    gripper_d_peel_y: wp.array[float],
+    gripper_f_shear_max: wp.array[float],
     gripper_k_peel_x: wp.array[float],
+    gripper_d_peel_x: wp.array[float],
     gripper_k_peel_y: wp.array[float],
+    gripper_d_peel_y: wp.array[float],
+    gripper_f_peel_max: wp.array[float],
     gripper_k_torsion: wp.array[float],
-    gripper_peel_capacity_x: wp.array[float],
-    gripper_peel_capacity_y: wp.array[float],
-    gripper_tw_x: wp.array[float],
-    gripper_tw_y: wp.array[float],
+    gripper_d_torsion: wp.array[float],
+    gripper_f_torsion_max: wp.array[float],
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     pad_grip_control: wp.array[float],
@@ -1330,142 +559,95 @@ def eval_pad_force(
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
-    body_mass: wp.array[float],  # gripped-body mass, for the implicit-damping rescale
-    body_inertia: wp.array[wp.mat33],  # gripped-body inertia tensor (body frame)
-    dt: float,  # sim sub-step [s]
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    dt: float,
     # outputs (mutated in place)
-    pad_shear_stick_point: wp.array[wp.vec2],
-    pad_theta_anchor: wp.array[float],
     pad_break_metric: wp.array[float],
+    pad_dof_force: wp.array[wp.vec4],
     body_f: wp.array[wp.spatial_vector],
 ):
+    """Per-pad linear spring-damper seal wrench with fixed magnitude caps (see the section header).
+
+    Seal kinematics (seal-frame separation, seal-point relative velocity, implicit damping) drive a
+    plain linear force per DOF with four caps (normal, combined shear, combined peel, twist). Writes the
+    equal-and-opposite wrench into ``body_f``.
+    """
     pad = wp.tid()
     if not pad_engaged[pad]:
-        return  # pad not engaged
+        return
     body_b = pad_body_b[pad]
 
     g = pad_gripper[pad]
     body_a = gripper_body_id[g]
 
-    # world pose of body A's seal frame: TA(t) * TAS, with TAS = gripper_xform * pad_xform
+    # world seal frames on A (TA*TAS) and B (TB*TBS); separation and relative velocity per DOF
     t_a_seal = body_q[body_a] * gripper_xform[g] * pad_xform[pad]
     q_a_seal = wp.transform_get_rotation(t_a_seal)
-    p_a_seal = wp.transform_get_translation(t_a_seal)  # seal point on A (world)
-
-    # matching seal frame on body B: TB(t)*TBS (TBS = pad_anchor_b, cached at engagement)
+    p_a_seal = wp.transform_get_translation(t_a_seal)
     t_b_seal = body_q[body_b] * pad_anchor_b[pad]
-    p_b_seal = wp.transform_get_translation(t_b_seal)  # seal point on B (world)
+    p_b_seal = wp.transform_get_translation(t_b_seal)
 
-    # accumulated separation since engagement, one value per DOF (in the seal frame):
-    # shear px, py; normal pz; peel theta_x, theta_y; twist theta_z
     px, py, pz, theta_x, theta_y, theta_z = eval_pad_separation(t_a_seal, t_b_seal)
 
-    # world-frame offset from each body's COM to the seal point. this is both the lever
-    # arm for v_com + omega x r (velocity) and the moment arm for the wrench below.
-    com_a = wp.transform_point(body_q[body_a], body_com[body_a])  # A's COM (world)
-    com_b = wp.transform_point(body_q[body_b], body_com[body_b])  # B's COM (world)
+    com_a = wp.transform_point(body_q[body_a], body_com[body_a])
+    com_b = wp.transform_point(body_q[body_b], body_com[body_b])
     r_a = p_a_seal - com_a
     r_b = p_b_seal - com_b
-    vx, vy, vz, omega_x, omega_y, _omega_z = eval_pad_relative_velocity(
+    vx, vy, vz, omega_x, omega_y, omega_z = eval_pad_relative_velocity(
         body_qd[body_a], body_qd[body_b], r_a, r_b, q_a_seal
     )
 
-    d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff = eval_effective_damping(
-        q_a_seal,
-        wp.transform_get_rotation(body_q[body_b]),
-        r_b,
-        body_mass[body_b],
-        body_inertia[body_b],
-        gripper_d_normal[g],
-        gripper_d_shear_x[g],
-        gripper_d_shear_y[g],
-        gripper_d_peel_x[g],
-        gripper_d_peel_y[g],
-        dt,
+    # implicit (backward-Euler) damping for all six DOFs (normal, shear x/y, peel x/y, twist)
+    q_body_b = wp.transform_get_rotation(body_q[body_b])
+    d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff, d_torsion_eff = (
+        eval_effective_damping(
+            q_a_seal,
+            q_body_b,
+            r_b,
+            body_mass[body_b],
+            body_inertia[body_b],
+            gripper_d_normal[g],
+            gripper_d_shear_x[g],
+            gripper_d_shear_y[g],
+            gripper_d_peel_x[g],
+            gripper_d_peel_y[g],
+            gripper_d_torsion[g],
+            dt,
+        )
     )
 
-    # --- normal (z): controllable preload + spring-damper, bidirectional ---
-    f_normal_max = gripper_f_normal_max[g]
-    fz, fz_elastic = eval_normal_force(
-        pad_grip_control[pad],
-        gripper_f_grip_max[g],
-        gripper_k_normal[g],
-        d_normal_eff,
-        f_normal_max,
-        pz,
-        vz,
-    )
-    # shear/peel/twist capacity scales with the holding force magnitude, so it stays non-zero in both
-    # tension and compression (the bidirectional normal) rather than collapsing at the anchor. Floor it
-    # at the suction preload: the vacuum always holds the lip down with at least f_min, so the capacity
-    # must not collapse to zero when the bidirectional normal transiently crosses zero (vz reversal),
-    # which otherwise makes the brittle break metric spike spuriously.
-    f_min_hold = pad_grip_control[pad] * gripper_f_grip_max[g]
-    f_hold = wp.max(wp.abs(fz), f_min_hold)
+    # normal (z): controllable preload + spring-damper, clamped to +/-f_normal_max
+    f_min = pad_grip_control[pad] * gripper_f_grip_max[g]
+    fz = f_min + gripper_k_normal[g] * pz + d_normal_eff * vz
+    fz = clamp_symmetric(fz, gripper_f_normal_max[g])
 
-    # --- shear (x, y): tangential spring from stick anchor, elliptical friction cone ---
-    k_shear_x = gripper_k_shear_x[g]
-    k_shear_y = gripper_k_shear_y[g]
-    shear_stick = pad_shear_stick_point[pad]
-    fx, fy, shear_stick = eval_shear_friction(
-        px,
-        py,
-        vx,
-        vy,
-        shear_stick[0],
-        shear_stick[1],
-        k_shear_x,
-        k_shear_y,
-        d_shear_x_eff,
-        d_shear_y_eff,
-        gripper_mu_x[g],
-        gripper_mu_y[g],
-        f_hold,
-    )
-    pad_shear_stick_point[pad] = shear_stick
+    # shear (x, y): spring-damper per axis, combined magnitude capped at f_shear_max
+    fx = gripper_k_shear_x[g] * px + d_shear_x_eff * vx
+    fy = gripper_k_shear_y[g] * py + d_shear_y_eff * vy
+    fx, fy = clamp_magnitude_2d(fx, fy, gripper_f_shear_max[g])
 
-    # --- peel (rotation about x, y): capped torsional spring-damper ---
-    k_peel_x = gripper_k_peel_x[g]
-    k_peel_y = gripper_k_peel_y[g]
-    m_peel_x_max = f_hold * gripper_peel_capacity_x[g]  # capacity scales with the holding force
-    m_peel_y_max = f_hold * gripper_peel_capacity_y[g]
-    m_peel_x, m_peel_y = eval_peel_moment(
-        k_peel_x,
-        k_peel_y,
-        d_peel_x_eff,
-        d_peel_y_eff,
-        theta_x,
-        theta_y,
-        omega_x,
-        omega_y,
-        m_peel_x_max,
-        m_peel_y_max,
-    )
+    # peel (about x, y): spring-damper per axis, combined magnitude capped at f_peel_max
+    m_peel_x = gripper_k_peel_x[g] * theta_x + d_peel_x_eff * omega_x
+    m_peel_y = gripper_k_peel_y[g] * theta_y + d_peel_y_eff * omega_y
+    m_peel_x, m_peel_y = clamp_magnitude_2d(m_peel_x, m_peel_y, gripper_f_peel_max[g])
 
-    # --- twist (rotation about z): torsional friction from a stick anchor ---
-    m_twist_max = f_hold * (gripper_mu_x[g] * gripper_tw_x[g] + gripper_mu_y[g] * gripper_tw_y[g])
-    m_twist, twist_stick = eval_twist_friction(theta_z, pad_theta_anchor[pad], gripper_k_torsion[g], m_twist_max)
-    pad_theta_anchor[pad] = twist_stick
+    # twist (about z): linear spring-damper, clamped to +/-f_torsion_max
+    m_twist = clamp_symmetric(gripper_k_torsion[g] * theta_z + d_torsion_eff * omega_z, gripper_f_torsion_max[g])
 
-    # assemble the seal-frame wrench and rotate into the world frame
+    # assemble the seal-frame wrench, rotate to world, and accumulate equal-and-opposite on A and B
     force = wp.quat_rotate(q_a_seal, wp.vec3(fx, fy, fz))
     torque = wp.quat_rotate(q_a_seal, wp.vec3(m_peel_x, m_peel_y, m_twist))
-
-    # accumulate equal-and-opposite wrenches; r_a / r_b are the COM-to-seal arms (world)
     wp.atomic_add(body_f, body_a, wp.spatial_vector(force, torque + wp.cross(r_a, force)))
     wp.atomic_add(body_f, body_b, wp.spatial_vector(-force, -torque + wp.cross(r_b, -force)))
 
-    # --- brittle break envelope: reported for the external disengage policy (see gripper.pdf) ---
-    pad_break_metric[pad] = eval_break_metric(
-        fz_elastic,
-        f_normal_max,
-        k_peel_x,
-        k_peel_y,
-        theta_x,
-        theta_y,
-        m_peel_x_max,
-        m_peel_y_max,
+    # per-DOF magnitudes for telemetry: (normal fz, shear |(fx,fy)|, peel |(mx,my)|, twist mz) -- for
+    # shear and peel this is the combined magnitude compared against the cap (sqrt(x^2 + y^2)).
+    pad_dof_force[pad] = wp.vec4(
+        fz, wp.sqrt(fx * fx + fy * fy), wp.sqrt(m_peel_x * m_peel_x + m_peel_y * m_peel_y), m_twist
     )
+
+    pad_break_metric[pad] = 0.0  # break not evaluated on this path yet
 
 
 def evaluate_gripper_force(
@@ -1476,43 +658,37 @@ def evaluate_gripper_force(
     gripper_control: SurfaceGripperControl,
     dt: float,
 ) -> None:
-    """Accumulate the full per-pad suction wrench (all six DOF) into ``state.body_f``.
-
-    Normal (preload + spring-damper, clamped tension-only), shear (Coulomb friction
-    with an elliptical cone and stick anchor), peel (torsional spring-damper) and twist
-    (torsional friction with a stick anchor). Uses the engagement recorded in
-    ``gripper_state`` (``pad_engaged``, ``pad_body_b`` and the attach-time
-    ``pad_anchor_b``) and mutates the stick anchors in place; the break/seal logic
-    comes later.
+    """Accumulate the linear per-DOF spring-damper seal wrench (:func:`eval_pad_force_linear`) into
+    ``state.body_f``. No stick-slip anchors and no break metric -- each DOF is a plain spring-damper
+    with a fixed magnitude cap. Uses the engagement state (``pad_engaged``, ``pad_body_b``,
+    ``pad_anchor_b``).
     """
     n_pads = gripper_model.pad_xform.shape[0]
     if n_pads == 0:
         return
     wp.launch(
-        eval_pad_force,
+        eval_pad_force_linear,
         dim=n_pads,
         inputs=[
             gripper_model.gripper_body_id,
             gripper_model.gripper_xform,
+            gripper_model.gripper_f_grip_max,
             gripper_model.gripper_k_normal,
             gripper_model.gripper_d_normal,
             gripper_model.gripper_f_normal_max,
-            gripper_model.gripper_f_grip_max,
             gripper_model.gripper_k_shear_x,
-            gripper_model.gripper_k_shear_y,
             gripper_model.gripper_d_shear_x,
+            gripper_model.gripper_k_shear_y,
             gripper_model.gripper_d_shear_y,
-            gripper_model.gripper_mu_x,
-            gripper_model.gripper_mu_y,
-            gripper_model.gripper_d_peel_x,
-            gripper_model.gripper_d_peel_y,
+            gripper_model.gripper_f_shear_max,
             gripper_model.gripper_k_peel_x,
+            gripper_model.gripper_d_peel_x,
             gripper_model.gripper_k_peel_y,
+            gripper_model.gripper_d_peel_y,
+            gripper_model.gripper_f_peel_max,
             gripper_model.gripper_k_torsion,
-            gripper_model.gripper_peel_capacity_x,
-            gripper_model.gripper_peel_capacity_y,
-            gripper_model.gripper_tw_x,
-            gripper_model.gripper_tw_y,
+            gripper_model.gripper_d_torsion,
+            gripper_model.gripper_f_torsion_max,
             gripper_model.pad_gripper,
             gripper_model.pad_xform,
             gripper_control.pad_grip_control,
@@ -1526,9 +702,8 @@ def evaluate_gripper_force(
             model.body_inertia,
             dt,
             # outputs (mutated in place)
-            gripper_state.pad_shear_stick_point,
-            gripper_state.pad_theta_anchor,
             gripper_state.pad_break_metric,
+            gripper_state.pad_dof_force,
             state.body_f,
         ],
     )

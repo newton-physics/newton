@@ -115,6 +115,51 @@ class DriveTargetRecorder:
         print(f"wrote {len(self.time_log)} rows to {path}")
 
 
+class GripperForceRecorder:
+    """Records each pad's per-DOF seal force (normal, combined shear, combined peel, twist) every sim
+    step over the first engaged (suction-on) window, then writes it to CSV at the first disengagement.
+
+    The shear and peel columns are the combined magnitudes ``sqrt(x^2 + y^2)`` -- the values compared
+    against ``f_shear_max`` / ``f_peel_max``. Sourced from the simple (linear) model's
+    ``pad_dof_force``, so it is only meaningful when that model is active. Gated by the caller (see the
+    record calls in ``simulate``). Host-side (reads state each sub-step), so CPU only.
+    """
+
+    def __init__(self, sim_dt, num_pads):
+        self.sim_dt = sim_dt
+        self.num_pads = num_pads
+        self.force_log = []  # per-pad [normal, shear, peel, torsion] flattened each sub-step
+        self.time_log = []  # matching sim time [s]
+        self.done = False  # set True at the first disengagement -> record no more
+
+    def record(self, engaged, pad_dof_force, sim_step_count):
+        """Record one sub-step. ``engaged`` / ``pad_dof_force`` / ``sim_step_count`` are device arrays
+        for the engagement command, the per-pad per-DOF force (wp.vec4), and the sub-step counter.
+        """
+        if self.done:
+            return
+        if not bool(engaged.numpy()[0]):
+            if self.force_log:  # was engaged, now disengaged -> stop recording and dump
+                self.done = True
+                self._dump()
+            return
+        forces = pad_dof_force.numpy()[: self.num_pads]  # [pads, 4]
+        self.force_log.append([c for pad in forces for c in pad])  # flatten pad-major
+        self.time_log.append(float(sim_step_count.numpy()[0]) * self.sim_dt)
+
+    def _dump(self, path="gripper_forces.csv"):
+        """Write the force log (time + normal/shear/peel/torsion per pad) to CSV."""
+        cols = ["time_s"]
+        for i in range(self.num_pads):
+            cols += [f"pad{i}_normal", f"pad{i}_shear", f"pad{i}_peel", f"pad{i}_torsion"]
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(cols)
+            for t, row in zip(self.time_log, self.force_log, strict=True):
+                writer.writerow([t, *row])
+        print(f"wrote {len(self.time_log)} rows to {path}")
+
+
 class PadBreakMetricRecorder:
     """Records each pad's brittle break metric every sim step over the whole run, then writes it to CSV
     once playback ends.
