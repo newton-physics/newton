@@ -981,7 +981,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Geom offsets are derived from body_com and shape_transform.
             self._update_geom_offsets()
 
-        if flags & ModelFlags.SHAPE_PROPERTIES:
+        if flags & ModelFlags.SHAPE_PROPERTIES and self._collision_detector_kamino is not None:
+            # Kamino materials only need to be updated when using the Kamino collision detector.
+            # External Newton contacts read per-shape material values directly and don't use Kamino materials.
             self._update_materials()
 
         if flags & (ModelFlags.CONSTRAINT_PROPERTIES | ModelFlags.TENDON_PROPERTIES):

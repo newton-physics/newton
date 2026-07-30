@@ -138,9 +138,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``rigid_avbd_beta``, ``rigid_avbd_linear_beta``,
        ``rigid_avbd_angular_beta``, ``rigid_avbd_gamma``,
        ``rigid_contact_hard``, ``rigid_contact_history``,
-       ``rigid_contact_k_start``, ``rigid_contact_stick_motion_eps``,
-       ``rigid_contact_stick_freeze_translation_eps``,
-       ``rigid_contact_stick_freeze_angular_eps``,
+       ``rigid_contact_k_start``,
        ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``,
        ``rigid_joint_linear_ke``, ``rigid_joint_angular_ke``,
@@ -157,11 +155,12 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
      - Contact history requires matched contacts, for example
-       ``CollisionPipeline(contact_matching="latest")``. Contact history is
+       ``CollisionPipeline(contact_matching="latest")`` or ``"sticky"``.
+       SolverVBD uses match indices only for numeric warm-starting; contact
+       geometry remains owned by the collision pipeline. Contact history is
        cross-replay-persistent state, so it must always be pre-allocated
-       before graph capture on any device: allocating it inside a graph
-       records a ``wp.zeros`` fill that wipes the warm-start buffers on every
-       replay. Construct :class:`~newton.CollisionPipeline` before
+       before graph capture on any device; otherwise SolverVBD raises a
+       ``RuntimeError``. Construct :class:`~newton.CollisionPipeline` before
        :class:`~newton.solvers.SolverVBD` so contact history is pre-allocated,
        or run one uncaptured solver step before capture. Ordinary contact
        buffers can still grow on demand during graph capture on CPU and on

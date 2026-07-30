@@ -4014,6 +4014,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
                 model.shape_margin,
+                model.shape_material_kf,
+                self.mjw_model.opt.impratio_invsqrt,
+                self.mjw_model.opt.cone == self._mujoco.mjtCone.mjCONE_ELLIPTIC,
                 bodies_per_world,
                 self.newton_shape_to_mjc_geom,
                 # Mujoco warp contacts
