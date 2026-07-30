@@ -51,6 +51,7 @@
 - Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).
 - Make experimental hydroelastic contacts respect each shape's margin and gap, including force-free speculative contacts between the margin and gap boundaries. Set both `margin=0.0` and `gap=0.0` for the closest equivalent of the earlier geometric-surface behavior.
 - Change experimental `SolverVBD` cable constraint slots from `[STRETCH=0, BEND=1]` to `[STRETCH=0, SHEAR=1, BEND=2, TWIST=3]`, allowing each stiffness and constraint mode to be configured independently. Existing cable calls using raw `slot=1` or `JointSlot.ANGULAR` now select shear; use `JointSlot.BEND` (now slot 2) to select bending.
+- Map `shape_material_kf` to per-contact MuJoCo `solreffriction` in `SolverMuJoCo` (elliptic friction cones with Newton contacts); resolve `kf` with priority/`solmix`, treat a resolved `kf = 0` as frictionless, and use native MuJoCo contacts or a pyramidal cone to preserve the previous solref-inherited friction.
 - Load visual-only USD geometry outside rigid-body hierarchies as static shapes by default; pass `load_static_visual_shapes=False` to retain the previous body-associated-visuals-only behavior.
 - Improve `SolverKamino` GPU simulation and kernel compilation performance.
 - Speed up `Mesh.create_heightfield()` and `Mesh.create_terrain()` by building the vertex and index buffers in place, substantially reducing construction time and peak memory for large terrain grids such as those used by Isaac Lab.
@@ -92,6 +93,7 @@
 
 ### Fixed
 
+- Convert `newton:mimicCoef0` from degrees to radians when the mimic follower joint is angular. Assets authored against the old behavior need the value rescaled to degrees.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
 - Fix `ModelBuilder.add_usd()` marking a `guide`-purpose collider visible when it has a bound render material. Such a collider is not viewport geometry, and the extra `VISIBLE` flag left it drawn by the viewer's visual toggle instead of its collision toggle. `force_show_colliders` still reveals it.
@@ -115,6 +117,7 @@
 - Fix `ModelBuilder.add_usd()` ignoring enabled collider mass properties and counting disabled colliders toward body mass. (#3594)
 - Report malformed MJCF free-joint and inertial inputs with deterministic validation errors, and ignore MJCF mesh geom `size` lengths consistently.
 - Fix MJCF imports ignoring material and inline RGBA colors on primitive geoms.
+- Fix `SolverVBD` failing to construct on large multi-world scenes containing particles and rigid shapes. (#3660)
 - Fix Style3D solver divergence caused by isolated vertices.
 - Fix compiler warnings about overflowing int32 constants when compiling SDF texture and `SensorTiledCamera` kernels.
 - Fix USD site import to discover sites beneath non-visual containers, collider prims, and instanceable rigid-body prims independently of `load_visual_shapes`; the reworked traversal also speeds up import of scenes with many nested `Xform` or instance prims.

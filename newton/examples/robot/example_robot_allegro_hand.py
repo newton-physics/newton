@@ -137,7 +137,9 @@ class Example:
             njmax=200,
             nconmax=max_contacts_per_world,
             impratio=20.0,
-            cone="elliptic",
+            # Preserve the example's solref-inherited grasp friction; its
+            # purpose is articulation control rather than kf mapping.
+            cone="pyramidal",
             iterations=100,
             ls_iterations=50,
             use_mujoco_contacts=False,
