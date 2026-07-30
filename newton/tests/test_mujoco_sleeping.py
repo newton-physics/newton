@@ -167,6 +167,8 @@ class TestMuJoCoSleeping(unittest.TestCase):
             SolverMuJoCo(model, enable_sleeping=True, use_mujoco_contacts=False)
         with self.assertRaisesRegex(ValueError, "solver='newton'"):
             SolverMuJoCo(model, enable_sleeping=True, solver="cg")
+        with self.assertRaisesRegex(ValueError, "does not support integrator='rk4'"):
+            SolverMuJoCo(model, enable_sleeping=True, integrator="rk4")
         with self.assertRaisesRegex(ValueError, "must not exceed"):
             SolverMuJoCo(model, enable_sleeping=True, nvmax=2)
         with self.assertRaisesRegex(ValueError, "only supported when sleeping is enabled"):
@@ -177,6 +179,11 @@ class TestMuJoCoSleeping(unittest.TestCase):
         multi_tree_model = _build_contact_wake_model()
         with self.assertRaisesRegex(ValueError, "initial state has 12 awake"):
             SolverMuJoCo(multi_tree_model, enable_sleeping=True, nvmax=6)
+
+        custom_integrator_model = _build_sleep_model(register_custom_attributes=True)
+        custom_integrator_model.mujoco.integrator.fill_(SolverMuJoCo._parse_integrator("rk4"))
+        with self.assertRaisesRegex(ValueError, "does not support integrator='rk4'"):
+            SolverMuJoCo(custom_integrator_model, enable_sleeping=True)
 
     def test_invalid_per_world_sleep_tolerance_fails_early(self):
         model = _build_sleep_model(world_count=2, register_custom_attributes=True)
@@ -242,6 +249,36 @@ class TestMuJoCoSleeping(unittest.TestCase):
         solver.reset(state, flags=0)
 
         np.testing.assert_array_equal(solver.mjw_data.tree_asleep.numpy()[0] < 0, [True, True, True, False])
+        self.assertEqual(int(solver.mjw_data.nv_awake.numpy()[0]), 3)
+        np.testing.assert_array_equal(solver.mjw_data.overflow.numpy(), [0])
+
+    def test_reset_rebuilds_initially_sleeping_tree_state(self):
+        model = _build_imported_sleep_policy_model()
+        solver = SolverMuJoCo(model, nvmax=3, iterations=2, disable_contacts=True)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        state_0, state_1 = self._sleep_all(solver, state_0, state_1, control, contacts)
+        self.assertEqual(int(solver.mjw_data.nv_awake.numpy()[0]), 1)
+
+        joint_q = state_0.joint_q.numpy()
+        joint_q[3] = 0.5
+        state_0.joint_q.assign(joint_q)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+        state_0, state_1 = state_1, state_0
+        self.assertEqual(int(solver.mjw_data.nv_awake.numpy()[0]), 2)
+
+        solver.reset(state_0, flags=newton.StateFlags.JOINT_Q)
+
+        np.testing.assert_allclose(state_0.joint_q.numpy(), model.joint_q.numpy())
+        np.testing.assert_allclose(solver.mjw_data.qpos.numpy()[0], model.joint_q.numpy())
+        self.assertEqual(int(solver.mjw_data.nv_awake.numpy()[0]), 3)
+
+        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+
         self.assertEqual(int(solver.mjw_data.nv_awake.numpy()[0]), 3)
         np.testing.assert_array_equal(solver.mjw_data.overflow.numpy(), [0])
 

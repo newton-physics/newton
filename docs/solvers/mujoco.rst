@@ -608,8 +608,9 @@ spend substantial time at rest::
 
 Sleeping is only supported by Newton's MuJoCo Warp GPU path. It requires
 ``solver="newton"`` and ``use_mujoco_contacts=True`` so MuJoCo Warp's
-collision pipeline can wake sleeping bodies. Unsupported combinations raise
-``ValueError`` during solver construction. When an imported MJCF contains
+collision pipeline can wake sleeping bodies, and it does not support the RK4
+integrator. Unsupported combinations raise ``ValueError`` during solver
+construction. When an imported MJCF contains
 ``<option><flag sleep="enable"/></option>``, leaving ``enable_sleeping`` as
 ``None`` honors that setting. An explicit constructor value takes precedence.
 
@@ -651,10 +652,13 @@ compact-solver workspace. If more than ``nvmax`` DOFs become active later,
 MuJoCo Warp sets the ``NVMAX`` bit in
 ``solver.mjw_data.overflow``; increase ``nvmax`` and recreate the solver.
 
-MuJoCo Warp automatically wakes islands for controls, applied forces, and
-contacts. Newton-side joint-position edits wake only the affected sleeping
-trees. :meth:`~newton.solvers.SolverMuJoCo.reset` restores the initial sleep
-state in selected worlds, while
+MuJoCo Warp automatically wakes islands for applied forces and contacts.
+Actuated trees are not allowed to sleep by default. If their sleep policy is
+explicitly changed to allow sleeping, changing actuator controls alone does not
+wake them; apply a force or set a nonzero velocity first. Newton-side
+joint-position edits wake only the affected sleeping trees.
+:meth:`~newton.solvers.SolverMuJoCo.reset` restores the initial sleep state in
+selected worlds, while
 :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` wakes all worlds
 after model-property updates. The sleeping path supports whole-step CUDA graph
 capture.

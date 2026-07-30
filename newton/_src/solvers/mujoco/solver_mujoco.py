@@ -3438,7 +3438,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
-            enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, and MuJoCo contact handling.
+            enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, and a non-RK4 integrator.
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo.
@@ -3847,8 +3847,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         per-step sync is disabled or sparse, so the reset joint coordinates are
         pushed into ``qpos`` / ``qvel`` immediately instead (for all worlds;
         unmasked worlds round-trip through their current joint coordinates).
-        When sleeping is enabled, reset restores the initial sleep state in the
-        selected worlds and rebuilds MuJoCo Warp's active-body/DOF indices.
+        When sleeping is enabled, reset synchronizes immediately, rebuilds
+        MuJoCo Warp's cached position- and velocity-dependent data, and restores
+        the initial sleep state in the selected worlds.
 
         Args:
             state: The simulation state to reset (modified in place).
@@ -3889,12 +3890,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
-                # At the default update_data_interval (1), step() syncs
-                # state -> qpos/qvel every step, so the reset propagates on its
-                # own. Otherwise push it now so it is not lost before the next
-                # sync. _update_mjc_data syncs all worlds; unmasked worlds simply
-                # round-trip through their current joint coordinates.
-                if self.update_data_interval != 1:
+                # Without sleeping, the default update interval propagates the
+                # reset on the next step. Otherwise push it now so it is not
+                # lost before the next sync. The sleeping path synchronizes
+                # below before rebuilding its cached data.
+                if self.update_data_interval != 1 and not self.enable_sleeping:
                     data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
                     if data is not None:
                         self._update_mjc_data(data, self.model, state)
@@ -3924,7 +3924,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[world_mask, *buffers],
             device=self.model.device,
         )
-        self._restore_initial_sleeping_state(world_mask, clear_overflow=True)
+        if self.enable_sleeping:
+            self._update_mjc_data(d, self.model, state)
+            self._wake_sleeping_worlds(world_mask, clear_overflow=True)
+            # Sleeping trees retain derived state, so rebuild it at the reset
+            # coordinates before restoring the initial sleep bookkeeping.
+            with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
+                self._mujoco_warp.fwd_position(self.mjw_model, d, factorize=False)
+                self._mujoco_warp.fwd_velocity(self.mjw_model, d)
+            self._restore_initial_sleeping_state(world_mask, clear_overflow=True)
 
     def _capture_initial_sleeping_state(self) -> None:
         """Capture the template world's initial sleep bookkeeping."""
@@ -5305,6 +5313,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             jacobian = mujoco.mjtJacobian.mjJAC_AUTO
         if enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP and solver != mujoco.mjtSolver.mjSOL_NEWTON:
             raise ValueError("enable_sleeping=True requires solver='newton'.")
+        if enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP and integrator == mujoco.mjtIntegrator.mjINT_RK4:
+            raise ValueError("enable_sleeping=True does not support integrator='rk4'.")
 
         spec = mujoco.MjSpec()
         spec.option.enableflags = enableflags
