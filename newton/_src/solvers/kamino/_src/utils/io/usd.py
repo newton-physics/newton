@@ -1515,6 +1515,7 @@ class USDImporter:
         meshes_are_collidable: bool = False,
         force_show_colliders: bool = False,
         hide_collision_shapes: bool = False,
+        bodies_with_visual_shapes: set[int] | None = None,
         prim_path_names: bool = False,
     ) -> GeometryDescriptor | None:
         """
@@ -1709,9 +1710,14 @@ class USDImporter:
 
         # Explicit hide_collision_shapes overrides drawability:
         # if the body already has visual shapes, hide its colliders unconditionally.
+        visual_bodies = bodies_with_visual_shapes if bodies_with_visual_shapes is not None else set()
+        has_body_visual_shapes = body_index in visual_bodies
+        hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
         # A collider is drawn when USD says it is drawn, or when force_show_colliders
         # overrides authored invisibility (e.g. guide/invisible collision geometry).
-        collider_is_visible = (force_show_colliders or self._is_viewport_drawn(geom_prim)) and not hide_collision_shapes
+        collider_is_visible = (
+            force_show_colliders or self._is_viewport_drawn(geom_prim)
+        ) and not hide_collider_for_body
 
         # Set the geom to be visible when the collider display policy says it should be drawn.
         if collider_is_visible:
@@ -2177,6 +2183,7 @@ class USDImporter:
         # Define separate lists to hold geometry descriptors for visual and physics geometry
         visual_geoms: list[GeometryDescriptor] = []
         physics_geoms: list[GeometryDescriptor] = []
+        bodies_with_visual_shapes: set[int] = set()
 
         # Define a function to process each geometry prim and construct geometry descriptors based on whether
         # they are marked for physics simulation or not. The geometry descriptors are then added to the
@@ -2226,6 +2233,7 @@ class USDImporter:
                                 meshes_are_collidable=meshes_are_collidable,
                                 force_show_colliders=force_show_colliders,
                                 hide_collision_shapes=hide_collision_shapes,
+                                bodies_with_visual_shapes=bodies_with_visual_shapes,
                                 prim_path_names=use_prim_path_names,
                             )
                             break  # Stop after the first match
@@ -2261,6 +2269,8 @@ class USDImporter:
                     else:
                         msg.debug("Adding visual geom '%d':\n%s\n", builder.num_geoms, geom_desc)
                         visual_geoms.append(geom_desc)
+                        if geom_desc.body >= 0 and self._is_viewport_drawn(prim):
+                            bodies_with_visual_shapes.add(geom_desc.body)
 
             # Indicate to user that a UsdGeom has potentially not been marked for physics simulation
             else:
