@@ -305,6 +305,27 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertFalse(attrs["closed"])
             self.assertIsNotNone(attrs["resolved_density"])
 
+        with self.subTest(cable="periodic"):
+            # A 3-4-5 triangle. add_rod appends the loop-closing joint last, and its dual length
+            # pairs the last and first segments (0.5 and 0.3) -- the only joint whose two operands
+            # are not neighbors in the body list.
+            stage = _deformable_stage(up_axis="y")
+            loop_pts = [(0.0, 0.0, 1.0), (0.3, 0.0, 1.0), (0.3, 0.4, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Loop", loop_pts, thickness=None, periodic=True)
+            thickness, stretch_mod = 0.02, 2.0e6
+            _bind_deformable_material(
+                stage, curves.GetPrim(), "/World/LoopMat", thickness=thickness, stretchStiffness=stretch_mod
+            )
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            j0, j1 = group_range(builder, "cable", "/World/Loop", "joint")
+            area = math.pi * (0.5 * thickness) ** 2
+            for joint, joint_length in zip(range(j0, j1), (0.35, 0.45, 0.4), strict=True):
+                expected = stretch_mod * area / joint_length
+                dof0 = builder.joint_qd_start[joint]
+                self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
+
         with self.subTest(material="authored_zero_stiffness"):
             stage = _deformable_stage(up_axis="y")
             curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
@@ -327,17 +348,16 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["stretchStiffness"], 0.0)
 
     def test_cable_rest_length_from_rest_shape_points(self):
-        """Per-joint stiffness uses the rest centerline (restShapePoints), not the possibly-deformed
-        points, so an authored rest shape sets the rest length L in E*A/L (proposal: rest segment
-        lengths derive from restShapePoints)."""
+        """Verify ``restShapePoints`` supplies each cable joint's local dual rest length."""
         from pxr import Sdf
 
         stage = _deformable_stage(up_axis="y")
         # Current points: 0.2-long segments (a stretched state).
         pts = [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0), (0.4, 0.0, 1.0), (0.6, 0.0, 1.0)]
         curves = _add_cable_curve(stage, "/World/Cable", pts)
-        # Rest centerline: 0.1-long segments (half the deformed length).
-        rest = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        # Rest centerline: graded 0.1/0.2/0.3 segments, so each joint's dual length is distinct
+        # and differs from the rest mean (0.2) as well as from the deformed lengths.
+        rest = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.3, 0.0, 1.0), (0.6, 0.0, 1.0)]
         curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(rest)
         thickness, stretch_mod = 0.02, 2.0e6
         _bind_deformable_material(
@@ -348,12 +368,15 @@ class TestUSDDeformableCable(unittest.TestCase):
         # restShapePoints only normalizes stiffness (it does not set an initial strain state), so it warns.
         with self.assertWarnsRegex(UserWarning, "restShapePoints only sets the rest length"):
             builder.add_usd(stage)
-        j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
+        j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
         r = 0.5 * thickness
         area = math.pi * r * r
-        expected = stretch_mod * area / 0.1  # rest length 0.1, not the 0.2 deformed segments
-        dof0 = builder.joint_qd_start[j0]
-        self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1e-3)
+        # Dual lengths of the rest polyline. Both differ from the 0.2 deformed segments and from
+        # the 0.2 rest mean, so this also pins the normalization to each joint's own neighbors.
+        for joint, joint_length in zip(range(j0, j1), (0.15, 0.25), strict=True):
+            expected = stretch_mod * area / joint_length
+            dof0 = builder.joint_qd_start[joint]
+            self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
 
     def test_non_linear_curve_is_skipped(self):
         """A non-linear (cubic) curve-deformable warns and is skipped (cable import is linear-only)."""

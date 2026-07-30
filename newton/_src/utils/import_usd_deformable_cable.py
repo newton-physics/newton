@@ -108,11 +108,10 @@ def _apply_local_cable_stiffnesses(
 ) -> None:
     """Apply material moduli using each joint's dual rest length.
 
-    A joint spans half of each adjacent segment, so its length is
-    ``0.5 * (L_parent + L_child)``. ``segment_rest_lengths`` is parallel to ``bodies``; the
-    ``strict=True`` zip below checks their lengths but not that ordering. An unauthored modulus
-    resolves to ``None`` and leaves the rod builder's default in place, so a material with no
-    moduli makes this a no-op.
+    A joint spans half of each adjacent segment, so its length is ``0.5 * (L_parent + L_child)``.
+    ``segment_rest_lengths[i]`` is the rest length of the segment body ``bodies[i]``. Unauthored
+    moduli preserve ``add_joint_cable()`` fallback behavior; a material with none leaves all
+    rod-builder defaults unchanged.
     """
     if not any(name.endswith("Stiffness") for name in material):
         return

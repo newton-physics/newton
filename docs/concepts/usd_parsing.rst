@@ -88,7 +88,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
 
 * Valid, enabled, **dynamic** cable, cloth, and volume simulation prims that use the AOUSD
   deformable APIs. A bound simulation material supplies thickness, stiffness, and density;
-  unauthored material properties fall back to documented builder defaults.
+  unauthored material properties fall back to documented builder defaults. Cable moduli become
+  per-joint stiffness, each normalized by that joint's own dual rest length
+  ``0.5 * (L_parent + L_child)``, so unevenly sampled curves keep per-joint accuracy.
 * The points and topology **as currently authored**. Newton builds the deformable at that pose;
   a standalone cable's ``restShapePoints`` may affect stiffness normalization but never
   establishes an initial strain state.
@@ -156,11 +158,7 @@ Known gaps of the experimental importer, tracked as follow-ups:
   (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
-* **Cable frames and stiffness** -- if per-point normals are missing, segment orientation is
-  synthesized. Each joint's stiffness is normalized by half the sum of its two adjacent segment
-  rest lengths, so unevenly sampled curves keep per-joint accuracy. When a standalone cable
-  authors valid ``restShapePoints``, those rest lengths drive the conversion; the current
-  ``points`` still define the rod's constructed and relaxed pose.
+* **Cable frames** -- if per-point normals are missing, segment orientation is synthesized.
 * **Thickness fallbacks** -- without an authored thickness the importer assumes a default
   (2 mm cloth shell thickness, 2.5 mm cable radius) for the mass, stiffness, and
   collision-radius conversions, and warns with the assumed value. Author
