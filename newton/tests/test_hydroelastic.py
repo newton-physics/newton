@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton._src.geometry.contact_reduction_hydroelastic import (
     FIXED_EXP_NONE,
+    SPECULATIVE_BIN_OFFSET,
     _fixed_mantissa_bits,
     _from_fixed,
     _to_fixed,
@@ -836,6 +837,61 @@ def test_hydroelastic_pre_prune_writes_contact_fingerprints(test, device):
     fingerprints = reducer.contact_fingerprints.numpy()[:face_count]
     test.assertFalse(np.any(fingerprints == unwritten_fingerprint))
     test.assertEqual(len(np.unique(fingerprints)), face_count)
+
+
+def test_deterministic_hydroelastic_speculative_contacts(test, device):
+    """Keep speculative contacts deterministic in their separate key range."""
+    model, state, _ = _build_margin_gap_boxes(device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=True,
+            buffer_fraction=1.0,
+        ),
+        deterministic=True,
+    )
+    contacts = pipeline.contacts()
+    reducer = pipeline.hydroelastic_sdf.contact_reduction.reducer
+    contact_fields = (
+        "rigid_contact_point_id",
+        "rigid_contact_shape0",
+        "rigid_contact_shape1",
+        "rigid_contact_point0",
+        "rigid_contact_point1",
+        "rigid_contact_offset0",
+        "rigid_contact_offset1",
+        "rigid_contact_normal",
+        "rigid_contact_margin0",
+        "rigid_contact_margin1",
+        "rigid_contact_tids",
+        "rigid_contact_stiffness",
+        "rigid_contact_damping",
+        "rigid_contact_friction",
+    )
+
+    snapshots = []
+    for _ in range(4):
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(count, 0)
+        test.assertTrue(np.all(_get_contact_distances(contacts, model, state) >= 0.0))
+        test.assertTrue(np.all(contacts.rigid_contact_stiffness.numpy()[:count] > 0.0))
+        test.assertEqual(int(reducer.ht_insert_failures.numpy()[0]), 0)
+
+        active_slots = reducer.hashtable.active_slots.numpy()
+        active_count = int(active_slots[reducer.hashtable.capacity])
+        active_keys = reducer.hashtable.keys.numpy()[active_slots[:active_count]]
+        bin_ids = (active_keys >> np.uint64(55)) & np.uint64(0xFF)
+        test.assertTrue(np.all(bin_ids >= SPECULATIVE_BIN_OFFSET))
+
+        snapshots.append((count, tuple(getattr(contacts, name).numpy()[:count].copy() for name in contact_fields)))
+
+    for count, fields in snapshots[1:]:
+        test.assertEqual(count, snapshots[0][0])
+        for name, expected, actual in zip(contact_fields, snapshots[0][1], fields, strict=True):
+            np.testing.assert_array_equal(actual, expected, err_msg=name)
 
 
 def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
@@ -2201,6 +2257,13 @@ add_function_test(
     TestHydroelastic,
     "test_hydroelastic_pre_prune_writes_contact_fingerprints",
     test_hydroelastic_pre_prune_writes_contact_fingerprints,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_deterministic_hydroelastic_speculative_contacts",
+    test_deterministic_hydroelastic_speculative_contacts,
     devices=cuda_devices,
 )
 

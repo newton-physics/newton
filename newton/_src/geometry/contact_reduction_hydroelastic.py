@@ -390,6 +390,9 @@ def _register_hydroelastic_normal_bins_kernel(
     tid = wp.tid()
     num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
     for contact_id in range(tid, num_contacts, total_num_threads):
+        if reducer_data.position_depth[contact_id][3] >= 0.0:
+            reducer_data.contact_nbin_entry[contact_id] = -1
+            continue
         pair = reducer_data.shape_pairs[contact_id]
         normal = decode_oct(reducer_data.normal[contact_id])
         key = make_contact_key(pair[0], pair[1], get_slot(normal))
