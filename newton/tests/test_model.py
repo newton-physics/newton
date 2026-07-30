@@ -213,6 +213,7 @@ class TestParallelJointWarning(unittest.TestCase):
     """Warn on parallel joints between the same pair of bodies."""
 
     def test_free_parallel_warns(self):
+        """Warn when an explicit joint parallels an implicit FREE joint."""
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0, label="Sun")
 
@@ -220,6 +221,7 @@ class TestParallelJointWarning(unittest.TestCase):
             builder.add_joint_revolute(parent=-1, child=body)
 
     def test_non_free_parallel_warns_undefined(self):
+        """Warn when two non-FREE joints connect the same bodies."""
         builder = ModelBuilder()
         link = builder.add_link(mass=1.0)
         builder.add_joint_revolute(parent=-1, child=link)
@@ -228,6 +230,7 @@ class TestParallelJointWarning(unittest.TestCase):
             builder.add_joint_prismatic(parent=-1, child=link)
 
     def test_reversed_parent_child_warns_undefined(self):
+        """Warn when reversed joints connect the same bodies."""
         builder = ModelBuilder()
         body_a = builder.add_link(mass=1.0, label="A")
         body_b = builder.add_link(mass=1.0, label="B")
