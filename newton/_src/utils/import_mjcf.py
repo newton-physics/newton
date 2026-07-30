@@ -361,11 +361,9 @@ def parse_mjcf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
-    # The equality custom attributes are declared by ModelBuilder.__init__; register the remaining
-    # MuJoCo custom attributes (geom/actuator/solver options) needed to parse and convert the model.
-    # register_custom_attributes is idempotent, so re-registering the equality fields is a no-op.
-    if convert_mjc_equality_constraints:
-        SolverMuJoCo.register_custom_attributes(builder)
+    # Register the MuJoCo custom attributes needed to preserve imported model
+    # properties. The operation is idempotent.
+    SolverMuJoCo.register_custom_attributes(builder)
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
@@ -436,6 +434,14 @@ def parse_mjcf(
                     for key, value in parsed.items():
                         if key in builder.custom_attributes:
                             builder.custom_attributes[key].values[0] = value
+
+            sleep_enabled_attr = builder.custom_attributes.get("mujoco:enable_sleeping")
+            if sleep_enabled_attr is not None:
+                for option_elem in root.findall("option"):
+                    for flag_elem in option_elem.findall("flag"):
+                        parsed = parse_custom_attributes(flag_elem.attrib, [sleep_enabled_attr], "mjcf")
+                        if "mujoco:enable_sleeping" in parsed:
+                            sleep_enabled_attr.values[0] = parsed["mujoco:enable_sleeping"]
 
     class_parent = {}
     class_children = {}
