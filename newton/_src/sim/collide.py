@@ -1231,6 +1231,8 @@ class CollisionPipeline:
         Masked selections accumulate until the next :meth:`collide` call
         consumes them.
 
+        .. experimental::
+
         Args:
             world_mask: Optional one-dimensional Warp boolean mask on the
                 model device. Shape ``(model.world_count,)`` selects local

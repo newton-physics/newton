@@ -3724,6 +3724,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         world_mask = self._normalize_reset_world_mask(world_mask)
         world_count = self.model.world_count
+        native_template_world_selected = not self.use_mujoco_cpu or world_mask is None or bool(world_mask.numpy()[0])
 
         # Reset joint coordinates/velocities to model defaults for the selected
         # worlds. body_q/body_qd are FK outputs and intentionally not touched.
@@ -3755,7 +3756,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # sync.
                 if self.update_data_interval != 1:
                     data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
-                    if data is not None:
+                    if data is not None and native_template_world_selected:
                         self._update_mjc_data(data, self.model, state, world_mask=world_mask)
 
         # Clear the internal buffers that persist between steps.
@@ -3766,7 +3767,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Native MuJoCo owns one template-world MjData instance even when
             # separate_worlds=True was requested for a multi-world Newton
             # model. Its persistent buffers therefore belong to local world 0.
-            if world_mask is not None and not bool(world_mask.numpy()[0]):
+            if not native_template_world_selected:
                 return
             # Single MjData instance: clear the whole buffers (no per-world mask).
             d.qacc_warmstart[:] = 0.0

@@ -134,6 +134,48 @@ class TestMuJoCoReset(unittest.TestCase):
                 for buffer in buffers:
                     np.testing.assert_array_equal(buffer, expected)
 
+    def test_native_cpu_masked_joint_reset_preserves_template_state(self):
+        """Preserve native MuJoCo coordinates when local world 0 is unselected."""
+        solver = SolverMuJoCo(
+            self.model,
+            separate_worlds=True,
+            use_mujoco_cpu=True,
+            update_data_interval=0,
+        )
+        state = self.model.state()
+        flags = StateFlags.JOINT_Q | StateFlags.JOINT_QD
+        coords_per_world = self.model.joint_coord_count // self.model.world_count
+        dofs_per_world = self.model.joint_dof_count // self.model.world_count
+        default_q = self.model.joint_q.numpy()
+        default_qd = self.model.joint_qd.numpy()
+
+        for mask_values in ((False, True), (False, False, True)):
+            with self.subTest(mask=mask_values):
+                joint_q_before = np.arange(self.model.joint_coord_count, dtype=np.float32) + 30.0
+                joint_qd_before = np.arange(self.model.joint_dof_count, dtype=np.float32) + 40.0
+                state.joint_q.assign(joint_q_before)
+                state.joint_qd.assign(joint_qd_before)
+                solver.mj_data.qpos[:] = np.arange(solver.mj_data.qpos.size) + 10.0
+                solver.mj_data.qvel[:] = np.arange(solver.mj_data.qvel.size) + 20.0
+                qpos_before = solver.mj_data.qpos.copy()
+                qvel_before = solver.mj_data.qvel.copy()
+
+                solver.reset(
+                    state,
+                    world_mask=wp.array(mask_values, dtype=wp.bool, device=self.model.device),
+                    flags=flags,
+                )
+
+                np.testing.assert_array_equal(solver.mj_data.qpos, qpos_before)
+                np.testing.assert_array_equal(solver.mj_data.qvel, qvel_before)
+                expected_q = joint_q_before.copy()
+                expected_qd = joint_qd_before.copy()
+                if mask_values[1]:
+                    expected_q[coords_per_world:] = default_q[coords_per_world:]
+                    expected_qd[dofs_per_world:] = default_qd[dofs_per_world:]
+                np.testing.assert_array_equal(state.joint_q.numpy(), expected_q)
+                np.testing.assert_array_equal(state.joint_qd.numpy(), expected_qd)
+
     def test_reset_all_worlds(self):
         """A ``None`` mask clears every world."""
         self._poison()
