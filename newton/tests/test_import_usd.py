@@ -4,6 +4,7 @@
 import builtins
 import functools
 import hashlib
+import logging
 import math
 import os
 import posixpath
@@ -7215,6 +7216,78 @@ def Xform "Articulation" (
         self.assertIsNotNone(src.texture)
         np.testing.assert_allclose(np.array(src.color), np.array([1.0, 1.0, 1.0]))
 
+    @staticmethod
+    def _build_uvless_textured_visual_mesh_stage(*, material_subset: bool):
+        """Build a textured visual mesh without authored UVs."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+
+        material = UsdShade.Material.Define(stage, "/Materials/Textured")
+        material.CreateInput("base_color", Sdf.ValueTypeNames.Color3f).Set((0.25, 0.5, 0.75))
+        shader = UsdShade.Shader.Define(stage, "/Materials/Textured/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        albedo = UsdShade.Shader.Define(stage, "/Materials/Textured/Albedo")
+        albedo.CreateIdAttr("UsdUVTexture")
+        albedo.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("albedo.png"))
+        albedo.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(albedo.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+        if material_subset:
+            subset = UsdGeom.Subset.Define(stage, "/Body/VisualMesh/textured")
+            subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+            subset.CreateFamilyNameAttr().Set("materialBind")
+            subset.CreateIndicesAttr().Set(Vt.IntArray([0, 1]))
+            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(material)
+            shape_path = "/Body/VisualMesh/textured"
+        else:
+            UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+            shape_path = "/Body/VisualMesh"
+
+        return stage, shape_path
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_uvless_textured_visual_mesh_uses_projected_uvs(self):
+        """Verify a full visual mesh retains its texture when UVs are unavailable."""
+        stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
+        builder = newton.ModelBuilder()
+
+        with self.assertLogs("newton", level=logging.INFO) as log_ctx:
+            result = builder.add_usd(stage)
+
+        mesh = builder.shape_source[result["path_shape_map"][shape_path]]
+        self.assertIsNotNone(mesh.texture)
+        self.assertIsNone(mesh.uvs)
+        np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
+        self.assertIn("texture will use projected UVs", "\n".join(log_ctx.output))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_uvless_textured_visual_mesh_subset_uses_projected_uvs(self):
+        """Verify a material subset retains its texture when UVs are unavailable."""
+        stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=True)
+        builder = newton.ModelBuilder()
+
+        with self.assertLogs("newton", level=logging.INFO) as log_ctx:
+            result = builder.add_usd(stage)
+
+        mesh = builder.shape_source[result["path_shape_map"][shape_path]]
+        self.assertIsNotNone(mesh.texture)
+        self.assertIsNone(mesh.uvs)
+        np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
+        self.assertIn("texture will use projected UVs", "\n".join(log_ctx.output))
+
     def _build_custom_shader_mesh_stage(self, *, with_diffuse: bool):
         """Build a stage whose mesh binds a non-UsdPreviewSurface shader with map inputs.
 
@@ -7599,7 +7672,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uv_length_mismatch_uses_info_logging(self):
-        """Dropped-UV/texture diagnostics are render-only and surface via `logger.info`, not `warnings.warn`."""
+        """Verify UV fallback diagnostics use `logger.info`, not `warnings.warn`."""
         import logging as _logging  # noqa: PLC0415
         import warnings as _warnings  # noqa: PLC0415
 
@@ -7625,7 +7698,7 @@ def Xform "Articulation" (
         mesh.CreateFaceVertexCountsAttr().Set([3, 3])
         mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
         # Author a single face-varying `st` primvar whose length does not match the mesh's
-        # face-corner count, so the importer must drop UVs and (downstream) the bound texture.
+        # face-corner count, so the importer must drop the UVs and project the bound texture.
         UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
             "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
         ).Set([(0.0, 0.0)])
@@ -7652,7 +7725,7 @@ def Xform "Articulation" (
 
         joined = "\n".join(log_ctx.output)
         self.assertIn("UV primvar length", joined)
-        self.assertIn("dropping texture because UVs could not be recovered", joined)
+        self.assertIn("texture will use projected UVs", joined)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):
