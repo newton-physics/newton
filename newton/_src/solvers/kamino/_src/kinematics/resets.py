@@ -192,25 +192,22 @@ def _compute_and_write_joint_coords_and_vel(
         wp.static(make_compute_and_write_joint_coords(JointDoFType.FREE))(r_j, q_j, coords_offset, joint_q_ref, joint_q)
         wp.static(make_compute_and_write_joint_vel(JointDoFType.FREE))(q_j, u_j, dofs_offset, joint_u)
 
-    elif dof_type == JointDoFType.GIMBAL:
+    elif dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        # Gimbal resets use select_gimbal_coords and reuse those coords for rate mapping in one step.
+        # Keep this inline so the shared make_compute_and_write_joint_* factories stay decoupled.
+        third_axis_sign = 1.0
+        if dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+            third_axis_sign = -1.0
         coords = select_gimbal_coords(
             q_j,
             wp.vec3f(joint_q_ref[coords_offset], joint_q_ref[coords_offset + 1], joint_q_ref[coords_offset + 2]),
-            1.0,
+            third_axis_sign,
         )
         for i in range(3):
             joint_q[coords_offset + i] = coords[i]
-            joint_u[dofs_offset + i] = map_gimbal_angular_velocity_to_rates(coords, wp.spatial_bottom(u_j), 1.0)[i]
-
-    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
-        coords = select_gimbal_coords(
-            q_j,
-            wp.vec3f(joint_q_ref[coords_offset], joint_q_ref[coords_offset + 1], joint_q_ref[coords_offset + 2]),
-            -1.0,
-        )
-        for i in range(3):
-            joint_q[coords_offset + i] = coords[i]
-            joint_u[dofs_offset + i] = map_gimbal_angular_velocity_to_rates(coords, wp.spatial_bottom(u_j), -1.0)[i]
+            joint_u[dofs_offset + i] = map_gimbal_angular_velocity_to_rates(
+                coords, wp.spatial_bottom(u_j), third_axis_sign
+            )[i]
 
     elif dof_type == JointDoFType.PRISMATIC:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.PRISMATIC))(

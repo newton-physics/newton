@@ -909,17 +909,13 @@ def _eval_target_relative_transformations(
                 q_X_B = wp.quat_from_matrix(X_B)
                 q_loc = read_quat_from_array(actuators_q, offset_q_j, normalize_quaternions)
                 q = q_X_B * q_loc * wp.quat_inverse(q_X_B)
-            elif dof_type_j == FKJointDoFType.GIMBAL:
+            elif dof_type_j == FKJointDoFType.GIMBAL or dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                third_axis_sign = 1.0
+                if wp.static(dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED):
+                    third_axis_sign = -1.0
                 axes = X_B @ gimbal_transported_axes(
-                    wp.vec3f(actuators_q[offset_q_j], actuators_q[offset_q_j + 1], actuators_q[offset_q_j + 2]), 1.0
-                )
-                q_0 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 0]), actuators_q[offset_q_j])
-                q_1 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 1]), actuators_q[offset_q_j + 1])
-                q_2 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 2]), actuators_q[offset_q_j + 2])
-                q = q_2 * q_1 * q_0
-            elif dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
-                axes = X_B @ gimbal_transported_axes(
-                    wp.vec3f(actuators_q[offset_q_j], actuators_q[offset_q_j + 1], actuators_q[offset_q_j + 2]), -1.0
+                    wp.vec3f(actuators_q[offset_q_j], actuators_q[offset_q_j + 1], actuators_q[offset_q_j + 2]),
+                    third_axis_sign,
                 )
                 q_0 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 0]), actuators_q[offset_q_j])
                 q_1 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 1]), actuators_q[offset_q_j + 1])
