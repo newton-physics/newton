@@ -11477,11 +11477,6 @@ class ModelBuilder:
                     shape_flags & ShapeFlags.HYDROELASTIC and shape_flags & ShapeFlags.COLLIDE_SHAPES
                 )
                 required_sdf_padding = shape_gap + self.shape_margin[i] if is_hydroelastic else shape_gap
-                if sdf_padding is not None and is_hydroelastic and sdf_padding < required_sdf_padding:
-                    raise ValueError(
-                        f"Hydroelastic shape {i} requires sdf_padding >= margin + gap "
-                        f"({required_sdf_padding:.6g}), got {sdf_padding:.6g}."
-                    )
                 sdf_gen_margin = sdf_padding if sdf_padding is not None else required_sdf_padding
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 

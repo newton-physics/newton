@@ -101,6 +101,29 @@ def test_hydroelastic_sdf_padding_covers_margin_and_gap(test, device):
         builder.finalize(device=device)
 
 
+def test_hydroelastic_sdf_padding_validation_can_be_skipped(test, device):
+    """Honor flags that skip hydroelastic shape-padding validation."""
+    skip_options = (
+        {"skip_validation_shapes": True},
+        {"skip_all_validations": True},
+    )
+    for skip_option in skip_options:
+        with test.subTest(**skip_option):
+            builder = newton.ModelBuilder()
+            builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+                is_hydroelastic=True,
+                margin=0.2,
+                gap=0.1,
+                sdf_max_resolution=32,
+                sdf_padding=0.25,
+            )
+            builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+
+            model = builder.finalize(device=device, **skip_option)
+
+            test.assertEqual(model.shape_count, 1)
+
+
 def test_particle_only_hydroelastic_shape_ignores_sdf_padding(test, device):
     """Allow unused SDF padding when hydroelastic shape collisions are disabled."""
     builder = newton.ModelBuilder()
@@ -1929,6 +1952,13 @@ add_function_test(
     "test_hydroelastic_sdf_padding_covers_margin_and_gap",
     test_hydroelastic_sdf_padding_covers_margin_and_gap,
     devices=["cpu"],
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_sdf_padding_validation_can_be_skipped",
+    test_hydroelastic_sdf_padding_validation_can_be_skipped,
+    devices=cuda_devices,
 )
 
 add_function_test(
