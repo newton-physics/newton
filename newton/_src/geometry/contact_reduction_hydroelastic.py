@@ -113,6 +113,39 @@ def _effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
     return (k_a * k_b) / denom
 
 
+@wp.func
+def _register_voxel_contact(
+    shape_a: int,
+    shape_b: int,
+    bin_offset: int,
+    voxel_idx: int,
+    contact_value: wp.uint64,
+    k_eff: wp.float32,
+    reducer_data: GlobalContactReducerData,
+):
+    """Register a contact in the voxel group selected by ``bin_offset``."""
+    voxel_idx = wp.clamp(voxel_idx, 0, wp.static(NUM_VOXEL_DEPTH_SLOTS - 1))
+    voxels_per_group = wp.static(NUM_SPATIAL_DIRECTIONS + 1)
+    voxel_group = voxel_idx // voxels_per_group
+    voxel_local_slot = voxel_idx % voxels_per_group
+    voxel_entry_idx = hashtable_find_or_insert(
+        make_contact_key(shape_a, shape_b, bin_offset + voxel_group),
+        reducer_data.ht_keys,
+        reducer_data.ht_active_slots,
+    )
+    if voxel_entry_idx >= 0:
+        reducer_data.entry_k_eff[voxel_entry_idx] = k_eff
+        reduction_update_slot(
+            voxel_entry_idx,
+            voxel_local_slot,
+            contact_value,
+            reducer_data.ht_values,
+            reducer_data.ht_capacity,
+        )
+    else:
+        wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
+
+
 # =============================================================================
 # Hydroelastic contact buffer function
 # =============================================================================
@@ -206,7 +239,6 @@ def get_reduce_hydroelastic_contacts_kernel():
                 # Keep speculative selection in a disjoint key namespace so it
                 # cannot replace penetrating winners. These entries carry no
                 # aggregate force and therefore export the selected raw faces.
-                ht_capacity = reducer_data.ht_capacity
                 aabb_lower = shape_collision_aabb_lower[shape_b]
                 aabb_upper = shape_collision_aabb_upper[shape_b]
                 voxel_idx = compute_voxel_index(
@@ -215,33 +247,18 @@ def get_reduce_hydroelastic_contacts_kernel():
                     aabb_upper,
                     shape_voxel_resolution[shape_b],
                 )
-                voxel_idx = wp.clamp(voxel_idx, 0, wp.static(NUM_VOXEL_DEPTH_SLOTS - 1))
-                voxels_per_group = wp.static(NUM_SPATIAL_DIRECTIONS + 1)
-                voxel_group = voxel_idx // voxels_per_group
-                voxel_local_slot = voxel_idx % voxels_per_group
-                voxel_entry_idx = hashtable_find_or_insert(
-                    make_contact_key(
-                        shape_a,
-                        shape_b,
-                        wp.static(SPECULATIVE_BIN_OFFSET) + voxel_group,
-                    ),
-                    reducer_data.ht_keys,
-                    reducer_data.ht_active_slots,
-                )
-                if voxel_entry_idx >= 0:
-                    reducer_data.entry_k_eff[voxel_entry_idx] = _effective_stiffness(
+                _register_voxel_contact(
+                    shape_a,
+                    shape_b,
+                    wp.static(SPECULATIVE_BIN_OFFSET),
+                    voxel_idx,
+                    _make_contact_value_fast(-depth, 0, i),
+                    _effective_stiffness(
                         shape_material_k_hydro[shape_a],
                         shape_material_k_hydro[shape_b],
-                    )
-                    reduction_update_slot(
-                        voxel_entry_idx,
-                        voxel_local_slot,
-                        _make_contact_value_fast(-depth, 0, i),
-                        reducer_data.ht_values,
-                        ht_capacity,
-                    )
-                else:
-                    wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
+                    ),
+                    reducer_data,
+                )
                 continue
 
             aabb_lower = shape_collision_aabb_lower[shape_b]
@@ -302,30 +319,18 @@ def get_reduce_hydroelastic_contacts_kernel():
             # === Part 2: Voxel-based reduction ===
             voxel_res = shape_voxel_resolution[shape_b]
             voxel_idx = compute_voxel_index(position, aabb_lower, aabb_upper, voxel_res)
-            voxel_idx = wp.clamp(voxel_idx, 0, wp.static(NUM_VOXEL_DEPTH_SLOTS - 1))
-
-            voxels_per_group = wp.static(NUM_SPATIAL_DIRECTIONS + 1)
-            voxel_group = voxel_idx // voxels_per_group
-            voxel_local_slot = voxel_idx % voxels_per_group
-
-            voxel_bin_id = wp.static(NUM_NORMAL_BINS) + voxel_group
-            voxel_key = make_contact_key(shape_a, shape_b, voxel_bin_id)
-
-            voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
-            if voxel_entry_idx >= 0:
-                reducer_data.entry_k_eff[voxel_entry_idx] = _effective_stiffness(
-                    shape_material_k_hydro[shape_a], shape_material_k_hydro[shape_b]
-                )
-                voxel_value = _make_contact_value_fast(-depth, 0, i)
-                reduction_update_slot(
-                    voxel_entry_idx,
-                    voxel_local_slot,
-                    voxel_value,
-                    reducer_data.ht_values,
-                    ht_capacity,
-                )
-            else:
-                wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
+            _register_voxel_contact(
+                shape_a,
+                shape_b,
+                wp.static(NUM_NORMAL_BINS),
+                voxel_idx,
+                _make_contact_value_fast(-depth, 0, i),
+                _effective_stiffness(
+                    shape_material_k_hydro[shape_a],
+                    shape_material_k_hydro[shape_b],
+                ),
+                reducer_data,
+            )
 
     return reduce_hydroelastic_contacts_kernel
 

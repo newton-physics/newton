@@ -744,6 +744,11 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
         test.assertTrue(np.all(stiffness > 0.0))
         if expected_distance >= 0.0:
             test.assertTrue(np.all(distances >= -tolerance))
+            if expected_distance > tolerance:
+                test.assertTrue(
+                    np.all(distances >= 0.0),
+                    "Speculative contacts must not move into the penetrating margin region.",
+                )
             if reduce_contacts and expected_distance > tolerance:
                 reducer = pipeline.hydroelastic_sdf.contact_reduction.reducer
                 active_slots = reducer.hashtable.active_slots.numpy()
