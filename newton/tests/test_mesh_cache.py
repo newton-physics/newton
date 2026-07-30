@@ -60,6 +60,7 @@ def test_finalize_reuses_cached_mesh(test: TestMeshCache, device):
     test.assertEqual(mesh.finalize(device=device, requires_grad=True), grad_mesh_id)
 
     sah_mesh_id = mesh.finalize(device=device, bvh_constructor="sah")
+    test.assertNotEqual(sah_mesh_id, mesh_id_1)
     test.assertEqual(mesh.finalize(device=device, bvh_constructor="sah"), sah_mesh_id)
     test.assertNotEqual(mesh.finalize(device=device, bvh_constructor="median"), sah_mesh_id)
 
