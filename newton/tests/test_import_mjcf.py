@@ -8830,6 +8830,76 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             )
             self.assertEqual(builder.shape_count, 2)
 
+    def test_absolute_heightfield_uses_custom_resolver_once(self):
+        """Remap an authored absolute heightfield path exactly once."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            heightfield_path = os.path.join(tmpdir, "terrain.bin")
+            with open(heightfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            authored_path = "/virtual/assets/terrain.bin"
+            mjcf = f"""\
+<mujoco>
+    <asset>
+        <hfield name="terrain" file="{authored_path}" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            resolved_paths = []
+
+            def resolve(base_dir, file_path):
+                resolved_paths.append((base_dir, file_path))
+                self.assertEqual(file_path, authored_path)
+                return heightfield_path
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf, path_resolver=resolve)
+
+            self.assertEqual(resolved_paths, [(None, authored_path)])
+            self.assertEqual(builder.shape_count, 1)
+
+    def test_assetdir_honors_strippath_for_all_file_assets(self):
+        """Strip authored directories before applying assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            mesh_path = os.path.join(assets_dir, "cube.stl")
+            texture_path = os.path.join(assets_dir, "checker.png")
+            heightfield_path = os.path.join(assets_dir, "terrain.bin")
+            self._create_cube_stl(mesh_path)
+            self._create_png(texture_path)
+            with open(heightfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets" strippath="true"/>
+    <asset>
+        <mesh name="cube" file="../vendor/cube.stl"/>
+        <texture name="checker" type="2d" file="../vendor/checker.png"/>
+        <material name="checker" texture="checker"/>
+        <hfield name="terrain" file="../vendor/terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube" material="checker"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            model_path = os.path.join(tmpdir, "model.xml")
+            with open(model_path, "w") as f:
+                f.write(mjcf)
+
+            root, _ = _load_and_expand_mjcf(model_path)
+            self.assertEqual(root.find(".//mesh").get("file"), mesh_path)
+            self.assertEqual(root.find(".//texture").get("file"), texture_path)
+            self.assertEqual(root.find(".//hfield").get("file"), heightfield_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(model_path, parse_visuals=True)
+            self.assertEqual(builder.shape_count, 2)
+
     def test_assetdir_xml_string_preserves_default_resolver_fallback(self):
         """Resolve XML-string assets relative to the working directory by default."""
         with tempfile.TemporaryDirectory() as tmpdir:

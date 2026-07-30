@@ -108,6 +108,7 @@ def _load_and_expand_mjcf(
     own_compiler = root.find("compiler")
     if own_compiler is not None:
         own_assetdir = own_compiler.attrib.get("assetdir")
+        own_strippath = own_compiler.attrib.get("strippath", "false").lower() in {"true", "1"}
         if own_assetdir is None:
             own_meshdir = own_compiler.attrib.get("meshdir", ".")
             own_texturedir = own_compiler.attrib.get("texturedir", own_meshdir)
@@ -115,8 +116,12 @@ def _load_and_expand_mjcf(
             own_meshdir = own_compiler.attrib.get("meshdir", own_assetdir)
             own_texturedir = own_compiler.attrib.get("texturedir", own_assetdir)
     else:
+        own_strippath = False
         own_meshdir = "."
         own_texturedir = "."
+
+    asset_dir_by_tag = {"mesh": own_meshdir, "hfield": own_meshdir, "texture": own_texturedir}
+    own_file_assets = [elem for elem in root.iter() if elem.tag in asset_dir_by_tag and elem.get("file")]
 
     # Strip consumed asset directories so they don't leak into the parent tree
     # and affect parent-file asset resolution. Other compiler attributes (angle, etc.)
@@ -152,19 +157,18 @@ def _load_and_expand_mjcf(
         for i, child in enumerate(included_root):
             parent.insert(idx + i, child)
 
-    # Resolve this file's own relative asset paths using the pre-extracted
-    # meshdir/texturedir.  Paths from nested includes are already absolute
-    # (resolved in their own recursive call), so the isabs check skips them.
-    _asset_dir_tags = {"mesh": own_meshdir, "hfield": own_meshdir, "texture": own_texturedir}
-    for elem in root.iter():
+    # Resolve only assets authored in this file. Included files resolve their
+    # own assets recursively, so custom resolvers see every path exactly once.
+    for elem in own_file_assets:
         file_attr = elem.get("file")
-        if file_attr and not os.path.isabs(file_attr):
-            asset_dir = _asset_dir_tags.get(elem.tag, ".")
-            resolved_path = os.path.join(asset_dir, file_attr) if asset_dir != "." else file_attr
-            if base_dir is None and path_resolver is _default_path_resolver:
-                elem.set("file", resolved_path)
-            else:
-                elem.set("file", path_resolver(base_dir, resolved_path))
+        if own_strippath:
+            file_attr = os.path.basename(file_attr.replace("\\", "/"))
+        asset_dir = asset_dir_by_tag[elem.tag]
+        resolved_path = os.path.join(asset_dir, file_attr) if asset_dir != "." else file_attr
+        if base_dir is None and path_resolver is _default_path_resolver and not os.path.isabs(resolved_path):
+            elem.set("file", resolved_path)
+        else:
+            elem.set("file", path_resolver(base_dir, resolved_path))
 
     return root, base_dir
 
