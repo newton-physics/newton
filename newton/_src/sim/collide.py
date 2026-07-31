@@ -9,7 +9,7 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
-from ..core.reset import validate_reset_world_mask
+from ..core.reset import normalize_reset_world_mask
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
@@ -1235,13 +1235,11 @@ class CollisionPipeline:
 
         Args:
             world_mask: Optional one-dimensional Warp boolean mask on the
-                model device. Shape ``(model.world_count,)`` selects local
-                worlds; shape ``(model.world_count + 1,)`` uses the final
-                entry for global entities whose world index is ``-1``. If
-                ``None``, clear all previous-frame contact history
-                immediately.
+                model device with shape ``(model.world_count + 1,)``. The final
+                entry selects global entities whose world index is ``-1``. If
+                ``None``, clear all previous-frame contact history immediately.
         """
-        world_mask = validate_reset_world_mask(
+        world_mask = normalize_reset_world_mask(
             world_mask,
             world_count=int(self.model.world_count),
             device=self.model.device,

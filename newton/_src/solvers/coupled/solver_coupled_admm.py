@@ -1771,7 +1771,7 @@ class SolverCoupledADMM(SolverCoupled):
         self,
         state: State,
         *,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Clear ADMM warm-start and internal contact buffers after reset."""

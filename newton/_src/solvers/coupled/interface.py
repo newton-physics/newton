@@ -263,7 +263,8 @@ class CouplingInterface:
         Args:
             state_in: Reset entry input state.
             state_out: Entry output state whose persistent history is synchronized.
-            world_mask: Validated device mask selecting reset worlds.
+            world_mask: Canonical device mask of shape ``(world_count + 1,)``
+                selecting reset worlds, including the final global slot.
             flags: Optional state bitmask forwarded from the reset request.
         """
         del state_in, state_out, world_mask, flags

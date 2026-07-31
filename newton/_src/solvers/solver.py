@@ -1,12 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
 from typing import Any
 
 import warp as wp
 
-from ..core.reset import validate_reset_world_mask
+from ..core.reset import normalize_reset_world_mask
 from ..geometry import ParticleFlags
 from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
 
@@ -220,23 +219,13 @@ class SolverBase:
         self._applied_module_options_revision = SolverBase._module_options_revision
 
     def _normalize_reset_world_mask(self, world_mask: wp.array[wp.bool] | None) -> wp.array[wp.bool] | None:
-        """Append an unselected global slot to a legacy reset mask."""
-        world_mask = self._validate_reset_world_mask(world_mask, allow_legacy=True)
-        if world_mask is None:
-            return None
-        if world_mask.shape[0] == self.model.world_count + 1:
-            return world_mask
-        world_count = int(self.model.world_count)
-        warnings.warn(
-            "world_mask with shape (world_count,) is deprecated; use shape (world_count + 1,), "
-            "where the final entry selects global entities in world -1.",
-            DeprecationWarning,
-            stacklevel=3,
+        """Validate a reset mask and return the canonical shape."""
+        return normalize_reset_world_mask(
+            world_mask,
+            world_count=int(self.model.world_count),
+            device=self.model.device,
+            allow_legacy=True,
         )
-        normalized_mask = wp.zeros(world_count + 1, dtype=wp.bool, device=self.device)
-        if world_count > 0:
-            wp.copy(normalized_mask, world_mask, count=world_count)
-        return normalized_mask
 
     @property
     def device(self) -> wp.Device:
@@ -353,7 +342,7 @@ class SolverBase:
     def reset(
         self,
         state: State,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Reset the solver internal state data.
@@ -379,20 +368,6 @@ class SolverBase:
         """
         del state, flags
         self._normalize_reset_world_mask(world_mask)
-
-    def _validate_reset_world_mask(
-        self,
-        world_mask: wp.array[wp.bool] | None,
-        *,
-        allow_legacy: bool = False,
-    ) -> wp.array[wp.bool] | None:
-        """Validate a reset mask against the shared solver contract."""
-        return validate_reset_world_mask(
-            world_mask,
-            world_count=int(self.model.world_count),
-            device=self.model.device,
-            allow_legacy=allow_legacy,
-        )
 
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float

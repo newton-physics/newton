@@ -149,7 +149,7 @@ class TestMuJoCoReset(unittest.TestCase):
         default_q = self.model.joint_q.numpy()
         default_qd = self.model.joint_qd.numpy()
 
-        for mask_values in ((False, True), (False, False, True)):
+        for mask_values in ((False, True, False), (False, False, True)):
             with self.subTest(mask=mask_values):
                 joint_q_before = np.arange(self.model.joint_coord_count, dtype=np.float32) + 30.0
                 joint_qd_before = np.arange(self.model.joint_dof_count, dtype=np.float32) + 40.0

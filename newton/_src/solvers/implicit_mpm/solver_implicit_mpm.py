@@ -1401,7 +1401,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if array.device != device:
             raise ValueError(f"state.{name} is on device {array.device}, expected {device}.")
 
-    def _validate_reset_inputs(self, state: newton.State, world_mask: wp.array | None) -> None:
+    def _validate_reset_inputs(self, state: newton.State) -> None:
         if state is None:
             raise ValueError("'state' argument is required.")
 
@@ -1460,8 +1460,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 device=device,
             )
 
-        self._validate_reset_world_mask(world_mask)
-
     def _reset_grid_warmstart_partition(self, name, field, scratch_field) -> fem.SpacePartition:
         scratch_partition = scratch_field.space_partition
         if field.space.topology == scratch_partition.space_topology:
@@ -1487,7 +1485,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         return partition
 
     def _validate_reset_warmstart_fields(
-        self, world_mask: wp.array | None
+        self, world_mask: wp.array[wp.bool] | None
     ) -> tuple[fem.SpacePartition | None, fem.SpacePartition | None]:
         reset_partitions = []
         for name, field, scratch_field in (
@@ -1518,7 +1516,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def _clear_reset_warmstarts(
         self,
-        world_mask: wp.array | None,
+        world_mask: wp.array[wp.bool] | None,
         reset_partitions: tuple[fem.SpacePartition | None, fem.SpacePartition | None],
     ) -> None:
         for field, partition in zip(
@@ -1555,7 +1553,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def reset(
         self,
         state: newton.State,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Reset implicit MPM history for all or selected worlds.
@@ -1575,11 +1573,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         Args:
             state: Simulation state whose MPM history is modified in place.
-            world_mask: Optional one-dimensional boolean mask on the model
-                device. Shape ``(model.world_count,)`` selects local worlds
-                only. Shape ``(model.world_count + 1,)`` additionally uses the
-                final entry to select global objects whose world index is
-                ``-1``. If ``None``, reset all worlds and global objects.
+            world_mask: Optional one-dimensional Warp boolean mask on the
+                model device with shape ``(model.world_count + 1,)``. The final
+                entry selects global objects whose world index is ``-1``. If
+                ``None``, reset all worlds and global objects. The deprecated
+                shape ``(model.world_count,)`` selects local worlds only.
 
                 .. experimental::
 
@@ -1587,7 +1585,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             flags: Optional state bitmask. If ``None``, reset all particle
                 history.
         """
-        self._validate_reset_inputs(state, world_mask)
+        self._validate_reset_inputs(state)
+        world_mask = self._normalize_reset_world_mask(world_mask)
 
         reset_partitions = self._validate_reset_warmstart_fields(world_mask)
         state_flags = int(StateFlags.ALL if flags is None else flags)

@@ -771,10 +771,9 @@ class ContactMatcher:
 
         Args:
             world_mask: Optional one-dimensional Warp boolean mask on the
-                matcher device. Shape ``(world_count,)`` selects local worlds;
-                shape ``(world_count + 1,)`` uses the final entry for global
-                entities. If ``None``, clear all previous-frame history
-                immediately.
+                matcher device with shape ``(world_count + 1,)``. The final
+                entry selects global entities. If ``None``, clear all
+                previous-frame history immediately.
         """
         if world_mask is None:
             self._prev_count.zero_()

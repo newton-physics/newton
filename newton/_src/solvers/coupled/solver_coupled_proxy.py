@@ -112,18 +112,31 @@ _PROXY_RELAXATION_MODE_BY_NAME = {
     "aitken": _ProxyRelaxationMode.AITKEN,
 }
 
+
 @wp.kernel(module="unique", enable_backward=False)
-def _zero_global_proxy_values_masked_kernel(
+def _reset_proxy_values_masked_kernel(
     proxy_ids_global: wp.array[int],
+    proxy_ids_local: wp.array[int],
     entity_world: wp.array[int],
     world_mask: wp.array[wp.bool],
     world_count: int,
-    values: wp.array[Any],
+    has_previous: int,
+    has_residual: int,
+    coupling_forces: wp.array[Any],
+    coupling_forces_previous: wp.array[Any],
+    aitken_residual_previous: wp.array[Any],
+    proxy_qd_before: wp.array[Any],
 ):
     index = wp.tid()
     proxy_id = proxy_ids_global[index]
     if reset_world_selected(entity_world[proxy_id], world_mask, world_count):
-        values[proxy_id] = values.dtype(0.0)
+        zero = coupling_forces.dtype(0.0)
+        coupling_forces[proxy_id] = zero
+        proxy_qd_before[proxy_ids_local[index]] = zero
+        if has_previous != 0:
+            coupling_forces_previous[index] = zero
+        if has_residual != 0:
+            aitken_residual_previous[index] = zero
 
 
 @wp.kernel(enable_backward=False)
@@ -1047,7 +1060,7 @@ class SolverCoupledProxy(SolverCoupled):
         self,
         state: State,
         *,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Clear selected lagged proxy feedback."""
@@ -1070,9 +1083,6 @@ class SolverCoupledProxy(SolverCoupled):
                 if mapping.proxy_qd_before is not None:
                     mapping.proxy_qd_before.zero_()
         else:
-            # coupling_forces_previous, aitken_* and proxy_qd_before are also
-            # preserved: their stash/copy/Aitken paths overwrite them before use.
-            # Full resets clear those buffers above.
             for mapping_group, entity_world in (
                 (self._proxy_mappings, self.model.body_world),
                 (self._proxy_particle_mappings, self.model.particle_world),
@@ -1080,15 +1090,23 @@ class SolverCoupledProxy(SolverCoupled):
                 for mapping in mapping_group:
                     if mapping.coupling_forces is None:
                         continue
+                    previous = mapping.coupling_forces_previous
+                    residual = mapping.aitken_residual_previous
                     wp.launch(
-                        _zero_global_proxy_values_masked_kernel,
+                        _reset_proxy_values_masked_kernel,
                         dim=mapping.proxy_ids_global.shape[0],
                         inputs=[
                             mapping.proxy_ids_global,
+                            mapping.proxy_ids_local,
                             entity_world,
                             world_mask,
                             self.model.world_count,
+                            int(previous is not None),
+                            int(residual is not None),
                             mapping.coupling_forces,
+                            mapping.coupling_forces if previous is None else previous,
+                            mapping.coupling_forces if residual is None else residual,
+                            mapping.proxy_qd_before,
                         ],
                         device=self.model.device,
                     )

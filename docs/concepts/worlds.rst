@@ -326,14 +326,18 @@ Per-World Reset Masks
 ---------------------
 
 The optional ``world_mask`` passed to :meth:`~newton.solvers.SolverBase.reset`
-has shape ``(world_count + 1,)``. Entries ``[0, world_count)`` select local
-worlds, and the final entry selects global entities whose world index is
-``-1``. An all-true mask therefore selects the same worlds as ``None``.
-Solvers that do not support global dynamic objects accept the final entry as a
-no-op.
+is a one-dimensional Warp boolean array on the solver device with shape
+``(world_count + 1,)``. Entries ``[0, world_count)`` select local worlds, and
+the final entry selects global entities whose world index is ``-1``. An
+all-true mask therefore selects the same entities as ``None``. ``None`` remains
+the full-reset form, however, so a solver may also clear bookkeeping or caches
+that have no per-world ownership. Solvers that do not support global dynamic
+objects accept the final entry as a no-op.
 
-The legacy shape ``(world_count,)`` remains available during its deprecation
-period. It selects local worlds only and leaves global entities unselected.
+.. deprecated:: 1.5
+   The legacy shape ``(world_count,)`` remains available during its
+   deprecation period. It selects local worlds only and leaves global entities
+   unselected.
 
 .. _Per-world gravity:
 

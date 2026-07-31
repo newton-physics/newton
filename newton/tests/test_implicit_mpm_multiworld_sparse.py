@@ -520,7 +520,9 @@ def test_masked_reset_restores_only_selected_world_history(test, device):
     solver._grid_status.fill_(wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
     solver._grid_accumulated_status.fill_(wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
 
-    solver.reset(state, world_mask=wp.array((False, False), dtype=wp.bool, device=device))
+    with test.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
+        solver.reset(state, world_mask=wp.array((False, False), dtype=wp.bool, device=device))
+    solver.reset(state, world_mask=wp.array((False, False, False), dtype=wp.bool, device=device))
     for name, expected in before.items():
         np.testing.assert_array_equal(_mpm_history_snapshot(state)[name], expected)
     for field, expected in zip(grid_warmstarts, warmstarts_before, strict=True):

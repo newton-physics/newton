@@ -1065,7 +1065,7 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
 
         solver.reset(
             model.state(),
-            world_mask=wp.array((True, False), dtype=wp.bool, device=model.device),
+            world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
             flags=0,
         )
         np.testing.assert_array_equal(group.u.numpy()[0], 0.0)
@@ -1175,7 +1175,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         group.lambda_.assign(lambda_before)
         solver.reset(
             model.state(),
-            world_mask=wp.array((True, False), dtype=wp.bool, device=model.device),
+            world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
             flags=0,
         )
 

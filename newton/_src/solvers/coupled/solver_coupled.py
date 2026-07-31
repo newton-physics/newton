@@ -2155,7 +2155,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def reset(
         self,
         state: State,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Reset coupled sub-solvers and clear coupled-solver transient state.
@@ -2328,7 +2328,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self,
         state: State,
         *,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Hook for subclasses to clear algorithm-specific reset state."""

@@ -158,7 +158,7 @@ def test_masked_reset_restarts_only_selected_contact_history(test, device):
         _collide_once(pipeline, state, contacts)
         test.assertTrue(np.all(contacts.rigid_contact_match_index.numpy()[:count] >= 0))
 
-        pipeline.reset_contact_matching(wp.array((True, False), dtype=wp.bool, device=device))
+        pipeline.reset_contact_matching(wp.array((True, False, False), dtype=wp.bool, device=device))
         _collide_once(pipeline, state, contacts)
         shape_world = model.shape_world.numpy()
         shape0 = contacts.rigid_contact_shape0.numpy()[:count]
@@ -183,9 +183,10 @@ def test_reset_rejects_invalid_world_masks(test, device):
     with wp.ScopedDevice(device):
         _model, _state, pipeline, _contacts = _build_two_world_contact_scene(device)
         invalid_masks = (
-            ((False, False), TypeError),
-            (wp.zeros(2, dtype=wp.int32, device=device), TypeError),
-            (wp.zeros((1, 2), dtype=wp.bool, device=device), ValueError),
+            ((False, False, False), TypeError),
+            (wp.zeros(3, dtype=wp.int32, device=device), TypeError),
+            (wp.zeros((1, 3), dtype=wp.bool, device=device), ValueError),
+            (wp.zeros(2, dtype=wp.bool, device=device), ValueError),
             (wp.zeros(4, dtype=wp.bool, device=device), ValueError),
         )
         for world_mask, error in invalid_masks:
@@ -194,7 +195,7 @@ def test_reset_rejects_invalid_world_masks(test, device):
 
         if device.is_cuda:
             with test.assertRaises(ValueError):
-                pipeline.reset_contact_matching(wp.zeros(2, dtype=wp.bool, device="cpu"))
+                pipeline.reset_contact_matching(wp.zeros(3, dtype=wp.bool, device="cpu"))
 
 
 def test_reset_accumulates_live_mask_during_cuda_graph_replay(test, device):
