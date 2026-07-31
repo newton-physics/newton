@@ -281,6 +281,35 @@ the mode from user code.
 For parameter interpretation, stability tradeoffs, and task-oriented guidance,
 see :ref:`Tuning MuJoCo`.
 
+.. _mujoco-contact-friction-solreffriction:
+
+Contact friction ``solreffriction`` mapping
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
+``solreffriction`` when the MuJoCo Warp backend uses elliptic friction cones
+(``use_mujoco_cpu=False``, ``cone="elliptic"``) with Newton contacts
+(``use_mujoco_contacts=False``). It targets the force-space friction slope
+``f = -kf * v`` below the Coulomb limit. The mapping is exact when the sum of
+MuJoCo's translational ``body_invweight0`` values matches the contact's inverse
+effective mass (the relevant diagonal of :math:`J M^{-1} J^T`) and the contact
+operates at its maximum impedance ``dmax``. Very large ``kf`` saturates at
+MuJoCo's refsafe stability bound, where the reference time constant is clamped
+to twice the timestep.
+
+The two shapes' ``kf`` values combine with the usual priority/``solmix``
+weighting. A resolved ``kf = 0`` makes the contact frictionless
+(``condim = 1``), removing its sliding, torsional, and rolling friction rows.
+If a positive ``kf`` cannot produce a positive, finite inverse-weight
+denominator, ``solreffriction`` remains unset and MuJoCo inherits the normal
+``solref``. The mapping is independent of the shape's ``solref_mode`` above,
+which only governs the normal-direction ``solref``.
+
+The slope is calibrated for the sliding friction rows. With ``condim > 3``, the
+torsional and rolling rows share the same per-contact ``solreffriction`` and
+MuJoCo scales their regularization by the corresponding friction-coefficient
+ratios, so their effective damping deviates from ``kf`` accordingly.
+
 Actuators
 ---------
 

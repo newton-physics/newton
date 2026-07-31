@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, override
+from ..geometry.flags import ShapeFlags
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
@@ -860,7 +861,7 @@ class Model:
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
-        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
+        """BVH over selected shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
@@ -888,6 +889,9 @@ class Model:
         """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
         self.heightfield_meshes: list[wp.Mesh] = []
         """wp.Mesh objects built from heightfield shapes, kept alive for the model's lifetime."""
+
+        self._mesh_keep_alive: list[wp.Mesh] = []
+        """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
 
         # Mesh edge data (packed array + per-shape slice)
         self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
@@ -1606,7 +1610,13 @@ class Model:
         )
         self.joint_target_qd = value
 
-    def bvh_build_shapes(self, state: State, *, bvh_constructor: str | None = None) -> None:
+    def bvh_build_shapes(
+        self,
+        state: State,
+        *,
+        bvh_constructor: str | None = None,
+        shape_flags: ShapeFlags = ShapeFlags.VISIBLE,
+    ) -> None:
         """Build or rebuild the shape BVH stored on this model.
 
         Allocates :attr:`bvh_shapes` and related fields from the current
@@ -1620,6 +1630,8 @@ class Model:
             bvh_constructor: Warp BVH construction algorithm. Valid choices
                 are ``"sah"``, ``"median"``, ``"lbvh"``, or ``None`` to use
                 Warp's device-dependent default.
+            shape_flags: Mask of :class:`~newton.ShapeFlags`; a shape is
+                included in the BVH if any of its flags are set in the mask.
         """
         from ..geometry.bvh import (  # noqa: PLC0415
             compute_bvh_group_roots,
@@ -1657,6 +1669,7 @@ class Model:
             inputs=[
                 self.shape_type,
                 self.shape_flags,
+                int(shape_flags),
                 self.bvh_shape_enabled,
                 num_enabled,
             ],
@@ -1666,6 +1679,9 @@ class Model:
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
 
         if self.bvh_shape_count_enabled == 0:
+            # drop any BVH from a previous build, it would index stale shapes
+            self.bvh_shapes = None
+            self.bvh_shapes_group_roots = None
             return
 
         compute_shape_world_transforms_launch(self, state)

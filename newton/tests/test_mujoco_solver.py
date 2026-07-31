@@ -4658,6 +4658,201 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             )
 
 
+class TestMuJoCoSolverContactKf(unittest.TestCase):
+    """Verify shape_material_kf maps to elliptic-contact solreffriction."""
+
+    def _make_sphere_scene(self, kf_sphere, kf_plane, impratio=None, cone="elliptic"):
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1.0e4
+        builder.default_shape_cfg.kd = 100.0
+        builder.default_shape_cfg.kf = kf_plane
+        builder.add_ground_plane()
+        # start slightly penetrating so the first collide() yields an active contact
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.45), wp.quat_identity()))
+        cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e4, kd=100.0, kf=kf_sphere)
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
+        model = builder.finalize()
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=False, cone=cone, nconmax=32, njmax=128, impratio=impratio)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+        return model, solver
+
+    def _step_and_read_solreffriction(self, model, solver):
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        nacon = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertGreater(nacon, 0)
+        return nacon, (collision_pipeline, contacts), (state_0, state_1, control)
+
+    def _expected_solreffriction(self, solver, nacon, kf_pair, impratio=1.0):
+        solimp = solver.mjw_data.contact.solimp.numpy()[:nacon]
+        geom = solver.mjw_data.contact.geom.numpy()[:nacon]
+        geom_bodyid = solver.mjw_model.geom_bodyid.numpy()
+        body_invweight0 = solver.mjw_model.body_invweight0.numpy()[0]
+        ir = 1.0 / math.sqrt(impratio)
+        expected = []
+        for i in range(nacon):
+            invw = body_invweight0[geom_bodyid[geom[i][0]]][0] + body_invweight0[geom_bodyid[geom[i][1]]][0]
+            dmax = solimp[i][1]
+            # beta = kf*(1/D + A) with A ~= invw; timeconst = 2/(dmax*beta)
+            expected.append(2.0 / (kf_pair * invw * ((1.0 - dmax) * ir * ir + dmax)))
+        return expected
+
+    def test_kf_sets_contact_solreffriction(self):
+        """Verify positive kf sets the mixed contact solreffriction."""
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        # equal solmix/priority -> mix = 0.5
+        expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0)
+        for i in range(nacon):
+            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+            self.assertEqual(float(solreffriction[i][1]), 1.0)
+
+    def test_kf_zero_mixes_with_positive_value(self):
+        """Verify zero kf participates in the usual contact-material mixing."""
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=0.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        expected = self._expected_solreffriction(solver, nacon, kf_pair=400.0)
+        for i in range(nacon):
+            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+            self.assertEqual(float(solreffriction[i][1]), 1.0)
+
+    def test_kf_zero_disables_friction(self):
+        """Verify a resolved zero kf makes the contact frictionless."""
+        model, solver = self._make_sphere_scene(kf_sphere=0.0, kf_plane=0.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        condim = solver.mjw_data.contact.dim.numpy()[:nacon]
+        for i in range(nacon):
+            self.assertEqual(int(condim[i]), 1)
+            self.assertEqual(float(solreffriction[i][0]), 0.0)
+            self.assertEqual(float(solreffriction[i][1]), 0.0)
+
+    def test_kf_zero_does_not_change_pyramidal_contacts(self):
+        """Verify zero kf leaves pyramidal friction contacts unchanged."""
+        model, solver = self._make_sphere_scene(kf_sphere=0.0, kf_plane=0.0, cone="pyramidal")
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        condim = solver.mjw_data.contact.dim.numpy()[:nacon]
+        for i in range(nacon):
+            self.assertEqual(int(condim[i]), 3)
+
+    def test_kf_zero_inverse_weight_leaves_solreffriction_unset(self):
+        """Verify a zero inverse weight cannot produce a non-finite reference."""
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
+        solver.mjw_model.body_invweight0.zero_()
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        for i in range(nacon):
+            self.assertEqual(float(solreffriction[i][0]), 0.0)
+            self.assertEqual(float(solreffriction[i][1]), 0.0)
+
+    def test_kf_runtime_update(self):
+        """Verify runtime kf updates refresh the contact reference."""
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
+        nacon, (collision_pipeline, contacts), (state_0, state_1, control) = self._step_and_read_solreffriction(
+            model, solver
+        )
+        model.shape_material_kf.fill_(400.0)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+        nacon = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertGreater(nacon, 0)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        expected = self._expected_solreffriction(solver, nacon, kf_pair=400.0)
+        for i in range(nacon):
+            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+
+    def test_kf_impratio_scaling(self):
+        """Verify impratio scaling preserves the requested force-space slope."""
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0, impratio=4.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0, impratio=4.0)
+        for i in range(nacon):
+            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+
+    def _slide_sphere_prismatic(self, kf, density, num_steps=60):
+        """Single contact, rotation locked by a prismatic joint: pure force-space viscous friction."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        builder.default_shape_cfg.ke = 1.0e5
+        builder.default_shape_cfg.kd = 1.0e3
+        builder.default_shape_cfg.kf = kf
+        builder.default_shape_cfg.mu = 2.0
+        builder.add_ground_plane()
+        radius = 0.1
+        # add_body() would auto-create a free joint; add_link()+add_articulation()
+        # keeps the prismatic joint as the body's sole (tree) connection, and the
+        # joint's parent_xform (not the link xform) is what places the body.
+        body = builder.add_link()
+        cfg = newton.ModelBuilder.ShapeConfig(density=density, ke=1.0e5, kd=1.0e3, kf=kf, mu=2.0)
+        builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+        joint = builder.add_joint_prismatic(
+            parent=-1,
+            child=body,
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, radius - 0.02), wp.quat_identity()),
+            axis=(1.0, 0.0, 0.0),
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize()
+        try:
+            solver = SolverMuJoCo(
+                model,
+                use_mujoco_contacts=False,
+                cone="elliptic",
+                solver="newton",
+                integrator="implicitfast",
+                iterations=50,
+                ls_iterations=20,
+                nconmax=32,
+                njmax=256,
+            )
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        joint_qd = state_0.joint_qd.numpy()
+        joint_qd[0] = 0.05
+        state_0.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        for _ in range(num_steps):
+            state_0.clear_forces()
+            collision_pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
+            state_0, state_1 = state_1, state_0
+        # step() only auto-syncs body_qd for free-joint bodies; read the DOF velocity
+        return float(state_0.joint_qd.numpy()[0])
+
+    def test_kf_force_space_mass_dependence(self):
+        """Verify the same kf produces mass-dependent velocity decay."""
+        v_light = self._slide_sphere_prismatic(kf=120.0, density=1000.0)  # ~4.2 kg,  rate ~9.9/s, analytic ~0.0042
+        v_heavy = self._slide_sphere_prismatic(kf=120.0, density=8000.0)  # ~33.5 kg, rate ~1.2/s, analytic ~0.037
+        self.assertLess(v_light, 0.01)
+        self.assertGreater(v_heavy, 0.02)
+
+    def test_kf_scales_viscous_friction(self):
+        """Verify larger kf values produce faster sliding decay."""
+        v_soft = self._slide_sphere_prismatic(kf=30.0, density=1000.0)  # rate ~2.5/s, analytic ~0.027
+        v_hard = self._slide_sphere_prismatic(kf=3000.0, density=1000.0)  # rate ~247/s, analytic ~0
+        self.assertGreater(v_soft, 0.015)
+        self.assertLess(v_soft, 0.04)
+        self.assertGreater(v_soft, 3.0 * max(v_hard, 1.0e-6))
+
+    def test_kf_zero_preserves_sliding_velocity(self):
+        """Verify zero kf applies no sliding-friction force."""
+        velocity = self._slide_sphere_prismatic(kf=0.0, density=1000.0)
+        self.assertAlmostEqual(velocity, 0.05, places=5)
+
+
 class TestFrictionPriority(unittest.TestCase):
     """Verify that contact friction respects geom priority.
 
@@ -7429,7 +7624,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         root_joint = builder.add_joint_free(body)
         builder.add_articulation([root_joint])
-        loop_joint = builder.add_joint_fixed(parent=-1, child=body)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*FREE joint parallel.*", category=UserWarning)
+            loop_joint = builder.add_joint_fixed(parent=-1, child=body)
 
         self.assertEqual(builder.joint_articulation[loop_joint], -1)
 
@@ -7446,12 +7643,14 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         builder = newton.ModelBuilder()
         b0 = builder.add_link(mass=0.01)
         b1 = builder.add_link(mass=0.01)
+        b2 = builder.add_link(mass=0.01)
         j0 = builder.add_joint_revolute(-1, b0)
         j1 = builder.add_joint_revolute(b0, b1)
-        builder.add_articulation([j0, j1])
+        j2 = builder.add_joint_revolute(b1, b2)
+        builder.add_articulation([j0, j1, j2])
         # add a loop joint with asymmetric xforms to exercise relpose computation
         builder.add_joint_fixed(
-            b1,
+            b2,
             b0,
             parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.1, -0.3), wp.quat_identity()),
@@ -7464,7 +7663,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.replicate(builder, world_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
-        self.assertEqual(solver.mj_model.nv, 2)
+        self.assertEqual(solver.mj_model.nv, 3)
         # Fixed loop joint → 1 weld constraint
         self.assertEqual(solver.mj_model.neq, 1)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_WELD))
@@ -7550,10 +7749,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         inertia = wp.mat33(np.eye(3))
         b0 = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
         j0 = builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0))
         j1 = builder.add_joint_revolute(b0, b1, axis=(0.0, 1.0, 0.0))
-        builder.add_articulation([j0, j1])
-        builder.add_joint_revolute(b1, b0, axis=(0.0, 0.0, 1.0))
+        j2 = builder.add_joint_revolute(b1, b2, axis=(1.0, 0.0, 0.0))
+        builder.add_articulation([j0, j1, j2])
+        builder.add_joint_revolute(b2, b0, axis=(0.0, 0.0, 1.0))
 
         world_count = 3
         world_builder = newton.ModelBuilder()
@@ -7562,7 +7763,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
 
         self.assertEqual(solver.mj_model.neq, 2)
-        expected = np.array([[2, 2], [5, 5], [8, 8]], dtype=np.int32)
+        expected = np.array([[3, 3], [7, 7], [11, 11]], dtype=np.int32)
         np.testing.assert_array_equal(solver.mjc_eq_to_newton_jnt.numpy(), expected)
 
     def test_mjc_equality_target_remaps_in_add_builder(self):
@@ -7687,11 +7888,13 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             builder.add_shape_box(body=tip, hx=0.1, hy=0.1, hz=0.1)
             builder.add_articulation([j0, j1, j2])
 
-            connect_joint = builder.add_joint_ball(
-                parent=root,
-                child=mid,
-                enabled=bool(connect_enabled[world]),
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+                connect_joint = builder.add_joint_ball(
+                    parent=root,
+                    child=mid,
+                    enabled=bool(connect_enabled[world]),
+                )
             _add_equality_constraint(
                 builder,
                 constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
@@ -7707,11 +7910,13 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                     "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
                 },
             )
-            weld_joint = builder.add_joint_fixed(
-                parent=mid,
-                child=tip,
-                enabled=bool(weld_enabled[world]),
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+                weld_joint = builder.add_joint_fixed(
+                    parent=mid,
+                    child=tip,
+                    enabled=bool(weld_enabled[world]),
+                )
             _add_equality_constraint(
                 builder,
                 constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD,
@@ -7778,10 +7983,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         """
         builder = newton.ModelBuilder()
 
-        # 2-link articulation: b1 offset from b0 by (0, 0, 1) so the loop
+        # 3-link articulation: b1 offset from b0 by (0, 0, 1), with b2
+        # colocated with b1, so the loop
         # joint can use asymmetric local anchors that coincide in world space.
         b0 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j0 = builder.add_joint_revolute(-1, b0, axis=(0, 0, 1))
         j1 = builder.add_joint_revolute(
             b0,
@@ -7789,13 +7996,14 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             axis=(0, 0, 1),
             parent_xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()),
         )
-        builder.add_articulation([j0, j1])
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0, 1, 0))
+        builder.add_articulation([j0, j1, j2])
 
         # Revolute loop joint BEFORE the free body — creates q_start offset.
-        # Asymmetric anchors: (0, 0, -0.5) on b1 at (0,0,1) → world (0, 0, 0.5)
+        # Asymmetric anchors: (0, 0, -0.5) on b2 at (0,0,1) → world (0, 0, 0.5)
         #                     (0, 0,  0.5) on b0 at origin   → world (0, 0, 0.5)
         loop_j = builder.add_joint_revolute(
-            b1,
+            b2,
             b0,
             parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0, 0, 0.5), wp.quat_identity()),
@@ -7822,10 +8030,10 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.neq, 2)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
         self.assertEqual(int(solver.mj_model.eq_type[1]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
-        # First CONNECT: parent anchor on b1 at (0, 0, -0.5)
+        # First CONNECT: parent anchor on b2 at (0, 0, -0.5)
         assert np.allclose(solver.mj_model.eq_data[0, 0:3], [0, 0, -0.5], atol=1e-6)
         # MuJoCo auto-computes child anchor from body positions at compile time:
-        # world point = b1_pos + (0,0,-0.5) = (0,0,1) + (0,0,-0.5) = (0,0,0.5)
+        # world point = b2_pos + (0,0,-0.5) = (0,0,1) + (0,0,-0.5) = (0,0,0.5)
         # in b0 frame: (0,0,0.5) - b0_pos = (0,0,0.5)
         assert np.allclose(solver.mj_model.eq_data[0, 3:6], [0, 0, 0.5], atol=1e-6)
         # Second CONNECT: offset along hinge axis (0, 0, 1) by 0.1
@@ -7869,16 +8077,18 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         """
         builder = newton.ModelBuilder()
 
-        # 2-link articulation
+        # 3-link articulation
         b0 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j0 = builder.add_joint_revolute(-1, b0, axis=(0, 0, 1))
         j1 = builder.add_joint_revolute(b0, b1, axis=(0, 0, 1))
-        builder.add_articulation([j0, j1])
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0, 1, 0))
+        builder.add_articulation([j0, j1, j2])
 
         # Ball loop joint BEFORE the free body — creates 4q/3qd offset
         loop_j = builder.add_joint_ball(
-            b1,
+            b2,
             b0,
             parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),

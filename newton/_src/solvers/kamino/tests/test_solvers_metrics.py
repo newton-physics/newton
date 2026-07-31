@@ -229,6 +229,47 @@ class TestSolverMetrics(unittest.TestCase):
         if self.verbose:
             msg.reset_log_level()
 
+    def _evaluate_contact_residuals(self, contacts: list[tuple[int, int, float]]) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate contact residuals from explicitly supplied signed distances."""
+
+        def build_two_boxes_on_planes():
+            builder = build_box_on_plane()
+            return build_box_on_plane(builder=builder)
+
+        test = TestSetup(
+            builder_fn=build_two_boxes_on_planes,
+            max_world_contacts=4,
+            gravity=False,
+            perturb=False,
+            device=self.default_device,
+        )
+
+        num_contacts = len(contacts)
+        wid = test.contacts.wid.numpy()
+        cid = test.contacts.cid.numpy()
+        gapfunc = test.contacts.gapfunc.numpy()
+        wid[:num_contacts] = [contact[0] for contact in contacts]
+        cid[:num_contacts] = [contact[1] for contact in contacts]
+        gapfunc[:num_contacts] = [(0.0, 0.0, 1.0, contact[2]) for contact in contacts]
+
+        test.contacts.model_active_contacts.assign(np.array([num_contacts], dtype=np.int32))
+        test.contacts.world_active_contacts.assign(
+            np.bincount([contact[0] for contact in contacts], minlength=2).astype(np.int32)
+        )
+        test.contacts.wid.assign(wid)
+        test.contacts.cid.assign(cid)
+        test.contacts.gapfunc.assign(gapfunc)
+
+        metrics = SolutionMetrics(model=test.model)
+        metrics.reset()
+        metrics._evaluate_constraint_violations_perf(
+            model=test.model,
+            data=test.data,
+            contacts=test.contacts,
+        )
+        wp.synchronize()
+        return metrics.data.r_cts_contacts.numpy(), metrics.data.r_cts_contacts_argmax.numpy()
+
     def test_00_make_default(self):
         """
         Test creating a SolutionMetrics instance with default initialization.
@@ -355,12 +396,15 @@ class TestSolverMetrics(unittest.TestCase):
         msg.info("metrics.r_ncp_compl: %s", metrics.data.r_ncp_compl)
         msg.info("metrics.r_vi_natmap: %s\n", metrics.data.r_vi_natmap)
 
-        # Extract the maximum contact penetration to use for validation
+        # Extract the maximum unilateral penetration depth, max(0, -d).
         nc = test.contacts.model_active_contacts.numpy()[0]
-        max_contact_penetration = 0.0
-        for cid in range(nc):
-            pen = test.contacts.gapfunc.numpy()[cid][3]
-            max_contact_penetration = max(max_contact_penetration, pen)
+        signed_distances = test.contacts.gapfunc.numpy()[:nc, 3]
+        contact_residuals = np.maximum(0.0, -signed_distances)
+        max_contact_penetration = np.max(contact_residuals, initial=0.0)
+        max_contact_argmax = -1
+        for cid, residual in enumerate(contact_residuals):
+            if residual > 0.0 and residual >= max_contact_penetration:
+                max_contact_argmax = cid
 
         # Check that all metrics are zero
         np.testing.assert_allclose(metrics.data.r_eom.numpy()[0], 0.0)
@@ -393,9 +437,7 @@ class TestSolverMetrics(unittest.TestCase):
         # NOTE: all contacts will have the same residual,
         # so the argmax will evaluate to the last constraint
         np.testing.assert_allclose(metrics.data.r_v_plus_argmax.numpy()[0], 11)
-        # NOTE: all contacts will have the same penetration,
-        # so the argmax will evaluate to the last contact
-        np.testing.assert_allclose(metrics.data.r_cts_contacts_argmax.numpy()[0], 3)
+        np.testing.assert_allclose(metrics.data.r_cts_contacts_argmax.numpy()[0], max_contact_argmax)
         np.testing.assert_allclose(metrics.data.r_ncp_primal_argmax.numpy()[0], 3)
         np.testing.assert_allclose(metrics.data.r_ncp_dual_argmax.numpy()[0], 3)
         np.testing.assert_allclose(metrics.data.r_ncp_compl_argmax.numpy()[0], 3)
@@ -459,12 +501,10 @@ class TestSolverMetrics(unittest.TestCase):
         msg.info("metrics.r_ncp_compl: %s", metrics.data.r_ncp_compl)
         msg.info("metrics.r_vi_natmap: %s\n", metrics.data.r_vi_natmap)
 
-        # Extract the maximum contact penetration to use for validation
+        # Extract the maximum unilateral penetration depth, max(0, -d).
         nc = test.contacts.model_active_contacts.numpy()[0]
-        max_contact_penetration = 0.0
-        for cid in range(nc):
-            pen = test.contacts.gapfunc.numpy()[cid][3]
-            max_contact_penetration = max(max_contact_penetration, pen)
+        signed_distances = test.contacts.gapfunc.numpy()[:nc, 3]
+        max_contact_penetration = np.max(np.maximum(0.0, -signed_distances), initial=0.0)
 
         # Check that all metrics are zero
         accuracy = 5  # number of decimal places for accuracy
@@ -547,11 +587,9 @@ class TestSolverMetrics(unittest.TestCase):
         msg.info("metrics.r_ncp_compl: %s", metrics.data.r_ncp_compl)
         msg.info("metrics.r_vi_natmap: %s\n", metrics.data.r_vi_natmap)
 
-        # Extract the maximum contact penetration to use for validation
-        max_contact_penetration = 0.0
-        for cid in range(nc):
-            pen = test.contacts.gapfunc.numpy()[cid][3]
-            max_contact_penetration = max(max_contact_penetration, pen)
+        # Extract the maximum unilateral penetration depth, max(0, -d).
+        signed_distances = test.contacts.gapfunc.numpy()[:nc, 3]
+        max_contact_penetration = np.max(np.maximum(0.0, -signed_distances), initial=0.0)
 
         # Check that all metrics are zero
         accuracy = 5  # number of decimal places for accuracy
@@ -822,6 +860,32 @@ class TestSolverMetrics(unittest.TestCase):
         np.testing.assert_allclose(
             metrics_dense.data.r_vi_natmap.numpy(), metrics_sparse.data.r_vi_natmap.numpy(), rtol=rtol, atol=atol
         )
+
+    def test_07_contact_residual_positive_gaps(self):
+        residual, argmax = self._evaluate_contact_residuals(
+            [
+                (0, 0, 0.0),
+                (0, 1, 0.1),
+                (1, 0, 0.2),
+            ]
+        )
+
+        np.testing.assert_allclose(residual, [0.0, 0.0])
+        np.testing.assert_array_equal(argmax, [-1, -1])
+
+    def test_08_contact_residual_mixed_signed_distances(self):
+        residual, argmax = self._evaluate_contact_residuals(
+            [
+                (0, 0, 0.5),
+                (0, 1, -0.1),
+                (1, 0, -0.2),
+                (1, 1, 0.3),
+                (1, 2, -0.4),
+            ]
+        )
+
+        np.testing.assert_allclose(residual, [0.1, 0.4])
+        np.testing.assert_array_equal(argmax, [1, 2])
 
 
 ###
