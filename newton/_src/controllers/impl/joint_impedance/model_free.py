@@ -262,19 +262,39 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         inputs.joint_qd = wp.zeros(_idx_max(self._qd_idx), dtype=wp.float32, device=d, requires_grad=rg)
         inputs.joint_q_des = wp.zeros(_idx_max(self._q_des_idx), dtype=wp.float32, device=d, requires_grad=rg)
         inputs.joint_qd_des = wp.zeros(_idx_max(self._qd_des_idx), dtype=wp.float32, device=d, requires_grad=rg)
-        inputs.joint_qdd = wp.zeros(_idx_max(self._qdd_idx), dtype=wp.float32, device=d, requires_grad=rg) if self._has_qdd else None
-        inputs.gravity_force = wp.zeros(_idx_max(self._gravity_idx), dtype=wp.float32, device=d, requires_grad=rg) if self._use_gravity else None
-        inputs.coriolis_force = wp.zeros(_idx_max(self._coriolis_idx), dtype=wp.float32, device=d, requires_grad=rg) if self._use_coriolis else None
+        inputs.joint_qdd = (
+            wp.zeros(_idx_max(self._qdd_idx), dtype=wp.float32, device=d, requires_grad=rg) if self._has_qdd else None
+        )
+        inputs.gravity_force = (
+            wp.zeros(_idx_max(self._gravity_idx), dtype=wp.float32, device=d, requires_grad=rg)
+            if self._use_gravity
+            else None
+        )
+        inputs.coriolis_force = (
+            wp.zeros(_idx_max(self._coriolis_idx), dtype=wp.float32, device=d, requires_grad=rg)
+            if self._use_coriolis
+            else None
+        )
         shape_2d = (self._robot_count, self._max_dofs)
-        inputs.mass_matrix = wp.zeros((self._robot_count, self._max_dofs, self._max_dofs), dtype=wp.float32, device=d, requires_grad=rg) if self._use_inertia else None
-        inputs.stiffness = wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._stiffness_baked is None else None
-        inputs.damping = wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._damping_baked is None else None
+        inputs.mass_matrix = (
+            wp.zeros((self._robot_count, self._max_dofs, self._max_dofs), dtype=wp.float32, device=d, requires_grad=rg)
+            if self._use_inertia
+            else None
+        )
+        inputs.stiffness = (
+            wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._stiffness_baked is None else None
+        )
+        inputs.damping = (
+            wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._damping_baked is None else None
+        )
         return inputs
 
     def output(self) -> Outputs:
         """Return a pre-allocated :class:`Outputs` with a flat torque array."""
         outputs = ControllerJointImpedanceModelFree.Outputs()
-        outputs.joint_f = wp.zeros(_idx_max(self._f_idx), dtype=wp.float32, device=self._device, requires_grad=self._requires_grad)
+        outputs.joint_f = wp.zeros(
+            _idx_max(self._f_idx), dtype=wp.float32, device=self._device, requires_grad=self._requires_grad
+        )
         return outputs
 
     def compute(

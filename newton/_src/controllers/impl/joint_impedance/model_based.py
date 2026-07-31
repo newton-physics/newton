@@ -201,12 +201,18 @@ class ControllerJointImpedance(ControllerBase):
         if self._use_inertia:
             self._mass_matrix = wp.zeros(
                 (robot_count, max_dofs, max_dofs),
-                dtype=wp.float32, device=self._device, requires_grad=requires_grad,
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
             )
         if self._use_gravity:
-            self._gravity_flat = wp.zeros(total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+            self._gravity_flat = wp.zeros(
+                total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
         if self._use_coriolis:
-            self._coriolis_flat = wp.zeros(total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+            self._coriolis_flat = wp.zeros(
+                total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
 
         # Newton fills dynamics in the same DOF order as model.joint_q — use identity indices.
         identity_idx = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self._device)
@@ -270,10 +276,16 @@ class ControllerJointImpedance(ControllerBase):
         inputs.joint_qd = wp.zeros(_idx_max(self._qd_idx), dtype=wp.float32, device=d, requires_grad=rg)
         inputs.joint_q_des = wp.zeros(_idx_max(self._q_des_idx), dtype=wp.float32, device=d, requires_grad=rg)
         inputs.joint_qd_des = wp.zeros(_idx_max(self._qd_des_idx), dtype=wp.float32, device=d, requires_grad=rg)
-        inputs.joint_qdd = wp.zeros(_idx_max(self._qdd_idx), dtype=wp.float32, device=d, requires_grad=rg) if self._has_qdd else None
+        inputs.joint_qdd = (
+            wp.zeros(_idx_max(self._qdd_idx), dtype=wp.float32, device=d, requires_grad=rg) if self._has_qdd else None
+        )
         shape_2d = (self._robot_count, self._max_dofs)
-        inputs.stiffness = wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._stiffness_is_live else None
-        inputs.damping = wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._damping_is_live else None
+        inputs.stiffness = (
+            wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._stiffness_is_live else None
+        )
+        inputs.damping = (
+            wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._damping_is_live else None
+        )
         return inputs
 
     def output(self) -> Outputs:
