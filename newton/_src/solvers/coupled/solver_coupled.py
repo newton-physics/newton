@@ -452,6 +452,17 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if index_lists is None:
                 visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
                 self._apply_global_shape_metadata(view, cfg, visible_bodies)
+            # Entry views must own their particle hash grid: it is per-step
+            # solver scratch (each particle solver rebuilds it over the
+            # entry's own particles before querying it), not shared model
+            # data. Aliasing the parent's grid makes its contents valid only
+            # for whichever entry stepped last and is a data race if entries
+            # ever step concurrently.
+            if view.particle_count > 0 and model.particle_grid is not None:
+                with wp.ScopedDevice(device):
+                    view.particle_grid = wp.HashGrid(128, 128, 128)
+            else:
+                view.particle_grid = None
             self._customize_compact_view(view)
             if cfg.configure_view is not None:
                 cfg.configure_view(view)
