@@ -11,11 +11,6 @@
 # tangential body forces, so boxes are carried around the loop, through the
 # 180-degree turn, up the incline, across the differential pair, and back.
 #
-# Straight belts cannot be driven kinematically, which is what motivates the
-# force-based drive here. See example_basic_conveyor.py for the other
-# approach: a single rotating belt moved by a prescribed joint, carrying its
-# load through ordinary contact friction.
-#
 # Command: python -m newton.examples basic_conveyor_forces
 #
 ###########################################################################
