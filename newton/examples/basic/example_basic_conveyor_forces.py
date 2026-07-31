@@ -365,7 +365,7 @@ class ConveyorForceModel:
     :meth:`add_pivot_belt`, call :meth:`finalize`, then drive it each substep::
 
         conveyor.apply(state_0)  # add the conveyor wrench from the last step
-        conveyor.snapshot_prev(state_0, solver)
+        conveyor.snapshot_prev(solver)
         collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, dt)
         conveyor.update(solver, contacts, state_1, dt)  # read forces, recompute wrench
@@ -500,11 +500,7 @@ class ConveyorForceModel:
             raise RuntimeError("Register at least one belt before finalize().")
         if contacts.rigid_contact_max <= 0:
             raise ValueError("Contacts must have nonzero rigid-contact capacity.")
-        if self.solver_type == "vbd":
-            force_buffer = contacts.rigid_contact_force
-        else:
-            force_buffer = contacts.force
-        if force_buffer is None:
+        if self.solver_type != "vbd" and contacts.force is None:
             raise ValueError("Call model.request_contact_attributes('force') before creating Contacts.")
 
         d = self.device
@@ -538,15 +534,16 @@ class ConveyorForceModel:
             device=self.device,
         )
 
-    def snapshot_prev(self, state: newton.State, solver) -> None:
+    def snapshot_prev(self, solver) -> None:
         """Store the pre-step body poses used for contact-force reporting.
 
+        Only VBD reports forces from a pose history, so this is a no-op for the other solvers.
+
         Args:
-            state: Input state for the upcoming solver step.
-            solver: Solver that will advance ``state``.
+            solver: Solver that is about to advance the state.
         """
-        source = solver.body_q_prev if self.solver_type == "vbd" else state.body_q
-        wp.copy(self.body_q_prev, source)
+        if self.solver_type == "vbd":
+            wp.copy(self.body_q_prev, solver.body_q_prev)
 
     def _report_contact_forces(self, solver, contacts, state_post, dt: float) -> None:
         """Copy solver-specific contact forces into a common linear-force buffer."""
@@ -964,7 +961,7 @@ class Example:
 
             # Add the wrench the conveyor computed from the previous step's contacts.
             self.conveyor.apply(self.state_0)
-            self.conveyor.snapshot_prev(self.state_0, self.solver)
+            self.conveyor.snapshot_prev(self.solver)
 
             self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)

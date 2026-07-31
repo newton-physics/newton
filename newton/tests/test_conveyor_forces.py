@@ -128,7 +128,7 @@ def run_conveyor(
         for _ in range(substeps):
             state_0.clear_forces()
             conveyor.apply(state_0)
-            conveyor.snapshot_prev(state_0, solver)
+            conveyor.snapshot_prev(solver)
             collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt)
             conveyor.update(solver, contacts, state_1, sim_dt)
@@ -233,7 +233,7 @@ def run_multi_belt(device, solver_name, belts, box_xy, *, box_half=(0.45, 0.2, 0
         for _ in range(substeps):
             state_0.clear_forces()
             conveyor.apply(state_0)
-            conveyor.snapshot_prev(state_0, solver)
+            conveyor.snapshot_prev(solver)
             collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt)
             conveyor.update(solver, contacts, state_1, sim_dt)
