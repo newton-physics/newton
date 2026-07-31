@@ -57,26 +57,6 @@ def compute_basis_vectors(direction: wp.vec3) -> Vec3Pair:
 
 
 @wp.func
-def compute_axis_impulse(
-    constraint_axis: wp.vec3,
-    relative_velocity: wp.vec3,
-    response_linear: wp.float32,
-    inv_inertia_world: wp.mat33,
-    center_of_mass_to_point: wp.vec3,
-    mass_splitting_scale: wp.float32,
-) -> wp.float32:
-    """Impulse along ``constraint_axis`` to null the relative velocity along it."""
-    delta_cross_axis = wp.cross(center_of_mass_to_point, constraint_axis)
-    response_angular = wp.dot(delta_cross_axis, wp.mul(inv_inertia_world, delta_cross_axis))
-    response = response_linear + response_angular
-    if response <= 0.0:
-        return 0.0
-    vel_multiplier = (1.0 / response) * mass_splitting_scale
-    rel_vel_proj = wp.dot(constraint_axis, relative_velocity)
-    return rel_vel_proj * vel_multiplier
-
-
-@wp.func
 def compute_point_impulse(
     normal: wp.vec3,
     normal_impulse: wp.float32,
@@ -92,12 +72,20 @@ def compute_point_impulse(
     rel_vel = target_vel - current_vel
     basis = compute_basis_vectors(normal)
 
-    i0 = compute_axis_impulse(
-        basis.v0, rel_vel, response_linear, inv_inertia_world, center_of_mass_to_point, mass_splitting_scale
-    )
-    i1 = compute_axis_impulse(
-        basis.v1, rel_vel, response_linear, inv_inertia_world, center_of_mass_to_point, mass_splitting_scale
-    )
+    r_cross_t0 = wp.cross(center_of_mass_to_point, basis.v0)
+    r_cross_t1 = wp.cross(center_of_mass_to_point, basis.v1)
+    k00 = response_linear + wp.dot(r_cross_t0, wp.mul(inv_inertia_world, r_cross_t0))
+    k11 = response_linear + wp.dot(r_cross_t1, wp.mul(inv_inertia_world, r_cross_t1))
+    k01 = wp.dot(r_cross_t0, wp.mul(inv_inertia_world, r_cross_t1))
+    det = (k00 * k11) - (k01 * k01)
+
+    i0 = wp.float32(0.0)
+    i1 = wp.float32(0.0)
+    if det > 0.0:
+        v0 = wp.dot(basis.v0, rel_vel)
+        v1 = wp.dot(basis.v1, rel_vel)
+        i0 = ((k11 * v0) - (k01 * v1)) * mass_splitting_scale / det
+        i1 = ((k00 * v1) - (k01 * v0)) * mass_splitting_scale / det
 
     friction_impulse_max = normal_impulse * friction_coefficient
     zero_err_magn = wp.sqrt((i0 * i0) + (i1 * i1))
@@ -179,6 +167,7 @@ def identify_belt_contact(
     body_q: wp.array[wp.transform],
     conv_surface_normal: wp.array[wp.vec3],
     conv_threshold: wp.array[wp.float32],
+    use_contact_offsets: wp.int32,
 ) -> BeltContact:
     """Decide whether contact ``i`` is a belt/body contact and extract its inputs for the force model."""
     out = BeltContact()
@@ -199,12 +188,16 @@ def identify_belt_contact(
     if conv0 >= 0 and conv1 < 0:
         conv = conv0
         body = shape_body[shape1]
-        body_point_local = rigid_contact_point1[i] + rigid_contact_offset1[i]
+        body_point_local = rigid_contact_point1[i]
+        if use_contact_offsets != 0:
+            body_point_local += rigid_contact_offset1[i]
         normal_toward_body = normal
     elif conv1 >= 0 and conv0 < 0:
         conv = conv1
         body = shape_body[shape0]
-        body_point_local = rigid_contact_point0[i] + rigid_contact_offset0[i]
+        body_point_local = rigid_contact_point0[i]
+        if use_contact_offsets != 0:
+            body_point_local += rigid_contact_offset0[i]
         normal_toward_body = -normal
     else:
         return out
@@ -247,6 +240,7 @@ def classify_belt_contacts(
     body_q: wp.array[wp.transform],
     conv_surface_normal: wp.array[wp.vec3],
     conv_threshold: wp.array[wp.float32],
+    use_contact_offsets: wp.int32,
     # output
     belt_contacts: wp.array[BeltContact],
     body_contact_count: wp.array[wp.int32],
@@ -269,6 +263,7 @@ def classify_belt_contacts(
         body_q,
         conv_surface_normal,
         conv_threshold,
+        use_contact_offsets,
     )
     belt_contacts[i] = c
     if c.valid == 1:
@@ -379,6 +374,8 @@ class ConveyorForceModel:
         self.model = model
         self.solver_type = solver_type
         self.device = model.device
+        # MuJoCo reporting replaces Newton support points with geometry-surface points.
+        self._use_contact_offsets = solver_type != "mujoco"
         self._field_type: list[int] = []
         self._const_vel: list[wp.vec3] = []
         self._pivot_point: list[wp.vec3] = []
@@ -582,6 +579,7 @@ class ConveyorForceModel:
                 state_post.body_q,
                 self.conv_surface_normal,
                 self.conv_threshold,
+                int(self._use_contact_offsets),
             ],
             outputs=[self.belt_contacts, self.body_contact_count],
             device=self.device,
@@ -772,15 +770,23 @@ class Example:
         builder.add_ground_plane()
         straight_belts, turn_belts, self.tracked_bodies = self._build_scene(builder)
 
+        transported = set(self.tracked_bodies)
         if self.solver_type == "mujoco":
             # The conveyor supplies tangential contact forces explicitly, so native
             # friction on transported bodies is reduced to MuJoCo's positive minimum.
             # The conveyor force remains bounded by BELT_DRIVE_FRICTION.
-            transported = set(self.tracked_bodies)
             for shape, body in enumerate(builder.shape_body):
                 builder.shape_material_mu[shape] = max(builder.shape_material_mu[shape], MUJOCO_MIN_FRICTION)
                 if body in transported:
                     builder.shape_material_mu[shape] = MUJOCO_MIN_FRICTION
+                    builder.shape_material_mu_torsional[shape] = 0.0
+                    builder.shape_material_mu_rolling[shape] = 0.0
+        elif self.solver_type == "xpbd":
+            # XPBD averages the two shape coefficients, so both sides of a belt
+            # contact must be frictionless to leave tangential drive to the conveyor.
+            for shape, body in enumerate(builder.shape_body):
+                if body in transported:
+                    builder.shape_material_mu[shape] = 0.0
                     builder.shape_material_mu_torsional[shape] = 0.0
                     builder.shape_material_mu_rolling[shape] = 0.0
 
@@ -854,7 +860,8 @@ class Example:
         ``(shape, velocity, surface_normal)`` and turns as ``(shape, pivot_point, angular_velocity)``
         — plus the body indices of the transported boxes.
         """
-        belt_cfg = newton.ModelBuilder.ShapeConfig(mu=0.0)  # the drive comes from the conveyor forces
+        # The explicit conveyor forces provide all belt traction.
+        belt_cfg = newton.ModelBuilder.ShapeConfig(mu=0.0, mu_torsional=0.0, mu_rolling=0.0)
         guard_cfg = newton.ModelBuilder.ShapeConfig(mu=GUARD_FRICTION)
 
         straight_belts = []

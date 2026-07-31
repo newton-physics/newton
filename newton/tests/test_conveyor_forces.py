@@ -76,7 +76,6 @@ def run_conveyor(
 
     box_body = builder.add_link(
         xform=wp.transform(p=wp.vec3(box_xy[0], box_xy[1], BELT_TOP_Z + BOX_HALF + 0.01), q=wp.quat_identity()),
-        mass=box_mass,
         label="box",
     )
     builder.add_shape_box(
@@ -84,7 +83,11 @@ def run_conveyor(
         hx=BOX_HALF,
         hy=BOX_HALF,
         hz=BOX_HALF,
-        cfg=newton.ModelBuilder.ShapeConfig(mu=CONTACT_FRICTION, restitution=0.0),
+        cfg=newton.ModelBuilder.ShapeConfig(
+            mu=CONTACT_FRICTION,
+            restitution=0.0,
+            density=box_mass / (8.0 * BOX_HALF**3),
+        ),
     )
     builder.add_articulation([builder.add_joint_free(box_body)], label="box")
     builder.color()
