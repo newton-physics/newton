@@ -17,7 +17,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
-from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
+from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -68,6 +68,119 @@ def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
         return os.path.abspath(os.path.join(base_dir, file_path))
     else:
         raise ValueError(f"Cannot resolve relative path '{file_path}' without base directory")
+
+
+def _compute_mjcf_mesh_inertia(
+    meshes: list[Mesh],
+    mode: str,
+    maxhullvert: int,
+) -> tuple[float, wp.vec3, wp.mat33]:
+    """Compute unit-density mesh mass properties using MuJoCo's algorithms."""
+    vertices = []
+    faces = []
+    vertex_offset = 0
+    for mesh in meshes:
+        mesh_vertices = np.asarray(mesh.vertices, dtype=np.float64)
+        mesh_faces = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
+        vertices.append(mesh_vertices)
+        faces.append(mesh_faces + vertex_offset)
+        vertex_offset += len(mesh_vertices)
+
+    vertices = np.concatenate(vertices)
+    faces = np.concatenate(faces)
+
+    triangles = vertices[faces]
+    centers = np.mean(triangles, axis=1)
+    cross_products = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    cross_norms = np.linalg.norm(cross_products, axis=1)
+    areas = 0.5 * cross_norms
+    total_area = np.sum(areas)
+    if total_area <= 0.0:
+        raise ValueError("MJCF mesh surface area is too small to compute inertia")
+    face_centroid = np.sum(areas[:, None] * centers, axis=0) / total_area
+
+    if mode == "convex":
+        inertia_vertices, inertia_faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
+        inertia_vertices = np.asarray(inertia_vertices, dtype=np.float64)
+        inertia_faces = np.asarray(inertia_faces, dtype=np.int32).reshape(-1, 3)
+    else:
+        inertia_vertices = vertices
+        inertia_faces = faces
+
+    triangles = inertia_vertices[inertia_faces]
+    centers = np.mean(triangles, axis=1)
+    cross_products = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    cross_norms = np.linalg.norm(cross_products, axis=1)
+    areas = 0.5 * cross_norms
+    normals = np.divide(
+        cross_products,
+        cross_norms[:, None],
+        out=np.zeros_like(cross_products),
+        where=cross_norms[:, None] > 0.0,
+    )
+
+    if mode == "shell":
+        weights = areas
+    else:
+        weights = np.sum((centers - face_centroid) * normals, axis=1) * areas / 3.0
+        if mode == "legacy":
+            weights = np.abs(weights)
+
+    total_measure = np.sum(weights)
+    if total_measure <= 0.0:
+        qualifier = "negative" if total_measure < 0.0 else "too small"
+        raise ValueError(f"MJCF mesh volume is {qualifier}; check triangle orientation or use inertia='shell'")
+    com = np.sum(weights[:, None] * (0.75 * centers + 0.25 * face_centroid), axis=0) / total_measure
+
+    centered_triangles = (inertia_vertices - com)[inertia_faces]
+    centers = np.mean(centered_triangles, axis=1)
+    cross_products = np.cross(
+        centered_triangles[:, 1] - centered_triangles[:, 0],
+        centered_triangles[:, 2] - centered_triangles[:, 0],
+    )
+    cross_norms = np.linalg.norm(cross_products, axis=1)
+    areas = 0.5 * cross_norms
+    normals = np.divide(
+        cross_products,
+        cross_norms[:, None],
+        out=np.zeros_like(cross_products),
+        where=cross_norms[:, None] > 0.0,
+    )
+    if mode == "shell":
+        weights = areas
+        denominator = 12.0
+    else:
+        weights = np.sum(centers * normals, axis=1) * areas / 3.0
+        if mode == "legacy":
+            weights = np.abs(weights)
+        denominator = 20.0
+
+    products = np.zeros(6)
+    coordinate_pairs = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+    d, e, f = centered_triangles[:, 0], centered_triangles[:, 1], centered_triangles[:, 2]
+    for product_index, (axis_a, axis_b) in enumerate(coordinate_pairs):
+        products[product_index] = np.sum(
+            weights
+            / denominator
+            * (
+                2.0 * (d[:, axis_a] * d[:, axis_b] + e[:, axis_a] * e[:, axis_b] + f[:, axis_a] * f[:, axis_b])
+                + d[:, axis_a] * e[:, axis_b]
+                + d[:, axis_b] * e[:, axis_a]
+                + d[:, axis_a] * f[:, axis_b]
+                + d[:, axis_b] * f[:, axis_a]
+                + e[:, axis_a] * f[:, axis_b]
+                + e[:, axis_b] * f[:, axis_a]
+            )
+        )
+
+    inertia = np.array(
+        [
+            [products[1] + products[2], -products[3], -products[4]],
+            [-products[3], products[0] + products[2], -products[5]],
+            [-products[4], -products[5], products[0] + products[1]],
+        ]
+    )
+    return float(np.sum(weights)), wp.vec3(*com), wp.mat33(*inertia)
 
 
 def _load_and_expand_mjcf(
@@ -520,7 +633,15 @@ def parse_mjcf(
                 s = np.array(s.split(), dtype=np.float32)
                 # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
                 maxhullvert = int(mesh_attrib.get("maxhullvert", str(mesh_maxhullvert)))
-                mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
+                inertia_mode = mesh_attrib.get("inertia", "legacy")
+                if inertia_mode not in {"convex", "exact", "legacy", "shell"}:
+                    raise ValueError(f"Unsupported inertia mode '{inertia_mode}' for MJCF mesh asset '{name}'")
+                mesh_assets[name] = {
+                    "file": fname,
+                    "scale": s,
+                    "maxhullvert": maxhullvert,
+                    "inertia": inertia_mode,
+                }
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
             tex_file = texture.attrib.get("file")
@@ -1016,23 +1137,33 @@ def parse_mjcf(
                     override_color=material_color,
                     override_texture=texture,
                 )
+                inertia_mode = mesh_assets[geom_attrib["mesh"]]["inertia"]
+                mesh_mass, mesh_com, mesh_inertia = _compute_mjcf_mesh_inertia(
+                    m_meshes,
+                    inertia_mode,
+                    maxhullvert,
+                )
+                mass_mesh = m_meshes[0]
+                mass_mesh.mass = mesh_mass
+                mass_mesh.com = mesh_com
+                mass_mesh.inertia = mesh_inertia
+                for m_mesh in m_meshes:
+                    m_mesh.is_solid = shape_cfg.is_solid
+
                 explicit_mesh_density = None
                 if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
-                    unit_density_mass = sum(
-                        compute_inertia_shape(
-                            GeoType.MESH,
-                            wp.vec3(1.0),
-                            m_mesh,
-                            density=1.0,
-                            is_solid=shape_cfg.is_solid,
-                            thickness=shape_cfg.margin,
-                        )[0]
-                        for m_mesh in m_meshes
-                    )
+                    unit_density_mass = compute_inertia_shape(
+                        GeoType.MESH,
+                        wp.vec3(1.0),
+                        mass_mesh,
+                        density=1.0,
+                        is_solid=shape_cfg.is_solid,
+                        thickness=shape_cfg.margin,
+                    )[0]
                     if unit_density_mass > 0.0:
                         explicit_mesh_density = geom_mass_explicit / unit_density_mass
                         explicit_mass_handled = True
-                for m_mesh in m_meshes:
+                for mesh_index, m_mesh in enumerate(m_meshes):
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
                             print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
@@ -1045,6 +1176,8 @@ def parse_mjcf(
                     mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
                     if explicit_mesh_density is not None:
                         mesh_cfg.density = explicit_mesh_density
+                    if mesh_index > 0:
+                        mesh_cfg.density = 0.0
                     mesh_shape_kwargs["cfg"] = mesh_cfg
                     s = shape_builder.add_shape_mesh(
                         xform=tf,

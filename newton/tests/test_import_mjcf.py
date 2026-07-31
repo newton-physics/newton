@@ -2911,6 +2911,68 @@ f 4 5 8
                     np.testing.assert_allclose(com, reference_com, atol=1e-7, rtol=1e-6)
                     np.testing.assert_allclose(inertia, reference_inertia, atol=1e-7, rtol=1e-6)
 
+    def test_mesh_asset_inertia_modes(self):
+        """Match native MuJoCo mesh mass properties without changing geometry."""
+        import mujoco
+        import trimesh
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mesh_path = os.path.join(temp_dir, "nonconvex.obj")
+            left_box = trimesh.creation.box(
+                extents=(1.0, 0.6, 0.4),
+                transform=trimesh.transformations.translation_matrix((-0.6, 0.0, 0.0)),
+            )
+            right_box = trimesh.creation.box(
+                extents=(0.4, 0.4, 0.8),
+                transform=trimesh.transformations.translation_matrix((0.7, 0.2, 0.15)),
+            )
+            trimesh.util.concatenate((left_box, right_box)).export(mesh_path)
+
+            cases = {
+                "convex": ("", 'inertia="convex"'),
+                "exact": ("", 'inertia="exact"'),
+                "legacy": ("", 'inertia="legacy"'),
+                "shell": ("", 'inertia="shell"'),
+                "default legacy": ("", ""),
+                "inherited shell": ('<default><mesh inertia="shell"/></default>', ""),
+            }
+            vertex_counts = {}
+            for case_name, (default_xml, inertia_attrib) in cases.items():
+                with self.subTest(case=case_name):
+                    mjcf = f"""
+<mujoco>
+  {default_xml}
+  <asset>
+    <mesh name="nonconvex" file="{mesh_path}" {inertia_attrib}/>
+  </asset>
+  <worldbody>
+    <body name="mesh_body">
+      <freejoint/>
+      <geom type="mesh" mesh="nonconvex" density="1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+                    native_model = mujoco.MjModel.from_xml_string(mjcf)
+                    inertia_rotation = np.empty(9)
+                    mujoco.mju_quat2Mat(inertia_rotation, native_model.body_iquat[1])
+                    inertia_rotation = inertia_rotation.reshape(3, 3)
+                    native_inertia = inertia_rotation @ np.diag(native_model.body_inertia[1]) @ inertia_rotation.T
+
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf)
+                    vertex_counts[case_name] = len(builder.shape_source[0].vertices)
+
+                    self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1], places=6)
+                    np.testing.assert_allclose(builder.body_com[0], native_model.body_ipos[1], atol=1e-6)
+                    np.testing.assert_allclose(
+                        np.asarray(builder.body_inertia[0]).reshape(3, 3),
+                        native_inertia,
+                        atol=1e-6,
+                    )
+
+            self.assertEqual(vertex_counts["convex"], vertex_counts["exact"])
+
     def test_compiler_inertiagrouprange(self):
         """Test that only geom groups in the compiler range contribute inertia."""
         mjcf = """<?xml version="1.0" ?>
