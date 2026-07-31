@@ -2889,6 +2889,7 @@ def parse_mjcf(
             merged_attrib = resolve_element_attrib(actuator_elem, actuator_type)
 
             joint_name = merged_attrib.get("joint")
+            joint_in_parent_name = merged_attrib.get("jointinparent")
             body_name = merged_attrib.get("body")
             tendon_name = merged_attrib.get("tendon")
             site_name = merged_attrib.get("site")
@@ -2896,6 +2897,8 @@ def parse_mjcf(
             # Sanitize names to match how they were stored in the builder
             if joint_name:
                 joint_name = sanitize_name(joint_name)
+            if joint_in_parent_name:
+                joint_in_parent_name = sanitize_name(joint_in_parent_name)
             if body_name:
                 body_name = sanitize_name(body_name)
             if tendon_name:
@@ -2909,27 +2912,28 @@ def parse_mjcf(
             qd_start = -1
             total_dofs = 0
 
-            if joint_name:
-                # Joint transmission (trntype=0)
+            target_joint_name = joint_name or joint_in_parent_name
+            if target_joint_name:
+                # Joint transmissions (trntype=0 or parent-frame trntype=1)
                 # First check per-MJCF-joint mapping (for targeting specific DOFs in combined joints)
-                if joint_name in mjcf_joint_name_to_dof:
-                    qd_start = mjcf_joint_name_to_dof[joint_name]
+                if target_joint_name in mjcf_joint_name_to_dof:
+                    qd_start = mjcf_joint_name_to_dof[target_joint_name]
                     total_dofs = 1  # Individual MJCF joints always map to exactly 1 DOF
                     target_idx = qd_start  # DOF index for joint actuators
-                    target_name_for_log = joint_name
-                    trntype = 0  # TrnType.JOINT
-                elif joint_name in joint_name_to_idx:
+                    target_name_for_log = target_joint_name
+                    trntype = 1 if joint_in_parent_name else 0
+                elif target_joint_name in joint_name_to_idx:
                     # Fallback: combined Newton joint (applies to all DOFs)
-                    joint_idx = joint_name_to_idx[joint_name]
+                    joint_idx = joint_name_to_idx[target_joint_name]
                     qd_start = builder.joint_qd_start[joint_idx]
                     lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
                     total_dofs = lin_dofs + ang_dofs
                     target_idx = qd_start  # DOF index for joint actuators
-                    target_name_for_log = joint_name
-                    trntype = 0  # TrnType.JOINT
+                    target_name_for_log = target_joint_name
+                    trntype = 1 if joint_in_parent_name else 0
                 else:
                     if verbose:
-                        print(f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'")
+                        print(f"Warning: {actuator_type} actuator references unknown joint '{target_joint_name}'")
                     continue
             elif body_name:
                 # Body transmission (trntype=4)
@@ -2989,7 +2993,7 @@ def parse_mjcf(
                 # Uses only the first DOF (qd_start) since inheritrange is only
                 # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
-                if inheritrange > 0 and joint_name and qd_start >= 0:
+                if inheritrange > 0 and target_joint_name and qd_start >= 0:
                     lower = builder.joint_limit_lower[qd_start]
                     upper = builder.joint_limit_upper[qd_start]
                     if lower < upper:
@@ -3110,7 +3114,7 @@ def parse_mjcf(
                 source_name = (
                     "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
                 )
-                trn_name = {0: "joint", 2: "tendon", 4: "body"}.get(trntype, "unknown")
+                trn_name = {0: "joint", 1: "jointinparent", 2: "tendon", 3: "site", 4: "body"}.get(trntype, "unknown")
                 print(
                     f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
                     f"trntype={trntype}, source={source_name}"
