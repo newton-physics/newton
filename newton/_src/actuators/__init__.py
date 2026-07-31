@@ -3,7 +3,14 @@
 
 from .actuator import Actuator
 from .clamping import Clamping, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .controllers import Controller, ControllerNeuralLSTM, ControllerNeuralMLP, ControllerPD, ControllerPID
+from .controllers import (
+    Controller,
+    ControllerDetent,
+    ControllerNeuralLSTM,
+    ControllerNeuralMLP,
+    ControllerPD,
+    ControllerPID,
+)
 from .delay import Delay
 from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
 
@@ -16,6 +23,7 @@ __all__ = [
     "ClampingPositionBased",
     "ComponentKind",
     "Controller",
+    "ControllerDetent",
     "ControllerNeuralLSTM",
     "ControllerNeuralMLP",
     "ControllerPD",
