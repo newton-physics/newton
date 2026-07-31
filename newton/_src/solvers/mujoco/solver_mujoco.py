@@ -3315,6 +3315,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         use_mujoco_cpu: bool = False,
         enable_multiccd: bool = False,
         disable_contacts: bool = False,
+        disable_sensors: bool = False,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
@@ -3354,6 +3355,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
             disable_contacts: If True, disable contact computation in MuJoCo.
+            disable_sensors: If True, disable sensor computation in MuJoCo.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
@@ -3521,6 +3523,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
         if disable_contacts:
             disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
+        if disable_sensors:
+            disableflags |= mujoco.mjtDisableBit.mjDSBL_SENSOR
         self.use_mujoco_cpu = use_mujoco_cpu
         if use_mujoco_contacts or use_mujoco_cpu:
             mujoco_attrs_for_warn = getattr(model, "mujoco", None)
