@@ -628,6 +628,8 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
 
     Returns:
         Number of contact points for collisions between A->B and B->A.
+        Primitive colliders run once in canonical order, so their reverse
+        capacity is zero.
     """
     # Ensure the shape types are ordered canonically
     if type_a > type_b:
@@ -650,13 +652,13 @@ def _max_contacts_for_shape_pair_impl(type_a: int, type_b: int) -> tuple[int, in
         elif type_b == GeoType.SPHERE:
             return 1, 0
         elif type_b == GeoType.CAPSULE:
-            return 8, 8
+            return 2, 0
         elif type_b == GeoType.ELLIPSOID:
-            return 4, 4
+            return 1, 0
         elif type_b == GeoType.CYLINDER:
-            return 6, 6
+            return 4, 0
         elif type_b == GeoType.BOX:
-            return 12, 12
+            return 4, 0
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
             return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
@@ -674,13 +676,13 @@ def _max_contacts_for_shape_pair_impl(type_a: int, type_b: int) -> tuple[int, in
 
     elif type_a == GeoType.CAPSULE:
         if type_b == GeoType.CAPSULE:
-            return 2, 2
+            return 2, 0
         elif type_b == GeoType.ELLIPSOID:
             return 8, 8
         elif type_b == GeoType.CYLINDER:
             return 4, 4
         elif type_b == GeoType.BOX:
-            return 8, 8
+            return 2, 0
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
             return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
@@ -710,7 +712,7 @@ def _max_contacts_for_shape_pair_impl(type_a: int, type_b: int) -> tuple[int, in
 
     elif type_a == GeoType.BOX:
         if type_b == GeoType.BOX:
-            return 12, 12
+            return 8, 0
         elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
             return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONE:
