@@ -3145,14 +3145,16 @@ def parse_mjcf(
     # been accumulated. Restrict them to this import so an existing builder is
     # not affected.
     for body_idx in range(start_body_count, len(builder.body_mass)):
-        mass = max(builder.body_mass[body_idx], bound_mass)
+        mass = builder.body_mass[body_idx]
         inertia = np.array(builder.body_inertia[body_idx], dtype=np.float64).reshape(3, 3)
         inertia = 0.5 * (inertia + inertia.T)
         principal_inertia, principal_axes = np.linalg.eigh(inertia)
-        principal_inertia = np.maximum(principal_inertia, bound_inertia)
 
         if mass < 0.0 or np.any(principal_inertia < 0.0):
             raise ValueError("MJCF body mass and inertia must be nonnegative.")
+
+        mass = max(mass, bound_mass)
+        principal_inertia = np.maximum(principal_inertia, bound_inertia)
 
         if (
             principal_inertia[0] + principal_inertia[1] < principal_inertia[2]
