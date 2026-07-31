@@ -598,7 +598,10 @@ Sleeping
 MuJoCo Warp can exclude stationary constraint islands from collision
 detection and the compact Newton solver. Newton keeps this optimization
 disabled by default. Enable it when simulating many passive objects that
-spend substantial time at rest::
+spend substantial time at rest. Sleeping adds island bookkeeping and uses the
+compact-solver path even while everything remains awake, so scenes in which
+most degrees of freedom remain awake can be slower than with sleeping disabled.
+Benchmark representative workloads before enabling it::
 
     solver = SolverMuJoCo(
         model,
@@ -639,7 +642,9 @@ adding the body::
 
 ``INIT`` makes the tree start asleep and is the intended way to construct a
 solver with compact ``nvmax`` storage. The setting applies to the shared model,
-so replicated worlds receive the same initial tree policies.
+so replicated worlds receive the same initial tree policies. Their default
+joint velocities must also match because MuJoCo Warp uses one shared initial
+sleep state; solver construction rejects differing per-world defaults.
 
 ``nvmax`` sizes the compact solver's active-DOF workspace per world. If it is
 ``None``, MuJoCo Warp uses the model's full ``nv``. This is the safe starting

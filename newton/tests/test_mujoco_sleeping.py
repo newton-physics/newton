@@ -192,6 +192,15 @@ class TestMuJoCoSleeping(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "got -1.0 at world 1"):
             SolverMuJoCo(model, enable_sleeping=True, nvmax=1)
 
+    def test_parallel_world_sleeping_requires_matching_default_velocities(self):
+        model = _build_sleep_model(world_count=2)
+        joint_qd = model.joint_qd.numpy()
+        joint_qd[1] = 0.25
+        model.joint_qd.assign(joint_qd)
+
+        with self.assertRaisesRegex(ValueError, "identical default joint velocities"):
+            SolverMuJoCo(model, enable_sleeping=True, nvmax=1)
+
     def test_mjcf_sleep_configuration_enables_compact_initial_state(self):
         model = _build_imported_sleep_policy_model()
         sleep_policy = SolverMuJoCo.SleepPolicy

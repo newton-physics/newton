@@ -3319,6 +3319,10 @@ def wake_changed_trees_kernel(
     tree_asleep: wp.array2d[wp.int32],
 ):
     """Wake edited trees and every tree in their sleeping-island cycles."""
+    # Negative values mean awake; non-negative values link the next tree in a
+    # sleeping-island cycle. The O(ntree) scan intentionally uses one walker
+    # per world because parallel walkers for overlapping edits could overwrite
+    # a link before a peer reads it.
     worldid = wp.tid()
     for treeid in range(ntree):
         if tree_changed[worldid, treeid] == 0:

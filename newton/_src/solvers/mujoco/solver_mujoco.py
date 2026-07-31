@@ -5167,6 +5167,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Validate model compatibility with separate_worlds mode
         if separate_worlds:
             self._validate_model_for_separate_worlds(model)
+            if self.enable_sleeping and model.world_count > 1:
+                dofs_per_world = model.joint_dof_count // model.world_count
+                joint_qd = model.joint_qd.numpy().reshape(model.world_count, dofs_per_world)
+                differing_worlds = np.flatnonzero(np.any(joint_qd != joint_qd[0], axis=1))
+                if differing_worlds.size:
+                    world = int(differing_worlds[0])
+                    raise ValueError(
+                        "enable_sleeping=True requires identical default joint velocities in every world "
+                        f"because MuJoCo Warp uses one shared initial sleep state; world {world} differs from world 0."
+                    )
 
         mujoco, mujoco_warp = self.import_mujoco()
 

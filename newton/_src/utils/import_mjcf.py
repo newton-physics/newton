@@ -435,13 +435,13 @@ def parse_mjcf(
                         if key in builder.custom_attributes:
                             builder.custom_attributes[key].values[0] = value
 
-            sleep_enabled_attr = builder.custom_attributes.get("mujoco:enable_sleeping")
-            if sleep_enabled_attr is not None:
-                for option_elem in root.findall("option"):
-                    for flag_elem in option_elem.findall("flag"):
-                        parsed = parse_custom_attributes(flag_elem.attrib, [sleep_enabled_attr], "mjcf")
-                        if "mujoco:enable_sleeping" in parsed:
-                            sleep_enabled_attr.values[0] = parsed["mujoco:enable_sleeping"]
+        sleep_enabled_attr = builder.custom_attributes.get("mujoco:enable_sleeping")
+        if sleep_enabled_attr is not None:
+            for option_elem in root.findall("option"):
+                for flag_elem in option_elem.findall("flag"):
+                    parsed = parse_custom_attributes(flag_elem.attrib, [sleep_enabled_attr], "mjcf")
+                    if "mujoco:enable_sleeping" in parsed:
+                        sleep_enabled_attr.values[0] = parsed["mujoco:enable_sleeping"]
 
     class_parent = {}
     class_children = {}
