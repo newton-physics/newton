@@ -3098,6 +3098,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             target_idx = int(actuator_trnid[mujoco_act_idx, 0])
             target_idx_alt = int(actuator_trnid[mujoco_act_idx, 1])
+            slider_site_name = None
 
             # Determine target type from trntype enum (JOINT, TENDON, SITE, BODY, ...).
             trntype = int(trntype_arr[mujoco_act_idx]) if trntype_arr is not None else 0
@@ -3180,13 +3181,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         )
                     continue
                 target_name = site_name
+            elif trntype == int(SolverMuJoCo.TrnType.SLIDERCRANK):
+                target_name = site_mapping.get(target_idx)
+                slider_site_name = site_mapping.get(target_idx_alt)
+                if target_name is None or slider_site_name is None:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
+                        print(
+                            f"Warning: MuJoCo slider-crank actuator {mujoco_act_idx} references "
+                            f"unavailable sites {target_idx}, {target_idx_alt}"
+                        )
+                    continue
             else:
-                # TODO: Support slidercrank and jointinparent transmission types
+                # TODO: Support jointinparent transmission types
                 if wp.config.log_level <= wp.LOG_DEBUG:
                     print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
                 continue
 
             general_args = dict(actuator_args)
+            if slider_site_name is not None:
+                general_args["slidersite"] = slider_site_name
 
             # Get custom attributes for this MuJoCo actuator
             if hasattr(mujoco_attrs, "actuator_gainprm"):
