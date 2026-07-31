@@ -925,6 +925,101 @@ MJCF_SITE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+MJCF_SLIDERCRANK_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_slidercrank_actuator">
+    <option gravity="0 0 0"/>
+    <worldbody>
+        <site name="slider" pos="0 -0.1 0" zaxis="1 0.5 0"/>
+        <body name="body">
+            <joint name="hinge" damping="0.1"/>
+            <geom type="capsule" size="0.01" fromto="0 0 0 0.2 0 0" mass="1"/>
+            <site name="crank" pos="0.1 0 0"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="drive" cranksite="crank" slidersite="slider" cranklength="0.08" kp="30"/>
+    </actuator>
+</mujoco>
+"""
+
+
+class TestMuJoCoSliderCrankActuators(unittest.TestCase):
+    """Tests for slider-crank actuator transmissions."""
+
+    def test_slidercrank_actuator_parsed_from_mjcf(self):
+        """Preserve both slider-crank sites and crank length."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_SLIDERCRANK_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(
+            model.mujoco.actuator_trntype.numpy(),
+            [int(SolverMuJoCo.TrnType.SLIDERCRANK)],
+        )
+        trnid = model.mujoco.actuator_trnid.numpy()[0]
+        self.assertNotEqual(int(trnid[0]), int(trnid[1]))
+        self.assertGreaterEqual(int(trnid[0]), 0)
+        self.assertGreaterEqual(int(trnid[1]), 0)
+        np.testing.assert_allclose(model.mujoco.actuator_cranklength.numpy(), [0.08])
+
+    def test_slidercrank_actuator_matches_native_mujoco(self):
+        """Match native MuJoCo slider-crank kinematics."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(MJCF_SLIDERCRANK_ACTUATOR)
+        native_data = mujoco.MjData(native_model)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_SLIDERCRANK_ACTUATOR, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.nu, 1)
+        self.assertEqual(solver.mj_model.actuator_trntype[0], mujoco.mjtTrn.mjTRN_SLIDERCRANK)
+        np.testing.assert_allclose(solver.mj_model.actuator_cranklength, native_model.actuator_cranklength)
+
+        native_data.qpos[:] = 0.2
+        solver.mj_data.qpos[:] = 0.2
+        mujoco.mj_forward(native_model, native_data)
+        mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        np.testing.assert_allclose(solver.mj_data.actuator_length, native_data.actuator_length, atol=1.0e-7)
+        np.testing.assert_allclose(solver.mj_data.actuator_moment, native_data.actuator_moment, atol=1.0e-7)
+
+    def test_slidercrank_actuator_resolves_sanitized_site_names(self):
+        """Resolve slider-crank sites whose MJCF names require sanitizing."""
+        mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('name="crank"', 'name="crank-site"')
+        mjcf = mjcf.replace('name="slider"', 'name="slider-site"')
+        mjcf = mjcf.replace('cranksite="crank"', 'cranksite="crank-site"')
+        mjcf = mjcf.replace('slidersite="slider"', 'slidersite="slider-site"')
+
+        builder = ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        trnid = model.mujoco.actuator_trnid.numpy()[0]
+        self.assertNotEqual(int(trnid[0]), int(trnid[1]))
+        self.assertGreaterEqual(int(trnid[0]), 0)
+        self.assertGreaterEqual(int(trnid[1]), 0)
+
+    def test_slidercrank_actuator_rejects_invalid_parameters(self):
+        """Reject unresolved or incomplete sites and nonpositive crank lengths."""
+        unknown_slider_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('slidersite="slider"', 'slidersite="missing"')
+        with self.assertRaisesRegex(ValueError, "unknown slidersite"):
+            ModelBuilder().add_mjcf(unknown_slider_mjcf, ctrl_direct=True)
+
+        unknown_crank_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranksite="crank"', 'cranksite="missing"')
+        with self.assertRaisesRegex(ValueError, "unknown cranksite"):
+            ModelBuilder().add_mjcf(unknown_crank_mjcf, ctrl_direct=True)
+
+        for missing_attrib in ('cranksite="crank"', 'slidersite="slider"'):
+            with self.subTest(missing=missing_attrib):
+                single_site_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace(missing_attrib, "")
+                with self.assertRaisesRegex(ValueError, "require both cranksite and slidersite"):
+                    ModelBuilder().add_mjcf(single_site_mjcf, ctrl_direct=True)
+
+        zero_length_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranklength="0.08"', 'cranklength="0"')
+        with self.assertRaisesRegex(ValueError, "cranklength must be positive"):
+            ModelBuilder().add_mjcf(zero_length_mjcf, ctrl_direct=True)
+
 
 class TestMuJoCoSiteActuators(unittest.TestCase):
     """Tests for site-targeted actuator support in SolverMuJoCo."""
