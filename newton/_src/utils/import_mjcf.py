@@ -1342,7 +1342,7 @@ def parse_mjcf(
                 visible=visible,
             )
             site_shapes.append(s)
-            site_name_to_idx[site_name] = s
+            site_name_to_idx[sanitize_name(site_name)] = s
 
         return site_shapes
 
@@ -2153,11 +2153,12 @@ def parse_mjcf(
             Returns:
                 Tuple of (body_idx, anchor_position) or None if site not found or not a site.
             """
-            if site_name not in site_name_to_idx:
+            site_key = sanitize_name(site_name)
+            if site_key not in site_name_to_idx:
                 if verbose:
                     print(f"Warning: Site '{site_name}' not found")
                 return None
-            site_idx = site_name_to_idx[site_name]
+            site_idx = site_name_to_idx[site_key]
             if not (builder.shape_flags[site_idx] & ShapeFlags.SITE):
                 if verbose:
                     print(f"Warning: Shape '{site_name}' is not a site")

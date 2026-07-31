@@ -984,11 +984,37 @@ class TestMuJoCoSliderCrankActuators(unittest.TestCase):
         np.testing.assert_allclose(solver.mj_data.actuator_length, native_data.actuator_length, atol=1.0e-7)
         np.testing.assert_allclose(solver.mj_data.actuator_moment, native_data.actuator_moment, atol=1.0e-7)
 
+    def test_slidercrank_actuator_resolves_sanitized_site_names(self):
+        """Resolve slider-crank sites whose MJCF names require sanitizing."""
+        mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('name="crank"', 'name="crank-site"')
+        mjcf = mjcf.replace('name="slider"', 'name="slider-site"')
+        mjcf = mjcf.replace('cranksite="crank"', 'cranksite="crank-site"')
+        mjcf = mjcf.replace('slidersite="slider"', 'slidersite="slider-site"')
+
+        builder = ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        trnid = model.mujoco.actuator_trnid.numpy()[0]
+        self.assertNotEqual(int(trnid[0]), int(trnid[1]))
+        self.assertGreaterEqual(int(trnid[0]), 0)
+        self.assertGreaterEqual(int(trnid[1]), 0)
+
     def test_slidercrank_actuator_rejects_invalid_parameters(self):
-        """Reject unresolved sites and nonpositive crank lengths."""
-        unknown_site_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('slidersite="slider"', 'slidersite="missing"')
+        """Reject unresolved or incomplete sites and nonpositive crank lengths."""
+        unknown_slider_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('slidersite="slider"', 'slidersite="missing"')
         with self.assertRaisesRegex(ValueError, "unknown slidersite"):
-            ModelBuilder().add_mjcf(unknown_site_mjcf, ctrl_direct=True)
+            ModelBuilder().add_mjcf(unknown_slider_mjcf, ctrl_direct=True)
+
+        unknown_crank_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranksite="crank"', 'cranksite="missing"')
+        with self.assertRaisesRegex(ValueError, "unknown cranksite"):
+            ModelBuilder().add_mjcf(unknown_crank_mjcf, ctrl_direct=True)
+
+        for missing_attrib in ('cranksite="crank"', 'slidersite="slider"'):
+            with self.subTest(missing=missing_attrib):
+                single_site_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace(missing_attrib, "")
+                with self.assertRaisesRegex(ValueError, "require both cranksite and slidersite"):
+                    ModelBuilder().add_mjcf(single_site_mjcf, ctrl_direct=True)
 
         zero_length_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranklength="0.08"', 'cranklength="0"')
         with self.assertRaisesRegex(ValueError, "cranklength must be positive"):
