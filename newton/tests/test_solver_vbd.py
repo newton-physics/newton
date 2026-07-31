@@ -2253,6 +2253,62 @@ def _soft_reset_captured_graph_restores_particles(test, device):
     np.testing.assert_allclose(result_q[~selected], moved_q[~selected])
 
 
+def _soft_reset_rebuilds_self_contact_bvh(test, device):
+    """Reset rebuilds the self-contact BVH from post-reset positions, not just refit.
+
+    A reset teleports particles discontinuously; refitting the existing tree would
+    keep a valid but low-quality hierarchy, so reset rebuilds it. The rebuild is
+    skipped when the reset moves no particle positions.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_cloth_grid(
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=1.0,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverVBD(model, iterations=0, particle_enable_self_contact=True)
+
+    # Count BVH rebuilds routed through the detector.
+    detector = solver.trimesh_collision_detector
+    original_rebuild = detector.rebuild
+    rebuild_calls = {"n": 0}
+
+    def counting_rebuild(*args, **kwargs):
+        rebuild_calls["n"] += 1
+        return original_rebuild(*args, **kwargs)
+
+    detector.rebuild = counting_rebuild
+
+    state = model.state()
+    model_q = model.particle_q.numpy()
+    moved_q = model_q.copy()
+    moved_q[:, 0] += 5.0
+
+    # A reset that restores positions rebuilds the BVH exactly once.
+    state.particle_q.assign(moved_q)
+    solver.reset(state, flags=newton.StateFlags.PARTICLE_Q)
+    np.testing.assert_allclose(state.particle_q.numpy(), model_q)
+    test.assertEqual(rebuild_calls["n"], 1)
+
+    # A velocity-only reset moves no geometry, so it does not rebuild.
+    state.particle_q.assign(moved_q)
+    rebuild_calls["n"] = 0
+    solver.reset(state, flags=newton.StateFlags.PARTICLE_QD)
+    test.assertEqual(rebuild_calls["n"], 0)
+
+    # A flags=0 reset touches no particle state, so it does not rebuild.
+    solver.reset(state, flags=0)
+    test.assertEqual(rebuild_calls["n"], 0)
+
+
 def _rigid_reset_replays_captured_step(test, device):
     """A reset issued after capture is consumed by the existing step graph."""
     template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -3061,6 +3117,12 @@ add_function_test(
     "test_soft_reset_captured_graph_restores_particles",
     _soft_reset_captured_graph_restores_particles,
     devices=cuda_devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_reset_rebuilds_self_contact_bvh",
+    _soft_reset_rebuilds_self_contact_bvh,
+    devices=devices,
 )
 add_function_test(
     TestSolverVBD,

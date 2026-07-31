@@ -1874,7 +1874,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         history is intentionally left untouched: ``particle_q_prev`` is rebaselined
         from the incoming state at the start of the next :meth:`step`, self-contact
         and body-particle contacts rebuild per step, and tet/cloth elasticity is
-        stateless, so no particle history cold-start is required.
+        stateless, so no particle history cold-start is required. When particle
+        self-contact is enabled, reset rebuilds the self-contact BVH from the
+        post-reset positions so the discontinuous jump does not degrade tree
+        quality; a rebuild is not graph-capturable, so issue reset outside capture
+        in that case.
 
         Reset does not run collision detection: after moving bodies, regenerate
         contacts and let the next :meth:`step` refresh rigid contact state. The next
@@ -1967,6 +1971,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                     outputs=[particle_q, particle_qd],
                     device=self.device,
                 )
+
+            if particle_q is not None and self.particle_enable_self_contact:
+                # A reset teleports particles discontinuously; refitting the
+                # self-contact BVH across that jump keeps a valid but low-quality
+                # tree, so rebuild it from the post-reset positions. Rebuild is not
+                # graph-capturable, so issue reset outside capture when self-contact
+                # is enabled (as with any episode reset).
+                self.trimesh_collision_detector.rebuild(state.particle_q)
 
         if not internal_body_reset:
             return
