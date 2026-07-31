@@ -1499,9 +1499,9 @@ class NarrowPhase:
                 Defaults to True for safety. Set to False when constructing from a model with no meshes.
             has_heightfields: Whether the scene contains any heightfield shapes (GeoType.HFIELD). When True,
                 heightfield collision buffers and kernels are allocated. Defaults to False.
-            deterministic: Sort contacts after the narrow phase so that results are
-                independent of GPU thread scheduling.  Adds a radix sort + gather
-                pass.  Hydroelastic contacts are not yet covered.
+            deterministic: Make contact generation and ordering independent of
+                GPU thread scheduling. Adds deterministic hydroelastic atomics
+                and a radix sort + gather pass.
             contact_max: Maximum number of contacts for the deterministic sort buffer.
                 Must match the ``contact_pair`` array size passed to :meth:`launch`.
                 Defaults to ``max_candidate_pairs``.  Set this to a larger value when
@@ -1657,6 +1657,8 @@ class NarrowPhase:
             self.global_contact_reducer = None
 
         self.hydroelastic_sdf = hydroelastic_sdf
+        if self.hydroelastic_sdf is not None:
+            self.hydroelastic_sdf._validate_deterministic(deterministic)
 
         # Pre-allocate all intermediate buffers.
         # Counters live in one consolidated array for efficient zeroing.

@@ -638,7 +638,8 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 720},
+    # Deterministic contacts keep the pick-and-place check from flaking.
+    test_options={"usd_required": True, "num-frames": 720, "deterministic": True},
     use_viewer=True,
 )
 
@@ -947,6 +948,22 @@ class TestContactsExamples(unittest.TestCase):
     pass
 
 
+for example_name in (
+    "contacts.example_balance_bird",
+    "contacts.example_domino_spiral",
+    "contacts.example_newton_cradle",
+):
+    for solver in ("xpbd", "vbd"):
+        add_example_test(
+            TestContactsExamples,
+            name=example_name,
+            devices=cuda_test_devices,
+            test_options={"num-frames": 60, "solver": solver},
+            use_viewer=True,
+            test_suffix=solver,
+        )
+
+
 add_example_test(
     TestContactsExamples,
     name="contacts.example_nut_bolt_sdf",
@@ -1116,7 +1133,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_proxy_joint_gripper",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
 )

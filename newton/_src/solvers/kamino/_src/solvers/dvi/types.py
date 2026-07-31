@@ -16,8 +16,9 @@ wp.set_module_options({"enable_backward": False})
 
 float32 = wp.float32
 int32 = wp.int32
-mat33f = wp.mat33f
+uint64 = wp.uint64
 vec2f = wp.vec2f
+vec2i = wp.vec2i
 
 
 @wp.struct
@@ -33,26 +34,14 @@ class DVIConfigStruct:
     omega: float32
     """Projected Gauss-Seidel update relaxation."""
 
-    max_iterations: int32
-    """Maximum projected Gauss-Seidel iterations for the fallback path."""
+    max_alternating_iterations: int32
+    """Outer projected-inequality blocks, with direct bilateral solves when available."""
 
-    block_iterations: int32
-    """Outer direct-bilateral/projected-inequality block iterations."""
-
-    contact_iterations: int32
+    inequality_sweeps_per_iteration: int32
     """Projected sweeps for unilateral inequalities in each direct-bilateral block."""
 
-    bilateral_solve_period: int32
+    bilateral_solve_interval: int32
     """Block iteration period for repeated direct bilateral solves."""
-
-    contact_jacobi_omega: float32
-    """Step size for contact Jacobi and block-preconditioned updates."""
-
-    contact_jacobi_relaxation: float32
-    """Solution mixing for contact Jacobi and block-preconditioned updates."""
-
-    contact_block_preconditioner: wp.bool
-    """Whether to use the full contact 3x3 diagonal block for projected updates."""
 
 
 @wp.struct
@@ -104,9 +93,14 @@ class DVIState:
         self.bilateral_solution: wp.array[float32] | None = None
         self.bilateral_preconditioner: wp.array[float32] | None = None
         self.bilateral_active_dim: wp.array[int32] | None = None
-        self.contact_block_inv: wp.array[mat33f] | None = None
-        self.contact_colors: wp.array[int32] | None = None
-        self.contact_num_colors: wp.array[int32] | None = None
+        self.limit_indices: wp.array[int32] | None = None
+        self.contact_indices: wp.array[int32] | None = None
+        self.inequality_bodies: wp.array[vec2i] | None = None
+        self.inequality_body_color_masks: wp.array[uint64] | None = None
+        self.inequality_colors: wp.array[int32] | None = None
+        self.inequality_num_colors: wp.array[int32] | None = None
+        self.inequality_ids_by_color: wp.array[int32] | None = None
+        self.inequality_color_starts: wp.array[int32] | None = None
         if size is not None:
             self.finalize(size)
 
@@ -120,9 +114,14 @@ class DVIState:
         self.bilateral_solution = wp.zeros(size.sum_of_num_joint_cts, dtype=float32)
         self.bilateral_preconditioner = wp.zeros(size.sum_of_num_joint_cts, dtype=float32)
         self.bilateral_active_dim = wp.zeros(size.num_worlds, dtype=int32)
-        self.contact_block_inv = wp.zeros(max(1, size.sum_of_max_contacts), dtype=mat33f)
-        self.contact_colors = wp.full(max(1, size.sum_of_max_contacts), -1, dtype=int32)
-        self.contact_num_colors = wp.zeros(max(1, size.num_worlds), dtype=int32)
+        self.limit_indices = wp.full(max(1, size.sum_of_max_limits), -1, dtype=int32)
+        self.contact_indices = wp.full(max(1, size.sum_of_max_contacts), -1, dtype=int32)
+        self.inequality_bodies = wp.full(max(1, size.sum_of_max_unilaterals), vec2i(-1, -1), dtype=vec2i)
+        self.inequality_body_color_masks = wp.zeros(max(1, size.sum_of_num_bodies), dtype=uint64)
+        self.inequality_colors = wp.full(max(1, size.sum_of_max_unilaterals), -1, dtype=int32)
+        self.inequality_num_colors = wp.zeros(max(1, size.num_worlds), dtype=int32)
+        self.inequality_ids_by_color = wp.full(max(1, size.sum_of_max_unilaterals), -1, dtype=int32)
+        self.inequality_color_starts = wp.zeros(max(1, size.sum_of_max_unilaterals + size.num_worlds), dtype=int32)
 
     def reset(self):
         """Reset scratch arrays to zero."""
@@ -134,9 +133,14 @@ class DVIState:
         self.bilateral_solution.zero_()
         self.bilateral_preconditioner.zero_()
         self.bilateral_active_dim.zero_()
-        self.contact_block_inv.zero_()
-        self.contact_colors.fill_(-1)
-        self.contact_num_colors.zero_()
+        self.limit_indices.fill_(-1)
+        self.contact_indices.fill_(-1)
+        self.inequality_bodies.fill_(vec2i(-1, -1))
+        self.inequality_body_color_masks.zero_()
+        self.inequality_colors.fill_(-1)
+        self.inequality_num_colors.zero_()
+        self.inequality_ids_by_color.fill_(-1)
+        self.inequality_color_starts.zero_()
 
 
 class DVIData:
@@ -174,11 +178,7 @@ def convert_config_to_struct(config: DVISolverConfig) -> DVIConfigStruct:
     config_struct.tolerance = config.tolerance
     config_struct.regularization = config.regularization
     config_struct.omega = config.omega
-    config_struct.max_iterations = config.max_iterations
-    config_struct.block_iterations = config.block_iterations
-    config_struct.contact_iterations = config.contact_iterations
-    config_struct.bilateral_solve_period = config.bilateral_solve_period
-    config_struct.contact_jacobi_omega = config.contact_jacobi_omega
-    config_struct.contact_jacobi_relaxation = config.contact_jacobi_relaxation
-    config_struct.contact_block_preconditioner = config.contact_block_preconditioner
+    config_struct.max_alternating_iterations = config.max_alternating_iterations
+    config_struct.inequality_sweeps_per_iteration = config.inequality_sweeps_per_iteration
+    config_struct.bilateral_solve_interval = config.bilateral_solve_interval
     return config_struct

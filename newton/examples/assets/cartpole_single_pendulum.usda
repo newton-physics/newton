@@ -19,7 +19,6 @@ over "slider"
     )
     {
         float3[] extent = [(-0.015, -4, -0.015), (0.015, 4, 0.015)]
-        uniform token purpose = "guide"
         double size = 1
         quatd xformOp:orient = (1, 0, 0, 0)
         double3 xformOp:scale = (0.029999999329447746, 8, 0.029999999329447746)
@@ -35,7 +34,6 @@ over "pole"
     )
     {
         float3[] extent = [(-0.02, -0.03, -0.5), (0.02, 0.03, 0.5)]
-        uniform token purpose = "guide"
         double size = 1
         quatd xformOp:orient = (1, 0, 0, 0)
         double3 xformOp:scale = (0.03999999910593033, 0.05999999865889549, 1)
@@ -51,7 +49,6 @@ over "cart"
     )
     {
         float3[] extent = [(-0.1, -0.125, -0.1), (0.1, 0.125, 0.1)]
-        uniform token purpose = "guide"
         double size = 1
         quatd xformOp:orient = (1, 0, 0, 0)
         double3 xformOp:scale = (0.20000000298023224, 0.25, 0.20000000298023224)

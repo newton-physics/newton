@@ -35,6 +35,7 @@ from ..linear import DirectSolver
 from . import rcm_batch as _rcm_batch
 from .llt_blocked_rcm import (
     llt_blocked_rcm_factorize,
+    llt_blocked_rcm_factorize_parallel,
     llt_blocked_rcm_fused_permute_and_tp,
     llt_blocked_rcm_permute_vector,
     llt_blocked_rcm_solve,
@@ -42,6 +43,7 @@ from .llt_blocked_rcm import (
     llt_blocked_rcm_symbolic_fill_in,
     make_llt_blocked_rcm_factorize_kernel,
     make_llt_blocked_rcm_fused_permute_and_tp_kernel,
+    make_llt_blocked_rcm_parallel_factorize_kernels,
     make_llt_blocked_rcm_permute_vector_kernel,
     make_llt_blocked_rcm_solve_inplace_kernel,
     make_llt_blocked_rcm_solve_kernel,
@@ -105,8 +107,10 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         # Threshold below which ``|A[i,j]|`` is treated as a non-edge by the
         # RCM adjacency scan and by the tile-pattern builder.
         reorder_tol: float = 0.0,
-        # Cap on BFS steps per block. None => auto (``2*ceil(sqrt(n)) + 4``).
+        # Optional approximate traversal cap. None completes every component.
         rcm_max_bfs_iters: int | None = None,
+        reuse_permutation: bool = True,
+        parallel_factorization: bool = False,
         dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
@@ -120,7 +124,13 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             reorder_tol: threshold below which an off-diagonal entry is
                 treated as a non-edge by the RCM adjacency scan and by the
                 tile-pattern builder.
-            rcm_max_bfs_iters: BFS depth cap for the batched RCM pass.
+            rcm_max_bfs_iters: optional BFS step cap. By default every connected
+                component is traversed completely.
+            reuse_permutation: whether to compute RCM once and reuse that
+                permutation for later numeric factorizations. The numeric tile
+                pattern is still rebuilt each time. Defaults to ``True``.
+            parallel_factorization: whether to solve off-diagonal tiles of
+                each Cholesky panel in parallel. Defaults to ``False``.
         """
         # The underlying kernels (factorize / solve / permute / tile-pattern)
         # are hard-coded to wp.float32, so reject any other dtype up front
@@ -133,7 +143,6 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._y: wp.array[dtype] | None = None
         # Reordering + semi-sparse state
         self._A_hat: wp.array[dtype] | None = None
-        self._b_hat: wp.array[dtype] | None = None
         self._x_hat: wp.array[dtype] | None = None
         self._P: wp.array[wp.int32] | None = None
         self._inv_P: wp.array[wp.int32] | None = None
@@ -159,9 +168,12 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         # Reordering options
         self._reorder_tol: float = reorder_tol
         self._rcm_max_bfs_iters = rcm_max_bfs_iters
+        self._reuse_permutation = reuse_permutation
+        self._parallel_factorization = parallel_factorization
 
         # Build kernels (cached by block_size / max_dim at allocate time).
         self._factorize_kernel = make_llt_blocked_rcm_factorize_kernel(block_size)
+        self._parallel_factorize_kernels = make_llt_blocked_rcm_parallel_factorize_kernels(block_size)
         self._solve_kernel = make_llt_blocked_rcm_solve_kernel(block_size)
         self._solve_inplace_kernel = make_llt_blocked_rcm_solve_inplace_kernel(block_size)
         # Auxiliary kernels resolved in _allocate_impl once we know max_dim.
@@ -256,7 +268,6 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
             # Reordering scratch.
             self._A_hat = wp.zeros(shape=(info.total_mat_size,), dtype=self._dtype)
-            self._b_hat = wp.zeros(shape=(info.total_vec_size,), dtype=self._dtype)
             self._x_hat = wp.zeros(shape=(info.total_vec_size,), dtype=self._dtype)
 
             # Permutations (indexed by vio, length dim per block).
@@ -288,9 +299,10 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._L.zero_()
         self._y.zero_()
         self._A_hat.zero_()
-        self._b_hat.zero_()
         self._x_hat.zero_()
         self._P.zero_()
+        self._rcm_scratch["permutation_valid"].zero_()
+        self._rcm_scratch["permutation_dim"].zero_()
         self._inv_P.zero_()
         self._tile_pattern.zero_()
         self._has_factors = False
@@ -319,6 +331,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 tol=self._reorder_tol,
                 max_bfs_iters=self._rcm_max_bfs_iters,
                 use_cuda_graph=False,
+                reuse_permutation=self._reuse_permutation,
                 device=self._device,
             )
         self._reorder_attached_to = A
@@ -331,9 +344,9 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         # Bind / rebind views to the current A buffer.
         self._ensure_reorder_launches_bound(A)
 
-        # 1. Compute per-block P via the batched RCM callback. The callback
-        #    is a set of recorded Warp launches and is safe to replay under
-        #    CUDA graph capture initiated by the caller.
+        # Compute per-block P via the batched RCM callback. The callback is a
+        # set of recorded Warp launches and is safe to replay under CUDA graph
+        # capture initiated by the caller.
         self._reorder_callback()
 
         # 2. Fused: build inv_P, permute A -> A_hat, and reduce |A_hat| into the
@@ -370,18 +383,33 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         )
 
         # 4. Numeric factorization with tile-pattern skips.
-        llt_blocked_rcm_factorize(
-            kernel=self._factorize_kernel,
-            dim=info.dim,
-            mio=info.mio,
-            tpo=self._tpo,
-            A=self._A_hat,
-            tile_pattern=self._tile_pattern,
-            L=self._L,
-            num_blocks=num_blocks,
-            block_dim=self._factorize_block_dim,
-            device=self._device,
-        )
+        if self._parallel_factorization:
+            llt_blocked_rcm_factorize_parallel(
+                kernels=self._parallel_factorize_kernels,
+                dim=info.dim,
+                mio=info.mio,
+                tpo=self._tpo,
+                A=self._A_hat,
+                tile_pattern=self._tile_pattern,
+                L=self._L,
+                num_blocks=num_blocks,
+                max_tiles=(self._max_dim + self._block_size - 1) // self._block_size,
+                block_dim=self._factorize_block_dim,
+                device=self._device,
+            )
+        else:
+            llt_blocked_rcm_factorize(
+                kernel=self._factorize_kernel,
+                dim=info.dim,
+                mio=info.mio,
+                tpo=self._tpo,
+                A=self._A_hat,
+                tile_pattern=self._tile_pattern,
+                L=self._L,
+                num_blocks=num_blocks,
+                block_dim=self._factorize_block_dim,
+                device=self._device,
+            )
 
     @override
     def _reconstruct_impl(self, A: wp.array[Any]) -> None:
@@ -392,20 +420,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         info = self._operator.info
         num_blocks = info.num_blocks
 
-        # Permute b -> b_hat.
-        llt_blocked_rcm_permute_vector(
-            kernel=self._permute_vector_kernel,
-            dim=info.dim,
-            vio=info.vio,
-            P=self._P,
-            src=b,
-            dst=self._b_hat,
-            num_blocks=num_blocks,
-            max_dim=self._max_dim,
-            device=self._device,
-        )
-
-        # Solve L L^T x_hat = b_hat and scatter x_hat -> x.
+        # Solve L L^T x_hat = P b and scatter x_hat -> x.
         llt_blocked_rcm_solve(
             kernel=self._solve_kernel,
             dim=info.dim,
@@ -415,7 +430,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             P=self._P,
             L=self._L,
             tile_pattern=self._tile_pattern,
-            b=self._b_hat,
+            b=b,
             y=self._y,
             x_hat=self._x_hat,
             x=x,

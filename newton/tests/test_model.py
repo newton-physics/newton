@@ -209,12 +209,50 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             newton.use_coord_layout_targets = prev_flag
 
 
+class TestParallelJointWarning(unittest.TestCase):
+    """Warn on parallel joints between the same pair of bodies."""
+
+    def test_free_parallel_warns(self):
+        """Warn when an explicit joint parallels an implicit FREE joint."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0, label="Sun")
+
+        expected_warning_line = inspect.currentframe().f_lineno + 2
+        with self.assertWarnsRegex(UserWarning, r"Sun.*FREE.*inconsistent") as warning:
+            builder.add_joint_revolute(parent=-1, child=body)
+        self.assertEqual(warning.filename, __file__)
+        self.assertEqual(warning.lineno, expected_warning_line)
+
+    def test_non_free_parallel_warns_undefined(self):
+        """Warn when two non-FREE joints connect the same bodies."""
+        builder = ModelBuilder()
+        link = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=link)
+
+        expected_warning_line = inspect.currentframe().f_lineno + 2
+        with self.assertWarnsRegex(UserWarning, "undefined semantics") as warning:
+            builder.add_joint_prismatic(parent=-1, child=link)
+        self.assertEqual(warning.filename, __file__)
+        self.assertEqual(warning.lineno, expected_warning_line)
+
+    def test_reversed_parent_child_warns_undefined(self):
+        """Warn when reversed joints connect the same bodies."""
+        builder = ModelBuilder()
+        body_a = builder.add_link(mass=1.0, label="A")
+        body_b = builder.add_link(mass=1.0, label="B")
+        builder.add_joint_revolute(parent=body_a, child=body_b)
+
+        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+            builder.add_joint_prismatic(parent=body_b, child=body_a)
+
+
 class TestModelBuilderBvhConstructor(unittest.TestCase):
     def test_model_builder_forwards_bvh_constructors(self):
         builder = ModelBuilder()
         builder.default_bvh_cfg.mesh_constructor = "cubql"
         builder.default_bvh_cfg.gaussian_constructor = "sah"
         builder.default_bvh_cfg.shape_constructor = "lbvh"
+        builder.default_bvh_cfg.shape_flags = newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES
 
         mesh = newton.Mesh(
             vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
@@ -239,7 +277,12 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         wp_mesh.assert_called_once()
         self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], "cubql")
         finalize.assert_called_once_with(gaussian, device="cpu", bvh_constructor="sah")
-        build_shapes.assert_called_once_with(model, model, bvh_constructor="lbvh")
+        build_shapes.assert_called_once_with(
+            model,
+            model,
+            bvh_constructor="lbvh",
+            shape_flags=newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES,
+        )
 
     def test_gaussian_finalize_forwards_bvh_constructor_to_warp_bvh(self):
         gaussian = newton.Gaussian(
@@ -1579,6 +1622,72 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn("999", error_msg)
 
 
+class TestShapeConfigValidation(unittest.TestCase):
+    def test_shape_config_rejects_invalid_density(self):
+        """Reject negative and non-finite density values."""
+        for density in (-1.0, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(density=density):
+                cfg = newton.ModelBuilder.ShapeConfig(density=density)
+
+                with self.assertRaisesRegex(ValueError, "density must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
+        """Reject non-positive and non-finite target voxel sizes."""
+        for target_voxel_size in (0.0, -0.01, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(target_voxel_size=target_voxel_size):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_target_voxel_size=target_voxel_size)
+
+                with self.assertRaisesRegex(ValueError, "sdf_target_voxel_size must be finite and > 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_padding(self):
+        """Reject negative and non-finite SDF padding values."""
+        for padding in (-0.1, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(padding=padding):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_padding=padding)
+
+                with self.assertRaisesRegex(ValueError, "sdf_padding must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_narrow_band_range(self):
+        """Reject malformed and non-finite SDF narrow-band ranges."""
+        cases = [
+            (0.1, 0.2),
+            (-0.1, -0.01),
+            (0.1, -0.1),
+            (-0.1,),
+            (float("nan"), 0.1),
+            (-0.1, float("nan")),
+            (float("-inf"), 0.1),
+            (-0.1, float("inf")),
+        ]
+
+        for narrow_band_range in cases:
+            with self.subTest(narrow_band_range=narrow_band_range):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=narrow_band_range)
+
+                with self.assertRaisesRegex(ValueError, "sdf_narrow_band_range"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_accepts_list_sdf_narrow_band_range(self):
+        """Accept list-based SDF narrow-band ranges."""
+        cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=[-0.1, 0.1])
+
+        cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_max_resolution(self):
+        """Reject invalid SDF maximum resolutions."""
+        cases = [0, -8, 10, 1 << 16]
+
+        for max_resolution in cases:
+            with self.subTest(max_resolution=max_resolution):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=max_resolution)
+
+                with self.assertRaisesRegex(ValueError, "sdf_max_resolution"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+
 class TestModelJoints(unittest.TestCase):
     def test_add_builder_xform_updates_root_free_joint_coordinates(self):
         parent_xform = wp.transform(wp.vec3(0.4, -0.2, 0.1), wp.quat_rpy(0.3, -0.4, 0.2))
@@ -1839,7 +1948,8 @@ class TestModelJoints(unittest.TestCase):
             positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
         )
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
-        builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
+        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+            builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
         count_before = builder.joint_count
         builder.collapse_fixed_joints()
         self.assertEqual(builder.joint_count, count_before)
@@ -1857,10 +1967,12 @@ class TestModelJoints(unittest.TestCase):
                 builder.add_shape_sphere(c, radius=0.1)
                 if order == "fixed_second":
                     builder.add_joint_ball(parent=p, child=c, label="ball")
-                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                    with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+                        builder.add_joint_fixed(parent=p, child=c, label="fix")
                 else:
                     builder.add_joint_fixed(parent=p, child=c, label="fix")
-                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                    with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+                        builder.add_joint_ball(parent=p, child=c, label="ball")
                 keep = ["fix"] if order == "fixed_kept_first" else []
                 builder.collapse_fixed_joints(joints_to_keep=keep)
                 labels = list(builder.joint_label)
@@ -1882,8 +1994,8 @@ class TestModelJoints(unittest.TestCase):
         anchor joint reaching a rod mid-chain cannot scramble recorded body ranges."""
         builder = newton.ModelBuilder()
         # A rigid pair joined by a fixed joint: something real to collapse.
-        b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="base")
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), label="tool")
+        b0 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="base")
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), label="tool")
         builder.add_shape_sphere(b0, radius=0.1)
         builder.add_shape_sphere(b1, radius=0.1)
         builder.add_joint_free(b0)
@@ -2831,10 +2943,10 @@ class TestModelJoints(unittest.TestCase):
         """Test programmatic creation of mimic constraints."""
         builder = newton.ModelBuilder()
 
-        # Create two joints
-        b0 = builder.add_body()
-        b1 = builder.add_body()
-        b2 = builder.add_body()
+        # Create three links without implicit FREE joints.
+        b0 = builder.add_link()
+        b1 = builder.add_link()
+        b2 = builder.add_link()
 
         j1 = builder.add_joint_revolute(
             parent=-1,
@@ -2854,6 +2966,9 @@ class TestModelJoints(unittest.TestCase):
             axis=(0, 0, 1),
             label="j3",
         )
+        builder.add_articulation([j1])
+        builder.add_articulation([j2])
+        builder.add_articulation([j3])
 
         # Add mimic constraints
         _c1 = builder.add_constraint_mimic(
@@ -2895,11 +3010,11 @@ class TestModelJoints(unittest.TestCase):
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""
         builder = ModelBuilder()
-        parent_body = builder.add_body(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
+        parent_body = builder.add_link(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
         parent_joint = builder.add_joint_fixed(parent=-1, child=parent_body)
         builder.add_articulation([parent_joint])  # Register parent body into an articulation
 
-        child_body = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
+        child_body = builder.add_link(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
         joint_id = builder._add_base_joint(child_body, parent=parent_body, floating=False)
 
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
@@ -3595,7 +3710,7 @@ class TestModelValidation(unittest.TestCase):
     def test_control_clear(self):
         """Test that Control.clear() works without errors."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_link()
         joint = builder.add_joint_free(child=body)
         builder.add_articulation([joint])
 

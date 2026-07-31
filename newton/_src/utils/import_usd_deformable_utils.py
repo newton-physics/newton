@@ -812,6 +812,9 @@ class _DeformablePrimBuckets:
     tetmeshes: list[Usd.Prim] = field(default_factory=list)
     attachments: list[Usd.Prim] = field(default_factory=list)
     element_filters: list[Usd.Prim] = field(default_factory=list)
+    # Optional supported visual leaf candidates collected for parse_usd's static visual
+    # pass. Reusing this scout avoids a second full instance-proxy traversal of the stage.
+    static_visuals: list[Usd.Prim] = field(default_factory=list)
     # PhysicsDeformableBodyAPI prim path -> the single simulation geometry it governs (the
     # first candidate of any family in traversal order); a body's mass must not be applied
     # once per family, so the passes skip every other candidate under the same body.
@@ -862,8 +865,29 @@ _SCOUT_SKIP_TYPE_NAMES = frozenset(
     }
 )
 
+# UsdGeom.Imageable is intentionally broader: it also accepts container and non-shape
+# schemas, while the static post-pass invokes the loader with child recursion disabled.
+_LOADABLE_VISUAL_TYPE_NAMES = frozenset(
+    {
+        "Cube",
+        "Sphere",
+        "Plane",
+        "Capsule",
+        "Cylinder",
+        "Cone",
+        "Mesh",
+        "ParticleField3DGaussianSplat",
+    }
+)
+_LOADABLE_VISUAL_TYPE_NAMES_LOWER = frozenset(type_name.lower() for type_name in _LOADABLE_VISUAL_TYPE_NAMES)
 
-def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = ()) -> _DeformablePrimBuckets:
+
+def _scout_deformable_prims(
+    root_prim: Usd.Prim,
+    ignore_paths: Sequence[str] = (),
+    *,
+    collect_static_visuals: bool = False,
+) -> _DeformablePrimBuckets:
     """Classify deformable candidate prims in one stage traversal.
 
     Replaces the per-family full-stage walks: the lowering passes iterate these buckets instead of
@@ -897,13 +921,18 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
 
     for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
         type_name = str(prim.GetTypeName())
-        if type_name in _SCOUT_SKIP_TYPE_NAMES:
+        is_static_visual = collect_static_visuals and type_name in _LOADABLE_VISUAL_TYPE_NAMES
+        if type_name in _SCOUT_SKIP_TYPE_NAMES and not is_static_visual:
             continue
         # An ignored prim must be as-if-absent from the start: bucketing it or letting it
         # claim body ownership would let an ignored sim child block a non-ignored sibling
         # from becoming the body's simulation geometry. Children still traverse, matching
         # the per-path semantics of the lowering passes' own checks.
         if ignore_paths and _is_ignored_path(str(prim.GetPath()), ignore_paths):
+            continue
+        if is_static_visual:
+            buckets.static_visuals.append(prim)
+        if type_name in _SCOUT_SKIP_TYPE_NAMES:
             continue
         if type_name == "PhysicsAttachment":
             buckets.attachments.append(prim)

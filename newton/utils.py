@@ -32,6 +32,12 @@ __all__ += [
     "validate_triangle_mesh",
 ]
 
+from ._src.utils.heightfield import rasterize_mesh_to_heightfield  # noqa: E402
+
+__all__ += [
+    "rasterize_mesh_to_heightfield",
+]
+
 # ==================================================================================
 # render utils
 # ==================================================================================
