@@ -2013,6 +2013,246 @@ def _rigid_reset_state_and_history(test, device):
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 0.0)
 
 
+def _soft_reset_masked_worlds(test, device):
+    """Masked deformable reset restores model-default particle state per selected world.
+
+    A cloth grid plus a tetrahedral soft grid populate two local worlds and the
+    global (world -1) range. Reset copies ``model.particle_q`` / ``particle_qd``
+    into the worlds picked by ``world_mask``, honoring ``PARTICLE_Q`` /
+    ``PARTICLE_QD`` independently; ``world_mask=None`` includes globals while an
+    explicit local mask excludes them.
+    """
+
+    def add_deformables(builder, x):
+        builder.add_cloth_grid(
+            pos=(x, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=1.0,
+        )
+        builder.add_soft_grid(
+            pos=wp.vec3(x, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=100.0,
+            k_mu=1.0e3,
+            k_lambda=1.0e3,
+            k_damp=0.0,
+        )
+
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    add_deformables(template, 0.0)
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    add_deformables(builder, -3.0)  # Global head range (world -1).
+    builder.add_world(template)  # World 0.
+    builder.add_world(template, xform=wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity()))  # World 1.
+    add_deformables(builder, 6.0)  # Global tail range (world -1).
+    builder.color()
+    model = builder.finalize(device=device)
+
+    particle_world = model.particle_world.numpy()
+    # Cloth and tet particles populate both local worlds and the global range.
+    test.assertTrue((particle_world == 0).any())
+    test.assertTrue((particle_world == 1).any())
+    test.assertTrue((particle_world < 0).any())
+
+    model_q = model.particle_q.numpy()
+    model_qd = model.particle_qd.numpy()
+    selected = particle_world == 0
+    global_particles = particle_world < 0
+
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    state = model.state()
+
+    def perturb():
+        custom_q = model_q.copy()
+        custom_q[:, 0] += 10.0
+        custom_qd = np.full_like(model_qd, 5.0)
+        state.particle_q.assign(custom_q)
+        state.particle_qd.assign(custom_qd)
+        return custom_q, custom_qd
+
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
+
+    # PARTICLE_Q on world 0: only selected positions restore; velocities untouched.
+    custom_q, custom_qd = perturb()
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_Q)
+    result_q = state.particle_q.numpy()
+    np.testing.assert_allclose(result_q[selected], model_q[selected])
+    np.testing.assert_allclose(result_q[~selected], custom_q[~selected])
+    np.testing.assert_allclose(state.particle_qd.numpy(), custom_qd)
+
+    # PARTICLE_QD on world 0: only selected velocities restore; positions untouched.
+    custom_q, custom_qd = perturb()
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_QD)
+    np.testing.assert_allclose(state.particle_q.numpy(), custom_q)
+    result_qd = state.particle_qd.numpy()
+    np.testing.assert_allclose(result_qd[selected], model_qd[selected])
+    np.testing.assert_allclose(result_qd[~selected], custom_qd[~selected])
+
+    # world_mask=None restores every particle, the global range included.
+    perturb()
+    solver.reset(state)
+    np.testing.assert_allclose(state.particle_q.numpy(), model_q)
+    np.testing.assert_allclose(state.particle_qd.numpy(), model_qd)
+
+    # The extended mask's final entry selects only the global range.
+    global_mask = wp.array([False, False, True], dtype=wp.bool, device=device)
+    custom_q, custom_qd = perturb()
+    solver.reset(state, world_mask=global_mask)
+    result_q = state.particle_q.numpy()
+    result_qd = state.particle_qd.numpy()
+    np.testing.assert_allclose(result_q[global_particles], model_q[global_particles])
+    np.testing.assert_allclose(result_q[~global_particles], custom_q[~global_particles])
+    np.testing.assert_allclose(result_qd[global_particles], model_qd[global_particles])
+    np.testing.assert_allclose(result_qd[~global_particles], custom_qd[~global_particles])
+
+    if device.is_cuda:
+        # A requested particle array on the wrong device fails; an unrequested one
+        # never binds and is preserved.
+        perturb()
+        good_qd = state.particle_qd
+        state.particle_qd = wp.clone(good_qd, device="cpu")
+        with test.assertRaisesRegex(ValueError, "state.particle_qd is on device cpu"):
+            solver.reset(state, flags=newton.StateFlags.PARTICLE_QD)
+        solver.reset(state, flags=newton.StateFlags.PARTICLE_Q)
+        np.testing.assert_allclose(state.particle_q.numpy(), model_q)
+        test.assertEqual(str(state.particle_qd.device), "cpu")
+        state.particle_qd = good_qd
+
+
+def _soft_reset_particle_only_and_external(test, device):
+    """Deformable reset runs when SolverVBD performs no internal rigid integration.
+
+    Covers a particle-only model (no bodies) and a model whose bodies are
+    integrated by an external rigid solver; both take the reset path that
+    early-returns before any rigid mutation, so particle restoration must happen
+    beforehand.
+    """
+    # Particle-only model: no bodies, so internal_body_reset is False.
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_cloth_grid(
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=1.0,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    test.assertEqual(model.body_count, 0)
+
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    state = model.state()
+    model_q = model.particle_q.numpy()
+    model_qd = model.particle_qd.numpy()
+    moved_q = model_q.copy()
+    moved_q[:, 0] += 4.0
+    state.particle_q.assign(moved_q)
+    state.particle_qd.assign(np.full_like(model_qd, 2.0))
+    solver.reset(state)
+    np.testing.assert_allclose(state.particle_q.numpy(), model_q)
+    np.testing.assert_allclose(state.particle_qd.numpy(), model_qd)
+
+    # External-rigid coupling: bodies exist but are integrated elsewhere, so the
+    # rigid reset path early-returns while masked particle reset still applies.
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = template.add_body(mass=1.0)
+    template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    template.add_cloth_grid(
+        pos=(0.0, 0.0, 0.5),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=1.0,
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_world(template)
+    builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    model = builder.finalize(device=device)
+    test.assertGreater(model.body_count, 0)
+
+    solver = newton.solvers.SolverVBD(model, iterations=0, integrate_with_external_rigid_solver=True)
+    state = model.state()
+    model_q = model.particle_q.numpy()
+    particle_world = model.particle_world.numpy()
+    selected = particle_world == 0
+    moved_q = model_q.copy()
+    moved_q[:, 0] += 7.0
+    state.particle_q.assign(moved_q)
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_Q)
+    result_q = state.particle_q.numpy()
+    np.testing.assert_allclose(result_q[selected], model_q[selected])
+    np.testing.assert_allclose(result_q[~selected], moved_q[~selected])
+
+
+def _soft_reset_captured_graph_restores_particles(test, device):
+    """A masked particle reset recorded in a CUDA graph restores defaults on replay.
+
+    ``reset()`` launches ``reset_particle_state`` without allocation, so it is
+    capturable, and the ``world_mask`` is read device-side, so a replay honors the
+    same per-world selection.
+    """
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    template.add_cloth_grid(
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=1.0,
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_world(template)
+    builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    model = builder.finalize(device=device)
+    test.assertEqual(model.body_count, 0)
+
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    state = model.state()
+    model_q = model.particle_q.numpy()
+    particle_world = model.particle_world.numpy()
+    selected = particle_world == 0
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
+
+    with wp.ScopedCapture(device=device) as capture:
+        solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_Q)
+    graph = capture.graph
+    test.assertIsNotNone(graph)
+
+    # In-place edits keep the captured buffer pointers valid; replay must restore
+    # only the selected world from the model defaults.
+    moved_q = model_q.copy()
+    moved_q[:, 0] += 5.0
+    state.particle_q.assign(moved_q)
+    wp.capture_launch(graph)
+    result_q = state.particle_q.numpy()
+    np.testing.assert_allclose(result_q[selected], model_q[selected])
+    np.testing.assert_allclose(result_q[~selected], moved_q[~selected])
+
+
 def _rigid_reset_replays_captured_step(test, device):
     """A reset issued after capture is consumed by the existing step graph."""
     template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -2803,6 +3043,24 @@ add_function_test(
     "test_rigid_reset_state_and_history",
     _rigid_reset_state_and_history,
     devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_reset_masked_worlds",
+    _soft_reset_masked_worlds,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_reset_particle_only_and_external",
+    _soft_reset_particle_only_and_external,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_reset_captured_graph_restores_particles",
+    _soft_reset_captured_graph_restores_particles,
+    devices=cuda_devices,
 )
 add_function_test(
     TestSolverVBD,
