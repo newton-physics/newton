@@ -3212,10 +3212,12 @@ def test_flag_off_is_inert(test, device):
     np.testing.assert_allclose(q_after, q_before, atol=1.0e-6, err_msg="flag off must not move the soft body")
 
 
-def test_full_surface_rejected_by_vbd_proxy_coupling(test, device):
-    """SolverVBD's proxy-coupling hook fails loud on full-surface contacts, which its proxy harvest
-    cannot yet consume, instead of silently dropping edge/face force feedback (E5). Standalone
-    SolverVBD is unaffected -- this only guards the SolverCoupledProxy path (coupling_* hooks)."""
+def test_full_surface_rejected_for_vbd_proxy_particles(test, device):
+    """SolverVBD's proxy-particle harvest fails loud on full-surface contacts.
+
+    The harvest kernel consumes per-particle records only, so an edge/face reaction on a proxy
+    particle would be dropped without a word. Standalone SolverVBD is unaffected -- this only
+    guards the SolverCoupledProxy path (coupling_* hooks)."""
     builder = newton.ModelBuilder()
     b = builder.add_body()
     builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
@@ -3231,8 +3233,20 @@ def test_full_surface_rejected_by_vbd_proxy_coupling(test, device):
     )
     contacts = pipeline.contacts()  # capability marker set True
     solver = newton.solvers.SolverVBD(model)
-    with test.assertRaises(NotImplementedError):
-        solver.coupling_prepare_proxy_contacts(model.state(), contacts)
+
+    harvest_kwargs = {
+        "particle_qd_before": wp.zeros(model.particle_count, dtype=wp.vec3, device=device),
+        "state": model.state(),
+        "state_out": model.state(),
+        "dt": 1.0 / 60.0,
+    }
+    with test.assertRaisesRegex(NotImplementedError, "proxy-particle"):
+        solver.coupling_harvest_proxy_particle_forces(
+            wp.array([0], dtype=int, device=device),
+            wp.zeros(1, dtype=wp.vec3, device=device),
+            contacts=contacts,
+            **harvest_kwargs,
+        )
 
 
 class TestVBDFullSurfaceContact(unittest.TestCase):
@@ -3277,8 +3291,8 @@ add_function_test(
 )
 add_function_test(
     TestVBDFullSurfaceContact,
-    "test_full_surface_rejected_by_vbd_proxy_coupling",
-    test_full_surface_rejected_by_vbd_proxy_coupling,
+    "test_full_surface_rejected_for_vbd_proxy_particles",
+    test_full_surface_rejected_for_vbd_proxy_particles,
     devices=devices,
 )
 

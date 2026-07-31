@@ -2460,6 +2460,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return filtered
 
     def _ensure_entry_contact_buffer(self, entry: SolverEntry, contacts: Contacts) -> Contacts:
+        # Entry buffers are filtered on a single particle id, which edge/face records do not have.
+        contacts._assert_particle_only_soft_contacts("SolverCoupled")
         filtered = self._entry_contact_buffers.get(entry.name)
         if filtered is None or not self._entry_contact_buffer_matches(filtered, contacts):
             from ...sim import Contacts  # noqa: PLC0415

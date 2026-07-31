@@ -376,6 +376,10 @@ The coupled-solver framework is useful today, but it is still experimental:
   custom hook is available.
 - USD ownership, automatic coupled-solver construction, and high-level tuning
   guidance are not part of the experimental public API yet.
+- Full-surface (edge/face) rigid-soft contacts are consumed by
+  :class:`~newton.solvers.SolverVBD` only, and must be enabled on the proxy's own
+  ``collision_pipeline`` rather than on the buffer passed to the coupled solver.
+  Proxy particles do not support them at all.
 
 Treat coupled solvers as an advanced feature for controlled experiments and
 solver integration work. Prefer focused regression tests and explicit scene

@@ -902,6 +902,37 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertRegex("\n".join(logs.output), r"entry 'child'.*joint.*outside.*full model layout")
         self.assertEqual(coupled.view("child").body_count, model.body_count)
 
+    def test_full_surface_contacts_rejected_on_the_shared_buffer(self):
+        """SolverCoupled rejects a caller buffer built for full-surface (edge/face) soft contacts.
+
+        The per-entry filter keys on a single particle id, so edge/face records never reach a
+        sub-solver. Full-surface belongs on the proxy's own collision pipeline, which feeds the
+        destination solve unfiltered. Only entries that own particles are filtered, so the entry
+        here must own them for the guard to be reached.
+        """
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        particles = [builder.add_particle(wp.vec3(0.0, 0.0, 0.6), wp.vec3(0.0), 0.1, radius=0.0) for _ in range(3)]
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(
+            model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        )
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A", solver=_ControlRecordingSolver, bodies=[body], joints=[joint], particles=particles
+                )
+            ],
+        )
+
+        with self.assertRaisesRegex(NotImplementedError, "does not support full-surface"):
+            coupled.step(model.state(), model.state(), None, pipeline.contacts(), dt=1.0 / 60.0)
+
     def test_entry_control_arrays_are_mapped_to_local_dofs(self):
         """Entry solvers should receive control arrays in their local DOF namespace."""
         _ControlRecordingSolver.instances.clear()
