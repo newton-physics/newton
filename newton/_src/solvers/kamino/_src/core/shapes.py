@@ -642,9 +642,35 @@ def _max_contacts_for_shape_pair_impl(type_a: int, type_b: int) -> tuple[int, in
     Return the contact capacity for a canonical shape pair without reordering.
 
     This is used for testing purposes, asserting that type_a > type_b always returns (0, 0).
+    This enforces that the implementation doesn't accidentally specify an unreachable pair.
     """
-    if type_a == GeoType.SPHERE:
-        return 1, 0
+    if type_a == GeoType.PLANE:
+        if type_b == GeoType.HFIELD:
+            return _MESH_CONVEX_MAX, 0
+        elif type_b == GeoType.SPHERE:
+            return 1, 0
+        elif type_b == GeoType.CAPSULE:
+            return 8, 8
+        elif type_b == GeoType.ELLIPSOID:
+            return 4, 4
+        elif type_b == GeoType.CYLINDER:
+            return 6, 6
+        elif type_b == GeoType.BOX:
+            return 12, 12
+        elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
+            return _MESH_CONVEX_MAX, 0
+        elif type_b == GeoType.CONE:
+            return 8, 8
+
+    elif type_a == GeoType.HFIELD:
+        if type_b == GeoType.MESH:
+            return _MESH_MESH_MAX, 0
+        elif type_b >= GeoType.HFIELD:
+            return _MESH_CONVEX_MAX, 0
+
+    elif type_a == GeoType.SPHERE:
+        if type_b >= GeoType.SPHERE:
+            return 1, 0
 
     elif type_a == GeoType.CAPSULE:
         if type_b == GeoType.CAPSULE:
@@ -690,39 +716,21 @@ def _max_contacts_for_shape_pair_impl(type_a: int, type_b: int) -> tuple[int, in
         elif type_b == GeoType.CONE:
             return 8, 8
 
-    elif type_a == GeoType.MESH or type_a == GeoType.CONVEX_MESH:
-        if type_b == GeoType.HFIELD:
-            return _MESH_MESH_MAX, 0
-        elif type_b == GeoType.CONE:
+    elif type_a == GeoType.MESH:
+        if type_b == GeoType.CONE:
             return _MESH_CONVEX_MAX, 0
-        else:
+        elif type_b == GeoType.CONVEX_MESH:
             return _MESH_MESH_MAX, 0
-
-    elif type_a == GeoType.HFIELD:
-        # Heightfield vs convex primitives
-        return _MESH_CONVEX_MAX, 0
 
     elif type_a == GeoType.CONE:
         if type_b == GeoType.CONE:
             return 4, 4
+        elif type_b == GeoType.CONVEX_MESH:
+            return _MESH_CONVEX_MAX, 0
 
-    elif type_a == GeoType.PLANE:
-        if type_b == GeoType.HFIELD:
-            return _MESH_CONVEX_MAX, 0
-        elif type_b == GeoType.SPHERE:
-            return 1, 0
-        elif type_b == GeoType.CAPSULE:
-            return 8, 8
-        elif type_b == GeoType.ELLIPSOID:
-            return 4, 4
-        elif type_b == GeoType.CYLINDER:
-            return 6, 6
-        elif type_b == GeoType.BOX:
-            return 12, 12
-        elif type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
-            return _MESH_CONVEX_MAX, 0
-        elif type_b == GeoType.CONE:
-            return 8, 8
+    elif type_a == GeoType.CONVEX_MESH:
+        if type_b == GeoType.CONVEX_MESH:
+            return _MESH_MESH_MAX, 0
 
     # unsupported type combination
     return 0, 0
