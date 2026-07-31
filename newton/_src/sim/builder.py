@@ -3529,14 +3529,30 @@ class ModelBuilder:
             appear in the authored metadata.
 
             ``path_mpm_particle_map`` is always returned. It maps each imported
-            ``UsdGeom.Points`` prim carrying ``NewtonMPMParticleAPI`` to its half-open
-            ``[start, end)`` builder particle range. These ranges are build-time
-            snapshots and are not updated by later structural builder mutations.
+            ``UsdGeom.Points`` prim carrying ``NewtonParticleAPI`` whose resolved
+            ``physics:simulationOwner`` carries ``NewtonMPMSceneAPI`` to its
+            half-open ``[start, end)`` builder particle range. These ranges are
+            build-time snapshots and are not updated by later structural builder
+            mutations.
             Each resolved whole-prim or point-``GeomSubset`` physics material must
-            apply ``NewtonMPMMaterialAPI``. Unbound MPM Points use Newton's registered
-            material defaults and :attr:`default_shape_cfg` density.
-            ``mpm_config`` is the validated :class:`SolverImplicitMPM.Config` read
-            from ``NewtonMPMSceneAPI``, or ``None`` when that scene API is absent.
+            apply ``NewtonMPMMaterialAPI``, ``PhysicsMaterialAPI``, or
+            ``PhysicsVolumeDeformableMaterialAPI``. Standard elasticity is read
+            from ``physics:youngsModulus`` and ``physics:poissonsRatio`` on
+            ``PhysicsVolumeDeformableMaterialAPI``. Unbound MPM Points use
+            Newton's registered material defaults and :attr:`default_shape_cfg`
+            density. All MPM Points imported by one call must resolve to the
+            same MPM scene; unrelated PhysicsScenes and particle systems are
+            ignored. ``mpm_config`` contains the owner's validated
+            :class:`SolverImplicitMPM.Config`. Without imported MPM Points,
+            ``mpm_config`` may be ``None``.
+
+            Particle widths are diameters. Newton converts each radius as
+            ``width / 2`` and derives mass from a cubical support volume,
+            ``physics:density * width**3``, after applying stage units and the
+            prim's uniform world scale. Without widths, it uses
+            :attr:`default_particle_radius` and a support width of twice that
+            radius. Non-uniform scale or shear is rejected because one scalar
+            width cannot preserve a spherical particle under that transform.
 
             The returned mapping has the following entries:
 
@@ -3592,7 +3608,7 @@ class ModelBuilder:
                 * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
                 * - ``"mpm_config"``
-                  - Validated :class:`SolverImplicitMPM.Config` authored on the physics scene, or ``None``
+                  - Validated :class:`SolverImplicitMPM.Config` for the resolved MPM owner scene, or the legacy first-scene result when no MPM Points are imported
                 * - ``"path_body_relative_transform"``
                   - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
                 * - ``"path_original_body_map"``

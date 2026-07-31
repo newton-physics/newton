@@ -425,14 +425,30 @@ def parse_usd(
         appear in the authored metadata.
 
         ``path_mpm_particle_map`` is always returned. It maps each imported
-        ``UsdGeom.Points`` prim carrying ``NewtonMPMParticleAPI`` to its half-open
-        ``[start, end)`` builder particle range. These ranges are build-time
-        snapshots and are not updated by later structural builder mutations.
+        ``UsdGeom.Points`` prim carrying ``NewtonParticleAPI`` whose resolved
+        ``physics:simulationOwner`` carries ``NewtonMPMSceneAPI`` to its
+        half-open ``[start, end)`` builder particle range. These ranges are
+        build-time snapshots and are not updated by later structural builder
+        mutations.
         Each resolved whole-prim or point-``GeomSubset`` physics material must
-        apply ``NewtonMPMMaterialAPI``. Unbound MPM Points use Newton's registered
-        material defaults and ``builder.default_shape_cfg`` density.
-        ``mpm_config`` is the validated :class:`SolverImplicitMPM.Config` read
-        from ``NewtonMPMSceneAPI``, or ``None`` when that scene API is absent.
+        apply ``NewtonMPMMaterialAPI``, ``PhysicsMaterialAPI``, or
+        ``PhysicsVolumeDeformableMaterialAPI``. Standard elasticity is read
+        from ``physics:youngsModulus`` and ``physics:poissonsRatio`` on
+        ``PhysicsVolumeDeformableMaterialAPI``. Unbound MPM Points use Newton's
+        registered material defaults and ``builder.default_shape_cfg`` density.
+        All MPM Points imported by one call must resolve to the same MPM scene;
+        unrelated PhysicsScenes and particle systems are ignored.
+        ``mpm_config`` contains the owner's validated
+        :class:`SolverImplicitMPM.Config`. Without imported MPM Points,
+        ``mpm_config`` may be ``None``.
+
+        Particle widths are diameters. Newton converts each radius as
+        ``width / 2`` and derives mass from a cubical support volume,
+        ``physics:density * width**3``, after applying stage units and the prim's
+        uniform world scale. Without widths, it uses
+        ``builder.default_particle_radius`` and a support width of twice that
+        radius. Non-uniform scale or shear is rejected because one scalar width
+        cannot preserve a spherical particle under that transform.
 
         The returned mapping has the following entries:
 
@@ -488,7 +504,7 @@ def parse_usd(
             * - ``"max_solver_iterations"``
               - The resolved maximum solver iterations (int or None)
             * - ``"mpm_config"``
-              - Validated :class:`SolverImplicitMPM.Config` authored on the physics scene, or ``None``
+              - Validated :class:`SolverImplicitMPM.Config` for the resolved MPM owner scene, or the legacy first-scene result when no MPM Points are imported
             * - ``"path_body_relative_transform"``
               - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
             * - ``"path_original_body_map"``
@@ -577,12 +593,6 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get mass unit: {e}")
-    if not math.isclose(mass_unit, 1.0):
-        warnings.warn(
-            "USD stages with non-unit mass units are not supported. "
-            f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
-            stacklevel=_external_stacklevel(),
-        )
     linear_unit = 1.0
     try:
         if UsdGeom.StageHasAuthoredMetersPerUnit(stage):
@@ -590,13 +600,6 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get linear unit: {e}")
-    if not math.isclose(linear_unit, 1.0):
-        warnings.warn(
-            "USD stages with non-unit linear units are not supported. "
-            f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
-            stacklevel=_external_stacklevel(),
-        )
-
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
     # LoadUsdPhysicsFromRange remains the native rigid/joint descriptor parser, so this
     # pre-pass supplies its deformable exclusions before it runs. The same walk also
@@ -2441,12 +2444,59 @@ def parse_usd(
         else:
             builder.gravity = gravity_vector
 
-    if physics_scene_prim is not None and _has_api_schema(physics_scene_prim, "NewtonMPMSceneAPI"):
-        from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
+    resolved_mpm_gravity = None
 
-        mpm_config = SolverImplicitMPM.Config.create_from_usd(physics_scene_prim)
+    def _preflight_mpm_scene(scene_prim: Usd.Prim) -> None:
+        """Resolve MPM scene gravity before particle insertion can mutate the builder."""
+        nonlocal resolved_mpm_gravity
 
-    path_mpm_particle_map = import_mpm_particles(
+        scene_path = str(scene_prim.GetPath())
+        mpm_scene = UsdPhysics.Scene(scene_prim)
+        raw_direction = mpm_scene.GetGravityDirectionAttr().Get()
+        direction_array = np.asarray(raw_direction if raw_direction is not None else (0.0, 0.0, 0.0), dtype=float)
+        if direction_array.shape != (3,) or not np.isfinite(direction_array).all():
+            raise ValueError(
+                f"{scene_path}: physics:gravityDirection must contain three finite values, got {raw_direction!r}."
+            )
+        direction_length = float(np.linalg.norm(direction_array))
+        if direction_length > 0.0:
+            direction_array /= direction_length
+        else:
+            direction_array = -np.asarray(stage_up_axis.to_vec3(), dtype=float)
+
+        raw_magnitude = mpm_scene.GetGravityMagnitudeAttr().Get()
+        try:
+            raw_magnitude = float(raw_magnitude)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"{scene_path}: physics:gravityMagnitude must be a number, got {raw_magnitude!r}."
+            ) from error
+        if math.isnan(raw_magnitude) or raw_magnitude == float("inf"):
+            raise ValueError(
+                f"{scene_path}: physics:gravityMagnitude must be finite or negative for Earth gravity, "
+                f"got {raw_magnitude!r}."
+            )
+        if raw_magnitude < 0.0:
+            magnitude_si = 9.81
+        else:
+            with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+                magnitude_si = float(np.float64(raw_magnitude) * np.float64(linear_unit))
+            if not math.isfinite(magnitude_si) or (raw_magnitude != 0.0 and magnitude_si == 0.0):
+                raise ValueError(
+                    f"{scene_path}: physics:gravityMagnitude does not convert to a finite, representable SI value."
+                )
+
+        gravity_enabled = R.get_value(
+            scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
+        )
+        gravity_xform = axis_xform if override_root_xform else incoming_world_xform
+        direction = wp.transform_vector(gravity_xform, wp.vec3(*direction_array))
+        gravity = direction * magnitude_si if gravity_enabled else wp.vec3()
+        if not np.isfinite(np.asarray(gravity, dtype=float)).all():
+            raise ValueError(f"{scene_path}: transformed gravity must contain only finite SI values.")
+        resolved_mpm_gravity = gravity
+
+    path_mpm_particle_map, imported_mpm_config = import_mpm_particles(
         builder,
         root_prim,
         ignore_paths=ignore_paths,
@@ -2454,7 +2504,24 @@ def parse_usd(
         incoming_world_mat=_xform_to_mat44(incoming_world_xform),
         linear_unit=linear_unit,
         mass_unit=mass_unit,
+        scene_preflight=_preflight_mpm_scene,
     )
+    if imported_mpm_config is not None:
+        mpm_config = imported_mpm_config
+        if resolved_mpm_gravity is None:
+            raise RuntimeError("MPM scene preflight did not resolve gravity.")
+        if builder.current_world >= 0:
+            builder.world_gravity[builder.current_world] = resolved_mpm_gravity
+        else:
+            builder.gravity = resolved_mpm_gravity
+    elif physics_scene_prim is not None and _has_api_schema(physics_scene_prim, "NewtonMPMSceneAPI"):
+        # Preserve the legacy config-only behavior when no opted-in MPM Points
+        # are imported. Imported particles resolve their owner across the
+        # entire stage inside import_mpm_particles(), including when the
+        # selected root_path does not contain that PhysicsScene.
+        from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
+
+        mpm_config = SolverImplicitMPM.Config.create_from_usd(physics_scene_prim)
     legacy_rigid_object_types = (
         UsdPhysics.ObjectType.RigidBody,
         UsdPhysics.ObjectType.SphereShape,
@@ -2465,18 +2532,9 @@ def parse_usd(
         UsdPhysics.ObjectType.MeshShape,
         UsdPhysics.ObjectType.PlaneShape,
     )
-    if (
-        path_mpm_particle_map
-        and any(kind in ret_dict for kind in legacy_rigid_object_types)
-        and (not math.isclose(linear_unit, 1.0) or not math.isclose(mass_unit, 1.0))
-    ):
-        warnings.warn(
-            "Mixed rigid/collider and MPM stages with non-unit metersPerUnit or kilogramsPerUnit use different "
-            "conversion paths: MPM particles are converted to SI, while the legacy rigid/collider importer still "
-            "expects unit stage metadata. Author mixed stages with both units set to 1.0 until rigid import gains "
-            "complete unit conversion.",
-            stacklevel=_external_stacklevel(),
-        )
+    has_legacy_rigid_objects = any(kind in ret_dict for kind in legacy_rigid_object_types)
+    has_nonunit_linear_units = not math.isclose(linear_unit, 1.0)
+    has_nonunit_mass_units = not math.isclose(mass_unit, 1.0)
 
     if verbose:
         print(
@@ -5071,6 +5129,40 @@ def parse_usd(
         actuator_count += 1
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
+
+    has_non_mpm_imported_content = bool(
+        path_body_map or path_joint_map or path_shape_map or path_cable_map or path_cloth_map or path_soft_map
+    )
+    if path_mpm_particle_map and has_legacy_rigid_objects and (has_nonunit_linear_units or has_nonunit_mass_units):
+        warnings.warn(
+            "Mixed rigid/collider and MPM stages with non-unit metersPerUnit or kilogramsPerUnit use different "
+            "conversion paths: MPM particles are converted to SI, while the legacy rigid/collider importer still "
+            "expects unit stage metadata. Author mixed stages with both units set to 1.0 until rigid import gains "
+            "complete unit conversion.",
+            stacklevel=_external_stacklevel(),
+        )
+    elif (
+        path_mpm_particle_map and has_non_mpm_imported_content and (has_nonunit_linear_units or has_nonunit_mass_units)
+    ):
+        warnings.warn(
+            "Mixed MPM and other imported USD content with non-unit metersPerUnit or kilogramsPerUnit may use "
+            "different conversion paths: MPM particles are converted to SI, while other import paths may still "
+            "expect unit stage metadata. Author mixed stages with both units set to 1.0.",
+            stacklevel=_external_stacklevel(),
+        )
+    elif not path_mpm_particle_map:
+        if has_nonunit_mass_units:
+            warnings.warn(
+                "USD stages with non-unit mass units are not supported. "
+                f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
+                stacklevel=_external_stacklevel(),
+            )
+        if has_nonunit_linear_units:
+            warnings.warn(
+                "USD stages with non-unit linear units are not supported. "
+                f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
+                stacklevel=_external_stacklevel(),
+            )
 
     result = {
         "fps": stage.GetFramesPerSecond(),
