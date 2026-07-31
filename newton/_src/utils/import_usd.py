@@ -958,15 +958,12 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
-            mesh.texture = None
-        if material_props.get("color") is not None and mesh.texture is None:
-            mesh.color = material_props["color"]
-        elif mesh.texture is not None:
-            # A textured mesh with no scalar color must use a white base so the
-            # default per-shape palette color does not tint the texture (matches
-            # the material-subset path in _make_visual_submesh).
+            logger.info("Mesh %s has a texture but no UVs; texture will use projected UVs.", path_name)
+        if mesh.texture is not None:
+            # The texture provides albedo, so avoid tinting it with a scalar color.
             mesh.color = (1.0, 1.0, 1.0)
+        elif material_props.get("color") is not None:
+            mesh.color = material_props["color"]
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -1070,14 +1067,16 @@ def parse_usd(
         if texture is not None:
             submesh.texture = texture
         if submesh.texture is not None and submesh.uvs is None:
-            logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
-            submesh.texture = None
+            logger.info(
+                "Mesh material subset %s has a texture but no UVs; texture will use projected UVs.",
+                path_name,
+            )
 
         color = material_props.get("color")
-        if color is not None:
-            submesh.color = color
-        elif submesh.texture is not None:
+        if submesh.texture is not None:
             submesh.color = (1.0, 1.0, 1.0)
+        elif color is not None:
+            submesh.color = color
         if material_props.get("roughness") is not None:
             submesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:

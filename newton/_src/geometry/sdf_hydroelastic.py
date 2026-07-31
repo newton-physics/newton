@@ -30,7 +30,7 @@ See Also:
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -44,6 +44,7 @@ from .collision_core import sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import get_slot
 from .contact_reduction_global import (
+    CONTACT_ID_BITS,
     GlobalContactReducerData,
     decode_oct,
     encode_oct,
@@ -67,6 +68,34 @@ from .utils import scan_with_total
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
 PRE_PRUNE_MAX_PENETRATING = 2
+
+# Marching cubes emits at most 5 triangles per voxel, so ``tid * 5 + fi``
+# uniquely identifies a generated face.  That value is used both as the
+# reduction fingerprint and as the contact sort sub-key.
+MAX_MC_FACES_PER_VOXEL = 5
+
+# Contact sort sub-keys reserve bit 22 for hydroelastic anchor contacts and bit
+# 0 for the normal/voxel reduction source. Face fingerprints are shifted left
+# by one during export, so they must stay below bit 21.
+_MAX_FACE_FINGERPRINT = 0x200000
+
+
+def _validate_deterministic_fingerprint_range(max_num_iso_voxels: int) -> None:
+    """Warn when face fingerprints can no longer be distinguished.
+
+    Fingerprints and sort sub-keys are masked to a fixed width; once
+    ``max_num_iso_voxels * MAX_MC_FACES_PER_VOXEL`` reaches the anchor bit, two
+    different faces can alias and contact ordering stops being reproducible.
+    """
+    if max_num_iso_voxels * MAX_MC_FACES_PER_VOXEL >= _MAX_FACE_FINGERPRINT:
+        warnings.warn(
+            f"Deterministic hydroelastic contacts need "
+            f"max_num_iso_voxels * {MAX_MC_FACES_PER_VOXEL} < {_MAX_FACE_FINGERPRINT}, but "
+            f"max_num_iso_voxels={max_num_iso_voxels}. Face fingerprints will alias and "
+            "contact ordering may vary between runs. Lower "
+            "HydroelasticSDF.Config.buffer_fraction or reduce the SDF resolution.",
+            stacklevel=3,
+        )
 
 
 @wp.kernel(enable_backward=False)
@@ -240,6 +269,9 @@ class HydroelasticSDF:
             and other behavior. Defaults to :class:`HydroelasticSDF.Config`.
         device: Warp device for GPU computation.
         writer_func: Callback for writing decoded contact data.
+        deterministic: Whether to make hydroelastic accumulation and contact
+            allocation reproducible across runs on the same GPU architecture.
+            Must be chosen at construction because it changes code generation.
 
     Note:
         Instances are typically created internally when constructing a
@@ -404,11 +436,20 @@ class HydroelasticSDF:
         config: HydroelasticSDF.Config | None = None,
         device: Devicelike | None = None,
         writer_func: Any = None,
+        deterministic: bool = False,
     ) -> None:
         if config is None:
             config = HydroelasticSDF.Config()
+        if deterministic and config.pre_prune_contacts:
+            # Pre-pruning keeps a per-thread top-K of faces, so which faces reach
+            # the contact buffer depends on how voxels are distributed over threads.
+            # Deterministic mode is the supported way to ask for reproducibility,
+            # so this is silent; the cost is documented on ``pre_prune_contacts``
+            # and in the deterministic-collisions section of the collision docs.
+            config = replace(config, pre_prune_contacts=False)
 
         self.config = config
+        self.deterministic = deterministic
         if device is None:
             device = wp.get_device()
         self.device = device
@@ -475,6 +516,18 @@ class HydroelasticSDF:
             if config.reduce_contacts and config.pre_prune_contacts:
                 face_contact_budget = face_contact_budget * config.contact_buffer_fraction
             self.max_num_face_contacts = max(int(face_contact_budget), 64)
+            self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
+            if deterministic:
+                _validate_deterministic_fingerprint_range(self.max_num_iso_voxels)
+                max_det_contacts = 1 << int(CONTACT_ID_BITS)
+                if self.max_num_face_contacts > max_det_contacts:
+                    raise ValueError(
+                        f"Deterministic hydroelastic contact packing supports at most {max_det_contacts} "
+                        f"buffered face contacts ({int(CONTACT_ID_BITS)}-bit contact_id), but "
+                        f"HydroelasticSDF allocated {self.max_num_face_contacts}. Lower "
+                        "HydroelasticSDF.Config.buffer_mult_contact or buffer_fraction, or disable "
+                        "deterministic mode."
+                    )
 
             if self.config.output_contact_surface:
                 # stores the point and depth of the contact surface vertex
@@ -518,6 +571,7 @@ class HydroelasticSDF:
             self.generate_contacts_kernel = get_generate_contacts_kernel(
                 output_vertices=self.config.output_contact_surface,
                 pre_prune=self.config.reduce_contacts and self.config.pre_prune_contacts,
+                deterministic_reduction=self.deterministic and self.config.reduce_contacts,
                 pressure_func=self.pressure_func,
                 mc_edge_clamp_min=self.config.mc_edge_clamp_min,
             )
@@ -539,6 +593,7 @@ class HydroelasticSDF:
                     config=reduction_config,
                     pressure_func=self.pressure_func,
                     pressure_data=self.pressure_data,
+                    deterministic=self.deterministic,
                 )
                 self.decode_contacts_kernel = None
             else:
@@ -553,6 +608,7 @@ class HydroelasticSDF:
                     ),
                     pressure_func=self.pressure_func,
                     pressure_data=self.pressure_data,
+                    deterministic=self.deterministic,
                 )
                 self.decode_contacts_kernel = get_decode_contacts_kernel(
                     self.config.margin_contact_area,
@@ -560,13 +616,28 @@ class HydroelasticSDF:
                     self.pressure_func,
                 )
 
-        self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
         self._host_warning_poll_interval = 120
         self._launch_counter = 0
 
+    def _validate_deterministic(self, deterministic: bool) -> None:
+        """Raise if ``deterministic`` disagrees with the mode chosen at construction.
+
+        Lets :class:`~newton.geometry.NarrowPhase` reject a pre-built instance
+        whose determinism setting does not match the pipeline's.
+        """
+        if deterministic != self.deterministic:
+            raise ValueError(
+                "Hydroelastic determinism must be selected when HydroelasticSDF is constructed "
+                "because it changes the generated kernels and reducer layout."
+            )
+
     @classmethod
     def _from_model(
-        cls, model: Model, config: HydroelasticSDF.Config | None = None, writer_func: Any = None
+        cls,
+        model: Model,
+        config: HydroelasticSDF.Config | None = None,
+        writer_func: Any = None,
+        deterministic: bool = False,
     ) -> HydroelasticSDF | None:
         """Create HydroelasticSDF from a model.
 
@@ -574,6 +645,7 @@ class HydroelasticSDF:
             model: The simulation model.
             config: Optional configuration for hydroelastic collision handling.
             writer_func: Optional writer function for decoding contacts.
+            deterministic: Whether to enable deterministic hydroelastic kernels.
 
         Returns:
             HydroelasticSDF instance, or None if no hydroelastic shape pairs exist.
@@ -651,6 +723,7 @@ class HydroelasticSDF:
             config=config,
             device=model.device,
             writer_func=writer_func,
+            deterministic=deterministic,
         )
 
     def get_contact_surface(self) -> ContactSurfaceData | None:
@@ -971,6 +1044,7 @@ class HydroelasticSDF:
                 self.contact_reduction.reducer.position_depth,
                 self.contact_reduction.reducer.normal,
                 self.contact_reduction.reducer.shape_pairs,
+                self.contact_reduction.reducer.contact_fingerprints,
                 self.contact_reduction.reducer.contact_area,
                 self.pressure_data,
                 self.max_num_face_contacts,
@@ -1391,6 +1465,7 @@ def get_decode_contacts_kernel(
         position_depth: wp.array[wp.vec4],
         normal: wp.array[wp.vec2],  # Octahedral-encoded
         shape_pairs: wp.array[wp.vec2i],
+        contact_fingerprints: wp.array[wp.int32],
         contact_area: wp.array[wp.float32],
         pressure_data: Any,
         max_num_face_contacts: int,
@@ -1481,6 +1556,10 @@ def get_decode_contacts_kernel(
             contact_data.shape_b = shape_b
             contact_data.gap_sum = gap_sum
             contact_data.contact_stiffness = c_stiffness
+            # ``tid`` is a buffer slot handed out by an atomic during generation,
+            # so it varies between runs; the fingerprint is the marching-cubes
+            # voxel and face index and is stable.
+            contact_data.sort_sub_key = contact_fingerprints[tid]
 
             writer_func(contact_data, writer_data, output_index)
 
@@ -1495,6 +1574,7 @@ def get_decode_contacts_kernel(
 def get_generate_contacts_kernel(
     output_vertices: bool,
     pre_prune: bool = False,
+    deterministic_reduction: bool = False,
     pressure_func: Any = None,
     mc_edge_clamp_min: float = 0.02,
 ):
@@ -1519,6 +1599,9 @@ def get_generate_contacts_kernel(
     Args:
         output_vertices: Whether to output contact surface vertices for visualization.
         pre_prune: Whether to perform local-first face compaction.
+        deterministic_reduction: Whether aggregate accumulation is deferred
+            to the deterministic reduction phase, which sums in fixed point so
+            the result does not depend on contact ordering.
         pressure_func: Warp function defining the per-shape pressure law used
             to locate the iso-pressure surface. Required.
         mc_edge_clamp_min: Lower bound for the marching-cubes edge
@@ -1676,7 +1759,7 @@ def get_generate_contacts_kernel(
                 # assumption from the aggregate / anchor / moment computations.
                 face_pressure = wp.static(pressure_func)(pen_depth, shape_b, pressure_data)
                 # Accumulate stats per normal bin
-                if pen_depth < 0.0:
+                if pen_depth < 0.0 and wp.static(not deterministic_reduction):
                     bin_id = get_slot(normal)
                     key = make_contact_key(shape_a, shape_b, bin_id)
                     entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
@@ -1703,6 +1786,7 @@ def get_generate_contacts_kernel(
                         normal,
                         pen_depth,
                         area,
+                        tid * MAX_MC_FACES_PER_VOXEL + fi,
                         reducer_data,
                     )
                     if wp.static(output_vertices) and contact_id >= 0:

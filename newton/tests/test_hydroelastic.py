@@ -9,6 +9,12 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.contact_reduction_hydroelastic import (
+    FIXED_EXP_NONE,
+    _fixed_mantissa_bits,
+    _from_fixed,
+    _to_fixed,
+)
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -55,6 +61,20 @@ solvers = {
 }
 
 
+@wp.kernel
+def _test_fixed_point_extreme_exponents(
+    values: wp.array[wp.float32],
+    exponents: wp.array[wp.int32],
+    mantissa_bits: int,
+    fixed_values: wp.array[wp.int64],
+    roundtrip_values: wp.array[wp.float32],
+):
+    """Convert sentinel and high finite pressure contributions in fixed point."""
+    tid = wp.tid()
+    fixed_values[tid] = _to_fixed(values[tid], exponents[tid], mantissa_bits)
+    roundtrip_values[tid] = _from_fixed(fixed_values[tid], exponents[tid], mantissa_bits)
+
+
 # --- Helper functions ---
 
 
@@ -74,6 +94,7 @@ def build_stacked_cubes_scene(
     cube_half: float = CUBE_HALF_LARGE,
     reduce_contacts: bool = True,
     sdf_hydroelastic_config: HydroelasticSDF.Config | None = None,
+    deterministic: bool = False,
 ):
     """Build the stacked cubes scene and return all components for simulation."""
     cube_mesh = None
@@ -157,6 +178,7 @@ def build_stacked_cubes_scene(
         rigid_contact_max=rigid_contact_max,
         broad_phase="explicit",
         sdf_hydroelastic_config=sdf_hydroelastic_config,
+        deterministic=deterministic,
     )
 
     return model, solver, state_0, state_1, control, collision_pipeline, initial_positions, cube_half
@@ -324,6 +346,106 @@ def test_buffer_fraction_no_crash(test, device):
         reduced_count,
         f"Full buffers ({full_count}) produced significantly fewer contacts than reduced buffers ({reduced_count})",
     )
+
+
+def test_deterministic_hydroelastic_contacts(test, device, moment_matching=False):
+    """Produce bit-identical hydroelastic contacts across repeated collision calls."""
+    model, _, state, _, _, pipeline, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=lambda model: None,
+        shape_type=ShapeType.PRIMITIVE,
+        deterministic=True,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=True,
+            anchor_contact=True,
+            moment_matching=moment_matching,
+        ),
+    )
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    contacts = pipeline.contacts()
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+    test.assertTrue(hydro.config.reduce_contacts)
+    test.assertTrue(hydro.contact_reduction.deterministic)
+    snapshots = []
+    contact_fields = (
+        "rigid_contact_point_id",
+        "rigid_contact_shape0",
+        "rigid_contact_shape1",
+        "rigid_contact_point0",
+        "rigid_contact_point1",
+        "rigid_contact_offset0",
+        "rigid_contact_offset1",
+        "rigid_contact_normal",
+        "rigid_contact_margin0",
+        "rigid_contact_margin1",
+        "rigid_contact_tids",
+        "rigid_contact_stiffness",
+        "rigid_contact_damping",
+        "rigid_contact_friction",
+    )
+
+    for _ in range(5):
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        face_count = int(hydro.contact_reduction.contact_count.numpy()[0])
+        insert_failures = int(hydro.contact_reduction.reducer.ht_insert_failures.numpy()[0])
+        test.assertLess(face_count, hydro.max_num_face_contacts, "Hydroelastic face-contact buffer saturated")
+        test.assertEqual(insert_failures, 0, "Hydroelastic reduction hashtable insertion failed")
+        test.assertLess(count, contacts.rigid_contact_max, "Rigid-contact buffer saturated")
+
+        sort_keys = pipeline._sort_key_array.numpy()[:count]
+        test.assertEqual(len(np.unique(sort_keys)), count, "Hydroelastic contact sort keys must be unique")
+        snapshots.append((count, tuple(getattr(contacts, name).numpy()[:count].copy() for name in contact_fields)))
+
+    test.assertGreater(snapshots[0][0], 0)
+    for count, fields in snapshots[1:]:
+        test.assertEqual(count, snapshots[0][0])
+        for name, expected, actual in zip(contact_fields, snapshots[0][1], fields, strict=True):
+            np.testing.assert_array_equal(actual, expected, err_msg=name)
+
+
+def test_deterministic_hydroelastic_contacts_moment_matching(test, device):
+    """Keep hydroelastic contacts bit-identical when moment matching is enabled."""
+    test_deterministic_hydroelastic_contacts(test, device, moment_matching=True)
+
+
+def test_deterministic_hydroelastic_contacts_unreduced(test, device):
+    """Produce bit-identical hydroelastic contacts with contact reduction disabled.
+
+    The unreduced path exports straight from the contact buffer, so it has to
+    sort on the geometric fingerprint rather than the atomically assigned buffer
+    slot, which varies between runs.
+    """
+    model, _, state, _, _, pipeline, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=lambda model: None,
+        shape_type=ShapeType.PRIMITIVE,
+        deterministic=True,
+        reduce_contacts=False,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(reduce_contacts=False),
+    )
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    contacts = pipeline.contacts()
+    test.assertFalse(pipeline.hydroelastic_sdf.config.reduce_contacts)
+
+    snapshots = []
+    for _ in range(4):
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        snapshots.append(
+            (
+                count,
+                contacts.rigid_contact_point0.numpy()[:count].copy(),
+                contacts.rigid_contact_normal.numpy()[:count].copy(),
+            )
+        )
+
+    test.assertGreater(snapshots[0][0], 0)
+    for count, point0, normal in snapshots[1:]:
+        test.assertEqual(count, snapshots[0][0])
+        np.testing.assert_array_equal(point0, snapshots[0][1], err_msg="rigid_contact_point0")
+        np.testing.assert_array_equal(normal, snapshots[0][2], err_msg="rigid_contact_normal")
 
 
 def test_iso_scan_scratch_buffers_are_level_sized(test, device):
@@ -513,7 +635,7 @@ def _build_cube_sphere_scene(device, cube_half=0.1, sphere_radius=0.1):
     return model, state, sphere_body, rest_z
 
 
-def _make_pipelines(model, configs, rigid_contact_maxes=None):
+def _make_pipelines(model, configs, rigid_contact_maxes=None, deterministic=False):
     """Create collision pipelines and contacts for a list of HydroelasticSDF.Configs.
 
     Returns list of (pipeline, contacts) tuples.
@@ -522,12 +644,14 @@ def _make_pipelines(model, configs, rigid_contact_maxes=None):
         rigid_contact_maxes = [500] * len(configs)
     result = []
     for cfg, rcm in zip(configs, rigid_contact_maxes, strict=True):
-        pipe = newton.CollisionPipeline(model, rigid_contact_max=rcm, sdf_hydroelastic_config=cfg)
+        pipe = newton.CollisionPipeline(
+            model, rigid_contact_max=rcm, sdf_hydroelastic_config=cfg, deterministic=deterministic
+        )
         result.append((pipe, pipe.contacts()))
     return result
 
 
-def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False):
+def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False, deterministic=False):
     """Reduced and unreduced hydroelastic forces must agree within 1%."""
     model, state, sphere_body, rest_z = _build_cube_sphere_scene(device)
 
@@ -542,7 +666,7 @@ def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False)
         anchor_contact=False,
     )
     (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
-        model, [cfg_reduced, cfg_unreduced], [500, 20000]
+        model, [cfg_reduced, cfg_unreduced], [500, 20000], deterministic=deterministic
     )
 
     anchor_label = "with anchor" if anchor_contact else "without anchor"
@@ -583,7 +707,7 @@ def test_reduced_vs_unreduced_contact_forces_with_anchor_contact(test, device):
     test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=True)
 
 
-def test_reduced_vs_unreduced_contact_moments(test, device):
+def test_reduced_vs_unreduced_contact_moments(test, device, deterministic=False):
     """Reduced and unreduced hydroelastic moments must agree with moment_matching."""
     model, state, sphere_body, rest_z = _build_cube_sphere_scene(device)
 
@@ -599,7 +723,7 @@ def test_reduced_vs_unreduced_contact_moments(test, device):
         anchor_contact=False,
     )
     (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
-        model, [cfg_reduced, cfg_unreduced], [500, 20000]
+        model, [cfg_reduced, cfg_unreduced], [500, 20000], deterministic=deterministic
     )
 
     # Filter to the cube-sphere shape pair (shape 1=cube, shape 2=sphere).
@@ -632,6 +756,25 @@ def test_reduced_vs_unreduced_contact_moments(test, device):
                 0.4,
                 f"pen={pen}: moment mismatch {rel * 100:.2f}% (reduced={m_red:.6f}, unreduced={m_unr:.6f})",
             )
+
+
+def test_reduced_vs_unreduced_contact_forces_deterministic(test, device):
+    """Reduced hydroelastic forces must still match when determinism is enabled.
+
+    Deterministic mode accumulates the aggregates that drive contact stiffness in
+    int64 fixed point, so this checks that path against the unreduced reference
+    rather than only against itself.
+    """
+    test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=True, deterministic=True)
+
+
+def test_reduced_vs_unreduced_contact_moments_deterministic(test, device):
+    """Reduced hydroelastic moments must still match when determinism is enabled.
+
+    Exercises the fixed-point unreduced/reduced friction-moment accumulators,
+    which deterministic mode computes in separate kernels from the default path.
+    """
+    test_reduced_vs_unreduced_contact_moments(test, device, deterministic=True)
 
 
 def _compute_total_friction_capacity(contacts, model, state, shape_pair=None):
@@ -1471,10 +1614,57 @@ def test_convex_mesh_hydroelastic_contacts(test, device):
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def test_fixed_point_extreme_exponents(test, device):
+    """Handle sentinel and high finite pressure contributions without overflow."""
+    mantissa_bits = _fixed_mantissa_bits(1024)
+    high_value = np.finfo(np.float32).max
+    values_np = np.array([0.0, high_value, -high_value], dtype=np.float32)
+    exponents_np = np.array([int(FIXED_EXP_NONE), 127, 127], dtype=np.int32)
+    values = wp.array(values_np, dtype=wp.float32, device=device)
+    exponents = wp.array(exponents_np, dtype=wp.int32, device=device)
+    fixed_values = wp.empty(len(values_np), dtype=wp.int64, device=device)
+    roundtrip_values = wp.empty(len(values_np), dtype=wp.float32, device=device)
+
+    wp.launch(
+        _test_fixed_point_extreme_exponents,
+        dim=len(values_np),
+        inputs=[values, exponents, mantissa_bits, fixed_values, roundtrip_values],
+        device=device,
+    )
+
+    fixed_np = fixed_values.numpy()
+    roundtrip_np = roundtrip_values.numpy()
+    test.assertEqual(fixed_np[0], 0)
+    test.assertEqual(roundtrip_np[0], 0.0)
+    test.assertTrue(np.all(np.abs(fixed_np[1:]) < np.iinfo(np.int64).max))
+    np.testing.assert_array_equal(roundtrip_np[1:], values_np[1:])
+
+
 # --- Test class ---
 
 
 class TestHydroelastic(unittest.TestCase):
+    def test_fixed_point_extreme_exponents(self):
+        """Handle sentinel and high finite pressure contributions without overflow."""
+        test_fixed_point_extreme_exponents(self, wp.get_device("cpu"))
+
+    def test_fixed_point_accumulator_cannot_overflow(self):
+        """``_fixed_mantissa_bits`` keeps deterministic fixed-point sums inside int64.
+
+        A contribution equal to the entry maximum scales to just under
+        ``2**(bits + 1)``, because ``|x| / 2**exponent`` lies in ``[1, 2)``.  The
+        worst case is every term hitting that ceiling in the same entry, so the
+        chosen width must keep ``max_terms * 2**(bits + 1)`` below ``2**63``.
+        This bound is host-side only, so the test runs even on CPU-only CI.
+        """
+        int64_max = 2**63 - 1
+        for max_terms in (1, 2, 64, 7168, 28672, 1 << 20, 1835008, (1 << 24) + 1):
+            bits = _fixed_mantissa_bits(max_terms)
+            worst_case_sum = max_terms * 2 ** (bits + 1)
+            self.assertLessEqual(worst_case_sum, int64_max, msg=f"max_terms={max_terms}, bits={bits}")
+            # Must still beat float32's 24-bit significand by a wide margin.
+            self.assertGreater(bits, 24, msg=f"max_terms={max_terms}")
+
     def test_mc_edge_clamp_min_validation(self):
         """``HydroelasticSDF.Config.mc_edge_clamp_min`` validates its range at construction.
 
@@ -1602,6 +1792,38 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_deterministic_hydroelastic_contacts",
+    test_deterministic_hydroelastic_contacts,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_fixed_point_extreme_exponents_cuda",
+    test_fixed_point_extreme_exponents,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_deterministic_hydroelastic_contacts_moment_matching",
+    test_deterministic_hydroelastic_contacts_moment_matching,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_deterministic_hydroelastic_contacts_unreduced",
+    test_deterministic_hydroelastic_contacts_unreduced,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_iso_scan_scratch_buffers_are_level_sized",
     test_iso_scan_scratch_buffers_are_level_sized,
     devices=cuda_devices,
@@ -1633,6 +1855,22 @@ add_function_test(
     TestHydroelastic,
     "test_reduced_vs_unreduced_contact_forces_with_anchor_contact",
     test_reduced_vs_unreduced_contact_forces_with_anchor_contact,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_forces_deterministic",
+    test_reduced_vs_unreduced_contact_forces_deterministic,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_moments_deterministic",
+    test_reduced_vs_unreduced_contact_moments_deterministic,
     devices=cuda_devices,
     check_output=False,
 )

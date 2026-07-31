@@ -193,11 +193,15 @@ def _eval_rotation_jacobian_blocks(
 
 @wp.func
 def _eval_passive_universal_jacobian_blocks(
-    X_T: wp.mat33f, q_base: wp.quatf, q_follower: wp.quatf, has_base: wp.bool
+    X_B_T: wp.mat33f,
+    X_F_T: wp.mat33f,
+    q_base: wp.quatf,
+    q_follower: wp.quatf,
+    has_base: wp.bool,
 ) -> tuple[wp.vec4f, wp.vec4f]:
     """Evaluate the base and follower blocks of a passive universal constraint Jacobian."""
-    a_x = X_T[0]
-    a_y = X_T[1]
+    a_x = X_B_T[0]  # x-axis on base
+    a_y = X_F_T[1]  # y-axis on follower
     jac_q_base = wp.vec4f(0.0)
     if has_base:
         a_y_follower = unit_quat_apply(q_follower, a_y)
@@ -970,6 +974,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
         joints_bid_B: wp.array[wp.int32],
         joints_bid_F: wp.array[wp.int32],
         joints_X_Bj: wp.array[wp.mat33f],
+        joints_X_Fj: wp.array[wp.mat33f],
         joints_B_r_B: wp.array[wp.vec3f],
         joints_F_r_F: wp.array[wp.vec3f],
         bodies_q: wp.array[wp.transformf],
@@ -996,6 +1001,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
             joints_bid_B: Joint base body id
             joints_bid_F: Joint follower body id
             joints_X_Bj: Joint local frame on base body
+            joints_X_Fj: Joint local frame on follower body
             joints_B_r_B: Joint local position on base body
             joints_F_r_F: Joint local position on follower body
             bodies_q: Body poses
@@ -1059,7 +1065,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
 
                 # Compute constraint (dot product between x axis on base and y axis on follower)
                 a_x = X_T[0]
-                a_y = X_T[1]
+                a_y = wp.transpose(joints_X_Fj[jt_id_tot])[1]
                 a_x_base = unit_quat_apply(q_base, a_x)
                 a_y_follower = unit_quat_apply(q_follower, a_y)
                 ct = -wp.dot(a_x_base, a_y_follower)
@@ -1168,6 +1174,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
         joints_bid_B: wp.array[wp.int32],
         joints_bid_F: wp.array[wp.int32],
         joints_X_Bj: wp.array[wp.mat33f],
+        joints_X_Fj: wp.array[wp.mat33f],
         joints_B_r_B: wp.array[wp.vec3f],
         joints_F_r_F: wp.array[wp.vec3f],
         bodies_q: wp.array[wp.transformf],
@@ -1191,6 +1198,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
             joints_bid_B: Joint base body id
             joints_bid_F: Joint follower body id
             joints_X_Bj: Joint local frame on base body
+            joints_X_Fj: Joint local frame on follower body
             joints_B_r_B: Joint local position on base body
             joints_F_r_F: Joint local position on follower body
             bodies_q: Body poses
@@ -1272,7 +1280,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
 
                 # Compute constraint Jacobian (cross product between x axis on base and y axis on follower)
                 jac_q_base, jac_q_follower = _eval_passive_universal_jacobian_blocks(
-                    X_T, q_base, q_follower, base_id_tot >= 0
+                    X_T, wp.transpose(joints_X_Fj[jt_id_tot]), q_base, q_follower, base_id_tot >= 0
                 )
 
                 # Write out Jacobian
@@ -1304,6 +1312,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
         joints_bid_B: wp.array[wp.int32],
         joints_bid_F: wp.array[wp.int32],
         joints_X_Bj: wp.array[wp.mat33f],
+        joints_X_Fj: wp.array[wp.mat33f],
         joints_B_r_B: wp.array[wp.vec3f],
         joints_F_r_F: wp.array[wp.vec3f],
         bodies_q: wp.array[wp.transformf],
@@ -1328,6 +1337,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
             joints_bid_B: Joint base body id
             joints_bid_F: Joint follower body id
             joints_X_Bj: Joint local frame on base body
+            joints_X_Fj: Joint local frame on follower body
             joints_B_r_B: Joint local position on base body
             joints_F_r_F: Joint local position on follower body
             bodies_q: Body poses
@@ -1413,7 +1423,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
 
                 # Compute constraint Jacobian (cross product between x axis on base and y axis on follower)
                 jac_q_base, jac_q_follower = _eval_passive_universal_jacobian_blocks(
-                    X_T, q_base, q_follower, base_id >= 0
+                    X_T, wp.transpose(joints_X_Fj[jt_id_tot]), q_base, q_follower, base_id >= 0
                 )
 
                 # Write out Jacobian

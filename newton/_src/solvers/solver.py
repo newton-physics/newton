@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from typing import Any
 
 import warp as wp
@@ -217,6 +218,27 @@ class SolverBase:
             SolverBase._module_options_revision += 1
         self._applied_module_options_revision = SolverBase._module_options_revision
 
+    def _normalize_reset_world_mask(self, world_mask: wp.array[wp.bool] | None) -> wp.array[wp.bool] | None:
+        """Append an unselected global slot to a legacy reset mask."""
+        if world_mask is None:
+            return None
+        world_count = self.model.world_count
+        mask_size = world_mask.size
+        if mask_size == world_count + 1:
+            return world_mask
+        if mask_size != world_count:
+            raise ValueError(f"world_mask has size {mask_size}, expected {world_count} or {world_count + 1}.")
+        warnings.warn(
+            "world_mask with shape (world_count,) is deprecated; use shape (world_count + 1,), "
+            "where the final entry selects global entities in world -1.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        normalized_mask = wp.zeros(world_count + 1, dtype=wp.bool, device=self.device)
+        if world_count > 0:
+            wp.copy(normalized_mask, world_mask, count=world_count)
+        return normalized_mask
+
     @property
     def device(self) -> wp.Device:
         """
@@ -346,14 +368,17 @@ class SolverBase:
 
         Args:
             state: The simulation state to reset (modified in place).
-            world_mask: Optional boolean mask of shape ``(num_worlds,)``
-                specifying which worlds to reset.  If ``None``, all worlds
-                are reset.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
+                specifying which worlds to reset. Entries before the last select
+                local worlds by index, and the final entry selects global entities
+                whose world is ``-1``. If ``None``, all local and global entities
+                are reset. Passing the deprecated shape ``(world_count,)`` selects
+                local worlds only and leaves global entities unselected.
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
         """
-        pass
+        self._normalize_reset_world_mask(world_mask)
 
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
