@@ -52,7 +52,7 @@ def _run_proxy_harvest(device, corners, bary):
     # Place the rigid point _PENETRATION above x = sum_i bary_i * v_i along +z, so that
     # penetration = -dot(n, x - bx) = _PENETRATION > 0.
     active = [c for c in corners if c >= 0]
-    contact_x = (np.array(bary)[: len(active), None] * _VERTS[: len(active)]).sum(axis=0)
+    contact_x = (np.array(bary)[: len(active), None] * _VERTS[active]).sum(axis=0)
     body_pos = contact_x + np.array(_NORMAL) * _PENETRATION
 
     smax = 8
@@ -117,6 +117,15 @@ def test_face_contact_reacts_on_proxy_body(test, device):
     _assert_reaction(test, *_run_proxy_harvest(device, [0, 1, 2], [0.6, 0.3, 0.1]))
 
 
+def test_edge_contact_reacts_on_proxy_body(test, device):
+    """A soft EDGE record ``(v0, v1, -1)`` reacts on the proxy body.
+
+    Spans v0 and the lifted v2 so the contact point still depends on the weights; an edge along
+    v0-v1 would lie in z = 0 and be insensitive to them.
+    """
+    _assert_reaction(test, *_run_proxy_harvest(device, [0, 2, -1], [0.7, 0.3, 0.0]))
+
+
 def test_particle_contact_reacts_on_proxy_body(test, device):
     """A particle record ``(p, -1, -1)`` still yields the identical analytic reaction."""
     _assert_reaction(test, *_run_proxy_harvest(device, [0, -1, -1], [1.0, 0.0, 0.0]))
@@ -130,6 +139,12 @@ add_function_test(
     TestVBDProxyFullSurfaceContact,
     "test_face_contact_reacts_on_proxy_body",
     test_face_contact_reacts_on_proxy_body,
+    devices=devices,
+)
+add_function_test(
+    TestVBDProxyFullSurfaceContact,
+    "test_edge_contact_reacts_on_proxy_body",
+    test_edge_contact_reacts_on_proxy_body,
     devices=devices,
 )
 add_function_test(
