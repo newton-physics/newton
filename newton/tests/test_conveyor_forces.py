@@ -4,7 +4,7 @@
 """Correctness tests for the force-based conveyor model.
 
 Exercises :class:`newton.examples.basic.example_basic_conveyor_forces.ConveyorForceModel`
-across solver backends with quantitative (not just validity) checks: zero speed
+across solver backends with quantitative checks: zero speed
 (no drift), constant/reversed speed (direction and convergence), rotated belt,
 curved (pivot) velocity field, contact loss, and long-running stability.
 """
