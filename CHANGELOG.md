@@ -133,6 +133,7 @@
 - Fix a use-after-free where finalizing a second model built from shared mesh geometry (e.g. via `ModelBuilder.replicate()` or `ModelBuilder.add_builder()`) invalidated the meshes referenced by previously finalized models.
 - Fix compiler warnings about overflowing int32 constants when compiling SDF texture and `SensorTiledCamera` kernels.
 - Fix USD site import to discover sites beneath non-visual containers, collider prims, and instanceable rigid-body prims independently of `load_visual_shapes`; the reworked traversal also speeds up import of scenes with many nested `Xform` or instance prims.
+- Fix `ModelBuilder.add_usd()` ignoring `newton:mimicEnabled` on a joint with `MjcEqualityJointAPI` applied. Such a joint is now imported disabled rather than coupled, which also stops the default equality conversion from enforcing the coupling in every solver.
 - Fix `SolverFeatherstone` BALL joints to apply passive `joint_damping` on all three angular DOFs.
 - Fix `eval_ik()` and `SolverSemiImplicit` rounding small float32 revolute-joint angles to zero. (#3434)
 - Fix excessive memory usage when importing MJCF or URDF models containing many visual-only shapes with self-collisions disabled.
