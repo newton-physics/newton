@@ -4703,6 +4703,11 @@ def parse_usd(
                 for attr_name in ("mjc:coef2", "mjc:coef3", "mjc:coef4"):
                     polycoef.append(float(usd.get_attribute(joint_prim, attr_name, default=0.0)))
 
+                # NewtonMimicAPI's opt-out governs both spellings of the constraint. The
+                # plain mimic loop below skips these prims, so it is folded into the
+                # runtime enabled flag here rather than dropping the constraint.
+                eq_enabled = enabled and bool(usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True))
+
                 if convert_mjc_equality_constraints:
                     if mjc_polycoef_has_higher_order(polycoef):
                         warnings.warn(
@@ -4717,7 +4722,7 @@ def parse_usd(
                         joint2_idx,
                         polycoef,
                         joint_path,
-                        enabled,
+                        eq_enabled,
                         eq_custom_attrs,
                     )
                 else:
@@ -4728,7 +4733,7 @@ def parse_usd(
                         joint2=joint2_idx,
                         polycoef=polycoef,
                         label=joint_path,
-                        enabled=enabled,
+                        enabled=eq_enabled,
                         custom_attributes=eq_custom_attrs,
                     )
 

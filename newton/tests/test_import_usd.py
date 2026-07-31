@@ -9708,6 +9708,77 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_equality_joint_parsing_honors_mimic_enabled(self):
+        """Test that newton:mimicEnabled disables an MjcEqualityJointAPI constraint.
+
+        MjcEqualityJointAPI builds on NewtonMimicAPI, so the opt-out has to govern both
+        spellings. The plain mimic loop skips prims carrying MjcEqualityJointAPI, so the
+        equality path is the only place that can honor it.
+        """
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        def build_stage():
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+            UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+            links = []
+            for name in ("Root", "Link1", "Link2"):
+                link = UsdGeom.Xform.Define(stage, f"/World/Articulation/{name}")
+                UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+                links.append(link)
+
+            fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/RootToWorld")
+            fixed.CreateBody0Rel().SetTargets([links[0].GetPath()])
+            fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+            for index in (1, 2):
+                joint = UsdPhysics.RevoluteJoint.Define(stage, f"/World/Articulation/Joint{index}")
+                joint.CreateBody0Rel().SetTargets([links[index - 1].GetPath()])
+                joint.CreateBody1Rel().SetTargets([links[index].GetPath()])
+                joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                joint.CreateAxisAttr().Set("Z")
+
+            follower = stage.GetPrimAtPath("/World/Articulation/Joint2")
+            follower.SetMetadata(
+                "apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityJointAPI", "NewtonMimicAPI"])
+            )
+            follower.CreateRelationship("newton:mimicJoint").SetTargets(["/World/Articulation/Joint1"])
+            follower.CreateAttribute("newton:mimicEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+            return stage
+
+        # The MuJoCo-native path authors the equality row directly.
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(build_stage(), convert_mjc_equality_constraints=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
+
+        # The default path additionally lowers a generic mimic constraint, which would
+        # otherwise enforce the coupling for every solver rather than only SolverMuJoCo.
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(build_stage(), convert_mjc_equality_constraints=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
+        self.assertEqual(model.constraint_mimic_count, 1)
+        self.assertFalse(bool(model.constraint_mimic_enabled.numpy()[0]))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_connect_site_parsing(self):
         """Test that MjcEqualityConnectAPI on a spherical joint is parsed as a connect equality constraint."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
