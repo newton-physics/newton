@@ -242,7 +242,7 @@ class PADMMSolver:
         # Cache high-level solver options shared across all worlds
         self._warmstart = warmstart
         self._use_acceleration = use_acceleration
-        self._use_graph_conditionals = use_graph_conditionals
+        self._use_graph_conditionals = use_graph_conditionals and wp.is_conditional_graph_supported()
         self._collect_info = collect_info
 
         # Check if any world uses adaptive penalty updates (requiring per-step regularization updates)
