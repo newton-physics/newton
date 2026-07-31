@@ -18,6 +18,7 @@
 - Add contact examples for Newton's cradle, a balance bird, and a domino spiral
 - Add `ViewerUSD(points_as_spheres=...)` to render `log_points` particles as a `UsdGeom.PointInstancer` of sphere prototypes; enabled by default (opt out with `points_as_spheres=False` for flat `UsdGeom.Points` splats)
 - Add list-of-pattern and explicit-index selectors to `ArticulationView`.
+- Add `ControllerDetent` for stateless multi-detent mechanical switches and a `basic_actuator` example demonstrating position-dependent magnetic clamping and a three-detent switch.
 - Add `newton[onnx]` for ONNX policy inference through Warp-NN; `ControllerNeuralMLP`, `ControllerNeuralLSTM`, and RL policy examples can run exported `.onnx` policies without requiring PyTorch for ONNX execution.
 - Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts
 - Add masked rigid-body reset support to `SolverVBD`; particle resets are not yet supported. (#3256)
