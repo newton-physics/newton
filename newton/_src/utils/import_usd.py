@@ -4511,6 +4511,7 @@ def parse_usd(
 
         coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0")
         if coef0 is None:
+            # The deprecated alias was always authored in radians, so it skips the conversion.
             coef0 = usd.get_attribute(joint_prim, "mjc:coef0", default=0.0)
         elif joint_prim.IsA(UsdPhysics.RevoluteJoint):
             coef0 *= DegreesToRadian
