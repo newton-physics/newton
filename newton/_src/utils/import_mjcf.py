@@ -2989,6 +2989,8 @@ def parse_mjcf(
                 # Uses only the first DOF (qd_start) since inheritrange is only
                 # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
+                if actuator_type == "intvelocity" and inheritrange > 0 and "actrange" in merged_attrib:
+                    raise ValueError("MJCF intvelocity actuator cannot define both actrange and inheritrange.")
                 if inheritrange > 0 and joint_name and qd_start >= 0:
                     lower = builder.joint_limit_lower[qd_start]
                     upper = builder.joint_limit_upper[qd_start]
@@ -2996,10 +2998,6 @@ def parse_mjcf(
                         mean = (upper + lower) / 2.0
                         radius = (upper - lower) / 2.0 * inheritrange
                         if actuator_type == "intvelocity":
-                            if "actrange" in merged_attrib:
-                                raise ValueError(
-                                    "MJCF intvelocity actuator cannot define both actrange and inheritrange."
-                                )
                             merged_attrib["actrange"] = f"{mean - radius} {mean + radius}"
                             merged_attrib["actlimited"] = "true"
                         else:
@@ -3007,7 +3005,8 @@ def parse_mjcf(
                             merged_attrib["ctrllimited"] = "true"
                 if actuator_type == "intvelocity" and "actrange" not in merged_attrib:
                     raise ValueError("MJCF intvelocity actuator requires actrange or a resolvable inheritrange.")
-                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
+                # Non-joint actuators must use CTRL_DIRECT. intvelocity also
+                # carries activation state that JOINT_TARGET cannot represent.
                 if actuator_type == "intvelocity" or trntype != 0 or total_dofs == 0 or ctrl_direct:
                     ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
                 else:

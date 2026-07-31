@@ -983,15 +983,22 @@ class TestMuJoCoIntegratedVelocityActuators(unittest.TestCase):
         for _ in range(5):
             mujoco.mj_step(native_model, native_data)
             mujoco.mj_step(solver.mj_model, solver.mj_data)
-
-        np.testing.assert_allclose(solver.mj_data.act, native_data.act, atol=1.0e-8)
-        np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, atol=1.0e-7)
-        np.testing.assert_allclose(solver.mj_data.qpos, native_data.qpos, atol=1.0e-7)
+            np.testing.assert_allclose(solver.mj_data.act, native_data.act, atol=1.0e-8)
+            np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, atol=1.0e-7)
+            np.testing.assert_allclose(solver.mj_data.qpos, native_data.qpos, atol=1.0e-7)
 
     def test_intvelocity_actuator_requires_activation_range(self):
         """Reject intvelocity actuators without an activation range."""
         mjcf = MJCF_INTVELOCITY_ACTUATOR.replace(' actrange="-0.5 0.5"', "")
         with self.assertRaisesRegex(ValueError, "requires actrange"):
+            ModelBuilder().add_mjcf(mjcf, ctrl_direct=True)
+
+    def test_intvelocity_actuator_rejects_conflicting_ranges(self):
+        """Reject actrange with inheritrange even for an unlimited joint."""
+        mjcf = MJCF_INTVELOCITY_ACTUATOR.replace(' range="-1 1"', "")
+        mjcf = mjcf.replace('joint="slide"/>', 'joint="slide" inheritrange="1"/>')
+
+        with self.assertRaisesRegex(ValueError, "cannot define both actrange and inheritrange"):
             ModelBuilder().add_mjcf(mjcf, ctrl_direct=True)
 
 
