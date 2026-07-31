@@ -335,7 +335,7 @@ class TestMuJoCoSleeping(unittest.TestCase):
         state_0, _ = self._sleep_all(solver, state_0, state_1, control, contacts)
         np.testing.assert_array_equal(solver.mjw_data.ntree_awake.numpy(), [0, 0])
 
-        mask = wp.array([True, False], dtype=wp.bool, device=model.device)
+        mask = wp.array([True, False, False], dtype=wp.bool, device=model.device)
         solver.reset(state_0, world_mask=mask, flags=0)
 
         np.testing.assert_array_equal(solver.mjw_data.ntree_awake.numpy(), [1, 0])
