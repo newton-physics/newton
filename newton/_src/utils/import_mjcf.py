@@ -361,11 +361,9 @@ def parse_mjcf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
-    # The equality custom attributes are declared by ModelBuilder.__init__; register the remaining
-    # MuJoCo custom attributes (geom/actuator/solver options) needed to parse and convert the model.
-    # register_custom_attributes is idempotent, so re-registering the equality fields is a no-op.
-    if convert_mjc_equality_constraints:
-        SolverMuJoCo.register_custom_attributes(builder)
+    # Option parsing needs the MuJoCo attributes even when equality conversion
+    # is disabled. Registration is idempotent.
+    SolverMuJoCo.register_custom_attributes(builder)
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
@@ -475,6 +473,12 @@ def parse_mjcf(
                 flag = option.find("flag")
                 if flag is None:
                     continue
+                unknown = set(flag.attrib) - disable_flag_bits.keys() - enable_flag_bits.keys()
+                if unknown:
+                    warnings.warn(
+                        f"MJCF option <flag> has unsupported attribute(s) {sorted(unknown)!r}; ignoring.",
+                        stacklevel=2,
+                    )
                 for name, bit in disable_flag_bits.items():
                     if name not in flag.attrib:
                         continue
