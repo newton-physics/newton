@@ -3237,8 +3237,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Detect position/velocity actuator shortcuts. Use set_to_position/
             # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
             # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
-            shortcut = None  # "position" or "velocity" if detected
+            shortcut = None  # "position", "velocity", or "damper" if detected
             shortcut_args: dict[str, float] = {}
+            gainprm = general_args.get("gainprm", [0, 0, 0])
+            if (
+                general_args.get("gaintype") == mujoco.mjtGain.mjGAIN_AFFINE
+                and general_args.get("biastype") == mujoco.mjtBias.mjBIAS_NONE
+                and gainprm[0] == 0
+                and gainprm[1] == 0
+                and gainprm[2] <= 0
+            ):
+                shortcut = "damper"
+                shortcut_args["kv"] = -gainprm[2]
+                for key in ("biasprm", "biastype", "gainprm", "gaintype"):
+                    general_args.pop(key, None)
             if general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0:
                 kp = general_args["gainprm"][0]
                 bp = general_args.get("biasprm", [0, 0, 0])
@@ -3277,6 +3289,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 act.set_to_position(**shortcut_args)
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
+            elif shortcut == "damper":
+                act.set_to_damper(**shortcut_args)
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT

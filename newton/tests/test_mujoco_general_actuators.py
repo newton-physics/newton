@@ -925,6 +925,74 @@ MJCF_SITE_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+MJCF_DAMPER_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_damper_actuator">
+    <option gravity="0 0 0"/>
+    <default>
+        <damper ctrlrange="0 2"/>
+    </default>
+    <worldbody>
+        <body name="body">
+            <joint name="hinge"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <damper name="drive" joint="hinge" kv="4"/>
+    </actuator>
+</mujoco>
+"""
+
+
+class TestMuJoCoDamperActuators(unittest.TestCase):
+    """Tests for controllable damper actuator shortcuts."""
+
+    def test_damper_actuator_parsed_from_mjcf(self):
+        """Expand inherited damper parameters into actuator metadata."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_DAMPER_ACTUATOR, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+        np.testing.assert_array_equal(model.mujoco.actuator_gaintype.numpy(), [1])
+        np.testing.assert_array_equal(model.mujoco.actuator_biastype.numpy(), [0])
+        np.testing.assert_allclose(model.mujoco.actuator_gainprm.numpy()[0, :3], [0.0, 0.0, -4.0])
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), [[0.0, 2.0]])
+
+    def test_damper_actuator_matches_native_mujoco(self):
+        """Match native MuJoCo damping force at nonzero velocity."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(MJCF_DAMPER_ACTUATOR)
+        native_data = mujoco.MjData(native_model)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_DAMPER_ACTUATOR, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.nu, 1)
+        np.testing.assert_allclose(solver.mj_model.actuator_gainprm, native_model.actuator_gainprm)
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange, native_model.actuator_ctrlrange)
+
+        native_data.qvel[:] = 3.0
+        solver.mj_data.qvel[:] = 3.0
+        native_data.ctrl[:] = 0.5
+        solver.mj_data.ctrl[:] = 0.5
+        mujoco.mj_forward(native_model, native_data)
+        mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        np.testing.assert_allclose(solver.mj_data.qfrc_actuator, native_data.qfrc_actuator, atol=1.0e-7)
+        np.testing.assert_allclose(native_data.qfrc_actuator, [-6.0], atol=1.0e-7)
+
+    def test_damper_actuator_rejects_invalid_control_range(self):
+        """Reject missing or negative damper control ranges."""
+        missing_range_mjcf = MJCF_DAMPER_ACTUATOR.replace(' ctrlrange="0 2"', "")
+        with self.assertRaisesRegex(ValueError, "requires a two-value ctrlrange"):
+            ModelBuilder().add_mjcf(missing_range_mjcf, ctrl_direct=True)
+
+        negative_range_mjcf = MJCF_DAMPER_ACTUATOR.replace('ctrlrange="0 2"', 'ctrlrange="-1 2"')
+        with self.assertRaisesRegex(ValueError, "ctrlrange must be nonnegative"):
+            ModelBuilder().add_mjcf(negative_range_mjcf, ctrl_direct=True)
+
 
 class TestMuJoCoSiteActuators(unittest.TestCase):
     """Tests for site-targeted actuator support in SolverMuJoCo."""
