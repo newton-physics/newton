@@ -12,6 +12,7 @@ import tempfile
 import types
 import unittest
 import warnings
+from typing import ClassVar
 from unittest.mock import patch
 
 import numpy as np
@@ -26,6 +27,7 @@ from newton.actuators import (
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
+    ControllerDetent,
     ControllerNeuralLSTM,
     ControllerNeuralMLP,
     ControllerPD,
@@ -315,6 +317,115 @@ class TestControllerPID(unittest.TestCase):
             state_0, state_1 = state_1, state_0
 
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
+
+
+class TestControllerDetent(unittest.TestCase):
+    """Detent controller signed lookup and validation tests."""
+
+    HIGH_LEVEL_ARGS: ClassVar[dict] = {
+        "detent_positions": (-1.0, 0.0, 1.0),
+        "holding_efforts": (2.0, 3.0, 4.0),
+        "breakaway_efforts": (5.0, 6.0),
+        "transition_width": 0.1,
+        "damping": 0.5,
+    }
+
+    @staticmethod
+    def _compute(args: dict, positions: list[float], velocities: list[float], device: str) -> np.ndarray:
+        resolved = ControllerDetent.resolve_arguments(args)
+        damping = wp.array([resolved["damping"]] * len(positions), dtype=wp.float32, device=device)
+        controller = ControllerDetent(
+            damping=damping,
+            lookup_positions=resolved["lookup_positions"],
+            lookup_efforts=resolved["lookup_efforts"],
+        )
+        controller.finalize(wp.get_device(device), len(positions))
+        indices = wp.array(range(len(positions)), dtype=wp.uint32, device=device)
+        zeros = wp.zeros(len(positions), dtype=wp.float32, device=device)
+        forces = wp.zeros(len(positions), dtype=wp.float32, device=device)
+        controller.compute(
+            positions=wp.array(positions, dtype=wp.float32, device=device),
+            velocities=wp.array(velocities, dtype=wp.float32, device=device),
+            target_pos=zeros,
+            target_vel=zeros,
+            feedforward=None,
+            pos_indices=indices,
+            vel_indices=indices,
+            target_pos_indices=indices,
+            target_vel_indices=indices,
+            forces=forces,
+            state=None,
+            dt=0.01,
+            device=wp.get_device(device),
+        )
+        return forces.numpy()
+
+    def test_high_level_curve(self):
+        """Generate stable and unstable zero crossings with the expected effort directions."""
+        sample_positions = [-1.1, -1.0, -0.9, -0.6, -0.5, -0.4, -0.1, 0.0, 0.1, 0.4, 0.5, 0.6, 0.9, 1.0, 1.1]
+        expected_efforts = [2.0, 0.0, -2.0, -5.0, 0.0, 5.0, 3.0, 0.0, -3.0, -6.0, 0.0, 6.0, 4.0, 0.0, -4.0]
+        result = self._compute(self.HIGH_LEVEL_ARGS, sample_positions, [0.0] * len(sample_positions), "cpu")
+        np.testing.assert_allclose(result, expected_efforts, atol=1.0e-5)
+
+    def test_low_level_lookup_and_damping(self):
+        """Interpolate an authored signed lookup and make damping oppose velocity."""
+        args = {
+            "lookup_positions": (-1.0, 0.0, 1.0),
+            "lookup_efforts": (2.0, 0.0, -2.0),
+            "damping": 0.5,
+        }
+        result = self._compute(args, [-0.5, 0.0, 0.5], [2.0, -2.0, 2.0], "cpu")
+        np.testing.assert_allclose(result, [0.0, 1.0, -2.0], atol=1.0e-5)
+
+    def test_validation(self):
+        """Reject incomplete, ambiguous, non-finite, and mechanically invalid parameters."""
+        invalid_args = [
+            {"detent_positions": (0.0,), "holding_efforts": (1.0,), "breakaway_efforts": (), "transition_width": 0.1},
+            {**self.HIGH_LEVEL_ARGS, "detent_positions": (-1.0, -1.0, 1.0)},
+            {**self.HIGH_LEVEL_ARGS, "holding_efforts": (1.0, 1.0)},
+            {**self.HIGH_LEVEL_ARGS, "breakaway_efforts": (1.0,)},
+            {**self.HIGH_LEVEL_ARGS, "breakover_positions": (-1.5, 0.5)},
+            {**self.HIGH_LEVEL_ARGS, "transition_width": 0.3},
+            {**self.HIGH_LEVEL_ARGS, "damping": -1.0},
+            {**self.HIGH_LEVEL_ARGS, "lookup_positions": (-1.0, 1.0), "lookup_efforts": (1.0, -1.0)},
+            {"lookup_positions": (0.0, 0.0), "lookup_efforts": (1.0, -1.0)},
+            {"lookup_positions": (0.0, 1.0), "lookup_efforts": (math.nan, 1.0)},
+        ]
+        for args in invalid_args:
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                ControllerDetent.resolve_arguments(args)
+
+    def test_builder_groups_shared_curve(self):
+        """Group equal detent curves while retaining per-DOF damping values."""
+        builder = newton.ModelBuilder()
+        links = [builder.add_link(), builder.add_link()]
+        joints = [
+            builder.add_joint_revolute(parent=-1, child=links[0], axis=newton.Axis.Z),
+            builder.add_joint_revolute(parent=links[0], child=links[1], axis=newton.Axis.Z),
+        ]
+        builder.add_articulation(joints)
+        for joint, damping in zip(joints, (0.2, 0.4), strict=True):
+            builder.add_actuator(
+                ControllerDetent,
+                index=builder.joint_qd_start[joint],
+                detent_positions=(-1.0, 0.0, 1.0),
+                holding_efforts=(2.0, 2.0, 2.0),
+                breakaway_efforts=(3.0, 3.0),
+                transition_width=0.1,
+                damping=damping,
+            )
+        model = builder.finalize(device="cpu")
+        self.assertEqual(len(model.actuators), 1)
+        np.testing.assert_allclose(model.actuators[0].controller.damping.numpy(), [0.2, 0.4])
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA is required for CPU/CUDA comparison")
+    def test_cpu_cuda_results_match(self):
+        """Match signed lookup and damping results across CPU and CUDA devices."""
+        positions = [-1.05, -0.75, -0.45, -0.05, 0.45, 0.75, 1.05]
+        velocities = [0.5, -0.4, 0.3, -0.2, 0.1, -0.6, 0.7]
+        cpu_result = self._compute(self.HIGH_LEVEL_ARGS, positions, velocities, "cpu")
+        cuda_result = self._compute(self.HIGH_LEVEL_ARGS, positions, velocities, "cuda:0")
+        np.testing.assert_allclose(cuda_result, cpu_result, rtol=1.0e-6, atol=1.0e-6)
 
 
 @unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
