@@ -77,6 +77,7 @@
 
 ### Fixed
 
+- Fix `SolverCoupled` entry model views sharing the parent model's particle `HashGrid`: each particle-carrying entry view now owns a private grid (particle-less entries get `None`). The shared grid's contents were only valid for the entry that stepped last, and concurrent entry stepping raced on it. Add the `coupled_concurrent_entries` example stepping two XPBD entries concurrently on private streams inside one captured CUDA graph.
 - Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
 - Raise an error when `SolverVBD(rigid_contact_history=True)` would allocate or grow contact-history buffers during CUDA graph capture; construct `CollisionPipeline` before `SolverVBD`, or run one uncaptured solver step before capture.
