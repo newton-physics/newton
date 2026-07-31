@@ -2460,8 +2460,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return filtered
 
     def _ensure_entry_contact_buffer(self, entry: SolverEntry, contacts: Contacts) -> Contacts:
-        # Entry buffers are filtered on a single particle id, which edge/face records do not have.
-        contacts._assert_particle_only_soft_contacts("SolverCoupled")
         filtered = self._entry_contact_buffers.get(entry.name)
         if filtered is None or not self._entry_contact_buffer_matches(filtered, contacts):
             from ...sim import Contacts  # noqa: PLC0415
@@ -2512,6 +2510,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 dtype=wp.int32,
                 device=contacts.device,
             )
+        # Carry the capability marker: the filter now preserves edge/face records, so a sub-solver
+        # that cannot consume them must still be able to reject the buffer it is handed.
+        filtered._enable_rigid_soft_full_surface_contact = contacts._enable_rigid_soft_full_surface_contact
         return filtered
 
     @staticmethod
@@ -3298,14 +3299,24 @@ def _filter_soft_contacts_global_shape_ids_kernel(
 
     particle = src_particle[contact_id]
     shape = src_shape[contact_id]
-    if particle < 0 or shape < 0:
-        return
-    if particle >= particle_flags.shape[0] or shape >= shape_flags.shape[0]:
+    if shape < 0 or shape >= shape_flags.shape[0]:
         return
     if (shape_flags[shape] & collide_particles_mask) == 0:
         return
-    if (particle_flags[particle] & active_particle_mask) == 0:
+
+    # Validate every soft corner the record references: one for a particle record, two for an edge,
+    # three for a face. Requiring all of them to be owned and active keeps a record whose corners
+    # straddle two entries out of both, rather than letting one entry read a particle it does not own.
+    corners = src_indices[contact_id]
+    if corners[0] < 0:
         return
+    for i in range(3):
+        corner = corners[i]
+        if corner >= 0:
+            if corner >= particle_flags.shape[0]:
+                return
+            if (particle_flags[corner] & active_particle_mask) == 0:
+                return
 
     dst_id = wp.atomic_add(dst_count, 0, wp.int32(1))
     src_to_dst[contact_id] = dst_id
