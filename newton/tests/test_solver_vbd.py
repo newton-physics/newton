@@ -2618,6 +2618,57 @@ def _body_particle_contact_lists_skip_static_kinematic(test, device):
     test.assertEqual(int(overflow_max.numpy()[0]), 0)
 
 
+def _build_multi_world_particle_shape_scene(world_count, device, globals_kind="none"):
+    """Build ``world_count`` replicas of a sub-world holding one shape and several free particles.
+
+    ``globals_kind`` puts a global entity in both the head and the tail range: ``"shapes"`` adds
+    global shapes, ``"particles"`` adds global particles, ``"none"`` adds neither. The two are never
+    mixed: global particles times global shapes contributes a world-count-independent constant, which
+    would break the exact 4x scaling the caller checks.
+    """
+    sub = newton.ModelBuilder()
+    sub.add_shape_sphere(body=-1, radius=0.5)
+    for i in range(8):
+        sub.add_particle(pos=wp.vec3(0.1 * i, 0.0, 2.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+    def add_global(builder, z):
+        if globals_kind == "shapes":
+            builder.add_shape_sphere(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()), radius=0.25)
+        elif globals_kind == "particles":
+            builder.add_particle(pos=wp.vec3(0.0, 0.0, z), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+    builder = newton.ModelBuilder()
+    add_global(builder, 5.0)  # Global head range.
+    for _ in range(world_count):
+        builder.add_world(sub)
+    add_global(builder, 6.0)  # Global tail range.
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def _soft_contact_presize_is_world_aware(test, device):
+    """Verify SolverVBD pre-sizes body-particle buffers from world-compatible pairs, not every particle-shape pair."""
+    for globals_kind in ("none", "shapes", "particles"):
+        sizes = {}
+        for world_count in (1, 4):
+            model = _build_multi_world_particle_shape_scene(world_count, device, globals_kind=globals_kind)
+            if globals_kind != "none":
+                # Guard the scene: an empty head or tail range would silently weaken the check below.
+                array = model.particle_world_start if globals_kind == "particles" else model.shape_world_start
+                start = array.numpy()
+                test.assertGreater(start[0], 0, f"{globals_kind=} {world_count=}")
+                test.assertGreater(start[-1], start[-2], f"{globals_kind=} {world_count=}")
+            # Constructed before any CollisionPipeline exists, as downstream users (Isaac Lab) do.
+            solver = newton.solvers.SolverVBD(model)
+            sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
+            test.assertEqual(
+                sizes[world_count],
+                newton.CollisionPipeline(model, broad_phase="nxn").soft_rigid_contact_pair_count,
+                f"{globals_kind=} {world_count=}",
+            )
+        test.assertEqual(sizes[4], 4 * sizes[1], f"{globals_kind=}")
+
+
 class TestSolverVBD(unittest.TestCase):
     pass
 
@@ -2822,6 +2873,12 @@ add_function_test(
     TestSolverVBD,
     "test_collect_rigid_contact_forces_reports_surface_points",
     _collect_rigid_contact_forces_reports_surface_points,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_contact_presize_is_world_aware",
+    _soft_contact_presize_is_world_aware,
     devices=devices,
 )
 
