@@ -294,7 +294,7 @@ class ControllerJointImpedance(ControllerBase):
         outputs.joint_f = self._model_free.output().joint_f
         return outputs
 
-    def compute(
+    def step(
         self,
         *,
         inputs: Inputs,
@@ -347,4 +347,4 @@ class ControllerJointImpedance(ControllerBase):
         if self._damping_is_live:
             self._mf_input.damping = inputs.damping
 
-        self._model_free.compute(inputs=self._mf_input, outputs=outputs, dt=dt)
+        self._model_free.step(inputs=self._mf_input, outputs=outputs, dt=dt)

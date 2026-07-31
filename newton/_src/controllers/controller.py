@@ -19,7 +19,7 @@ class ControllerBase(ABC, Generic[InputT, OutputT]):
 
     Every concrete control law (joint impedance, differential IK, …) subclasses
     :class:`ControllerBase` directly. There is no framework-level composition: users
-    who want to combine multiple control laws call each one's :meth:`compute`
+    who want to combine multiple control laws call each one's :meth:`step`
     in sequence themselves.
 
     Subclasses are responsible for:
@@ -30,14 +30,14 @@ class ControllerBase(ABC, Generic[InputT, OutputT]):
     - :meth:`input`, :meth:`output`: allocate fresh typed input/output structs.
       Baked-in arrays (gains passed as a ``wp.array`` at construction) are
       stored on the controller and do **not** appear on the input struct.
-    - :meth:`compute`: read the input struct's live arrays, run kernels, write
+    - :meth:`step`: read the input struct's live arrays, run kernels, write
       the output struct's live arrays. Writes are slot-replacing (``=``, not
       ``+=``); composing laws is the user's job.
     """
 
     @abstractmethod
     def is_graphable(self) -> bool:
-        """Whether :meth:`compute` is safe to capture in a graph."""
+        """Whether :meth:`step` is safe to capture in a graph."""
 
     @abstractmethod
     def input(self) -> InputT:
@@ -52,7 +52,7 @@ class ControllerBase(ABC, Generic[InputT, OutputT]):
         """Allocate a fresh output struct."""
 
     @abstractmethod
-    def compute(
+    def step(
         self,
         *,
         inputs: InputT,

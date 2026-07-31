@@ -297,7 +297,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         )
         return outputs
 
-    def compute(
+    def step(
         self,
         *,
         inputs: Inputs,

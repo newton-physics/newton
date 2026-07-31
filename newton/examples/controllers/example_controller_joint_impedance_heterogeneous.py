@@ -182,8 +182,8 @@ class Example:
         self.viewer.set_model(self.model)
 
     def _gpu_step(self):
-        """Pure GPU work: controller compute + physics substeps. Safe to graph-capture."""
-        self.controller.compute(inputs=self._input, outputs=self._output, dt=self.sim_dt)
+        """Pure GPU work: controller step + physics substeps. Safe to graph-capture."""
+        self.controller.step(inputs=self._input, outputs=self._output, dt=self.sim_dt)
 
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
