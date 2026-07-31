@@ -214,11 +214,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             "particle": (soft_p0, builder.particle_count),
             "tet": (soft_t0, builder.tet_count),
         }
-        builder._record_soft_group(
-            path,
-            (soft_p0, builder.particle_count),
-            (soft_t0, builder.tet_count),
-        )
         # The density actually used, mirroring add_soft_mesh's own resolution order:
         # explicit override, else the TetMesh's material density, else the builder default.
         # A neutral weight only distributes a body-mass total and is not a physical

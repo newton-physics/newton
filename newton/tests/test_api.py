@@ -133,6 +133,12 @@ class TestApi(unittest.TestCase):
 
         _check_builder_method_matches_importer_function_signature(parse_usd, ModelBuilder.add_usd)
 
+    def test_rod_signatures_hide_group_recording_control(self):
+        from newton import ModelBuilder  # noqa: PLC0415
+
+        for method in (ModelBuilder.add_rod, ModelBuilder.add_rod_graph):
+            self.assertNotIn("_record_group", inspect.signature(method).parameters)
+
     def test_tetmesh_create_from_usd_docstring_parity(self):
         from newton import TetMesh  # noqa: PLC0415
         from newton._src.usd.utils import get_tetmesh  # noqa: PLC0415
