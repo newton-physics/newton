@@ -81,6 +81,8 @@ class ContactWriterDataKamino:
     # Contact limit and active count (Newton interface)
     contact_max: wp.int32
     contact_count: wp.array[wp.int32]
+    dropped_contact_count: wp.array[wp.int32]
+    contact_overflow_warning_emitted: wp.array[wp.int32]
 
     # Output arrays (Kamino Contacts format)
     contacts_model_num_active: wp.array[wp.int32]
@@ -157,11 +159,21 @@ def _write_contact_unified_kamino(
     wcid = wp.atomic_add(writer_data.contacts_world_num_active, wid, 1)
     if wcid >= world_max_contacts:  # Roll back and exit if world counter exceeds max
         wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
+        wp.atomic_add(writer_data.dropped_contact_count, 0, 1)
+        if wp.atomic_exch(writer_data.contact_overflow_warning_emitted, 0, 1) == 0:
+            wp.printf(
+                "Warning: Kamino contact capacity exceeded. Increase collision_detector.max_contacts_per_world.\n"
+            )
         return
     mcid = wp.atomic_add(writer_data.contacts_model_num_active, 0, 1)
     if mcid >= writer_data.model_max_contacts:  # Roll back and exit if model counter exceeds max
         wp.atomic_sub(writer_data.contacts_model_num_active, 0, 1)
         wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
+        wp.atomic_add(writer_data.dropped_contact_count, 0, 1)
+        if wp.atomic_exch(writer_data.contact_overflow_warning_emitted, 0, 1) == 0:
+            wp.printf(
+                "Warning: Kamino contact capacity exceeded. Increase collision_detector.max_contacts_per_world.\n"
+            )
         return
     # Note: the world counter must be incremented first to ensure that once
     # a thread increments the global counter, it won't decrease it again after
@@ -469,7 +481,8 @@ class CollisionPipelineUnifiedKamino:
         if broadphase == "explicit":
             self.shape_pairs_filtered = self._model.geoms.collidable_pairs
             self._max_shape_pairs = self._model.geoms.num_collidable_pairs
-            self._max_contacts = self._model.geoms.model_minimum_contacts
+            if max_contacts is None:
+                self._max_contacts = self._model.geoms.model_minimum_contacts
 
         # Build excluded pairs for NXN/SAP broadphase filtering.
         # Kamino uses a bitmask group/collides system that is more expressive than
@@ -514,6 +527,8 @@ class CollisionPipelineUnifiedKamino:
             self.broad_phase_pairs = wp.zeros(self._max_shape_pairs, dtype=wp.vec2i)
             self.broad_phase_pair_count = wp.zeros(1, dtype=wp.int32)
             self.narrow_phase_contact_count = wp.zeros(1, dtype=wp.int32)
+            self.dropped_contact_count = wp.zeros(1, dtype=wp.int32)
+            self.contact_overflow_warning_emitted = wp.zeros(1, dtype=wp.int32)
             self.shape_sdf_data = wp.empty(shape=(0,), dtype=TextureSDFData)
             self.shape_sdf_index = wp.full_like(self._model.geoms.type, -1)
 
@@ -612,6 +627,7 @@ class CollisionPipelineUnifiedKamino:
 
         # Clear internal contact counts
         self.narrow_phase_contact_count.zero_()
+        self.dropped_contact_count.zero_()
 
         # Update geometry poses from body states and compute respective AABBs
         self._update_geom_data(data, state)
@@ -763,6 +779,8 @@ class CollisionPipelineUnifiedKamino:
         writer_data.material_pair_dynamic_friction = self._model.material_pairs.dynamic_friction
         writer_data.contact_max = wp.int32(contacts.model_max_contacts_host)
         writer_data.contact_count = self.narrow_phase_contact_count
+        writer_data.dropped_contact_count = self.dropped_contact_count
+        writer_data.contact_overflow_warning_emitted = self.contact_overflow_warning_emitted
         writer_data.contacts_model_num_active = contacts.model_active_contacts
         writer_data.contacts_world_num_active = contacts.world_active_contacts
         writer_data.contact_wid = contacts.wid

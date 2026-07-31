@@ -1828,7 +1828,7 @@ def _rigid_reset_state_and_history(test, device):
     selected_joints = joint_world == 0
     global_bodies = body_world < 0
     global_joints = joint_world < 0
-    world_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=0)
     # A history-disabled solver (the default) allocates no contact-reset state.
@@ -1857,9 +1857,7 @@ def _rigid_reset_state_and_history(test, device):
     solver.joint_lambda_lin.fill_(5.0)
     with test.assertRaisesRegex(ValueError, "argument is required"):
         solver.reset(None)
-    with test.assertRaisesRegex(ValueError, "one-dimensional Warp boolean array"):
-        solver.reset(state, world_mask=wp.array([1, 0], dtype=wp.int32, device=device))
-    with test.assertRaisesRegex(ValueError, "world_mask has length 1, expected 2 or 3"):
+    with test.assertRaisesRegex(ValueError, "world_mask has size 1, expected 2 or 3"):
         solver.reset(state, world_mask=wp.array([True], dtype=wp.bool, device=device))
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 5.0)
 
@@ -1915,7 +1913,8 @@ def _rigid_reset_state_and_history(test, device):
 
     # Phase 4: an all-false reset arms nothing, so the next step finite-differences
     # a known delta for every body (a leaked pose baseline would zero some world).
-    solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
+    with test.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
+        solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
     all_false_delta = 2.0
     moved_q = base_q.copy()
     moved_q[:, 0] += all_false_delta
@@ -2046,7 +2045,7 @@ def _rigid_reset_replays_captured_step(test, device):
 
     # reset() runs after capture. Its device-side mask write must be visible when
     # replaying the graph, while post-reset pose preparation remains authoritative.
-    world_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
     solver.reset(state_in, world_mask=world_mask, flags=0)
     reset_q = model.body_q.numpy()
     reset_q[:, 0] += 1.0
@@ -2092,7 +2091,7 @@ def _rigid_contact_reset_lifecycle(test, device):
     builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
     model = builder.finalize(device=device)
-    reset_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    reset_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
     dt = 1.0e-2
 
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")

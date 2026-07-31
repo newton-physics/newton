@@ -354,6 +354,7 @@ class CollisionDetector:
                     self._unified_pipeline = CollisionPipelineUnifiedKamino(
                         model=self._model,
                         broadphase=self._config.broadphase,
+                        max_contacts=self._model_max_contacts,
                         default_gap=self._config.default_gap,
                         max_triangle_pairs=self._config.max_triangle_pairs,
                         max_contacts_per_pair=self._config.max_contacts_per_pair,

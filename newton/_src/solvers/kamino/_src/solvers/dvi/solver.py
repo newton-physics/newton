@@ -11,7 +11,6 @@ from ....config import DVISolverConfig
 from ...core.data import DataKamino
 from ...core.model import ModelKamino
 from ...core.size import SizeKamino
-from ...core.types import to_warp_int32_array
 from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.jacobians import SparseSystemJacobians
@@ -25,15 +24,11 @@ from ..common import (
     warmstart_limit_constraints,
 )
 from .kernels import (
-    _apply_dvi_contact_jacobi_delta,
     _build_bilateral_rhs,
-    _color_dvi_contacts,
-    _compute_dvi_contact_block_inverse,
-    _compute_dvi_contact_jacobi_delta,
-    _compute_dvi_contact_velocities,
     _compute_dvi_desaxce_corrections,
     _compute_dvi_solution_vectors,
     _compute_dvi_status_residuals,
+    _compute_dvi_unilateral_velocities,
     _copy_bilateral_block,
     _initialize_dvi_status,
     _reset_dvi_solver_data,
@@ -41,12 +36,15 @@ from .kernels import (
     _scatter_bilateral_solution,
     _set_dvi_bilateral_active_dim,
     _set_dvi_direct_status_iterations,
-    _solve_dvi_contacts_colored_gs,
-    _solve_dvi_limits_pgs,
-    _solve_dvi_pgs,
+    _solve_dvi_inequalities_colored_pgs,
     _unprecondition_dvi_solution,
 )
 from .sparse import SparseDVIPath
+from .sparse_kernels import (
+    _color_mapped_dvi_inequalities,
+    _map_active_contacts,
+    _map_active_limits,
+)
 from .types import DVIConfigStruct, DVIData, convert_config_to_struct
 
 wp.set_module_options({"enable_backward": False})
@@ -63,8 +61,8 @@ class DVISolver:
     velocity correction.
 
     Bilateral constraints are solved as a direct block when available, while
-    limits and frictional contacts use projected Gauss-Seidel, Jacobi, or
-    graph-colored updates. Dense and matrix-free sparse problems share the
+    every limit and frictional contact uses one graph-colored projected
+    Gauss-Seidel schedule. Dense and matrix-free sparse problems share the
     same solution, warm-start, status, and diagnostics contract.
     """
 
@@ -102,13 +100,11 @@ class DVISolver:
         self._size: SizeKamino | None = None
         self._data: DVIData | None = None
         self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | None = None
-        self._max_block_iterations: int = 1
-        self._max_contact_iterations: int = 1
-        self._max_iterations: int = 1
+        self._max_alternating_iterations: int = 1
         self._bilateral_solve_after_block: tuple[bool, ...] = ()
-        self._has_contact_block_preconditioner: bool = False
         self._has_unilateral_constraints: bool = False
-        self._contact_bid_AB: wp.array[wp.vec2i] | None = None
+        self._limits: LimitsKamino | None = None
+        self._contacts: ContactsKamino | None = None
         self._sparse_path: SparseDVIPath | None = None
         self._all_worlds_mask: wp.array[wp.bool] | None = None
         self._device: wp.DeviceLike = None
@@ -186,11 +182,8 @@ class DVISolver:
         self._config = self._check_config(model, config)
         self._warmstart = warmstart
         self._collect_info = collect_info
-        self._max_iterations = max(c.max_iterations for c in self._config)
-        self._max_block_iterations = max(c.block_iterations for c in self._config)
-        self._max_contact_iterations = max(c.contact_iterations for c in self._config)
+        self._max_alternating_iterations = max(c.max_alternating_iterations for c in self._config)
         self._bilateral_solve_after_block = self._make_bilateral_solve_schedule(self._config)
-        self._has_contact_block_preconditioner = any(c.contact_block_preconditioner for c in self._config)
         self._has_unilateral_constraints = self._size.max_of_max_limits > 0 or self._size.max_of_max_contacts > 0
         self._data = DVIData(size=self._size, collect_info=self._collect_info, device=self._device)
         self._all_worlds_mask = wp.ones(shape=(self._size.num_worlds,), dtype=wp.bool, device=self._device)
@@ -205,15 +198,15 @@ class DVISolver:
             contacts=contacts,
             jacobians=jacobians,
             bilateral_solver=self._bilateral_solver,
-            max_iterations=self._max_iterations,
-            max_block_iterations=self._max_block_iterations,
-            max_contact_iterations=self._max_contact_iterations,
-            has_contact_block_preconditioner=self._has_contact_block_preconditioner,
+            max_alternating_iterations=self._max_alternating_iterations,
             has_unilateral_constraints=self._has_unilateral_constraints,
             all_worlds_mask=self._all_worlds_mask,
             should_solve_bilateral_after_block=self._should_solve_bilateral_after_block,
+            set_bilateral_active_dim=self._set_bilateral_active_dim,
         )
+        self._limits = limits
         self.set_contacts(contacts)
+        self._validate_inequality_topology()
         if problem is not None and problem.sparse:
             self._sparse_path.prepare(problem)
 
@@ -224,8 +217,11 @@ class DVISolver:
     def _make_bilateral_solve_schedule(self, configs: list[DVISolver.Config]) -> tuple[bool, ...]:
         """Return host-side repeated bilateral solve points for direct-block DVI."""
         return tuple(
-            any(next_block < c.block_iterations and next_block % c.bilateral_solve_period == 0 for c in configs)
-            for next_block in range(1, self._max_block_iterations)
+            any(
+                next_block < c.max_alternating_iterations and next_block % c.bilateral_solve_interval == 0
+                for c in configs
+            )
+            for next_block in range(1, self._max_alternating_iterations)
         )
 
     def _should_solve_bilateral_after_block(self, block_iteration: int) -> bool:
@@ -233,6 +229,22 @@ class DVISolver:
         if block_iteration < 0 or block_iteration >= len(self._bilateral_solve_after_block):
             return False
         return self._bilateral_solve_after_block[block_iteration]
+
+    def _set_bilateral_active_dim(self, problem: DualProblem, block_iteration: int) -> None:
+        """Select worlds whose bilateral block is active for a scheduled solve."""
+        wp.launch(
+            kernel=_set_dvi_bilateral_active_dim,
+            dim=self._size.num_worlds,
+            inputs=[
+                problem.data.njc,
+                problem.data.nl,
+                problem.data.nc,
+                block_iteration,
+                self._data.config,
+                self._data.state.bilateral_active_dim,
+            ],
+            device=self.device,
+        )
 
     def _allocate_bilateral_solver(self, model: ModelKamino):
         """Allocate the reduced dense operator used for bilateral DVI solves."""
@@ -242,25 +254,18 @@ class DVISolver:
             return
 
         joint_cts_per_world = model.info.num_joint_cts.numpy().astype(int).tolist()
-        if any(njc <= 0 for njc in joint_cts_per_world):
-            return
-
-        mat_sizes = [njc * njc for njc in joint_cts_per_world]
-        mat_offsets = [0]
-        for size in mat_sizes[:-1]:
-            mat_offsets.append(mat_offsets[-1] + size)
+        # LLT metadata requires positive blocks; assembly makes zero-row worlds disconnected identities.
+        factor_dims = [max(1, njc) for njc in joint_cts_per_world]
 
         operator = DenseLinearOperatorData()
         operator.info = DenseSquareMultiLinearInfo()
-        operator.info.assign(
-            maxdim=model.info.num_joint_cts,
-            dim=model.info.num_joint_cts,
-            mio=to_warp_int32_array(mat_offsets, device=self._device),
-            vio=model.info.joint_cts_offset,
-            dtype=float32,
-            device=self._device,
-        )
+        operator.info.finalize(factor_dims, dtype=float32, device=self._device)
         operator.mat = wp.zeros(shape=(operator.info.total_mat_size,), dtype=float32, device=self._device)
+        self._data.state.bilateral_rhs = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
+        self._data.state.bilateral_solution = wp.zeros(operator.info.total_vec_size, dtype=float32, device=self._device)
+        self._data.state.bilateral_preconditioner = wp.zeros(
+            operator.info.total_vec_size, dtype=float32, device=self._device
+        )
         self._data.bilateral_operator = operator
         first_config = self._config[0]
         if any(
@@ -300,11 +305,10 @@ class DVISolver:
         return config
 
     def set_contacts(self, contacts: ContactsKamino | None):
-        """Cache contact topology for graph-colored contact solves."""
-        if contacts is not None and contacts.model_max_contacts_host > 0:
-            self._contact_bid_AB = contacts.bid_AB
-        else:
-            self._contact_bid_AB = None
+        """Cache contact topology for graph-colored inequality solves."""
+        self._contacts = contacts
+        if self._sparse_path is not None:
+            self._sparse_path.contacts = contacts
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
         """Reset scratch state and cached solution data."""
@@ -344,7 +348,16 @@ class DVISolver:
     ):
         """Prepare a warm-start solve."""
         self._data.state.reset()
-        self.set_contacts(contacts)
+        if limits is None:
+            limits = self._limits
+        else:
+            self._limits = limits
+            if self._sparse_path is not None:
+                self._sparse_path.limits = limits
+        if contacts is None:
+            contacts = self._contacts
+        else:
+            self.set_contacts(contacts)
 
         match self._warmstart:
             case WarmStartMode.NONE:
@@ -386,12 +399,13 @@ class DVISolver:
         The unilateral block is updated iteratively with projection onto the
         nonnegative and Coulomb cones. Alternating these updates retains the
         ``D_bu`` and ``D_ub`` coupling while using a solver suited to each
-        constraint class. Repeating the alternation for ``block_iterations``
+        constraint class. Repeating the alternation for ``max_alternating_iterations``
         drives ``lambda_b`` and ``lambda_u`` toward a mutually consistent
         solution; a single block without a bilateral re-solve reduces to a
         one-directional solve where the joints never see the final contact and
-        limit impulses. The fallback path instead applies projected
-        Gauss-Seidel to all rows.
+        limit impulses. When no bilateral block exists, the same iteration
+        schedule applies projected Gauss-Seidel blocks and skips the bilateral
+        solves.
 
         This differs from Kamino's PADMM backend, which places all constraint
         rows in one proximal-ADMM iteration: it solves a regularized full
@@ -419,53 +433,12 @@ class DVISolver:
             # Apply projected iterations through matrix-free products
             # D * lambda = J * (M^-1 * (J^T * lambda)) + R * lambda.
             self._sparse_path.solve(problem)
-        elif self._has_contact_block_preconditioner and self._size.max_of_max_contacts > 0:
-            # For each contact c, form B_c = (D_cc + regularization * I)^-1.
-            wp.launch(
-                kernel=_compute_dvi_contact_block_inverse,
-                dim=(self._size.num_worlds, self._size.max_of_max_contacts),
-                inputs=[
-                    problem.data.dim,
-                    problem.data.mio,
-                    problem.data.nc,
-                    problem.data.ccgo,
-                    problem.data.cio,
-                    problem.data.D,
-                    self._data.config,
-                    self._data.state.contact_block_inv,
-                ],
-                device=self.device,
-            )
 
         if not problem.sparse:
             if self._bilateral_solver is not None and self._data.bilateral_operator is not None:
                 self._solve_with_bilateral_direct_block(problem)
-            else:
-                # Solve all rows together with projected Gauss-Seidel:
-                # lambda_next = projection(lambda - omega * B * v_aug).
-                wp.launch(
-                    kernel=_solve_dvi_pgs,
-                    dim=self._size.num_worlds,
-                    inputs=[
-                        problem.data.dim,
-                        problem.data.mio,
-                        problem.data.vio,
-                        problem.data.njc,
-                        problem.data.nl,
-                        problem.data.nc,
-                        problem.data.lcgo,
-                        problem.data.ccgo,
-                        problem.data.cio,
-                        problem.data.mu,
-                        problem.data.D,
-                        problem.data.v_f,
-                        self._data.state.contact_block_inv,
-                        self._data.config,
-                        self._data.status,
-                        self._data.solution.lambdas,
-                    ],
-                    device=self.device,
-                )
+            elif self._can_use_dense_inequality_pgs():
+                self._solve_dense_inequality_pgs(problem)
 
             # Evaluate the physical post-event velocity v_plus = D * lambda + v_f.
             wp.launch(
@@ -543,6 +516,140 @@ class DVISolver:
                 self._data.solution.lambdas,
                 self._data.solution.v_plus,
             ],
+            device=self.device,
+        )
+
+    def _validate_inequality_topology(self) -> None:
+        """Require the topology that graph-colored inequality solves consume.
+
+        Checked at allocation so a model with limit or contact capacity fails
+        before the first solve, which may run inside a captured graph.
+        """
+        if self._size.max_of_max_limits > 0 and self._limits is None:
+            raise ValueError("DVI requires `limits` when the model allocates joint limits.")
+        if self._size.max_of_max_contacts > 0 and self._contacts is None:
+            raise ValueError("DVI requires `contacts` when the model allocates contacts.")
+
+    def _prepare_inequality_coloring(self, problem: DualProblem) -> None:
+        """Map and color active inequalities with the multi-world fast path."""
+        state = self._data.state
+        self._validate_inequality_topology()
+        limits = self._limits
+        if limits is not None and limits.model_max_limits_host > 0:
+            wp.launch(
+                kernel=_map_active_limits,
+                dim=limits.model_max_limits_host,
+                inputs=[
+                    limits.model_active_limits,
+                    limits.wid,
+                    limits.lid,
+                    limits.bids,
+                    problem.data.lio,
+                    problem.data.uio,
+                    state.limit_indices,
+                    state.inequality_bodies,
+                ],
+                device=self.device,
+            )
+        contacts = self._contacts
+        if contacts is not None and contacts.model_max_contacts_host > 0:
+            wp.launch(
+                kernel=_map_active_contacts,
+                dim=contacts.model_max_contacts_host,
+                inputs=[
+                    contacts.model_active_contacts,
+                    contacts.wid,
+                    contacts.cid,
+                    contacts.bid_AB,
+                    problem.data.nl,
+                    problem.data.cio,
+                    problem.data.uio,
+                    state.contact_indices,
+                    state.inequality_bodies,
+                ],
+                device=self.device,
+            )
+        state.inequality_body_color_masks.zero_()
+        wp.launch(
+            kernel=_color_mapped_dvi_inequalities,
+            dim=self._size.num_worlds,
+            inputs=[
+                problem.data.nl,
+                problem.data.nc,
+                problem.data.uio,
+                state.inequality_bodies,
+                state.inequality_body_color_masks,
+                state.inequality_colors,
+                state.inequality_num_colors,
+                state.inequality_ids_by_color,
+                state.inequality_color_starts,
+            ],
+            device=self.device,
+        )
+
+    def _can_use_dense_inequality_pgs(self) -> bool:
+        return self._has_unilateral_constraints and self._size.sum_of_num_joint_cts == 0
+
+    def _solve_dense_inequality_pgs(self, problem: DualProblem) -> None:
+        """Solve an inequality-only dense problem through the unified path."""
+        state = self._data.state
+        wp.launch(
+            kernel=_initialize_dvi_status,
+            dim=self._size.num_worlds,
+            inputs=[self._data.config, self._data.status],
+            device=self.device,
+        )
+        self._prepare_inequality_coloring(problem)
+        wp.launch(
+            kernel=_compute_dvi_unilateral_velocities,
+            dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+            inputs=[
+                problem.data.dim,
+                problem.data.mio,
+                problem.data.vio,
+                problem.data.nl,
+                problem.data.nc,
+                problem.data.lcgo,
+                problem.data.ccgo,
+                problem.data.D,
+                problem.data.v_f,
+                self._data.solution.lambdas,
+                state.v_aug,
+            ],
+            device=self.device,
+        )
+        threads_per_world = 64 if self.device.is_cuda else 1
+        for block_iteration in range(self._max_alternating_iterations):
+            wp.launch(
+                kernel=_solve_dvi_inequalities_colored_pgs,
+                dim=self._size.num_worlds * threads_per_world,
+                inputs=[
+                    problem.data.dim,
+                    problem.data.mio,
+                    problem.data.vio,
+                    problem.data.nl,
+                    problem.data.nc,
+                    problem.data.lcgo,
+                    problem.data.ccgo,
+                    problem.data.cio,
+                    problem.data.uio,
+                    problem.data.mu,
+                    problem.data.D,
+                    block_iteration,
+                    state.inequality_num_colors,
+                    state.inequality_ids_by_color,
+                    state.inequality_color_starts,
+                    self._data.config,
+                    state.v_aug,
+                    self._data.solution.lambdas,
+                ],
+                device=self.device,
+                block_dim=threads_per_world,
+            )
+        wp.launch(
+            kernel=_set_dvi_direct_status_iterations,
+            dim=self._size.num_worlds,
+            inputs=[problem.data.nl, problem.data.nc, self._data.config, self._data.status],
             device=self.device,
         )
 
@@ -636,144 +743,59 @@ class DVISolver:
             device=self.device,
         )
 
-        wp.launch(
-            kernel=_set_dvi_bilateral_active_dim,
-            dim=self._size.num_worlds,
-            inputs=[
-                problem.data.njc,
-                problem.data.nl,
-                problem.data.nc,
-                self._data.state.bilateral_active_dim,
-            ],
-            device=self.device,
-        )
-
-        use_colored_contacts = (
-            self._size.max_of_max_contacts > 0 and self.device.is_cuda and self._contact_bid_AB is not None
-        )
-        if use_colored_contacts:
+        self._prepare_inequality_coloring(problem)
+        threads_per_world = 64 if self.device.is_cuda else 1
+        for block_iteration in range(self._max_alternating_iterations):
             wp.launch(
-                kernel=_color_dvi_contacts,
-                dim=self._size.num_worlds,
+                kernel=_compute_dvi_unilateral_velocities,
+                dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
+                    problem.data.dim,
+                    problem.data.mio,
+                    problem.data.vio,
+                    problem.data.nl,
                     problem.data.nc,
-                    problem.data.cio,
-                    self._contact_bid_AB,
-                    self._data.state.contact_colors,
-                    self._data.state.contact_num_colors,
+                    problem.data.lcgo,
+                    problem.data.ccgo,
+                    problem.data.D,
+                    problem.data.v_f,
+                    self._data.solution.lambdas,
+                    self._data.state.v_aug,
                 ],
                 device=self.device,
             )
-
-        for block_iteration in range(self._max_block_iterations):
-            if self._size.max_of_max_limits > 0:
-                wp.launch(
-                    kernel=_solve_dvi_limits_pgs,
-                    dim=self._size.num_worlds,
-                    inputs=[
-                        problem.data.dim,
-                        problem.data.mio,
-                        problem.data.vio,
-                        problem.data.nl,
-                        problem.data.lcgo,
-                        problem.data.D,
-                        problem.data.v_f,
-                        block_iteration,
-                        self._data.config,
-                        self._data.status,
-                        self._data.solution.lambdas,
-                    ],
-                    device=self.device,
-                )
-
-            if self._size.max_of_max_contacts > 0:
-                wp.launch(
-                    kernel=_compute_dvi_contact_velocities,
-                    dim=(self._size.num_worlds, 3 * self._size.max_of_max_contacts),
-                    inputs=[
-                        problem.data.dim,
-                        problem.data.mio,
-                        problem.data.vio,
-                        problem.data.nc,
-                        problem.data.ccgo,
-                        problem.data.D,
-                        problem.data.v_f,
-                        self._data.solution.lambdas,
-                        self._data.state.v_aug,
-                    ],
-                    device=self.device,
-                )
-
-                if use_colored_contacts:
-                    wp.launch(
-                        kernel=_solve_dvi_contacts_colored_gs,
-                        dim=self._size.num_worlds * 64,
-                        inputs=[
-                            problem.data.dim,
-                            problem.data.mio,
-                            problem.data.vio,
-                            problem.data.nc,
-                            problem.data.ccgo,
-                            problem.data.cio,
-                            problem.data.mu,
-                            problem.data.D,
-                            block_iteration,
-                            self._data.state.contact_block_inv,
-                            self._data.state.contact_colors,
-                            self._data.state.contact_num_colors,
-                            self._data.config,
-                            self._data.state.v_aug,
-                            self._data.solution.lambdas,
-                        ],
-                        device=self.device,
-                        block_dim=64,
-                    )
-                else:
-                    for contact_iteration in range(self._max_contact_iterations):
-                        wp.launch(
-                            kernel=_compute_dvi_contact_jacobi_delta,
-                            dim=(self._size.num_worlds, self._size.max_of_max_contacts),
-                            inputs=[
-                                problem.data.dim,
-                                problem.data.mio,
-                                problem.data.vio,
-                                problem.data.nc,
-                                problem.data.ccgo,
-                                problem.data.cio,
-                                problem.data.mu,
-                                problem.data.D,
-                                block_iteration,
-                                contact_iteration,
-                                self._data.config,
-                                self._data.state.contact_block_inv,
-                                self._data.state.v_aug,
-                                self._data.solution.lambdas,
-                                self._data.state.scratch,
-                            ],
-                            device=self.device,
-                        )
-                        wp.launch(
-                            kernel=_apply_dvi_contact_jacobi_delta,
-                            dim=(self._size.num_worlds, 3 * self._size.max_of_max_contacts),
-                            inputs=[
-                                problem.data.dim,
-                                problem.data.mio,
-                                problem.data.vio,
-                                problem.data.nc,
-                                problem.data.ccgo,
-                                problem.data.D,
-                                block_iteration,
-                                contact_iteration,
-                                self._data.config,
-                                self._data.state.scratch,
-                                self._data.state.v_aug,
-                            ],
-                            device=self.device,
-                        )
+            wp.launch(
+                kernel=_solve_dvi_inequalities_colored_pgs,
+                dim=self._size.num_worlds * threads_per_world,
+                inputs=[
+                    problem.data.dim,
+                    problem.data.mio,
+                    problem.data.vio,
+                    problem.data.nl,
+                    problem.data.nc,
+                    problem.data.lcgo,
+                    problem.data.ccgo,
+                    problem.data.cio,
+                    problem.data.uio,
+                    problem.data.mu,
+                    problem.data.D,
+                    block_iteration,
+                    self._data.state.inequality_num_colors,
+                    self._data.state.inequality_ids_by_color,
+                    self._data.state.inequality_color_starts,
+                    self._data.config,
+                    self._data.state.v_aug,
+                    self._data.solution.lambdas,
+                ],
+                device=self.device,
+                block_dim=threads_per_world,
+            )
 
             if self._should_solve_bilateral_after_block(block_iteration):
+                self._set_bilateral_active_dim(problem, block_iteration)
                 self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
 
+        self._set_bilateral_active_dim(problem, -1)
         self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
 
         wp.launch(
