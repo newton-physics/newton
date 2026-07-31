@@ -127,6 +127,7 @@
 - Fix `ModelBuilder.add_usd()` ignoring enabled collider mass properties and counting disabled colliders toward body mass. (#3594)
 - Report malformed MJCF free-joint and inertial inputs with deterministic validation errors, and ignore MJCF mesh geom `size` lengths consistently.
 - Fix MJCF imports ignoring material and inline RGBA colors on primitive geoms.
+- Fix `ModelBuilder.add_usd()` silently dropping a MuJoCo joint equality constraint when the asset supplies the leader joint and coefficients through `NewtonMimicAPI` instead of the deprecated `mjc:target`, `mjc:coef0`, and `mjc:coef1`. `MjcEqualityJointAPI` builds on `NewtonMimicAPI`, so both spellings are now accepted.
 - Fix `SolverVBD` failing to construct on large multi-world scenes containing particles and rigid shapes. (#3660)
 - Fix Style3D solver divergence caused by isolated vertices.
 - Fix a use-after-free where finalizing a second model built from shared mesh geometry (e.g. via `ModelBuilder.replicate()` or `ModelBuilder.add_builder()`) invalidated the meshes referenced by previously finalized models.
