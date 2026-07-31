@@ -2905,7 +2905,6 @@ def accumulate_body_particle_contacts_per_body(
 @wp.kernel
 def solve_rigid_body(
     dt: float,
-    skip_elastic_bodies: bool,
     body_ids_in_color: wp.array(dtype=wp.int32),
     body_q: wp.array(dtype=wp.transform),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -3007,13 +3006,15 @@ def solve_rigid_body(
 
     Note:
       - All forces, torques, and Hessian blocks are expressed in the world frame.
+      - Reduced elastic bodies are skipped: their frame is solved together with their modal
+        coordinates in the coupled block solve, so updating it here would double count.
     """
     tid = wp.tid()
     body_index = body_ids_in_color[tid]
 
     q_current = body_q[body_index]
 
-    if skip_elastic_bodies and body_elastic_index[body_index] >= 0:
+    if body_elastic_index[body_index] >= 0:
         body_q_new[body_index] = q_current
         return
 

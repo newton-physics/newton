@@ -57,6 +57,8 @@
 
 ### Removed
 
+- Remove `Model.elastic_endpoint_joint`, `Model.elastic_endpoint_side` and `Model.elastic_endpoint_body`, which no longer have any consumer. Use `Model.joint_parent_elastic_endpoint` and `Model.joint_child_elastic_endpoint` to map a joint to its endpoint index and side
+
 ### Fixed
 
 - Solve each reduced elastic body's floating frame and modal coordinates in one

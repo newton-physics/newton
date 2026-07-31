@@ -1115,12 +1115,6 @@ class ModelBuilder:
         """Identity map from Python ModalBasis objects to builder-local basis indices."""
         self.elastic_basis: list[int] = []
         """Shared modal basis index for each reduced elastic body, or -1."""
-        self.elastic_endpoint_joint: list[int] = []
-        """Joint index for each internal reduced elastic endpoint."""
-        self.elastic_endpoint_side: list[int] = []
-        """Endpoint side for each internal reduced elastic endpoint: 0 parent, 1 child."""
-        self.elastic_endpoint_body: list[int] = []
-        """Body index for each internal reduced elastic endpoint."""
         self.elastic_endpoint_sample: list[int] = []
         """ModalBasis-local sample index for each internal reduced elastic endpoint."""
         self.elastic_endpoint_phi: list[wp.vec3] = []
@@ -9601,9 +9595,6 @@ class ModelBuilder:
 
     def _build_elastic_endpoint_cache(self) -> None:
         """Sample reduced elastic mode shapes at ordinary joint endpoint transforms."""
-        self.elastic_endpoint_joint.clear()
-        self.elastic_endpoint_side.clear()
-        self.elastic_endpoint_body.clear()
         self.elastic_endpoint_sample.clear()
         self.elastic_endpoint_phi.clear()
         self.elastic_endpoint_psi.clear()
@@ -9628,10 +9619,7 @@ class ModelBuilder:
 
             local_pos = np.array(wp.transform_get_translation(xform), dtype=np.float32)
             phi, psi, sample_index = self._add_elastic_modal_sample(elastic_index, local_pos)
-            endpoint_index = len(self.elastic_endpoint_joint)
-            self.elastic_endpoint_joint.append(joint_index)
-            self.elastic_endpoint_side.append(side)
-            self.elastic_endpoint_body.append(body)
+            endpoint_index = len(self.elastic_endpoint_sample)
             self.elastic_endpoint_sample.append(sample_index)
             for i in range(self.elastic_max_mode_count):
                 if i < phi.shape[0]:
@@ -10931,7 +10919,7 @@ class ModelBuilder:
             m.equality_constraint_count = len(self.equality_constraint_type)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
             m.elastic_body_count = len(self.elastic_body)
-            m.elastic_endpoint_count = len(self.elastic_endpoint_joint)
+            m.elastic_endpoint_count = len(self.elastic_endpoint_sample)
             m.elastic_max_mode_count = self.elastic_max_mode_count
             m.modal_basis_count = len(self.modal_bases)
             m.modal_bases = tuple(self.modal_bases)
@@ -10957,9 +10945,6 @@ class ModelBuilder:
             m.elastic_mode_coupling_coriolis = wp.array(
                 self._padded_coriolis_blocks(), dtype=wp.vec3, requires_grad=requires_grad
             )
-            m.elastic_endpoint_joint = wp.array(self.elastic_endpoint_joint, dtype=wp.int32)
-            m.elastic_endpoint_side = wp.array(self.elastic_endpoint_side, dtype=wp.int32)
-            m.elastic_endpoint_body = wp.array(self.elastic_endpoint_body, dtype=wp.int32)
             m.elastic_endpoint_sample = wp.array(self.elastic_endpoint_sample, dtype=wp.int32)
             m.elastic_endpoint_phi = wp.array(self.elastic_endpoint_phi, dtype=wp.vec3, requires_grad=requires_grad)
             m.elastic_endpoint_psi = wp.array(self.elastic_endpoint_psi, dtype=wp.vec3, requires_grad=requires_grad)

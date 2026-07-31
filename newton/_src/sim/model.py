@@ -731,12 +731,6 @@ class Model:
         """Reduced elastic centrifugal coupling [kg m^2], shape [sum(elastic_mode_count)], dtype :class:`mat33`."""
         self.elastic_mode_coupling_coriolis: wp.array(dtype=wp.vec3) | None = None
         """Reduced elastic Coriolis coupling [kg m^2], shape [elastic_body_count * elastic_max_mode_count^2], dtype :class:`vec3`."""
-        self.elastic_endpoint_joint: wp.array(dtype=wp.int32) | None = None
-        """Joint index for each internal reduced elastic endpoint, shape [elastic_endpoint_count], int."""
-        self.elastic_endpoint_side: wp.array(dtype=wp.int32) | None = None
-        """Endpoint side for each internal reduced elastic endpoint: 0 parent, 1 child, shape [elastic_endpoint_count], int."""
-        self.elastic_endpoint_body: wp.array(dtype=wp.int32) | None = None
-        """Body index for each internal reduced elastic endpoint, shape [elastic_endpoint_count], int."""
         self.elastic_endpoint_sample: wp.array(dtype=wp.int32) | None = None
         """ModalBasis-local sample index for each internal reduced elastic endpoint, shape [elastic_endpoint_count], int."""
         self.elastic_endpoint_phi: wp.array(dtype=wp.vec3) | None = None

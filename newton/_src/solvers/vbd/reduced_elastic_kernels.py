@@ -947,164 +947,13 @@ def assemble_elastic_contacts(
             contact_idx += _NUM_ELASTIC_CONTACT_THREADS_PER_BODY
 
 
-@wp.kernel
-def solve_elastic_body(
-    dt: float,
-    solve_frame: bool,
-    body_ids: wp.array(dtype=wp.int32),
-    body_elastic_index: wp.array(dtype=wp.int32),
-    elastic_joint: wp.array(dtype=wp.int32),
-    elastic_mode_count: wp.array(dtype=wp.int32),
-    elastic_max_mode_count: int,
-    body_inv_mass: wp.array(dtype=float),
-    body_com: wp.array(dtype=wp.vec3),
-    body_q: wp.array(dtype=wp.transform),
-    joint_q_start: wp.array(dtype=wp.int32),
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_q_prev: wp.array(dtype=float),
-    elastic_body_block_grad: wp.array2d(dtype=float),
-    elastic_body_block_delta: wp.array2d(dtype=float),
-    elastic_body_block_matrix: wp.array3d(dtype=float),
-    elastic_body_block_factor: wp.array3d(dtype=float),
-    elastic_mode_block_initial_residual_norm: wp.array(dtype=float),
-    elastic_mode_block_solve_residual_norm: wp.array(dtype=float),
-    elastic_mode_block_applied_residual_norm: wp.array(dtype=float),
-    elastic_mode_block_update_norm: wp.array(dtype=float),
-    elastic_mode_block_update_max: wp.array(dtype=float),
-    elastic_mode_relaxation: float,
-    body_q_new: wp.array(dtype=wp.transform),
-    joint_q: wp.array(dtype=float),
-    joint_qd: wp.array(dtype=float),
-):
-    body = body_ids[wp.tid()]
-    elastic_index = body_elastic_index[body]
-    if elastic_index < 0:
-        return
-
-    owner_joint = elastic_joint[elastic_index]
-    q_start = joint_q_start[owner_joint] + 7
-    qd_start = joint_qd_start[owner_joint] + 6
-    mode_count = elastic_mode_count[elastic_index]
-    max_modes = elastic_max_mode_count
-    block_width = max_modes + 6
-
-    inv_dt = 1.0 / dt
-
-    for i in range(block_width):
-        for j in range(block_width):
-            h_ij = elastic_body_block_matrix[elastic_index, i, j]
-            if j < i:
-                h_ij = elastic_body_block_matrix[elastic_index, j, i]
-            elastic_body_block_factor[elastic_index, i, j] = h_ij
-
-    # Dense Cholesky reference solve. The CUDA path uses the same full block
-    # with wp.tile_cholesky().
-    for i in range(block_width):
-        for j in range(i + 1):
-            value = elastic_body_block_factor[elastic_index, i, j]
-            for k in range(j):
-                value = (
-                    value
-                    - elastic_body_block_factor[elastic_index, i, k] * elastic_body_block_factor[elastic_index, j, k]
-                )
-            if i == j:
-                regularization = 1.0e-9 * (wp.abs(elastic_body_block_matrix[elastic_index, i, i]) + 1.0)
-                elastic_body_block_factor[elastic_index, i, j] = wp.sqrt(wp.max(value, regularization))
-            else:
-                elastic_body_block_factor[elastic_index, i, j] = value / elastic_body_block_factor[elastic_index, j, j]
-
-    for i in range(block_width):
-        value = -elastic_body_block_grad[elastic_index, i]
-        for j in range(i):
-            value = value - elastic_body_block_factor[elastic_index, i, j] * elastic_body_block_delta[elastic_index, j]
-        elastic_body_block_delta[elastic_index, i] = value / elastic_body_block_factor[elastic_index, i, i]
-
-    for reverse_i in range(block_width):
-        i = block_width - 1 - reverse_i
-        value = elastic_body_block_delta[elastic_index, i]
-        for j in range(i + 1, block_width):
-            value = value - elastic_body_block_factor[elastic_index, j, i] * elastic_body_block_delta[elastic_index, j]
-        elastic_body_block_delta[elastic_index, i] = value / elastic_body_block_factor[elastic_index, i, i]
-
-    initial_residual_sq = float(0.0)
-    solve_residual_sq = float(0.0)
-    applied_residual_sq = float(0.0)
-    update_norm_sq = float(0.0)
-    update_max = float(0.0)
-    for i in range(mode_count):
-        row = 6 + i
-        grad_i = elastic_body_block_grad[elastic_index, row]
-        solve_residual_i = grad_i
-        applied_residual_i = grad_i
-        for j in range(block_width):
-            h_ij = elastic_body_block_matrix[elastic_index, row, j]
-            if j < row:
-                h_ij = elastic_body_block_matrix[elastic_index, j, row]
-            delta_j = elastic_body_block_delta[elastic_index, j]
-            solve_residual_i = solve_residual_i + h_ij * delta_j
-            applied_residual_i = applied_residual_i + h_ij * (elastic_mode_relaxation * delta_j)
-
-        applied_delta_i = elastic_mode_relaxation * elastic_body_block_delta[elastic_index, row]
-        initial_residual_sq = initial_residual_sq + grad_i * grad_i
-        solve_residual_sq = solve_residual_sq + solve_residual_i * solve_residual_i
-        applied_residual_sq = applied_residual_sq + applied_residual_i * applied_residual_i
-        update_norm_sq = update_norm_sq + applied_delta_i * applied_delta_i
-        update_max = wp.max(update_max, wp.abs(applied_delta_i))
-
-    elastic_mode_block_initial_residual_norm[elastic_index] = wp.sqrt(initial_residual_sq)
-    elastic_mode_block_solve_residual_norm[elastic_index] = wp.sqrt(solve_residual_sq)
-    elastic_mode_block_applied_residual_norm[elastic_index] = wp.sqrt(applied_residual_sq)
-    elastic_mode_block_update_norm[elastic_index] = wp.sqrt(update_norm_sq)
-    elastic_mode_block_update_max[elastic_index] = update_max
-
-    q_current = body_q[body]
-    if solve_frame and body_inv_mass[body] > 0.0:
-        rot_current = wp.transform_get_rotation(q_current)
-        body_R = wp.quat_to_matrix(rot_current)
-        x_inc_world = body_R * (
-            elastic_mode_relaxation
-            * wp.vec3(
-                elastic_body_block_delta[elastic_index, 0],
-                elastic_body_block_delta[elastic_index, 1],
-                elastic_body_block_delta[elastic_index, 2],
-            )
-        )
-        w_world = body_R * (
-            elastic_mode_relaxation
-            * wp.vec3(
-                elastic_body_block_delta[elastic_index, 3],
-                elastic_body_block_delta[elastic_index, 4],
-                elastic_body_block_delta[elastic_index, 5],
-            )
-        )
-        angle = wp.length(w_world)
-        if angle > _SMALL_ANGLE_EPS:
-            dq_world = wp.quat_from_axis_angle(w_world / angle, angle)
-        else:
-            half_w = 0.5 * w_world
-            dq_world = wp.normalize(wp.quat(half_w[0], half_w[1], half_w[2], 1.0))
-        rot_new = wp.normalize(dq_world * rot_current)
-        com_current = wp.transform_point(q_current, body_com[body])
-        com_new = com_current + x_inc_world
-        pos_new = com_new - wp.quat_rotate(rot_new, body_com[body])
-        body_q_new[body] = wp.transform(pos_new, rot_new)
-    else:
-        body_q_new[body] = q_current
-
-    for mode in range(mode_count):
-        q_idx = q_start + mode
-        qd_idx = qd_start + mode
-        q_prev = joint_q_prev[q_idx]
-        q_old = joint_q[q_idx]
-        q_solved = q_old + elastic_body_block_delta[elastic_index, 6 + mode]
-        q_new = q_old + elastic_mode_relaxation * (q_solved - q_old)
-        joint_q[q_idx] = q_new
-        joint_qd[qd_idx] = (q_new - q_prev) * inv_dt
-
-
 @functools.cache
 def create_solve_elastic_body_tiled(block_width: int):
-    """Create a full frame-modal tiled Cholesky kernel for one block width."""
+    """Create the coupled frame/modal block solve kernel for one block width.
+
+    The assembled ``(6 + mode_count)`` block is solved by a dense Cholesky factorization.
+    Blocks that are not positive definite fall back to a Jacobi step.
+    """
     width = int(block_width)
 
     def _solve_elastic_body_tiled(
@@ -1123,12 +972,12 @@ def create_solve_elastic_body_tiled(block_width: int):
         elastic_body_block_grad: wp.array2d(dtype=float),
         elastic_body_block_delta: wp.array2d(dtype=float),
         elastic_body_block_matrix: wp.array3d(dtype=float),
-        elastic_mode_block_initial_residual_norm: wp.array(dtype=float),
-        elastic_mode_block_solve_residual_norm: wp.array(dtype=float),
-        elastic_mode_block_applied_residual_norm: wp.array(dtype=float),
-        elastic_mode_block_update_norm: wp.array(dtype=float),
-        elastic_mode_block_update_max: wp.array(dtype=float),
-        elastic_mode_relaxation: float,
+        elastic_body_block_initial_residual_norm: wp.array(dtype=float),
+        elastic_body_block_solve_residual_norm: wp.array(dtype=float),
+        elastic_body_block_applied_residual_norm: wp.array(dtype=float),
+        elastic_body_block_update_norm: wp.array(dtype=float),
+        elastic_body_block_update_max: wp.array(dtype=float),
+        elastic_body_relaxation: float,
         body_q_new: wp.array(dtype=wp.transform),
         joint_q: wp.array(dtype=float),
         joint_qd: wp.array(dtype=float),
@@ -1152,8 +1001,20 @@ def create_solve_elastic_body_tiled(block_width: int):
         factor = wp.tile_cholesky(h)
         delta = wp.tile_cholesky_solve(factor, rhs)
 
+        block_is_definite = True
         for i in range(width):
-            elastic_body_block_delta[elastic_index, i] = delta[i]
+            if not wp.isfinite(delta[i]):
+                block_is_definite = False
+
+        for i in range(width):
+            if block_is_definite:
+                elastic_body_block_delta[elastic_index, i] = delta[i]
+            else:
+                diagonal = elastic_body_block_matrix[elastic_index, i, i]
+                if diagonal > 0.0:
+                    elastic_body_block_delta[elastic_index, i] = -g[i] / diagonal
+                else:
+                    elastic_body_block_delta[elastic_index, i] = 0.0
 
         owner_joint = elastic_joint[elastic_index]
         q_start = joint_q_start[owner_joint] + 7
@@ -1165,35 +1026,54 @@ def create_solve_elastic_body_tiled(block_width: int):
         applied_residual_sq = float(0.0)
         update_norm_sq = float(0.0)
         update_max = float(0.0)
-        for i in range(mode_count):
-            row = 6 + i
-            grad_i = g[row]
-            solve_residual_i = grad_i
-            applied_residual_i = grad_i
-            for j in range(width):
-                solve_residual_i = solve_residual_i + h[row, j] * delta[j]
-                applied_residual_i = applied_residual_i + h[row, j] * (elastic_mode_relaxation * delta[j])
+        for row in range(width):
+            if row < 6:
+                row_is_solved = solve_frame
+            else:
+                row_is_solved = row - 6 < mode_count
+            if row_is_solved:
+                grad_i = g[row]
+                solve_residual_i = grad_i
+                applied_residual_i = grad_i
+                for j in range(width):
+                    delta_j = elastic_body_block_delta[elastic_index, j]
+                    solve_residual_i = solve_residual_i + h[row, j] * delta_j
+                    applied_residual_i = applied_residual_i + h[row, j] * (elastic_body_relaxation * delta_j)
 
-            applied_delta_i = elastic_mode_relaxation * delta[row]
-            initial_residual_sq = initial_residual_sq + grad_i * grad_i
-            solve_residual_sq = solve_residual_sq + solve_residual_i * solve_residual_i
-            applied_residual_sq = applied_residual_sq + applied_residual_i * applied_residual_i
-            update_norm_sq = update_norm_sq + applied_delta_i * applied_delta_i
-            update_max = wp.max(update_max, wp.abs(applied_delta_i))
+                applied_delta_i = elastic_body_relaxation * elastic_body_block_delta[elastic_index, row]
+                initial_residual_sq = initial_residual_sq + grad_i * grad_i
+                solve_residual_sq = solve_residual_sq + solve_residual_i * solve_residual_i
+                applied_residual_sq = applied_residual_sq + applied_residual_i * applied_residual_i
+                update_norm_sq = update_norm_sq + applied_delta_i * applied_delta_i
+                update_max = wp.max(update_max, wp.abs(applied_delta_i))
 
-        elastic_mode_block_initial_residual_norm[elastic_index] = wp.sqrt(initial_residual_sq)
-        elastic_mode_block_solve_residual_norm[elastic_index] = wp.sqrt(solve_residual_sq)
-        elastic_mode_block_applied_residual_norm[elastic_index] = wp.sqrt(applied_residual_sq)
-        elastic_mode_block_update_norm[elastic_index] = wp.sqrt(update_norm_sq)
-        elastic_mode_block_update_max[elastic_index] = update_max
+        elastic_body_block_initial_residual_norm[elastic_index] = wp.sqrt(initial_residual_sq)
+        elastic_body_block_solve_residual_norm[elastic_index] = wp.sqrt(solve_residual_sq)
+        elastic_body_block_applied_residual_norm[elastic_index] = wp.sqrt(applied_residual_sq)
+        elastic_body_block_update_norm[elastic_index] = wp.sqrt(update_norm_sq)
+        elastic_body_block_update_max[elastic_index] = update_max
 
         inv_dt = 1.0 / dt
         q_current = body_q[body]
         if solve_frame and body_inv_mass[body] > 0.0:
             rot_current = wp.transform_get_rotation(q_current)
             body_R = wp.quat_to_matrix(rot_current)
-            x_inc_world = body_R * (elastic_mode_relaxation * wp.vec3(delta[0], delta[1], delta[2]))
-            w_world = body_R * (elastic_mode_relaxation * wp.vec3(delta[3], delta[4], delta[5]))
+            x_inc_world = body_R * (
+                elastic_body_relaxation
+                * wp.vec3(
+                    elastic_body_block_delta[elastic_index, 0],
+                    elastic_body_block_delta[elastic_index, 1],
+                    elastic_body_block_delta[elastic_index, 2],
+                )
+            )
+            w_world = body_R * (
+                elastic_body_relaxation
+                * wp.vec3(
+                    elastic_body_block_delta[elastic_index, 3],
+                    elastic_body_block_delta[elastic_index, 4],
+                    elastic_body_block_delta[elastic_index, 5],
+                )
+            )
             angle = wp.length(w_world)
             if angle > _SMALL_ANGLE_EPS:
                 dq_world = wp.quat_from_axis_angle(w_world / angle, angle)
@@ -1213,7 +1093,7 @@ def create_solve_elastic_body_tiled(block_width: int):
             qd_idx = qd_start + mode
             q_prev = joint_q_prev[q_idx]
             q_old = joint_q[q_idx]
-            q_new = q_old + elastic_mode_relaxation * delta[6 + mode]
+            q_new = q_old + elastic_body_relaxation * elastic_body_block_delta[elastic_index, 6 + mode]
             joint_q[q_idx] = q_new
             joint_qd[qd_idx] = (q_new - q_prev) * inv_dt
 

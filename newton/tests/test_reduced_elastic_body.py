@@ -2557,7 +2557,6 @@ def test_vbd_elastic_joint_assembles_one_coupled_block(test, device):
         rigid_joint_angular_kd=0.0,
         rigid_joint_adaptive_stiffness=False,
     )
-    solver._solve_elastic_body_tiled = create_solve_elastic_body_tiled(solver.elastic_body_block_width)
     solver.step(state_0, state_1, model.control(), None, dt)
 
     matrix_upper = solver.elastic_body_block_matrix.numpy()[0]
@@ -2580,6 +2579,164 @@ def test_vbd_elastic_joint_assembles_one_coupled_block(test, device):
     solved_mode_q = float(state_1.joint_q.numpy()[q_start + 7])
     np.testing.assert_allclose(body_x, frame_x + delta[0], rtol=1.0e-6, atol=1.0e-7)
     np.testing.assert_allclose(solved_mode_q, mode_q + delta[6], rtol=1.0e-6, atol=1.0e-7)
+
+
+def test_vbd_elastic_body_rejects_external_rigid_solver(test, device):
+    basis = newton.ModalBasis(
+        sample_points=[[0.0, 0.0, 0.0]],
+        sample_phi=[[[1.0, 0.0, 0.0]]],
+        sample_mass=[1.0],
+        mode_stiffness=[0.0],
+        mode_damping=[0.0],
+    )
+    builder = newton.ModelBuilder(gravity=0.0)
+    body = builder.add_body_elastic(mass=3.0, inertia=_identity_inertia(), mode_q=[0.0], modal_basis=basis)
+    builder.add_joint_fixed(parent=-1, child=body)
+    builder.color()
+    model = builder.finalize(device=device)
+
+    with test.assertRaises(NotImplementedError):
+        newton.solvers.SolverVBD(model, iterations=1, integrate_with_external_rigid_solver=True)
+
+
+def test_vbd_elastic_block_solve_falls_back_when_indefinite(test, device):
+    """An indefinite block degrades to a Jacobi step instead of writing NaN."""
+    width = 7
+    kernel = create_solve_elastic_body_tiled(width)
+
+    rng = np.random.default_rng(0)
+    matrix = np.zeros((2, width, width), dtype=np.float32)
+    grad = np.zeros((2, width), dtype=np.float32)
+    for block in range(2):
+        a = rng.standard_normal((width, width))
+        matrix[block] = np.triu(a @ a.T + width * np.eye(width))
+        grad[block] = rng.standard_normal(width)
+    matrix[1, 3, 3] = -5.0
+
+    zeros_int = wp.zeros(1, dtype=wp.int32, device=device)
+    delta = wp.zeros((2, width), dtype=float, device=device)
+    metrics = [wp.zeros(2, dtype=float, device=device) for _ in range(5)]
+    wp.launch_tiled(
+        kernel=kernel,
+        dim=[2],
+        inputs=[
+            0.01,
+            False,
+            wp.array([0, 1], dtype=wp.int32, device=device),
+            wp.array([0, 1], dtype=wp.int32, device=device),
+            wp.array([0, 0], dtype=wp.int32, device=device),
+            wp.array([1, 1], dtype=wp.int32, device=device),
+            wp.zeros(2, dtype=float, device=device),
+            wp.zeros(2, dtype=wp.vec3, device=device),
+            wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device),
+            zeros_int,
+            zeros_int,
+            wp.zeros(8, dtype=float, device=device),
+            wp.array(grad, dtype=float, device=device),
+            delta,
+            wp.array(matrix, dtype=float, device=device),
+            *metrics,
+            1.0,
+        ],
+        outputs=[
+            wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device),
+            wp.zeros(8, dtype=float, device=device),
+            wp.zeros(8, dtype=float, device=device),
+        ],
+        block_dim=32,
+        device=device,
+    )
+
+    solved = delta.numpy()
+    test.assertTrue(bool(np.isfinite(solved).all()))
+
+    definite = np.triu(matrix[0]) + np.triu(matrix[0], 1).T
+    np.testing.assert_allclose(solved[0], np.linalg.solve(definite, -grad[0]), rtol=1.0e-4, atol=1.0e-5)
+
+    diagonal = np.diag(matrix[1])
+    expected_fallback = np.where(diagonal > 0.0, -grad[1] / np.where(diagonal > 0.0, diagonal, 1.0), 0.0)
+    np.testing.assert_allclose(solved[1], expected_fallback, rtol=1.0e-5, atol=1.0e-6)
+
+
+def test_vbd_elastic_block_width_rejects_oversized_basis(test, device):
+    """A basis too wide for device shared memory fails at construction, not at launch."""
+    shared_memory_limit = int(getattr(wp.get_device(device), "max_shared_memory_per_block", 0))
+    if shared_memory_limit <= 0:
+        test.skipTest("device reports no shared memory budget")
+
+    largest_width = int((np.sqrt(9.0 + 2.0 * shared_memory_limit) - 3.0) / 4.0)
+    mode_count = largest_width - 6 + 1
+
+    basis = newton.ModalBasis(
+        sample_points=[[0.0, 0.0, 0.0]],
+        sample_phi=np.tile(np.array([[1.0, 0.0, 0.0]]), (1, mode_count, 1)),
+        sample_mass=[1.0],
+        mode_stiffness=[1.0] * mode_count,
+    )
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_body_elastic(mass=1.0, inertia=_identity_inertia(), modal_basis=basis, label="oversized")
+    builder.color()
+    model = builder.finalize(device=device)
+
+    with test.assertRaises(ValueError) as raised:
+        newton.solvers.SolverVBD(model, iterations=1)
+    test.assertIn("shared memory", str(raised.exception))
+
+
+def test_vbd_elastic_block_metrics_cover_frame_rows(test, device):
+    """Convergence metrics span the whole block, not just the modal rows."""
+    width = 7
+    kernel = create_solve_elastic_body_tiled(width)
+
+    rng = np.random.default_rng(3)
+    a = rng.standard_normal((width, width))
+    matrix = np.triu(a @ a.T + width * np.eye(width)).astype(np.float32)[None]
+    grad = rng.standard_normal((1, width)).astype(np.float32)
+
+    zeros_int = wp.zeros(1, dtype=wp.int32, device=device)
+    delta = wp.zeros((1, width), dtype=float, device=device)
+    metrics = [wp.zeros(1, dtype=float, device=device) for _ in range(5)]
+    wp.launch_tiled(
+        kernel=kernel,
+        dim=[1],
+        inputs=[
+            0.01,
+            True,
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array([1], dtype=wp.int32, device=device),
+            wp.ones(1, dtype=float, device=device),
+            wp.zeros(1, dtype=wp.vec3, device=device),
+            wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
+            zeros_int,
+            zeros_int,
+            wp.zeros(8, dtype=float, device=device),
+            wp.array(grad, dtype=float, device=device),
+            delta,
+            wp.array(matrix, dtype=float, device=device),
+            *metrics,
+            1.0,
+        ],
+        outputs=[
+            wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
+            wp.zeros(8, dtype=float, device=device),
+            wp.zeros(8, dtype=float, device=device),
+        ],
+        block_dim=32,
+        device=device,
+    )
+
+    initial_residual = float(metrics[0].numpy()[0])
+    modal_only = float(abs(grad[0, 6]))
+    test.assertAlmostEqual(initial_residual, float(np.linalg.norm(grad[0])), delta=1.0e-4)
+    test.assertGreater(initial_residual, 2.0 * modal_only)
+
+    solve_residual = float(metrics[1].numpy()[0])
+    test.assertLess(solve_residual / initial_residual, 1.0e-5)
+
+    update_max = float(metrics[4].numpy()[0])
+    test.assertAlmostEqual(update_max, float(np.abs(delta.numpy()[0]).max()), delta=1.0e-5)
 
 
 def test_vbd_implicit_mass_coupling_requires_spd_block(test, device):
@@ -3669,6 +3826,30 @@ for device in devices:
         TestReducedElasticBody,
         "test_vbd_elastic_joint_assembles_one_coupled_block",
         test_vbd_elastic_joint_assembles_one_coupled_block,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
+        "test_vbd_elastic_body_rejects_external_rigid_solver",
+        test_vbd_elastic_body_rejects_external_rigid_solver,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
+        "test_vbd_elastic_block_solve_falls_back_when_indefinite",
+        test_vbd_elastic_block_solve_falls_back_when_indefinite,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
+        "test_vbd_elastic_block_width_rejects_oversized_basis",
+        test_vbd_elastic_block_width_rejects_oversized_basis,
+        devices=[device],
+    )
+    add_function_test(
+        TestReducedElasticBody,
+        "test_vbd_elastic_block_metrics_cover_frame_rows",
+        test_vbd_elastic_block_metrics_cover_frame_rows,
         devices=[device],
     )
     add_function_test(
