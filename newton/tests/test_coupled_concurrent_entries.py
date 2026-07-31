@@ -79,28 +79,50 @@ def _build_two_pad_concurrent(seed: int = 0):
     return _build_two_pad_coupled(seed, solver_cls=_ConcurrentEntrySolverCoupled)
 
 
-def _run_frames(model, solver, frames: int, use_graph: bool) -> np.ndarray:
+def _run_frames(model, solver, frames: int, use_graph: bool, graph_warmup: int = 30) -> np.ndarray:
+    """Step ``frames`` frames and return the final particle positions.
+
+    States ping-pong between two buffers so each step consumes the previous
+    step's output. With ``use_graph``, an even pair of steps is captured (so
+    every replay starts and ends on the same physical buffer) after
+    ``graph_warmup`` eager frames: the capture must happen once the contact
+    path is warm — capturing before the first contact bakes the lazily
+    initialized contact filtering state and deterministically changes the
+    trajectory (verified: warm capture is bit-exact vs eager stepping).
+    """
     device = model.device
     state_0, state_1 = model.state(), model.state()
     contacts = model.contacts()
     dt = 1.0 / 60.0
+    solver.prepare_contacts(contacts)
 
-    def frame():
-        state_0.clear_forces()
-        model.collide(state_0, contacts)
-        solver.step(state_0, state_1, None, contacts, dt)
+    def step(state_in, state_out):
+        state_in.clear_forces()
+        model.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, dt)
 
+    states = [state_0, state_1]
+    n = 0
     if use_graph:
+        if (frames - graph_warmup) <= 0 or (frames - graph_warmup) % 2 != 0:
+            raise ValueError("use_graph requires frames > graph_warmup with an even remainder")
+        for _ in range(graph_warmup):
+            step(states[n % 2], states[(n + 1) % 2])
+            n += 1
         with wp.ScopedDevice(device):
             with wp.ScopedCapture() as capture:
-                frame()
-        for _ in range(frames):
+                step(states[n % 2], states[(n + 1) % 2])
+                step(states[(n + 1) % 2], states[n % 2])
+        for _ in range((frames - graph_warmup) // 2):
             wp.capture_launch(capture.graph)
+        final = states[n % 2]
     else:
         for _ in range(frames):
-            frame()
+            step(states[n % 2], states[(n + 1) % 2])
+            n += 1
+        final = states[n % 2]
     wp.synchronize_device(device)
-    return state_0.particle_q.numpy().copy()
+    return final.particle_q.numpy().copy()
 
 
 class TestCoupledEntryParticleGridOwnership(unittest.TestCase):
