@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import warp as wp
@@ -30,29 +29,3 @@ def _normalize_indices(
         )
 
     return idx
-
-
-def _allocate_namespace(
-    specs: list[tuple[str, Any, int]],
-    device: Any,
-    requires_grad: bool,
-) -> SimpleNamespace:
-    """Build a :class:`SimpleNamespace` with one zero-allocated ``wp.array`` per spec.
-
-    Duplicate attr names take the larger size (smaller views are a prefix of the larger).
-    """
-    merged: dict[str, tuple[Any, int]] = {}
-    for attr, dtype, size in specs:
-        if attr in merged:
-            prev_dtype, prev_size = merged[attr]
-            if prev_dtype != dtype:
-                raise TypeError(f"Field '{attr}': two ports declared incompatible dtypes ({prev_dtype} vs {dtype}).")
-            merged[attr] = (dtype, max(prev_size, size))
-        else:
-            merged[attr] = (dtype, size)
-    return SimpleNamespace(
-        **{
-            attr: wp.zeros(size, dtype=dtype, device=device, requires_grad=requires_grad)
-            for attr, (dtype, size) in merged.items()
-        }
-    )

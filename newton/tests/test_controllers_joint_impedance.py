@@ -221,14 +221,14 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         np.testing.assert_allclose(tau, [3.0, 0.0], atol=1e-5)
 
     def test_live_stiffness_port(self):
-        """Verify stiffness supplied via a live input attribute is applied correctly."""
+        """Verify stiffness supplied via inputs.stiffness each step is applied correctly."""
         device = wp.get_device()
         ctrl = ControllerJointImpedanceModelFree(
             robot_count=1,
             dofs_per_robot=_dofs_arr([2], device),
             max_dofs=2,
             default_dof_indices=_iota(2, device),
-            stiffness="kp",
+            stiffness=None,
             damping=wp.zeros((1, 2), dtype=wp.float32, device=device),
             use_gravity_compensation=False,
             use_coriolis_compensation=False,
@@ -240,7 +240,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         ins.joint_qd = wp.zeros(2, dtype=wp.float32, device=device)
         ins.joint_q_des = wp.array([2.0, 0.0], dtype=wp.float32, device=device)
         ins.joint_qd_des = wp.zeros(2, dtype=wp.float32, device=device)
-        ins.kp = wp.array([[3.0, 3.0]], dtype=wp.float32, device=device)
+        ins.stiffness = wp.array([[3.0, 3.0]], dtype=wp.float32, device=device)
         outs = ctrl.output()
         ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
         np.testing.assert_allclose(outs.joint_f.numpy(), [6.0, 0.0], atol=1e-5)
@@ -286,8 +286,8 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         self.assertTrue(hasattr(outs, "joint_f"))
         self.assertEqual(outs.joint_f.shape, (2,))
 
-    def test_custom_output_attr_name(self):
-        """Verify joint_f_attr renames the output field on the output struct."""
+    def test_output_has_joint_f(self):
+        """Verify output() always returns a struct with joint_f."""
         device = wp.get_device()
         ctrl = ControllerJointImpedanceModelFree(
             robot_count=1,
@@ -296,12 +296,10 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
             default_dof_indices=_iota(2, device),
             stiffness=wp.ones((1, 2), dtype=wp.float32, device=device),
             damping=wp.zeros((1, 2), dtype=wp.float32, device=device),
-            joint_f_attr="tau_cmd",
             device=device,
         )
         outs = ctrl.output()
-        self.assertTrue(hasattr(outs, "tau_cmd"))
-        self.assertFalse(hasattr(outs, "joint_f"))
+        self.assertTrue(hasattr(outs, "joint_f"))
 
     def test_partial_sim_indices(self):
         """Verify gather/scatter correctly selects a controller-DOF subset from a larger sim array."""

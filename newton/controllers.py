@@ -5,7 +5,7 @@
 
 This module provides standalone controllers that compute joint torques or
 other actuation signals from simulation state. Each controller is a concrete
-subclass of :class:`Controller` and operates on flat 1D arrays matching the
+subclass of :class:`ControllerBase` and operates on flat 1D arrays matching the
 layout of :class:`~newton.State` fields, making them composable with any
 Newton solver.
 
@@ -16,13 +16,13 @@ Newton solver.
 """
 
 from ._src.controllers import (
-    Controller,
+    ControllerBase,
     ControllerJointImpedance,
     ControllerJointImpedanceModelFree,
 )
 
 __all__ = [
-    "Controller",
+    "ControllerBase",
     "ControllerJointImpedance",
     "ControllerJointImpedanceModelFree",
 ]

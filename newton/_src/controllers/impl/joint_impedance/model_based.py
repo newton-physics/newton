@@ -13,7 +13,6 @@ Gravity and Coriolis compensation use :func:`newton.eval_inverse_dynamics_passiv
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -24,13 +23,13 @@ from newton._src.sim.articulation import eval_fk, eval_mass_matrix
 from newton._src.sim.builder import ModelBuilder
 from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
 
-from ...controller import Controller
-from ...utils import _allocate_namespace, _normalize_indices
+from ...controller import ControllerBase
+from ...utils import _normalize_indices
 from ._common import _gather_dof_flat_kernel, _idx_max
 from .model_free import ControllerJointImpedanceModelFree
 
 
-class ControllerJointImpedance(Controller):
+class ControllerJointImpedance(ControllerBase):
     """One-step joint-space impedance controller for a batch of robots.
 
     Has an identical input/output interface to
@@ -44,6 +43,10 @@ class ControllerJointImpedance(Controller):
     per-robot topology; the controller pads internal buffers to
     ``model.max_dofs_per_articulation`` and skips padding slots in all kernels.
 
+    Only 1-DOF joints (Revolute, Prismatic) and zero-DOF Fixed joints are
+    supported. The PD error term ``q_des - q`` is only valid for scalar
+    joint coordinates.
+
     Impedance law (terms enabled at construction):
 
         τ = [M(q) if use_inertia_decoupling else I] · (q̈_des + Kp·Δq + Kd·Δq̇)
@@ -53,59 +56,76 @@ class ControllerJointImpedance(Controller):
     Args:
         builder: :class:`~newton.ModelBuilder` with N articulations (one
             per robot). Articulations may have different DOF counts.
-        default_dof_indices: ``wp.array[uint32]`` of length
-            ``sum(dofs per articulation)`` — concatenated per-robot index
-            arrays mapping controller DOF slots to positions in the flat
-            simulation arrays (robot 0's indices first, then robot 1's, etc.).
-        stiffness: Position-error gain Kp. ``wp.array2d[float32]`` of shape
-            ``(N, max_dofs)`` (baked) or ``str`` (live attr on input struct).
-        damping: Velocity-error gain Kd. Same format as ``stiffness``.
+        default_dof_indices: Concatenated per-robot index arrays of length
+            ``sum(dofs per articulation)`` mapping controller DOF slots to
+            positions in the flat simulation arrays (robot 0's indices first,
+            then robot 1's, etc.).
+        stiffness: Position-error gain Kp [N/m or N·m/rad], shape
+            ``(N, max_dofs)``. Pass a baked array or ``None`` to read from
+            ``inputs.stiffness`` each step.
+        damping: Velocity-error gain Kd [N·s/m or N·m·s/rad]. Same format
+            as ``stiffness``.
         use_gravity_compensation: Add gravity generalized forces to τ.
         use_coriolis_compensation: Add Coriolis generalized forces to τ.
         use_inertia_decoupling: Premultiply the PD term by M(q).
-        has_qdd_feedforward: Accept a desired-acceleration feedforward
-            ``joint_qdd`` in the input struct.
-        joint_q_attr: Flat sim attr name for current joint positions.
+        has_qdd_feedforward: Accept a desired-acceleration feedforward via
+            ``inputs.joint_qdd``.
         joint_q_idx: Optional index array (same length as
             ``default_dof_indices``) overriding it for the position read.
-        joint_qd_attr: Flat sim attr name for current joint velocities.
         joint_qd_idx: Optional index array for velocity read.
-        joint_q_des_attr: Flat sim attr name for desired joint positions.
         joint_q_des_idx: Optional index array for desired position read.
-        joint_qd_des_attr: Flat sim attr name for desired joint velocities.
         joint_qd_des_idx: Optional index array for desired velocity read.
-        joint_qdd_attr: Flat sim attr name for desired acceleration feedforward
-            (only used when ``has_qdd_feedforward=True``).
         joint_qdd_idx: Optional index array for feedforward read.
-        joint_f_attr: Flat sim attr name for the torque output.
         joint_f_idx: Optional index array overriding ``default_dof_indices``
             for the torque-output write.
         device: Warp device.
         requires_grad: Whether internal buffers need gradient support.
     """
 
+    class Inputs:
+        """Input struct returned by :meth:`~ControllerJointImpedance.input`.
+
+        Dynamics fields (mass matrix, gravity, Coriolis) are computed
+        internally and do not appear here.
+        """
+
+        joint_q: wp.array[wp.float32]
+        """Current joint positions [m or rad], flat sim-level array."""
+        joint_qd: wp.array[wp.float32]
+        """Current joint velocities [m/s or rad/s], flat sim-level array."""
+        joint_q_des: wp.array[wp.float32]
+        """Desired joint positions [m or rad], flat sim-level array."""
+        joint_qd_des: wp.array[wp.float32]
+        """Desired joint velocities [m/s or rad/s], flat sim-level array."""
+        joint_qdd: wp.array[wp.float32] | None
+        """Desired acceleration feedforward [m/s² or rad/s²], flat sim-level array. ``None`` unless ``has_qdd_feedforward=True``."""
+        stiffness: wp.array2d[wp.float32] | None
+        """Position-error gain Kp [N/m or N·m/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+        damping: wp.array2d[wp.float32] | None
+        """Velocity-error gain Kd [N·s/m or N·m·s/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+
+    class Outputs:
+        """Output struct returned by :meth:`~ControllerJointImpedance.output`."""
+
+        joint_f: wp.array[wp.float32]
+        """Joint torque command [N or N·m], flat sim-level array."""
+
     def __init__(
         self,
         builder: ModelBuilder,
         *,
         default_dof_indices: wp.array[wp.uint32],
-        stiffness: wp.array2d[wp.float32] | str,
-        damping: wp.array2d[wp.float32] | str,
+        stiffness: wp.array2d[wp.float32] | None,
+        damping: wp.array2d[wp.float32] | None,
         use_gravity_compensation: bool = True,
         use_coriolis_compensation: bool = True,
         use_inertia_decoupling: bool = True,
         has_qdd_feedforward: bool = False,
-        joint_q_attr: str = "joint_q",
         joint_q_idx: wp.array[wp.uint32] | None = None,
-        joint_qd_attr: str = "joint_qd",
         joint_qd_idx: wp.array[wp.uint32] | None = None,
-        joint_q_des_attr: str = "joint_q_des",
         joint_q_des_idx: wp.array[wp.uint32] | None = None,
-        joint_qd_des_attr: str = "joint_qd_des",
         joint_qd_des_idx: wp.array[wp.uint32] | None = None,
-        joint_qdd_attr: str = "joint_qdd",
         joint_qdd_idx: wp.array[wp.uint32] | None = None,
-        joint_f_attr: str = "joint_f",
         joint_f_idx: wp.array[wp.uint32] | None = None,
         device: Any = None,
         requires_grad: bool = False,
@@ -139,6 +159,8 @@ class ControllerJointImpedance(Controller):
         self._use_inertia = bool(use_inertia_decoupling)
         self._has_qdd = bool(has_qdd_feedforward)
         self._needs_fk = self._use_inertia or self._use_gravity or self._use_coriolis
+        self._stiffness_is_live = stiffness is None
+        self._damping_is_live = damping is None
 
         self._model = builder.finalize(device=self._device, requires_grad=requires_grad)
         self._model_state = self._model.state()
@@ -146,9 +168,9 @@ class ControllerJointImpedance(Controller):
         max_dofs = self._model.max_dofs_per_articulation
 
         # Derive per-articulation DOF counts from the finalized model.
-        art_start = self._model.articulation_start.numpy()  # first joint per articulation
-        art_end = self._model.articulation_end.numpy()  # one-past-last joint per articulation
-        joint_q_start = self._model.joint_q_start.numpy()  # DOF start per joint (+1 sentinel)
+        art_start = self._model.articulation_start.numpy()
+        art_end = self._model.articulation_end.numpy()
+        joint_q_start = self._model.joint_q_start.numpy()
         dofs_per_robot_np = np.array(
             [joint_q_start[art_end[i]] - joint_q_start[art_start[i]] for i in range(robot_count)],
             dtype=np.int32,
@@ -165,22 +187,12 @@ class ControllerJointImpedance(Controller):
         self._robot_count = robot_count
         self._max_dofs = max_dofs
         self._total_dofs = total_dofs
-        self._dofs_per_robot_np = dofs_per_robot_np
 
-        self._q_attr = joint_q_attr
         self._q_idx = _normalize_indices(joint_q_idx, default_dof_indices, name="joint_q")
-        self._qd_attr = joint_qd_attr
         self._qd_idx = _normalize_indices(joint_qd_idx, default_dof_indices, name="joint_qd")
-        self._q_des_attr = joint_q_des_attr
         self._q_des_idx = _normalize_indices(joint_q_des_idx, default_dof_indices, name="joint_q_des")
-        self._qd_des_attr = joint_qd_des_attr
         self._qd_des_idx = _normalize_indices(joint_qd_des_idx, default_dof_indices, name="joint_qd_des")
-        self._qdd_attr = joint_qdd_attr
         self._qdd_idx = _normalize_indices(joint_qdd_idx, default_dof_indices, name="joint_qdd")
-
-        # Validate gain port shapes only (ModelFree will store/copy them).
-        self._stiffness_attr = stiffness if isinstance(stiffness, str) else None
-        self._damping_attr = damping if isinstance(damping, str) else None
 
         self._mass_matrix: wp.array3d[wp.float32] | None = None
         self._gravity_flat: wp.array[wp.float32] | None = None
@@ -188,22 +200,15 @@ class ControllerJointImpedance(Controller):
 
         if self._use_inertia:
             self._mass_matrix = wp.zeros(
-                ((robot_count, max_dofs, max_dofs)),
-                dtype=wp.float32,
-                device=self._device,
-                requires_grad=requires_grad,
+                (robot_count, max_dofs, max_dofs),
+                dtype=wp.float32, device=self._device, requires_grad=requires_grad,
             )
         if self._use_gravity:
-            self._gravity_flat = wp.zeros(
-                total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
-            )
+            self._gravity_flat = wp.zeros(total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
         if self._use_coriolis:
-            self._coriolis_flat = wp.zeros(
-                total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
-            )
+            self._coriolis_flat = wp.zeros(total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
 
-        # Newton fills dynamics in the same DOF order as model.joint_q (robot-stride,
-        # no sim-level remapping needed) — use identity indices.
+        # Newton fills dynamics in the same DOF order as model.joint_q — use identity indices.
         identity_idx = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self._device)
 
         self._model_free = ControllerJointImpedanceModelFree(
@@ -217,40 +222,26 @@ class ControllerJointImpedance(Controller):
             use_coriolis_compensation=use_coriolis_compensation,
             use_inertia_decoupling=use_inertia_decoupling,
             has_qdd_feedforward=has_qdd_feedforward,
-            joint_q_attr=joint_q_attr,
             joint_q_idx=joint_q_idx,
-            joint_qd_attr=joint_qd_attr,
             joint_qd_idx=joint_qd_idx,
-            joint_q_des_attr=joint_q_des_attr,
             joint_q_des_idx=joint_q_des_idx,
-            joint_qd_des_attr=joint_qd_des_attr,
             joint_qd_des_idx=joint_qd_des_idx,
-            joint_qdd_attr=joint_qdd_attr,
             joint_qdd_idx=joint_qdd_idx,
             gravity_force_idx=identity_idx,
             coriolis_force_idx=identity_idx,
-            joint_f_attr=joint_f_attr,
             joint_f_idx=joint_f_idx,
             device=device,
             requires_grad=requires_grad,
         )
 
-        self._mf_input = SimpleNamespace()
+        # Pre-wired dynamics fields forwarded to ModelFree each step.
+        self._mf_input = ControllerJointImpedanceModelFree.Inputs()
         if self._use_inertia:
             self._mf_input.mass_matrix = self._mass_matrix
         if self._use_gravity:
             self._mf_input.gravity_force = self._gravity_flat
         if self._use_coriolis:
             self._mf_input.coriolis_force = self._coriolis_flat
-
-        self._input_specs: list[tuple[str, Any, int]] = [
-            (self._q_attr, wp.float32, _idx_max(self._q_idx)),
-            (self._qd_attr, wp.float32, _idx_max(self._qd_idx)),
-            (self._q_des_attr, wp.float32, _idx_max(self._q_des_idx)),
-            (self._qd_des_attr, wp.float32, _idx_max(self._qd_des_idx)),
-        ]
-        if self._has_qdd:
-            self._input_specs.append((self._qdd_attr, wp.float32, _idx_max(self._qdd_idx)))
 
     @property
     def robot_count(self) -> int:
@@ -271,56 +262,52 @@ class ControllerJointImpedance(Controller):
     def is_graphable(self) -> bool:
         return True
 
-    def input(self):
-        """Return a pre-allocated input struct without dynamics fields (computed internally)."""
-        ns = _allocate_namespace(self._input_specs, self._device, self._requires_grad)
+    def input(self) -> Inputs:
+        """Return a pre-allocated :class:`Inputs` without dynamics fields."""
+        d, rg = self._device, self._requires_grad
+        inputs = ControllerJointImpedance.Inputs()
+        inputs.joint_q = wp.zeros(_idx_max(self._q_idx), dtype=wp.float32, device=d, requires_grad=rg)
+        inputs.joint_qd = wp.zeros(_idx_max(self._qd_idx), dtype=wp.float32, device=d, requires_grad=rg)
+        inputs.joint_q_des = wp.zeros(_idx_max(self._q_des_idx), dtype=wp.float32, device=d, requires_grad=rg)
+        inputs.joint_qd_des = wp.zeros(_idx_max(self._qd_des_idx), dtype=wp.float32, device=d, requires_grad=rg)
+        inputs.joint_qdd = wp.zeros(_idx_max(self._qdd_idx), dtype=wp.float32, device=d, requires_grad=rg) if self._has_qdd else None
         shape_2d = (self._robot_count, self._max_dofs)
-        if self._stiffness_attr is not None:
-            setattr(
-                ns,
-                self._stiffness_attr,
-                wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad),
-            )
-        if self._damping_attr is not None:
-            setattr(
-                ns,
-                self._damping_attr,
-                wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad),
-            )
-        return ns
+        inputs.stiffness = wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._stiffness_is_live else None
+        inputs.damping = wp.zeros(shape_2d, dtype=wp.float32, device=d, requires_grad=rg) if self._damping_is_live else None
+        return inputs
 
-    def output(self):
-        """Return a pre-allocated output struct with a flat torque array."""
-        return self._model_free.output()
+    def output(self) -> Outputs:
+        """Return a pre-allocated :class:`Outputs` with a flat torque array."""
+        outputs = ControllerJointImpedance.Outputs()
+        outputs.joint_f = self._model_free.output().joint_f
+        return outputs
 
     def compute(
         self,
         *,
-        inputs: Any,
-        outputs: Any,
+        inputs: Inputs,
+        outputs: Outputs,
         dt: float | wp.array[wp.float32],
     ) -> None:
         """Run one impedance-control step.
 
         Args:
-            inputs: Namespace with flat sim arrays for joint state and
-                desired state. Dynamics terms are computed internally.
-            outputs: Namespace with a flat sim torque array.
+            inputs: Populated :class:`Inputs` struct. Dynamics terms are
+                computed internally from the Newton model.
+            outputs: :class:`Outputs` struct to write torques into.
             dt: Unused. Accepted for API compatibility.
         """
-        # Populate the Newton model state for FK/dynamics using a flat gather —
-        # model_state.joint_q is a flat array of length total_dofs (no padding).
         wp.launch(
             _gather_dof_flat_kernel,
             dim=self._total_dofs,
-            inputs=[getattr(inputs, self._q_attr), self._q_idx],
+            inputs=[inputs.joint_q, self._q_idx],
             outputs=[self._model_state.joint_q],
             device=self._device,
         )
         wp.launch(
             _gather_dof_flat_kernel,
             dim=self._total_dofs,
-            inputs=[getattr(inputs, self._qd_attr), self._qd_idx],
+            inputs=[inputs.joint_qd, self._qd_idx],
             outputs=[self._model_state.joint_qd],
             device=self._device,
         )
@@ -337,15 +324,15 @@ class ControllerJointImpedance(Controller):
                 coriolis_force=self._coriolis_flat,
             )
 
-        self._mf_input.joint_q = getattr(inputs, self._q_attr)
-        self._mf_input.joint_qd = getattr(inputs, self._qd_attr)
-        self._mf_input.joint_q_des = getattr(inputs, self._q_des_attr)
-        self._mf_input.joint_qd_des = getattr(inputs, self._qd_des_attr)
+        self._mf_input.joint_q = inputs.joint_q
+        self._mf_input.joint_qd = inputs.joint_qd
+        self._mf_input.joint_q_des = inputs.joint_q_des
+        self._mf_input.joint_qd_des = inputs.joint_qd_des
         if self._has_qdd:
-            self._mf_input.joint_qdd = getattr(inputs, self._qdd_attr)
-        if self._stiffness_attr is not None:
-            setattr(self._mf_input, self._stiffness_attr, getattr(inputs, self._stiffness_attr))
-        if self._damping_attr is not None:
-            setattr(self._mf_input, self._damping_attr, getattr(inputs, self._damping_attr))
+            self._mf_input.joint_qdd = inputs.joint_qdd
+        if self._stiffness_is_live:
+            self._mf_input.stiffness = inputs.stiffness
+        if self._damping_is_live:
+            self._mf_input.damping = inputs.damping
 
         self._model_free.compute(inputs=self._mf_input, outputs=outputs, dt=dt)
