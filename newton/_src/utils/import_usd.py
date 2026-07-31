@@ -958,15 +958,12 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
-            mesh.texture = None
-        if material_props.get("color") is not None and mesh.texture is None:
-            mesh.color = material_props["color"]
-        elif mesh.texture is not None:
-            # A textured mesh with no scalar color must use a white base so the
-            # default per-shape palette color does not tint the texture (matches
-            # the material-subset path in _make_visual_submesh).
+            logger.info("Mesh %s has a texture but no UVs; texture will use projected UVs.", path_name)
+        if mesh.texture is not None:
+            # The texture provides albedo, so avoid tinting it with a scalar color.
             mesh.color = (1.0, 1.0, 1.0)
+        elif material_props.get("color") is not None:
+            mesh.color = material_props["color"]
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -1070,14 +1067,16 @@ def parse_usd(
         if texture is not None:
             submesh.texture = texture
         if submesh.texture is not None and submesh.uvs is None:
-            logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
-            submesh.texture = None
+            logger.info(
+                "Mesh material subset %s has a texture but no UVs; texture will use projected UVs.",
+                path_name,
+            )
 
         color = material_props.get("color")
-        if color is not None:
-            submesh.color = color
-        elif submesh.texture is not None:
+        if submesh.texture is not None:
             submesh.color = (1.0, 1.0, 1.0)
+        elif color is not None:
+            submesh.color = color
         if material_props.get("roughness") is not None:
             submesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -4864,6 +4863,36 @@ def parse_usd(
             continue
         coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0", default=0.0)
         coef1 = usd.get_attribute(joint_prim, "newton:mimicCoef1", default=1.0)
+        # NewtonMimicAPI documents newton:mimicCoef0 in the follower's position units,
+        # which is degrees for a single angular DOF. Newton mimic constraints operate on
+        # joint coordinates, so such a follower needs radians. coef1 is dimensionless.
+        #
+        # Classify from the authored USD prim rather than builder.joint_type: several
+        # single-DOF prims sharing a body pair are merged into one D6 (see
+        # parse_merged_joints), which would otherwise misread an angular follower.
+        follower_is_revolute = joint_prim.IsA(UsdPhysics.RevoluteJoint)
+        follower_is_prismatic = joint_prim.IsA(UsdPhysics.PrismaticJoint)
+        if follower_is_revolute:
+            coef0 *= DegreesToRadian
+        elif not follower_is_prismatic:
+            # Spherical and D6 followers hold more than one DOF, and a ball joint's
+            # coordinates are a quaternion rather than a scalar angle, so a single offset
+            # has no defined unit. NewtonMimicAPI says as much: multi-DOF behavior is
+            # undefined. Pass the value through and say so.
+            warnings.warn(
+                f"NewtonMimicAPI on {joint_path}: newton:mimicCoef0 has no defined unit for a "
+                f"{joint_prim.GetTypeName()} follower, which is not a single-DOF joint. Using the "
+                f"authored value unconverted; the offset is applied to every DOF.",
+                stacklevel=2,
+            )
+        # Independent of units: a single-DOF prim merged into a D6 is constrained on every
+        # axis of that joint, not only the one the API was authored on.
+        if (follower_is_revolute or follower_is_prismatic) and builder.joint_type[joint_idx] == JointType.D6:
+            warnings.warn(
+                f"NewtonMimicAPI on {joint_path}: follower was merged into a multi-DOF joint, so the "
+                f"mimic constraint applies to every DOF of that joint, not only the authored axis.",
+                stacklevel=2,
+            )
         leader_idx = path_joint_map[leader_path_str]
         builder.add_constraint_mimic(
             joint0=joint_idx,

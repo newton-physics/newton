@@ -22,6 +22,7 @@ from ...sim import (
     State,
     StateFlags,
 )
+from ...sim.collide import _count_soft_particle_rigid_contact_pairs
 from ...utils import is_graph_capture_allocation_enabled
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
@@ -133,9 +134,13 @@ class SolverVBD(SolverBase, CouplingInterface):
         See :ref:`Joint feature support` for the full comparison across solvers.
 
     Buffer sizing:
-        SolverVBD pre-allocates contact state from capacities populated by
-        :class:`~newton.CollisionPipeline` when available; otherwise, the first
-        :meth:`step` lazily sizes buffers from ``Contacts``. During graph capture,
+        Body-body contact state is pre-allocated from ``model.rigid_contact_max`` when a
+        :class:`~newton.CollisionPipeline` has already published it and this solver owns the
+        rigid system. Body-particle contact state is pre-sized from a world-aware
+        particle-shape pair count, which excludes the
+        ``enable_rigid_soft_full_surface_contact`` edge/face headroom. Both grow from
+        ``Contacts`` on the first :meth:`step`, and the rigid contact force outputs grow in
+        :meth:`collect_rigid_contact_forces`. During graph capture,
         ordinary lazy resizing is supported on CPU and on CUDA with Warp's
         stream-ordered memory pool enabled; otherwise the solver raises with
         guidance to pre-size before capture. Rigid contact history is
@@ -815,7 +820,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Zero-length body poses for static-shape contact kernels when State.body_q is absent.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
         if model.particle_count > 0 and model.shape_count > 0:
-            self._init_body_particle_contact_state(model.shape_count * model.particle_count)
+            # Not shape_count * particle_count: that counts cross-world pairs, so it is quadratic in
+            # world count and can exceed Warp's int32 array shape limit. A hint only -- the first step
+            # grows this to contacts.soft_contact_max, raising if capture cannot allocate.
+            self._init_body_particle_contact_state(_count_soft_particle_rigid_contact_pairs(model))
 
         # Kinematic body support: create effective inv_mass / inv_inertia arrays
         # with kinematic bodies zeroed out.
@@ -1173,9 +1181,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             raise RuntimeError(
                 f"SolverVBD {name} buffer needs to grow from {current} to {required} "
                 "during graph capture, but allocation during capture is not enabled on this device. "
-                "Pre-size before capture by constructing CollisionPipeline before SolverVBD, "
-                "passing explicit rigid_contact_max/soft_contact_max to CollisionPipeline, or running one "
-                "uncaptured step/force-collection pass."
+                "Run one uncaptured step (or force-collection pass) before capture so the contact "
+                "buffers are sized for the scene, or enable Warp's stream-ordered memory pool on this device. "
+                "Rigid buffers can also be pre-sized by constructing CollisionPipeline before SolverVBD, "
+                "which publishes model.rigid_contact_max; there is no equivalent for body-particle contacts."
             )
 
     def _refresh_cable_rest_bend_twist_cache(self) -> None:
@@ -1873,10 +1882,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         Args:
             state: The simulation state to reset (modified in place).
             world_mask: One-dimensional Warp boolean mask on the solver device.
-                Shape ``(world_count,)`` selects local worlds only. Shape
-                ``(world_count + 1,)`` additionally uses the final entry for
-                entities not assigned to a world (``world == -1``). ``None``
-                selects all local and unassigned entities.
+                Shape ``(world_count + 1,)``, with the final entry selecting
+                entities in global world ``-1``. ``None`` selects all local and
+                global entities. Passing the deprecated shape ``(world_count,)``
+                selects local worlds only and leaves global entities unselected.
             flags: :class:`~newton.StateFlags` (or ``int``) selecting which body
                 fields to copy from the model defaults. VBD honors
                 :attr:`~newton.StateFlags.BODY_Q` and
@@ -1885,16 +1894,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if state is None:
             raise ValueError("'state' argument is required.")
         model = self.model
-        if world_mask is not None:
-            if not isinstance(world_mask, wp.array) or world_mask.ndim != 1 or world_mask.dtype != wp.bool:
-                raise ValueError("world_mask must be a one-dimensional Warp boolean array.")
-            mask_length = world_mask.shape[0]
-            if mask_length not in (model.world_count, model.world_count + 1):
-                raise ValueError(
-                    f"world_mask has length {mask_length}, expected {model.world_count} or {model.world_count + 1}."
-                )
-            if world_mask.device != self.device:
-                raise ValueError(f"world_mask is on device {world_mask.device}, expected solver device {self.device}.")
+        world_mask = self._normalize_reset_world_mask(world_mask)
 
         flags_value = int(StateFlags.ALL if flags is None else flags)
 

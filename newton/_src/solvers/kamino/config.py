@@ -781,14 +781,6 @@ class DVISolverConfig:
     A container to hold configurations for the DVI forward dynamics solver.
     """
 
-    max_iterations: int = 100
-    """
-    Maximum projected Gauss-Seidel iterations for the all-constraint
-    fallback path. The direct bilateral block path is controlled by
-    `block_iterations` and `contact_iterations`. Must be greater than zero.
-    Defaults to `100`.
-    """
-
     tolerance: float = 1e-5
     """
     The convergence tolerance on the projected update size.
@@ -807,22 +799,24 @@ class DVISolverConfig:
     Must be in the range `(0, 2]`. Defaults to `1.0`.
     """
 
-    block_iterations: int = 32
+    max_alternating_iterations: int = 20
     """
-    Number of outer DVI block iterations alternating direct bilateral solves
-    with projected inequality solves. Must be greater than zero. Defaults to `32`.
+    Maximum number of outer DVI iterations alternating direct bilateral
+    solves with projected inequality solves. Must be greater than zero.
+    This schedule is also used when no bilateral constraints are present;
+    in that case, the bilateral solve is skipped. Defaults to `20`.
     """
 
-    contact_iterations: int = 4
+    inequality_sweeps_per_iteration: int = 1
     """
     Number of projected Gauss-Seidel sweeps used for unilateral inequalities
-    during each DVI block iteration. Contacts use graph-colored sweeps on CUDA.
-    Must be greater than zero. Defaults to `4`.
+    during each alternating DVI iteration. Contacts use graph-colored sweeps
+    on CUDA. Must be greater than zero. Defaults to `1`.
     """
 
-    bilateral_solve_period: int = 1
+    bilateral_solve_interval: int = 1
     """
-    Number of DVI block iterations between repeated direct bilateral solves.
+    Number of alternating DVI iterations between repeated direct bilateral solves.
     A value of `1` re-solves after every projected inequality block, preserving
     the standard direct-block schedule. Must be greater than zero. Defaults to `1`.
     """
@@ -839,24 +833,6 @@ class DVISolverConfig:
     """
     Additional keyword arguments passed to the bilateral linear solver.
     Defaults to an empty dictionary.
-    """
-
-    contact_jacobi_omega: float = 0.3
-    """
-    Step size for contact Jacobi updates and block-preconditioned contact
-    updates. Must be in the range `(0, 2]`. Defaults to `0.3`.
-    """
-
-    contact_jacobi_relaxation: float = 0.9
-    """
-    Solution mixing factor for contact Jacobi updates and block-preconditioned
-    contact updates. Must be in the range `(0, 1]`. Defaults to `0.9`.
-    """
-
-    contact_block_preconditioner: bool = False
-    """
-    Whether to use a full 3x3 contact diagonal block preconditioner for DVI
-    projected contact updates. Defaults to `False`.
     """
 
     warmstart_mode: Literal["none", "internal", "containers"] = "containers"
@@ -897,9 +873,9 @@ class DVISolverConfig:
         cfg = DVISolverConfig(**kwargs)
         kamino_attrs = getattr(model, "kamino", None)
         if kamino_attrs is not None and hasattr(kamino_attrs, "max_solver_iterations"):
-            max_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
-            if max_iterations >= 0:
-                cfg.max_iterations = max_iterations
+            max_alternating_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
+            if max_alternating_iterations >= 0:
+                cfg.max_alternating_iterations = max_alternating_iterations
         cfg.validate()
         return cfg
 
@@ -909,31 +885,29 @@ class DVISolverConfig:
         from ._src.solvers.common import WarmStartMode  # noqa: PLC0415
         from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
 
-        if self.max_iterations <= 0:
-            raise ValueError(f"Invalid maximum iterations: {self.max_iterations}. Must be a positive integer.")
         if self.tolerance < 0.0:
             raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be non-negative.")
         if self.regularization <= 0.0:
             raise ValueError(f"Invalid regularization: {self.regularization}. Must be greater than zero.")
         if self.omega <= 0.0 or self.omega > 2.0:
             raise ValueError(f"Invalid omega: {self.omega}. Must be in the range (0, 2].")
-        if self.block_iterations <= 0:
-            raise ValueError(f"Invalid block iterations: {self.block_iterations}. Must be a positive integer.")
-        if self.contact_iterations <= 0:
-            raise ValueError(f"Invalid contact iterations: {self.contact_iterations}. Must be a positive integer.")
-        if self.bilateral_solve_period <= 0:
+        if self.max_alternating_iterations <= 0:
             raise ValueError(
-                f"Invalid bilateral solve period: {self.bilateral_solve_period}. Must be a positive integer."
+                f"Invalid maximum alternating iterations: {self.max_alternating_iterations}. "
+                "Must be a positive integer."
+            )
+        if self.inequality_sweeps_per_iteration <= 0:
+            raise ValueError(
+                f"Invalid inequality sweeps per iteration: {self.inequality_sweeps_per_iteration}. "
+                "Must be a positive integer."
+            )
+        if self.bilateral_solve_interval <= 0:
+            raise ValueError(
+                f"Invalid bilateral solve interval: {self.bilateral_solve_interval}. Must be a positive integer."
             )
         if self.bilateral_solver_type not in {"LLTB", "LLTBRCM"}:
             raise ValueError(
                 f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM']."
-            )
-        if self.contact_jacobi_omega <= 0.0 or self.contact_jacobi_omega > 2.0:
-            raise ValueError(f"Invalid contact Jacobi omega: {self.contact_jacobi_omega}. Must be in the range (0, 2].")
-        if self.contact_jacobi_relaxation <= 0.0 or self.contact_jacobi_relaxation > 1.0:
-            raise ValueError(
-                f"Invalid contact Jacobi relaxation: {self.contact_jacobi_relaxation}. Must be in the range (0, 1]."
             )
         WarmStartMode.from_string(self.warmstart_mode)
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
