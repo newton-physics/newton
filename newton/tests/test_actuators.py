@@ -376,6 +376,48 @@ class TestControllerNeuralMLP(unittest.TestCase):
             msg="history should contain pos error from current step",
         )
 
+    def test_velocity_input_is_raw_joint_velocity(self):
+        """Network receives raw joint velocity, not velocity error (target_vel must not affect it)."""
+        weights = np.array([[0.0, 1.0]], dtype=np.float32)  # output = velocity feature
+        bias = np.zeros((1,), dtype=np.float32)
+        path = self._save_mlp(weights, bias)
+        n = 1
+        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+        state_b = ctrl.state(n, self.device)
+
+        q, qd = 0.5, 2.0
+        target_q, target_qd = q, 5.0  # zero pos error; target_qd must not enter the network input
+        expected = weights[0, 0] * (target_q - q) + weights[0, 1] * qd + bias[0]
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+        ctrl.compute(
+            wp.array([q], dtype=wp.float32, device=self.device),
+            wp.array([qd], dtype=wp.float32, device=self.device),
+            wp.array([target_q], dtype=wp.float32, device=self.device),
+            wp.array([target_qd], dtype=wp.float32, device=self.device),
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        self.assertAlmostEqual(forces.numpy()[0], expected, places=3, msg="input must be joint velocity, not vel error")
+
+        ctrl.update_state(state_a, state_b)
+        self.assertAlmostEqual(
+            float(state_b.vel_history.numpy()[0, 0]),
+            qd,
+            places=4,
+            msg="history should contain raw joint velocity from current step",
+        )
+
     def test_metadata_scales(self):
         """Metadata effort_scale is applied to the network output."""
         weights = np.zeros((1, 2), dtype=np.float32)
@@ -1443,6 +1485,23 @@ class TestActuatorBuilder(unittest.TestCase):
 class TestActuatorSelectionAPI(unittest.TestCase):
     """Tests for actuator parameter access via ArticulationView."""
 
+    def build_actuator_view(self):
+        single_world_builder = newton.ModelBuilder()
+        body = single_world_builder.add_link()
+        joint = single_world_builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        single_world_builder.add_articulation([joint], label="robot")
+        single_world_builder.add_actuator(
+            ControllerPD,
+            index=single_world_builder.joint_qd_start[joint],
+            kp=100.0,
+        )
+
+        builder = newton.ModelBuilder()
+        builder.replicate(single_world_builder, 2)
+        model = builder.finalize()
+        view = ArticulationView(model, "robot")
+        return model.actuators[0], view
+
     def run_test_actuator_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="myart">
@@ -1635,6 +1694,25 @@ class TestActuatorSelectionAPI(unittest.TestCase):
     def test_actuator_selection_two_per_view_with_mask(self):
         self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
 
+    def test_set_actuator_parameter_rejects_invalid_masks_before_launch(self):
+        actuator, view = self.build_actuator_view()
+        values = wp.ones((view.world_count, 1), dtype=wp.float32, device=view.device)
+
+        invalid_masks = (
+            (wp.ones((view.world_count, 1), dtype=wp.bool, device=view.device), "mask shape"),
+            (wp.ones(view.world_count, dtype=wp.int32, device=view.device), "Boolean mask"),
+        )
+        if wp.is_cuda_available():
+            other_device = "cpu" if view.device.is_cuda else "cuda:0"
+            invalid_masks += ((wp.ones(view.world_count, dtype=wp.bool, device=other_device), "device"),)
+
+        for mask, message in invalid_masks:
+            with self.subTest(shape=mask.shape, dtype=mask.dtype, device=mask.device):
+                with patch.object(wp, "launch") as launch:
+                    with self.assertRaisesRegex(ValueError, message):
+                        view.set_actuator_parameter(actuator, actuator.controller, "kp", values, mask=mask)
+                    launch.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # 7. State reset (masked and full)
@@ -1753,12 +1831,34 @@ class TestStateReset(unittest.TestCase):
         self.assertTrue(all(v > 0 for v in integral_before), "integrals should have accumulated")
 
         mask = wp.array([True, False, True], dtype=wp.bool, device=device)
-        state_0.reset(mask)
+        with patch("newton._src.actuators.controllers.controller_pid.wp.launch", wraps=wp.launch) as launch:
+            state_0.reset(mask)
+
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.kwargs["device"], state_0.integral.device)
 
         integral_after = state_0.integral.numpy()
         self.assertAlmostEqual(integral_after[0], 0.0, places=6, msg="DOF 0 should be reset")
         self.assertAlmostEqual(integral_after[1], integral_before[1], places=6, msg="DOF 1 should be untouched")
         self.assertAlmostEqual(integral_after[2], 0.0, places=6, msg="DOF 2 should be reset")
+
+    def test_pid_masked_reset_rejects_invalid_mask(self):
+        state = ControllerPID.State(integral=wp.zeros(3, dtype=wp.float32, device="cpu"))
+
+        with self.assertRaisesRegex(ValueError, "one-dimensional Boolean array"):
+            state.reset(wp.zeros(3, dtype=wp.int32, device="cpu"))
+        with self.assertRaisesRegex(ValueError, "one-dimensional Boolean array"):
+            state.reset(wp.zeros((1, 3), dtype=wp.bool, device="cpu"))
+        with self.assertRaisesRegex(ValueError, r"mask length \(2\) must match integral length \(3\)"):
+            state.reset(wp.zeros(2, dtype=wp.bool, device="cpu"))
+
+    @unittest.skipUnless(wp.get_cuda_device_count() > 0, "CUDA device required")
+    def test_pid_masked_reset_rejects_wrong_device(self):
+        state = ControllerPID.State(integral=wp.zeros(3, dtype=wp.float32, device="cuda:0"))
+        mask = wp.zeros(3, dtype=wp.bool, device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "mask device .* must match integral device"):
+            state.reset(mask)
 
     def test_actuator_composed_reset(self):
         """Actuator.State.reset delegates to both delay and controller sub-states."""

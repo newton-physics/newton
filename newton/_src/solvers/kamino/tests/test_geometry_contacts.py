@@ -27,6 +27,8 @@ from newton._src.solvers.kamino._src.geometry.contacts import (
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
+_NEWTON_CONTACT_CAPACITY = 64
+
 ###
 # Builders
 ###
@@ -186,6 +188,12 @@ def build_dynamic_static_sphere_scene(
     builder.add_shape_sphere(-1, radius=r, cfg=no_gap)
     return builder
 
+
+###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 ###
 # Kernels
@@ -652,7 +660,12 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        collision_pipeline = newton.CollisionPipeline(
+            model,
+            rigid_contact_max=_NEWTON_CONTACT_CAPACITY,
+        )
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         return model, state, contacts
 
     @staticmethod
@@ -730,7 +743,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         self.assertGreater(nc, 0, "Newton collision detection must produce contacts")
         self._seed_constant_linear_force(newton_contacts, f_world)
 
-        kamino_out = ContactsKamino(capacity=nc + 16, device=self.default_device)
+        kamino_out = ContactsKamino(capacity=newton_contacts.rigid_contact_max, device=self.default_device)
         convert_contacts_newton_to_kamino(model, state, newton_contacts, kamino_out, convert_forces=True)
 
         nc_kamino = int(kamino_out.model_active_contacts.numpy()[0])
@@ -790,7 +803,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         nc = int(newton_contacts_orig.rigid_contact_count.numpy()[0])
         self.assertGreater(nc, 0)
 
-        kamino = ContactsKamino(capacity=nc + 16, device=self.default_device)
+        kamino = ContactsKamino(capacity=newton_contacts_orig.rigid_contact_max, device=self.default_device)
         convert_contacts_newton_to_kamino(model, state, newton_contacts_orig, kamino)
 
         nc_kamino = int(kamino.model_active_contacts.numpy()[0])
@@ -893,7 +906,11 @@ class TestGeometryContactConversions(unittest.TestCase):
         expected_torque = self._compute_expected_existing_torque(model, state, newton_contacts, f_world)
 
         # N->K with remappable=True so the K->N existing path has remap data.
-        kamino = ContactsKamino(capacity=nc + 16, device=self.default_device, remappable=True)
+        kamino = ContactsKamino(
+            capacity=newton_contacts.rigid_contact_max,
+            device=self.default_device,
+            remappable=True,
+        )
         convert_contacts_newton_to_kamino(model, state, newton_contacts, kamino, convert_forces=True)
         nc_kamino = int(kamino.model_active_contacts.numpy()[0])
         self.assertGreater(nc_kamino, 0)
@@ -967,7 +984,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         self.assertGreater(nc, 0)
         self._seed_constant_linear_force(contacts, f_world)
 
-        kamino = ContactsKamino(capacity=nc + 16, device=self.default_device)
+        kamino = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
         convert_contacts_newton_to_kamino(model, state, contacts, kamino, convert_forces=True)
         nc_kamino = int(kamino.model_active_contacts.numpy()[0])
         self.assertGreater(nc_kamino, 0)
@@ -1007,7 +1024,11 @@ class TestGeometryContactConversions(unittest.TestCase):
         self._seed_constant_linear_force(contacts, f_world)
         expected_torque = self._compute_expected_existing_torque(model, state, contacts, f_world)
 
-        kamino = ContactsKamino(capacity=nc + 16, device=self.default_device, remappable=True)
+        kamino = ContactsKamino(
+            capacity=contacts.rigid_contact_max,
+            device=self.default_device,
+            remappable=True,
+        )
         convert_contacts_newton_to_kamino(model, state, contacts, kamino, convert_forces=True)
         nc_kamino = int(kamino.model_active_contacts.numpy()[0])
         self.assertGreater(nc_kamino, 0)
@@ -1128,13 +1149,16 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        capacity_per_world = [9 + 10, 9 + 10, 4 + 10]
+        collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=sum(capacity_per_world))
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         nc_orig = int(contacts.rigid_contact_count.numpy()[0])
         self.assertEqual(nc_orig, 9 + 9 + 4, f"Expected 22 contacts (9+9+4), got {nc_orig}")
 
         self._seed_constant_linear_force(contacts, f_world)
 
-        kamino_out = ContactsKamino(capacity=nc_orig + 32, device=self.default_device)
+        kamino_out = ContactsKamino(capacity=capacity_per_world, device=self.default_device)
         convert_contacts_newton_to_kamino(model, state, contacts, kamino_out, convert_forces=True)
         nc_kamino = int(kamino_out.model_active_contacts.numpy()[0])
         self.assertGreater(nc_kamino, 0)
@@ -1202,7 +1226,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         for margin in (0.0, 0.05):
             with self.subTest(margin=margin):
                 sphere = ModelBuilder()
-                body = sphere.add_link()
+                body = sphere.add_link(xform=wp.transform(p=wp.vec3(0.0, 0.0, radius), q=wp.quat_identity()))
                 sphere.add_shape_sphere(
                     body,
                     radius=radius,
@@ -1211,7 +1235,7 @@ class TestGeometryContactConversions(unittest.TestCase):
                 joint = sphere.add_joint_free(
                     parent=-1,
                     child=body,
-                    parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, radius), q=wp.quat_identity()),
+                    parent_xform=wp.transform_identity(),
                     child_xform=wp.transform_identity(),
                 )
                 sphere.add_articulation([joint])
@@ -1223,11 +1247,13 @@ class TestGeometryContactConversions(unittest.TestCase):
 
                 state = model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                contacts = model.collide(state)
+                collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=2)
+                contacts = collision_pipeline.contacts()
+                collision_pipeline.collide(state, contacts)
                 contact_count = int(contacts.rigid_contact_count.numpy()[0])
                 self.assertEqual(contact_count, 1)
 
-                kamino_contacts = ContactsKamino(capacity=contact_count + 1, device=self.default_device)
+                kamino_contacts = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
                 convert_contacts_newton_to_kamino(model, state, contacts, kamino_contacts)
                 kamino_count = int(kamino_contacts.model_active_contacts.numpy()[0])
                 self.assertEqual(kamino_count, 1)
@@ -1271,7 +1297,11 @@ class TestGeometryContactConversions(unittest.TestCase):
         self.assertIsNone(contacts_no_force.force, "Test precondition: Contacts.force must be unallocated")
 
         # N->K without forces -> reactions remain zero.
-        kamino = ContactsKamino(capacity=nc + 16, device=self.default_device, remappable=True)
+        kamino = ContactsKamino(
+            capacity=contacts_no_force.rigid_contact_max,
+            device=self.default_device,
+            remappable=True,
+        )
         convert_contacts_newton_to_kamino(model, state, contacts_no_force, kamino)
         nc_kamino = int(kamino.model_active_contacts.numpy()[0])
         self.assertGreater(nc_kamino, 0)
@@ -1337,8 +1367,9 @@ class TestGeometryContactConversions(unittest.TestCase):
         )
         nc_nc = int(contacts_nc.rigid_contact_count.numpy()[0])
         self.assertEqual(nc_nc, 0, "Nunchaku without ground must produce no Newton contacts")
-        kamino_nc = ContactsKamino(capacity=8, device=self.default_device)
-        convert_contacts_newton_to_kamino(model_nc, state_nc, contacts_nc, kamino_nc)
+        kamino_nc = ContactsKamino(capacity=contacts_nc.rigid_contact_max, device=self.default_device)
+        with self.assertNoLogs(level="WARNING"):
+            convert_contacts_newton_to_kamino(model_nc, state_nc, contacts_nc, kamino_nc)
         self.assertEqual(int(kamino_nc.model_active_contacts.numpy()[0]), 0)
         del model_nc, state_nc, contacts_nc, kamino_nc
 
@@ -1349,7 +1380,12 @@ class TestGeometryContactConversions(unittest.TestCase):
         small_capacity = max(1, nc // 3)
         self.assertLess(small_capacity, nc)
         kamino_small = ContactsKamino(capacity=small_capacity, device=self.default_device)
-        convert_contacts_newton_to_kamino(model, state, contacts, kamino_small)
+        with self.assertLogs(level="WARNING") as logs:
+            convert_contacts_newton_to_kamino(model, state, contacts, kamino_small)
+        self.assertTrue(
+            any("active contacts may be truncated" in message for message in logs.output),
+            "An undersized Kamino contact buffer must warn about possible truncation",
+        )
         nc_small = int(kamino_small.model_active_contacts.numpy()[0])
         self.assertLessEqual(
             nc_small,
@@ -1362,7 +1398,11 @@ class TestGeometryContactConversions(unittest.TestCase):
             self.assertGreaterEqual(int(bid_AB[i, 1]), 0)
 
         # 3) Missing remap on the existing-contacts path raises.
-        kamino_no_remap = ContactsKamino(capacity=nc + 16, device=self.default_device, remappable=False)
+        kamino_no_remap = ContactsKamino(
+            capacity=contacts.rigid_contact_max,
+            device=self.default_device,
+            remappable=False,
+        )
         convert_contacts_newton_to_kamino(model, state, contacts, kamino_no_remap)
         contacts_with_force = Contacts(
             rigid_contact_max=nc + 16,
@@ -1379,6 +1419,59 @@ class TestGeometryContactConversions(unittest.TestCase):
                 clear_output=False,
                 convert_forces=True,
             )
+
+    def test_09_multi_world_per_world_capacity_not_starved(self):
+        """Preserve capacity for later worlds when earlier worlds are saturated.
+
+        The conversion must examine all Newton contact slots so a saturated
+        world cannot prevent a later world from filling its own contact cap.
+
+        Test the following regression:
+        Scanning with the lower Kamino contact capacity would miss contacts.
+        """
+        scene = ModelBuilder()
+        scene.add_ground_plane()
+        scene.add_world(build_nunchaku_scene(ground=False))
+
+        single_box = ModelBuilder()
+        body = single_box.add_link()
+        no_gap = ModelBuilder.ShapeConfig(gap=0.0)
+        single_box.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, cfg=no_gap)
+        joint = single_box.add_joint_free(
+            parent=-1,
+            child=body,
+            parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.25), q=wp.quat_identity()),
+            child_xform=wp.transform_identity(),
+        )
+        single_box.add_articulation([joint])
+        scene.add_world(single_box, xform=wp.transform(p=wp.vec3(10.0, 0.0, 0.0)))
+
+        model = scene.finalize(self.default_device)
+        self.assertEqual(model.world_count, 2)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        collision_pipeline = newton.CollisionPipeline(
+            model,
+            rigid_contact_max=_NEWTON_CONTACT_CAPACITY,
+        )
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
+
+        input_count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(input_count, 2)
+
+        kamino = ContactsKamino(capacity=[1, 1], device=self.default_device)
+        with self.assertLogs(level="WARNING") as logs:
+            convert_contacts_newton_to_kamino(model, state, contacts, kamino)
+        self.assertTrue(
+            any("active contacts may be truncated" in message for message in logs.output),
+            "An undersized per-world contact buffer must warn about possible truncation",
+        )
+
+        np.testing.assert_array_equal(kamino.world_active_contacts.numpy(), [1, 1])
+        self.assertEqual(int(kamino.model_active_contacts.numpy()[0]), 2)
+        bid_AB = kamino.bid_AB.numpy()[:2]
+        self.assertTrue(np.all(bid_AB[:, 1] >= 0))
 
 
 ###

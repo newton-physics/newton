@@ -79,12 +79,24 @@ support label matching accept one of the following:
 - A **list of integer indices** -- selects directly by index.
 - A **single string pattern** -- selects all entries whose label matches the pattern via :func:`fnmatch.fnmatch`
   (supports ``*`` and ``?`` wildcards).
-- A **list of string patterns** -- selects all entries whose label matches at least one of the patterns.
+- A **list of string patterns** -- selects all entries whose label matches at least one pattern.
+- A **compiled string regular expression** -- selects all entries whose entire label or name matches the expression via
+  :meth:`re.Pattern.fullmatch`.
 
-Examples::
+Ordinary strings always use glob syntax. Compile a pattern with :func:`re.compile` to opt into regular-expression
+syntax. Callers who want a regular expression to match a substring can add ``.*`` around that substring explicitly.
+For :class:`~newton.selection.ArticulationView`, ``pattern`` is matched against full articulation labels. Joint and
+link filters are matched against the final path component of each label.
+
+.. code-block:: python
+
+   import re
 
    # single pattern: all shapes whose label starts with "foot_"
    SensorIMU(model, sites="foot_*")
+
+   # compiled regular expression: full-match an environment and object label
+   SensorIMU(model, sites=re.compile(r"/World/envs/env_[0-9]+/imu_(left|right)"))
 
    # list of patterns: union of two groups
    SensorContact(model, sensing_shapes=["*Plate*", "*Flap*"])
@@ -148,7 +160,7 @@ Some sensors depend on extended attributes that are not allocated by default:
   ``model.state()`` calls allocate it automatically.
 - ``SensorContact`` requires ``Contacts.force`` (per-contact spatial force
   wrenches). By default it requests this from the model at construction, so
-  subsequent ``model.contacts()`` calls allocate it automatically. The solver
+  subsequent :meth:`CollisionPipeline.contacts <newton.CollisionPipeline.contacts>` calls allocate it automatically. The solver
   must also support populating contact forces.
 
 Performance Considerations

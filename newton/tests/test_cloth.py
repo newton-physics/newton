@@ -9,6 +9,7 @@ import warp as wp
 
 import newton
 from newton import ParticleFlags
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 # fmt: off
@@ -282,12 +283,12 @@ CLOTH_FACES = [
 
 # fmt: on
 class ClothSim:
-    def __init__(self, device, solver, use_cuda_graph=False, do_rendering=False, use_collision_pipeline=False):
+    def __init__(self, device, solver, use_graph=False, do_rendering=False, use_collision_pipeline=False):
         self.frame_dt = 1 / 60
         self.num_test_frames = 50
         self.iterations = 5
         self.device = device
-        self.use_cuda_graph = self.device.is_cuda and use_cuda_graph
+        self.use_graph = use_graph and is_graph_capture_allocation_enabled(self.device)
         self.builder = newton.ModelBuilder(up_axis="Y")
         self.builder.default_shape_cfg.ke = 1.0e5
         self.builder.default_shape_cfg.kd = 1.0e8 if solver == "vbd" else 1.0e3
@@ -880,7 +881,7 @@ class ClothSim:
         self.init_pos = np.array(self.state0.particle_q.numpy(), copy=True)
 
         self.graph = None
-        if self.use_cuda_graph:
+        if self.use_graph:
             with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -952,7 +953,7 @@ def compute_current_angles(model, state):
 
 
 def test_cloth_sagging(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_up_sagging_experiment()
 
     initial_pos = example.state0.particle_q.numpy().copy()
@@ -970,7 +971,7 @@ def test_cloth_sagging(test, device, solver):
 
 
 def test_cloth_bending(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_up_bending_experiment()
 
     example.run()
@@ -983,7 +984,7 @@ def test_cloth_bending(test, device, solver):
 
 
 def test_cloth_bending_non_zero_rest_angle_bending(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_up_non_zero_rest_angle_bending_experiment()
 
     example.run()
@@ -996,7 +997,7 @@ def test_cloth_bending_non_zero_rest_angle_bending(test, device, solver):
 
 
 def test_cloth_bending_consistent_angle_computation(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_up_complex_rest_angle_bending_experiment(
         tri_ke=1e2, tri_kd=0.0, edge_ke=1e-1, edge_kd=0.0, fixed_particles=[1], use_gravity=False
     )
@@ -1019,7 +1020,7 @@ def test_cloth_bending_consistent_angle_computation(test, device, solver):
 
 
 def test_cloth_bending_with_complex_rest_angles(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     tri_kd = 0.0 if solver == "vbd" else 1e-2
     edge_kd = 1e0 if solver == "vbd" else 0.0
     example.set_up_complex_rest_angle_bending_experiment(
@@ -1044,7 +1045,7 @@ def test_cloth_bending_with_complex_rest_angles(test, device, solver):
 
 # Internal forces and damping should not affect free-fall behavior.
 def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     tri_kd = 5e0 if solver == "vbd" else 1e-1
     edge_kd = 1e0 if solver == "vbd" else 1e-1
     example.set_up_complex_rest_angle_bending_experiment(
@@ -1099,7 +1100,7 @@ def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
 
 
 def test_cloth_collision(test, device, solver):
-    example = ClothSim(device, solver, use_cuda_graph=True)
+    example = ClothSim(device, solver, use_graph=True)
     example.set_collision_experiment()
 
     example.run()
@@ -1258,7 +1259,7 @@ class TestClothCollisionPipeline(unittest.TestCase):
 
 def test_cloth_collision(test, device, solver):
     """Test cloth collision using collision pipeline."""
-    example = ClothSim(device, solver, use_cuda_graph=True, use_collision_pipeline=True)
+    example = ClothSim(device, solver, use_graph=True, use_collision_pipeline=True)
     example.set_collision_experiment()
 
     example.run()

@@ -663,7 +663,6 @@ class SolverCoupledADMM(SolverCoupled):
         self._admm_particle_particle_contact_specs: list[_AdmmParticleParticleContactSpec] = []
         self._admm_collision_pipeline = None
         self._admm_internal_contacts = None
-        self._admm_particle_contact_grid = None
         self._admm_particle_contact_query_radius = 0.0
         self._entry_body_sets: dict[str, set[int]] = {}
         self._entry_particle_sets: dict[str, set[int]] = {}
@@ -1107,14 +1106,14 @@ class SolverCoupledADMM(SolverCoupled):
 
         if self._admm_particle_particle_contact_specs:
             self._validate_particle_particle_contact_specs()
-            self._admm_dynamic_pp_contact_groups = self._build_collision_particle_particle_contact_groups()
-            if self._admm_dynamic_pp_contact_groups:
-                self._admm_particle_contact_query_radius = max(
-                    group.query_radius for group in self._admm_dynamic_pp_contact_groups
-                )
-                with wp.ScopedDevice(self.model.device):
-                    self._admm_particle_contact_grid = wp.HashGrid(128, 128, 128)
-                    self._admm_particle_contact_grid.reserve(self.model.particle_count)
+            if self.model.particle_grid is not None:
+                self._admm_dynamic_pp_contact_groups = self._build_collision_particle_particle_contact_groups()
+                if self._admm_dynamic_pp_contact_groups:
+                    self._admm_particle_contact_query_radius = max(
+                        group.query_radius for group in self._admm_dynamic_pp_contact_groups
+                    )
+                    with wp.ScopedDevice(self.model.device):
+                        self.model.particle_grid.reserve(self.model.particle_count)
 
         # Eagerly allocate the internal contact buffer so it exists before any
         # CUDA graph capture. Lazy allocation during capture leaves a bogus
@@ -3039,10 +3038,11 @@ class SolverCoupledADMM(SolverCoupled):
                 )
 
         if self._admm_dynamic_pp_contact_groups:
-            self._admm_particle_contact_grid.build(
-                state_in.particle_q,
-                radius=self._admm_particle_contact_query_radius,
-            )
+            with wp.ScopedDevice(self.model.device):
+                self.model.particle_grid.build(
+                    state_in.particle_q,
+                    radius=self._admm_particle_contact_query_radius,
+                )
 
         for group in self._admm_dynamic_pp_contact_groups:
             if group.count == 0:
@@ -3094,7 +3094,7 @@ class SolverCoupledADMM(SolverCoupled):
                 particle_particle_contacts_hashgrid_kernel,
                 dim=self.model.particle_count,
                 inputs=[
-                    self._admm_particle_contact_grid.id,
+                    self.model.particle_grid.id,
                     state_in.particle_q,
                     self.model.particle_radius,
                     self.model.particle_flags,

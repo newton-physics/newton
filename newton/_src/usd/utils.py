@@ -647,6 +647,31 @@ def get_custom_attribute_values(
     return out
 
 
+def _get_tetmesh_custom_attribute_values(
+    prim: Usd.Prim,
+    custom_attributes: Sequence[ModelBuilder.CustomAttribute],
+) -> dict[str, np.ndarray]:
+    """Read builder-declared TetMesh arrays without inferring their frequency."""
+    out: dict[str, np.ndarray] = {}
+    for spec in custom_attributes:
+        usd_name = spec.usd_attribute_name
+        if not usd_name or usd_name == "*":
+            continue
+        usd_attr = prim.GetAttribute(usd_name)
+        if not usd_attr or not usd_attr.HasAuthoredValue():
+            continue
+        primvar = UsdGeom.Primvar(usd_attr)
+        value = primvar.ComputeFlattened() if primvar else usd_attr.Get()
+        if value is None:
+            continue
+        if spec.usd_value_transformer is not None:
+            value = spec.usd_value_transformer(value, {"prim": prim, "attr": spec})
+            if value is None:
+                continue
+        out[spec.key] = np.asarray(value)
+    return out
+
+
 def _newell_normal(P: np.ndarray) -> np.ndarray:
     """Newell's method for polygon normal (not normalized)."""
     x = y = z = 0.0
@@ -832,6 +857,143 @@ def _expand_indexed_primvar(
     return values[indices]
 
 
+def _split_corners_into_vertices(
+    points: np.ndarray,
+    indices: np.ndarray,
+    corner_dirs: np.ndarray,
+    corner_uvs: np.ndarray | None,
+    angle_threshold_deg: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    """Duplicate vertices whose faceVarying corners disagree in normal direction or UV.
+
+    The corners of a vertex are clustered greedily in corner order: a corner joins the
+    first cluster whose mean direction is within ``angle_threshold_deg`` and whose UV
+    matches, otherwise it starts a new cluster. Every cluster becomes one output vertex,
+    numbered by the corner that created it.
+
+    Most vertices resolve to a single cluster, which is decided for all of them at once
+    with array operations; only the vertices that fail that test run the sequential
+    clustering. A vertex whose corner directions all lie within half the threshold angle
+    of their mean lie within the full threshold of each other, so the sequential pass
+    would place every one of them in the first cluster.
+
+    A corner whose angle to the cluster mean is exactly ``angle_threshold_deg`` may fall
+    on either side of the comparison: the dot product is rounded differently depending on
+    the arithmetic used, so which cluster such a corner lands in is not defined beyond
+    "one of the clusters it is within the threshold of".
+
+    Args:
+        points: Source vertex positions, shape [vertex_count, 3].
+        indices: Face-corner vertex indices, shape [corner_count].
+        corner_dirs: Unit corner normals, shape [corner_count, 3].
+        corner_uvs: Per-corner UVs, shape [corner_count, channels], or ``None``.
+        angle_threshold_deg: Maximum angle between a corner normal and its cluster mean [deg].
+
+    Returns:
+        Split positions, the remapped corner indices, the per-vertex normals, and the
+        per-vertex UVs (``None`` when ``corner_uvs`` is ``None``).
+    """
+    corner_count = len(indices)
+    if corner_count == 0:
+        empty_uvs = None if corner_uvs is None else corner_uvs[:0]
+        return points[:0], indices.copy(), np.zeros((0, 3), dtype=np.float32), empty_uvs
+
+    cos_thresh = math.cos(math.radians(angle_threshold_deg))
+    cos_half_thresh = math.cos(math.radians(angle_threshold_deg) * 0.5)
+
+    # Group the corners by vertex; the stable sort keeps corner order inside each group.
+    order = np.argsort(indices, kind="stable")
+    grouped_vertices = indices[order]
+    grouped_dirs = corner_dirs[order]
+    grouped_uvs = None if corner_uvs is None else corner_uvs[order]
+
+    starts = np.flatnonzero(np.concatenate(([True], grouped_vertices[1:] != grouped_vertices[:-1])))
+    group_sizes = np.diff(np.append(starts, corner_count))
+    group_vertices = grouped_vertices[starts]
+    group_of_corner = np.repeat(np.arange(len(starts)), group_sizes)
+
+    # The normalized sum of a group's corner directions is the cluster mean it would end
+    # up with if every corner joined the same cluster.
+    dir_sums = np.add.reduceat(grouped_dirs, starts, axis=0)
+    dir_means = dir_sums / np.clip(np.linalg.norm(dir_sums, axis=1, keepdims=True), 1e-30, None)
+    dots = np.einsum("ij,ij->i", grouped_dirs, dir_means[group_of_corner])
+    single_cluster = np.minimum.reduceat(dots, starts) >= cos_half_thresh
+    if grouped_uvs is not None:
+        same_uv = np.all(grouped_uvs == grouped_uvs[starts][group_of_corner], axis=1)
+        single_cluster &= np.logical_and.reduceat(same_uv, starts)
+
+    # Provisional ids: the single-cluster groups first, then the sequential pass.
+    simple_groups = np.flatnonzero(single_cluster)
+    provisional_of_group = np.full(len(starts), -1, dtype=np.int64)
+    provisional_of_group[simple_groups] = np.arange(len(simple_groups))
+    provisional_of_corner = provisional_of_group[group_of_corner]
+
+    next_id = len(simple_groups)
+    split_creation: list[int] = []
+    split_vertices: list[int] = []
+    split_dir_sums: list[tuple[float, float, float]] = []
+    split_uvs: list[tuple[float, ...]] = []
+    for group in np.flatnonzero(~single_cluster):
+        begin = int(starts[group])
+        end = begin + int(group_sizes[group])
+        source_vertex = int(group_vertices[group])
+        clusters: list[list] = []
+        for corner in range(begin, end):
+            dir_x, dir_y, dir_z = (float(value) for value in grouped_dirs[corner])
+            corner_uv = None if grouped_uvs is None else tuple(grouped_uvs[corner].tolist())
+            for cluster in clusters:
+                sum_x, sum_y, sum_z = cluster[0], cluster[1], cluster[2]
+                # Scalar arithmetic rounds this dot product differently from the
+                # equivalent NumPy expression (which uses FMA and a scaled norm), so a
+                # corner sitting exactly on the threshold can cluster either way.
+                scale = max(math.sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z), 1e-30)
+                if (sum_x * dir_x + sum_y * dir_y + sum_z * dir_z) / scale < cos_thresh:
+                    continue
+                if corner_uv is not None and cluster[3] != corner_uv:
+                    continue
+                cluster[0] = sum_x + dir_x
+                cluster[1] = sum_y + dir_y
+                cluster[2] = sum_z + dir_z
+                provisional_of_corner[corner] = cluster[4]
+                break
+            else:
+                clusters.append([dir_x, dir_y, dir_z, corner_uv, next_id])
+                provisional_of_corner[corner] = next_id
+                split_creation.append(int(order[corner]))
+                split_vertices.append(source_vertex)
+                if corner_uv is not None:
+                    split_uvs.append(corner_uv)
+                next_id += 1
+        # Cluster order matches the id order assigned above.
+        split_dir_sums.extend((cluster[0], cluster[1], cluster[2]) for cluster in clusters)
+
+    creation_corners = np.concatenate([order[starts[simple_groups]], np.asarray(split_creation, dtype=np.int64)])
+    source_vertices = np.concatenate([group_vertices[simple_groups], np.asarray(split_vertices, dtype=np.int64)])
+    new_dir_sums = np.concatenate(
+        [dir_sums[simple_groups], np.asarray(split_dir_sums, dtype=np.float64).reshape(-1, 3)]
+    )
+
+    # Number the output vertices by the corner that created them, matching the order a
+    # purely sequential pass over the corners would produce.
+    final_of_provisional = np.empty(len(creation_corners), dtype=np.int64)
+    final_of_provisional[np.argsort(creation_corners, kind="stable")] = np.arange(len(creation_corners))
+    provisional_in_final_order = np.argsort(final_of_provisional, kind="stable")
+
+    new_indices = np.empty(corner_count, dtype=indices.dtype)
+    new_indices[order] = final_of_provisional[provisional_of_corner]
+    new_points = points[source_vertices[provisional_in_final_order]]
+    ordered_sums = new_dir_sums[provisional_in_final_order]
+    lengths = np.clip(np.linalg.norm(ordered_sums, axis=1, keepdims=True), 1e-30, None)
+    new_normals = (ordered_sums / lengths).astype(np.float32)
+
+    new_uvs = None
+    if grouped_uvs is not None:
+        split_uv_rows = np.asarray(split_uvs, dtype=grouped_uvs.dtype).reshape(-1, grouped_uvs.shape[1])
+        new_uvs = np.concatenate([grouped_uvs[starts[simple_groups]], split_uv_rows])[provisional_in_final_order]
+
+    return new_points, new_indices, new_normals, new_uvs
+
+
 def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool) -> np.ndarray:
     """Return flattened corner indices for fan-triangulated face-varying data."""
     counts_i32 = np.asarray(counts, dtype=np.int32)
@@ -852,9 +1014,312 @@ def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool)
     return corner_faces.reshape(-1)
 
 
+def _is_usd_url(source: str) -> bool:
+    """Return True when ``source`` is an HTTPS USD asset URL."""
+    return source.startswith("https://")
+
+
+def _open_usd_stage(source: str | os.PathLike[str]):
+    """Open a USD stage from a local path or resolved URL."""
+    if Usd is None:
+        raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).")
+
+    source_path = os.fspath(source)
+    if source_path.startswith("http://"):
+        raise ValueError("HTTP USD URLs are not supported; use HTTPS or download the asset explicitly.")
+    if _is_usd_url(source_path):
+        from ..utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
+
+        source_path = resolve_usd_from_url(source_path)
+
+    stage = Usd.Stage.Open(source_path, Usd.Stage.LoadAll)
+    if stage is None:
+        raise FileNotFoundError(f"Unable to open USD stage: {source_path}")
+    return stage
+
+
+def _get_root_prim(stage, root_path: str | None):
+    """Return the merge root prim for a stage-backed mesh load."""
+    if root_path is None or root_path == "/":
+        return stage.GetPseudoRoot()
+
+    root = stage.GetPrimAtPath(root_path)
+    if not root or not root.IsValid():
+        raise ValueError(f"USD root path '{root_path}' does not exist.")
+    return root
+
+
+def _iter_mesh_prims(root) -> list[Any]:
+    """Return all mesh prims under ``root`` in traversal order."""
+    return [prim for prim in Usd.PrimRange(root) if prim.IsA(UsdGeom.Mesh)]
+
+
+def _matrix_to_numpy(matrix) -> np.ndarray:
+    """Convert a USD matrix value into a NumPy row-vector matrix."""
+    return np.array(matrix, dtype=np.float64)
+
+
+def _relative_transform_matrix(prim, root, xform_cache) -> np.ndarray:
+    """Return ``prim`` transform relative to the selected merge ``root``."""
+    prim_world = _matrix_to_numpy(xform_cache.GetLocalToWorldTransform(prim))
+    if root.IsPseudoRoot():
+        return prim_world
+
+    root_world = _matrix_to_numpy(xform_cache.GetLocalToWorldTransform(root))
+    return prim_world @ np.linalg.inv(root_world)
+
+
+def _transform_mesh_data(mesh: Mesh, matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Apply a row-vector USD transform to mesh vertices, winding, and normals."""
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    vertices_h = np.concatenate((vertices, np.ones((len(vertices), 1), dtype=np.float64)), axis=1)
+    transformed_vertices = (vertices_h @ matrix)[:, :3].astype(np.float32)
+
+    indices = np.asarray(mesh.indices, dtype=np.int32).copy()
+    linear = matrix[:3, :3]
+    if np.linalg.det(linear) < 0.0:
+        indices = indices.reshape(-1, 3)
+        indices[:, [1, 2]] = indices[:, [2, 1]]
+        indices = indices.reshape(-1)
+
+    normals = None
+    if mesh.normals is not None:
+        try:
+            normal_matrix = np.linalg.inv(linear).T
+        except np.linalg.LinAlgError:
+            normal_matrix = None
+        if normal_matrix is not None:
+            normals = np.asarray(mesh.normals, dtype=np.float64) @ normal_matrix
+            lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+            lengths[lengths < 1e-20] = 1.0
+            normals = (normals / lengths).astype(np.float32)
+
+    return transformed_vertices, indices, normals
+
+
+def _get_mesh_from_source(
+    source,
+    *,
+    root_path: str | None,
+    load_normals: bool,
+    load_uvs: bool,
+    maxhullvert: int | None,
+    face_varying_normal_conversion: Literal["vertex_averaging", "angle_weighted", "vertex_splitting"],
+    vertex_splitting_angle_threshold_deg: float,
+    preserve_facevarying_uvs: bool,
+    compute_inertia: bool,
+    apply_stage_units: bool,
+) -> Mesh:
+    """Load and merge mesh prims from a USD stage, path, URL, or prim subtree."""
+    if Usd is None or UsdGeom is None:
+        raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).")
+    if preserve_facevarying_uvs:
+        raise ValueError(
+            "preserve_facevarying_uvs is not supported for merged USD sources; "
+            "load a single mesh prim with return_uv_indices=True or use preserve_facevarying_uvs=False."
+        )
+
+    if isinstance(source, str | os.PathLike):
+        stage = _open_usd_stage(source)
+        root = _get_root_prim(stage, root_path)
+    elif isinstance(source, Usd.Stage):
+        stage = source
+        root = _get_root_prim(stage, root_path)
+    elif isinstance(source, Usd.Prim):
+        stage = source.GetStage()
+        root = source if root_path is None else _get_root_prim(stage, root_path)
+    else:
+        raise TypeError(
+            f"get_mesh() expected a USD prim, USD stage, filesystem path, or URL; received {type(source).__name__}."
+        )
+
+    mesh_prims = _iter_mesh_prims(root)
+    if not mesh_prims:
+        raise ValueError(f"No UsdGeom.Mesh prims found under '{root.GetPath()}'.")
+
+    linear_unit = 1.0
+    if apply_stage_units and UsdGeom.StageHasAuthoredMetersPerUnit(stage):
+        linear_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    vertices_parts = []
+    indices_parts = []
+    normals_parts = []
+    uvs_parts = []
+    vertex_offset = 0
+    all_have_normals = True
+    all_have_uvs = True
+    source_meshes = []
+
+    for prim in mesh_prims:
+        source_mesh = get_mesh(
+            prim,
+            load_normals=load_normals,
+            load_uvs=load_uvs,
+            maxhullvert=maxhullvert,
+            face_varying_normal_conversion=face_varying_normal_conversion,
+            vertex_splitting_angle_threshold_deg=vertex_splitting_angle_threshold_deg,
+            preserve_facevarying_uvs=preserve_facevarying_uvs,
+            compute_inertia=False,
+        )
+        source_meshes.append(source_mesh)
+        matrix = _relative_transform_matrix(prim, root, xform_cache)
+        vertices, indices, normals = _transform_mesh_data(source_mesh, matrix)
+
+        vertices_parts.append(vertices)
+        indices_parts.append(indices + vertex_offset)
+        vertex_offset += len(vertices)
+
+        if normals is None:
+            all_have_normals = False
+        else:
+            normals_parts.append(normals)
+
+        if source_mesh.uvs is None:
+            all_have_uvs = False
+        else:
+            uvs_parts.append(np.asarray(source_mesh.uvs, dtype=np.float32))
+
+    vertices = np.concatenate(vertices_parts, axis=0)
+    if linear_unit != 1.0:
+        vertices *= linear_unit
+    indices = np.concatenate(indices_parts, axis=0)
+    normals = np.concatenate(normals_parts, axis=0) if all_have_normals else None
+    uvs = np.concatenate(uvs_parts, axis=0) if all_have_uvs else None
+
+    material_source = source_meshes[0] if len(source_meshes) == 1 else None
+    return Mesh(
+        vertices,
+        indices,
+        normals=normals,
+        uvs=uvs,
+        maxhullvert=maxhullvert,
+        compute_inertia=compute_inertia,
+        color=material_source.color if material_source is not None else None,
+        texture=material_source.texture if material_source is not None else None,
+        metallic=material_source.metallic if material_source is not None else None,
+        roughness=material_source.roughness if material_source is not None else None,
+    )
+
+
+def _material_surface_shader(material: UsdShade.Material | None) -> UsdShade.Shader | None:
+    """Return the surface shader driving a material (UsdPreviewSurface or MDL)."""
+    if not material:
+        return None
+    surface_output = material.GetSurfaceOutput() or material.GetOutput("surface") or material.GetOutput("mdl:surface")
+    if surface_output:
+        source = surface_output.GetConnectedSource()
+        if source:
+            return UsdShade.Shader(source[0].GetPrim())
+    for child in material.GetPrim().GetChildren():
+        if child.IsA(UsdShade.Shader):
+            return UsdShade.Shader(child)
+    return None
+
+
+def _uvtexture_reader_varname(texture_shader: UsdShade.Shader) -> str | None:
+    """Return the primvar name a ``UsdUVTexture`` reads via its ``st`` -> ``UsdPrimvarReader_float2``."""
+    st_input = texture_shader.GetInput("st")
+    source = st_input.GetConnectedSource() if st_input else None
+    if not source:
+        return None
+    reader = UsdShade.Shader(source[0].GetPrim())
+    varname = reader.GetInput("varname")
+    if not varname:
+        return None
+    value = varname.Get()
+    if value is None:
+        try:
+            attrs = UsdShade.Utils.GetValueProducingAttributes(varname)
+        except Exception:
+            attrs = ()
+        value = attrs[0].Get() if attrs else None
+    return str(value) if value else None
+
+
+def _uv_primvar_name_from_shader(shader: UsdShade.Shader | None) -> str | None:
+    """Resolve the texcoord primvar name a shader's base-color texture reads, or ``None``.
+
+    - ``UsdPreviewSurface``: follow the base-color ``UsdUVTexture``'s ``st`` input to its
+      ``UsdPrimvarReader_float2`` and read ``inputs:varname``.
+    - ``OmniPBR`` and other MDL shaders: ``st_<inputs:uv_space_index>``.
+    """
+    if shader is None:
+        return None
+    try:
+        shader_id = shader.GetIdAttr().Get()
+    except Exception:
+        shader_id = None
+    if shader_id == "UsdPreviewSurface":
+        for color_name in ("baseColor", "diffuseColor"):
+            color_input = shader.GetInput(color_name)
+            source = color_input.GetConnectedSource() if color_input else None
+            if not source:
+                continue
+            texture = UsdShade.Shader(source[0].GetPrim())
+            if texture.GetIdAttr().Get() == "UsdUVTexture":
+                name = _uvtexture_reader_varname(texture)
+                if name:
+                    return name
+    uv_index_input = shader.GetInput("uv_space_index")
+    if uv_index_input:
+        value = uv_index_input.Get()
+        if value is not None:
+            return f"st_{int(value)}"
+    return None
+
+
+def _resolve_material_uv_primvar_name(prim: Usd.Prim) -> str | None:
+    """Resolve the texcoord primvar name from the material(s) bound to a mesh or its subsets."""
+    candidate_prims = [prim]
+    try:
+        subsets = UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+        candidate_prims += [subset.GetPrim() for subset in subsets]
+    except Exception:
+        pass
+    for candidate in candidate_prims:
+        name = _uv_primvar_name_from_shader(_material_surface_shader(_get_bound_material(candidate)))
+        if name:
+            return name
+    return None
+
+
+def _find_uv_primvar(prim: Usd.Prim):
+    """Return a mesh's texture-coordinate primvar, or ``None``.
+
+    The primvar name is resolved from the bound material's shader network — the
+    ``UsdPreviewSurface`` texture reader's ``varname`` or an MDL/OmniPBR
+    ``uv_space_index`` — because a mesh may carry several UV sets and only the
+    material identifies the correct one. Falls back to the conventional ``st``
+    primvar, then to the first ``float2``/``texCoord2f`` primvar named ``st*``/``uv*``.
+    """
+    api = UsdGeom.PrimvarsAPI(prim)
+
+    resolved = _resolve_material_uv_primvar_name(prim)
+    if resolved:
+        primvar = api.GetPrimvar(resolved)
+        if primvar and primvar.HasValue():
+            return primvar
+
+    primvar = api.GetPrimvar("st")
+    if primvar and primvar.HasValue():
+        return primvar
+
+    fallback = None
+    for candidate in api.GetPrimvarsWithValues():
+        if candidate.GetTypeName() not in (Sdf.ValueTypeNames.TexCoord2fArray, Sdf.ValueTypeNames.Float2Array):
+            continue
+        name = candidate.GetPrimvarName().lower()
+        if name.startswith("st"):
+            return candidate
+        if (name.startswith("uv") or name == "map1") and fallback is None:
+            fallback = candidate
+    return fallback
+
+
 @overload
 def get_mesh(
-    prim: Usd.Prim,
+    source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -864,12 +1329,15 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: Literal[False] = False,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
 ) -> Mesh: ...
 
 
 @overload
 def get_mesh(
-    prim: Usd.Prim,
+    source: Usd.Prim,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -879,11 +1347,54 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: Literal[True] = True,
+    root_path: None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+) -> tuple[Mesh, np.ndarray | None]: ...
+
+
+@overload
+def get_mesh(
+    source: None = None,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: Literal[False] = False,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    *,
+    prim: Usd.Prim,
+) -> Mesh: ...
+
+
+@overload
+def get_mesh(
+    source: None = None,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: Literal[True] = True,
+    root_path: None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    *,
+    prim: Usd.Prim,
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
 
 def get_mesh(
-    prim: Usd.Prim,
+    source: Usd.Prim | Usd.Stage | str | os.PathLike[str] | None = None,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -893,9 +1404,19 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: bool = False,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    *,
+    prim: Usd.Prim | None = None,
 ) -> Mesh | tuple[Mesh, np.ndarray | None]:
     """
-    Load a triangle mesh from a USD prim that has the ``UsdGeom.Mesh`` schema.
+    Load a triangle mesh from a USD mesh prim, stage, file path, or URL.
+
+    When ``source`` is a mesh prim, the mesh is loaded in the prim's local
+    coordinates. When ``source`` is a stage, path, URL, or non-mesh prim, all
+    ``UsdGeom.Mesh`` prims under ``root_path`` are merged into one
+    :class:`newton.Mesh` with authored transforms applied relative to that root.
 
     Example:
 
@@ -917,7 +1438,8 @@ def get_mesh(
             assert len(demo_mesh.normals) == 6102
 
     Args:
-        prim: The USD prim to load the mesh from.
+        source: USD mesh prim, stage, file path, or URL to load the mesh from.
+        prim: Legacy keyword alias for ``source`` when loading a USD prim.
         load_normals: Whether to load the normals.
         load_uvs: Whether to load the UVs.
         maxhullvert: The maximum number of vertices for the convex hull approximation.
@@ -950,14 +1472,61 @@ def get_mesh(
             where ``uv_indices`` is a flattened triangle index buffer for the
             UVs when available. For faceVarying UVs and
             ``preserve_facevarying_uvs=True``, these indices reference the
-            face-varying UV array.
+            face-varying UV array. Only supported for a single
+            ``UsdGeom.Mesh`` prim when ``root_path`` is None.
+        root_path: USD prim path to use as the merge root for stage, file path,
+            URL, or non-mesh prim sources. Defaults to the stage pseudo-root for
+            stages and paths, or the provided prim for non-mesh prim sources.
+        compute_inertia: If True, compute mass properties for the returned
+            :class:`newton.Mesh`.
+        apply_stage_units: If True, convert merged stage, file path, URL, or
+            non-mesh prim sources from authored USD distance units to meters.
+            Single mesh prim sources keep their authored coordinates for
+            backward compatibility unless ``root_path`` is provided.
 
     Returns:
         newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
         ``return_uv_indices`` is True.
     """
+    if prim is not None:
+        if source is not None:
+            raise TypeError("get_mesh() received both 'source' and legacy 'prim'; pass only one.")
+        source = prim
+    elif source is None:
+        raise TypeError("get_mesh() missing required argument: 'source'.")
+
     if maxhullvert is None:
         maxhullvert = Mesh.MAX_HULL_VERTICES
+
+    should_load_source = isinstance(source, str | os.PathLike) or (
+        Usd is not None
+        and (
+            isinstance(source, Usd.Stage)
+            or (isinstance(source, Usd.Prim) and (root_path is not None or not source.IsA(UsdGeom.Mesh)))
+        )
+    )
+    if should_load_source:
+        if return_uv_indices:
+            raise ValueError("return_uv_indices is only supported when loading a single UsdGeom.Mesh prim.")
+        return _get_mesh_from_source(
+            source,
+            root_path=root_path,
+            load_normals=load_normals,
+            load_uvs=load_uvs,
+            maxhullvert=maxhullvert,
+            face_varying_normal_conversion=face_varying_normal_conversion,
+            vertex_splitting_angle_threshold_deg=vertex_splitting_angle_threshold_deg,
+            preserve_facevarying_uvs=preserve_facevarying_uvs,
+            compute_inertia=compute_inertia,
+            apply_stage_units=apply_stage_units,
+        )
+
+    if Usd is not None and isinstance(source, Usd.Prim):
+        prim = source
+    else:
+        raise TypeError(
+            f"get_mesh() expected a USD prim, USD stage, filesystem path, or URL; received {type(source).__name__}."
+        )
 
     mesh = UsdGeom.Mesh(prim)
 
@@ -971,7 +1540,7 @@ def get_mesh(
     # faceVarying normal conversion, so we don't split again in the UV pass.
     did_split_vertices = False
     if load_uvs:
-        uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
+        uv_primvar = _find_uv_primvar(prim)
         if uv_primvar:
             uvs = uv_primvar.Get()
             if uvs is not None:
@@ -1041,68 +1610,33 @@ def get_mesh(
                 nlen = np.clip(nlen, 1e-30, None)
                 Ndir = Nfv / nlen
 
-                cos_thresh = np.cos(np.deg2rad(vertex_splitting_angle_threshold_deg))
+                # faceVarying UVs carry one value per corner; if the count does
+                # not match, they can't be indexed per-corner, so drop them
+                # (matching the non-splitting UV path below).
+                uvs_facevarying = uvs is not None and uvs_interpolation == UsdGeom.Tokens.faceVarying
+                if uvs_facevarying and len(uvs) != C:
+                    logger.info(
+                        "Mesh %s: UV primvar length (%d) does not match corner count (%d); dropping UVs.",
+                        prim.GetPath(),
+                        len(uvs),
+                        C,
+                    )
+                    uvs = None
+                    uvs_facevarying = False
 
-                # For each original vertex v, we'll keep a list of clusters:
-                # each cluster stores (sum_dir, count, new_vid)
-                clusters_per_v = [[] for _ in range(V)]
+                # Corners that share a smooth normal but carry different faceVarying UVs
+                # lie on a texture seam and must not be merged, or the seam's UVs would
+                # collapse onto one value.
+                if uvs is None:
+                    corner_uvs = None
+                else:
+                    corner_uvs = np.asarray(uvs).reshape(len(uvs), -1)
+                    if not uvs_facevarying:
+                        corner_uvs = corner_uvs[indices]
 
-                new_points = []
-                new_norm_sums = []  # accumulate directions per new vertex id
-                new_indices = np.empty_like(indices)
-                new_uvs = [] if uvs is not None else None
-
-                # Helper to create a new vertex clone from original v
-                def _new_vertex_from(v, n_dir, corner_idx):
-                    new_vid = len(new_points)
-                    new_points.append(points[v])
-                    new_norm_sums.append(n_dir.copy())
-                    clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
-                    if new_uvs is not None:
-                        # Use corner UV if faceVarying, otherwise use vertex UV
-                        if uvs_interpolation == UsdGeom.Tokens.faceVarying:
-                            new_uvs.append(uvs[corner_idx])
-                        else:
-                            new_uvs.append(uvs[v])
-                    return new_vid
-
-                # Assign each corner to a cluster (new vertex) based on angular proximity
-                for c in range(C):
-                    v = int(indices[c])
-                    n_dir = Ndir[c]
-
-                    clusters = clusters_per_v[v]
-                    assigned = False
-                    # try to match an existing cluster
-                    for cl in clusters:
-                        sum_dir, cnt, new_vid = cl
-                        # compare with current mean direction (sum_dir normalized)
-                        mean_dir = sum_dir / max(np.linalg.norm(sum_dir), 1e-30)
-                        if float(np.dot(mean_dir, n_dir)) >= cos_thresh:
-                            # assign to this cluster
-                            cl[0] = sum_dir + n_dir
-                            cl[1] = cnt + 1
-                            new_norm_sums[new_vid] += n_dir
-                            new_indices[c] = new_vid
-                            assigned = True
-                            break
-
-                    if not assigned:
-                        new_vid = _new_vertex_from(v, n_dir, c)
-                        new_indices[c] = new_vid
-
-                new_points = np.asarray(new_points, dtype=np.float64)
-
-                # Produce per-vertex normalized normals for the new vertices
-                new_norm_sums = np.asarray(new_norm_sums, dtype=np.float64)
-                nn = np.linalg.norm(new_norm_sums, axis=1, keepdims=True)
-                nn = np.clip(nn, 1e-30, None)
-                new_vertex_normals = (new_norm_sums / nn).astype(np.float32)
-
-                points = new_points
-                indices = new_indices
-                normals = new_vertex_normals
-                uvs = new_uvs
+                points, indices, normals, uvs = _split_corners_into_vertices(
+                    points, indices, Ndir, corner_uvs, vertex_splitting_angle_threshold_deg
+                )
                 # Vertex splitting creates a new per-vertex layout (and UVs
                 # if available). Skip the later faceVarying UV split to avoid
                 # dropping/duplicating UVs.
@@ -1192,6 +1726,7 @@ def get_mesh(
         normals=normals,
         uvs=uvs,
         maxhullvert=maxhullvert,
+        compute_inertia=compute_inertia,
         color=material_props.get("color"),
         texture=material_props.get("texture"),
         metallic=material_props.get("metallic"),
@@ -1266,7 +1801,12 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
     )
 
 
-def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = None) -> TetMesh:
+def get_tetmesh(
+    prim: Usd.Prim,
+    *,
+    compat_namespaces: Sequence[str] | None = None,
+    _load_custom_attributes: bool = True,
+) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
     Reads vertex positions from the ``points`` attribute and tetrahedral
@@ -1277,6 +1817,11 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
     those values are read and converted to Lame parameters (``k_mu``,
     ``k_lambda``) and density on the returned TetMesh. Material properties
     are set to ``None`` if not present.
+
+    Custom primvars use their resolved interpolation to determine attribute
+    frequency. Other custom arrays use length-based inference; arrays whose
+    frequency is ambiguous or cannot be inferred emit a warning and are
+    omitted without preventing the TetMesh from loading.
 
     Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
     (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
@@ -1423,6 +1968,15 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
         # density too; a plain rigid-style physics material is a valid source.
         density = _get_physics_material_density(material_prim)
 
+    if not _load_custom_attributes:
+        return TetMesh(
+            vertices=vertices,
+            tet_indices=tet_indices,
+            k_mu=k_mu,
+            k_lambda=k_lambda,
+            density=density,
+        )
+
     # Read custom primvars and attributes (per-vertex, per-tet, etc.)
     # Primvar interpolation is used to determine the attribute frequency
     # when available, falling back to length-based inference in TetMesh.__init__.
@@ -1445,7 +1999,7 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
         name = primvar.GetPrimvarName()
         if name in ("st", "normals"):
             continue  # skip well-known primvars handled elsewhere
-        val = primvar.Get()
+        val = primvar.ComputeFlattened()
         if val is not None:
             arr = np.array(val)
             interp = primvar.GetInterpolation()
@@ -1480,14 +2034,32 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
             except (TypeError, ValueError):
                 pass  # skip non-array attributes
 
-    return TetMesh(
+    result = TetMesh(
         vertices=vertices,
         tet_indices=tet_indices,
         k_mu=k_mu,
         k_lambda=k_lambda,
         density=density,
-        custom_attributes=custom_attributes if custom_attributes else None,
     )
+    tri_count = len(result.surface_tri_indices) // 3
+    for name, value in custom_attributes.items():
+        if name in result._RESERVED_ATTR_KEYS:
+            warnings.warn(
+                f"{prim.GetPath()}: custom attribute '{name}' uses a reserved TetMesh name; skipping the attribute.",
+                stacklevel=2,
+            )
+            continue
+        if isinstance(value, tuple):
+            arr, frequency = value
+        else:
+            arr = value
+            try:
+                frequency = result._infer_frequency(arr, result.vertex_count, result.tet_count, tri_count, name)
+            except ValueError as exc:
+                warnings.warn(f"{prim.GetPath()}: {exc}; skipping the attribute.", stacklevel=2)
+                continue
+        result.custom_attributes[name] = (np.asarray(arr), frequency)
+    return result
 
 
 def _find_physics_material_prim(prim: Usd.Prim):
@@ -2094,6 +2666,72 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
     return properties
 
 
+def _output_channel_count(type_name: Sdf.ValueTypeName) -> int:
+    """Return the component count of a shader output value type (float -> 1, float3 -> 3)."""
+    default = type_name.defaultValue
+    if hasattr(default, "__len__"):
+        return len(default)
+    return 1
+
+
+# Base-color input name fragments used to identify the diffuse/albedo parameter
+# feeding a surface shader. A texture connection's shape alone is ambiguous
+# (a normal map is a 3-channel ``rgb`` connection like a diffuse map), so the
+# input name is the disambiguator for both connected and direct-asset textures.
+_COLOR_TEXTURE_INPUT_NAMES = ("diffuse", "albedo", "basecolor", "base_color", "displaycolor")
+
+
+def _is_color_texture_input_name(base_name: str) -> bool:
+    """Return whether an input name denotes a base-color/albedo texture parameter."""
+    name = base_name.lower()
+    return any(fragment in name for fragment in _COLOR_TEXTURE_INPUT_NAMES)
+
+
+def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> str | np.ndarray | None:
+    """Return the base-color texture feeding a surface shader input, if any.
+
+    The input must be a base-color/albedo parameter by name: a normal map is
+    conventionally wired as ``UsdUVTexture.outputs:rgb`` too, so its 3-channel
+    connection is indistinguishable from a diffuse map by shape alone. Two
+    shapes are then supported:
+
+    - A connected ``UsdUVTexture``: accepted only when the connected output is a
+      multi-channel color output (``rgb`` / ``rgba``). Single-channel outputs
+      (``r``/``g``/``b``/``a``) are scalar data maps (roughness, metallic, ...)
+      and are ignored.
+    - A direct asset value (e.g. an MDL ``diffuse_texture`` parameter): there is
+      no texture node to inspect, so the base-color input is identified by name.
+    """
+    if not _is_color_texture_input_name(surface_input.GetBaseName()):
+        return None
+    try:
+        producing = UsdShade.Utils.GetValueProducingAttributes(surface_input)
+    except Exception:
+        producing = ()
+    for attr in producing:
+        source_shader = UsdShade.Shader(attr.GetPrim())
+        try:
+            if source_shader.GetIdAttr().Get() != "UsdUVTexture":
+                continue
+        except Exception:
+            continue
+        if _output_channel_count(attr.GetTypeName()) < 3:
+            continue
+        texture = _find_texture_in_shader(source_shader, prim)
+        if texture is not None:
+            return texture
+
+    try:
+        connected = surface_input.HasConnectedSource()
+    except Exception:
+        connected = False
+    if not connected:
+        asset = surface_input.Get()
+        if asset:
+            return _resolve_color_texture_asset(asset, prim, surface_input.GetAttr())
+    return None
+
+
 def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract common material properties from a shader node.
 
@@ -2140,19 +2778,10 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
 
     if properties["texture"] is None:
         for inp in shader.GetInputs():
-            name = inp.GetBaseName()
-            if inp.HasConnectedSource():
-                source = inp.GetConnectedSource()
-                source_shader = UsdShade.Shader(source[0].GetPrim())
-                texture = _find_texture_in_shader(source_shader, prim)
-                if texture is not None:
-                    properties["texture"] = texture
-                    break
-            elif "file" in name or "texture" in name:
-                asset = inp.Get()
-                if asset:
-                    properties["texture"] = _resolve_color_texture_asset(asset, prim, inp.GetAttr())
-                    break
+            texture = _color_texture_from_input(inp, prim)
+            if texture is not None:
+                properties["texture"] = texture
+                break
 
     return properties
 
@@ -2216,30 +2845,21 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
 
 
 def _get_bound_material(target_prim: Usd.Prim) -> UsdShade.Material | None:
-    """Get the material bound to a prim."""
+    """Get the material bound to a prim.
+
+    Resolution is UsdShade's canonical ``ComputeBoundMaterial``: ancestor bindings, binding
+    strength, collection-based bindings, and purpose all follow the USD spec instead of a
+    partial reimplementation. Prims that author ``material:binding`` without applying
+    ``MaterialBindingAPI`` are invalid USD; resolution still tolerates them but emits one
+    ``TfWarn`` per query (there is no Python-side suppression API, and instanced prims cannot
+    be normalized in-session). Import caches material resolution per prim, so the warning
+    volume is bounded by the number of non-conformant prims — fix such assets at source with
+    ``usdchecker`` or ``usd-validation-nvidia``.
+    """
     if not target_prim or not target_prim.IsValid():
         return None
-    if target_prim.HasAPI(UsdShade.MaterialBindingAPI):
-        binding_api = UsdShade.MaterialBindingAPI(target_prim)
-        bound_material, _ = binding_api.ComputeBoundMaterial()
-        return bound_material
-
-    # Some assets author material:binding relationships without applying MaterialBindingAPI.
-    rels = [rel for rel in target_prim.GetRelationships() if rel.GetName().startswith("material:binding")]
-    if not rels:
-        return None
-    rels.sort(
-        key=lambda rel: (
-            0 if rel.GetName() == "material:binding" else 1 if rel.GetName() == "material:binding:preview" else 2
-        )
-    )
-    for rel in rels:
-        targets = rel.GetTargets()
-        if targets:
-            mat_prim = target_prim.GetStage().GetPrimAtPath(targets[0])
-            if mat_prim and mat_prim.IsValid():
-                return UsdShade.Material(mat_prim)
-    return None
+    bound_material, _ = UsdShade.MaterialBindingAPI(target_prim).ComputeBoundMaterial()
+    return bound_material if bound_material else None
 
 
 def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] | None:

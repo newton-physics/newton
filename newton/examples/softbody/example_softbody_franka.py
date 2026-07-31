@@ -65,7 +65,7 @@ class Example:
         self.soft_contact_kd = 2e-1
         self.self_contact_friction = 0.5
 
-        self.scene = ModelBuilder(gravity=-9.81)
+        self.scene = ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
         self.viewer = viewer
 
@@ -228,12 +228,9 @@ class Example:
         self.ik_iters = 24
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def create_articulation(self, builder):
         asset_path = newton.utils.download_asset("franka_emika_panda")

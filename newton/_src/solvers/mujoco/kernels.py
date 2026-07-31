@@ -418,6 +418,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_damping: wp.array[wp.float32],
     rigid_contact_friction: wp.array[wp.float32],
     shape_margin: wp.array[float],
+    shape_material_kf: wp.array[float],
+    opt_impratio_invsqrt: wp.array[float],
+    use_kf_mapping: bool,
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array[wp.int32],
     # Mujoco warp contacts
@@ -625,6 +628,26 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     friction[3],
                     friction[4],
                 )
+
+        # Match Newton's force-space friction slope using MuJoCo's inverse-weight
+        # approximation; positive solref lets refsafe limit overly stiff damping.
+        if shape_material_kf and use_kf_mapping:
+            kf1 = shape_material_kf[shape_a]
+            kf2 = shape_material_kf[shape_b]
+            kf = mix * kf1 + (1.0 - mix) * kf2
+            if kf > 0.0:
+                invw = body_invweight0[worldid, mj_body_a][0] + body_invweight0[worldid, mj_body_b][0]
+                ir = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+                imp = solimp[1]
+                denom = kf * invw * ((1.0 - imp) * ir * ir + imp)
+                if denom > 0.0 and wp.isfinite(denom):
+                    timeconst = 2.0 / denom
+                    if wp.isfinite(timeconst):
+                        solreffriction = wp.vec2(timeconst, 1.0)
+            elif kf == 0.0:
+                # A zero gain means no friction force in Newton, so omit all
+                # sliding, torsional, and rolling constraint rows.
+                condim = 1
 
         cid = wp.atomic_add(nacon_out, 0, 1)
         if cid >= naconmax:
@@ -2491,6 +2514,54 @@ def update_geom_properties_kernel(
 
 
 @wp.kernel
+def update_site_properties_kernel(
+    shape_transform: wp.array[wp.transform],
+    shape_scale: wp.array[wp.vec3],
+    site_shape_index: wp.array[wp.int32],
+    site_is_global: wp.array[bool],
+    shapes_per_world: int,
+    first_env_shape_base: int,
+    site_pos: wp.array2d[wp.vec3],
+    site_quat: wp.array2d[wp.quat],
+    site_size: wp.array[wp.vec3],
+):
+    """Update MuJoCo site poses and sizes from Newton shape properties."""
+    world, site = wp.tid()
+    template_or_global_shape = site_shape_index[site]
+    if template_or_global_shape < 0:
+        return
+
+    shape = template_or_global_shape
+    if not site_is_global[site]:
+        shape = first_env_shape_base + template_or_global_shape + world * shapes_per_world
+
+    tf = shape_transform[shape]
+    site_pos[world, site] = tf.p
+    site_quat[world, site] = quat_xyzw_to_wxyz(tf.q)
+
+    # site_size has no world dimension in mujoco_warp, so world 0 is the
+    # source of truth; per-world site sizes are not representable.
+    if world == 0:
+        scale = shape_scale[shape]
+        # Mirror export: fill zero components with the first positive one.
+        nonzero = 0.0
+        if scale[0] > 0.0:
+            nonzero = scale[0]
+        elif scale[1] > 0.0:
+            nonzero = scale[1]
+        elif scale[2] > 0.0:
+            nonzero = scale[2]
+        if nonzero > 0.0:
+            site_size[site] = wp.vec3(
+                wp.where(scale[0] == 0.0, nonzero, scale[0]),
+                wp.where(scale[1] == 0.0, nonzero, scale[1]),
+                wp.where(scale[2] == 0.0, nonzero, scale[2]),
+            )
+        else:
+            site_size[site] = wp.vec3(0.01, 0.01, 0.01)
+
+
+@wp.kernel
 def sync_worldbody_geom_xposes_kernel(
     geom_bodyid: wp.array[int],
     geom_pos: wp.array2d[wp.vec3],
@@ -2506,6 +2577,25 @@ def sync_worldbody_geom_xposes_kernel(
     geom_q = quat_wxyz_to_xyzw(geom_quat[world, geom])
     geom_xpos[world, geom] = geom_pos[world, geom]
     geom_xmat[world, geom] = wp.quat_to_matrix(geom_q)
+
+
+@wp.kernel
+def sync_site_xposes_kernel(
+    site_bodyid: wp.array[int],
+    site_pos: wp.array2d[wp.vec3],
+    site_quat: wp.array2d[wp.quat],
+    body_xpos: wp.array2d[wp.vec3],
+    body_xquat: wp.array2d[wp.quat],
+    site_xpos: wp.array2d[wp.vec3],
+    site_xmat: wp.array2d[wp.mat33],
+):
+    """Refresh derived site poses after per-world model updates."""
+    world, site = wp.tid()
+    body = site_bodyid[site]
+    body_q = quat_wxyz_to_xyzw(body_xquat[world, body])
+    site_q = quat_wxyz_to_xyzw(site_quat[world, site])
+    site_xpos[world, site] = body_xpos[world, body] + wp.quat_rotate(body_q, site_pos[world, site])
+    site_xmat[world, site] = wp.quat_to_matrix(body_q * site_q)
 
 
 @wp.kernel

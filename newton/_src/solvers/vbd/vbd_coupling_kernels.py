@@ -302,6 +302,8 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
         return
 
     particle_idx = body_particle_contact_particle[contact_idx]
+    if particle_idx < 0:  # edge/face record: no single particle id (harvested via the per-body path)
+        return
     if not _vbd_particle_is_mapped_proxy(
         particle_idx, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
     ):
