@@ -59,6 +59,64 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_nested_option_flags_match_native_mujoco(self):
+        """Import nested option flags and preserve later option overrides."""
+        mjcf = """
+<mujoco model="option_flags">
+    <option>
+        <flag gravity="disable" contact="disable" energy="enable" multiccd="enable"/>
+    </option>
+    <option>
+        <flag gravity="enable"/>
+    </option>
+    <worldbody>
+        <body name="body">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        solver = SolverMuJoCo(builder.finalize())
+
+        self.assertEqual(solver.mj_model.opt.disableflags, native_model.opt.disableflags)
+        self.assertEqual(solver.mj_model.opt.enableflags, native_model.opt.enableflags)
+
+    def test_constructor_overrides_imported_option_flags(self):
+        """Let explicit solver arguments override corresponding imported flags."""
+        mjcf = """
+<mujoco model="option_flag_overrides">
+    <option>
+        <flag contact="disable" sensor="enable" multiccd="enable"/>
+    </option>
+    <worldbody>
+        <body name="body">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        solver = SolverMuJoCo(
+            builder.finalize(),
+            disable_contacts=False,
+            disable_sensors=True,
+            enable_multiccd=False,
+        )
+
+        disableflags = solver.mj_model.opt.disableflags
+        self.assertFalse(disableflags & mujoco.mjtDisableBit.mjDSBL_CONTACT)
+        self.assertTrue(disableflags & mujoco.mjtDisableBit.mjDSBL_SENSOR)
+        self.assertTrue(disableflags & mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+
     def test_collision_shapes_hidden_by_default_even_without_same_body_visuals(self):
         mjcf = """
 <mujoco model="collision_visibility">
