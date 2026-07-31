@@ -121,7 +121,6 @@ def _run_frames(model, solver, frames: int, use_graph: bool, graph_warmup: int =
             step(states[n % 2], states[(n + 1) % 2])
             n += 1
         final = states[n % 2]
-    wp.synchronize_device(device)
     return final.particle_q.numpy().copy()
 
 
