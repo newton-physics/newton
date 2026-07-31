@@ -719,7 +719,9 @@ def _max_contacts_for_shape_pair_impl(type_a: int, type_b: int) -> tuple[int, in
             return 8, 8
 
     elif type_a == GeoType.MESH:
-        if type_b == GeoType.CONE:
+        if type_b == GeoType.MESH:
+            return _MESH_MESH_MAX, 0
+        elif type_b == GeoType.CONE:
             return _MESH_CONVEX_MAX, 0
         elif type_b == GeoType.CONVEX_MESH:
             return _MESH_MESH_MAX, 0
