@@ -148,7 +148,7 @@ def compute_point_force(
 
 
 # ---------------------------------------------------------------------------
-# Newton coupling kernels
+# Contact processing kernels
 # ---------------------------------------------------------------------------
 @wp.struct
 class BeltContact:
@@ -232,7 +232,7 @@ def identify_belt_contact(
 
 
 @wp.kernel
-def count_belt_contacts(
+def classify_belt_contacts(
     rigid_contact_count: wp.array[wp.int32],
     rigid_contact_shape0: wp.array[wp.int32],
     rigid_contact_shape1: wp.array[wp.int32],
@@ -248,9 +248,10 @@ def count_belt_contacts(
     conv_surface_normal: wp.array[wp.vec3],
     conv_threshold: wp.array[wp.float32],
     # output
+    belt_contacts: wp.array[BeltContact],
     body_contact_count: wp.array[wp.int32],
 ):
-    """Count accepted belt contacts for each dynamic body."""
+    """Classify belt contacts and count the accepted contacts per dynamic body."""
     i = wp.tid()
     c = identify_belt_contact(
         i,
@@ -269,6 +270,7 @@ def count_belt_contacts(
         conv_surface_normal,
         conv_threshold,
     )
+    belt_contacts[i] = c
     if c.valid == 1:
         wp.atomic_add(body_contact_count, c.body, 1)
 
@@ -276,17 +278,7 @@ def count_belt_contacts(
 @wp.kernel
 def accumulate_conveyor_forces(
     dt: wp.float32,
-    rigid_contact_count: wp.array[wp.int32],
-    rigid_contact_shape0: wp.array[wp.int32],
-    rigid_contact_shape1: wp.array[wp.int32],
-    rigid_contact_normal: wp.array[wp.vec3],
-    rigid_contact_point0: wp.array[wp.vec3],
-    rigid_contact_point1: wp.array[wp.vec3],
-    rigid_contact_offset0: wp.array[wp.vec3],
-    rigid_contact_offset1: wp.array[wp.vec3],
-    contact_force_vec: wp.array[wp.vec3],
-    shape_body: wp.array[wp.int32],
-    shape_conveyor: wp.array[wp.int32],
+    belt_contacts: wp.array[BeltContact],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
@@ -306,23 +298,7 @@ def accumulate_conveyor_forces(
 ):
     """Accumulate Coulomb-limited belt-contact wrenches by body."""
     i = wp.tid()
-    c = identify_belt_contact(
-        i,
-        rigid_contact_count,
-        rigid_contact_shape0,
-        rigid_contact_shape1,
-        rigid_contact_normal,
-        rigid_contact_point0,
-        rigid_contact_point1,
-        rigid_contact_offset0,
-        rigid_contact_offset1,
-        contact_force_vec,
-        shape_body,
-        shape_conveyor,
-        body_q,
-        conv_surface_normal,
-        conv_threshold,
-    )
+    c = belt_contacts[i]
     if c.valid == 0:
         return
 
@@ -544,6 +520,7 @@ class ConveyorForceModel:
 
         self.body_contact_count = wp.zeros(self.model.body_count, dtype=wp.int32, device=d)
         self.conveyor_body_f = wp.zeros(self.model.body_count, dtype=wp.spatial_vector, device=d)
+        self.belt_contacts = wp.empty(contacts.rigid_contact_max, dtype=BeltContact, device=d)
         self.contact_force_vec = wp.zeros(contacts.rigid_contact_max, dtype=wp.vec3, device=d)
         self.body_q_prev = wp.zeros(self.model.body_count, dtype=wp.transform, device=d)
         self._finalized = True
@@ -591,7 +568,7 @@ class ConveyorForceModel:
         self.conveyor_body_f.zero_()
         self.body_contact_count.zero_()
         wp.launch(
-            count_belt_contacts,
+            classify_belt_contacts,
             dim=contacts.rigid_contact_max,
             inputs=[
                 contacts.rigid_contact_count,
@@ -609,7 +586,7 @@ class ConveyorForceModel:
                 self.conv_surface_normal,
                 self.conv_threshold,
             ],
-            outputs=[self.body_contact_count],
+            outputs=[self.belt_contacts, self.body_contact_count],
             device=self.device,
         )
         wp.launch(
@@ -617,17 +594,7 @@ class ConveyorForceModel:
             dim=contacts.rigid_contact_max,
             inputs=[
                 dt,
-                contacts.rigid_contact_count,
-                contacts.rigid_contact_shape0,
-                contacts.rigid_contact_shape1,
-                contacts.rigid_contact_normal,
-                contacts.rigid_contact_point0,
-                contacts.rigid_contact_point1,
-                contacts.rigid_contact_offset0,
-                contacts.rigid_contact_offset1,
-                self.contact_force_vec,
-                self.model.shape_body,
-                self.shape_conveyor,
+                self.belt_contacts,
                 state_post.body_q,
                 state_post.body_qd,
                 self.model.body_com,
@@ -796,10 +763,9 @@ class Example:
     def __init__(self, viewer, args=None):
         self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
 
-        # VBD needs a smaller step for stable explicit conveyor-force feedback.
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 4 if self.solver_type == "vbd" else 2
+        self.sim_substeps = 2
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
