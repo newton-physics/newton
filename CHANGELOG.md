@@ -96,6 +96,7 @@
 ### Fixed
 
 - Make deterministic collision pipelines cover hydroelastic contact generation and reduction, including unique reduced-contact sort keys and overflow-safe fixed-point pressure accumulation.
+- Import MJCF mesh asset `inertia` modes when computing body mass properties.
 - Convert `newton:mimicCoef0` from degrees to radians when the mimic follower joint is angular. Assets authored against the old behavior need the value rescaled to degrees.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
