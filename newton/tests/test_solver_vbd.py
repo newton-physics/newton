@@ -2013,19 +2013,26 @@ def _rigid_reset_state_and_history(test, device):
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 0.0)
 
 
-def _soft_reset_masked_worlds(test, device):
-    """Masked deformable reset restores model-default particle state per selected world.
+def _reset_masked_rigid_and_soft(test, device):
+    """A single masked reset restores rigid bodies and deformables together per world.
 
-    A cloth grid plus a tetrahedral soft grid populate two local worlds and the
-    global (world -1) range. Reset copies ``model.particle_q`` / ``particle_qd``
-    into the worlds picked by ``world_mask``, honoring ``PARTICLE_Q`` /
-    ``PARTICLE_QD`` independently; ``world_mask=None`` includes globals while an
-    explicit local mask excludes them.
+    ``reset()`` is one entry point for both maximal body state and particle state.
+    With fixed bodies, a cloth grid, and a tetrahedral soft grid sharing the same
+    worlds and global (world -1) range, one ``world_mask`` selects both sides:
+    ``BODY_Q`` / ``PARTICLE_Q`` restore positions and ``BODY_QD`` / ``PARTICLE_QD``
+    velocities in lockstep, ``world_mask=None`` includes globals, and an explicit
+    mask's final entry selects only globals. Companion to
+    :func:`_rigid_reset_state_and_history`, which covers the rigid history and
+    pose-deferral semantics in depth.
     """
 
-    def add_deformables(builder, x):
+    def add_content(builder, x):
+        body = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_fixed(parent=-1, child=body)
+        builder.add_articulation([joint])
         builder.add_cloth_grid(
-            pos=(x, 0.0, 0.0),
+            pos=(x, 0.5, 0.0),
             rot=wp.quat_identity(),
             vel=(0.0, 0.0, 0.0),
             dim_x=2,
@@ -2035,7 +2042,7 @@ def _soft_reset_masked_worlds(test, device):
             mass=1.0,
         )
         builder.add_soft_grid(
-            pos=wp.vec3(x, 0.0, 1.0),
+            pos=wp.vec3(x, 0.5, 1.0),
             rot=wp.quat_identity(),
             vel=wp.vec3(0.0, 0.0, 0.0),
             dim_x=1,
@@ -2051,85 +2058,112 @@ def _soft_reset_masked_worlds(test, device):
         )
 
     template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    add_deformables(template, 0.0)
+    add_content(template, 0.0)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    add_deformables(builder, -3.0)  # Global head range (world -1).
+    add_content(builder, -3.0)  # Global head range (world -1).
     builder.add_world(template)  # World 0.
     builder.add_world(template, xform=wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity()))  # World 1.
-    add_deformables(builder, 6.0)  # Global tail range (world -1).
+    add_content(builder, 6.0)  # Global tail range (world -1).
     builder.color()
     model = builder.finalize(device=device)
 
+    body_world = model.body_world.numpy()
     particle_world = model.particle_world.numpy()
+    np.testing.assert_array_equal(body_world, [-1, 0, 1, -1])
     # Cloth and tet particles populate both local worlds and the global range.
     test.assertTrue((particle_world == 0).any())
     test.assertTrue((particle_world == 1).any())
     test.assertTrue((particle_world < 0).any())
 
-    model_q = model.particle_q.numpy()
-    model_qd = model.particle_qd.numpy()
-    selected = particle_world == 0
-    global_particles = particle_world < 0
+    model_bq = model.body_q.numpy()
+    model_bqd = model.body_qd.numpy()
+    model_pq = model.particle_q.numpy()
+    model_pqd = model.particle_qd.numpy()
+    body_selected = body_world == 0
+    body_global = body_world < 0
+    part_selected = particle_world == 0
+    part_global = particle_world < 0
 
     solver = newton.solvers.SolverVBD(model, iterations=0)
     state = model.state()
 
     def perturb():
-        custom_q = model_q.copy()
-        custom_q[:, 0] += 10.0
-        custom_qd = np.full_like(model_qd, 5.0)
-        state.particle_q.assign(custom_q)
-        state.particle_qd.assign(custom_qd)
-        return custom_q, custom_qd
+        bq = model_bq.copy()
+        bq[:, 0] += 10.0
+        bqd = np.full_like(model_bqd, 3.0)
+        pq = model_pq.copy()
+        pq[:, 0] += 10.0
+        pqd = np.full_like(model_pqd, 5.0)
+        state.body_q.assign(bq)
+        state.body_qd.assign(bqd)
+        state.particle_q.assign(pq)
+        state.particle_qd.assign(pqd)
+        return bq, bqd, pq, pqd
 
     world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
 
-    # PARTICLE_Q on world 0: only selected positions restore; velocities untouched.
-    custom_q, custom_qd = perturb()
-    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_Q)
-    result_q = state.particle_q.numpy()
-    np.testing.assert_allclose(result_q[selected], model_q[selected])
-    np.testing.assert_allclose(result_q[~selected], custom_q[~selected])
-    np.testing.assert_allclose(state.particle_qd.numpy(), custom_qd)
+    # World-0 mask, positions only: bodies and particles restore together; velocities untouched.
+    bq, bqd, pq, pqd = perturb()
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.BODY_Q | newton.StateFlags.PARTICLE_Q)
+    result_bq = state.body_q.numpy()
+    result_pq = state.particle_q.numpy()
+    np.testing.assert_allclose(result_bq[body_selected], model_bq[body_selected])
+    np.testing.assert_allclose(result_bq[~body_selected], bq[~body_selected])
+    np.testing.assert_allclose(result_pq[part_selected], model_pq[part_selected])
+    np.testing.assert_allclose(result_pq[~part_selected], pq[~part_selected])
+    np.testing.assert_allclose(state.body_qd.numpy(), bqd)
+    np.testing.assert_allclose(state.particle_qd.numpy(), pqd)
 
-    # PARTICLE_QD on world 0: only selected velocities restore; positions untouched.
-    custom_q, custom_qd = perturb()
-    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_QD)
-    np.testing.assert_allclose(state.particle_q.numpy(), custom_q)
-    result_qd = state.particle_qd.numpy()
-    np.testing.assert_allclose(result_qd[selected], model_qd[selected])
-    np.testing.assert_allclose(result_qd[~selected], custom_qd[~selected])
+    # World-0 mask, velocities only: symmetric, positions untouched.
+    bq, bqd, pq, pqd = perturb()
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.BODY_QD | newton.StateFlags.PARTICLE_QD)
+    np.testing.assert_allclose(state.body_q.numpy(), bq)
+    np.testing.assert_allclose(state.particle_q.numpy(), pq)
+    result_bqd = state.body_qd.numpy()
+    result_pqd = state.particle_qd.numpy()
+    np.testing.assert_allclose(result_bqd[body_selected], model_bqd[body_selected])
+    np.testing.assert_allclose(result_bqd[~body_selected], bqd[~body_selected])
+    np.testing.assert_allclose(result_pqd[part_selected], model_pqd[part_selected])
+    np.testing.assert_allclose(result_pqd[~part_selected], pqd[~part_selected])
 
-    # world_mask=None restores every particle, the global range included.
+    # world_mask=None restores every body and particle, the global range included.
     perturb()
     solver.reset(state)
-    np.testing.assert_allclose(state.particle_q.numpy(), model_q)
-    np.testing.assert_allclose(state.particle_qd.numpy(), model_qd)
+    np.testing.assert_allclose(state.body_q.numpy(), model_bq)
+    np.testing.assert_allclose(state.body_qd.numpy(), model_bqd)
+    np.testing.assert_allclose(state.particle_q.numpy(), model_pq)
+    np.testing.assert_allclose(state.particle_qd.numpy(), model_pqd)
 
-    # The extended mask's final entry selects only the global range.
+    # The extended mask's final entry selects only the global range, both sides.
     global_mask = wp.array([False, False, True], dtype=wp.bool, device=device)
-    custom_q, custom_qd = perturb()
+    bq, bqd, pq, pqd = perturb()
     solver.reset(state, world_mask=global_mask)
-    result_q = state.particle_q.numpy()
-    result_qd = state.particle_qd.numpy()
-    np.testing.assert_allclose(result_q[global_particles], model_q[global_particles])
-    np.testing.assert_allclose(result_q[~global_particles], custom_q[~global_particles])
-    np.testing.assert_allclose(result_qd[global_particles], model_qd[global_particles])
-    np.testing.assert_allclose(result_qd[~global_particles], custom_qd[~global_particles])
+    result_bq = state.body_q.numpy()
+    result_bqd = state.body_qd.numpy()
+    result_pq = state.particle_q.numpy()
+    result_pqd = state.particle_qd.numpy()
+    np.testing.assert_allclose(result_bq[body_global], model_bq[body_global])
+    np.testing.assert_allclose(result_bq[~body_global], bq[~body_global])
+    np.testing.assert_allclose(result_bqd[body_global], model_bqd[body_global])
+    np.testing.assert_allclose(result_bqd[~body_global], bqd[~body_global])
+    np.testing.assert_allclose(result_pq[part_global], model_pq[part_global])
+    np.testing.assert_allclose(result_pq[~part_global], pq[~part_global])
+    np.testing.assert_allclose(result_pqd[part_global], model_pqd[part_global])
+    np.testing.assert_allclose(result_pqd[~part_global], pqd[~part_global])
 
     if device.is_cuda:
         # A requested particle array on the wrong device fails; an unrequested one
         # never binds and is preserved.
         perturb()
-        good_qd = state.particle_qd
-        state.particle_qd = wp.clone(good_qd, device="cpu")
+        good_pqd = state.particle_qd
+        state.particle_qd = wp.clone(good_pqd, device="cpu")
         with test.assertRaisesRegex(ValueError, "state.particle_qd is on device cpu"):
             solver.reset(state, flags=newton.StateFlags.PARTICLE_QD)
         solver.reset(state, flags=newton.StateFlags.PARTICLE_Q)
-        np.testing.assert_allclose(state.particle_q.numpy(), model_q)
+        np.testing.assert_allclose(state.particle_q.numpy(), model_pq)
         test.assertEqual(str(state.particle_qd.device), "cpu")
-        state.particle_qd = good_qd
+        state.particle_qd = good_pqd
 
 
 def _soft_reset_particle_only_and_external(test, device):
@@ -3102,8 +3136,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_soft_reset_masked_worlds",
-    _soft_reset_masked_worlds,
+    "test_reset_masked_rigid_and_soft",
+    _reset_masked_rigid_and_soft,
     devices=devices,
 )
 add_function_test(
