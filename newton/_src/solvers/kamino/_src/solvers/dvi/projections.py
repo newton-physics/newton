@@ -9,7 +9,6 @@ from ...core.math import FLOAT32_EPS
 from ..padmm.math import project_to_coulomb_cone
 
 float32 = wp.float32
-mat33f = wp.mat33f
 vec3f = wp.vec3f
 
 
@@ -37,27 +36,17 @@ def project_contact_diagonal_update(
 
 
 @wp.func
-def project_contact_block_update(
-    lambda_old: vec3f,
-    v_c: vec3f,
-    D_diag: vec3f,
-    D_block_inv: mat33f,
-    regularization: float32,
-    omega: float32,
-    mu: float32,
-) -> vec3f:
-    """Apply a block-preconditioned contact projection.
+def contact_diagonal_preconditioner(D_diag: vec3f) -> vec3f:
+    """Return the contact preconditioner as a shared tangential and true normal diagonal.
 
-    Computes ``lambda_next = project_K(lambda - omega * B * v_aug)``.
+    The two tangential rows must share one scalar, otherwise the friction disk
+    ``norm(lambda_t) <= mu * lambda_n`` is scaled into an ellipse and the
+    Coulomb-cone projection is no longer a projection. Taking their maximum
+    also bounds each row's effective relaxation by ``omega``: preconditioning
+    a tangential row by the smaller normal diagonal over-relaxes it whenever
+    the contact carries a lever arm, reaching ``D_tt / D_nn = 3.5`` for a
+    solid sphere. The normal row keeps its own diagonal, which converges far
+    faster than a shared maximum under high mass ratios.
     """
-    inv_diag_norm = wp.abs(D_block_inv[0, 0]) + wp.abs(D_block_inv[1, 1]) + wp.abs(D_block_inv[2, 2])
-    if inv_diag_norm > FLOAT32_EPS:
-        return project_to_coulomb_cone(lambda_old - omega * (D_block_inv * v_c), mu)
-    return project_contact_diagonal_update(lambda_old, v_c, D_diag, regularization, omega, mu)
-
-
-@wp.func
-def contact_trace_preconditioner(D_diag: vec3f) -> vec3f:
-    """Return the isotropic contact preconditioner derived from block trace."""
-    D_eff = (D_diag.x + D_diag.y + D_diag.z) / float32(3.0)
-    return vec3f(D_eff, D_eff, D_eff)
+    D_t = wp.max(D_diag.x, D_diag.y)
+    return vec3f(D_t, D_t, D_diag.z)

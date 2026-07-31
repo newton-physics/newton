@@ -3853,18 +3853,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Args:
             state: The simulation state to reset (modified in place).
-            world_mask: Optional boolean mask of shape ``(world_count,)``
-                selecting which worlds to reset. If ``None``, all worlds are
-                reset.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
+                selecting which worlds to reset. The final entry represents
+                global world ``-1`` and is a no-op because MuJoCo does not
+                support global dynamic objects. If ``None``, all worlds are
+                reset. Passing the deprecated shape ``(world_count,)`` selects
+                local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling which
                 joint-state quantities are reset. If ``None``, all are reset.
                 The internal MuJoCo buffers are always cleared regardless.
         """
         world_count = self.model.world_count
-        if world_mask is not None and world_mask.shape[0] != world_count:
-            raise ValueError(
-                f"world_mask has length {world_mask.shape[0]}, expected {world_count} (one entry per world)."
-            )
+        world_mask = self._normalize_reset_world_mask(world_mask)
 
         # Reset joint coordinates/velocities to model defaults for the selected
         # worlds. body_q/body_qd are FK outputs and intentionally not touched.

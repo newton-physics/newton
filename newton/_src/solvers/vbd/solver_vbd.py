@@ -1882,10 +1882,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         Args:
             state: The simulation state to reset (modified in place).
             world_mask: One-dimensional Warp boolean mask on the solver device.
-                Shape ``(world_count,)`` selects local worlds only. Shape
-                ``(world_count + 1,)`` additionally uses the final entry for
-                entities not assigned to a world (``world == -1``). ``None``
-                selects all local and unassigned entities.
+                Shape ``(world_count + 1,)``, with the final entry selecting
+                entities in global world ``-1``. ``None`` selects all local and
+                global entities. Passing the deprecated shape ``(world_count,)``
+                selects local worlds only and leaves global entities unselected.
             flags: :class:`~newton.StateFlags` (or ``int``) selecting which body
                 fields to copy from the model defaults. VBD honors
                 :attr:`~newton.StateFlags.BODY_Q` and
@@ -1894,16 +1894,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if state is None:
             raise ValueError("'state' argument is required.")
         model = self.model
-        if world_mask is not None:
-            if not isinstance(world_mask, wp.array) or world_mask.ndim != 1 or world_mask.dtype != wp.bool:
-                raise ValueError("world_mask must be a one-dimensional Warp boolean array.")
-            mask_length = world_mask.shape[0]
-            if mask_length not in (model.world_count, model.world_count + 1):
-                raise ValueError(
-                    f"world_mask has length {mask_length}, expected {model.world_count} or {model.world_count + 1}."
-                )
-            if world_mask.device != self.device:
-                raise ValueError(f"world_mask is on device {world_mask.device}, expected solver device {self.device}.")
+        world_mask = self._normalize_reset_world_mask(world_mask)
 
         flags_value = int(StateFlags.ALL if flags is None else flags)
 

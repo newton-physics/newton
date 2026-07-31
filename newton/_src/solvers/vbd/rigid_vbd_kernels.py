@@ -102,12 +102,10 @@ def _reset_world_selected(
     reset_all: bool,
     world_count: int,
 ):
-    """Query a public reset mask whose optional final entry selects unassigned entities."""
+    """Query a public reset mask whose final entry selects global entities."""
     if reset_all:
         return True
     if world < 0:
-        if world_mask.shape[0] == world_count:
-            return False
         world = world_count
     return world_mask[world]
 

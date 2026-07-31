@@ -8,8 +8,14 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.geometry import (
     CollisionDetector,
+)
+from newton._src.solvers.kamino._src.geometry.detector import (
+    _cap_world_contacts_at_total,
+    _estimate_fallback_world_max_contacts,
+    _resolve_contact_capacity,
 )
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
@@ -160,6 +166,83 @@ class TestGeometryCollisionDetector(unittest.TestCase):
             case="boxes_nunchaku",
             header="unified pipeline",
         )
+
+    def test_03_pair_based_world_budgets(self):
+        """Verify per-world budgets follow geometry rather than an equal model split."""
+        builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
+        model = builder.finalize(self.default_device)
+
+        config = CollisionDetector.Config(pipeline="primitive", broadphase="explicit")
+        detector = CollisionDetector(model=model, config=config)
+
+        self.assertEqual(detector.world_max_contacts, model.geoms.world_minimum_contacts)
+        self.assertEqual(detector.model_max_contacts, sum(model.geoms.world_minimum_contacts))
+
+    def test_04_max_contacts_caps_model_total(self):
+        """Verify ``max_contacts`` caps rather than floors the geometry-based estimate."""
+        builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
+        model = builder.finalize(self.default_device)
+        uncapped_total = sum(model.geoms.world_minimum_contacts)
+        self.assertGreater(uncapped_total, 15)
+
+        config = CollisionDetector.Config(
+            pipeline="primitive",
+            broadphase="explicit",
+            max_contacts=15,
+        )
+        detector = CollisionDetector(model=model, config=config)
+
+        self.assertEqual(detector.model_max_contacts, 15)
+        self.assertEqual(sum(detector.world_max_contacts), 15)
+
+    def test_05_heterogeneous_world_budgets(self):
+        """Verify worlds with different geometry receive different contact budgets."""
+        builder = ModelBuilderKamino(default_world=False)
+        basics.build_boxes_nunchaku(builder=builder)
+        builder.add_world(name="empty_world")
+        model = builder.finalize(self.default_device)
+
+        config = CollisionDetector.Config(pipeline="primitive", broadphase="explicit")
+        detector = CollisionDetector(model=model, config=config)
+
+        self.assertEqual(len(detector.world_max_contacts), 2)
+        self.assertGreater(detector.world_max_contacts[0], 0)
+        self.assertEqual(detector.world_max_contacts[1], 0)
+        self.assertEqual(detector.world_max_contacts, model.geoms.world_minimum_contacts)
+
+
+class TestCollisionDetectorContactCapacity(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def test_00_cap_world_contacts_at_total(self):
+        """Verify proportional capping preserves the configured model total."""
+        capped = _cap_world_contacts_at_total([100, 50, 50], 120)
+        self.assertEqual(sum(capped), 120)
+        self.assertEqual(capped[0], 60)
+
+    def test_01_fallback_explicit_per_world_pair_counts(self):
+        """Verify fallback explicit broad-phase estimates accumulate pairs per world."""
+        builder = make_homogeneous_builder(num_worlds=2, build_fn=basics.build_boxes_nunchaku)
+        model = builder.finalize(self.default_device)
+        config = CollisionDetector.Config(broadphase="explicit")
+
+        world_max = _estimate_fallback_world_max_contacts(model, config)
+        self.assertEqual(len(world_max), 2)
+        self.assertGreater(world_max[0], 0)
+        self.assertEqual(world_max[0], world_max[1])
+
+    def test_02_resolve_contact_capacity_uses_pair_metadata(self):
+        """Verify resolved budgets match pair-based metadata when available."""
+        builder = basics.build_boxes_nunchaku()
+        model = builder.finalize(self.default_device)
+        config = CollisionDetector.Config(max_contacts=10_000)
+
+        model_max, world_max = _resolve_contact_capacity(model, config)
+        self.assertEqual(world_max, model.geoms.world_minimum_contacts)
+        self.assertEqual(model_max, model.geoms.model_minimum_contacts)
 
 
 ###

@@ -1320,6 +1320,161 @@ class TestImportMjcfMeshScale(unittest.TestCase):
         self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
 
 
+class TestImportMjcfInlineMesh(unittest.TestCase):
+    """Tests for MJCF mesh assets authored with inline arrays."""
+
+    def test_inline_mesh_builds_convex_hull_without_faces(self):
+        """Build a convex hull when inline mesh faces are absent or empty."""
+        for face_attribute in ("", ' face=""', ' face="   "'):
+            with self.subTest(face_attribute=face_attribute):
+                mjcf = f"""
+<mujoco>
+    <asset>
+        <mesh name="tetra" vertex="0 0 0  1 0 0  0 1 0  0 0 1"{face_attribute}/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="tetra" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+
+                mesh = builder.shape_source[0]
+                self.assertEqual(len(mesh.vertices), 4)
+                self.assertEqual(len(mesh.indices), 12)
+                np.testing.assert_allclose(
+                    np.asarray(mesh.vertices)[np.lexsort(np.asarray(mesh.vertices).T[::-1])],
+                    [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+                )
+
+    def test_inline_mesh_vertex_face_data(self):
+        """Import inline mesh vertices and triangle faces."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"/>
+    </asset>
+    <worldbody>
+        <body>
+            <geom type="mesh" mesh="tetra" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, scale=2.0)
+
+        self.assertEqual(builder.shape_count, 1)
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(
+            mesh.vertices,
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]],
+        )
+        np.testing.assert_array_equal(mesh.indices, [0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2])
+
+    def test_inline_mesh_preserves_texcoords_for_textures(self):
+        """Preserve per-vertex UVs on a textured inline mesh."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            texture_path = os.path.join(tmpdir, "texture.png")
+            mjcf = f"""
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"
+              texcoord="0 0  1 0  0 1  1 1"/>
+        <texture name="texture" type="2d" file="{texture_path}"/>
+        <material name="textured" texture="texture"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="tetra" material="textured" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(mesh.uvs, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+        self.assertEqual(mesh.texture, texture_path)
+
+    def test_inline_mesh_applies_reference_pose_to_vertices_and_normals(self):
+        """Apply the MJCF reference pose and scale to inline mesh data."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="1 0 0  2 0 0  1 1 0  1 0 1"
+              face="0 2 1  0 1 3  0 3 2  1 2 3"
+              normal="1 1 0  1 1 0  1 1 0  1 1 0"
+              refpos="1 0 0"
+              refquat="0.7071067811865476 0 0 0.7071067811865476"
+              scale="2 3 4"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="tetra" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(
+            mesh.vertices,
+            [[0.0, 0.0, 0.0], [0.0, -3.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+            atol=1e-5,
+        )
+        expected_normal = np.array([0.5, -1.0 / 3.0, 0.0])
+        expected_normal /= np.linalg.norm(expected_normal)
+        np.testing.assert_allclose(mesh.normals, np.tile(expected_normal, (4, 1)), atol=1e-5)
+
+    def test_inline_mesh_rejects_malformed_vertex_attributes(self):
+        """Reject normals and texture coordinates with the wrong vertex count."""
+        for attribute, message in (
+            ('normal="0 0 1"', "normal.*3 values per vertex"),
+            ('texcoord="0 0"', "texcoord.*2 values per vertex"),
+            ('refpos="invalid 0 0"', "Inline MJCF mesh 'bad'.*invalid refpos data"),
+            ('refquat="invalid 0 0 1"', "Inline MJCF mesh 'bad'.*invalid refquat data"),
+        ):
+            with self.subTest(attribute=attribute):
+                mjcf = f"""
+<mujoco>
+    <asset>
+        <mesh name="bad"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"
+              {attribute}/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="bad" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+                with self.assertRaisesRegex(ValueError, message):
+                    builder.add_mjcf(mjcf)
+
+    def test_inline_mesh_rejects_malformed_faces(self):
+        """Reject inline mesh face data that does not contain triangles."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="bad" vertex="0 0 0  1 0 0  0 1 0" face="0 1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="bad"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "face.*multiple of 3"):
+            builder.add_mjcf(mjcf)
+
+
 class TestImportMjcfGeometry(unittest.TestCase):
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""

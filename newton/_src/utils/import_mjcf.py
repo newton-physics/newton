@@ -17,7 +17,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
-from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
+from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -514,19 +514,106 @@ def parse_mjcf(
     hfield_assets = {}
     for asset in root.findall("asset"):
         for mesh in asset.findall("mesh"):
-            if "file" in mesh.attrib:
-                fname = os.path.join(mesh_dir, mesh.attrib["file"])
+            mesh_attrib = resolve_element_attrib(mesh, "mesh")
+            mesh_file = mesh_attrib.get("file")
+            mesh_name = mesh_attrib.get("name")
+            mesh_scale = np.array(mesh_attrib.get("scale", "1.0 1.0 1.0").split(), dtype=np.float32)
+            maxhullvert = int(mesh_attrib.get("maxhullvert", str(mesh_maxhullvert)))
+
+            if mesh_file:
+                fname = os.path.join(mesh_dir, mesh_file)
                 # handle stl relative paths
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
-                # resolve mesh element's class defaults
-                mesh_attrib = resolve_element_attrib(mesh, "mesh")
-                name = mesh.attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
-                s = mesh_attrib.get("scale", "1.0 1.0 1.0")
-                s = np.array(s.split(), dtype=np.float32)
-                # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
-                maxhullvert = int(mesh_attrib.get("maxhullvert", str(mesh_maxhullvert)))
-                mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
+                name = mesh_name or ".".join(os.path.basename(fname).split(".")[:-1])
+                mesh_assets[name] = {"file": fname, "scale": mesh_scale, "maxhullvert": maxhullvert}
+            elif "vertex" in mesh_attrib:
+                name = mesh_name
+                if not name:
+                    raise ValueError("Inline MJCF mesh assets require a name.")
+                try:
+                    vertices = np.array(mesh_attrib["vertex"].split(), dtype=np.float32)
+                except ValueError as exc:
+                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid vertex data.") from exc
+                if len(vertices) % 3 != 0:
+                    raise ValueError(
+                        f"Inline MJCF mesh {name!r} vertex data must contain a multiple of 3 values; "
+                        f"got {len(vertices)}."
+                    )
+                if len(vertices) < 9:
+                    raise ValueError(f"Inline MJCF mesh {name!r} must contain at least 3 vertices.")
+                vertices = vertices.reshape(-1, 3)
+
+                faces = None
+                face_data = mesh_attrib.get("face", "").strip()
+                if face_data:
+                    try:
+                        faces = np.array(face_data.split(), dtype=np.int32)
+                    except ValueError as exc:
+                        raise ValueError(f"Inline MJCF mesh {name!r} has invalid face data.") from exc
+                    if len(faces) % 3 != 0:
+                        raise ValueError(
+                            f"Inline MJCF mesh {name!r} face data must contain a multiple of 3 values; got {len(faces)}."
+                        )
+                    if np.any(faces < 0) or np.any(faces >= len(vertices)):
+                        raise ValueError(f"Inline MJCF mesh {name!r} face data contains an invalid vertex index.")
+                    faces = faces.reshape(-1, 3)
+
+                normals = None
+                if "normal" in mesh_attrib:
+                    try:
+                        normals = np.array(mesh_attrib["normal"].split(), dtype=np.float32)
+                    except ValueError as exc:
+                        raise ValueError(f"Inline MJCF mesh {name!r} has invalid normal data.") from exc
+                    if len(normals) != 3 * len(vertices):
+                        raise ValueError(
+                            f"Inline MJCF mesh {name!r} normal data must contain 3 values per vertex; "
+                            f"got {len(normals)} values for {len(vertices)} vertices."
+                        )
+                    normals = normals.reshape(-1, 3)
+
+                texcoords = None
+                if "texcoord" in mesh_attrib:
+                    try:
+                        texcoords = np.array(mesh_attrib["texcoord"].split(), dtype=np.float32)
+                    except ValueError as exc:
+                        raise ValueError(f"Inline MJCF mesh {name!r} has invalid texcoord data.") from exc
+                    if len(texcoords) != 2 * len(vertices):
+                        raise ValueError(
+                            f"Inline MJCF mesh {name!r} texcoord data must contain 2 values per vertex; "
+                            f"got {len(texcoords)} values for {len(vertices)} vertices."
+                        )
+                    texcoords = texcoords.reshape(-1, 2)
+
+                try:
+                    refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
+                except ValueError as exc:
+                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refpos data.") from exc
+                try:
+                    refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
+                except ValueError as exc:
+                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refquat data.") from exc
+                if refpos.shape != (3,):
+                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must have 3 values.")
+                if refquat.shape != (4,):
+                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must have 4 values.")
+                refquat_norm = np.linalg.norm(refquat)
+                if not np.isfinite(refquat_norm) or refquat_norm == 0.0:
+                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must be finite and nonzero.")
+                if not np.all(np.isfinite(refpos)):
+                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must contain only finite values.")
+                refquat /= refquat_norm
+
+                mesh_assets[name] = {
+                    "vertices": vertices,
+                    "faces": faces,
+                    "normals": normals,
+                    "texcoords": texcoords,
+                    "refpos": refpos,
+                    "refquat": refquat,
+                    "scale": mesh_scale,
+                    "maxhullvert": maxhullvert,
+                }
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
             tex_file = texture.attrib.get("file")
@@ -580,6 +667,64 @@ def parse_mjcf(
                 "file": file_path,
                 "elevation": elevation_data,
             }
+
+    def load_mesh_asset(
+        mesh_name: str,
+        scaling: np.ndarray,
+        maxhullvert: int,
+        override_color: tuple[float, float, float] | None = None,
+        override_texture: str | None = None,
+    ) -> list[Mesh]:
+        mesh_asset = mesh_assets[mesh_name]
+        if "file" in mesh_asset:
+            return load_meshes_from_file(
+                mesh_asset["file"],
+                scale=scaling,
+                maxhullvert=maxhullvert,
+                override_color=override_color,
+                override_texture=override_texture,
+            )
+
+        refquat = mesh_asset["refquat"]
+        rotation = np.asarray(
+            wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
+            dtype=np.float32,
+        ).reshape(3, 3)
+        vertices = ((mesh_asset["vertices"] - mesh_asset["refpos"]) @ rotation) * scaling
+        faces = mesh_asset["faces"]
+        normals = mesh_asset["normals"]
+        texcoords = mesh_asset["texcoords"]
+        if normals is not None:
+            normals = (normals @ rotation) / scaling
+            lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+            normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
+
+        if faces is None:
+            hull_vertices, faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
+            source_index_by_vertex = {}
+            for index, vertex in enumerate(vertices):
+                source_index_by_vertex.setdefault(tuple(vertex), index)
+            source_indices = np.array(
+                [source_index_by_vertex[tuple(vertex)] for vertex in hull_vertices],
+                dtype=np.int32,
+            )
+            vertices = hull_vertices
+            if normals is not None:
+                normals = normals[source_indices]
+            if texcoords is not None:
+                texcoords = texcoords[source_indices]
+
+        return [
+            Mesh(
+                vertices,
+                faces,
+                normals=normals,
+                uvs=texcoords,
+                maxhullvert=maxhullvert,
+                color=override_color,
+                texture=override_texture,
+            )
+        ]
 
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     xform = xform * axis_xform
@@ -879,7 +1024,6 @@ def parse_mjcf(
                         print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
                     continue
                 else:
-                    stl_file = mesh_assets[mesh_name]["file"]
                     if "mesh" in geom_defaults:
                         mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[mesh_name]["scale"])
                     else:
@@ -887,11 +1031,7 @@ def parse_mjcf(
                     scaling = np.array(mesh_scale) * scale
                     maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
 
-                    m_meshes = load_meshes_from_file(
-                        stl_file,
-                        scale=scaling,
-                        maxhullvert=maxhullvert,
-                    )
+                    m_meshes = load_mesh_asset(mesh_name, scaling, maxhullvert)
                     # Combine all sub-meshes into one vertex array for fitting.
                     all_vertices = np.concatenate([m.vertices for m in m_meshes], axis=0)
 
@@ -1007,18 +1147,19 @@ def parse_mjcf(
                     if verbose:
                         print(f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
                     continue
-                stl_file = mesh_assets[geom_attrib["mesh"]]["file"]
-                mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
+                mesh_asset = mesh_assets[geom_attrib["mesh"]]
+                mesh_label = mesh_asset.get("file", geom_attrib["mesh"])
+                mesh_scale = mesh_asset["scale"]
                 scaling = np.array(mesh_scale) * scale
                 # as per the Mujoco XML reference, ignore geom size attribute
 
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
 
-                m_meshes = load_meshes_from_file(
-                    stl_file,
-                    scale=scaling,
-                    maxhullvert=maxhullvert,
+                m_meshes = load_mesh_asset(
+                    geom_attrib["mesh"],
+                    scaling,
+                    maxhullvert,
                     override_color=material_color,
                     override_texture=texture,
                 )
@@ -1041,7 +1182,7 @@ def parse_mjcf(
                 for m_mesh in m_meshes:
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
-                            print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
+                            print(f"Warning: mesh {mesh_label} has a texture but no UVs; texture will be ignored.")
                         m_mesh.texture = None
                     # Mesh shapes must not use cfg.sdf_*; SDFs are built on the mesh itself.
                     mesh_shape_kwargs = dict(shape_kwargs)
