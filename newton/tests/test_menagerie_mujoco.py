@@ -1400,6 +1400,12 @@ def compare_mjw_models(
                 opt_native = getattr(native_val, opt_attr, None)
                 if opt_newton is None or opt_native is None or callable(opt_native):
                     continue
+                if opt_attr == "graph_conditional" and not wp.is_conditional_graph_supported():
+                    # SolverMuJoCo forces this flag off where conditional graph
+                    # nodes are unsupported, while put_model() leaves its default
+                    # True, so the expected value here is False, not equality.
+                    assert not opt_newton, f"{attr}.{opt_attr}: {opt_newton} != False"
+                    continue
                 if hasattr(opt_native, "numpy"):
                     np.testing.assert_allclose(
                         opt_newton.numpy(),
