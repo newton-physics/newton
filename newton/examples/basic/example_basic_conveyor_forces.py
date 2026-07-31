@@ -176,6 +176,8 @@ def identify_belt_contact(
     rigid_contact_normal: wp.array[wp.vec3],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     contact_force_vec: wp.array[wp.vec3],
     shape_body: wp.array[wp.int32],
     shape_conveyor: wp.array[wp.int32],
@@ -202,12 +204,12 @@ def identify_belt_contact(
     if conv0 >= 0 and conv1 < 0:
         conv = conv0
         body = shape_body[shape1]
-        body_point_local = rigid_contact_point1[i]
+        body_point_local = rigid_contact_point1[i] + rigid_contact_offset1[i]
         normal_toward_body = normal
     elif conv1 >= 0 and conv0 < 0:
         conv = conv1
         body = shape_body[shape0]
-        body_point_local = rigid_contact_point0[i]
+        body_point_local = rigid_contact_point0[i] + rigid_contact_offset0[i]
         normal_toward_body = -normal
     else:
         return out
@@ -242,6 +244,8 @@ def count_belt_contacts(
     rigid_contact_normal: wp.array[wp.vec3],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     contact_force_vec: wp.array[wp.vec3],
     shape_body: wp.array[wp.int32],
     shape_conveyor: wp.array[wp.int32],
@@ -261,6 +265,8 @@ def count_belt_contacts(
         rigid_contact_normal,
         rigid_contact_point0,
         rigid_contact_point1,
+        rigid_contact_offset0,
+        rigid_contact_offset1,
         contact_force_vec,
         shape_body,
         shape_conveyor,
@@ -281,6 +287,8 @@ def accumulate_conveyor_forces(
     rigid_contact_normal: wp.array[wp.vec3],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     contact_force_vec: wp.array[wp.vec3],
     shape_body: wp.array[wp.int32],
     shape_conveyor: wp.array[wp.int32],
@@ -311,6 +319,8 @@ def accumulate_conveyor_forces(
         rigid_contact_normal,
         rigid_contact_point0,
         rigid_contact_point1,
+        rigid_contact_offset0,
+        rigid_contact_offset1,
         contact_force_vec,
         shape_body,
         shape_conveyor,
@@ -595,6 +605,8 @@ class ConveyorForceModel:
                 contacts.rigid_contact_normal,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 self.contact_force_vec,
                 self.model.shape_body,
                 self.shape_conveyor,
@@ -616,6 +628,8 @@ class ConveyorForceModel:
                 contacts.rigid_contact_normal,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 self.contact_force_vec,
                 self.model.shape_body,
                 self.shape_conveyor,
