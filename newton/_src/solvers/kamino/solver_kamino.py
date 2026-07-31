@@ -745,7 +745,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Scratch array for notify validation
         self._notify_violations = wp.empty(
-            self._kamino.JOINT_UPDATE_VIOLATION_COUNT,
+            len(self._kamino.JointUpdateViolation),
             dtype=wp.int32,
             device=model.device,
         )
@@ -1285,12 +1285,12 @@ class SolverKamino(SolverBase, CouplingInterface):
             check_axes=check_axes,
         )
         violations = self._notify_violations.numpy()
-        dynamic_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_DYNAMIC_CTS]
-        limit_dof = violations[self._kamino.JOINT_UPDATE_VIOLATION_LIMIT_FINITE]
-        actuation_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION]
-        invalid_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE]
-        axis_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES]
-        gimbal_handedness_joint = violations[self._kamino.JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS]
+        dynamic_joint = violations[self._kamino.JointUpdateViolation.DYNAMIC_CTS]
+        limit_dof = violations[self._kamino.JointUpdateViolation.LIMIT_FINITE]
+        actuation_joint = violations[self._kamino.JointUpdateViolation.ACTUATION_PARTITION]
+        invalid_joint = violations[self._kamino.JointUpdateViolation.INVALID_TARGET_MODE]
+        axis_joint = violations[self._kamino.JointUpdateViolation.NONORTHONORMAL_AXES]
+        gimbal_handedness_joint = violations[self._kamino.JointUpdateViolation.GIMBAL_HANDEDNESS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from enum import IntEnum
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
 ###
 
 __all__ = [
+    "JointUpdateViolation",
     "convert_geometries",
     "convert_joints",
     "convert_model_joint_actuation",
@@ -57,14 +59,17 @@ __all__ = [
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
-# Indices into the joint-update validation ``violations`` array.
-JOINT_UPDATE_VIOLATION_DYNAMIC_CTS = 0
-JOINT_UPDATE_VIOLATION_LIMIT_FINITE = 1
-JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION = 2
-JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE = 3
-JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES = 4
-JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS = 5
-JOINT_UPDATE_VIOLATION_COUNT = 6
+
+class JointUpdateViolation(IntEnum):
+    """Indices into the joint-update validation violations array."""
+
+    DYNAMIC_CTS = 0
+    LIMIT_FINITE = 1
+    ACTUATION_PARTITION = 2
+    INVALID_TARGET_MODE = 3
+    NONORTHONORMAL_AXES = 4
+    GIMBAL_HANDEDNESS = 5
+
 
 ###
 # Kernels
@@ -236,12 +241,12 @@ def validate_joint_dof_updates_kernel(
             joint_target_ke,
             joint_target_kd,
         ) != (num_dynamic_cts[tid] > 0):
-            wp.atomic_min(violations, JOINT_UPDATE_VIOLATION_DYNAMIC_CTS, tid)
+            wp.atomic_min(violations, JointUpdateViolation.DYNAMIC_CTS, tid)
 
     if tid < dof_count:
         current_finite = joint_limit_lower[tid] > JOINT_QMIN or joint_limit_upper[tid] < JOINT_QMAX
         if current_finite != (built_limit_finite[tid] != 0):
-            wp.atomic_min(violations, JOINT_UPDATE_VIOLATION_LIMIT_FINITE, tid)
+            wp.atomic_min(violations, JointUpdateViolation.LIMIT_FINITE, tid)
 
 
 @wp.kernel
@@ -261,9 +266,9 @@ def validate_joint_actuation_updates_kernel(
         joint_target_mode,
     )
     if current_actuation < 0:
-        wp.atomic_min(violations, JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE, joint)
+        wp.atomic_min(violations, JointUpdateViolation.INVALID_TARGET_MODE, joint)
     elif (current_actuation == JointActuationType.PASSIVE) != (act_type[joint] == JointActuationType.PASSIVE):
-        wp.atomic_min(violations, JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION, joint)
+        wp.atomic_min(violations, JointUpdateViolation.ACTUATION_PARTITION, joint)
 
 
 @wp.kernel
@@ -312,10 +317,10 @@ def validate_joint_axes_kernel(
             left_handed = wp.dot(wp.cross(axis_0, axis_1), axis_2) < 0.0
             expected_left_handed = dof_type == JointDoFType.GIMBAL_LEFT_HANDED
             if left_handed != expected_left_handed:
-                wp.atomic_min(violations, JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS, joint)
+                wp.atomic_min(violations, JointUpdateViolation.GIMBAL_HANDEDNESS, joint)
                 return
     if not valid:
-        wp.atomic_min(violations, JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES, joint)
+        wp.atomic_min(violations, JointUpdateViolation.NONORTHONORMAL_AXES, joint)
 
 
 @wp.kernel
@@ -875,15 +880,15 @@ def validate_model_joint_updates(
 ) -> int:
     """Validate that runtime joint edits preserve Kamino's structural layout.
 
-    ``violations`` is a :data:`JOINT_UPDATE_VIOLATION_COUNT`-entry array
+    ``violations`` is a ``len(JointUpdateViolation)``-entry array
     containing the first index for each violation type:
 
-    - :data:`JOINT_UPDATE_VIOLATION_DYNAMIC_CTS`: dynamic-constraint topology changed
-    - :data:`JOINT_UPDATE_VIOLATION_LIMIT_FINITE`: finite-limit state changed
-    - :data:`JOINT_UPDATE_VIOLATION_ACTUATION_PARTITION`: passive/actuated partition changed
-    - :data:`JOINT_UPDATE_VIOLATION_INVALID_TARGET_MODE`: unsupported target-mode combination
-    - :data:`JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
-    - :data:`JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS`: gimbal axis handedness changed
+    - :attr:`JointUpdateViolation.DYNAMIC_CTS`: dynamic-constraint topology changed
+    - :attr:`JointUpdateViolation.LIMIT_FINITE`: finite-limit state changed
+    - :attr:`JointUpdateViolation.ACTUATION_PARTITION`: passive/actuated partition changed
+    - :attr:`JointUpdateViolation.INVALID_TARGET_MODE`: unsupported target-mode combination
+    - :attr:`JointUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
+    - :attr:`JointUpdateViolation.GIMBAL_HANDEDNESS`: gimbal axis handedness changed
 
     An entry equal to the maximum of the joint and DoF counts indicates that no
     violation of that type was found.
@@ -995,14 +1000,15 @@ def _validate_joint_axes(
             ],
             device=model.device,
         )
-    invalid_joint = int(violations.numpy()[JOINT_UPDATE_VIOLATION_NONORTHONORMAL_AXES])
+    violations_np = violations.numpy()
+    invalid_joint = int(violations_np[JointUpdateViolation.NONORTHONORMAL_AXES])
     if invalid_joint < model.joint_count:
         raise ValueError(
             f"Invalid joint configuration for SolverKamino:\n"
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
             "universal and gimbal axes must be unit length and orthogonal"
         )
-    invalid_joint = int(violations.numpy()[JOINT_UPDATE_VIOLATION_GIMBAL_HANDEDNESS])
+    invalid_joint = int(violations_np[JointUpdateViolation.GIMBAL_HANDEDNESS])
     if invalid_joint < model.joint_count:
         raise ValueError(
             f"Invalid joint configuration for SolverKamino:\n"
@@ -1314,7 +1320,7 @@ def convert_joints(
         device=model.device,
     )
 
-    axis_validation_violations = wp.empty(JOINT_UPDATE_VIOLATION_COUNT, dtype=wp.int32, device=model.device)
+    axis_validation_violations = wp.empty(len(JointUpdateViolation), dtype=wp.int32, device=model.device)
     _validate_joint_axes(model, joint_dof_type, axis_validation_violations)
 
     wp.launch(

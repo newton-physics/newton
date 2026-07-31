@@ -915,7 +915,7 @@ def _eval_target_relative_transformations(
                 q = q_X_B * q_loc * wp.quat_inverse(q_X_B)
             elif dof_type_j == FKJointDoFType.GIMBAL or dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
                 third_axis_sign = 1.0
-                if wp.static(dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED):
+                if dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
                     third_axis_sign = -1.0
                 axes = X_B @ gimbal_transported_axes(
                     wp.vec3f(actuators_q[offset_q_j], actuators_q[offset_q_j + 1], actuators_q[offset_q_j + 2]),
