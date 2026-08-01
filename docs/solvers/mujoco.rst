@@ -592,6 +592,89 @@ See MuJoCo's `solver documentation
 what each parameter does and when to tune it.
 
 
+Sleeping
+--------
+
+MuJoCo Warp can exclude stationary constraint islands from collision
+detection and the compact Newton solver. Newton keeps this optimization
+disabled by default. Enable it when simulating many passive objects that
+spend substantial time at rest. Sleeping adds island bookkeeping and uses the
+compact-solver path even while everything remains awake, so scenes in which
+most degrees of freedom remain awake can be slower than with sleeping disabled.
+Benchmark representative workloads before enabling it::
+
+    solver = SolverMuJoCo(
+        model,
+        enable_sleeping=True,
+        sleep_tolerance=0.01,
+    )
+
+Sleeping is only supported by Newton's MuJoCo Warp GPU path. It requires
+``solver="newton"`` and ``use_mujoco_contacts=True`` so MuJoCo Warp's
+collision pipeline can wake sleeping bodies, and it does not support the RK4
+integrator. Unsupported combinations raise ``ValueError`` during solver
+construction. When an imported MJCF contains
+``<option><flag sleep="enable"/></option>``, leaving ``enable_sleeping`` as
+``None`` honors that setting. An explicit constructor value takes precedence.
+
+``sleep_tolerance`` is the scaled generalized-velocity threshold [m/s] below
+which an island becomes eligible to sleep. It follows the normal
+`Solver options`_ resolution order, including per-world
+``model.mujoco.sleep_tolerance`` values. The default is ``0.001``.
+
+MuJoCo's per-tree ``body/sleep`` policy is available as the body-frequency
+``model.mujoco.sleep_policy`` custom attribute and is imported from MJCF.
+The supported values are :attr:`~newton.solvers.SolverMuJoCo.SleepPolicy.AUTO`,
+:attr:`~newton.solvers.SolverMuJoCo.SleepPolicy.NEVER`,
+:attr:`~newton.solvers.SolverMuJoCo.SleepPolicy.ALLOWED`, and
+:attr:`~newton.solvers.SolverMuJoCo.SleepPolicy.INIT`. The policy must be
+assigned to the moving root body of a MuJoCo kinematic tree. For a
+programmatically built model, register the MuJoCo custom attributes before
+adding the body::
+
+    builder = newton.ModelBuilder()
+    SolverMuJoCo.register_custom_attributes(builder)
+    root = builder.add_link(
+        custom_attributes={
+            "mujoco:sleep_policy": SolverMuJoCo.SleepPolicy.INIT,
+        },
+    )
+
+``INIT`` makes the tree start asleep and is the intended way to construct a
+solver with compact ``nvmax`` storage. The setting applies to the shared model,
+so replicated worlds receive the same initial tree policies. Their default
+joint velocities must also match because MuJoCo Warp uses one shared initial
+sleep state; solver construction rejects differing per-world defaults.
+
+``nvmax`` sizes the compact solver's active-DOF workspace per world. If it is
+``None``, MuJoCo Warp uses the model's full ``nv``. This is the safe starting
+point but does not reduce compact-workspace memory. Tune a smaller value to
+the maximum number of DOFs expected to be awake simultaneously. The capacity
+must include every DOF that is awake in the initial MuJoCo state; Newton rejects
+smaller values before allocating solver data. ``nvmax`` is rejected when
+sleeping is disabled because MuJoCo Warp would otherwise allocate unused
+compact-solver workspace. If more than ``nvmax`` DOFs become active later,
+MuJoCo Warp sets the ``NVMAX`` bit in
+``solver.mjw_data.overflow``; increase ``nvmax`` and recreate the solver.
+
+MuJoCo Warp automatically wakes islands for applied forces and contacts.
+Actuated trees are not allowed to sleep by default. If their sleep policy is
+explicitly changed to allow sleeping, changing actuator controls alone does not
+wake them; apply a force or set a nonzero velocity first. Newton-side
+joint-position edits wake only the affected sleeping trees.
+:meth:`~newton.solvers.SolverMuJoCo.reset` restores the initial sleep state in
+selected worlds, while
+:meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` wakes all worlds
+after model-property updates. The sleeping path supports whole-step CUDA graph
+capture.
+
+See MuJoCo's `sleeping-islands documentation
+<https://mujoco.readthedocs.io/en/stable/programming/simulation.html#sleeping-islands>`_
+and `MuJoCo Warp compact-solver guide
+<https://mujoco.readthedocs.io/en/latest/mjwarp/#compact-solver>`_ for the
+underlying sleep policy, wake triggers, and ``nvmax`` tuning guidance.
+
+
 .. _mujoco-custom-attributes:
 
 MuJoCo-specific parameters in USD and MJCF

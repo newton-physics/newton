@@ -765,6 +765,19 @@ add_example_test(
 )
 
 
+class TestMuJoCoExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestMuJoCoExamples,
+    name="mujoco.example_mujoco_sleeping",
+    devices=cuda_test_devices,
+    test_options={"stack-count": 2, "num-frames": 300},
+    use_viewer=True,
+)
+
+
 class TestSelectionAPIExamples(unittest.TestCase):
     pass
 

@@ -4816,6 +4816,33 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         else:
             self.fail("Model should have mujoco.condim attribute")
 
+    def test_explicit_class_replaces_childclass(self):
+        """Use an explicit class without retaining sibling childclass defaults."""
+        mjcf = """
+<mujoco>
+    <default>
+        <default class="ambient">
+            <geom friction="0.7 0.1 0.01"/>
+        </default>
+        <default class="explicit">
+            <geom size="0.2"/>
+        </default>
+    </default>
+    <worldbody>
+        <body childclass="ambient">
+            <geom class="explicit"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        self.assertAlmostEqual(builder.shape_scale[0][0], 0.2)
+        self.assertAlmostEqual(builder.shape_material_mu[0], 1.0)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[0], 0.005)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[0], 0.0001)
+
 
 class TestImportMjcfActuatorsFrames(unittest.TestCase):
     def test_actuatorfrcrange_parsing(self):
