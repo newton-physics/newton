@@ -150,6 +150,9 @@ class Camera:
         Unlike :meth:`look_at`, this does not change the view direction, so it
         composes with :meth:`orbit`: the camera keeps whatever angle/distance
         the user last orbited to while tracking a moving target.
+
+        Args:
+            target: World-space target position [m].
         """
         self.translate(self._as_vec3(target) - self.pivot)
 

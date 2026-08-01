@@ -554,9 +554,9 @@ class ViewerViser(ViewerBase):
         the same camera setup as soon as they report camera state.
 
         Args:
-            pos: Requested camera position.
-            pitch: Requested camera pitch angle. Defaults to 0 if None.
-            yaw: Requested camera yaw angle. Defaults to 0 if None.
+            pos: Requested camera position [m].
+            pitch: Requested camera pitch angle [deg]. Defaults to 0 if None.
+            yaw: Requested camera yaw angle [deg]. Defaults to 0 if None.
         """
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         front, up_direction = self._compute_camera_front_up(pitch or 0.0, yaw or 0.0)
