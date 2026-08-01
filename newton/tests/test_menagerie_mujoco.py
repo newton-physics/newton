@@ -1402,9 +1402,13 @@ def compare_mjw_models(
                     continue
                 if opt_attr == "graph_conditional" and not wp.is_conditional_graph_supported():
                     # SolverMuJoCo forces this flag off where conditional graph
-                    # nodes are unsupported, while put_model() leaves its default
-                    # True, so the expected value here is False, not equality.
-                    assert not opt_newton, f"{attr}.{opt_attr}: {opt_newton} != False"
+                    # nodes are unsupported, while models built by a raw
+                    # put_model() keep its default True. Accept the forced value
+                    # or plain equality, so both solver-built and raw-model
+                    # comparisons pass.
+                    assert (not opt_newton) or opt_newton == opt_native, (
+                        f"{attr}.{opt_attr}: {opt_newton} != {opt_native} and not forced off"
+                    )
                     continue
                 if hasattr(opt_native, "numpy"):
                     np.testing.assert_allclose(
