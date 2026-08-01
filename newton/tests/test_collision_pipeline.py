@@ -35,7 +35,9 @@ from newton._src.sim.collide import (
     CollisionPipeline,
     _build_soft_edge_rigid_contact_pairs,
     _build_soft_face_rigid_contact_pairs,
+    _build_soft_particle_rigid_contact_pairs,
     _compute_per_world_shape_pairs_max,
+    _count_soft_particle_rigid_contact_pairs,
     _estimate_rigid_contact_max,
 )
 from newton._src.utils.heightfield import HeightfieldData
@@ -1707,6 +1709,48 @@ class TestParticleShapeContacts(unittest.TestCase):
         self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
 
+    def test_particle_shape_pair_count_matches_built_pairs(self):
+        """Verify the offset-only pair count matches the materialized particle-shape pair list.
+
+        ``_count_soft_particle_rigid_contact_pairs`` derives its result from the CSR world offsets
+        alone, so it must agree exactly with what ``_build_soft_particle_rigid_contact_pairs`` emits.
+        """
+
+        def add_entities(builder, shapes, particles, z):
+            for i in range(shapes):
+                builder.add_shape_sphere(
+                    body=-1, xform=wp.transform(wp.vec3(float(i), 0.0, z), wp.quat_identity()), radius=0.1
+                )
+            for i in range(particles):
+                builder.add_particle(pos=wp.vec3(0.0, float(i), z), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+        # (label, per-world (shapes, particles), head globals (shapes, particles), tail globals).
+        cases = [
+            ("single world", [(1, 1)], (0, 0), (0, 0)),
+            ("ragged worlds", [(1, 3), (4, 1), (2, 5)], (0, 0), (0, 0)),
+            ("zero-particle world", [(2, 0), (1, 3)], (0, 0), (0, 0)),
+            ("zero-shape world", [(0, 4), (2, 2)], (0, 0), (0, 0)),
+            ("head globals only", [(1, 2), (3, 1)], (2, 3), (0, 0)),
+            ("tail globals only", [(1, 2), (3, 1)], (0, 0), (2, 3)),
+            ("head and tail globals", [(1, 2), (3, 1)], (2, 3), (1, 2)),
+            ("no worlds, all globals collapse into the head", [], (2, 3), (1, 2)),
+        ]
+        for label, worlds, head, tail in cases:
+            builder = newton.ModelBuilder()
+            add_entities(builder, *head, 5.0)  # Global head range.
+            for shapes, particles in worlds:
+                sub = newton.ModelBuilder()
+                add_entities(sub, shapes, particles, 0.0)
+                builder.add_world(sub)
+            add_entities(builder, *tail, 6.0)  # Global tail range.
+            model = builder.finalize(device="cpu")
+
+            self.assertEqual(
+                _count_soft_particle_rigid_contact_pairs(model),
+                len(_build_soft_particle_rigid_contact_pairs(model)),
+                label,
+            )
+
 
 class TestContactEstimator(unittest.TestCase):
     def test_visual_only_meshes_do_not_inflate_estimate(self):
@@ -2146,8 +2190,9 @@ def test_mesh_convex_midphase_queries_margin_shell(test, device):
     indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
     builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, indices), cfg=cfg)
 
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
-    builder.add_joint_free(child=body)
+    body = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
+    joint = builder.add_joint_free(child=body)
+    builder.add_articulation([joint])
     builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
 
     model = builder.finalize(device=device)
@@ -2311,10 +2356,11 @@ def test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge(test, 
     )
     builder.add_shape_heightfield(heightfield=heightfield, cfg=cfg)
 
-    body = builder.add_body(
+    body = builder.add_link(
         xform=wp.transform(wp.vec3(1.0 + radius + surface_separation, 0.0, 0.0), wp.quat_identity())
     )
-    builder.add_joint_free(child=body)
+    joint = builder.add_joint_free(child=body)
+    builder.add_articulation([joint])
     builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
 
     model = builder.finalize(device=device)
@@ -2443,7 +2489,7 @@ def _build_deterministic_scene(device):
                 )
                 shape_type = shape_types[shape_index % len(shape_types)]
                 shape_index += 1
-                body = builder.add_body(xform=wp.transform(p=pos, q=wp.quat_identity()))
+                body = builder.add_link(xform=wp.transform(p=pos, q=wp.quat_identity()))
                 if shape_type == "sphere":
                     builder.add_shape_sphere(body, radius=0.3)
                 elif shape_type == "box":

@@ -804,7 +804,7 @@ class TestSolverCoupledResetMask(unittest.TestCase):
     def test_missing_reset_inputs_zero_selected_transform_and_scalar_rows(self):
         """Zero selected transform and scalar rows when reset inputs are missing."""
         world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        body = world.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         joint = world.add_joint_free(child=body)
         world.add_articulation([joint])
 
@@ -2269,10 +2269,12 @@ class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         base = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         root_joint = builder.add_joint_fixed(parent=-1, child=base)
+        middle = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        middle_joint = builder.add_joint_revolute(parent=base, child=middle, axis=(0.0, 0.0, 1.0))
         link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        tree_joint = builder.add_joint_revolute(parent=base, child=link, axis=(0.0, 0.0, 1.0))
-        builder.add_articulation([root_joint, tree_joint])
-        loop_joint = builder.add_joint_fixed(parent=base, child=link)
+        tree_joint = builder.add_joint_revolute(parent=middle, child=link, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([root_joint, middle_joint, tree_joint])
+        loop_joint = builder.add_joint_fixed(parent=link, child=base)
         builder.joint_articulation[loop_joint] = -1
         model = builder.finalize(device="cpu")
 
@@ -2282,15 +2284,15 @@ class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
                 SolverCoupled.Entry(
                     name="loop",
                     solver=SolverSemiImplicit,
-                    bodies=[base, link],
-                    joints=[root_joint, tree_joint, loop_joint],
+                    bodies=[base, middle, link],
+                    joints=[root_joint, middle_joint, tree_joint, loop_joint],
                 )
             ],
         )
 
         view = coupled.view("loop")
-        np.testing.assert_array_equal(view.articulation_start.numpy(), [0, 3])
-        np.testing.assert_array_equal(view.articulation_end.numpy(), [2])
+        np.testing.assert_array_equal(view.articulation_start.numpy(), [0, 4])
+        np.testing.assert_array_equal(view.articulation_end.numpy(), [3])
 
     def test_compacted_multi_world_articulation_end_is_rebased(self):
         """articulation_end must be rebased to local joint ids, matching articulation_start.
