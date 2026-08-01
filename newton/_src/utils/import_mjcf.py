@@ -872,7 +872,8 @@ def parse_mjcf(
             end = wp.transform_point(incoming_xform, end)
 
         position = (start + end) * 0.5
-        direction = end - start
+        # Match MuJoCo's compiler, which points local +Z from the second endpoint to the first.
+        direction = start - end
         length = wp.length(direction)
         if length < 1.0e-6:
             if zero_length_error is not None:
