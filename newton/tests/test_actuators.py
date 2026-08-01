@@ -2204,5 +2204,61 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         )
 
 
+class TestControlTargetAttrDefaults(unittest.TestCase):
+    """``control_target_pos_attr`` / ``control_target_vel_attr`` accept ``None``.
+
+    Both parameters used to default to ``None``, meaning "resolve against the
+    active target layout". The layout switch removed that resolution step, but
+    callers may still pass ``None`` explicitly; it must keep selecting the
+    canonical names instead of reaching ``getattr()`` with a non-string.
+    """
+
+    def _actuator(self, **kwargs):
+        device = wp.get_device()
+        indices = wp.array([0], dtype=wp.uint32, device=device)
+        controller = ControllerPD(
+            kp=wp.array([10.0], dtype=wp.float32, device=device),
+            kd=wp.array([0.0], dtype=wp.float32, device=device),
+        )
+        return Actuator(indices=indices, controller=controller, **kwargs)
+
+    def test_omitted_attrs_default_to_canonical_names(self):
+        """Omitting both keywords selects joint_target_q / joint_target_qd."""
+        actuator = self._actuator()
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_normalizes_to_canonical_names(self):
+        """Explicit None must normalize rather than be stored verbatim."""
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_still_steps(self):
+        """step() must run after None was passed, not raise inside getattr()."""
+        device = wp.get_device()
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+
+        def _a(vals):
+            return wp.array(vals, dtype=wp.float32, device=device)
+
+        sim_state = types.SimpleNamespace(joint_q=_a([0.0]), joint_qd=_a([0.0]))
+        sim_control = types.SimpleNamespace(
+            joint_target_q=_a([1.0]),
+            joint_target_qd=_a([0.0]),
+            joint_act=None,
+            joint_f=wp.zeros(1, dtype=wp.float32, device=device),
+        )
+        actuator.step(sim_state, sim_control, dt=0.01)
+        # kp * (target - pos) = 10 * (1.0 - 0.0)
+        self.assertAlmostEqual(float(sim_control.joint_f.numpy()[0]), 10.0, places=4)
+
+    def test_custom_attr_names_are_preserved(self):
+        """A caller-supplied attribute name must be stored verbatim."""
+        actuator = self._actuator(control_target_pos_attr="my_pos", control_target_vel_attr="my_vel")
+        self.assertEqual(actuator.control_target_pos_attr, "my_pos")
+        self.assertEqual(actuator.control_target_vel_attr, "my_vel")
+
+
 if __name__ == "__main__":
     unittest.main()

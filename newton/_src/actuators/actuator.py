@@ -88,8 +88,8 @@ class Actuator:
         effort_indices: wp.array[wp.uint32] | None = None,
         state_pos_attr: str = "joint_q",
         state_vel_attr: str = "joint_qd",
-        control_target_pos_attr: str = "joint_target_q",
-        control_target_vel_attr: str = "joint_target_qd",
+        control_target_pos_attr: str | None = "joint_target_q",
+        control_target_vel_attr: str | None = "joint_target_qd",
         control_feedforward_attr: str | None = "joint_act",
         control_output_attr: str = "joint_f",
         control_computed_output_attr: str | None = None,
@@ -119,7 +119,9 @@ class Actuator:
             state_pos_attr: Attribute on sim_state for positions.
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.
+                ``None`` selects the default ``"joint_target_q"``.
             control_target_vel_attr: Attribute on sim_control for target velocities.
+                ``None`` selects the default ``"joint_target_qd"``.
             control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
             control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
@@ -153,8 +155,11 @@ class Actuator:
 
         self.state_pos_attr = state_pos_attr
         self.state_vel_attr = state_vel_attr
-        self.control_target_pos_attr = control_target_pos_attr
-        self.control_target_vel_attr = control_target_vel_attr
+        # These used to default to None and resolve against the target layout.
+        # Normalize so callers still passing None explicitly keep working
+        # instead of tripping getattr() with a non-string name in step().
+        self.control_target_pos_attr = "joint_target_q" if control_target_pos_attr is None else control_target_pos_attr
+        self.control_target_vel_attr = "joint_target_qd" if control_target_vel_attr is None else control_target_vel_attr
         self.control_feedforward_attr = control_feedforward_attr
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
