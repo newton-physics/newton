@@ -848,9 +848,9 @@ class ViewerGL(ViewerBase):
         Set the camera position, pitch, and yaw.
 
         Args:
-            pos: The camera position.
-            pitch: The camera pitch. If None, the current pitch is kept.
-            yaw: The camera yaw. If None, the current yaw is kept.
+            pos: The camera position [m].
+            pitch: The camera pitch [deg]. If None, the current pitch is kept.
+            yaw: The camera yaw [deg]. If None, the current yaw is kept.
         """
         self.camera.pos = self.camera._as_vec3(pos)
         if pitch is not None:
