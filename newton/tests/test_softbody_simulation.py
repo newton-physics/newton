@@ -72,7 +72,8 @@ def _tet_volumes(q, tet_indices):
 
 def _step(model, solver, state_0, state_1, steps=60, dt=1.0 / 300.0):
     control = model.control()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
 
     for _ in range(steps):
         state_0.clear_forces()

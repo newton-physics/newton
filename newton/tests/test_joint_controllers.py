@@ -27,7 +27,7 @@ def test_revolute_controller(
     target_ke,
     target_kd,
 ):
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     box_mass = 1.0
     box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
     # easy case: identity transform, zero center of mass
@@ -101,7 +101,7 @@ def test_ball_controller(
     prev_flag = newton.use_coord_layout_targets
     newton.use_coord_layout_targets = False
     try:
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
         box_mass = 1.0
         box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
         # easy case: identity transform, zero center of mass
@@ -199,7 +199,7 @@ def test_ball_controller_coord_layout(
     prev_flag = newton.use_coord_layout_targets
     newton.use_coord_layout_targets = True
     try:
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
         box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
         b = builder.add_link(inertia=box_inertia, mass=1.0)
         builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
@@ -274,7 +274,7 @@ def test_ball_controller_coord_layout_rotated_anchor(
     prev_flag = newton.use_coord_layout_targets
     newton.use_coord_layout_targets = True
     try:
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
         box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
 
         base = builder.add_link(inertia=box_inertia, mass=1.0)
@@ -361,7 +361,7 @@ def test_free_plus_revolute_position_target(
     prev_flag = newton.use_coord_layout_targets
     newton.use_coord_layout_targets = coord_layout
     try:
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=0.0)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         base = builder.add_link(inertia=wp.mat33(np.eye(3) * 0.1), mass=1.0)
@@ -425,7 +425,7 @@ def test_effort_limit_clamping(
     solver_fn,
 ):
     """Test that MuJoCo solver correctly clamps actuator forces based on effort_limit."""
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
 
     box_mass = 1.0
     inertia_value = 0.1
@@ -512,7 +512,7 @@ def test_qfrc_actuator(
     solver_fn,
 ):
     """Test that mujoco.qfrc_actuator extended state attribute is populated correctly by MuJoCo solver."""
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
 
     box_mass = 1.0
     inertia_value = 0.1
@@ -583,7 +583,7 @@ def test_qfrc_actuator(
     )
 
     # Verify that qfrc_actuator is NOT allocated when not requested
-    builder2 = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder2 = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     b2 = builder2.add_link(inertia=box_inertia, mass=box_mass)
     builder2.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
     j2 = builder2.add_joint_revolute(
@@ -636,7 +636,7 @@ def test_free_joint_qfrc_actuator_frame(
       </actuator>
     </mujoco>
     """
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     parse_mjcf(builder, mjcf, ctrl_direct=True, ignore_inertial_definitions=False)
     builder.request_state_attributes("mujoco:qfrc_actuator")

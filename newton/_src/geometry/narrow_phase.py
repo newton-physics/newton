@@ -1499,9 +1499,9 @@ class NarrowPhase:
                 Defaults to True for safety. Set to False when constructing from a model with no meshes.
             has_heightfields: Whether the scene contains any heightfield shapes (GeoType.HFIELD). When True,
                 heightfield collision buffers and kernels are allocated. Defaults to False.
-            deterministic: Sort contacts after the narrow phase so that results are
-                independent of GPU thread scheduling.  Adds a radix sort + gather
-                pass.  Hydroelastic contacts are not yet covered.
+            deterministic: Make contact generation and ordering independent of
+                GPU thread scheduling. Adds deterministic hydroelastic atomics
+                and a radix sort + gather pass.
             contact_max: Maximum number of contacts for the deterministic sort buffer.
                 Must match the ``contact_pair`` array size passed to :meth:`launch`.
                 Defaults to ``max_candidate_pairs``.  Set this to a larger value when
@@ -1657,6 +1657,8 @@ class NarrowPhase:
             self.global_contact_reducer = None
 
         self.hydroelastic_sdf = hydroelastic_sdf
+        if self.hydroelastic_sdf is not None:
+            self.hydroelastic_sdf._validate_deterministic(deterministic)
 
         # Pre-allocate all intermediate buffers.
         # Counters live in one consolidated array for efficient zeroing.
@@ -1716,6 +1718,9 @@ class NarrowPhase:
             num_shapes = shape_aabb_lower.shape[0] if shape_aabb_lower is not None else max_candidate_pairs
             self._empty_edge_indices = wp.zeros(1, dtype=wp.vec2i, device=device)
             self._empty_edge_range = wp.full(max(num_shapes, 1), (-1, 0), dtype=wp.vec2i, device=device)
+            # Indexed by shape id; all-zero means "no watertight bit set" so the
+            # sign method falls back to automatic selection (see resolve_mesh_sign_method).
+            self._empty_mesh_properties = wp.zeros(max(num_shapes, 1), dtype=wp.int32, device=device)
 
             if hydroelastic_sdf is not None:
                 self.shape_pairs_sdf_sdf = wp.zeros(hydroelastic_sdf.max_num_shape_pairs, dtype=wp.vec2i, device=device)
@@ -1784,6 +1789,7 @@ class NarrowPhase:
         shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
         shape_transform: wp.array[wp.transform],  # In world space
         shape_source: wp.array[wp.uint64],  # The index into the source array, type define by shape_types
+        shape_mesh_properties: wp.array[wp.int32] | None = None,  # Per-shape mesh property bitfield
         shape_sdf_index: wp.array[wp.int32],  # Per-shape index into texture_sdf_data (-1 for none)
         shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
         shape_collision_radius: wp.array[wp.float32],  # per-shape collision radius for AABB fallback
@@ -1813,6 +1819,7 @@ class NarrowPhase:
             shape_data: Array of vec4 containing scale (xyz) and margin (w) for each shape
             shape_transform: Array of world-space transforms for each shape
             shape_source: Array of source pointers (mesh IDs, etc.) for each shape
+            shape_mesh_properties: Per-shape mesh property bitfield.
             shape_sdf_index: Per-shape SDF table index (-1 for shapes without SDF)
             texture_sdf_data: Compact array of TextureSDFData structs
             shape_gap: Array of per-shape contact gaps (detection threshold) for each shape
@@ -1828,6 +1835,8 @@ class NarrowPhase:
         """
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
+        if shape_mesh_properties is None:
+            shape_mesh_properties = self._empty_mesh_properties
         if shape_edge_range is None:
             shape_edge_range = self._empty_edge_range
 
@@ -2092,6 +2101,7 @@ class NarrowPhase:
                             shape_source,
                             texture_sdf_data,
                             shape_sdf_index,
+                            shape_mesh_properties,
                             shape_gap,
                             shape_collision_aabb_lower,
                             shape_collision_aabb_upper,
@@ -2122,6 +2132,7 @@ class NarrowPhase:
                             shape_source,
                             texture_sdf_data,
                             shape_sdf_index,
+                            shape_mesh_properties,
                             shape_gap,
                             shape_collision_aabb_lower,
                             shape_collision_aabb_upper,
@@ -2231,6 +2242,7 @@ class NarrowPhase:
         shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
         shape_transform: wp.array[wp.transform],  # In world space
         shape_source: wp.array[wp.uint64],  # The index into the source array, type define by shape_types
+        shape_mesh_properties: wp.array[wp.int32] | None = None,  # Per-shape mesh property bitfield
         shape_sdf_index: wp.array[wp.int32] | None = None,  # Per-shape index into texture_sdf_data (-1 for none)
         texture_sdf_data: wp.array[TextureSDFData] | None = None,  # Compact texture SDF data table
         shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
@@ -2261,6 +2273,7 @@ class NarrowPhase:
             shape_data: Array of vec4 containing scale (xyz) and margin (w) for each shape
             shape_transform: Array of world-space transforms for each shape
             shape_source: Array of source pointers (mesh IDs, etc.) for each shape
+            shape_mesh_properties: Per-shape mesh property bitfield.
             shape_sdf_index: Per-shape SDF table index (-1 for shapes without SDF)
             texture_sdf_data: Compact array of TextureSDFData structs
             shape_gap: Array of per-shape contact gaps (detection threshold) for each shape
@@ -2346,6 +2359,7 @@ class NarrowPhase:
             shape_data=shape_data,
             shape_transform=shape_transform,
             shape_source=shape_source,
+            shape_mesh_properties=shape_mesh_properties,
             shape_sdf_index=shape_sdf_index,
             texture_sdf_data=texture_sdf_data,
             shape_gap=shape_gap,

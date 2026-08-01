@@ -5,11 +5,27 @@ import warp as wp
 
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield
 from .broad_phase_common import binary_search
-from .flags import ParticleFlags, ShapeFlags
+from .flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from .types import (
     Axis,
     GeoType,
 )
+
+
+@wp.func
+def resolve_mesh_sign_method(mesh_properties: int):
+    """Resolve the runtime mesh sign method for a shape from its mesh properties.
+
+    Parity for watertight meshes, pseudo-normal otherwise. Normal (rather than
+    the winding number the baked SDF path falls back to) is the open-mesh
+    runtime choice on purpose: for a genuinely open surface the generalized
+    winding number is ~0.5 and gives no clean inside, whereas the pseudo-normal
+    yields a stable local side-of-surface, which is what open collision
+    geometry needs.
+    """
+    if mesh_properties & MeshProperties.WATERTIGHT:
+        return int(MeshSignMethod.PARITY)
+    return int(MeshSignMethod.NORMAL)
 
 
 @wp.func
@@ -866,6 +882,14 @@ def closest_edge_coordinate_cylinder(
 
 
 @wp.func
+def mesh_query_point_sign(mesh: wp.uint64, point: wp.vec3, max_dist: float, sign_method: int):
+    """Closest-point query with the inside/outside sign strategy selected by *sign_method*."""
+    if sign_method == MeshSignMethod.PARITY:
+        return wp.mesh_query_point_sign_parity(mesh, point, max_dist)
+    return wp.mesh_query_point_sign_normal(mesh, point, max_dist)
+
+
+@wp.func
 def mesh_sdf(mesh: wp.uint64, point: wp.vec3, max_dist: float):
     res = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
 
@@ -892,7 +916,7 @@ def sdf_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
 
 @wp.func
 def closest_point_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
-    res = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
+    res = wp.mesh_query_point_no_sign(mesh, point, max_dist)
 
     if res.result:
         return wp.mesh_eval_position(mesh, res.face, res.u, res.v)
@@ -1006,6 +1030,7 @@ def create_soft_contacts(
     shape_type: wp.array[int],
     shape_scale: wp.array[wp.vec3],
     shape_source_ptr: wp.array[wp.uint64],
+    shape_mesh_properties: wp.array[wp.int32],
     shape_world: wp.array[int],  # World indices for shapes
     margin: float,
     shape_margin: wp.array[float],
@@ -1017,6 +1042,8 @@ def create_soft_contacts(
     # outputs
     soft_contact_count: wp.array[int],
     soft_contact_particle: wp.array[int],
+    soft_contact_indices: wp.array[wp.vec3i],
+    soft_contact_barycentric: wp.array[wp.vec3],
     soft_contact_shape: wp.array[int],
     soft_contact_body_pos: wp.array[wp.vec3],
     soft_contact_body_vel: wp.array[wp.vec3],
@@ -1102,8 +1129,11 @@ def create_soft_contacts(
         # Use magnitude of components: the search radius must always be positive
         # regardless of mirror parity.
         min_scale = wp.min(wp.min(wp.abs(geo_scale[0]), wp.abs(geo_scale[1])), wp.abs(geo_scale[2]))
-        query = wp.mesh_query_point_sign_parity(
-            mesh, wp.cw_div(x_local, geo_scale), margin + s_margin / min_scale + radius / min_scale
+        query = mesh_query_point_sign(
+            mesh,
+            wp.cw_div(x_local, geo_scale),
+            margin + s_margin / min_scale + radius / min_scale,
+            resolve_mesh_sign_method(shape_mesh_properties[shape_index]),
         )
         if query.result:
             sign = query.sign
@@ -1146,7 +1176,11 @@ def create_soft_contacts(
             soft_contact_shape[index] = shape_index
             soft_contact_body_pos[index] = body_pos
             soft_contact_body_vel[index] = body_vel
+            # Unified record: a particle contact is (p, -1, -1) with barycentric (1, 0, 0), plus the
+            # particle-only view kept for solvers that consume particle contacts exclusively.
             soft_contact_particle[index] = particle_index
+            soft_contact_indices[index] = wp.vec3i(particle_index, -1, -1)
+            soft_contact_barycentric[index] = wp.vec3(1.0, 0.0, 0.0)
             soft_contact_normal[index] = world_normal
 
 

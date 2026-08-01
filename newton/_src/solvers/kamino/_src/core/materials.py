@@ -22,6 +22,7 @@ material properties that can be queried at simulation runtime. It includes:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -38,7 +39,6 @@ from .types import Descriptor
 ###
 
 __all__ = [
-    "DEFAULT_DENSITY",
     "DEFAULT_FRICTION",
     "DEFAULT_RESTITUTION",
     "MaterialDescriptor",
@@ -46,17 +46,12 @@ __all__ = [
     "MaterialPairProperties",
     "MaterialPairsModel",
     "MaterialsModel",
+    "make_get_mixed_material_pair_property",
 ]
 
 ###
 # Constants
 ###
-
-DEFAULT_DENSITY = 1000.0
-"""
-The global default density for materials, in kg/m^3.
-Equals ``1000.0`` kg/m^3.
-"""
 
 DEFAULT_RESTITUTION = 0.0
 """
@@ -75,7 +70,7 @@ Equals ``0.7``.
 ###
 
 
-class MaterialMuxMode(IntEnum):
+class MaterialMixMode(IntEnum):
     """
     An enumeration defining the heuristic modes for deriving
     pairwise material properties from individual materials.
@@ -87,11 +82,32 @@ class MaterialMuxMode(IntEnum):
     AVERAGE = 0
     """Pairwise property is the average of the two material properties."""
 
-    MAX = 1
+    MULTIPLY = 1
+    """Pairwise property is the product of the two material properties."""
+
+    MAX = 2
     """Pairwise property is the maximum of the two material properties."""
 
-    MIN = 2
+    MIN = 3
     """Pairwise property is the minimum of the two material properties."""
+
+    @classmethod
+    def from_string(cls, s: str) -> MaterialMixMode:
+        """Converts a string to a MaterialMixMode enum value."""
+        try:
+            return cls[s.upper()]
+        except KeyError as e:
+            raise ValueError(f"Invalid MaterialMixMode: {s}. Valid options are: {[e.name for e in cls]}") from e
+
+    @override
+    def __str__(self):
+        """Returns a string representation of the MaterialMixMode."""
+        return f"MaterialMixMode.{self.name} ({self.value})"
+
+    @override
+    def __repr__(self):
+        """Returns a string representation of the MaterialMixMode."""
+        return self.__str__()
 
 
 @dataclass
@@ -99,17 +115,13 @@ class MaterialDescriptor(Descriptor):
     """
     A container to represent a managed material.
 
-    This descriptor holds both intrinsic and extrinsic properties of a material. While the former
-    are truly dependent on the material itself (e.g., density), the latter are actually dependent
-    on the pairwise interactions of the material with others (e.g., friction, restitution). These
-    extrinsic properties are stored here to support model specifications such as USD which
-    currently do not support material-pair definitions.
+    To support model specifications such as USD (which currently do not support material-pair
+    definitions), this descriptor holds extrinsic properties of a material (e.g., friction, restitution),
+    which are actually dependent on the pairwise interactions of the material with others.
 
     Attributes:
         name: The name of the material.
         uid: The unique identifier (UUID) of the material.
-        density: The density of the material [kg/m³].
-            Defaults to the global default of ``1000.0`` kg/m³.
         restitution: The coefficient of restitution, according to the Newtonian impact model.
             Defaults to the global default of ``0.0``.
         static_friction: The coefficient of static friction, according to the Coulomb friction model.
@@ -125,12 +137,6 @@ class MaterialDescriptor(Descriptor):
     ###
     # Attributes
     ###
-
-    density: float = DEFAULT_DENSITY
-    """
-    The density of the material, in kg/m^3.
-    Defaults to the global default of ``1000.0`` kg/m^3.
-    """
 
     restitution: float = DEFAULT_RESTITUTION
     """
@@ -173,7 +179,6 @@ class MaterialDescriptor(Descriptor):
             f"MaterialDescriptor(\n"
             f"name: {self.name},\n"
             f"uid: {self.uid},\n"
-            f"density: {self.density},\n"
             f"restitution: {self.restitution},\n"
             f"static_friction: {self.static_friction},\n"
             f"dynamic_friction: {self.dynamic_friction}\n"
@@ -231,8 +236,6 @@ class MaterialsModel:
 
     Attributes:
         num_materials: Total number of materials represented in the model.
-        density: Array of material density values of each registered material.
-            Shape of ``(num_materials,)``.
         restitution: Array of restitution coefficients for each registered material.
             Shape of ``(num_materials,)``.
         static_friction: Array of static friction coefficients for each registered material.
@@ -243,12 +246,6 @@ class MaterialsModel:
 
     num_materials: int = 0
     """Total number of materials represented in the model."""
-
-    density: wp.array[wp.float32] | None = None
-    """
-    Array of material density values of each registered material.
-    Shape of ``(num_materials,)``.
-    """
 
     restitution: wp.array[wp.float32] | None = None
     """
@@ -339,6 +336,24 @@ def material_average(
 
 
 @wp.func
+def material_multiply(
+    value1: wp.float32,
+    value2: wp.float32,
+) -> wp.float32:
+    """
+    Computes the product of two material property values.
+
+    Args:
+        value1: The first material property value.
+        value2: The second material property value.
+
+    Returns:
+        The product of the two material property values.
+    """
+    return value1 * value2
+
+
+@wp.func
 def material_max(
     value1: wp.float32,
     value2: wp.float32,
@@ -374,27 +389,78 @@ def material_min(
     return wp.min(value1, value2)
 
 
-def make_get_material_pair_properties(muxmode: MaterialMuxMode = MaterialMuxMode.MAX):
+def get_material_mixing_function(
+    mixmode: MaterialMixMode = MaterialMixMode.AVERAGE,
+) -> Callable[[wp.float32, wp.float32], wp.float32]:
+    """
+    Returns the appropriate material mix function based on the specified mixing mode.
+    """
+    # Select the appropriate mixing function based on the mixing mode
+    match mixmode:
+        case MaterialMixMode.AVERAGE:
+            mix_func = material_average
+        case MaterialMixMode.MULTIPLY:
+            mix_func = material_multiply
+        case MaterialMixMode.MAX:
+            mix_func = material_max
+        case MaterialMixMode.MIN:
+            mix_func = material_min
+        case _:
+            raise ValueError(f"Unsupported material mixing mode: {mixmode}")
+
+    # Return the selected mixing function
+    return mix_func
+
+
+def make_get_mixed_material_pair_property(mixmode: MaterialMixMode = MaterialMixMode.AVERAGE):
     """
     Generates a Warp function to retrieve material pair
-    properties based on the specified muxing mode.
+    property based on the specified mixing mode.
 
     Args:
-        muxmode: The muxing mode to use for material pair properties.
+        mixmode: The mixing mode to use for material pair property.
+
+    Returns:
+        A Warp function that retrieves material pair property.
+    """
+    # Select the appropriate mixing function based on the mixing mode
+    mix_func = get_material_mixing_function(mixmode)
+
+    # Define the Warp function to retrieve material pair properties
+    @wp.func
+    def _get_mixed_material_pair_property(
+        property_0: wp.float32,
+        property_1: wp.float32,
+    ) -> wp.float32:
+        """
+        Retrieves the mixed properties of a material pair given the properties of the two materials.
+
+        Args:
+            property_0: The property of the first material.
+            property_1: The property of the second material.
+
+        Returns:
+            The mixed property of the two materials.
+        """
+        return mix_func(property_0, property_1)
+
+    # Return the generated Warp function
+    return _get_mixed_material_pair_property
+
+
+def make_get_material_pair_properties(mixmode: MaterialMixMode = MaterialMixMode.AVERAGE):
+    """
+    Generates a Warp function to retrieve material pair
+    properties based on the specified mixing mode.
+
+    Args:
+        mixmode: The mixing mode to use for material pair properties.
 
     Returns:
         A Warp function that retrieves material pair properties.
     """
-    # Select the appropriate muxing function based on the muxing mode
-    match muxmode:
-        case MaterialMuxMode.AVERAGE:
-            mix_func = material_average
-        case MaterialMuxMode.MAX:
-            mix_func = material_max
-        case MaterialMuxMode.MIN:
-            mix_func = material_min
-        case _:
-            raise ValueError(f"Unsupported material muxing mode: {muxmode}")
+    # Select the appropriate mixing function based on the mixing mode
+    mix_func = get_material_mixing_function(mixmode)
 
     # Define the Warp function to retrieve material pair properties
     @wp.func
@@ -413,7 +479,7 @@ def make_get_material_pair_properties(muxmode: MaterialMuxMode = MaterialMuxMode
 
         If material-pair properties are not defined (i.e., negative values) for the given
         material indices `mid1, mid2`, the properties are computed from the individual
-        materials using the configured muxing method.
+        materials using the configured mixing method.
 
         Args:
             mid1: The index of the first material.
@@ -436,7 +502,7 @@ def make_get_material_pair_properties(muxmode: MaterialMuxMode = MaterialMuxMode
         static_friction = material_pair_static_friction[mid_tril_idx]
         dynamic_friction = material_pair_dynamic_friction[mid_tril_idx]
 
-        # If any property is negative, compute the material pair properties using the set muxing method
+        # If any property is negative, compute the material pair properties using the set mixing method
         if restitution < 0.0:
             restitution = mix_func(material_restitution[mid1], material_restitution[mid2])
         if static_friction < 0.0:

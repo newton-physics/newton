@@ -51,10 +51,18 @@ def _enable_example_deprecation_warnings() -> None:
     _enable_example_deprecation_warnings._installed = True
 
 
-def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):
+def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False, ref: str = "main"):
+    """Download a folder from a Git repository.
+
+    Args:
+        git_url: Git repository URL.
+        folder_path: Path within the repository.
+        force_refresh: Whether to refresh the cached download.
+        ref: Git branch, tag, or commit SHA to download.
+    """
     from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
-    return download_git_folder(git_url, folder_path, force_refresh=force_refresh)
+    return download_git_folder(git_url, folder_path, ref=ref, force_refresh=force_refresh)
 
 
 def test_body_state(
@@ -393,11 +401,17 @@ class _ExampleBrowser:
         if hasattr(self.viewer, "hide_loading_splash"):
             self.viewer.hide_loading_splash()
 
+    def _clear_viewer_scene(self):
+        if hasattr(self.viewer, "clear_all_layers"):
+            self.viewer.clear_all_layers()
+        else:
+            self.viewer.clear_model()
+
     def switch(self, example_class):
         """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
         module_path, self.switch_target = self.switch_target, None
         self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
-        self.viewer.clear_model()
+        self._clear_viewer_scene()
         try:
             mod = importlib.import_module(module_path)
             parser = getattr(mod.Example, "create_parser", create_parser)()
@@ -423,7 +437,7 @@ class _ExampleBrowser:
         """
         self._reset_requested = False
         self._show_splash("Resetting...")
-        self.viewer.clear_model()
+        self._clear_viewer_scene()
         try:
             if self._initial_args is not None:
                 # Re-create the example with the user's original CLI args so

@@ -415,7 +415,9 @@ def jcalc_tau(
             # w = joint_qd[dof_start + i]
             # r = joint_q[coord_start + i]
 
-            tau[dof_start + i] = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
+            j = dof_start + i
+            passive_f = -joint_damping[j] * joint_qd[j]
+            tau[j] = -wp.dot(S_s, body_f_s) + joint_f[j] + passive_f
             # tau -= w * target_kd - r * target_ke
 
         return
@@ -1409,9 +1411,11 @@ def eval_rigid_tau(
             tau,
         )
 
-        # update parent forces, todo: check that this is valid for the backwards pass
+        # Each articulation is traversed serially by one thread, so an ordinary
+        # read-modify-write keeps the accumulated wrench visible to the next
+        # iteration of the backward pass.
         if parent >= 0:
-            wp.atomic_add(body_ft_s, parent, f_s)
+            body_ft_s[parent] = body_ft_s[parent] + f_s
 
 
 # builds spatial Jacobian J which is an (joint_count*6)x(dof_count) matrix

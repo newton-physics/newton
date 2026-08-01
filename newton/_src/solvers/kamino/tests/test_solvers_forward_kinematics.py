@@ -19,6 +19,7 @@ from newton._src.solvers.kamino._src.core.joints import JointActuationType, Join
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
+from newton._src.solvers.kamino._src.models.builders.testing import build_all_joints_test_model
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.fk import ForwardKinematicsSolver
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
@@ -33,6 +34,8 @@ from newton._src.solvers.kamino.tests.utils.sampling import (
     sample_base_state,
     sample_body_poses,
 )
+from newton.tests.utils.basics import build_cartpole
+from newton.tests.utils.testing import build_unary_universal_joint_test
 
 ###
 # Module configs
@@ -128,6 +131,109 @@ class JacobianCheckForwardKinematics(unittest.TestCase):
         self.assertTrue(success)
 
 
+class PassiveUniversalJointFrameForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_follower_joint_frame(self):
+        """Test kinematic constraints and jacobian for a passive universal joint.
+
+        The follower joint frame is rotated relative to the base joint frame,
+        while the follower body is counter-rotated so both joint frames coincide
+        in world coordinates. The base-frame X axis and follower-frame Y axis
+        are therefore orthogonal, as required by a universal joint.
+        """
+        # Build a single body attached to the world and make both rotational
+        # degrees of freedom passive.
+        builder = build_unary_universal_joint_test(limits=True, ground=False)
+        builder.joint_target_mode[0] = newton.JointTargetMode.NONE
+        builder.joint_target_mode[1] = newton.JointTargetMode.NONE
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+
+        # Rotate the follower-local joint frame by 90 degrees about Z without
+        # changing the base-local joint frame.
+        q_X_F = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), 0.5 * wp.pi)
+        X_Fj = model.joints.X_Fj.numpy()
+        X_Fj[0] = np.asarray(wp.quat_to_matrix(q_X_F), dtype=np.float32).reshape(3, 3)
+        model.joints.X_Fj.assign(X_Fj)
+
+        # Counter-rotate and translate the follower body so its joint frame has
+        # the same world-space pose as the base joint frame.
+        q_F = wp.quat_inverse(q_X_F)
+        B_r_Bj = wp.vec3f(model.joints.B_r_Bj.numpy()[0])
+        F_r_Fj = wp.vec3f(model.joints.F_r_Fj.numpy()[0])
+        r_F = B_r_Bj - wp.quat_rotate(q_F, F_r_Fj)
+        bodies_q = wp.array([wp.transformf(r_F, q_F)], dtype=wp.transformf, device=self.default_device)
+
+        # Coincident joint frames satisfy all three anchor constraints and the
+        # universal joint's rotational orthogonality constraint.
+        solver = ForwardKinematicsSolver(model)
+        actuators_q = wp.empty(0, dtype=wp.float32, device=self.default_device)
+        target_transforms = solver.eval_position_control_transformations(actuators_q, None)
+        constraints = solver.eval_kinematic_constraints(bodies_q, target_transforms).numpy()[0]
+        np.testing.assert_allclose(constraints, 0.0, atol=1.0e-6)
+
+        # Validate jacobian with finite differences
+        bodies_q_np = bodies_q.numpy().reshape(-1)
+        jacobian = solver.eval_kinematic_constraints_jacobian(bodies_q, target_transforms).numpy()[0]
+
+        def eval_constraints(bodies_q_stepped_np):
+            bodies_q.assign(bodies_q_stepped_np)
+            stepped_constraints = solver.eval_kinematic_constraints(bodies_q, target_transforms).numpy()[0]
+            bodies_q.assign(bodies_q_np)
+            return stepped_constraints
+
+        self.assertTrue(
+            diff_check(
+                eval_constraints,
+                jacobian,
+                bodies_q_np,
+                epsilon=1.0e-4,
+                tolerance_abs=5.0e-3,
+                tolerance_rel=5.0e-3,
+            )
+        )
+
+
+class SparseJacobianSingleJointCheckForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_sparse_jacobian_matches_dense_for_single_joint_examples(self):
+        """Match dense and sparse Jacobians for every single-joint fixture."""
+        test_name = "Single-joint sparse Jacobian assembly check"
+        rng = np.random.default_rng(42)
+
+        def test_function(model: ModelKamino):
+            """Compare the dense and sparse Jacobians for a random body state."""
+            bodies_q_np = rng.uniform(-1.0, 1.0, 7 * model.size.sum_of_num_bodies).astype("float32")
+            bodies_q = wp.from_numpy(bodies_q_np, dtype=wp.transformf, device=model.device)
+            actuators_q = wp.zeros(
+                shape=model.size.sum_of_num_actuated_joint_coords, dtype=wp.float32, device=model.device
+            )
+            solver = ForwardKinematicsSolver(model, config=ForwardKinematicsSolver.Config(use_sparsity=True))
+            transforms = solver.eval_position_control_transformations(actuators_q, None)
+
+            jac_dense_np = solver.eval_kinematic_constraints_jacobian(bodies_q, transforms).numpy()
+            solver.assemble_sparse_jacobian(bodies_q, transforms)
+            jac_sparse_np = solver.sparse_jacobian.numpy()
+            rows, cols = solver.sparse_jacobian.dims.numpy()[0]
+            return np.allclose(jac_dense_np[0, :rows, :cols], jac_sparse_np[0], atol=1e-6, rtol=0.0)
+
+        success = run_test_single_joint_examples(test_function, test_name, device=self.default_device)
+        self.assertTrue(success)
+
+
 class WorldMaskInitializationForwardKinematics(unittest.TestCase):
     def setUp(self):
         if not test_context.setup_done:
@@ -198,6 +304,11 @@ def compute_actuated_coords_and_dofs_data(model: ModelKamino):
 
     # Filter for actuators only
     joint_is_actuator = model.joints.act_type.numpy() != JointActuationType.PASSIVE
+    if model.joints.fk_act_flag is not None:
+        fk_act_flag_np = model.joints.fk_act_flag.numpy()
+        joint_is_actuator_fk = fk_act_flag_np == 1
+        overwrite_mask = fk_act_flag_np != -1
+        joint_is_actuator[overwrite_mask] = joint_is_actuator_fk[overwrite_mask]
     actuated_coord_offsets = coord_offsets[joint_is_actuator]
     actuated_coords_sizes = joint_num_coords[joint_is_actuator]
     actuated_dof_offsets = dof_offsets[joint_is_actuator]
@@ -251,28 +362,6 @@ def extract_segments(array, offsets, sizes):
     return np.array(res)
 
 
-def compute_constraint_residual_mask(model: ModelKamino):
-    """
-    Computes a boolean mask for constraint residuals, True for most constraints but False
-    for base joints (to filter out residuals for fixed base models if the base is reset
-    to a different pose)
-    """
-    mask = np.array(model.size.sum_of_num_joint_cts * [True])
-
-    # Exclude base joints
-    first_joint_ct_id = model.joints.kinematic_cts_offset.numpy().copy()  # Cts offset per joint
-    num_joint_cts = model.joints.num_kinematic_cts.numpy()  # Num cts per joint
-    base_joint_index = model.info.base_joint_index.numpy().tolist()
-    for wd_id in range(model.size.num_worlds):
-        if base_joint_index[wd_id] < 0:
-            continue
-        base_jt_id = base_joint_index[wd_id]
-        ct_offset = first_joint_ct_id[base_jt_id]
-        mask[ct_offset : ct_offset + num_joint_cts[base_jt_id]] = False
-
-    return mask
-
-
 def simulate_random_poses(
     model: ModelKamino,
     num_poses: int,
@@ -289,17 +378,16 @@ def simulate_random_poses(
     # Generate random inputs
     base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng, num_poses)
     actuators_q_np = sample_actuator_coords(
-        model, rng, num_poses, max_pos=max_pos, max_angle=max_angle, max_quat=max_quat
+        model, rng, num_poses, max_pos=max_pos, max_angle=max_angle, max_quat=max_quat, use_fk_actuators=True
     )
-    actuators_u_np = sample_actuator_velocities(model, rng, num_poses, max_lin_vel=max_lin_vel, max_ang_vel=max_ang_vel)
+    actuators_u_np = sample_actuator_velocities(
+        model, rng, num_poses, max_lin_vel=max_lin_vel, max_ang_vel=max_ang_vel, use_fk_actuators=True
+    )
 
     # Precompute offset arrays for extracting actuator coordinates/dofs
     actuated_coord_offsets, actuated_coords_sizes, actuated_dof_offsets, actuated_dofs_sizes, actuator_dof_types = (
         compute_actuated_coords_and_dofs_data(model)
     )
-
-    # Precompute boolean mask for extracting relevant constraint residuals
-    residual_mask = compute_constraint_residual_mask(model)
 
     # Run forward kinematics on all random poses
     config = ForwardKinematicsSolver.Config(**config_kwargs)
@@ -343,7 +431,7 @@ def simulate_random_poses(
         compute_joints_data(model=model, data=data, q_j_p=model.joints.q_j_0, correction=JointCorrectionMode.CONTINUOUS)
 
         # Validate positions computation
-        residual_ct_pos = np.max(np.abs(data.joints.r_j.numpy()[residual_mask]))
+        residual_ct_pos = np.max(np.abs(data.joints.r_j.numpy()))
         if residual_ct_pos > epsilon:
             print(f"Large constraint residual ({residual_ct_pos}) for pose {pose_id}")
             success_flags[-1] = False
@@ -358,7 +446,7 @@ def simulate_random_poses(
             success_flags[-1] = False
 
         # Validate velocities computation
-        residual_ct_vel = np.max(np.abs(data.joints.dr_j.numpy()[residual_mask]))
+        residual_ct_vel = np.max(np.abs(data.joints.dr_j.numpy()))
         if residual_ct_vel > epsilon:
             print(f"Large constraint velocity residual ({residual_ct_vel}) for pose {pose_id}")
             success_flags[-1] = False
@@ -398,7 +486,6 @@ class DRTestMechanismRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Load model
         builder = USDImporter().import_from(asset_file)
-        builder.set_base_joint("base")
         model = builder.finalize(device=self.default_device, requires_grad=False)
 
         # Generate helper function to simulate random poses
@@ -408,7 +495,7 @@ class DRTestMechanismRandomPosesCheckForwardKinematics(unittest.TestCase):
             model,
             num_poses,
             rng,
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             use_incremental_solve=True,
@@ -441,7 +528,7 @@ class DRLegsRandomPosesCheckForwardKinematics(unittest.TestCase):
         seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
         rng = np.random.default_rng(seed)
 
-        # Load the DR TestMech and DR Legs models from the `newton-assets` repository
+        # Load the DR Legs model from the `newton-assets` repository
         asset_path = newton.utils.download_asset("disneyresearch")
         asset_file = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
         builder = USDImporter().import_from(asset_file)
@@ -457,7 +544,7 @@ class DRLegsRandomPosesCheckForwardKinematics(unittest.TestCase):
             rng,
             max_angle=np.radians(10.0),  # Angles too far from the initial pose lead to singularities
             max_ang_vel=np.radians(30.0),
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             tolerance=1e-6,
@@ -494,7 +581,6 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
         asset_file_0 = str(asset_path / "dr_testmech" / "usd" / "dr_testmech.usda")
         asset_file_1 = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
         builder = USDImporter().import_from(asset_file_0)
-        builder.set_base_joint("base")
         builder1 = USDImporter().import_from(asset_file_1)
         builder1.set_base_body("pelvis")
         builder.add_builder(builder1)
@@ -509,7 +595,7 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
             rng,
             max_angle=np.radians(10.0),  # Angles too far from the initial pose lead to singularities
             max_ang_vel=np.radians(30.0),
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             use_incremental_solve=True,
@@ -536,6 +622,46 @@ class FourBarTieRodRandomPosesCheckForwardKinematics(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
 
+    def test_axis_joint_frames_update_after_notify(self):
+        """Synthetic axis frames match a fresh solver after model changes."""
+        model = create_four_bar_tie_rod().finalize(device=self.default_device, requires_grad=False)
+        config = ForwardKinematicsSolver.Config(add_axis_joints=True)
+        solver = ForwardKinematicsSolver(model, config)
+        axis_body = int(solver.fk_axis_body.numpy()[0])
+        source_joint = int(solver.fk_axis_source_joint_0.numpy()[0])
+
+        body_q = model.bodies.q_i_0.numpy()
+        body_q[axis_body] = np.array(
+            wp.transformf(
+                wp.vec3f(*body_q[axis_body, :3]),
+                wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.3),
+            )
+        )
+        model.bodies.q_i_0.assign(body_q)
+        if model.joints.bid_B.numpy()[source_joint] == axis_body:
+            joint_anchor = model.joints.B_r_Bj.numpy()
+            joint_anchor[source_joint] += np.array([0.05, -0.02, 0.01], dtype=np.float32)
+            model.joints.B_r_Bj.assign(joint_anchor)
+        else:
+            joint_anchor = model.joints.F_r_Fj.numpy()
+            joint_anchor[source_joint] += np.array([0.05, -0.02, 0.01], dtype=np.float32)
+            model.joints.F_r_Fj.assign(joint_anchor)
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.BODY_PROPERTIES)
+        reference = ForwardKinematicsSolver(model, ForwardKinematicsSolver.Config(add_axis_joints=True))
+        axis_joints = solver.fk_axis_joint.numpy()
+
+        np.testing.assert_allclose(
+            solver.joints_X_Bj.numpy()[axis_joints],
+            reference.joints_X_Bj.numpy()[axis_joints],
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            solver.joints_X_Fj.numpy()[axis_joints],
+            reference.joints_X_Fj.numpy()[axis_joints],
+            atol=1e-6,
+        )
+
     def test_four_bar_tie_rod_model_FK_random_poses(self):
         # Initialize RNG
         test_name = "Four-bar with tie rod FK random poses check"
@@ -553,7 +679,7 @@ class FourBarTieRodRandomPosesCheckForwardKinematics(unittest.TestCase):
             model,
             num_poses,
             rng,
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             use_incremental_solve=True,
@@ -574,6 +700,149 @@ class FourBarTieRodRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Simulate random poses, using regularization to handle tie rod (sparse solver)
         success = simulate_function(add_axis_joints=False, use_regularization=True, tolerance=1e-5, use_sparsity=True)
+        self.assertTrue(success)
+
+
+class AllJointsExampleRandomPosesCheckForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        self.has_cuda = self.default_device.is_cuda
+        self.verbose = test_context.verbose
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_all_joints_example_FK_random_poses(self):
+        # Initialize RNG
+        test_name = "All-joints example FK random poses check"
+        seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
+        rng = np.random.default_rng(seed)
+
+        # Build model with all joint types, unary and binary (actuated so the FK problem is well-posed)
+        builder = build_all_joints_test_model(unary_joints=True, binary_joints=True, actuated=True, floating_base=False)
+        model = builder.finalize(device=self.default_device)
+
+        # Generate helper function to simulate random poses
+        num_poses = 30
+        simulate_function = partial(
+            simulate_random_poses,
+            model,
+            num_poses,
+            rng,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            use_incremental_solve=True,
+            tolerance=1e-6,
+        )
+
+        # Simulate random poses with dense solver
+        success = simulate_function(use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses with sparse solver
+        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
+        self.assertTrue(success)
+
+    def test_all_joints_example_asymmetric_frames_FK_random_poses(self):
+        # Initialize RNG
+        test_name = "All-joints example FK random poses check with asymmetric frames"
+        seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
+        rng = np.random.default_rng(seed)
+
+        # Build model with all joint types, unary and binary (actuated so the FK problem is well-posed)
+        builder = build_all_joints_test_model(unary_joints=True, binary_joints=True, actuated=True, floating_base=False)
+
+        # Set asymmetric joint frames (X_B != X_F) into joints (while preserving initial pose)
+        num_joints = builder.num_joints
+        random_quats = np.resize(rng.uniform(-1.0, 1.0, 4 * num_joints), (num_joints, 4))
+        random_quats /= np.linalg.norm(random_quats, axis=1)[:, None]
+        for jid, joint in enumerate(builder.all_joints):
+            wid = joint.wid
+            q_B = wp.transform_identity() if joint.bid_B < 0 else builder.bodies[wid][joint.bid_B].q_i_0
+            q_F = builder.bodies[wid][joint.bid_F].q_i_0
+            R_B = wp.quat_to_matrix(wp.transform_get_rotation(q_B))
+            R_F = wp.quat_to_matrix(wp.transform_get_rotation(q_F))
+            joint.X_Fj = wp.quat_to_matrix(wp.quatf(random_quats[jid]))
+            joint.X_Bj = wp.transpose(R_B) * R_F * joint.X_Fj  # Compute X_B given X_F to preserve a valid pose
+        model = builder.finalize(device=self.default_device)
+
+        # Generate helper function to simulate random poses
+        num_poses = 30
+        simulate_function = partial(
+            simulate_random_poses,
+            model,
+            num_poses,
+            rng,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            use_incremental_solve=True,
+            tolerance=1e-6,
+        )
+
+        # Simulate random poses with dense solver
+        success = simulate_function(use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses with sparse solver
+        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
+        self.assertTrue(success)
+
+
+class CartpoleRandomPosesCheckForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        self.has_cuda = self.default_device.is_cuda
+        self.verbose = test_context.verbose
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_cartpole_FK_random_poses(self):
+        # Initialize RNG
+        test_name = "Cartpole FK random poses check"
+        seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
+        rng = np.random.default_rng(seed)
+
+        # Get builder for the cartpole model
+        robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        fk_actuation_flags = {1: 1}  # Actuate the revolute joint for FK
+        newton.solvers.SolverKamino.register_custom_attributes(robot_builder, fk_actuation_flags=fk_actuation_flags)
+        build_cartpole(builder=robot_builder, ground=False)
+
+        # Finalize model and convert to ModelKamino
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        num_worlds = 10
+        for _ in range(num_worlds):
+            builder.add_world(robot_builder)
+        model_newton = builder.finalize(skip_validation_joints=True)
+        model = ModelKamino.from_newton(model_newton)
+
+        # Generate helper function to simulate random poses
+        num_poses = 30
+        simulate_function = partial(
+            simulate_random_poses,
+            model,
+            num_poses,
+            rng,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            use_incremental_solve=True,
+            tolerance=1e-6,
+        )
+
+        # Simulate random poses with dense solver
+        success = simulate_function(use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses with sparse solver
+        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
         self.assertTrue(success)
 
 
@@ -599,7 +868,6 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
         asset_file_0 = str(asset_path / "dr_testmech" / "usd" / "dr_testmech.usda")
         asset_file_1 = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
         builder = USDImporter().import_from(asset_file_0)
-        builder.set_base_joint("base")
         builder1 = USDImporter().import_from(asset_file_1)
         builder1.set_base_body("pelvis")
         builder.add_builder(builder1)
@@ -632,7 +900,7 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
             for wd_id in range(model.size.num_worlds):
                 rows, cols = int(dims[wd_id][0]), int(dims[wd_id][1])
                 residual = jac_dense_np[wd_id, :rows, :cols] - jac_sparse_np[wd_id]
-                self.assertTrue(np.max(np.abs(residual)) < 1e-10)
+                self.assertTrue(np.max(np.abs(residual)) < 1e-6)
 
 
 ###

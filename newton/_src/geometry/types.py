@@ -18,7 +18,7 @@ from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
     from ..sim.model import Model
-    from .sdf_utils import SDF
+    from .sdf_utils import SDF, SignMethod
 
 
 def _resolve_relative_or_absolute(
@@ -219,6 +219,11 @@ class Mesh:
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
+        # Finalized wp.Mesh cache keyed by (device, requires_grad, bvh_constructor).
+        # Geometry objects may be shared across builders (e.g. via
+        # :meth:`ModelBuilder.replicate`), so re-finalizing must not release
+        # wp.Mesh objects whose ids earlier models still reference.
+        self._finalized_meshes: dict = {}
         if maxhullvert is None:
             maxhullvert = Mesh.MAX_HULL_VERTICES
         self.maxhullvert = maxhullvert
@@ -771,6 +776,7 @@ class Mesh:
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
+        sign_method: "SignMethod" = "auto",
         cache_dir: str | os.PathLike[str] | None = None,
         edge_lower_angle_threshold_rad: float = math.radians(0.1),
         edge_upper_angle_threshold_rad: float = math.radians(10.0),
@@ -805,6 +811,12 @@ class Mesh:
             texture_format: Subgrid texture storage: ``"uint16"`` (default,
                 half the memory of float32), ``"float32"`` (full precision),
                 or ``"uint8"`` (minimum memory, lower precision).
+            sign_method: Inside/outside sign strategy for the bake.
+                ``"auto"`` (default) uses parity rays if
+                :attr:`is_watertight` else winding numbers; ``"parity"``,
+                ``"winding"``, and ``"normal"`` (angle-weighted
+                pseudo-normal, for open sheets) force the respective
+                method.
             cache_dir: Optional directory for on-disk caching of the cooked
                 sparse SDF. Keyed by mesh content and build parameters
                 (``shape_margin`` is applied at sample time and is *not*
@@ -876,6 +888,7 @@ class Mesh:
             shape_margin=shape_margin,
             scale=scale,
             texture_format=texture_format,
+            sign_method=sign_method,
             cache_dir=cache_dir,
         )
 
@@ -1035,6 +1048,25 @@ class Mesh:
         self.sdf = None
         self._collision_edges = None
 
+    def invalidate_cache(self) -> None:
+        """Invalidate all cached data derived from the mesh geometry.
+
+        Drops the cached mesh hash, edge data, watertightness flag, and the
+        finalized Warp meshes returned by :meth:`finalize`, so they are
+        recomputed from the current :attr:`vertices` and :attr:`indices` on
+        next access.
+
+        Assigning new arrays to :attr:`vertices` or :attr:`indices` calls this
+        method automatically. Call it explicitly after modifying those arrays
+        in place (e.g. ``mesh.vertices[0] = ...``), which bypasses the
+        property setters and would otherwise leave stale cached data.
+        """
+        self._cached_hash = None
+        self._edges = None
+        self._collision_edges = None
+        self._is_watertight = None
+        self._finalized_meshes = {}
+
     @property
     def vertices(self):
         return self._vertices
@@ -1042,10 +1074,7 @@ class Mesh:
     @vertices.setter
     def vertices(self, value):
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
-        self._cached_hash = None
-        self._edges = None
-        self._collision_edges = None
-        self._is_watertight = None
+        self.invalidate_cache()
 
     @property
     def indices(self):
@@ -1054,10 +1083,7 @@ class Mesh:
     @indices.setter
     def indices(self, value):
         self._indices = np.array(value, dtype=np.int32).flatten()
-        self._cached_hash = None
-        self._edges = None
-        self._collision_edges = None
-        self._is_watertight = None
+        self.invalidate_cache()
 
     def _canonical_vertex_ids(self) -> np.ndarray:
         """Per-vertex canonical IDs that fold geometrically coincident vertices
@@ -1446,6 +1472,14 @@ class Mesh:
         """
         Construct a simulation-ready Warp Mesh object from the mesh data and return its ID.
 
+        The Warp Mesh is cached per device, so repeated calls (e.g. when the same
+        geometry object is shared by several builders through
+        :meth:`ModelBuilder.replicate` or :meth:`ModelBuilder.add_builder`) return
+        the same Warp Mesh instead of releasing the one referenced by previously
+        finalized models. The cache is invalidated when ``vertices`` or
+        ``indices`` are reassigned; after modifying those arrays in place, call
+        :meth:`invalidate_cache` to avoid finalizing stale geometry.
+
         Args:
             device: Device on which to allocate mesh buffers.
             requires_grad: If True, mesh points and velocities are allocated with gradient tracking.
@@ -1454,13 +1488,20 @@ class Mesh:
         Returns:
             The ID of the simulation-ready Warp Mesh.
         """
-        with wp.ScopedDevice(device):
-            pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
-            vel = wp.zeros_like(pos)
-            indices = wp.array(self.indices, dtype=wp.int32)
+        device = wp.get_device(device)
+        # wp.Device is not hashable, key on its alias instead
+        cache_key = (device.alias, requires_grad, bvh_constructor)
+        mesh = self._finalized_meshes.get(cache_key)
+        if mesh is None:
+            with wp.ScopedDevice(device):
+                pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
+                vel = wp.zeros_like(pos)
+                indices = wp.array(self.indices, dtype=wp.int32)
+                mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor=bvh_constructor)
+            self._finalized_meshes[cache_key] = mesh
 
-            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor=bvh_constructor)
-            return self.mesh.id
+        self.mesh = mesh
+        return mesh.id
 
     def compute_convex_hull(self, replace: bool = False) -> "Mesh":
         """
@@ -1528,23 +1569,30 @@ class Mesh:
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
-    def create_from_usd(prim, **kwargs) -> "Mesh":
-        """Load a Mesh from a USD prim with the ``UsdGeom.Mesh`` schema.
+    def create_from_usd(source=None, *, prim=None, **kwargs) -> "Mesh":
+        """Load a Mesh from a USD mesh prim, stage, file path, or URL.
 
         This is a convenience wrapper around :func:`newton.usd.get_mesh`.
         See that function for full documentation.
 
         Args:
-            prim: The USD prim to load the mesh from.
+            source: USD mesh prim, stage, file path, or URL to load the mesh
+                from.
+            prim: Legacy keyword alias for ``source`` when loading a USD prim.
             **kwargs: Additional arguments passed to :func:`newton.usd.get_mesh`
-                (e.g. ``load_normals``, ``load_uvs``).
+                (e.g. ``root_path``, ``load_normals``, ``load_uvs``).
 
         Returns:
             Mesh: A new Mesh instance.
         """
         from ..usd.utils import get_mesh  # noqa: PLC0415
 
-        result = get_mesh(prim, **kwargs)
+        if prim is not None:
+            if source is not None:
+                raise TypeError("Mesh.create_from_usd() received both 'source' and legacy 'prim'; pass only one.")
+            source = prim
+
+        result = get_mesh(source, **kwargs)
         if isinstance(result, tuple):
             return result[0]
         return result
@@ -1711,11 +1759,15 @@ class TetMesh:
         first_dim = arr.shape[0] if arr.ndim >= 1 else 1
         counts = {"vertex_count": vertex_count, "tet_count": tet_count, "tri_count": tri_count}
         matches = [label for label, c in counts.items() if first_dim == c and c > 0]
+        if first_dim == 1:
+            matches.append("ONCE")
         if len(matches) > 1:
             raise ValueError(
                 f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches "
                 f"{', '.join(matches)}. Pass an explicit (array, frequency) tuple instead."
             )
+        if "ONCE" in matches:
+            return Model.AttributeFrequency.ONCE
         if first_dim == vertex_count and vertex_count > 0:
             return Model.AttributeFrequency.PARTICLE
         if first_dim == tet_count and tet_count > 0:
@@ -1843,6 +1895,11 @@ class TetMesh:
         those values are read and converted to Lame parameters (``k_mu``,
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
+
+        Custom primvars use their resolved interpolation to determine attribute
+        frequency. Other custom arrays use length-based inference; arrays whose
+        frequency is ambiguous or cannot be inferred emit a warning and are
+        omitted without preventing the TetMesh from loading.
 
         Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
         (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
@@ -2186,6 +2243,52 @@ class Heightfield:
         self.inertia = wp.mat33()
         self.mass = 0.0
         self.com = wp.vec3()
+
+    @staticmethod
+    def create_from_mesh(
+        mesh: "wp.Mesh",
+        resolution: float,
+        *,
+        max_cells_per_axis: int = 4096,
+    ) -> tuple["Heightfield", wp.transform]:
+        """Create a heightfield by rasterizing a triangle mesh.
+
+        Rays are cast straight down onto the mesh on a regular grid to sample its
+        elevation (see :func:`~newton.utils.rasterize_mesh_to_heightfield`). This
+        method supports terrain that is single-valued in Z, including sloped planes.
+
+        Args:
+            mesh: Triangle mesh to rasterize, with vertex coordinates [m] in the
+                frame where it should be placed.
+            resolution: Horizontal grid spacing [m]. Smaller values preserve more
+                detail at the cost of a larger grid.
+            max_cells_per_axis: Upper bound on grid rows/columns. If the mesh extent
+                would exceed this, the effective resolution is coarsened to fit.
+
+        Returns:
+            A tuple ``(heightfield, xform)`` where ``heightfield`` is the sampled
+            :class:`Heightfield` and ``xform`` has a translation [m] that places its
+            (origin-centered) grid at the mesh's XY center. Pass both to
+            :meth:`~newton.ModelBuilder.add_shape_heightfield`.
+        """
+        from ..utils.heightfield import rasterize_mesh_to_heightfield  # noqa: PLC0415
+
+        heights, (x_min, y_min, x_max, y_max) = rasterize_mesh_to_heightfield(
+            mesh, resolution, max_cells_per_axis=max_cells_per_axis
+        )
+        nrow, ncol = heights.shape
+        heightfield = Heightfield(
+            data=heights,
+            nrow=nrow,
+            ncol=ncol,
+            hx=0.5 * (x_max - x_min),
+            hy=0.5 * (y_max - y_min),
+        )
+        xform = wp.transform(
+            wp.vec3(0.5 * (x_min + x_max), 0.5 * (y_min + y_max), 0.0),
+            wp.quat_identity(),
+        )
+        return heightfield, xform
 
     @property
     def data(self):

@@ -13,10 +13,14 @@ import warp as wp
 
 from ...core import MAXVAL
 from . import camera_utils
-from .types import RenderLightType, TextureData
+from .types import RenderConfig, RenderLightType, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
+
+# Knuth multiplicative hash constant (2^32 / golden ratio).
+# Typed uint32 so kernel codegen doesn't overflow an int32 constant.
+HASH_MULTIPLIER = wp.uint32(2654435761)
 
 
 def _resolve_fisheye_image_size(
@@ -225,7 +229,7 @@ def unpack_shape_index_hash_to_rgba_kernel(
     # Knuth multiplicative hash, masked to 24 bits. ``idx + 1`` keeps shape 0
     # away from the all-zero hash that collides with the miss color; the
     # miss sentinel ``0xFFFFFFFF`` wraps back to 0 and intentionally renders black.
-    h = ((idx + wp.uint32(1)) * wp.uint32(2654435761)) & wp.uint32(0xFFFFFF)
+    h = ((idx + wp.uint32(1)) * HASH_MULTIPLIER) & wp.uint32(0xFFFFFF)
     out[n, y, x, 0] = wp.uint8((h >> wp.uint32(16)) & wp.uint32(0xFF))
     out[n, y, x, 1] = wp.uint8((h >> wp.uint32(8)) & wp.uint32(0xFF))
     out[n, y, x, 2] = wp.uint8(h & wp.uint32(0xFF))
@@ -278,8 +282,18 @@ def _validate_rgba_out_buffer(
 class Utils:
     """Utility functions for the RenderContext."""
 
-    def __init__(self, render_context: RenderContext):
+    def __init__(self, render_context: RenderContext, render_config: RenderConfig | None = None):
         self.__render_context = render_context
+        self.__render_config = render_config
+
+    def __warn_implicit_render_config_update(self, method_name: str, config_field: str, value: bool) -> None:
+        warnings.warn(
+            f"SensorTiledCamera.utils.{method_name}() changed SensorTiledCamera.default_render_config.{config_field}. "
+            "This side effect is deprecated as of Newton 1.4 and will be removed in a future release. "
+            f"Set sensor.default_render_config.{config_field} = {value!r} explicitly.",
+            category=DeprecationWarning,
+            stacklevel=3,
+        )
 
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a color output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
@@ -314,6 +328,21 @@ class Utils:
             dtype=wp.float32,
             device=self.__render_context.device,
         )
+
+    def create_forward_depth_image_output(
+        self, width: int, height: int, camera_count: int = 1
+    ) -> wp.array4d[wp.float32]:
+        """Create a forward-depth output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
+
+        Returns:
+            Array of shape ``(world_count, camera_count, height, width)``, dtype ``float32``.
+        """
+        return self.create_depth_image_output(width, height, camera_count)
 
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a shape-index output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
@@ -1320,7 +1349,11 @@ class Utils:
         )
         return out_buffer
 
-    def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
+    def create_default_light(
+        self,
+        enable_shadows: bool = True,
+        direction: wp.vec3f | None = None,
+    ):
         """Create a default directional light oriented at ``(-1, 1, -1)``.
 
         Args:
@@ -1328,12 +1361,17 @@ class Utils:
             direction: Normalized light direction. If ``None``, defaults to
                 (normalized ``(-1, 1, -1)``).
         """
-        self.__render_context.config.enable_shadows = enable_shadows
+        if self.__render_config is not None:
+            if self.__render_config.enable_shadows != enable_shadows:
+                self.__warn_implicit_render_config_update("create_default_light", "enable_shadows", enable_shadows)
+            self.__render_config.enable_shadows = enable_shadows
         self.__render_context.lights_active = wp.array([True], dtype=wp.bool, device=self.__render_context.device)
         self.__render_context.lights_type = wp.array(
             [RenderLightType.DIRECTIONAL], dtype=wp.int32, device=self.__render_context.device
         )
-        self.__render_context.lights_cast_shadow = wp.array([True], dtype=wp.bool, device=self.__render_context.device)
+        self.__render_context.lights_cast_shadow = wp.array(
+            [enable_shadows], dtype=wp.bool, device=self.__render_context.device
+        )
         self.__render_context.lights_position = wp.array(
             [wp.vec3f(0.0)], dtype=wp.vec3f, device=self.__render_context.device
         )
@@ -1384,7 +1422,10 @@ class Utils:
 
         self.__checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
-        self.__render_context.config.enable_textures = True
+        if self.__render_config is not None:
+            if not self.__render_config.enable_textures:
+                self.__warn_implicit_render_config_update("assign_checkerboard_material", "enable_textures", True)
+            self.__render_config.enable_textures = True
         self.__render_context.texture_data = wp.array(
             [self.__checkerboard_data], dtype=TextureData, device=self.__render_context.device
         )

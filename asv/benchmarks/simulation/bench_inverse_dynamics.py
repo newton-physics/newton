@@ -40,31 +40,43 @@ class _InverseDynamicsBenchmark:
         self.state = self.model.state()
         set_default_pose(self.model, self.state)
 
-        self.inverse_dynamics = self.model.inverse_dynamics()
+        self.mass_matrix = wp.empty(
+            (
+                self.model.articulation_count,
+                self.model.max_dofs_per_articulation,
+                self.model.max_dofs_per_articulation,
+            ),
+            dtype=wp.float32,
+            device=self.model.device,
+        )
+        self.gravity_force = wp.empty_like(self.state.joint_qd)
+        self.coriolis_force = wp.empty_like(self.state.joint_qd)
+        self.joint_f = wp.zeros_like(self.state.joint_qd)
 
         # Capture one full M(q) + g(q) + C(q, q_dot)*q_dot evaluation into a
         # CUDA graph so the timed inner loop is just graph replays.
         with wp.ScopedCapture() as cap:
-            newton.eval_inverse_dynamics(
+            newton.eval_inverse_dynamics_passive(
                 self.model,
                 self.state,
-                newton.InverseDynamics.EvalType.ALL,
-                self.inverse_dynamics,
+                mass_matrix=self.mass_matrix,
+                gravity_force=self.gravity_force,
+                coriolis_force=self.coriolis_force,
             )
         self.eval_graph = cap.graph
 
-        # Populate the inverse_dynamics buffers so eval_inverse_dynamics_force
+        # Populate the passive terms so eval_inverse_dynamics_force
         # has a valid M(q) / g(q) / C(q, q_dot)*q_dot to consume. The capture
         # above only records the launches; it does not execute them.
         wp.capture_launch(self.eval_graph)
 
-        # qddot input for eval_inverse_dynamics_force. Any finite values are
+        # joint_qdd input for eval_inverse_dynamics_force. Any finite values are
         # fine; use a tiled ramp matching set_default_pose's joint_qd pattern.
         n_dofs = self.model.joint_dof_count
         dofs_per_world = n_dofs // max(self.model.world_count, 1)
-        qddot_per_world = np.linspace(-0.1, 0.1, dofs_per_world, dtype=np.float32)
-        self.qddot = wp.array(
-            np.tile(qddot_per_world, max(self.model.world_count, 1)),
+        joint_qdd_per_world = np.linspace(-0.1, 0.1, dofs_per_world, dtype=np.float32)
+        self.joint_qdd = wp.array(
+            np.tile(joint_qdd_per_world, max(self.model.world_count, 1)),
             dtype=wp.float32,
             device=self.model.device,
         )
@@ -75,16 +87,16 @@ class _InverseDynamicsBenchmark:
             newton.eval_inverse_dynamics_force(
                 self.model,
                 self.state,
-                self.inverse_dynamics.mass_matrix,
-                self.qddot,
-                self.inverse_dynamics.coriolis_force,
-                self.inverse_dynamics.gravity_force,
-                self.inverse_dynamics.tau,
+                mass_matrix=self.mass_matrix,
+                joint_qdd=self.joint_qdd,
+                coriolis_force=self.coriolis_force,
+                gravity_force=self.gravity_force,
+                joint_f=self.joint_f,
             )
         self.force_graph = cap_force.graph
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_eval_inverse_dynamics(self):
+    def time_eval_inverse_dynamics_passive(self):
         for _ in range(self.NUM_EVALS):
             wp.capture_launch(self.eval_graph)
         wp.synchronize_device()
@@ -96,19 +108,22 @@ class _InverseDynamicsBenchmark:
         wp.synchronize_device()
 
     def teardown(self):
-        H = self.inverse_dynamics.mass_matrix.numpy()
-        g = self.inverse_dynamics.gravity_force.numpy()
-        c = self.inverse_dynamics.coriolis_force.numpy()
-        tau = self.inverse_dynamics.tau.numpy()
+        H = self.mass_matrix.numpy()
+        g = self.gravity_force.numpy()
+        c = self.coriolis_force.numpy()
+        joint_f = self.joint_f.numpy()
         finite = (
-            np.all(np.isfinite(H)) and np.all(np.isfinite(g)) and np.all(np.isfinite(c)) and np.all(np.isfinite(tau))
+            np.all(np.isfinite(H))
+            and np.all(np.isfinite(g))
+            and np.all(np.isfinite(c))
+            and np.all(np.isfinite(joint_f))
         )
         if not finite:
             raise RuntimeError("Inverse-dynamics output contains non-finite values.")
 
 
 class FastInverseDynamics(_InverseDynamicsBenchmark):
-    """Time ``eval_inverse_dynamics(EvalType.ALL)`` and
+    """Time ``eval_inverse_dynamics_passive`` and
     ``eval_inverse_dynamics_force`` on a model replicating the Franka arm
     across ``WORLD_COUNT`` worlds (default 1024)."""
 

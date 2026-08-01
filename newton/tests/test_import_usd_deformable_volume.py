@@ -14,6 +14,7 @@ import unittest
 import warnings
 
 import numpy as np
+import warp as wp
 
 import newton
 from newton.tests._usd_deformable_test_utils import (
@@ -312,6 +313,186 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
         self.assertEqual(group_labels(builder, "soft"), ["/World/Good"])
         self.assertEqual(builder.particle_count, 4)
+
+    def test_unregistered_custom_attribute_is_ignored_and_keeps_tetmesh(self):
+        """An irrelevant USD array is ignored without warning or dropping the soft body."""
+        from pxr import Sdf
+
+        cases = (
+            ("physxVolumeDeformableSim:simMeshHexCrc", list(range(16))),
+            ("deformablePose:default:omniphysics:purposes", [1]),
+        )
+        for attr_name, values in cases:
+            with self.subTest(attr_name=attr_name):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                tet.GetPrim().CreateAttribute(attr_name, Sdf.ValueTypeNames.IntArray).Set(values)
+
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    result = builder.add_usd(stage, return_deformable_results=True)
+
+                self.assertFalse(any(attr_name in str(w.message) for w in caught))
+                self.assertIn("/World/Soft", result["path_soft_map"])
+
+    def test_get_tetmesh_warns_for_uninferable_custom_attribute(self):
+        """Direct TetMesh loading diagnoses and omits an uninferable custom array."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft")
+        attr_name = "physxVolumeDeformableSim:simMeshHexCrc"
+        tet.GetPrim().CreateAttribute(attr_name, Sdf.ValueTypeNames.IntArray).Set(list(range(16)))
+
+        with self.assertWarnsRegex(UserWarning, rf"{attr_name}.*length 16.*skipping the attribute"):
+            tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+        self.assertNotIn(attr_name, tetmesh.custom_attributes)
+
+    def test_get_tetmesh_infers_once_for_issue_pose_attribute(self):
+        """The issue's one-value pose metadata resolves to ONCE on a multi-tet mesh."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_tet_cube(stage, "/World/Soft")
+        attr_name = "deformablePose:default:omniphysics:purposes"
+        tet.GetPrim().CreateAttribute(attr_name, Sdf.ValueTypeNames.IntArray).Set([1])
+
+        tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+        values, frequency = tetmesh.custom_attributes[attr_name]
+        np.testing.assert_array_equal(values, [1])
+        self.assertEqual(frequency, newton.Model.AttributeFrequency.ONCE)
+
+    def test_registered_custom_attribute_uses_declared_frequency(self):
+        """A builder declaration resolves a one-value per-tet attribute on a one-tet mesh."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.GetPrim().CreateAttribute("custom:regionId", Sdf.ValueTypeNames.IntArray).Set([7])
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="regionId",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.TETRAHEDRON,
+                usd_attribute_name="custom:regionId",
+            )
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertFalse(any("custom:regionId" in str(w.message) for w in caught))
+        np.testing.assert_array_equal(model.regionId.numpy(), [7])
+
+    def test_registered_custom_attribute_wrong_length_warns_and_keeps_tetmesh(self):
+        """A declared frequency does not let a malformed array abort soft-body import."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.GetPrim().CreateAttribute("custom:temperature", Sdf.ValueTypeNames.FloatArray).Set([10.0, 20.0])
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="temperature",
+                dtype=wp.float32,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                usd_attribute_name="custom:temperature",
+            )
+        )
+        with self.assertWarnsRegex(UserWarning, "/World/Soft.*custom:temperature.*length 2.*particle count 4"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertIn("/World/Soft", result["path_soft_map"])
+
+    def test_constant_primvar_resolves_single_tet_ambiguity(self):
+        """Explicit USD interpolation preserves a constant array on a single-tetrahedron mesh."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft")
+        primvar = UsdGeom.PrimvarsAPI(tet.GetPrim()).CreatePrimvar(
+            "constantValue", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant
+        )
+        primvar.Set([42.0])
+
+        tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+        _, frequency = tetmesh.custom_attributes["constantValue"]
+        self.assertEqual(frequency, newton.Model.AttributeFrequency.ONCE)
+
+    def test_indexed_primvar_is_flattened(self):
+        """Indexed vertex primvars load in expanded particle order."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft")
+        primvar = UsdGeom.PrimvarsAPI(tet.GetPrim()).CreatePrimvar(
+            "temperature", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+        )
+        primvar.Set([10.0, 20.0])
+        primvar.SetIndices([0, 1, 0, 1])
+
+        tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+        values, frequency = tetmesh.custom_attributes["temperature"]
+        np.testing.assert_array_equal(values, [10.0, 20.0, 10.0, 20.0])
+        self.assertEqual(frequency, newton.Model.AttributeFrequency.PARTICLE)
+
+    def test_registered_indexed_primvar_imports_flattened_values(self):
+        """Builder-declared indexed primvars flow to particles in expanded order."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        primvar = UsdGeom.PrimvarsAPI(tet.GetPrim()).CreatePrimvar(
+            "temperature", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+        )
+        primvar.Set([10.0, 20.0])
+        primvar.SetIndices([0, 1, 0, 1])
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="temperature",
+                dtype=wp.float32,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                usd_attribute_name="primvars:temperature",
+            )
+        )
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.temperature.numpy(), [10.0, 20.0, 10.0, 20.0])
+
+    def test_registered_once_attribute_warns_and_keeps_tetmesh(self):
+        """Volume import diagnoses registered ONCE data that cannot attach per soft body."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.GetPrim().CreateAttribute("custom:bodyTag", Sdf.ValueTypeNames.IntArray).Set([9])
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="bodyTag",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.ONCE,
+                usd_attribute_name="custom:bodyTag",
+            )
+        )
+        with self.assertWarnsRegex(UserWarning, "/World/Soft.*custom:bodyTag.*ONCE.*not imported"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+
+        self.assertIn("/World/Soft", result["path_soft_map"])
 
     def test_resolved_density_reports_builder_default_fallback(self):
         """With no authored or material density, add_soft_mesh falls back to the builder's

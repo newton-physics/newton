@@ -6,7 +6,9 @@
 This helper discovers Newton's top-level public modules from ``newton.__all__``,
 reads each module's ``__all__`` list (and falls back to public attributes if
 ``__all__`` is missing), and writes one reStructuredText file per module with an
-``autosummary`` directive.  When Sphinx later builds the documentation (with
+``autosummary`` directive.  Modules may use ``__deprecated_symbols__`` to keep
+warning-only compatibility names documented without resolving their values.
+When Sphinx later builds the documentation (with
 ``autosummary_generate = True``), individual stub pages will be created
 automatically for every listed symbol.
 
@@ -202,7 +204,8 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     else:
         module = importlib.import_module(mod_name)
 
-    symbols = public_symbols(module)
+    deprecated_messages = dict(getattr(module, "__deprecated_symbols__", {}))
+    symbols = list(dict.fromkeys([*public_symbols(module), *deprecated_messages]))
     if uses_internal_solver_module:
         # Keep solver classes centralized in newton.solvers.
         symbols = [name for name in symbols if not name.startswith("Solver")]
@@ -211,8 +214,13 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     functions: list[str] = []
     constants: list[str] = []
     modules: list[str] = []
+    deprecated: list[str] = []
 
     for name in symbols:
+        if name in deprecated_messages:
+            deprecated.append(name)
+            continue
+
         attr = getattr(module, name)
 
         # ------------------------------------------------------------------
@@ -336,6 +344,28 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
                 ]
             )
             lines.extend([f"   {fn}" for fn in functions])
+        lines.append("")
+
+    if deprecated:
+        deprecated.sort()
+        lines.extend(
+            [
+                ".. rubric:: Deprecated",
+                "",
+                ".. list-table::",
+                "   :header-rows: 1",
+                "",
+                "   * - Name",
+                "     - Guidance",
+            ]
+        )
+        for name in deprecated:
+            lines.extend(
+                [
+                    f"   * - ``{name}``",
+                    f"     - {deprecated_messages[name]}",
+                ]
+            )
         lines.append("")
 
     if constants:

@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from ...geometry import ParticleFlags, ShapeFlags
-from ...sim import ModelFlags, StateFlags
+from ...sim import Model, ModelFlags, StateFlags
 from ..solver import SolverBase
 from .interface import (
     CouplingEndpointKind,
@@ -23,7 +23,7 @@ from .interface import (
 from .model_view import ModelView, _AttributeNamespaceView
 
 if TYPE_CHECKING:
-    from ...sim import Contacts, Control, Model, State
+    from ...sim import Contacts, Control, State
 
 logger = logging.getLogger(__name__)
 
@@ -1930,15 +1930,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         Args:
             state: Parent-model simulation state to reset (modified in place).
-            world_mask: Optional boolean mask of shape ``(world_count,)``
-                selecting which worlds to reset. If ``None``, all worlds are
-                reset.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
+                selecting which worlds to reset. The final entry selects global
+                entities whose world is ``-1``. If ``None``, all local and
+                global entities are reset. Passing the deprecated shape
+                ``(world_count,)`` selects local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling
                 which state quantities sub-solvers should reset. If ``None``,
                 all state quantities are reset.
         """
         if state is None:
             raise ValueError("'state' argument is required.")
+        world_mask = self._normalize_reset_world_mask(world_mask)
 
         self._distribute_state(state, iteration_restart=True)
         for entry in self._entries.values():
@@ -1986,7 +1989,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _sync_entry_reset_state(self, entry: SolverEntry) -> None:
         """Mirror a reset entry input state to persistent entry buffers."""
         if entry.state_1 is not None and entry.state_1 is not entry.state_0:
-            _copy_state(entry.state_0, entry.state_1)
+            _copy_same_view_state(entry.state_0, entry.state_1)
 
         for entry_state in (entry.state_0, entry.state_1):
             if entry_state is not None:
@@ -2294,7 +2297,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         substep_dt = dt / float(entry.substeps)
         if entry.state_tmp is None:
             raise RuntimeError(f"SolverCoupled.Entry {entry.name!r} is missing a substep scratch state")
-        _copy_state(entry.state_0, entry.state_1)
+        _copy_same_view_state(entry.state_0, entry.state_1)
         state_in = entry.state_1
         state_out = entry.state_tmp
         for substep in range(entry.substeps):
@@ -2303,7 +2306,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.solver.step(state_in, state_out, control, contacts, substep_dt)
             state_in, state_out = state_out, state_in
         if state_in is entry.state_tmp:
-            _copy_state(entry.state_tmp, entry.state_1)
+            _copy_same_view_state(entry.state_tmp, entry.state_1)
         return contacts
 
     def _contacts_for_entry(self, entry: SolverEntry, contacts: Contacts | None) -> Contacts | None:
@@ -2331,6 +2334,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 dim=contact_update_dim,
                 inputs=[
                     contacts.contact_generation,
+                    filtered.contact_generation,
                     self._entry_rigid_contact_generation[entry.name],
                     self._entry_soft_contact_generation[entry.name],
                     self._entry_rigid_contact_update[entry.name],
@@ -2444,6 +2448,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,
                     contacts.soft_contact_tids,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_barycentric,
                     entry.view.shape_flags,
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
@@ -2455,6 +2461,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_body_vel,
                     filtered.soft_contact_normal,
                     filtered.soft_contact_tids,
+                    filtered.soft_contact_indices,
+                    filtered.soft_contact_barycentric,
                     soft_src_to_dst,
                 ],
                 device=self.model.device,
@@ -2820,6 +2828,43 @@ def _copy_state(src: State, dst: State) -> None:
         _copy_prefix(dst.joint_qd, src.joint_qd, "joint_qd")
 
 
+def _copy_same_view_state(src: State, dst: State) -> None:
+    """Copy persistent arrays between states allocated from the same model view.
+
+    Core state arrays retain the coupled solver's established copy semantics,
+    while custom namespaced arrays (such as implicit MPM history) are copied in
+    full. Solver-produced top-level output annotations are intentionally not
+    copied; they are not persistent state and may only exist on output buffers.
+    """
+    if src is dst:
+        return
+
+    _copy_state(src, dst)
+
+    src_namespaces = {name: value for name, value in vars(src).items() if isinstance(value, Model.AttributeNamespace)}
+    dst_namespaces = {name: value for name, value in vars(dst).items() if isinstance(value, Model.AttributeNamespace)}
+    for namespace_name in src_namespaces.keys() | dst_namespaces.keys():
+        src_namespace = src_namespaces.get(namespace_name)
+        dst_namespace = dst_namespaces.get(namespace_name)
+        src_arrays = (
+            {}
+            if src_namespace is None
+            else {name: value for name, value in vars(src_namespace).items() if isinstance(value, wp.array)}
+        )
+        dst_arrays = (
+            {}
+            if dst_namespace is None
+            else {name: value for name, value in vars(dst_namespace).items() if isinstance(value, wp.array)}
+        )
+        for array_name in src_arrays.keys() | dst_arrays.keys():
+            qualified_name = f"{namespace_name}.{array_name}"
+            if array_name not in dst_arrays:
+                raise ValueError(f"State is missing array for '{qualified_name}' which is present in the other state.")
+            if array_name not in src_arrays:
+                raise ValueError(f"Other state is missing array for '{qualified_name}' which is present in this state.")
+            dst_arrays[array_name].assign(src_arrays[array_name])
+
+
 def _copy_forces(src: State, dst: State) -> None:
     """Copy force buffers without disturbing positions or velocities."""
     if dst.body_f is not None:
@@ -3046,6 +3091,7 @@ def _add_mapped_particle_forces_kernel(
 @wp.kernel(enable_backward=False)
 def _prepare_filtered_contact_update_kernel(
     src_generation: wp.array[wp.int32],
+    dst_generation: wp.array[wp.int32],
     rigid_generation: wp.array[wp.int32],
     soft_generation: wp.array[wp.int32],
     rigid_update_out: wp.array[wp.int32],
@@ -3068,6 +3114,13 @@ def _prepare_filtered_contact_update_kernel(
     if tid == 0:
         rigid_update_out[0] = rigid_update
         soft_update_out[0] = soft_update
+        if rigid_update != 0 or soft_update != 0:
+            generation = dst_generation[0]
+            if generation == 2147483647:
+                generation = 0
+            else:
+                generation = generation + 1
+            dst_generation[0] = generation
         if rigid_update != 0:
             rigid_generation[0] = src_generation[0]
         if soft_update != 0:
@@ -3228,6 +3281,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_body_vel: wp.array[wp.vec3],
     src_normal: wp.array[wp.vec3],
     src_tids: wp.array[int],
+    src_indices: wp.array[wp.vec3i],
+    src_barycentric: wp.array[wp.vec3],
     shape_flags: wp.array[wp.int32],
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
@@ -3239,6 +3294,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_vel: wp.array[wp.vec3],
     dst_normal: wp.array[wp.vec3],
     dst_tids: wp.array[int],
+    dst_indices: wp.array[wp.vec3i],
+    dst_barycentric: wp.array[wp.vec3],
     src_to_dst: wp.array[wp.int32],
 ):
     if update_filter[0] == 0:
@@ -3268,3 +3325,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
     dst_tids[dst_id] = src_tids[contact_id]
+    # Carry the unified feature record too (the particle-only path writes (p, -1, -1) + (1, 0, 0)); VBD
+    # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
+    # VBD even with full-surface contact off (E7).
+    dst_indices[dst_id] = src_indices[contact_id]
+    dst_barycentric[dst_id] = src_barycentric[contact_id]
