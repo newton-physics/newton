@@ -92,13 +92,14 @@ def _run_frames(model, solver, frames: int, use_graph: bool, graph_warmup: int =
     """
     device = model.device
     state_0, state_1 = model.state(), model.state()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
     dt = 1.0 / 60.0
     solver.prepare_contacts(contacts)
 
     def step(state_in, state_out):
         state_in.clear_forces()
-        model.collide(state_in, contacts)
+        collision_pipeline.collide(state_in, contacts)
         solver.step(state_in, state_out, None, contacts, dt)
 
     src, dst = state_0, state_1
