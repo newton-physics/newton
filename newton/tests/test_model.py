@@ -1121,7 +1121,7 @@ class TestModelMesh(unittest.TestCase):
                 self.assertEqual(builder.shape_material_kd[extra_shape], builder.shape_material_kd[shape])
                 self.assertEqual(builder.shape_material_mu[extra_shape], builder.shape_material_mu[shape])
                 self.assertEqual(builder.shape_force_sdf[extra_shape], builder.shape_force_sdf[shape])
-                self.assertNotIsInstance(builder._shape_collision_filter_pairs, list)
+                self.assertNotIsInstance(builder._shape_collision_filter_pairs, list)  # pyright: ignore[reportPrivateUsage]
 
                 filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
                 self.assertIn(tuple(sorted((shape, extra_shape))), filter_pairs)
