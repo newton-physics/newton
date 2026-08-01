@@ -7470,6 +7470,15 @@ class ModelBuilder:
                     import trimesh
 
                 decompositions = {}
+                filtered_shapes_by_shape: dict[int, set[int]] = {}
+                convex_parts_by_shape: dict[int, list[int]] = {}
+                source_shapes = set(shape_indices)
+                # Snapshot source filters before adding convex parts, without materializing compact storage.
+                for shape_a, shape_b in self._shape_collision_filter_pairs:
+                    if shape_a in source_shapes:
+                        filtered_shapes_by_shape.setdefault(shape_a, set()).add(shape_b)
+                    if shape_b in source_shapes:
+                        filtered_shapes_by_shape.setdefault(shape_b, set()).add(shape_a)
 
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
@@ -7521,17 +7530,11 @@ class ModelBuilder:
                         xform = self.shape_transform[shape]
                         color = self.shape_color[shape]
                         custom_attributes = get_shape_custom_attributes(shape)
-                        filtered_shapes = []
-                        for shape_a, shape_b in self.shape_collision_filter_pairs:
-                            if shape_a == shape:
-                                filtered_shape = shape_b
-                            elif shape_b == shape:
-                                filtered_shape = shape_a
-                            else:
-                                continue
-                            if self.shape_body[filtered_shape] != body:
-                                filtered_shapes.append(filtered_shape)
-                        filtered_shapes = sorted(set(filtered_shapes))
+                        filtered_shapes = sorted(
+                            filtered_shape
+                            for filtered_shape in filtered_shapes_by_shape.get(shape, ())
+                            if self.shape_body[filtered_shape] != body
+                        )
                         cfg = ModelBuilder.ShapeConfig(
                             ke=self.shape_material_ke[shape],
                             kd=self.shape_material_kd[shape],
@@ -7544,6 +7547,7 @@ class ModelBuilder:
                             kh=self.shape_material_kh[shape],
                             margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
+                            force_sdf=self.shape_force_sdf[shape],
                         )
                         cfg.flags = self.shape_flags[shape]
                         cfg.density = 0.0  # do not add extra mass / inertia
@@ -7564,6 +7568,9 @@ class ModelBuilder:
                             )
                             for filtered_shape in filtered_shapes:
                                 self.add_shape_collision_filter_pair(filtered_shape, extra_shape)
+                                for filtered_part in convex_parts_by_shape.get(filtered_shape, ()):
+                                    self.add_shape_collision_filter_pair(filtered_part, extra_shape)
+                            convex_parts_by_shape.setdefault(shape, []).append(extra_shape)
                     remeshed_shapes.add(shape)
             except Exception as e:
                 if raise_on_failure:

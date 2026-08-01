@@ -1104,6 +1104,7 @@ class TestModelMesh(unittest.TestCase):
                     gap=0.123,
                     collision_group=7,
                     collision_filter_parent=collision_filter_parent,
+                    force_sdf=True,
                 )
                 shape = builder.add_shape_mesh(body=child, mesh=mesh, cfg=cfg)
                 body_mass = builder.body_mass[child]
@@ -1119,11 +1120,50 @@ class TestModelMesh(unittest.TestCase):
                 self.assertEqual(builder.shape_material_ke[extra_shape], builder.shape_material_ke[shape])
                 self.assertEqual(builder.shape_material_kd[extra_shape], builder.shape_material_kd[shape])
                 self.assertEqual(builder.shape_material_mu[extra_shape], builder.shape_material_mu[shape])
+                self.assertEqual(builder.shape_force_sdf[extra_shape], builder.shape_force_sdf[shape])
+                self.assertNotIsInstance(builder._shape_collision_filter_pairs, list)
 
                 filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
                 self.assertIn(tuple(sorted((shape, extra_shape))), filter_pairs)
                 parent_pair = tuple(sorted((parent_shape, extra_shape)))
                 self.assertEqual(parent_pair in filter_pairs, collision_filter_parent)
+
+    def test_mesh_approximation_convex_decomposition_preserves_filters_between_generated_parts(self):
+        """Preserve source filters between every generated convex part."""
+
+        class FakeCoacdMesh:
+            def __init__(self, vertices, faces):
+                self.vertices = vertices
+                self.faces = faces
+
+        def fake_decompose(backend_mesh, **_kwargs):
+            vertices = np.asarray(backend_mesh.vertices)
+            faces = np.asarray(backend_mesh.faces)
+            return [(vertices.copy(), faces.copy()), (vertices.copy(), faces.copy())]
+
+        fake_coacd = SimpleNamespace(Mesh=FakeCoacdMesh, run_coacd=fake_decompose)
+        mesh = newton.Mesh.create_box(
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+        )
+        builder = ModelBuilder()
+        body_a = builder.add_body()
+        body_b = builder.add_body()
+        shape_a = builder.add_shape_mesh(body=body_a, mesh=mesh, label="mesh_a")
+        shape_b = builder.add_shape_mesh(body=body_b, mesh=mesh, label="mesh_b")
+        builder.add_shape_collision_filter_pair(shape_a, shape_b)
+
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape_a, shape_b], raise_on_failure=True)
+
+        parts_a = (shape_a, builder.shape_label.index("mesh_a_convex_1"))
+        parts_b = (shape_b, builder.shape_label.index("mesh_b_convex_1"))
+        filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
+        for part_a in parts_a:
+            for part_b in parts_b:
+                self.assertIn(tuple(sorted((part_a, part_b))), filter_pairs)
 
     def test_approximate_meshes_collision_filter_child_bodies(self):
         def normalize_pair(a, b):
