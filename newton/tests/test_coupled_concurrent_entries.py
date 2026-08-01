@@ -101,27 +101,26 @@ def _run_frames(model, solver, frames: int, use_graph: bool, graph_warmup: int =
         model.collide(state_in, contacts)
         solver.step(state_in, state_out, None, contacts, dt)
 
-    states = [state_0, state_1]
-    n = 0
+    src, dst = state_0, state_1
     if use_graph:
         if (frames - graph_warmup) <= 0 or (frames - graph_warmup) % 2 != 0:
             raise ValueError("use_graph requires frames > graph_warmup with an even remainder")
         for _ in range(graph_warmup):
-            step(states[n % 2], states[(n + 1) % 2])
-            n += 1
+            step(src, dst)
+            src, dst = dst, src
         with wp.ScopedDevice(device):
             with wp.ScopedCapture() as capture:
-                step(states[n % 2], states[(n + 1) % 2])
-                step(states[(n + 1) % 2], states[n % 2])
+                step(src, dst)
+                step(dst, src)
+        # The captured pair starts and ends on `src`.
         for _ in range((frames - graph_warmup) // 2):
             wp.capture_launch(capture.graph)
-        final = states[n % 2]
     else:
         for _ in range(frames):
-            step(states[n % 2], states[(n + 1) % 2])
-            n += 1
-        final = states[n % 2]
-    return final.particle_q.numpy().copy()
+            step(src, dst)
+            src, dst = dst, src
+    # In both paths the most recently written state is `src`.
+    return src.particle_q.numpy().copy()
 
 
 class TestCoupledEntryParticleGridOwnership(unittest.TestCase):
