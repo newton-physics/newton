@@ -800,8 +800,10 @@ class ViewerBase(ABC):
 
         Args:
             pos: The position of the camera.
-            pitch: The pitch of the camera. If None, the current pitch is kept.
-            yaw: The yaw of the camera. If None, the current yaw is kept.
+            pitch: The pitch of the camera. If None, the current pitch is kept
+                (``ViewerViser`` is the exception: it defaults to 0.0).
+            yaw: The yaw of the camera. If None, the current yaw is kept
+                (``ViewerViser`` is the exception: it defaults to 0.0).
         """
         return
 
