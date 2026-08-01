@@ -150,11 +150,12 @@ def _zero_reset_view_rows_kernel(
     world_mask: wp.array[wp.bool],
     world_count: int,
     values: wp.array[Any],
+    zero_value: Any,
 ):
     local_id = wp.tid()
     global_id = local_to_global[local_id]
     if global_id >= 0 and _reset_world_selected(global_row_world[global_id], world_mask, world_count):
-        values[local_id] = values.dtype(0.0)
+        values[local_id] = zero_value
 
 
 def _identity_index_map(count: int, device) -> wp.array:
@@ -2171,8 +2172,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
             world_mask: Optional boolean mask of shape ``(world_count + 1,)``
                 selecting which worlds to reset. The final entry selects global
                 entities whose world is ``-1``. If ``None``, all local and
-                global entities are reset. Passing the deprecated shape
-                ``(world_count,)`` selects local worlds only.
+                global entities are reset.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling
                 which state quantities sub-solvers should reset. If ``None``,
                 all state quantities are reset.
@@ -2322,6 +2327,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         frequency,
                         world_mask,
                         values,
+                        values.dtype(0),
                     )
 
     def _reset_coupling_state(
@@ -2406,6 +2412,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         frequency,
                         world_mask,
                         dst,
+                        dst.dtype(0),
                     )
             notify_flags = self._input_state_copy_flags(state_in, entry.state_0)
             self._notify_input_state_update(entry, notify_flags, iteration_restart=True)

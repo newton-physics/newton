@@ -360,8 +360,12 @@ class SolverBase:
                 specifying which worlds to reset. Entries before the last select
                 local worlds by index, and the final entry selects global entities
                 whose world is ``-1``. If ``None``, all local and global entities
-                are reset. Passing the deprecated shape ``(world_count,)`` selects
-                local worlds only and leaves global entities unselected.
+                are reset.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.

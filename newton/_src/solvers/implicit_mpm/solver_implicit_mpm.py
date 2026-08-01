@@ -1576,8 +1576,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             world_mask: Optional one-dimensional Warp boolean mask on the
                 model device with shape ``(model.world_count + 1,)``. The final
                 entry selects global objects whose world index is ``-1``. If
-                ``None``, reset all worlds and global objects. The deprecated
-                shape ``(model.world_count,)`` selects local worlds only.
+                ``None``, reset all worlds and global objects.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
 
                 .. experimental::
 

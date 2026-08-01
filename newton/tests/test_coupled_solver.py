@@ -801,6 +801,57 @@ class TestSolverCoupledContactsAndMPM(unittest.TestCase):
 class TestSolverCoupledResetMask(unittest.TestCase):
     """Test world-selective coupled reset behavior."""
 
+    def test_missing_reset_inputs_zero_selected_transform_and_scalar_rows(self):
+        """Zero selected transform and scalar rows when reset inputs are missing."""
+        world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = world.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = world.add_joint_free(child=body)
+        world.add_articulation([joint])
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_world(world)
+        builder.add_world(world)
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry(
+                    "recording",
+                    _ResetRecordingCopySolver,
+                    bodies=range(model.body_count),
+                    joints=range(model.joint_count),
+                ),
+            ),
+        )
+        entry_state = coupled._entries["recording"].state_0
+        body_q_before = np.asarray(
+            (
+                (1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0),
+                (4.0, 5.0, 6.0, 0.0, 0.0, 0.0, 1.0),
+            ),
+            dtype=np.float32,
+        )
+        joint_q_before = np.arange(1, model.joint_coord_count + 1, dtype=np.float32)
+        entry_state.body_q.assign(body_q_before)
+        entry_state.joint_q.assign(joint_q_before)
+
+        state = model.state()
+        state.body_q = None
+        state.joint_q = None
+        coupled.reset(
+            state,
+            world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
+        )
+
+        body_q_expected = body_q_before.copy()
+        body_q_expected[0] = 0.0
+        np.testing.assert_array_equal(entry_state.body_q.numpy(), body_q_expected)
+
+        joint_q_expected = joint_q_before.copy()
+        joint_q_world_start = model.joint_coord_world_start.numpy()
+        joint_q_expected[joint_q_world_start[0] : joint_q_world_start[1]] = 0.0
+        np.testing.assert_array_equal(entry_state.joint_q.numpy(), joint_q_expected)
+
     def test_mask_is_forwarded_without_touching_unselected_rows(self):
         """Normalize once, then preserve unselected state and history."""
 
