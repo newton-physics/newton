@@ -2165,6 +2165,15 @@ def _reset_masked_rigid_and_soft(test, device):
         test.assertEqual(str(state.particle_qd.device), "cpu")
         state.particle_qd = good_pqd
 
+        # The symmetric particle_q guard rejects before any field is written.
+        _, _, pq, _ = perturb()
+        good_pq = state.particle_q
+        state.particle_q = wp.clone(good_pq, device="cpu")
+        with test.assertRaisesRegex(ValueError, "state.particle_q is on device cpu"):
+            solver.reset(state, flags=newton.StateFlags.PARTICLE_Q)
+        np.testing.assert_allclose(state.particle_q.numpy(), pq)
+        state.particle_q = good_pq
+
 
 def _soft_reset_particle_only_and_external(test, device):
     """Deformable reset runs when SolverVBD performs no internal rigid integration.

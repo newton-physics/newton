@@ -1362,7 +1362,7 @@ def reset_particle_state(
     """Copy model-default particle state into selected worlds' particles.
 
     A non-null ``particle_q`` / ``particle_qd`` output is the caller's request to
-    reset that field. The shared :func:`_reset_world_selected` predicate applies
+    reset that field. The shared ``_reset_world_selected()`` predicate applies
     the same per-world masking as the rigid reset, mapping global particles
     (``particle_world == -1``) to the mask's final slot.
     """
