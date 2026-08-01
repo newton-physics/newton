@@ -8890,6 +8890,272 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                     f.write(struct.pack("<fff", *v))
                 f.write(struct.pack("<H", 0))  # attribute
 
+    def _create_png(self, path):
+        """Write a minimal 1x1 PNG image.
+
+        Args:
+            path: Filesystem path for the PNG output.
+        """
+        sig = b"\x89PNG\r\n\x1a\n"
+        ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+        ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data)
+        ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", ihdr_crc)
+        raw = zlib.compress(b"\x00\xff\x00\x00")
+        idat_crc = zlib.crc32(b"IDAT" + raw)
+        idat = struct.pack(">I", len(raw)) + b"IDAT" + raw + struct.pack(">I", idat_crc)
+        iend_crc = zlib.crc32(b"IEND")
+        iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
+        with open(path, "wb") as f:
+            f.write(sig + ihdr + idat + iend)
+
+    def test_assetdir_resolves_meshes_and_textures(self):
+        """Load mesh, texture, and heightfield files through compiler assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            texture_path = os.path.join(assets_dir, "checker.png")
+            self._create_png(texture_path)
+            hfield_path = os.path.join(assets_dir, "terrain.bin")
+            with open(hfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <texture name="checker" type="2d" file="checker.png"/>
+        <material name="checker" texture="checker"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube" material="checker"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            model_path = os.path.join(tmpdir, "model.xml")
+            with open(model_path, "w") as f:
+                f.write(mjcf)
+
+            root, _ = _load_and_expand_mjcf(model_path)
+            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(assets_dir, "cube.stl"))
+            self.assertEqual(root.find(".//texture").get("file"), texture_path)
+            self.assertEqual(root.find(".//hfield").get("file"), hfield_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(model_path, parse_visuals=True)
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_assetdir_uses_custom_resolver_for_xml_string(self):
+        """Resolve a relative assetdir through a custom resolver without a base path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            with open(os.path.join(assets_dir, "terrain.bin"), "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            resolved_paths = []
+
+            def resolve(base_dir, file_path):
+                resolved_paths.append((base_dir, file_path))
+                return os.path.join(tmpdir, file_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf, path_resolver=resolve)
+
+            self.assertEqual(
+                resolved_paths,
+                [
+                    (None, os.path.join("assets", "cube.stl")),
+                    (None, os.path.join("assets", "terrain.bin")),
+                ],
+            )
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_absolute_heightfield_uses_custom_resolver_once(self):
+        """Remap an authored absolute heightfield path exactly once."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            heightfield_path = os.path.join(tmpdir, "terrain.bin")
+            with open(heightfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            authored_path = "/virtual/assets/terrain.bin"
+            mjcf = f"""\
+<mujoco>
+    <asset>
+        <hfield name="terrain" file="{authored_path}" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            resolved_paths = []
+
+            def resolve(base_dir, file_path):
+                resolved_paths.append((base_dir, file_path))
+                self.assertEqual(file_path, authored_path)
+                return heightfield_path
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf, path_resolver=resolve)
+
+            self.assertEqual(resolved_paths, [(None, authored_path)])
+            self.assertEqual(builder.shape_count, 1)
+
+    def test_assetdir_honors_strippath_for_all_file_assets(self):
+        """Strip authored directories before applying assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            mesh_path = os.path.join(assets_dir, "cube.stl")
+            texture_path = os.path.join(assets_dir, "checker.png")
+            heightfield_path = os.path.join(assets_dir, "terrain.bin")
+            self._create_cube_stl(mesh_path)
+            self._create_png(texture_path)
+            with open(heightfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets" strippath="true"/>
+    <asset>
+        <mesh name="cube" file="../vendor/cube.stl"/>
+        <texture name="checker" type="2d" file="../vendor/checker.png"/>
+        <material name="checker" texture="checker"/>
+        <hfield name="terrain" file="../vendor/terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube" material="checker"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            model_path = os.path.join(tmpdir, "model.xml")
+            with open(model_path, "w") as f:
+                f.write(mjcf)
+
+            root, _ = _load_and_expand_mjcf(model_path)
+            self.assertEqual(root.find(".//mesh").get("file"), mesh_path)
+            self.assertEqual(root.find(".//texture").get("file"), texture_path)
+            self.assertEqual(root.find(".//hfield").get("file"), heightfield_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(model_path, parse_visuals=True)
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_assetdir_xml_string_preserves_default_resolver_fallback(self):
+        """Resolve XML-string assets relative to the working directory by default."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            with open(os.path.join(assets_dir, "terrain.bin"), "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            previous_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_explicit_asset_directories_override_assetdir(self):
+        """Prefer meshdir and texturedir over their shared assetdir fallback."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cases = (
+                ('assetdir="common" meshdir="meshes"', "meshes", "common"),
+                ('assetdir="common" texturedir="textures"', "common", "textures"),
+            )
+            for index, (compiler_attrib, expected_meshdir, expected_texturedir) in enumerate(cases):
+                mjcf = f"""\
+<mujoco>
+    <compiler {compiler_attrib}/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <texture name="checker" type="2d" file="checker.png"/>
+    </asset>
+</mujoco>"""
+                model_path = os.path.join(tmpdir, f"model_{index}.xml")
+                with open(model_path, "w") as f:
+                    f.write(mjcf)
+
+                root, _ = _load_and_expand_mjcf(model_path)
+                with self.subTest(compiler_attrib=compiler_attrib):
+                    self.assertEqual(
+                        root.find(".//mesh").get("file"),
+                        os.path.join(tmpdir, expected_meshdir, "cube.stl"),
+                    )
+                    self.assertEqual(
+                        root.find(".//texture").get("file"),
+                        os.path.join(tmpdir, expected_texturedir, "checker.png"),
+                    )
+
+    def test_include_with_assetdir(self):
+        """Resolve an included file's assets relative to its own assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            models_dir = os.path.join(tmpdir, "models")
+            assets_dir = os.path.join(models_dir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+
+            included_content = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+    </asset>
+    <worldbody>
+        <body name="robot">
+            <geom type="mesh" mesh="cube"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            included_path = os.path.join(models_dir, "robot.xml")
+            with open(included_path, "w") as f:
+                f.write(included_content)
+
+            main_content = """\
+<mujoco model="test">
+    <include file="models/robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(assets_dir, "cube.stl"))
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+            self.assertEqual(builder.shape_count, 1)
+
     def test_include_with_meshdir(self):
         """Test that meshdir in included file is used to resolve mesh paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -9007,27 +9273,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             # Create texture directory with a dummy PNG
             tex_dir = os.path.join(tmpdir, "textures")
             os.makedirs(tex_dir)
-            # Minimal 1x1 PNG
-
-            def _make_png(path):
-                """Write a minimal 1x1 PNG image.
-
-                Args:
-                    path: Filesystem path for the PNG output.
-                """
-                sig = b"\x89PNG\r\n\x1a\n"
-                ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
-                ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data)
-                ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", ihdr_crc)
-                raw = zlib.compress(b"\x00\xff\x00\x00")
-                idat_crc = zlib.crc32(b"IDAT" + raw)
-                idat = struct.pack(">I", len(raw)) + b"IDAT" + raw + struct.pack(">I", idat_crc)
-                iend_crc = zlib.crc32(b"IEND")
-                iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
-                with open(path, "wb") as f:
-                    f.write(sig + ihdr + idat + iend)
-
-            _make_png(os.path.join(tex_dir, "checker.png"))
+            self._create_png(os.path.join(tex_dir, "checker.png"))
             self._create_cube_stl(os.path.join(tmpdir, "cube.stl"))
 
             included_content = """\
