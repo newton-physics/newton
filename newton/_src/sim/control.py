@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
+from ..utils.deprecation import RemovedAttribute
+
 if TYPE_CHECKING:
     from .model import Model
 
@@ -22,6 +24,9 @@ class Control:
     :data:`newton.use_coord_layout_targets` — coord-shaped when ``True``,
     DOF-shaped otherwise.
     """
+
+    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
+    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def __init__(self):
         self.joint_f: wp.array | None = None

@@ -3476,5 +3476,53 @@ class TestModelValidation(unittest.TestCase):
             self.fail(f"control.clear() raised {type(e).__name__}: {e}")
 
 
+class TestRemovedJointTargetAliases(unittest.TestCase):
+    """The 1.3-era ``joint_target_pos`` / ``joint_target_vel`` aliases are gone.
+
+    They are shadowed by tombstone descriptors rather than simply deleted so
+    that code written against the old API fails loudly. A plain deletion would
+    let ``obj.joint_target_pos = targets`` succeed as a fresh instance
+    attribute while ``joint_target_q`` stayed untouched, silently dropping the
+    requested targets.
+    """
+
+    ALIASES = (("joint_target_pos", "joint_target_q"), ("joint_target_vel", "joint_target_qd"))
+
+    def _owners(self):
+        builder = ModelBuilder()
+        base = builder.add_link(mass=1.0)
+        j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
+        builder.add_articulation([j])
+        model = builder.finalize()
+        return (("Model", model), ("Control", model.control()), ("ModelBuilder", ModelBuilder()))
+
+    def test_assignment_raises_and_leaves_no_shadow_attribute(self):
+        """Assigning a removed alias must raise instead of silently no-op'ing."""
+        for label, obj in self._owners():
+            for alias, replacement in self.ALIASES:
+                with self.subTest(owner=label, alias=alias):
+                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
+                        setattr(obj, alias, [1.0, 2.0])
+                    self.assertNotIn(alias, vars(obj))
+
+    def test_read_raises(self):
+        """Reading a removed alias must raise and name the replacement."""
+        for label, obj in self._owners():
+            for alias, replacement in self.ALIASES:
+                with self.subTest(owner=label, alias=alias):
+                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
+                        getattr(obj, alias)
+                    # Raising AttributeError on read keeps the usual probes well behaved.
+                    self.assertFalse(hasattr(obj, alias))
+                    self.assertEqual(getattr(obj, alias, "default"), "default")
+
+    def test_canonical_names_still_work(self):
+        """The replacement attributes remain readable."""
+        for label, obj in self._owners():
+            with self.subTest(owner=label):
+                self.assertIsNotNone(obj.joint_target_q)
+                self.assertIsNotNone(obj.joint_target_qd)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

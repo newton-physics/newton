@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, override
+from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
@@ -1554,6 +1555,13 @@ class Model:
         if references in self.custom_frequency_counts:
             return references
         raise ValueError(f"Unknown custom attribute reference frequency {references!r}")
+
+    # ----- Removed joint-target aliases -------------------------------------
+    # Tombstones so that assigning the 1.3-era names fails loudly instead of
+    # creating an unused instance attribute whose targets are never applied.
+
+    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
+    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     # ----- Deprecated SDF aliases -------------------------------------------
     # The underlying SDF members on ``Model`` are now underscore-prefixed.
