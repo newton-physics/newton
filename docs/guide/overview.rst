@@ -112,8 +112,8 @@ Core Concepts
   :meth:`~newton.ModelBuilder.add_urdf`,
   :meth:`~newton.ModelBuilder.add_mjcf`, and
   :meth:`~newton.ModelBuilder.add_usd`.
-- :doc:`Viewer <visualization>`: Visualizes the simulation in real time
-  or offline.
+- :doc:`Viewers and debugging <visualization>`: Visualize the simulation in
+  real time or inspect it offline.
 
 Simulation Loop
 ---------------

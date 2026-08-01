@@ -35,6 +35,7 @@ from newton._src.solvers.kamino.tests.utils.sampling import (
     sample_body_poses,
 )
 from newton.tests.utils.basics import build_cartpole
+from newton.tests.utils.testing import build_unary_universal_joint_test
 
 ###
 # Module configs
@@ -128,6 +129,75 @@ class JacobianCheckForwardKinematics(unittest.TestCase):
 
         success = run_test_single_joint_examples(test_function, test_name, device=self.default_device)
         self.assertTrue(success)
+
+
+class PassiveUniversalJointFrameForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_follower_joint_frame(self):
+        """Test kinematic constraints and jacobian for a passive universal joint.
+
+        The follower joint frame is rotated relative to the base joint frame,
+        while the follower body is counter-rotated so both joint frames coincide
+        in world coordinates. The base-frame X axis and follower-frame Y axis
+        are therefore orthogonal, as required by a universal joint.
+        """
+        # Build a single body attached to the world and make both rotational
+        # degrees of freedom passive.
+        builder = build_unary_universal_joint_test(limits=True, ground=False)
+        builder.joint_target_mode[0] = newton.JointTargetMode.NONE
+        builder.joint_target_mode[1] = newton.JointTargetMode.NONE
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+
+        # Rotate the follower-local joint frame by 90 degrees about Z without
+        # changing the base-local joint frame.
+        q_X_F = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), 0.5 * wp.pi)
+        X_Fj = model.joints.X_Fj.numpy()
+        X_Fj[0] = np.asarray(wp.quat_to_matrix(q_X_F), dtype=np.float32).reshape(3, 3)
+        model.joints.X_Fj.assign(X_Fj)
+
+        # Counter-rotate and translate the follower body so its joint frame has
+        # the same world-space pose as the base joint frame.
+        q_F = wp.quat_inverse(q_X_F)
+        B_r_Bj = wp.vec3f(model.joints.B_r_Bj.numpy()[0])
+        F_r_Fj = wp.vec3f(model.joints.F_r_Fj.numpy()[0])
+        r_F = B_r_Bj - wp.quat_rotate(q_F, F_r_Fj)
+        bodies_q = wp.array([wp.transformf(r_F, q_F)], dtype=wp.transformf, device=self.default_device)
+
+        # Coincident joint frames satisfy all three anchor constraints and the
+        # universal joint's rotational orthogonality constraint.
+        solver = ForwardKinematicsSolver(model)
+        actuators_q = wp.empty(0, dtype=wp.float32, device=self.default_device)
+        target_transforms = solver.eval_position_control_transformations(actuators_q, None)
+        constraints = solver.eval_kinematic_constraints(bodies_q, target_transforms).numpy()[0]
+        np.testing.assert_allclose(constraints, 0.0, atol=1.0e-6)
+
+        # Validate jacobian with finite differences
+        bodies_q_np = bodies_q.numpy().reshape(-1)
+        jacobian = solver.eval_kinematic_constraints_jacobian(bodies_q, target_transforms).numpy()[0]
+
+        def eval_constraints(bodies_q_stepped_np):
+            bodies_q.assign(bodies_q_stepped_np)
+            stepped_constraints = solver.eval_kinematic_constraints(bodies_q, target_transforms).numpy()[0]
+            bodies_q.assign(bodies_q_np)
+            return stepped_constraints
+
+        self.assertTrue(
+            diff_check(
+                eval_constraints,
+                jacobian,
+                bodies_q_np,
+                epsilon=1.0e-4,
+                tolerance_abs=5.0e-3,
+                tolerance_rel=5.0e-3,
+            )
+        )
 
 
 class SparseJacobianSingleJointCheckForwardKinematics(unittest.TestCase):

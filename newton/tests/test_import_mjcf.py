@@ -1320,6 +1320,161 @@ class TestImportMjcfMeshScale(unittest.TestCase):
         self.assertAlmostEqual(self._mesh_extent(builder), 0.5, places=5)
 
 
+class TestImportMjcfInlineMesh(unittest.TestCase):
+    """Tests for MJCF mesh assets authored with inline arrays."""
+
+    def test_inline_mesh_builds_convex_hull_without_faces(self):
+        """Build a convex hull when inline mesh faces are absent or empty."""
+        for face_attribute in ("", ' face=""', ' face="   "'):
+            with self.subTest(face_attribute=face_attribute):
+                mjcf = f"""
+<mujoco>
+    <asset>
+        <mesh name="tetra" vertex="0 0 0  1 0 0  0 1 0  0 0 1"{face_attribute}/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="tetra" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+
+                mesh = builder.shape_source[0]
+                self.assertEqual(len(mesh.vertices), 4)
+                self.assertEqual(len(mesh.indices), 12)
+                np.testing.assert_allclose(
+                    np.asarray(mesh.vertices)[np.lexsort(np.asarray(mesh.vertices).T[::-1])],
+                    [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+                )
+
+    def test_inline_mesh_vertex_face_data(self):
+        """Import inline mesh vertices and triangle faces."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"/>
+    </asset>
+    <worldbody>
+        <body>
+            <geom type="mesh" mesh="tetra" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, scale=2.0)
+
+        self.assertEqual(builder.shape_count, 1)
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(
+            mesh.vertices,
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]],
+        )
+        np.testing.assert_array_equal(mesh.indices, [0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2])
+
+    def test_inline_mesh_preserves_texcoords_for_textures(self):
+        """Preserve per-vertex UVs on a textured inline mesh."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            texture_path = os.path.join(tmpdir, "texture.png")
+            mjcf = f"""
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"
+              texcoord="0 0  1 0  0 1  1 1"/>
+        <texture name="texture" type="2d" file="{texture_path}"/>
+        <material name="textured" texture="texture"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="tetra" material="textured" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(mesh.uvs, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+        self.assertEqual(mesh.texture, texture_path)
+
+    def test_inline_mesh_applies_reference_pose_to_vertices_and_normals(self):
+        """Apply the MJCF reference pose and scale to inline mesh data."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="tetra"
+              vertex="1 0 0  2 0 0  1 1 0  1 0 1"
+              face="0 2 1  0 1 3  0 3 2  1 2 3"
+              normal="1 1 0  1 1 0  1 1 0  1 1 0"
+              refpos="1 0 0"
+              refquat="0.7071067811865476 0 0 0.7071067811865476"
+              scale="2 3 4"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="tetra" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(
+            mesh.vertices,
+            [[0.0, 0.0, 0.0], [0.0, -3.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+            atol=1e-5,
+        )
+        expected_normal = np.array([0.5, -1.0 / 3.0, 0.0])
+        expected_normal /= np.linalg.norm(expected_normal)
+        np.testing.assert_allclose(mesh.normals, np.tile(expected_normal, (4, 1)), atol=1e-5)
+
+    def test_inline_mesh_rejects_malformed_vertex_attributes(self):
+        """Reject normals and texture coordinates with the wrong vertex count."""
+        for attribute, message in (
+            ('normal="0 0 1"', "normal.*3 values per vertex"),
+            ('texcoord="0 0"', "texcoord.*2 values per vertex"),
+            ('refpos="invalid 0 0"', "Inline MJCF mesh 'bad'.*invalid refpos data"),
+            ('refquat="invalid 0 0 1"', "Inline MJCF mesh 'bad'.*invalid refquat data"),
+        ):
+            with self.subTest(attribute=attribute):
+                mjcf = f"""
+<mujoco>
+    <asset>
+        <mesh name="bad"
+              vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+              face="0 1 2  0 3 1  0 2 3  1 3 2"
+              {attribute}/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="bad" mass="1"/>
+    </worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+                with self.assertRaisesRegex(ValueError, message):
+                    builder.add_mjcf(mjcf)
+
+    def test_inline_mesh_rejects_malformed_faces(self):
+        """Reject inline mesh face data that does not contain triangles."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="bad" vertex="0 0 0  1 0 0  0 1 0" face="0 1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="bad"/>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "face.*multiple of 3"):
+            builder.add_mjcf(mjcf)
+
+
 class TestImportMjcfGeometry(unittest.TestCase):
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
@@ -2848,6 +3003,161 @@ f 4 5 8
             0.0,
             msg="Visual geom with explicit mass should contribute non-zero inertia",
         )
+
+    def test_geom_inertia_independent_of_visual_loading(self):
+        """Preserve combined geom mass properties across visual-loading modes."""
+        cases = {
+            "explicit mass": ('mass="1.25"', 'mass="2.75"'),
+            "density": ("", 'density="600"'),
+        }
+        import_modes = {
+            "visuals": ({"parse_visuals": True}, 2),
+            "no visuals": ({"parse_visuals": False}, 1),
+            "visuals as colliders": ({"parse_visuals_as_colliders": True}, 1),
+        }
+        visual_com = np.array([0.4, -0.2, 0.15])
+        collider_com = np.array([-0.3, 0.25, -0.1])
+
+        for case_name, (visual_mass_attrib, collider_mass_attrib) in cases.items():
+            mjcf = f"""<?xml version="1.0" ?>
+<mujoco>
+  <default>
+    <default class="visual">
+      <geom contype="0" conaffinity="0" group="2"/>
+    </default>
+    <default class="collision">
+      <geom group="3"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="test">
+      <freejoint/>
+      <geom name="visual" class="visual" type="box" size="0.12 0.07 0.03"
+            pos="0.4 -0.2 0.15" quat="0.9238795 0 0 0.3826834" {visual_mass_attrib}/>
+      <geom name="collision" class="collision" type="cylinder" size="0.08 0.2"
+            pos="-0.3 0.25 -0.1" euler="20 0 0" {collider_mass_attrib}/>
+    </body>
+  </worldbody>
+</mujoco>"""
+            properties = {}
+            for mode_name, (options, expected_shape_count) in import_modes.items():
+                with self.subTest(case=case_name, mode=mode_name):
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf, **options)
+
+                    self.assertEqual(builder.shape_count, expected_shape_count)
+                    properties[mode_name] = (
+                        builder.body_mass[0],
+                        np.array(builder.body_com[0]),
+                        np.array(builder.body_inertia[0]).reshape(3, 3),
+                    )
+
+            reference_mass, reference_com, reference_inertia = properties["visuals"]
+            self.assertFalse(np.allclose(reference_com, visual_com))
+            self.assertFalse(np.allclose(reference_com, collider_com))
+            self.assertGreater(
+                np.max(np.abs(reference_inertia - np.diag(np.diag(reference_inertia)))),
+                1e-4,
+            )
+            for mode_name in ("no visuals", "visuals as colliders"):
+                with self.subTest(case=case_name, mode=mode_name):
+                    mass, com, inertia = properties[mode_name]
+                    self.assertAlmostEqual(mass, reference_mass, places=6)
+                    np.testing.assert_allclose(com, reference_com, atol=1e-7, rtol=1e-6)
+                    np.testing.assert_allclose(inertia, reference_inertia, atol=1e-7, rtol=1e-6)
+
+    def test_compiler_inertiagrouprange(self):
+        """Test that only geom groups in the compiler range contribute inertia."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiagrouprange="0 2"/>
+  <worldbody>
+    <body name="test">
+      <freejoint/>
+      <geom type="sphere" size="0.1" group="2" mass="0.5"/>
+      <geom type="box" size="0.1 0.1 0.1" group="3" mass="8"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        self.assertAlmostEqual(builder.body_mass[0], 0.5, places=6)
+        np.testing.assert_allclose(
+            np.array(builder.body_inertia[0]).reshape(3, 3),
+            np.diag([0.002, 0.002, 0.002]),
+            atol=1e-7,
+            rtol=1e-6,
+        )
+
+    def test_compiler_inertiafromgeom_modes(self):
+        """Test inertiafromgeom modes with and without an inertial element."""
+        expected_properties = {
+            "auto": (1.0, [0.1, 0.2, 0.3], [0.01, 0.02, 0.03]),
+            "false": (1.0, [0.1, 0.2, 0.3], [0.01, 0.02, 0.03]),
+            "true": (2.0, [-0.2, 0.4, 0.1], [0.008, 0.008, 0.008]),
+        }
+        for mode, (expected_mass, expected_com, expected_inertia) in expected_properties.items():
+            with self.subTest(mode=mode):
+                mjcf = f"""<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiafromgeom="{mode}"/>
+  <worldbody>
+    <body name="test">
+      <freejoint/>
+      <inertial pos="0.1 0.2 0.3" mass="1" diaginertia="0.01 0.02 0.03"/>
+      <geom type="sphere" size="0.1" pos="-0.2 0.4 0.1" mass="2"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+
+                self.assertAlmostEqual(builder.body_mass[0], expected_mass, places=6)
+                np.testing.assert_allclose(builder.body_com[0], expected_com, atol=1e-7)
+                np.testing.assert_allclose(
+                    np.array(builder.body_inertia[0]).reshape(3, 3),
+                    np.diag(expected_inertia),
+                    atol=1e-7,
+                )
+
+        mjcf_missing_inertial = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiafromgeom="false"/>
+  <worldbody>
+    <body name="missing_inertial">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="2"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        with self.assertRaisesRegex(ValueError, "requires an <inertial> element"):
+            newton.ModelBuilder().add_mjcf(mjcf_missing_inertial)
+
+        mjcf_fixed_missing_inertial = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiafromgeom="false"/>
+  <worldbody>
+    <body name="fixed_root">
+      <geom type="sphere" size="0.1"/>
+    </body>
+    <body name="moving_parent">
+      <joint type="hinge"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      <body name="fixed_child">
+        <geom type="sphere" size="0.1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_fixed_missing_inertial)
+        fixed_body_indices = [
+            index for index, label in enumerate(builder.body_label) if label.endswith(("fixed_root", "fixed_child"))
+        ]
+        self.assertEqual(len(fixed_body_indices), 2)
+        for body_index in fixed_body_indices:
+            self.assertEqual(builder.body_mass[body_index], 0.0)
 
     def test_inertial_locks_body_against_frame_geom_mass(self):
         """Regression: explicit <inertial> must lock body mass/COM against later frame geoms.
@@ -8580,6 +8890,272 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                     f.write(struct.pack("<fff", *v))
                 f.write(struct.pack("<H", 0))  # attribute
 
+    def _create_png(self, path):
+        """Write a minimal 1x1 PNG image.
+
+        Args:
+            path: Filesystem path for the PNG output.
+        """
+        sig = b"\x89PNG\r\n\x1a\n"
+        ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+        ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data)
+        ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", ihdr_crc)
+        raw = zlib.compress(b"\x00\xff\x00\x00")
+        idat_crc = zlib.crc32(b"IDAT" + raw)
+        idat = struct.pack(">I", len(raw)) + b"IDAT" + raw + struct.pack(">I", idat_crc)
+        iend_crc = zlib.crc32(b"IEND")
+        iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
+        with open(path, "wb") as f:
+            f.write(sig + ihdr + idat + iend)
+
+    def test_assetdir_resolves_meshes_and_textures(self):
+        """Load mesh, texture, and heightfield files through compiler assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            texture_path = os.path.join(assets_dir, "checker.png")
+            self._create_png(texture_path)
+            hfield_path = os.path.join(assets_dir, "terrain.bin")
+            with open(hfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <texture name="checker" type="2d" file="checker.png"/>
+        <material name="checker" texture="checker"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube" material="checker"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            model_path = os.path.join(tmpdir, "model.xml")
+            with open(model_path, "w") as f:
+                f.write(mjcf)
+
+            root, _ = _load_and_expand_mjcf(model_path)
+            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(assets_dir, "cube.stl"))
+            self.assertEqual(root.find(".//texture").get("file"), texture_path)
+            self.assertEqual(root.find(".//hfield").get("file"), hfield_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(model_path, parse_visuals=True)
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_assetdir_uses_custom_resolver_for_xml_string(self):
+        """Resolve a relative assetdir through a custom resolver without a base path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            with open(os.path.join(assets_dir, "terrain.bin"), "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            resolved_paths = []
+
+            def resolve(base_dir, file_path):
+                resolved_paths.append((base_dir, file_path))
+                return os.path.join(tmpdir, file_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf, path_resolver=resolve)
+
+            self.assertEqual(
+                resolved_paths,
+                [
+                    (None, os.path.join("assets", "cube.stl")),
+                    (None, os.path.join("assets", "terrain.bin")),
+                ],
+            )
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_absolute_heightfield_uses_custom_resolver_once(self):
+        """Remap an authored absolute heightfield path exactly once."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            heightfield_path = os.path.join(tmpdir, "terrain.bin")
+            with open(heightfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            authored_path = "/virtual/assets/terrain.bin"
+            mjcf = f"""\
+<mujoco>
+    <asset>
+        <hfield name="terrain" file="{authored_path}" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            resolved_paths = []
+
+            def resolve(base_dir, file_path):
+                resolved_paths.append((base_dir, file_path))
+                self.assertEqual(file_path, authored_path)
+                return heightfield_path
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf, path_resolver=resolve)
+
+            self.assertEqual(resolved_paths, [(None, authored_path)])
+            self.assertEqual(builder.shape_count, 1)
+
+    def test_assetdir_honors_strippath_for_all_file_assets(self):
+        """Strip authored directories before applying assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            mesh_path = os.path.join(assets_dir, "cube.stl")
+            texture_path = os.path.join(assets_dir, "checker.png")
+            heightfield_path = os.path.join(assets_dir, "terrain.bin")
+            self._create_cube_stl(mesh_path)
+            self._create_png(texture_path)
+            with open(heightfield_path, "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets" strippath="true"/>
+    <asset>
+        <mesh name="cube" file="../vendor/cube.stl"/>
+        <texture name="checker" type="2d" file="../vendor/checker.png"/>
+        <material name="checker" texture="checker"/>
+        <hfield name="terrain" file="../vendor/terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube" material="checker"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            model_path = os.path.join(tmpdir, "model.xml")
+            with open(model_path, "w") as f:
+                f.write(mjcf)
+
+            root, _ = _load_and_expand_mjcf(model_path)
+            self.assertEqual(root.find(".//mesh").get("file"), mesh_path)
+            self.assertEqual(root.find(".//texture").get("file"), texture_path)
+            self.assertEqual(root.find(".//hfield").get("file"), heightfield_path)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(model_path, parse_visuals=True)
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_assetdir_xml_string_preserves_default_resolver_fallback(self):
+        """Resolve XML-string assets relative to the working directory by default."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_dir = os.path.join(tmpdir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            with open(os.path.join(assets_dir, "terrain.bin"), "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
+            mjcf = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube"/>
+        <geom type="hfield" hfield="terrain"/>
+    </worldbody>
+</mujoco>"""
+            previous_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(builder.shape_count, 2)
+
+    def test_explicit_asset_directories_override_assetdir(self):
+        """Prefer meshdir and texturedir over their shared assetdir fallback."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cases = (
+                ('assetdir="common" meshdir="meshes"', "meshes", "common"),
+                ('assetdir="common" texturedir="textures"', "common", "textures"),
+            )
+            for index, (compiler_attrib, expected_meshdir, expected_texturedir) in enumerate(cases):
+                mjcf = f"""\
+<mujoco>
+    <compiler {compiler_attrib}/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <texture name="checker" type="2d" file="checker.png"/>
+    </asset>
+</mujoco>"""
+                model_path = os.path.join(tmpdir, f"model_{index}.xml")
+                with open(model_path, "w") as f:
+                    f.write(mjcf)
+
+                root, _ = _load_and_expand_mjcf(model_path)
+                with self.subTest(compiler_attrib=compiler_attrib):
+                    self.assertEqual(
+                        root.find(".//mesh").get("file"),
+                        os.path.join(tmpdir, expected_meshdir, "cube.stl"),
+                    )
+                    self.assertEqual(
+                        root.find(".//texture").get("file"),
+                        os.path.join(tmpdir, expected_texturedir, "checker.png"),
+                    )
+
+    def test_include_with_assetdir(self):
+        """Resolve an included file's assets relative to its own assetdir."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            models_dir = os.path.join(tmpdir, "models")
+            assets_dir = os.path.join(models_dir, "assets")
+            os.makedirs(assets_dir)
+            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+
+            included_content = """\
+<mujoco>
+    <compiler assetdir="assets"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+    </asset>
+    <worldbody>
+        <body name="robot">
+            <geom type="mesh" mesh="cube"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            included_path = os.path.join(models_dir, "robot.xml")
+            with open(included_path, "w") as f:
+                f.write(included_content)
+
+            main_content = """\
+<mujoco model="test">
+    <include file="models/robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(assets_dir, "cube.stl"))
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+            self.assertEqual(builder.shape_count, 1)
+
     def test_include_with_meshdir(self):
         """Test that meshdir in included file is used to resolve mesh paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -8697,27 +9273,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             # Create texture directory with a dummy PNG
             tex_dir = os.path.join(tmpdir, "textures")
             os.makedirs(tex_dir)
-            # Minimal 1x1 PNG
-
-            def _make_png(path):
-                """Write a minimal 1x1 PNG image.
-
-                Args:
-                    path: Filesystem path for the PNG output.
-                """
-                sig = b"\x89PNG\r\n\x1a\n"
-                ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
-                ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data)
-                ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", ihdr_crc)
-                raw = zlib.compress(b"\x00\xff\x00\x00")
-                idat_crc = zlib.crc32(b"IDAT" + raw)
-                idat = struct.pack(">I", len(raw)) + b"IDAT" + raw + struct.pack(">I", idat_crc)
-                iend_crc = zlib.crc32(b"IEND")
-                iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
-                with open(path, "wb") as f:
-                    f.write(sig + ihdr + idat + iend)
-
-            _make_png(os.path.join(tex_dir, "checker.png"))
+            self._create_png(os.path.join(tex_dir, "checker.png"))
             self._create_cube_stl(os.path.join(tmpdir, "cube.stl"))
 
             included_content = """\

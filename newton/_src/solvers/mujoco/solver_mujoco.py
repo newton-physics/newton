@@ -3315,6 +3315,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         use_mujoco_cpu: bool = False,
         enable_multiccd: bool = False,
         disable_contacts: bool = False,
+        disable_sensors: bool = False,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
@@ -3354,6 +3355,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
             disable_contacts: If True, disable contact computation in MuJoCo.
+            disable_sensors: If True, disable sensor computation in MuJoCo.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
@@ -3521,6 +3523,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
         if disable_contacts:
             disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
+        if disable_sensors:
+            disableflags |= mujoco.mjtDisableBit.mjDSBL_SENSOR
         self.use_mujoco_cpu = use_mujoco_cpu
         if use_mujoco_contacts or use_mujoco_cpu:
             mujoco_attrs_for_warn = getattr(model, "mujoco", None)
@@ -3710,18 +3714,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Args:
             state: The simulation state to reset (modified in place).
-            world_mask: Optional boolean mask of shape ``(world_count,)``
-                selecting which worlds to reset. If ``None``, all worlds are
-                reset.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
+                selecting which worlds to reset. The final entry represents
+                global world ``-1`` and is a no-op because MuJoCo does not
+                support global dynamic objects. If ``None``, all worlds are
+                reset. Passing the deprecated shape ``(world_count,)`` selects
+                local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling which
                 joint-state quantities are reset. If ``None``, all are reset.
                 The internal MuJoCo buffers are always cleared regardless.
         """
         world_count = self.model.world_count
-        if world_mask is not None and world_mask.shape[0] != world_count:
-            raise ValueError(
-                f"world_mask has length {world_mask.shape[0]}, expected {world_count} (one entry per world)."
-            )
+        world_mask = self._normalize_reset_world_mask(world_mask)
 
         # Reset joint coordinates/velocities to model defaults for the selected
         # worlds. body_q/body_qd are FK outputs and intentionally not touched.
@@ -4014,6 +4018,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
                 model.shape_margin,
+                model.shape_material_kf,
+                self.mjw_model.opt.impratio_invsqrt,
+                self.mjw_model.opt.cone == self._mujoco.mjtCone.mjCONE_ELLIPTIC,
                 bodies_per_world,
                 self.newton_shape_to_mjc_geom,
                 # Mujoco warp contacts
