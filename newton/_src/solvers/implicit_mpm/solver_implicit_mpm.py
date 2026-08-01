@@ -1056,7 +1056,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 ("newton:mpm:gridType", "grid_type", {"sparse", "dense", "fixed"}),
                 ("newton:mpm:transferScheme", "transfer_scheme", {"apic", "pic"}),
                 ("newton:mpm:integrationScheme", "integration_scheme", {"pic", "gimp"}),
-                ("newton:mpm:velocityBasis", "velocity_basis", {"Q1", "B2", "B3"}),
             )
             for usd_name, field_name, allowed in token_fields:
                 value = authored(usd_name)
@@ -1102,7 +1101,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 if not math.isfinite(config.air_drag) or (authored_air_drag != 0.0 and config.air_drag == 0.0):
                     raise ValueError(f"{path}: newton:mpm:airDrag must convert to a finite, representable SI value.")
 
-            def read_basis(prefix: str, field_name: str) -> None:
+            def read_basis(prefix: str, field_name: str, allowed_types: set[str]) -> None:
                 """Compose the schema's basis fields into Newton's compact basis name."""
                 type_name = f"newton:mpm:{prefix}BasisType"
                 order_name = f"newton:mpm:{prefix}BasisOrder"
@@ -1118,7 +1117,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 basis_type = token(
                     type_name,
                     attrs[0].Get(),
-                    {"linear", "trilinear", "bspline", "serendipity", "particle"},
+                    allowed_types,
                 )
                 order = integer(order_name, attrs[1].Get())
                 discontinuous = attrs[2].Get()
@@ -1150,8 +1149,30 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     _parse_grid_basis_name(basis)
                 setattr(config, field_name, basis)
 
-            read_basis("collider", "collider_basis")
-            read_basis("strain", "strain_basis")
+            read_basis(
+                "collider",
+                "collider_basis",
+                {"linear", "trilinear", "bspline", "serendipity", "particle"},
+            )
+            read_basis("strain", "strain_basis", {"linear", "trilinear", "particle"})
+
+            velocity_type_name = "newton:mpm:velocityBasisType"
+            velocity_order_name = "newton:mpm:velocityBasisOrder"
+            velocity_attrs = (
+                prim.GetAttribute(velocity_type_name),
+                prim.GetAttribute(velocity_order_name),
+            )
+            if any(attr and attr.HasAuthoredValue() for attr in velocity_attrs):
+                velocity_type = token(
+                    velocity_type_name,
+                    velocity_attrs[0].Get(),
+                    {"trilinear", "bspline"},
+                )
+                velocity_order = integer(velocity_order_name, velocity_attrs[1].Get())
+                if not 1 <= velocity_order <= 3:
+                    raise ValueError(f"{path}: {velocity_order_name} must be from 1 through 3, got {velocity_order}.")
+                velocity_prefix = "Q" if velocity_type == "trilinear" else "B"
+                config.velocity_basis = f"{velocity_prefix}{velocity_order}"
 
             return config
 
@@ -1842,7 +1863,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     state.mpm.particle_transform.fill_(identity)
                     state.mpm.particle_qd_grad.zero_()
                     state.mpm.particle_stress.zero_()
-                    state.mpm.particle_Jp.fill_(1.0)
+                    state.mpm.particle_Jp.assign(self.model.mpm.particle_Jp)
                 else:
                     wp.launch(
                         reset_mpm_particle_history,
@@ -1851,6 +1872,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                             self.model.particle_world,
                             world_mask,
                             self._initial_world_count,
+                            self.model.mpm.particle_Jp,
                             state.mpm.particle_elastic_strain,
                             state.mpm.particle_transform,
                             state.mpm.particle_qd_grad,

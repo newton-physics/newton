@@ -18,7 +18,7 @@ from ..sim.builder import ModelBuilder
 from ..usd import utils as usd
 
 _MATERIAL_ATTRIBUTES = {
-    "newton:mpm:elasticDampingTime": ("mpm:damping", "time"),
+    "newton:mpm:elasticDamping": ("mpm:damping", "pressure_time"),
     "newton:mpm:internalFriction": ("mpm:friction", "dimensionless"),
     "newton:mpm:yieldPressure": ("mpm:yield_pressure", "pressure"),
     "newton:mpm:tensileYieldRatio": ("mpm:tensile_yield_ratio", "dimensionless"),
@@ -28,6 +28,7 @@ _MATERIAL_ATTRIBUTES = {
     "newton:mpm:hardeningRate": ("mpm:hardening_rate", "dimensionless"),
     "newton:mpm:softeningRate": ("mpm:softening_rate", "dimensionless"),
     "newton:mpm:dilatancy": ("mpm:dilatancy", "dimensionless"),
+    "newton:mpm:initialPlasticVolumeStrain": ("mpm:particle_Jp", "dimensionless"),
 }
 
 _STANDARD_ELASTIC_ATTRIBUTES = {
@@ -166,6 +167,7 @@ def _read_material_prim(
     material_prim,
     linear_unit: float,
     mass_unit: float,
+    default_young_modulus: float,
 ) -> tuple[dict[str, float], float | None]:
     """Read MPM values and an optional positive density from one material."""
     if material_prim is None:
@@ -275,6 +277,19 @@ def _read_material_prim(
         if value is not None and value > 1.0:
             raise ValueError(f"{material_path}: {name} must not exceed 1.0, got {value}.")
 
+    absolute_damping = values.get("mpm:damping")
+    if absolute_damping is not None:
+        damping_modulus = young_modulus if young_modulus is not None else default_young_modulus
+        if not math.isfinite(damping_modulus) or damping_modulus <= 0.0:
+            raise ValueError("The registered mpm:young_modulus default must be finite and positive.")
+        normalized_damping = absolute_damping / damping_modulus
+        if not math.isfinite(normalized_damping) or (absolute_damping != 0.0 and normalized_damping == 0.0):
+            raise ValueError(
+                f"{material_path}: newton:mpm:elasticDamping does not convert to a finite, representable "
+                "solver damping value."
+            )
+        values["mpm:damping"] = normalized_damping
+
     return values, density
 
 
@@ -346,8 +361,14 @@ def _read_particle_materials(
     mass_unit: float,
 ) -> tuple[dict[str, float | list[float]], float | np.ndarray | None]:
     """Resolve the whole-prim material and point-subset material assignments."""
+    default_young_modulus = float(builder.custom_attributes["mpm:young_modulus"].default)
     parent_material = _bound_physics_material(points.GetPrim())
-    parent_values, parent_density = _read_material_prim(parent_material, linear_unit, mass_unit)
+    parent_values, parent_density = _read_material_prim(
+        parent_material,
+        linear_unit,
+        mass_unit,
+        default_young_modulus,
+    )
     overlays = _point_material_subsets(points, count, path)
     if not overlays:
         return parent_values, parent_density
@@ -366,7 +387,12 @@ def _read_particle_materials(
 
     for indices, material_prim in overlays:
         resolved_subset = defaults.copy()
-        subset_values, subset_density = _read_material_prim(material_prim, linear_unit, mass_unit)
+        subset_values, subset_density = _read_material_prim(
+            material_prim,
+            linear_unit,
+            mass_unit,
+            default_young_modulus,
+        )
         resolved_subset.update(subset_values)
         for name, value in resolved_subset.items():
             material_arrays[name][indices] = value

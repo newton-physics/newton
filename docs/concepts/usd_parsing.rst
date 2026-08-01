@@ -65,6 +65,10 @@ The importer uses standard point and material representations:
   ``PhysicsVolumeDeformableMaterialAPI`` can supply ``physics:youngsModulus`` and
   ``physics:poissonsRatio``. Point-element ``GeomSubset`` bindings provide
   discrete materials within one Points prim.
+* ``newton:mpm:elasticDamping`` is authored as an absolute coefficient in Pa·s.
+  Until the solver stores absolute damping directly, the importer divides it by
+  the resolved Young's modulus. ``newton:mpm:initialPlasticVolumeStrain`` seeds
+  the per-particle ``mpm:particle_Jp`` state and is preserved by solver resets.
 * Density-derived mass uses a cubical MPM support volume:
   ``mass = density * transformed_width**3``. If widths are absent, Newton uses
   :attr:`newton.ModelBuilder.default_particle_radius` and a support width of

@@ -23,6 +23,7 @@ def Xform "World"
         float physics:density = 1000
         float physics:youngsModulus = 100
         float newton:mpm:internalFriction = 0.1
+        float newton:mpm:initialPlasticVolumeStrain = 1
     }
 
     def Material "MaterialA" (
@@ -32,6 +33,7 @@ def Xform "World"
         float physics:density = 2000
         float physics:youngsModulus = 200
         float newton:mpm:internalFriction = 0.2
+        float newton:mpm:initialPlasticVolumeStrain = 0.9
     }
 
     def Material "MaterialB" (
@@ -41,6 +43,7 @@ def Xform "World"
         float physics:density = 3000
         float physics:youngsModulus = 300
         float newton:mpm:internalFriction = 0.3
+        float newton:mpm:initialPlasticVolumeStrain = 0.8
     }
 
     def Points "Mixed" (

@@ -123,7 +123,6 @@ class TestImportUsdMPM(unittest.TestCase):
             "newton:mpm:integrationScheme": "integration_scheme",
             "newton:mpm:criticalFraction": "critical_fraction",
             "newton:mpm:airDrag": "air_drag",
-            "newton:mpm:velocityBasis": "velocity_basis",
         }
         simulator_default_fields = {
             "newton:mpm:voxelSize",
@@ -159,6 +158,8 @@ class TestImportUsdMPM(unittest.TestCase):
             "newton:mpm:strainBasisType": "linear",
             "newton:mpm:strainBasisOrder": 0,
             "newton:mpm:strainDiscontinuousBasis": False,
+            "newton:mpm:velocityBasisType": "trilinear",
+            "newton:mpm:velocityBasisOrder": 1,
         }
         for usd_name, expected in basis_fallbacks.items():
             with self.subTest(attribute=usd_name):
@@ -176,7 +177,7 @@ class TestImportUsdMPM(unittest.TestCase):
         builder = newton.ModelBuilder()
         SolverImplicitMPM.register_custom_attributes(builder)
         fallback_fields = {
-            "newton:mpm:elasticDampingTime": "mpm:damping",
+            "newton:mpm:elasticDamping": "mpm:damping",
             "newton:mpm:internalFriction": "mpm:friction",
             "newton:mpm:yieldPressure": "mpm:yield_pressure",
             "newton:mpm:tensileYieldRatio": "mpm:tensile_yield_ratio",
@@ -186,6 +187,7 @@ class TestImportUsdMPM(unittest.TestCase):
             "newton:mpm:hardeningRate": "mpm:hardening_rate",
             "newton:mpm:softeningRate": "mpm:softening_rate",
             "newton:mpm:dilatancy": "mpm:dilatancy",
+            "newton:mpm:initialPlasticVolumeStrain": "mpm:particle_Jp",
         }
         simulator_default_fields = {
             "newton:mpm:yieldPressure",
@@ -259,7 +261,8 @@ class TestImportUsdMPM(unittest.TestCase):
             "newton:mpm:strainBasisType": "trilinear",
             "newton:mpm:strainBasisOrder": 1,
             "newton:mpm:strainDiscontinuousBasis": True,
-            "newton:mpm:velocityBasis": "B2",
+            "newton:mpm:velocityBasisType": "bspline",
+            "newton:mpm:velocityBasisOrder": 2,
         }
         for name, value in values.items():
             scene.GetAttribute(name).Set(value)
@@ -286,12 +289,22 @@ class TestImportUsdMPM(unittest.TestCase):
         self.assertEqual(config.strain_basis, "Q12")
 
         scene.GetAttribute("newton:mpm:strainBasisType").Set("bspline")
-        with self.assertRaisesRegex(ValueError, "values from 1 through 3"):
+        with self.assertRaisesRegex(ValueError, "must be one of"):
             SolverImplicitMPM.Config.create_from_usd(scene)
 
         scene.GetAttribute("newton:mpm:strainBasisType").Set("linear")
         scene.GetAttribute("newton:mpm:strainBasisOrder").Set(2)
         with self.assertRaisesRegex(ValueError, "must be discontinuous"):
+            SolverImplicitMPM.Config.create_from_usd(scene)
+
+        scene.GetAttribute("newton:mpm:strainBasisType").Clear()
+        scene.GetAttribute("newton:mpm:strainBasisOrder").Clear()
+        scene.GetAttribute("newton:mpm:velocityBasisType").Set("bspline")
+        scene.GetAttribute("newton:mpm:velocityBasisOrder").Set(3)
+        self.assertEqual(SolverImplicitMPM.Config.create_from_usd(scene).velocity_basis, "B3")
+
+        scene.GetAttribute("newton:mpm:velocityBasisOrder").Set(4)
+        with self.assertRaisesRegex(ValueError, "from 1 through 3"):
             SolverImplicitMPM.Config.create_from_usd(scene)
 
     def test_config_maps_authored_zero_order_fallback_to_p0(self):
@@ -563,7 +576,7 @@ class TestImportUsdMPM(unittest.TestCase):
                 "physics:density": 1000.0,
                 "physics:youngsModulus": 500.0,
                 "physics:poissonsRatio": 0.25,
-                "newton:mpm:elasticDampingTime": 0.02,
+                "newton:mpm:elasticDamping": 10.0,
                 "newton:mpm:internalFriction": 0.4,
                 "newton:mpm:yieldPressure": 200.0,
                 "newton:mpm:tensileYieldRatio": 0.3,
@@ -573,6 +586,7 @@ class TestImportUsdMPM(unittest.TestCase):
                 "newton:mpm:hardeningRate": 0.6,
                 "newton:mpm:softeningRate": 0.7,
                 "newton:mpm:dilatancy": 0.8,
+                "newton:mpm:initialPlasticVolumeStrain": 0.9,
             },
         )
         self._bind(points, material)
@@ -594,6 +608,7 @@ class TestImportUsdMPM(unittest.TestCase):
             "hardening_rate": 0.6,
             "softening_rate": 0.7,
             "dilatancy": 0.8,
+            "particle_Jp": 0.9,
         }
         for field_name, expected_value in expected.items():
             with self.subTest(field=field_name):
@@ -605,6 +620,8 @@ class TestImportUsdMPM(unittest.TestCase):
                     float(getattr(model.mpm, field_name).numpy()[0]),
                     expected_value,
                 )
+
+        self.assertAlmostEqual(float(model.state().mpm.particle_Jp.numpy()[0]), 0.9)
 
     def test_imports_checked_in_two_prim_fixture(self):
         """Parse the checked-in transformed, unit-scaled, two-material USDA fixture."""
@@ -651,6 +668,7 @@ class TestImportUsdMPM(unittest.TestCase):
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.mpm.young_modulus.numpy(), [200.0, 300.0, 200.0, 100.0])
         np.testing.assert_allclose(model.mpm.friction.numpy(), [0.2, 0.3, 0.2, 0.1])
+        np.testing.assert_allclose(model.state().mpm.particle_Jp.numpy(), [0.9, 0.8, 0.9, 1.0])
 
     def test_validates_particle_array_lengths_before_mutation(self):
         """Reject malformed particle arrays before adding any particles."""

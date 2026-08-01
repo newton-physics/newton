@@ -20,6 +20,8 @@ def Xform "World"
         float newton:mpm:tolerance = 0.0001
         token[] newton:mpm:rheologySolvers = ["auto"]
         float newton:mpm:voxelSize = 0.1
+        token newton:mpm:velocityBasisType = "trilinear"
+        int newton:mpm:velocityBasisOrder = 1
     }
 
     def Material "SandMaterial" (
@@ -29,7 +31,7 @@ def Xform "World"
         float physics:density = 1000
         float physics:youngsModulus = 1e7
         float physics:poissonsRatio = 0.3
-        float newton:mpm:elasticDampingTime = 0
+        float newton:mpm:elasticDamping = 0
         float newton:mpm:internalFriction = 0.68
         float newton:mpm:yieldPressure = 1e12
     }
@@ -41,7 +43,8 @@ def Xform "World"
         float physics:density = 1200
         float physics:youngsModulus = 2e7
         float physics:poissonsRatio = 0.28
-        float newton:mpm:elasticDampingTime = 0.01
+        float newton:mpm:elasticDamping = 200000
+        float newton:mpm:initialPlasticVolumeStrain = 0.975
         float newton:mpm:internalFriction = 0.8
         float newton:mpm:yieldPressure = 8e11
     }
