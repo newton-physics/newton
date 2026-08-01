@@ -4,10 +4,12 @@
 """Tests for per-entry particle hash-grid ownership in SolverCoupled.
 
 The particle hash grid is per-step solver scratch: each particle solver
-rebuilds it over its own particles before querying it. Entry model views must
-therefore own a private grid — aliasing the parent model's grid makes its
-contents valid only for whichever entry stepped last, and is a data race when
-entries step concurrently (multi-stream or CUDA-graph task parallelism).
+rebuilds it over its own particles before querying it. Solvers therefore own
+a private grid, created at construction when the model-level grid signals
+that particle-particle contacts are enabled — sharing one grid across the
+entries of a SolverCoupled makes its contents valid only for whichever entry
+stepped last, and is a data race when entries step concurrently (multi-stream
+or CUDA-graph task parallelism).
 
 These tests assert the ownership invariant and validate that stepping the
 entries of a SolverCoupled concurrently on private streams — eagerly and
@@ -125,14 +127,15 @@ def _run_frames(model, solver, frames: int, use_graph: bool, graph_warmup: int =
 
 
 class TestCoupledEntryParticleGridOwnership(unittest.TestCase):
-    def test_entry_views_own_private_particle_grids(self):
+    def test_entry_solvers_own_private_particle_grids(self):
+        """Each particle solver owns its grid scratch instead of sharing the model grid."""
         model, solver = _build_two_pad_coupled()
-        grids = {name: entry.solver.model.particle_grid for name, entry in solver._entries.items()}
+        grids = {name: entry.solver.particle_grid for name, entry in solver._entries.items()}
         self.assertIsNotNone(model.particle_grid)
         for name, grid in grids.items():
-            self.assertIsNotNone(grid, f"entry {name!r} should own a particle grid")
-            self.assertIsNot(grid, model.particle_grid, f"entry {name!r} aliases the parent grid")
-        self.assertIsNot(grids["pad_a"], grids["pad_b"], "entries alias one particle grid")
+            self.assertIsNotNone(grid, f"entry {name!r} solver should own a particle grid")
+            self.assertIsNot(grid, model.particle_grid, f"entry {name!r} solver uses the model grid")
+        self.assertIsNot(grids["pad_a"], grids["pad_b"], "entry solvers share one particle grid")
 
 
 def _build_stacked_pads_admm():

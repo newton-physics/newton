@@ -556,13 +556,14 @@ def eval_body_contact(
             wp.atomic_add(body_f, body_b, wp.spatial_vector(f_total, wp.cross(r_b, f_total)))
 
 
-def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.array):
-    if model.particle_count > 1 and model.particle_grid is not None:
+def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.array, particle_grid=None):
+    grid = particle_grid if particle_grid is not None else model.particle_grid
+    if model.particle_count > 1 and grid is not None:
         wp.launch(
             kernel=eval_particle_contact,
             dim=model.particle_count,
             inputs=[
-                model.particle_grid.id,
+                grid.id,
                 state.particle_q,
                 state.particle_qd,
                 model.particle_radius,

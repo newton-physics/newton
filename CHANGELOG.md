@@ -256,7 +256,7 @@
 
 ### Fixed
 
-- Fix `SolverCoupled` entry model views sharing the parent model's particle `HashGrid`: each particle-carrying entry view now owns a private grid (particle-less entries get `None`). The shared grid's contents were only valid for the entry that stepped last, and concurrent entry stepping raced on it. Add the `coupled_concurrent_entries` example stepping two XPBD entries concurrently on private streams inside one captured CUDA graph.
+- Fix `SolverXPBD` and `SolverSemiImplicit` rebuilding the shared `Model.particle_grid` as per-step scratch: each solver now creates and owns a private hash grid at construction (`solver.particle_grid`), with the model-level grid acting as the particle-contact enable flag. Note two behavior shifts: setting `Model.particle_grid = None` disables particle contacts at solver construction time (no longer per step), and `Model.particle_grid` contents are no longer refreshed by these solvers' steps — query `solver.particle_grid` for up-to-date neighbor data. With `SolverCoupled`, the shared grid's contents were only valid for the entry that stepped last, and concurrent entry stepping raced on it. Add the `coupled_concurrent_entries` example stepping two XPBD entries concurrently on private streams inside one captured CUDA graph.
 - Fix `ModelBuilder.add_usd()` to initialize maximal and free-base generalized state from authored rigid-body velocities, including local-to-world rotation and angular unit conversion.
 - Fix `ModelBuilder.collapse_fixed_joints()` to transport body velocity when merging changes the center of mass.
 - Tune VBD contact settings in the `basic_shapes` and `cable_bundle_hysteresis` examples for more consistent friction and recovery behavior. (#3446)

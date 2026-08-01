@@ -11,9 +11,9 @@
 # (including the multi-stream fork/join) is captured into a single CUDA
 # graph and replayed.
 #
-# This relies on entry model views owning PRIVATE particle hash grids:
-# the grid is per-step solver scratch, and entries stepping concurrently
-# would race on a shared one.
+# This relies on each particle solver owning a PRIVATE hash grid (created
+# at solver construction): the grid is per-step solver scratch, and entries
+# stepping concurrently would race on a shared one.
 #
 # Pass ``--stepping serial`` to run the standard sequential entry loop for
 # comparison; both modes produce the same trajectories.
