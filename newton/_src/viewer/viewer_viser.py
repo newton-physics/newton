@@ -547,7 +547,7 @@ class ViewerViser(ViewerBase):
             client.camera.up_direction = tuple(up_direction.tolist())
 
     @override
-    def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+    def set_camera(self, pos: wp.vec3, pitch: float | None = None, yaw: float | None = None):
         """Set camera position and orientation for connected Viser clients.
 
         The requested view is also cached so that newly connected clients receive
@@ -555,11 +555,11 @@ class ViewerViser(ViewerBase):
 
         Args:
             pos: Requested camera position.
-            pitch: Requested camera pitch angle.
-            yaw: Requested camera yaw angle.
+            pitch: Requested camera pitch angle. Defaults to 0 if None.
+            yaw: Requested camera yaw angle. Defaults to 0 if None.
         """
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
-        front, up_direction = self._compute_camera_front_up(pitch, yaw)
+        front, up_direction = self._compute_camera_front_up(pitch or 0.0, yaw or 0.0)
         look_at = position + front
         self._camera_request = (position, look_at, up_direction)
 

@@ -97,6 +97,7 @@
 
 ### Fixed
 
+- Fix `ViewerGL` follow-camera examples resetting the view to a fixed world-space offset every frame, which fought manual mouse orbit and could point the camera away from the tracked target. `Camera.follow()` re-centers the pivot on a moving target while preserving the orbit distance/angle; see `example_robot_anymal_c_walk.py`. `ViewerBase.set_camera()` now accepts `pitch=None`/`yaw=None` across all viewer backends to update position without resetting orientation.
 - Make deterministic collision pipelines cover hydroelastic contact generation and reduction, including unique reduced-contact sort keys and overflow-safe fixed-point pressure accumulation.
 - Convert `newton:mimicCoef0` from degrees to radians when the mimic follower joint is angular. Assets authored against the old behavior need the value rescaled to degrees.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.

@@ -144,6 +144,15 @@ class Camera:
         self.pos += delta
         self.pivot += delta
 
+    def follow(self, target):
+        """Re-center the pivot on a world-space target, keeping distance and orientation.
+
+        Unlike :meth:`look_at`, this does not change the view direction, so it
+        composes with :meth:`orbit`: the camera keeps whatever angle/distance
+        the user last orbited to while tracking a moving target.
+        """
+        self.translate(self._as_vec3(target) - self.pivot)
+
     def orbit(self, delta_yaw: float, delta_pitch: float):
         """Orbit the camera around the pivot.
 
