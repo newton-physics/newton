@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
@@ -32,6 +33,7 @@ from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton._src.solvers.kamino.tests.utils.sampling import sample_world_mask
+from newton.tests.utils import basics
 
 ###
 # Module configs
@@ -376,6 +378,59 @@ class TestSolverKaminoConfig(unittest.TestCase):
         self.assertEqual(config.rotation_correction, "continuous")
         self.assertEqual(config.dynamics.linear_solver_type, "CR")
         self.assertEqual(config.padmm.warmstart_mode, "internal")
+
+
+class TestCollisionCapacityInitialization(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def _make_three_world_model(self) -> newton.Model:
+        source_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(source_builder)
+        basics.build_sphere_on_plane(builder=source_builder, z_offset=0.5)
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        builder.replicate(source_builder, world_count=3)
+        return builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+    def test_capacity_allocation_for_pipeline_allocated_after_kamino(self):
+        """Verify capacity allocation for a pipeline allocated after Kamino."""
+        model = self._make_three_world_model()
+
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=False))
+
+        pipeline = newton.CollisionPipeline(model)
+
+        # Kamino's capacity should be equal to the pipeline's capacity.
+        self.assertEqual(solver._contacts_kamino.model_max_contacts_host, pipeline.rigid_contact_max)
+
+    def test_capacity_allocation_for_pipeline_allocated_before_kamino(self):
+        """Verify capacity allocation for a pipeline allocated before Kamino."""
+        model = self._make_three_world_model()
+
+        pipeline = newton.CollisionPipeline(model)
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=False))
+
+        # Kamino's capacity should be at least as large as the pipeline's capacity. Due to rounding up to the nearest multiple of the world count.
+        self.assertGreaterEqual(solver._contacts_kamino.model_max_contacts_host, pipeline.rigid_contact_max)
+
+    def test_external_collisions_preserve_explicit_rigid_contact_max(self):
+        """Verify external collisions preserve an explicit contact capacity."""
+        model = self._make_three_world_model()
+        model.rigid_contact_max = 1000
+
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=False))
+
+        self.assertEqual(model.rigid_contact_max, 1000)
+        self.assertEqual(solver._contacts_kamino.world_max_contacts_host, [334, 334, 334])
+        self.assertEqual(solver._contacts_kamino.model_max_contacts_host, 1002)
+
+        contacts = newton.CollisionPipeline(model).contacts()
+        with self.assertNoLogs(level="WARNING"):
+            solver.update_contacts(contacts, model.state())
 
 
 class TestSolverKaminoImpl(unittest.TestCase):

@@ -140,6 +140,33 @@ the second-to-last entry corresponding to the starting index of the global entit
 With this format, we can easily compute the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
 as well as the total number of global entities by summing the first entry with the difference of the last two.
 
+Unlike per-world value and selection arrays, a ``*_world_start`` array does
+not provide one contiguous slot for global world ``-1``. Global entities can
+occur in two ranges because they may be added both before the first local
+world and after the last local world:
+
+* ``[0, world_start[0])`` contains global entities added at the front.
+* ``[world_start[-2], world_start[-1])`` contains global entities added at the
+  back.
+
+For example, the shape arrays in the scene above have this layout:
+
+.. code-block:: text
+
+   shape index:        0   1   2   3   4   5
+   shape_world:       -1   0   0   1   1  -1
+   shape_world_start: [1, 3, 5, 6]
+
+World ``0`` occupies shape indices ``[1, 3)`` and world ``1`` occupies
+``[3, 5)``. The two global shapes are split between index ``0`` at the front
+and index ``5`` at the back, so no single slice from ``shape_world_start``
+selects both. To select every global shape, test the per-shape world indices:
+
+.. code-block:: python
+
+   global_shape_mask = model.shape_world.numpy() == -1
+   # [True, False, False, False, False, True]
+
 Continuing the same example, we can compute the per-world shape counts as follows:
 
 .. testcode::
@@ -292,6 +319,21 @@ CUDA graph-capture requirements. See
 :meth:`~newton.solvers.SolverImplicitMPM.setup_collider` and
 :meth:`~newton.solvers.SolverImplicitMPM.reset` for collider configuration and
 selective reset behavior.
+
+.. _Per-world reset masks:
+
+Per-World Reset Masks
+---------------------
+
+The optional ``world_mask`` passed to :meth:`~newton.solvers.SolverBase.reset`
+has shape ``(world_count + 1,)``. Entries ``[0, world_count)`` select local
+worlds, and the final entry selects global entities whose world index is
+``-1``. An all-true mask therefore selects the same worlds as ``None``.
+Solvers that do not support global dynamic objects accept the final entry as a
+no-op.
+
+The legacy shape ``(world_count,)`` remains available during its deprecation
+period. It selects local worlds only and leaves global entities unselected.
 
 .. _Per-world gravity:
 
