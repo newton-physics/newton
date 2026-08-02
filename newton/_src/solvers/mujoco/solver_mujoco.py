@@ -3692,13 +3692,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Initialised before _convert_to_mjc because notify_model_changed (called
         # during conversion) may call _invalidate_contact_fast_path.
         #
-        # Eagerly pre-allocate the device tracking buffers here (rather than
-        # lazily inside _convert_contacts_to_mjwarp).  Lazy wp.full(...) calls
-        # that happen on the first step often run while a CUDA graph is being
-        # captured; the resulting buffers can have a tangled lifetime and
-        # _invalidate_contact_fast_path() — which is called from outside the
-        # captured graph (e.g. notify_model_changed) — would then touch stale
-        # captured memory and trigger CUDA 700 (illegal memory access).
+        # Allocate the generation and count buffers before conversion because
+        # notify_model_changed() may invalidate them during conversion. The
+        # contact map is allocated below once the converted capacity is known.
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
@@ -3751,6 +3747,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 include_sites=include_sites,
                 skip_visual_only_geoms=skip_visual_only_geoms,
             )
+        if not use_mujoco_cpu and not use_mujoco_contacts:
+            self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
         self._initial_model_sync = False
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -4216,8 +4214,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         naconmax = self.mjw_data.naconmax
         launch_dim = min(contacts.rigid_contact_max, naconmax)
 
-        # Lazy-allocate the tid_to_cid buffer; reallocate if launch_dim grew
-        # (e.g. a different Contacts object with a larger rigid_contact_max).
+        # Grow the tid_to_cid buffer if the MJWarp data capacity changed after
+        # construction.
         # Invalidate the cached tid_to_cid mapping whenever any of the
         # invariants it depends on change:
         #
