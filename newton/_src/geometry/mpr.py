@@ -236,9 +236,10 @@ def create_support_map_function(support_func: Any):
             # point near the contact region — this dramatically improves
             # MPR convergence for large triangles.
             #
-            # Blend 1% toward the centroid so the point is strictly in the
-            # face interior.  This does NOT prevent an MPR degeneracy (MPR
-            # works fine from an edge point); it improves *manifold quality*.
+            # Nudge toward the centroid so the point moves into the face
+            # interior when possible.  This does NOT prevent an MPR
+            # degeneracy (MPR works fine from an edge point); it improves
+            # *manifold quality*.
             # When shape B projects onto a shared mesh edge, both adjacent
             # triangles get the same v0, producing MPR witness points biased
             # toward the edge.  The manifold builder (multicontact.py) uses
@@ -246,14 +247,29 @@ def create_support_map_function(support_func: Any):
             # mapping, so edge-biased centers cause overlapping contact
             # polygons across the two triangles instead of distinct ones —
             # resulting in asymmetric force distribution and spurious torque.
-            # The 1% nudge gives each triangle a unique v0 pulled toward its
-            # own interior, yielding well-separated manifold centers.
+            # Keep that triangle-specific direction, but limit the tangential
+            # displacement to 1% of the normal center-to-plane distance.  A
+            # face projection therefore tilts the initial ray by at most
+            # atan(0.01), about 0.57 degrees, regardless of triangle size.  A
+            # pure barycentric blend scales with the triangle and can make the
+            # initial ray almost tangential when a small partner lies on a
+            # large terrain face, causing MPR to converge to a non-minimum
+            # portal.
             tri_a = wp.vec3(0.0, 0.0, 0.0)
             tri_b = geom_a.scale
             tri_c = geom_a.auxiliary
             proj = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
             centroid = (tri_a + tri_b + tri_c) / 3.0
-            center_a = proj + 0.01 * (centroid - proj)
+            to_centroid = centroid - proj
+            distance_to_centroid = wp.length(to_centroid)
+            face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+            face_normal_length = wp.length(face_normal)
+            if distance_to_centroid > 1.0e-12 and face_normal_length > 1.0e-12:
+                center_to_plane = wp.abs(wp.dot(center_b_world - proj, face_normal)) / face_normal_length
+                nudge_distance = 0.01 * wp.min(distance_to_centroid, center_to_plane)
+                center_a = proj + to_centroid * (nudge_distance / distance_to_centroid)
+            else:
+                center_a = proj
 
         center.B = center_b_world
         center.BtoA = center_a - center_b_world
