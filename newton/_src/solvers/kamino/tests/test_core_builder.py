@@ -615,7 +615,7 @@ class TestModelBuilder(unittest.TestCase):
         msg.info("world_min_contacts: %s", world_min_contacts)
 
         # Check that the generated meta-data matches expected values for this model
-        expected_contacts_per_world = 2 * len(model_candidate_pairs) * 12  # 12 is the max contacts per pair
+        expected_contacts_per_world = len(model_candidate_pairs) * 8  # Box-box pairs generate up to 8 contacts.
         self.assertEqual(world_num_collidables[0], 5)
         self.assertEqual(model_num_collidables, 5)
         self.assertEqual(len(model_candidate_pairs), 6)
@@ -678,7 +678,7 @@ class TestModelBuilder(unittest.TestCase):
         msg.info("world_min_contacts: %s", world_min_contacts)
 
         # Check that the generated meta-data matches expected values for this model
-        expected_contacts_per_world = 2 * len(model_candidate_pairs) * 12  # 12 is the max contacts per pair
+        expected_contacts_per_world = len(model_candidate_pairs) * 8  # Box-box pairs generate up to 8 contacts.
         self.assertEqual(world_num_collidables[0], 3)
         self.assertEqual(model_num_collidables, 3)
         self.assertEqual(len(model_candidate_pairs), 2)
@@ -774,7 +774,7 @@ class TestModelBuilder(unittest.TestCase):
         msg.info("world_min_contacts: %s", world_min_contacts)
 
         # Check that the generated meta-data matches expected values for this model
-        expected_contacts_per_world = 2 * 6 * 12  # 12 is the max contacts per pair
+        expected_contacts_per_world = 6 * 8  # Six box-box pairs generate up to 8 contacts each.
         self.assertEqual(model_num_collidables, 5 * builder.num_worlds)
         self.assertEqual(world_num_collidables, [5] * builder.num_worlds)
         self.assertEqual(len(model_candidate_pairs), 6 * builder.num_worlds)

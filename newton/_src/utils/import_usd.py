@@ -958,15 +958,12 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
-            mesh.texture = None
-        if material_props.get("color") is not None and mesh.texture is None:
-            mesh.color = material_props["color"]
-        elif mesh.texture is not None:
-            # A textured mesh with no scalar color must use a white base so the
-            # default per-shape palette color does not tint the texture (matches
-            # the material-subset path in _make_visual_submesh).
+            logger.info("Mesh %s has a texture but no UVs; texture will use projected UVs.", path_name)
+        if mesh.texture is not None:
+            # The texture provides albedo, so avoid tinting it with a scalar color.
             mesh.color = (1.0, 1.0, 1.0)
+        elif material_props.get("color") is not None:
+            mesh.color = material_props["color"]
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -1070,14 +1067,16 @@ def parse_usd(
         if texture is not None:
             submesh.texture = texture
         if submesh.texture is not None and submesh.uvs is None:
-            logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
-            submesh.texture = None
+            logger.info(
+                "Mesh material subset %s has a texture but no UVs; texture will use projected UVs.",
+                path_name,
+            )
 
         color = material_props.get("color")
-        if color is not None:
-            submesh.color = color
-        elif submesh.texture is not None:
+        if submesh.texture is not None:
             submesh.color = (1.0, 1.0, 1.0)
+        elif color is not None:
+            submesh.color = color
         if material_props.get("roughness") is not None:
             submesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -4480,6 +4479,48 @@ def parse_usd(
                         existing_filter_pairs.add(pair)
                         builder.add_shape_collision_filter_pair(*pair)
 
+    def _resolve_newton_mimic(joint_prim: Usd.Prim) -> tuple[Sdf.Path | None, float, float]:
+        """Resolve the mimic leader joint and coefficients from a follower joint prim.
+
+        ``MjcEqualityJointAPI`` builds on ``NewtonMimicAPI``, so the equality and the plain
+        mimic import paths read the same properties through here. The deprecated
+        ``mjc:target``, ``mjc:coef0``, and ``mjc:coef1`` aliases are honored as a fallback
+        for assets authored before those properties moved to the ``newton:`` namespace.
+
+        ``newton:mimicCoef0`` is authored in the follower's position units, so a revolute
+        follower is converted from degrees into the joint coordinates the constraint is
+        evaluated in; the deprecated ``mjc:coef0`` is already in radians. ``coef1`` is
+        dimensionless. A multi-DOF follower has no defined unit, so its offset is passed
+        through unconverted and callers warn about it.
+
+        Returns:
+            The leader joint path, or ``None`` when no target is authored, followed by
+            ``coef0`` in joint coordinates and the dimensionless ``coef1``.
+        """
+        mimic_rel = joint_prim.GetRelationship("newton:mimicJoint")
+        targets = mimic_rel.GetTargets() if mimic_rel and mimic_rel.HasAuthoredTargets() else []
+        if not targets:
+            target_rel = joint_prim.GetRelationship("mjc:target")
+            targets = target_rel.GetTargets() if target_rel else []
+
+        leader_path = None
+        if targets:
+            leader_path = targets[0]
+            if not leader_path.IsAbsolutePath():
+                leader_path = joint_prim.GetPath().GetParentPath().AppendPath(leader_path)
+
+        coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0")
+        if coef0 is None:
+            # The deprecated alias was always authored in radians, so it skips the conversion.
+            coef0 = usd.get_attribute(joint_prim, "mjc:coef0", default=0.0)
+        elif joint_prim.IsA(UsdPhysics.RevoluteJoint):
+            coef0 *= DegreesToRadian
+        coef1 = usd.get_attribute(joint_prim, "newton:mimicCoef1")
+        if coef1 is None:
+            coef1 = usd.get_attribute(joint_prim, "mjc:coef1", default=1.0)
+
+        return leader_path, float(coef0), float(coef1)
+
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
     # for any bodies that get merged.
@@ -4639,16 +4680,15 @@ def parse_usd(
                     )
                     continue
 
-                target_rel = joint_prim.GetRelationship("mjc:target")
-                targets = target_rel.GetTargets() if target_rel else []
-                if not targets:
+                leader_path, coef0, coef1 = _resolve_newton_mimic(joint_prim)
+                if leader_path is None:
                     warnings.warn(
-                        f"MjcEqualityJointAPI on '{joint_path}' has no mjc:target relationship; skipping.",
+                        f"MjcEqualityJointAPI on '{joint_path}' has no newton:mimicJoint relationship; skipping.",
                         stacklevel=2,
                     )
                     continue
 
-                target_path = str(targets[0])
+                target_path = str(leader_path)
                 joint2_idx = path_joint_map.get(target_path)
                 if joint2_idx is None:
                     warnings.warn(
@@ -4657,16 +4697,16 @@ def parse_usd(
                     )
                     continue
 
-                polycoef = []
-                for attr_name, default in (
-                    ("mjc:coef0", 0.0),
-                    ("mjc:coef1", 1.0),
-                    ("mjc:coef2", 0.0),
-                    ("mjc:coef3", 0.0),
-                    ("mjc:coef4", 0.0),
-                ):
-                    attr = joint_prim.GetAttribute(attr_name)
-                    polycoef.append(float(attr.Get()) if attr and attr.HasValue() else default)
+                # Only the constant and linear terms moved to NewtonMimicAPI; the
+                # higher-order polynomial terms remain MuJoCo-specific.
+                polycoef = [coef0, coef1]
+                for attr_name in ("mjc:coef2", "mjc:coef3", "mjc:coef4"):
+                    polycoef.append(float(usd.get_attribute(joint_prim, attr_name, default=0.0)))
+
+                # NewtonMimicAPI's opt-out governs both spellings of the constraint. The
+                # plain mimic loop below skips these prims, so it is folded into the
+                # runtime enabled flag here rather than dropping the constraint.
+                eq_enabled = enabled and bool(usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True))
 
                 if convert_mjc_equality_constraints:
                     if mjc_polycoef_has_higher_order(polycoef):
@@ -4682,7 +4722,7 @@ def parse_usd(
                         joint2_idx,
                         polycoef,
                         joint_path,
-                        enabled,
+                        eq_enabled,
                         eq_custom_attrs,
                     )
                 else:
@@ -4693,7 +4733,7 @@ def parse_usd(
                         joint2=joint2_idx,
                         polycoef=polycoef,
                         label=joint_path,
-                        enabled=enabled,
+                        enabled=eq_enabled,
                         custom_attributes=eq_custom_attrs,
                     )
 
@@ -4842,19 +4882,11 @@ def parse_usd(
         mimic_enabled = usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True)
         if not mimic_enabled:
             continue
-        mimic_rel = joint_prim.GetRelationship("newton:mimicJoint")
-        if not mimic_rel or not mimic_rel.HasAuthoredTargets():
+        leader_path, coef0, coef1 = _resolve_newton_mimic(joint_prim)
+        if leader_path is None:
             if verbose:
                 print(f"NewtonMimicAPI on {joint_path} has no newton:mimicJoint target; skipping")
             continue
-        targets = mimic_rel.GetTargets()
-        if not targets:
-            if verbose:
-                print(f"NewtonMimicAPI on {joint_path}: newton:mimicJoint has no targets; skipping")
-            continue
-        leader_path = targets[0]
-        if not leader_path.IsAbsolutePath():
-            leader_path = joint_prim.GetPath().GetParentPath().AppendPath(leader_path)
         leader_path_str = str(leader_path)
         if leader_path_str not in path_joint_map:
             warnings.warn(
@@ -4862,24 +4894,16 @@ def parse_usd(
                 stacklevel=2,
             )
             continue
-        coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0", default=0.0)
-        coef1 = usd.get_attribute(joint_prim, "newton:mimicCoef1", default=1.0)
-        # NewtonMimicAPI documents newton:mimicCoef0 in the follower's position units,
-        # which is degrees for a single angular DOF. Newton mimic constraints operate on
-        # joint coordinates, so such a follower needs radians. coef1 is dimensionless.
-        #
         # Classify from the authored USD prim rather than builder.joint_type: several
         # single-DOF prims sharing a body pair are merged into one D6 (see
         # parse_merged_joints), which would otherwise misread an angular follower.
         follower_is_revolute = joint_prim.IsA(UsdPhysics.RevoluteJoint)
         follower_is_prismatic = joint_prim.IsA(UsdPhysics.PrismaticJoint)
-        if follower_is_revolute:
-            coef0 *= DegreesToRadian
-        elif not follower_is_prismatic:
+        if not follower_is_revolute and not follower_is_prismatic:
             # Spherical and D6 followers hold more than one DOF, and a ball joint's
             # coordinates are a quaternion rather than a scalar angle, so a single offset
             # has no defined unit. NewtonMimicAPI says as much: multi-DOF behavior is
-            # undefined. Pass the value through and say so.
+            # undefined. _resolve_newton_mimic passes the value through; say so here.
             warnings.warn(
                 f"NewtonMimicAPI on {joint_path}: newton:mimicCoef0 has no defined unit for a "
                 f"{joint_prim.GetTypeName()} follower, which is not a single-DOF joint. Using the "
