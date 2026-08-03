@@ -9,7 +9,13 @@ if TYPE_CHECKING:
     from .featherstone import SolverFeatherstone
     from .implicit_mpm import SolverImplicitMPM
     from .kamino import SolverKamino
-    from .limx import ConstraintAnchor, ConstraintDistance, ConstraintTriangleElastic, SolverLIMX
+    from .limx import (
+        ConstraintAnchor,
+        ConstraintDihedralBending,
+        ConstraintDistance,
+        ConstraintTriangleElastic,
+        SolverLIMX,
+    )
     from .mujoco import SolverMuJoCo
     from .semi_implicit import SolverSemiImplicit
     from .solver import SolverBase
@@ -19,6 +25,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ConstraintAnchor",
+    "ConstraintDihedralBending",
     "ConstraintDistance",
     "ConstraintTriangleElastic",
     "SolverBase",
@@ -40,6 +47,7 @@ __all__ = [
 # not pay the import cost of every solver backend.
 _LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
     "ConstraintAnchor": (".limx", "ConstraintAnchor"),
+    "ConstraintDihedralBending": (".limx", "ConstraintDihedralBending"),
     "ConstraintDistance": (".limx", "ConstraintDistance"),
     "ConstraintTriangleElastic": (".limx", "ConstraintTriangleElastic"),
     "SolverBase": (".solver", "SolverBase"),

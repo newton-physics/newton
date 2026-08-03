@@ -4,7 +4,8 @@
 """Static particle constraint batches for the LIMX solver."""
 
 from .anchor import ConstraintAnchor
+from .dihedral_bending import ConstraintDihedralBending
 from .distance import ConstraintDistance
 from .triangle_elastic import ConstraintTriangleElastic
 
-__all__ = ["ConstraintAnchor", "ConstraintDistance", "ConstraintTriangleElastic"]
+__all__ = ["ConstraintAnchor", "ConstraintDihedralBending", "ConstraintDistance", "ConstraintTriangleElastic"]

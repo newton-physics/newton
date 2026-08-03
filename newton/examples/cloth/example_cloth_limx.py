@@ -8,6 +8,7 @@ import warp as wp
 
 import newton
 import newton.examples
+import newton.utils
 
 
 class Example:
@@ -48,6 +49,9 @@ class Example:
             radius=[0.005] * particle_count,
         )
         triangle_array = np.asarray(triangles, dtype=np.int32)
+        edge_rows = newton.utils.MeshAdjacency(triangle_array).edge_indices
+        interior_edge_rows = edge_rows[edge_rows[:, 1] >= 0]
+        self.dihedral_indices = interior_edge_rows[:, [2, 3, 0, 1]]
         builder.add_triangles(triangle_array[:, 0], triangle_array[:, 1], triangle_array[:, 2])
         self.model = builder.finalize()
         self.model.set_gravity((0.0, 0.0, -9.81))
@@ -74,6 +78,13 @@ class Example:
                 self.inverse_rest_matrices,
                 self.model.tri_areas.numpy(),
                 [wp.vec3(1.0e4, 1.0e4, 1.0e3)] * len(triangles),
+                particle_count,
+                self.model.device,
+            ),
+            newton.solvers.ConstraintDihedralBending(
+                self.dihedral_indices,
+                positions_np,
+                0.01,
                 particle_count,
                 self.model.device,
             ),

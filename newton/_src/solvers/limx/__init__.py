@@ -3,7 +3,7 @@
 
 """LIMX constraint-based particle solver."""
 
-from .constraints import ConstraintAnchor, ConstraintDistance, ConstraintTriangleElastic
+from .constraints import ConstraintAnchor, ConstraintDihedralBending, ConstraintDistance, ConstraintTriangleElastic
 from .linear_solver import PcgSolver
 from .operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
 from .solver_newton import SolverLIMX
@@ -11,6 +11,7 @@ from .solver_newton import SolverLIMX
 __all__ = [
     "CompositeLinearOperator",
     "ConstraintAnchor",
+    "ConstraintDihedralBending",
     "ConstraintDistance",
     "ConstraintTriangleElastic",
     "EmptyDynamicConstraintOperator",

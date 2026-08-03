@@ -1117,17 +1117,28 @@ class TestSolverLIMX(unittest.TestCase):
         self.assertEqual(solver_time_steps, [0.01])
         self.assertAlmostEqual(example.sim_time, 0.01)
 
-    def test_example_uses_triangle_membrane_without_distance_springs(self):
-        with wp.ScopedDevice("cpu"):
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_example_uses_membrane_and_dihedral_bending(self):
+        with wp.ScopedDevice("cuda:0"):
             example = ClothLimxExample(ViewerNull(num_frames=1), None)
 
+        anchor_constraints = [
+            constraint for constraint in example.solver.constraints if isinstance(constraint, ConstraintAnchor)
+        ]
         membrane_constraints = [
             constraint for constraint in example.solver.constraints if isinstance(constraint, ConstraintTriangleElastic)
+        ]
+        bending_constraints = [
+            constraint for constraint in example.solver.constraints if isinstance(constraint, ConstraintDihedralBending)
         ]
         distance_constraints = [
             constraint for constraint in example.solver.constraints if isinstance(constraint, ConstraintDistance)
         ]
+        self.assertEqual(len(anchor_constraints), 1)
         self.assertEqual(len(membrane_constraints), 1)
+        self.assertEqual(len(bending_constraints), 1)
+        self.assertEqual(bending_constraints[0].stiffness, 0.01)
+        self.assertEqual(len(bending_constraints[0].host_dihedral_indices), 1160)
         self.assertEqual(distance_constraints, [])
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
@@ -1251,6 +1262,7 @@ class TestSolverLIMX(unittest.TestCase):
     def test_public_exports(self):
         self.assertIs(newton.solvers.SolverLIMX, SolverLIMX)
         self.assertIs(newton.solvers.ConstraintAnchor, ConstraintAnchor)
+        self.assertIs(newton.solvers.ConstraintDihedralBending, ConstraintDihedralBending)
         self.assertIs(newton.solvers.ConstraintDistance, ConstraintDistance)
         self.assertIs(newton.solvers.ConstraintTriangleElastic, ConstraintTriangleElastic)
 
