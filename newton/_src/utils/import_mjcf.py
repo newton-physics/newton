@@ -382,10 +382,10 @@ def parse_mjcf(
     # Register the MuJoCo custom attributes needed to preserve imported model
     # properties. The operation is idempotent.
     SolverMuJoCo.register_custom_attributes(builder)
-    # ``contype`` and ``conaffinity`` bit positions form a namespace local to
-    # one MJCF source. A later parse call may reuse the same numeric bits for
-    # unrelated pair rules, so give every import its own provenance domain.
-    # The domain never changes collision behavior by itself.
+    # Bit 1 in one MJCF file may describe different shapes than bit 1 in
+    # another. Give every add_mjcf() call a domain so those equal numbers are
+    # not mistaken for one shared collision rule. The domain is only a source
+    # label; it does not enable or disable collisions.
     collision_mask_domain_key = "mujoco:collision_mask_domain"
     collision_mask_domain_attr = builder.custom_attributes[collision_mask_domain_key]
     collision_mask_domain = (

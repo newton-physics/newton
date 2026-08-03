@@ -888,9 +888,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjcf_attribute_name="conaffinity",
             )
         )
-        # This is import provenance, not a MuJoCo geom attribute or a mask.
-        # Keeping it as per-shape model data lets it survive finalization and
-        # replication, so unrelated bit namespaces are not later combined.
+        # Record which add_mjcf() call supplied each shape's masks. This is not
+        # another mask: it prevents equal bit numbers from separate files from
+        # being treated as if they were authored together.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="collision_mask_domain",
@@ -5805,11 +5805,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             colliding_shapes,
         )
 
-        # MuJoCo mask bit positions are meaningful only within the MJCF source
-        # that assigned them. Forwarding preserved masks is therefore safe only
-        # for a complete, single-domain selection whose masks already cover all
-        # active Newton filters. Mixed or multi-domain selections must instead
-        # be compiled from their combined Newton collision graph.
+        # Reuse the original masks only when all shapes came from the same
+        # add_mjcf() call and the masks already enforce every Newton filter.
+        # Otherwise generate new masks from Newton's final allowed shape pairs.
         use_preserved_collision_masks = (
             shape_mjc_contype is not None
             and shape_mjc_conaffinity is not None
