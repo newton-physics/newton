@@ -57,20 +57,31 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.assertTrue(True, "setUp method completed.")
 
     def test_collision_coloring_uses_all_32_mujoco_mask_bits(self):
-        """The graph-color fallback uses bits 0 through 31 before degrading to MuJoCo defaults."""
+        """Verify that graph-color fallback uses bits 0 through 31 before degrading to MuJoCo defaults."""
+        clique_size = 33
+        isolated_shape_count = 24
+        shape_count = clique_size + isolated_shape_count
         builder = newton.ModelBuilder()
-        for i in range(32):
+        for i in range(shape_count):
             body = builder.add_link(label=f"body_{i}")
             builder.add_shape_sphere(body, radius=0.1, label=f"shape_{i}")
             joint = builder.add_joint_free(body)
             builder.add_articulation([joint])
 
+        # The 33-shape clique requires 33 colors. Isolating another 24 shapes
+        # creates more than 1,024 sparse exclusions, which also forces the
+        # legacy fallback when the bounded mask compiler from #3714 is used.
+        colliding_pairs = set(itertools.combinations(range(clique_size), 2))
+        for pair in itertools.combinations(range(shape_count), 2):
+            if pair not in colliding_pairs:
+                builder.add_shape_collision_filter_pair(*pair)
+
         model = builder.finalize(device="cpu")
         colors = SolverMuJoCo._color_collision_shapes(model, np.arange(model.shape_count))
-        np.testing.assert_array_equal(np.sort(np.unique(colors)), np.arange(32))
+        np.testing.assert_array_equal(np.sort(np.unique(colors)), np.arange(33))
 
         solver = SolverMuJoCo(model, use_mujoco_cpu=True)
-        expected_masks = {SolverMuJoCo._collision_color_masks(color) for color in range(32)}
+        expected_masks = {SolverMuJoCo._collision_color_masks(color) for color in range(33)}
         actual_masks = {
             (int(contype), int(conaffinity))
             for contype, conaffinity in zip(
@@ -81,7 +92,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         }
         self.assertEqual(actual_masks, expected_masks)
         self.assertIn((-2147483648, 2147483647), actual_masks)
-        self.assertEqual(SolverMuJoCo._collision_color_masks(32), (1, 1))
+        self.assertIn((1, 1), actual_masks)
 
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
