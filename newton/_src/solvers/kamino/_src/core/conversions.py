@@ -1124,7 +1124,7 @@ def convert_rigid_bodies(
 
 
 def convert_joints(
-    model: Model,
+    model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
 ) -> JointsModel:
@@ -1627,7 +1627,7 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
 
 
 def convert_geometries(
-    model: Model,
+    model: Model | ModelView,
     model_size: SizeKamino,
     model_bodies: RigidBodiesModel,
     materials_manager: MaterialManager,
