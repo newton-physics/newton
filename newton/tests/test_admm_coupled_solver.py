@@ -804,7 +804,7 @@ class TestAdmmGraphCapture(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=1),
+                    solver=lambda v: SolverVBD(model=v, iterations=1, rigid_compliant_alm=False),
                     bodies=[body_b],
                 ),
             ],

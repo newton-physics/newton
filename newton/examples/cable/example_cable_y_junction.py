@@ -119,6 +119,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
         )
 
         self.state_0 = self.model.state()
@@ -135,8 +136,8 @@ class Example:
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:
             pick_state = picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = 2.0
-            pick_state[0]["pick_damping"] = 0.0
+            pick_state[0]["pick_stiffness"] = 0.1
+            pick_state[0]["pick_damping"] = 0.01
             picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(

@@ -243,8 +243,8 @@ class Example:
             num_segments=self.payload_segments,
             twist_total=0.0,
         )
-        stretch_stiffness = 1.0e6
-        bend_stiffness = 5.0e-4
+        stretch_stiffness = 2.0e5
+        bend_stiffness = 0.08
         builder.add_rod(
             positions=points,
             quaternions=quats,
@@ -252,9 +252,9 @@ class Example:
             body_frame_origin="start",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
-            stretch_damping=1.0e-1,
+            stretch_damping=2.0e-2,
             bend_stiffness=bend_stiffness,
-            bend_damping=2.0e-3 * bend_stiffness,
+            bend_damping=2.0e-2 * bend_stiffness,
             label="vbd_cable",
         )
         self.payload_bodies = list(range(payload_body_start, builder.body_count))
@@ -313,6 +313,7 @@ class Example:
                     solver=lambda v: SolverVBD(
                         model=v,
                         iterations=int(args.vbd_iterations),
+                        rigid_compliant_alm=True,
                         rigid_avbd_beta=float(args.vbd_rigid_avbd_beta),
                         rigid_contact_k_start=float(args.vbd_rigid_contact_k_start),
                         rigid_contact_history=False,
@@ -516,9 +517,12 @@ class Example:
         # The cable is grasped at its midpoint and carried to the place target; verify that
         # the grasped segment was placed within 1 cm of the target (x, y) in every world.
         target_xy = np.asarray(self.place_target_xy, dtype=np.float32)
+        body_com = self.model.body_com.numpy()
         for world_idx in range(self.world_count):
             mid_body = self.payload_bodies[world_idx * self.payload_body_count_per_world + self.payload_mid_body_offset]
-            dist = float(np.linalg.norm(body_q[mid_body, :2] - target_xy))
+            mid_q = body_q[mid_body]
+            segment_center = mid_q[:3] + np.asarray(wp.quat_rotate(wp.quat(*mid_q[3:]), wp.vec3(*body_com[mid_body])))
+            dist = float(np.linalg.norm(segment_center[:2] - target_xy))
             assert dist < 0.01, f"World {world_idx} cable placed {dist * 100:.1f} cm from target (expected < 1 cm)"
 
     @staticmethod

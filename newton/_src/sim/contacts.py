@@ -291,6 +291,8 @@ class Contacts:
             # Contact matching index — filled by the collision pipeline when
             # contact_matching is enabled.
             self.contact_matching = contact_matching
+            # Internal collision-pipeline mode consumed by contact-history solvers.
+            self._rigid_contact_matching_mode = "disabled"
             self.contact_report = contact_report
             if contact_matching:
                 self.rigid_contact_match_index = wp.full(rigid_contact_max, -1, dtype=wp.int32)

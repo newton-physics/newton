@@ -1771,7 +1771,7 @@ def _coupled_vbd_reset_preserves_pose_history(test, device):
         entries=[
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda view: SolverVBD(view, iterations=0),
+                solver=lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
                 bodies=[dynamic_body, kinematic_body],
                 joints=[dynamic_joint, kinematic_joint],
             ),
@@ -2810,7 +2810,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     name="dst",
-                    solver=lambda view: SolverVBD(view, iterations=1),
+                    solver=lambda view: SolverVBD(view, iterations=1, rigid_compliant_alm=False),
                     bodies=[2, 3, 4],
                     joints=[2, 3, 4, fixed_joint],
                 ),
@@ -2862,7 +2862,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     name="dst",
-                    solver=lambda view: SolverVBD(view, iterations=1),
+                    solver=lambda view: SolverVBD(view, iterations=1, rigid_compliant_alm=False),
                     bodies=[2, 3, 4],
                     joints=vbd_joint_order,
                 ),

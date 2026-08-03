@@ -1251,6 +1251,7 @@ class CollisionPipeline:
         # Flag the buffer so solvers that only consume particle contacts can refuse it (see
         # Contacts._enable_rigid_soft_full_surface_contact); edge/face records appear only when this is set.
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
+        contacts._rigid_contact_matching_mode = self.contact_matching
 
         # attach custom attributes with assignment==CONTACT
         self.model._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=self.requires_grad)
@@ -1308,6 +1309,7 @@ class CollisionPipeline:
         # particle-only solvers (XPBD, semi-implicit, Style3D) would not raise and would silently
         # ignore them. Mirrors the assignment in CollisionPipeline.contacts().
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
+        contacts._rigid_contact_matching_mode = self.contact_matching
 
         # Counter zeroing and generation bump are fused into compute_shape_aabbs.
         # Only call contacts.clear() if clear_buffers mode is enabled (debug path).

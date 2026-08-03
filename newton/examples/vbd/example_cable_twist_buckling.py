@@ -200,6 +200,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
             rigid_contact_hard=hard_contact,
             rigid_contact_history=contact_history,
             rigid_body_contact_buffer_size=256,
