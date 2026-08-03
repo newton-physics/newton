@@ -36,6 +36,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     update_duals_body_body_contacts,
     update_duals_joint,
 )
+from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, configure_sdf_for_collision_shapes, get_test_devices
 
 devices = get_test_devices()
@@ -3017,6 +3018,44 @@ def test_edge_face_reacts_on_rigid_body(test, device):
     test.assertGreater(z_after, z_before - 0.05, "box should be supported by the soft contact, not free-fall")
 
 
+def test_edge_face_reacts_through_coupled_proxy(test, device):
+    """Propagate a detected face contact through coupled proxy harvesting."""
+    model, body = _build_sphere_on_fixed_soft_triangle(device)
+    model.gravity.zero_()
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupledProxy.Entry(name="body", solver=newton.solvers.SolverSemiImplicit, bodies=[body]),
+            SolverCoupledProxy.Entry(
+                name="soft",
+                solver=lambda view: newton.solvers.SolverVBD(view, iterations=1),
+                particles=list(range(model.particle_count)),
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[SolverCoupledProxy.Proxy(source="body", destination="soft", bodies=[body])],
+            iterations=1,
+        ),
+    )
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+
+    for step in range(2):
+        pipeline.collide(state_in, contacts)
+        if step == 0:
+            total = int(contacts.soft_contact_count.numpy()[0])
+            indices = contacts.soft_contact_indices.numpy()[:total]
+            test.assertGreater(total, 0)
+            test.assertTrue(np.all(indices[:, 1] >= 0), "only edge/face contacts should be detected")
+        coupled.step(state_in, state_out, None, contacts, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+
+    test.assertGreater(float(state_in.body_qd.numpy()[body, 2]), 0.0)
+
+
 def _set_slot(arr, idx, value):
     a = arr.numpy()
     a[idx] = value
@@ -3263,6 +3302,12 @@ add_function_test(
     TestVBDFullSurfaceContact,
     "test_edge_face_reacts_on_rigid_body",
     test_edge_face_reacts_on_rigid_body,
+    devices=devices,
+)
+add_function_test(
+    TestVBDFullSurfaceContact,
+    "test_edge_face_reacts_through_coupled_proxy",
+    test_edge_face_reacts_through_coupled_proxy,
     devices=devices,
 )
 add_function_test(
