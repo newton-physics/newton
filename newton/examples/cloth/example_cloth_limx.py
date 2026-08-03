@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Mass-spring cloth solved by the LIMX projected-Newton pipeline."""
+"""Anisotropic membrane cloth solved by the LIMX projected-Newton pipeline."""
 
 import numpy as np
 import warp as wp
@@ -52,17 +52,9 @@ class Example:
         self.model = builder.finalize()
         self.model.set_gravity((0.0, 0.0, -9.81))
 
-        self.edges = sorted(
-            {
-                tuple(sorted(edge))
-                for triangle in triangles
-                for edge in ((triangle[0], triangle[1]), (triangle[1], triangle[2]), (triangle[2], triangle[0]))
-            }
-        )
         positions_np = np.asarray(positions, dtype=np.float32)
-        self.rest_lengths = np.asarray(
-            [np.linalg.norm(positions_np[j] - positions_np[i]) for i, j in self.edges], dtype=np.float32
-        )
+        self.triangle_indices = triangle_array
+        self.inverse_rest_matrices = self.model.tri_poses.numpy()
         self.anchor_indices = [0, grid_cells]
         self.anchor_targets = positions_np[self.anchor_indices].copy()
         self.anchor_y = float(self.anchor_targets[0, 1])
@@ -77,10 +69,11 @@ class Example:
                 particle_count,
                 self.model.device,
             ),
-            newton.solvers.ConstraintDistance(
-                self.edges,
-                self.rest_lengths,
-                [1.0e4] * len(self.edges),
+            newton.solvers.ConstraintTriangleElastic(
+                triangles,
+                self.inverse_rest_matrices,
+                self.model.tri_areas.numpy(),
+                [wp.vec3(1.0e4, 1.0e4, 1.0e3)] * len(triangles),
                 particle_count,
                 self.model.device,
             ),
@@ -127,7 +120,18 @@ class Example:
     def test_final(self):
         positions = self.state_0.particle_q.numpy()
         velocities = self.state_0.particle_qd.numpy()
-        current_edge_lengths = np.asarray([np.linalg.norm(positions[j] - positions[i]) for i, j in self.edges])
+        triangle_positions = positions[self.triangle_indices]
+        edge_01 = triangle_positions[:, 1] - triangle_positions[:, 0]
+        edge_02 = triangle_positions[:, 2] - triangle_positions[:, 0]
+        deformation_u = (
+            edge_01 * self.inverse_rest_matrices[:, 0, 0, None] + edge_02 * self.inverse_rest_matrices[:, 1, 0, None]
+        )
+        deformation_v = (
+            edge_01 * self.inverse_rest_matrices[:, 0, 1, None] + edge_02 * self.inverse_rest_matrices[:, 1, 1, None]
+        )
+        stretch_u = np.linalg.norm(deformation_u, axis=1)
+        stretch_v = np.linalg.norm(deformation_v, axis=1)
+        shear = np.abs(np.sum(deformation_u * deformation_v, axis=1))
 
         if not np.isfinite(positions).all() or not np.isfinite(velocities).all():
             raise AssertionError("LIMX cloth state contains non-finite values")
@@ -136,8 +140,10 @@ class Example:
             raise AssertionError("LIMX cloth center did not sag under gravity")
         if positions[self.center_index, 1] >= self.anchor_y:
             raise AssertionError("LIMX cloth center did not swing past the anchor line")
-        if float(np.max(current_edge_lengths)) >= 2.0 * float(np.max(self.rest_lengths)):
-            raise AssertionError("LIMX cloth springs stretched beyond the expected bound")
+        if float(max(np.max(stretch_u), np.max(stretch_v))) >= 2.0:
+            raise AssertionError("LIMX cloth membrane stretched beyond the expected bound")
+        if float(np.max(shear)) >= 1.0:
+            raise AssertionError("LIMX cloth membrane sheared beyond the expected bound")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

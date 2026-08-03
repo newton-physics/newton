@@ -742,6 +742,19 @@ class TestSolverLIMX(unittest.TestCase):
         self.assertEqual(solver_time_steps, [0.01])
         self.assertAlmostEqual(example.sim_time, 0.01)
 
+    def test_example_uses_triangle_membrane_without_distance_springs(self):
+        with wp.ScopedDevice("cpu"):
+            example = ClothLimxExample(ViewerNull(num_frames=1), None)
+
+        membrane_constraints = [
+            constraint for constraint in example.solver.constraints if isinstance(constraint, ConstraintTriangleElastic)
+        ]
+        distance_constraints = [
+            constraint for constraint in example.solver.constraints if isinstance(constraint, ConstraintDistance)
+        ]
+        self.assertEqual(len(membrane_constraints), 1)
+        self.assertEqual(distance_constraints, [])
+
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_example_cuda_graph_advances_odd_substep_state(self):
         with wp.ScopedDevice("cuda:0"):
