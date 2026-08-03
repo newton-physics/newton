@@ -82,10 +82,11 @@ Pre-release planning
      - When the stable Warp version for the upcoming Newton release is
        published before the branch cut, stabilize it on ``main``: replace the
        dev or RC requirement in ``pyproject.toml`` and the pin in
-       ``asv.conf.json`` with the stable version, remove the NVIDIA
-       ``warp-lang`` package-index override, and regenerate ``uv.lock`` from
-       public PyPI.  Cut the upcoming release branch after this change; do not
-       apply the new Warp minor version to previously released Newton branches.
+       ``asv.conf.json`` with the stable version and regenerate ``uv.lock``.
+       Keep the NVIDIA ``warp-lang`` package-index override on ``main`` so it
+       is ready for the next dev-nightly update.  Cut the upcoming release
+       branch after this change; do not apply the new Warp minor version to
+       previously released Newton branches.
    * - ☐
      - Set timeline: code freeze → RC1 → testing window → GA.
    * - ☐
@@ -126,15 +127,14 @@ Code freeze and release branch creation
      - On **release-X.Y**: bump the version in ``pyproject.toml`` to ``X.Y.ZrcN`` and
        run ``uv run docs/generate_api.py``, then regenerate ``uv.lock`` (``uv lock``).
    * - ☐
-     - On **release-X.Y**, if dependency stabilization did not land on ``main``
-       before the branch cut: update dependencies in ``pyproject.toml`` from
-       dev to RC or stable versions where applicable and remove the NVIDIA
-       package index (``[[tool.uv.index]]`` entry for ``nvidia`` **and** the
+     - On **release-X.Y**: update dependencies in ``pyproject.toml`` from dev
+       to RC or stable versions where applicable and remove the NVIDIA package
+       index (``[[tool.uv.index]]`` entry for ``nvidia`` **and** the
        ``warp-lang`` entry in ``[tool.uv.sources]`` that references it) so the
-       release wheel installs purely from PyPI.  Update the Warp install
-       command in ``asv.conf.json`` to the same stable release from public PyPI,
-       without ``--pre`` or the NVIDIA index.  Then regenerate ``uv.lock``
-       (``uv lock``) and commit.
+       release wheel installs purely from PyPI.  Update the Warp install command
+       in ``asv.conf.json`` to the same stable release from public PyPI, without
+       ``--pre`` or the NVIDIA index.  Then regenerate ``uv.lock`` (``uv lock``)
+       and commit.
    * - ☐
      - Run the ``release-audit`` skill in **release-candidate mode** against
        ``release-X.Y``; address or acknowledge flagged entries before
