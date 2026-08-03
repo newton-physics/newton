@@ -10,6 +10,7 @@ import newton
 from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.constraints.anchor import ConstraintAnchor
 from newton._src.solvers.limx.constraints.distance import ConstraintDistance
+from newton._src.solvers.limx.constraints.triangle_elastic import ConstraintTriangleElastic
 from newton._src.solvers.limx.linear_solver import PcgSolver
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
 from newton._src.solvers.limx.solver_newton import SolverLIMX
@@ -271,6 +272,250 @@ class TestConstraintDistance(unittest.TestCase):
         for index_pairs, rest_lengths, stiffnesses, particle_count in invalid_arguments:
             with self.subTest(index_pairs=index_pairs), self.assertRaises(ValueError):
                 ConstraintDistance(index_pairs, rest_lengths, stiffnesses, particle_count, "cpu")
+
+
+class TestConstraintTriangleElastic(unittest.TestCase):
+    @staticmethod
+    def membrane_energy(positions, inverse_rest_matrix, rest_area, stiffness):
+        edge_01 = positions[1] - positions[0]
+        edge_02 = positions[2] - positions[0]
+        deformation_u = edge_01 * inverse_rest_matrix[0, 0] + edge_02 * inverse_rest_matrix[1, 0]
+        deformation_v = edge_01 * inverse_rest_matrix[0, 1] + edge_02 * inverse_rest_matrix[1, 1]
+        stretch_u = np.linalg.norm(deformation_u) - 1.0
+        stretch_v = np.linalg.norm(deformation_v) - 1.0
+        shear = float(np.dot(deformation_u, deformation_v))
+        return (
+            0.5
+            * rest_area
+            * (
+                stiffness[0] * stretch_u * stretch_u
+                + stiffness[1] * stretch_v * stretch_v
+                + stiffness[2] * shear * shear
+            )
+        )
+
+    @staticmethod
+    def make_constraint(stiffness=(7.0, 11.0, 5.0), device="cpu"):
+        return ConstraintTriangleElastic(
+            [(0, 1, 2)],
+            [wp.mat22(1.0, 0.0, 0.0, 1.0)],
+            [0.5],
+            [wp.vec3(*stiffness)],
+            3,
+            device,
+        )
+
+    @staticmethod
+    def projected_hessian_reference(positions, inverse_rest_matrix, rest_area, stiffness):
+        edge_01 = positions[1] - positions[0]
+        edge_02 = positions[2] - positions[0]
+        deformation_u = edge_01 * inverse_rest_matrix[0, 0] + edge_02 * inverse_rest_matrix[1, 0]
+        deformation_v = edge_01 * inverse_rest_matrix[0, 1] + edge_02 * inverse_rest_matrix[1, 1]
+        derivative_u = np.asarray(
+            [
+                -inverse_rest_matrix[0, 0] - inverse_rest_matrix[1, 0],
+                inverse_rest_matrix[0, 0],
+                inverse_rest_matrix[1, 0],
+            ]
+        )
+        derivative_v = np.asarray(
+            [
+                -inverse_rest_matrix[0, 1] - inverse_rest_matrix[1, 1],
+                inverse_rest_matrix[0, 1],
+                inverse_rest_matrix[1, 1],
+            ]
+        )
+
+        def projected_stretch_curvature(deformation, component_stiffness):
+            length = np.linalg.norm(deformation)
+            if length <= 1.0e-8:
+                return np.zeros((3, 3))
+            direction = deformation / length
+            normal_outer = np.outer(direction, direction)
+            return component_stiffness * (normal_outer + max(1.0 - 1.0 / length, 0.0) * (np.eye(3) - normal_outer))
+
+        curvature_u = projected_stretch_curvature(deformation_u, stiffness[0])
+        curvature_v = projected_stretch_curvature(deformation_v, stiffness[1])
+        shear_gradients = [derivative_u[i] * deformation_v + derivative_v[i] * deformation_u for i in range(3)]
+        hessian = np.empty((9, 9))
+        for i in range(3):
+            for j in range(3):
+                block = rest_area * (
+                    derivative_u[i] * derivative_u[j] * curvature_u
+                    + derivative_v[i] * derivative_v[j] * curvature_v
+                    + stiffness[2] * np.outer(shear_gradients[i], shear_gradients[j])
+                )
+                hessian[3 * i : 3 * i + 3, 3 * j : 3 * j + 3] = block
+        return hessian
+
+    @staticmethod
+    def dense_hessian(matrix):
+        values = matrix.values.numpy()
+        dense = np.empty((9, 9))
+        for i in range(3):
+            for j in range(3):
+                dense[3 * i : 3 * i + 3, 3 * j : 3 * j + 3] = values[matrix.block_index(i, j)]
+        return dense
+
+    @classmethod
+    def assemble_single_triangle(cls, positions, stiffness=(7.0, 11.0, 5.0), device="cpu"):
+        constraint = cls.make_constraint(stiffness, device)
+        builder = BlockCsrBuilder(3)
+        constraint.append_hessian_structure(builder)
+        matrix = builder.finalize(device)
+        constraint.bind_hessian(matrix)
+        positions_wp = wp.array(positions, dtype=wp.vec3, device=device)
+        forces = wp.zeros(3, dtype=wp.vec3, device=device)
+
+        matrix.clear_values()
+        constraint.accumulate_force_and_hessian(positions_wp, forces, matrix.values)
+        matrix.update_diagonal()
+        return constraint, matrix, positions_wp, forces
+
+    def test_rigidly_rotated_rest_triangle_has_zero_force(self):
+        constraint = self.make_constraint()
+        positions = wp.array(
+            [
+                wp.vec3(0.2, -0.3, 1.0),
+                wp.vec3(1.2, -0.3, 1.0),
+                wp.vec3(0.2, -0.3, 2.0),
+            ],
+            dtype=wp.vec3,
+            device="cpu",
+        )
+        forces = wp.zeros(3, dtype=wp.vec3, device="cpu")
+
+        constraint.accumulate_force(positions, forces)
+
+        np.testing.assert_allclose(forces.numpy(), np.zeros((3, 3)), atol=1.0e-6)
+
+    def test_force_matches_negative_finite_difference_energy_gradient(self):
+        stiffness = np.asarray([7.0, 11.0, 5.0])
+        inverse_rest_matrix = np.eye(2)
+        rest_area = 0.5
+        positions = np.asarray(
+            [
+                [0.1, -0.2, 0.3],
+                [1.25, 0.1, 0.5],
+                [0.25, 0.9, -0.15],
+            ],
+            dtype=np.float64,
+        )
+        constraint = self.make_constraint(stiffness)
+        positions_wp = wp.array(positions, dtype=wp.vec3, device="cpu")
+        forces = wp.zeros(3, dtype=wp.vec3, device="cpu")
+
+        constraint.accumulate_force(positions_wp, forces)
+
+        epsilon = 1.0e-5
+        energy_gradient = np.empty((3, 3))
+        for particle in range(3):
+            for axis in range(3):
+                positions_plus = positions.copy()
+                positions_minus = positions.copy()
+                positions_plus[particle, axis] += epsilon
+                positions_minus[particle, axis] -= epsilon
+                energy_gradient[particle, axis] = (
+                    self.membrane_energy(positions_plus, inverse_rest_matrix, rest_area, stiffness)
+                    - self.membrane_energy(positions_minus, inverse_rest_matrix, rest_area, stiffness)
+                ) / (2.0 * epsilon)
+
+        np.testing.assert_allclose(forces.numpy(), -energy_gradient, rtol=2.0e-4, atol=2.0e-4)
+
+    def test_projected_hessian_matches_analytic_blocks_and_is_psd(self):
+        positions = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [0.8, 0.0, 0.0],
+                [0.25, 1.1, 0.1],
+            ]
+        )
+        stiffness = np.asarray([7.0, 11.0, 5.0])
+        _, matrix, _, _ = self.assemble_single_triangle(positions, stiffness)
+
+        actual = self.dense_hessian(matrix)
+        expected = self.projected_hessian_reference(positions, np.eye(2), 0.5, stiffness)
+
+        np.testing.assert_allclose(actual, expected, rtol=2.0e-6, atol=2.0e-6)
+        np.testing.assert_allclose(actual, actual.T, atol=1.0e-6)
+        self.assertGreaterEqual(float(np.linalg.eigvalsh(actual)[0]), -1.0e-5)
+
+    def test_compressed_warp_hessian_removes_negative_transverse_curvature(self):
+        positions = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [0.8, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ]
+        )
+        _, matrix, _, _ = self.assemble_single_triangle(positions, (7.0, 0.0, 0.0))
+
+        expected_material_block = np.diag([3.5, 0.0, 0.0])
+        actual = self.dense_hessian(matrix)
+
+        np.testing.assert_allclose(actual[0:3, 0:3], expected_material_block, atol=1.0e-6)
+        np.testing.assert_allclose(actual[0:3, 3:6], -expected_material_block, atol=1.0e-6)
+        np.testing.assert_allclose(actual[3:6, 0:3], -expected_material_block, atol=1.0e-6)
+        np.testing.assert_allclose(actual[3:6, 3:6], expected_material_block, atol=1.0e-6)
+        np.testing.assert_array_equal(actual[:, 6:9], np.zeros((9, 3)))
+        np.testing.assert_array_equal(actual[6:9, :], np.zeros((3, 9)))
+
+    def test_extended_stretch_hessian_matches_negative_force_jacobian(self):
+        positions = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.2, 0.2, 0.1],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float64,
+        )
+        constraint, matrix, _, _ = self.assemble_single_triangle(positions, (7.0, 0.0, 0.0))
+        epsilon = 1.0e-4
+        force_jacobian = np.empty((9, 9))
+        for column in range(9):
+            positions_plus = positions.copy().reshape(-1)
+            positions_minus = positions.copy().reshape(-1)
+            positions_plus[column] += epsilon
+            positions_minus[column] -= epsilon
+            force_plus = wp.zeros(3, dtype=wp.vec3, device="cpu")
+            force_minus = wp.zeros(3, dtype=wp.vec3, device="cpu")
+            constraint.accumulate_force(wp.array(positions_plus.reshape(3, 3), dtype=wp.vec3, device="cpu"), force_plus)
+            constraint.accumulate_force(
+                wp.array(positions_minus.reshape(3, 3), dtype=wp.vec3, device="cpu"), force_minus
+            )
+            force_jacobian[:, column] = (force_plus.numpy().reshape(-1) - force_minus.numpy().reshape(-1)) / (
+                2.0 * epsilon
+            )
+
+        np.testing.assert_allclose(self.dense_hessian(matrix), -force_jacobian, rtol=2.0e-3, atol=2.0e-3)
+
+    def test_reassembly_changes_values_without_changing_nine_block_pattern(self):
+        positions = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [0.8, 0.0, 0.0],
+                [0.25, 1.1, 0.1],
+            ]
+        )
+        constraint, matrix, _, _ = self.assemble_single_triangle(positions)
+        row_offsets = matrix.row_offsets.numpy().copy()
+        column_indices = matrix.column_indices.numpy().copy()
+        initial_values = matrix.values.numpy().copy()
+        new_positions = wp.array(
+            [wp.vec3(0.0), wp.vec3(1.3, 0.2, 0.0), wp.vec3(-0.1, 0.9, 0.3)],
+            dtype=wp.vec3,
+            device="cpu",
+        )
+        forces = wp.zeros(3, dtype=wp.vec3, device="cpu")
+
+        matrix.clear_values()
+        constraint.accumulate_force_and_hessian(new_positions, forces, matrix.values)
+
+        np.testing.assert_array_equal(row_offsets, [0, 3, 6, 9])
+        np.testing.assert_array_equal(column_indices, [0, 1, 2, 0, 1, 2, 0, 1, 2])
+        np.testing.assert_array_equal(matrix.row_offsets.numpy(), row_offsets)
+        np.testing.assert_array_equal(matrix.column_indices.numpy(), column_indices)
+        self.assertFalse(np.allclose(matrix.values.numpy(), initial_values))
 
 
 class TestCompositeLinearOperator(unittest.TestCase):
