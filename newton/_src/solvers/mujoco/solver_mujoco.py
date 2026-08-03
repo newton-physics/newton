@@ -6903,6 +6903,85 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mj_data = mujoco.MjData(self.mj_model)
         mujoco.mj_setConst(self.mj_model, self.mj_data)
 
+        # Resolve <position dampratio="..."> for JOINT_TARGET actuators.
+        #
+        # The MJCF importer stores an unresolved dampratio as a positive
+        # ``mujoco:actuator_biasprm[2]`` placeholder and leaves
+        # ``joint_target_kd`` at zero, because the reflected inertia needed to
+        # turn a ratio into a gain is only known once MuJoCo has compiled the
+        # model. CTRL_DIRECT actuators get resolved by ``mj_setConst`` above,
+        # but JOINT_TARGET actuators read ``joint_target_kd`` directly (both
+        # here and in ``update_axis_properties_kernel``), so without this step
+        # a drive authored as critically damped imports completely undamped.
+        #
+        # MuJoCo's compile-time formula is ``kv = 2 * dampratio * sqrt(kp * dof_M0)``,
+        # where ``dof_M0`` is the reflected inertia of the driven DOF in the
+        # reference configuration. Note this is *not* interchangeable with
+        # ``1 / actuator_acc0``: the two agree only when the actuated joint is the
+        # sole DOF in its kinematic subtree, and diverge badly otherwise (on a
+        # three-link chain the acc0 form is off by roughly 6x).
+        if mujoco_attrs is not None:
+            act_biasprm = get_custom_attribute("actuator_biasprm")
+            act_gainprm = get_custom_attribute("actuator_gainprm")
+            act_trnid = get_custom_attribute("actuator_trnid")
+            act_trntype = get_custom_attribute("actuator_trntype")
+            act_ctrl_source = get_custom_attribute("ctrl_source")
+            act_ctrl_type = get_custom_attribute("ctrl_type")
+            if (
+                act_biasprm is not None
+                and act_gainprm is not None
+                and act_trnid is not None
+                and act_ctrl_source is not None
+                and act_ctrl_type is not None
+            ):
+                resolved_kd: dict[int, float] = {}
+                for row in range(len(act_biasprm)):
+                    if int(act_ctrl_source[row]) != int(SolverMuJoCo.CtrlSource.JOINT_TARGET):
+                        continue
+                    if int(act_ctrl_type[row]) != int(SolverMuJoCo.CtrlType.POSITION):
+                        continue
+                    # trnid only names a DOF for joint transmissions; for tendon/body/site
+                    # actuators it indexes a different array entirely.
+                    if act_trntype is not None and int(act_trntype[row]) != int(SolverMuJoCo.TrnType.JOINT):
+                        continue
+                    dampratio = float(act_biasprm[row][2])
+                    # Negative encodes an explicit kv, zero means neither was authored.
+                    if dampratio <= 0.0:
+                        continue
+                    kp = float(act_gainprm[row][0])
+                    if kp <= 0.0:
+                        continue
+                    # For joint transmissions actuator_trnid[:, 0] is the Newton DOF
+                    # index itself (see import_mjcf.py, which stores qd_start here),
+                    # not a joint index -- an actuator drives exactly that one DOF.
+                    dof = int(act_trnid[row][0])
+                    if dof < 0 or dof >= len(axis_to_actuator):
+                        continue
+                    mjc_actuator = int(axis_to_actuator[dof, 0])
+                    if mjc_actuator < 0:
+                        continue
+                    # Resolve the MuJoCo DOF this actuator drives so we can read its
+                    # reflected inertia; trnid on the compiled model is a joint index.
+                    mjc_jnt = int(self.mj_model.actuator_trnid[mjc_actuator, 0])
+                    if mjc_jnt < 0 or mjc_jnt >= self.mj_model.njnt:
+                        continue
+                    mjc_dof = int(self.mj_model.jnt_dofadr[mjc_jnt])
+                    if mjc_dof < 0 or mjc_dof >= self.mj_model.nv:
+                        continue
+                    dof_m0 = float(self.mj_model.dof_M0[mjc_dof])
+                    if dof_m0 <= 0.0:
+                        continue
+                    resolved_kd[dof] = 2.0 * dampratio * np.sqrt(kp * dof_m0)
+                if resolved_kd:
+                    kd_host = model.joint_target_kd.numpy()
+                    for dof, kd_value in resolved_kd.items():
+                        # An explicit kv, or a kd already set by a velocity
+                        # actuator on the same DOF, takes precedence.
+                        if kd_host[dof] == 0.0:
+                            kd_host[dof] = kd_value
+                            joint_target_kd[dof] = kd_value
+                    model.joint_target_kd.assign(wp.array(kd_host, dtype=float, device=model.device))
+
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.
         # These map Newton template joint index → MuJoCo qpos/qvel start.
         # Loop joints get -1 (they have no MuJoCo qpos/qvel slots).

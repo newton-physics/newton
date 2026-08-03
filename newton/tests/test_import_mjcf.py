@@ -8302,6 +8302,190 @@ class TestMjcfPositionDampratioParsing(unittest.TestCase):
         self.assertAlmostEqual(float(biasprm[1, 2]), -3.0, places=6)
 
 
+class TestMjcfPositionDampratioResolvedForJointTarget(unittest.TestCase):
+    """Regression for #3698: <position dampratio> must reach joint_target_kd.
+
+    The importer stores an unresolved dampratio as a positive biasprm[2]
+    placeholder because the reflected inertia is only known after MuJoCo
+    compiles the model. CTRL_DIRECT actuators are resolved by mj_setConst,
+    but JOINT_TARGET actuators read joint_target_kd directly, so a drive the
+    asset author tuned to be critically damped used to import with kd == 0.
+    """
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="link">
+                <joint name="hinge" type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="1"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="motor" joint="hinge" kp="100" dampratio="1"/>
+        </actuator>
+    </mujoco>
+    """
+
+    @staticmethod
+    def _expected_kd(kp, dampratio, dof_m0):
+        # MuJoCo: kv = 2 * dampratio * sqrt(kp * dof_M0).
+        return 2.0 * dampratio * np.sqrt(kp * dof_m0)
+
+    def test_dampratio_resolved_into_joint_target_kd(self):
+        """A dampratio-only position actuator must not import undamped."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.MJCF)
+        model = builder.finalize()
+
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[0]), 0.0, places=6)
+
+        solver = newton.solvers.SolverMuJoCo(model)
+        kd = float(model.joint_target_kd.numpy()[0])
+
+        self.assertGreater(kd, 0.0, "dampratio was dropped; drive imported undamped")
+        expected = self._expected_kd(100.0, 1.0, float(solver.mj_model.dof_M0[0]))
+        self.assertAlmostEqual(kd, expected, places=4)
+
+    def test_matches_native_mujoco(self):
+        """The resolved kd must match MuJoCo's own compile-time value."""
+        import mujoco
+
+        mj_model = mujoco.MjModel.from_xml_string(self.MJCF)
+        native_kv = -float(mj_model.actuator_biasprm[0][2])
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.MJCF)
+        model = builder.finalize()
+        newton.solvers.SolverMuJoCo(model)
+
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[0]), native_kv, places=4)
+
+    def test_explicit_kv_is_not_overwritten(self):
+        """An explicit kv must still win; dampratio must not clobber it."""
+        mjcf = self.MJCF.replace('kp="100" dampratio="1"', 'kp="100" kv="3.0" dampratio="1"')
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        newton.solvers.SolverMuJoCo(model)
+
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[0]), 3.0, places=6)
+
+    def test_no_dampratio_stays_undamped(self):
+        """Neither kv nor dampratio authored => kd stays zero."""
+        mjcf = self.MJCF.replace('kp="100" dampratio="1"', 'kp="100"')
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        newton.solvers.SolverMuJoCo(model)
+
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[0]), 0.0, places=6)
+
+    # Scenes where the actuated hinge is NOT the first DOF, and where the
+    # reflected inertia is not simply the actuator's own. actuator_trnid stores
+    # a DOF index, so anything that reads it as a joint index lands on the wrong
+    # target (or out of range, silently dropping the damping); and dof_M0 only
+    # coincides with 1 / actuator_acc0 when the driven joint is alone in its
+    # subtree, so a chain exposes the difference too.
+    MJCF_BALL_THEN_HINGE = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="ball_link">
+                <joint name="ball" type="ball"/>
+                <geom type="sphere" size="0.05" mass="1"/>
+                <body name="link" pos="0.2 0 0">
+                    <joint name="hinge" type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="motor" joint="hinge" kp="100" dampratio="1"/>
+        </actuator>
+    </mujoco>
+    """
+
+    MJCF_FREE_THEN_HINGE = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="floating">
+                <freejoint/>
+                <geom type="box" size="0.1 0.1 0.1" mass="3"/>
+                <body name="link" pos="0.2 0 0">
+                    <joint name="hinge" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.05" mass="1"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="motor" joint="hinge" kp="80" dampratio="1.5"/>
+        </actuator>
+    </mujoco>
+    """
+
+    MJCF_CHAIN = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="a">
+                <joint name="h0" type="hinge" axis="0 0 1"/>
+                <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="2"/>
+                <body name="b" pos="0.3 0 0">
+                    <joint name="h1" type="hinge" axis="0 0 1"/>
+                    <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="2"/>
+                    <body name="c" pos="0.3 0 0">
+                        <joint name="h2" type="hinge" axis="0 0 1"/>
+                        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.04" mass="2"/>
+                    </body>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="motor" joint="h0" kp="50" dampratio="0.7"/>
+        </actuator>
+    </mujoco>
+    """
+
+    def _assert_matches_native(self, mjcf):
+        import mujoco
+
+        mj_model = mujoco.MjModel.from_xml_string(mjcf)
+        native_kv = -float(mj_model.actuator_biasprm[0][2])
+        self.assertGreater(native_kv, 0.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        newton.solvers.SolverMuJoCo(model)
+
+        dof = int(model.mujoco.actuator_trnid.numpy()[0, 0])
+        kd = float(model.joint_target_kd.numpy()[dof])
+        self.assertGreater(kd, 0.0, "dampratio was dropped for a non-leading DOF")
+        self.assertAlmostEqual(kd / native_kv, 1.0, places=5)
+        return model, dof
+
+    def test_dampratio_after_ball_joint(self):
+        """A 3-DOF ball joint ahead of the hinge must not misdirect the damping."""
+        model, dof = self._assert_matches_native(self.MJCF_BALL_THEN_HINGE)
+        self.assertEqual(dof, 3)
+        # Only the actuated DOF is damped; the ball joint's DOFs stay untouched.
+        kd_all = model.joint_target_kd.numpy()
+        np.testing.assert_allclose(kd_all[:3], 0.0, atol=1e-9)
+
+    def test_dampratio_after_free_joint(self):
+        """A 6-DOF free joint ahead of the hinge must not misdirect the damping."""
+        model, dof = self._assert_matches_native(self.MJCF_FREE_THEN_HINGE)
+        self.assertEqual(dof, 6)
+        kd_all = model.joint_target_kd.numpy()
+        np.testing.assert_allclose(kd_all[:6], 0.0, atol=1e-9)
+
+    def test_dampratio_uses_reflected_inertia_of_chain(self):
+        """kv must use the driven DOF's dof_M0, not 1 / actuator_acc0."""
+        model, dof = self._assert_matches_native(self.MJCF_CHAIN)
+        self.assertEqual(dof, 0)
+        # Only the actuated DOF picks up damping.
+        kd_all = model.joint_target_kd.numpy()
+        np.testing.assert_allclose(kd_all[1:], 0.0, atol=1e-9)
+
+
 class TestActuatorDefaultKpKv(unittest.TestCase):
     """Regression: position/velocity actuators must default kp=1/kv=1.
 
