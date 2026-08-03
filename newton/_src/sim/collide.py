@@ -1248,6 +1248,7 @@ class CollisionPipeline:
             contact_matching=self._matching_enabled,
             contact_report=self.contact_report,
         )
+        contacts._contact_matching_mode = self.contact_matching
         # Flag the buffer so solvers that only consume particle contacts can refuse it (see
         # Contacts._enable_rigid_soft_full_surface_contact); edge/face records appear only when this is set.
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
@@ -1302,6 +1303,9 @@ class CollisionPipeline:
                 contact threshold also incorporates per-shape margins from
                 ``model.shape_margin``.
         """
+        # Keep result provenance in sync when a buffer is reused across pipelines.
+        contacts._contact_matching_mode = self.contact_matching
+
         # Keep the buffer's full-surface capability marker in sync with this pipeline on every call.
         # collide() may be handed a Contacts created elsewhere (or by a flag-off pipeline); the edge/
         # face passes below would otherwise populate records while the marker stayed False, so
