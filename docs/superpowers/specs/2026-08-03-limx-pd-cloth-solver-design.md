@@ -288,13 +288,24 @@ Initial defaults are:
 - distance stiffness `1e4 N/m`;
 - anchor stiffness `1e7 N/m`;
 - frame rate `60 Hz` with `4` substeps;
-- `4` nonlinear iterations per substep;
-- `32` PCG iterations per nonlinear iteration;
+- `64` nonlinear iterations per substep;
+- `10` PCG iterations per nonlinear iteration;
 - velocity damping `1.0` (no damping by default).
 
 The example has no ground plane and does not call collision generation. It
 implements `test_final()` to verify finite particle state, bounded anchor drift,
-and visible center sag.
+visible center sag, and that the center passes the anchor line within the first
+second. The crossing check distinguishes genuine pendulum-like motion from an
+under-converged solve that merely creeps toward a hanging equilibrium.
+
+The higher nonlinear budget is intentional. A distance constraint uses the
+fixed projective-dynamics block `k I3`; at a spring's rest state this is much
+stiffer than the exact elastic Hessian in directions transverse to the spring.
+Four local-global updates therefore suppress the sheet's large rotational mode.
+The `64 x 10` split was selected from trajectory measurements of the full
+`21 x 21`-particle example: after one second its center has crossed the anchor
+line and retains nonzero speed. Keeping ten PCG iterations per nonlinear update
+limits the total linear work while matching Style3D's default inner budget.
 
 ## Testing
 
@@ -330,6 +341,7 @@ least one second, and require:
 
 - both anchor displacements remain below `1e-3 m`;
 - the center particle falls at least `5e-2 m` below its initial height;
+- the full example's center passes the anchor line within one second;
 - every particle position and velocity remains finite;
 - the maximum spring length remains below twice its rest length;
 - the center particle does not undergo unrestricted ballistic free fall.
@@ -355,5 +367,6 @@ instructions.
 The design is complete when Newton contains a `SolverLIMX` whose public anchor
 and distance constraint batches generate forces and static
 Hessian blocks, whose block-CSR and composite operator feed an independent
-PCG solver, and whose two-corner-anchored cloth visibly sags under gravity
-without either anchor escaping or the sheet entering ballistic free fall.
+PCG solver, and whose two-corner-anchored cloth visibly swings past its anchor
+line under gravity without either anchor escaping or the sheet entering
+ballistic free fall.
