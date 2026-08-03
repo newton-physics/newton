@@ -9,6 +9,7 @@ import warp as wp
 import newton
 from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.constraints.anchor import ConstraintAnchor
+from newton._src.solvers.limx.constraints.dihedral_bending import ConstraintDihedralBending
 from newton._src.solvers.limx.constraints.distance import ConstraintDistance
 from newton._src.solvers.limx.constraints.triangle_elastic import ConstraintTriangleElastic
 from newton._src.solvers.limx.linear_solver import PcgSolver
@@ -569,6 +570,362 @@ class TestConstraintTriangleElastic(unittest.TestCase):
                     forces,
                     wp.zeros(block_count, dtype=wp.mat33, device="cpu"),
                 )
+
+
+@unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+class TestConstraintDihedralBending(unittest.TestCase):
+    REST_POSITIONS = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.25, 1.0, 0.0],
+            [0.75, -1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    STIFFNESS = 0.01
+
+    @staticmethod
+    def signed_angle(positions):
+        edge = positions[1] - positions[0]
+        edge_direction = edge / np.linalg.norm(edge)
+        normal_1 = np.cross(positions[2] - positions[0], edge)
+        normal_2 = np.cross(edge, positions[3] - positions[0])
+        normal_1 /= np.linalg.norm(normal_1)
+        normal_2 /= np.linalg.norm(normal_2)
+        return float(
+            np.arctan2(
+                np.dot(np.cross(normal_1, normal_2), edge_direction),
+                np.dot(normal_1, normal_2),
+            )
+        )
+
+    @classmethod
+    def bending_energy(cls, positions):
+        rest_angle = cls.signed_angle(cls.REST_POSITIONS.astype(np.float64))
+        angle = cls.signed_angle(positions)
+        residual = np.arctan2(np.sin(angle - rest_angle), np.cos(angle - rest_angle))
+        return 0.5 * cls.STIFFNESS * residual * residual
+
+    @staticmethod
+    def positions_at_angle(angle):
+        return np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.25, 1.0, 0.0],
+                [0.75, -np.cos(angle), -np.sin(angle)],
+            ],
+            dtype=np.float64,
+        )
+
+    @classmethod
+    def make_constraint(cls):
+        return ConstraintDihedralBending(
+            [(0, 1, 2, 3)],
+            cls.REST_POSITIONS,
+            cls.STIFFNESS,
+            4,
+            "cuda:0",
+        )
+
+    @classmethod
+    def numerical_angle_gradient(cls, positions):
+        epsilon = 1.0e-5
+        gradient = np.empty((4, 3))
+        for particle in range(4):
+            for axis in range(3):
+                positions_plus = positions.copy()
+                positions_minus = positions.copy()
+                positions_plus[particle, axis] += epsilon
+                positions_minus[particle, axis] -= epsilon
+                angle_plus = cls.signed_angle(positions_plus)
+                angle_minus = cls.signed_angle(positions_minus)
+                angle_difference = np.arctan2(
+                    np.sin(angle_plus - angle_minus),
+                    np.cos(angle_plus - angle_minus),
+                )
+                gradient[particle, axis] = angle_difference / (2.0 * epsilon)
+        return gradient
+
+    @classmethod
+    def assemble_single_dihedral(cls, positions):
+        constraint = cls.make_constraint()
+        builder = BlockCsrBuilder(4)
+        constraint.append_hessian_structure(builder)
+        matrix = builder.finalize("cuda:0")
+        constraint.bind_hessian(matrix)
+        positions_wp = wp.array(positions, dtype=wp.vec3, device="cuda:0")
+        forces = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+
+        matrix.clear_values()
+        constraint.accumulate_force_and_hessian(positions_wp, forces, matrix.values)
+        matrix.update_diagonal()
+        return constraint, matrix, positions_wp, forces
+
+    @staticmethod
+    def dense_hessian(matrix):
+        values = matrix.values.numpy()
+        dense = np.empty((12, 12))
+        for particle_i in range(4):
+            for particle_j in range(4):
+                dense[3 * particle_i : 3 * particle_i + 3, 3 * particle_j : 3 * particle_j + 3] = values[
+                    matrix.block_index(particle_i, particle_j)
+                ]
+        return dense
+
+    def test_force_is_zero_at_rest(self):
+        constraint = self.make_constraint()
+        positions = wp.array(self.REST_POSITIONS, dtype=wp.vec3, device="cuda:0")
+        forces = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+
+        constraint.accumulate_force(positions, forces)
+
+        np.testing.assert_allclose(forces.numpy(), np.zeros((4, 3)), atol=1.0e-7)
+
+    def test_force_is_zero_after_rigid_transform_of_rest_shape(self):
+        constraint = self.make_constraint()
+        angle = 0.7
+        rotation = np.asarray(
+            [
+                [np.cos(angle), 0.0, np.sin(angle)],
+                [0.0, 1.0, 0.0],
+                [-np.sin(angle), 0.0, np.cos(angle)],
+            ]
+        )
+        positions = self.REST_POSITIONS @ rotation.T + np.asarray([0.3, -0.4, 1.2])
+        forces = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+
+        constraint.accumulate_force(wp.array(positions, dtype=wp.vec3, device="cuda:0"), forces)
+
+        np.testing.assert_allclose(forces.numpy(), np.zeros((4, 3)), atol=1.0e-7)
+
+    def test_force_matches_negative_wrapped_energy_gradient(self):
+        positions = np.asarray(
+            [
+                [0.05, -0.03, 0.02],
+                [1.02, 0.04, -0.01],
+                [0.21, 0.95, 0.17],
+                [0.78, -0.82, -0.61],
+            ],
+            dtype=np.float64,
+        )
+        constraint = self.make_constraint()
+        positions_wp = wp.array(positions, dtype=wp.vec3, device="cuda:0")
+        forces = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+
+        constraint.accumulate_force(positions_wp, forces)
+
+        epsilon = 1.0e-4
+        energy_gradient = np.empty((4, 3))
+        for particle in range(4):
+            for axis in range(3):
+                positions_plus = positions.copy()
+                positions_minus = positions.copy()
+                positions_plus[particle, axis] += epsilon
+                positions_minus[particle, axis] -= epsilon
+                energy_gradient[particle, axis] = (
+                    self.bending_energy(positions_plus) - self.bending_energy(positions_minus)
+                ) / (2.0 * epsilon)
+
+        np.testing.assert_allclose(forces.numpy(), -energy_gradient, rtol=2.0e-3, atol=2.0e-5)
+
+    def test_gauss_newton_hessian_matches_angle_gradient_outer_product(self):
+        positions = np.asarray(
+            [
+                [0.02, -0.04, 0.01],
+                [1.03, 0.02, -0.03],
+                [0.23, 0.91, 0.24],
+                [0.81, -0.74, -0.67],
+            ],
+            dtype=np.float64,
+        )
+        _, matrix, _, _ = self.assemble_single_dihedral(positions)
+        angle_gradient = self.numerical_angle_gradient(positions).reshape(-1)
+        expected = self.STIFFNESS * np.outer(angle_gradient, angle_gradient)
+
+        actual = self.dense_hessian(matrix)
+
+        np.testing.assert_allclose(actual, expected, rtol=3.0e-3, atol=3.0e-5)
+        np.testing.assert_allclose(actual, actual.T, atol=1.0e-7)
+        eigenvalues = np.linalg.eigvalsh(actual)
+        self.assertGreaterEqual(float(eigenvalues[0]), -1.0e-6)
+        self.assertEqual(int(np.count_nonzero(eigenvalues > 1.0e-5)), 1)
+
+    def test_reassembly_changes_values_without_changing_sixteen_block_pattern(self):
+        initial_positions = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.25, 0.95, 0.2],
+                [0.75, -0.8, -0.6],
+            ],
+            dtype=np.float32,
+        )
+        constraint, matrix, _, _ = self.assemble_single_dihedral(initial_positions)
+        row_offsets = matrix.row_offsets.numpy().copy()
+        column_indices = matrix.column_indices.numpy().copy()
+        initial_values = matrix.values.numpy().copy()
+        new_positions = wp.array(
+            [
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.1, 0.0),
+                wp.vec3(0.2, 0.85, 0.4),
+                wp.vec3(0.8, -0.65, -0.75),
+            ],
+            dtype=wp.vec3,
+            device="cuda:0",
+        )
+        forces = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+
+        matrix.clear_values()
+        constraint.accumulate_force_and_hessian(new_positions, forces, matrix.values)
+
+        np.testing.assert_array_equal(row_offsets, [0, 4, 8, 12, 16])
+        np.testing.assert_array_equal(column_indices, [0, 1, 2, 3] * 4)
+        np.testing.assert_array_equal(matrix.row_offsets.numpy(), row_offsets)
+        np.testing.assert_array_equal(matrix.column_indices.numpy(), column_indices)
+        self.assertFalse(np.allclose(matrix.values.numpy(), initial_values))
+
+    def test_force_uses_short_angle_residual_across_branch_cut(self):
+        rest_positions = self.positions_at_angle(np.pi - 0.05)
+        positions = self.positions_at_angle(-np.pi + 0.05)
+        rest_angle = self.signed_angle(rest_positions)
+        constraint = ConstraintDihedralBending(
+            [(0, 1, 2, 3)],
+            rest_positions,
+            self.STIFFNESS,
+            4,
+            "cuda:0",
+        )
+        forces = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+
+        constraint.accumulate_force(wp.array(positions, dtype=wp.vec3, device="cuda:0"), forces)
+
+        def energy(candidate):
+            angle = self.signed_angle(candidate)
+            residual = np.arctan2(np.sin(angle - rest_angle), np.cos(angle - rest_angle))
+            return 0.5 * self.STIFFNESS * residual * residual
+
+        epsilon = 1.0e-4
+        expected_force = np.empty((4, 3))
+        for particle in range(4):
+            for axis in range(3):
+                positions_plus = positions.copy()
+                positions_minus = positions.copy()
+                positions_plus[particle, axis] += epsilon
+                positions_minus[particle, axis] -= epsilon
+                expected_force[particle, axis] = -(energy(positions_plus) - energy(positions_minus)) / (2.0 * epsilon)
+
+        np.testing.assert_allclose(forces.numpy(), expected_force, rtol=3.0e-3, atol=2.0e-5)
+
+    def test_runtime_degenerate_hinge_contributes_finite_zeros(self):
+        constraint = self.make_constraint()
+        builder = BlockCsrBuilder(4)
+        constraint.append_hessian_structure(builder)
+        matrix = builder.finalize("cuda:0")
+        constraint.bind_hessian(matrix)
+        positions = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+        forces = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+
+        matrix.clear_values()
+        constraint.accumulate_force_and_hessian(positions, forces, matrix.values)
+
+        self.assertTrue(np.isfinite(forces.numpy()).all())
+        self.assertTrue(np.isfinite(matrix.values.numpy()).all())
+        np.testing.assert_array_equal(forces.numpy(), np.zeros((4, 3)))
+        np.testing.assert_array_equal(matrix.values.numpy(), np.zeros((16, 3, 3)))
+
+    def test_duplicate_hinges_accumulate_force_and_hessian(self):
+        positions = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.25, 0.9, 0.3],
+                [0.75, -0.75, -0.66],
+            ],
+            dtype=np.float32,
+        )
+        _, single_matrix, _, single_forces = self.assemble_single_dihedral(positions)
+        duplicate = ConstraintDihedralBending(
+            [(0, 1, 2, 3), (0, 1, 2, 3)],
+            self.REST_POSITIONS,
+            self.STIFFNESS,
+            4,
+            "cuda:0",
+        )
+        builder = BlockCsrBuilder(4)
+        duplicate.append_hessian_structure(builder)
+        duplicate_matrix = builder.finalize("cuda:0")
+        duplicate.bind_hessian(duplicate_matrix)
+        duplicate_forces = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+
+        duplicate_matrix.clear_values()
+        duplicate.accumulate_force_and_hessian(
+            wp.array(positions, dtype=wp.vec3, device="cuda:0"),
+            duplicate_forces,
+            duplicate_matrix.values,
+        )
+
+        np.testing.assert_allclose(duplicate_forces.numpy(), 2.0 * single_forces.numpy(), rtol=1.0e-6, atol=1.0e-7)
+        np.testing.assert_allclose(
+            duplicate_matrix.values.numpy(),
+            2.0 * single_matrix.values.numpy(),
+            rtol=1.0e-6,
+            atol=1.0e-7,
+        )
+
+    def test_rejects_invalid_input(self):
+        valid_rest = self.REST_POSITIONS
+        collapsed_edge = valid_rest.copy()
+        collapsed_edge[1] = collapsed_edge[0]
+        collapsed_height = valid_rest.copy()
+        collapsed_height[2] = [0.5, 0.0, 0.0]
+        nonfinite_rest = valid_rest.copy()
+        nonfinite_rest[2, 1] = np.nan
+        invalid_arguments = [
+            ([], valid_rest, self.STIFFNESS, 4),
+            ([(0, 1, 2)], valid_rest, self.STIFFNESS, 4),
+            ([(0, 1, 2, 2)], valid_rest, self.STIFFNESS, 4),
+            ([(0, 1, 2, 4)], valid_rest, self.STIFFNESS, 4),
+            ([(0, 1, 2, 3)], valid_rest[:3], self.STIFFNESS, 4),
+            ([(0, 1, 2, 3)], nonfinite_rest, self.STIFFNESS, 4),
+            ([(0, 1, 2, 3)], collapsed_edge, self.STIFFNESS, 4),
+            ([(0, 1, 2, 3)], collapsed_height, self.STIFFNESS, 4),
+            ([(0, 1, 2, 3)], valid_rest, 0.0, 4),
+            ([(0, 1, 2, 3)], valid_rest, float("inf"), 4),
+        ]
+        for dihedrals, rest_positions, stiffness, particle_count in invalid_arguments:
+            with self.subTest(dihedrals=dihedrals, stiffness=stiffness), self.assertRaises(ValueError):
+                ConstraintDihedralBending(
+                    dihedrals,
+                    rest_positions,
+                    stiffness,
+                    particle_count,
+                    "cuda:0",
+                )
+
+    def test_rejects_unbound_or_wrong_hessian_buffer(self):
+        constraint = self.make_constraint()
+        positions = wp.array(self.REST_POSITIONS, dtype=wp.vec3, device="cuda:0")
+        forces = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+        with self.assertRaisesRegex(RuntimeError, "bind_hessian"):
+            constraint.accumulate_force_and_hessian(
+                positions,
+                forces,
+                wp.zeros(16, dtype=wp.mat33, device="cuda:0"),
+            )
+
+        builder = BlockCsrBuilder(4)
+        constraint.append_hessian_structure(builder)
+        matrix = builder.finalize("cuda:0")
+        constraint.bind_hessian(matrix)
+        with self.assertRaisesRegex(ValueError, "16 Hessian blocks"):
+            constraint.accumulate_force_and_hessian(
+                positions,
+                forces,
+                wp.zeros(15, dtype=wp.mat33, device="cuda:0"),
+            )
 
 
 class TestCompositeLinearOperator(unittest.TestCase):
