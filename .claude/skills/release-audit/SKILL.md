@@ -3,7 +3,7 @@ name: release-audit
 description: "Use when auditing Newton's pending Towncrier fragments for keep/defer decisions, reviewing an RC for readiness, or calibrating against an already-shipped release."
 disable-model-invocation: true
 argument-hint: "[target-version]"
-allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(git ls-tree *) Bash(uv run --no-project python scripts/changelog_policy.py validate) Bash(uvx --from towncrier==25.8.0 towncrier build --draft *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
+allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(git ls-tree *) Bash(uv run --no-project python scripts/changelog_policy.py validate) Bash(uvx --from towncrier==25.8.0 towncrier build --draft *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
 ---
 
 # Release Audit
@@ -126,7 +126,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
 1. Run the commit-list tool:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
+   uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
      --base <base-ref> \
      --head <head-ref> \
      --report-date "$(date +%F)" \
@@ -136,7 +136,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
 2. Run the dependency and license audit helper:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py \
+   uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/license_audit.py \
      --base <base-ref> \
      --head <head-ref>
    ```
@@ -406,7 +406,7 @@ For each post-target tag, read its CHANGELOG section (the `## [<version>]` block
 Also collect the commits in each post-target range (`<prior-tag>..<tag>`) — one full `list_commits.py` invocation per range, with the same required args as Phase 2. `--main-ref` reuses the main ref resolved in Phase 1 (don't rely on the script's `upstream/main` default; Phase 1 may have fallen back to a different remote):
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
+uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/list_commits.py \
   --base <prior-tag> \
   --head <tag> \
   --report-date "$(date +%F)" \
