@@ -10495,6 +10495,28 @@ class ModelBuilder:
                     f"Hydroelastic shape {i} requires sdf_padding >= margin + gap "
                     f"({margin + gap:.6g}), got {sdf_padding:.6g}."
                 )
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)
+            ):
+                shape_src = self.shape_source[i]
+                mesh_sdf = getattr(shape_src, "sdf", None) if shape_src is not None else None
+                if mesh_sdf is not None:
+                    required_sdf_padding = margin + gap
+                    construction_padding = getattr(mesh_sdf, "_construction_padding", None)
+                    if mesh_sdf.texture_data is not None and construction_padding is None:
+                        raise ValueError(
+                            f"Hydroelastic shape {i} has precomputed SDF data with unknown construction padding. "
+                            "Rebuild it with Mesh.build_sdf(margin=margin + gap)."
+                        )
+                    if construction_padding is not None and construction_padding < required_sdf_padding:
+                        raise ValueError(
+                            f"Hydroelastic shape {i} requires SDF construction padding >= margin + gap "
+                            f"({required_sdf_padding:.6g}), but the attached SDF uses "
+                            f"{construction_padding:.6g}. Rebuild it with "
+                            f"Mesh.build_sdf(margin={required_sdf_padding:.6g})."
+                        )
             if gap < 0.0:
                 shapes_with_bad_gap.append(
                     f"{self.shape_label[i] or f'shape_{i}'} (margin={margin:.6g}, gap={gap:.6g})"
@@ -11596,23 +11618,6 @@ class ModelBuilder:
                         if deferred_key in deferred_collision_edges_cache:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
-                        construction_padding = getattr(mesh_sdf, "_construction_padding", None)
-                        if is_hydroelastic and mesh_sdf.texture_data is not None and construction_padding is None:
-                            raise ValueError(
-                                f"Hydroelastic shape {i} has precomputed SDF data with unknown construction padding. "
-                                "Rebuild it with Mesh.build_sdf(margin=margin + gap)."
-                            )
-                        if (
-                            is_hydroelastic
-                            and construction_padding is not None
-                            and construction_padding < required_sdf_padding
-                        ):
-                            raise ValueError(
-                                f"Hydroelastic shape {i} requires SDF construction padding >= margin + gap "
-                                f"({required_sdf_padding:.6g}), but the attached SDF uses "
-                                f"{construction_padding:.6g}. Rebuild it with "
-                                f"Mesh.build_sdf(margin={required_sdf_padding:.6g})."
-                            )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                 elif has_shape_collision and (
                     is_hydroelastic

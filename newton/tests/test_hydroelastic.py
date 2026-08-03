@@ -193,6 +193,27 @@ def test_hydroelastic_attached_sdf_requires_padding_metadata(test, device):
     with test.assertRaisesRegex(ValueError, "unknown construction padding"):
         builder.finalize(device=device)
 
+    skip_options = (
+        {"skip_validation_shapes": True},
+        {"skip_all_validations": True},
+    )
+    for skip_option in skip_options:
+        with test.subTest(**skip_option):
+            builder = newton.ModelBuilder()
+            builder.add_shape_mesh(
+                body=-1,
+                mesh=mesh,
+                cfg=newton.ModelBuilder.ShapeConfig(
+                    is_hydroelastic=True,
+                    margin=0.2,
+                    gap=0.1,
+                ),
+            )
+
+            model = builder.finalize(device=device, **skip_option)
+
+            test.assertEqual(model.shape_count, 1)
+
 
 def simulate(solver, model, state_0, state_1, control, contacts, collision_pipeline, sim_dt, substeps):
     for _ in range(substeps):
