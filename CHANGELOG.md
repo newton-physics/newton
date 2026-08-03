@@ -314,6 +314,7 @@
   - Correct `SolverFeatherstone` Coriolis/centrifugal forces so torque-free bodies conserve angular momentum.
   - Correct `newton.eval_fk()` / `newton.eval_ik()` rotations and joint velocities when three angular axes form a left-handed orthonormal basis.
 - Fix mesh inertia computation to produce deterministic results across repeated CUDA runs. (#3136)
+- Fix convex decomposition of disconnected mesh components so unified multi-part collision meshes preserve separate convex parts.
 - Fix `SolverXPBD.step()` rejecting `contacts=None` for particle models with shapes, and align its optional control and contact annotations with `SolverBase.step()`.
 - Fix `ModelBuilder.add_builder()` and `ModelBuilder.finalize()` time and memory scaling for large replicated scenes with collision filter pairs. (#1675)
 - Fix mesh-SDF contacts with positive contact gaps by making contact reduction prefer margin-depth contacts over gap-only directional fallbacks. (#3490)
