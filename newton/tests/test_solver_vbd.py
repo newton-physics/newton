@@ -1828,7 +1828,7 @@ def _rigid_reset_state_and_history(test, device):
     selected_joints = joint_world == 0
     global_bodies = body_world < 0
     global_joints = joint_world < 0
-    world_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=0)
     # A history-disabled solver (the default) allocates no contact-reset state.
@@ -1857,9 +1857,7 @@ def _rigid_reset_state_and_history(test, device):
     solver.joint_lambda_lin.fill_(5.0)
     with test.assertRaisesRegex(ValueError, "argument is required"):
         solver.reset(None)
-    with test.assertRaisesRegex(ValueError, "one-dimensional Warp boolean array"):
-        solver.reset(state, world_mask=wp.array([1, 0], dtype=wp.int32, device=device))
-    with test.assertRaisesRegex(ValueError, "world_mask has length 1, expected 2 or 3"):
+    with test.assertRaisesRegex(ValueError, "world_mask has size 1, expected 2 or 3"):
         solver.reset(state, world_mask=wp.array([True], dtype=wp.bool, device=device))
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 5.0)
 
@@ -1915,7 +1913,8 @@ def _rigid_reset_state_and_history(test, device):
 
     # Phase 4: an all-false reset arms nothing, so the next step finite-differences
     # a known delta for every body (a leaked pose baseline would zero some world).
-    solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
+    with test.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
+        solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
     all_false_delta = 2.0
     moved_q = base_q.copy()
     moved_q[:, 0] += all_false_delta
@@ -2046,7 +2045,7 @@ def _rigid_reset_replays_captured_step(test, device):
 
     # reset() runs after capture. Its device-side mask write must be visible when
     # replaying the graph, while post-reset pose preparation remains authoritative.
-    world_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
     solver.reset(state_in, world_mask=world_mask, flags=0)
     reset_q = model.body_q.numpy()
     reset_q[:, 0] += 1.0
@@ -2092,7 +2091,7 @@ def _rigid_contact_reset_lifecycle(test, device):
     builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
     model = builder.finalize(device=device)
-    reset_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    reset_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
     dt = 1.0e-2
 
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
@@ -2618,6 +2617,57 @@ def _body_particle_contact_lists_skip_static_kinematic(test, device):
     test.assertEqual(int(overflow_max.numpy()[0]), 0)
 
 
+def _build_multi_world_particle_shape_scene(world_count, device, globals_kind="none"):
+    """Build ``world_count`` replicas of a sub-world holding one shape and several free particles.
+
+    ``globals_kind`` puts a global entity in both the head and the tail range: ``"shapes"`` adds
+    global shapes, ``"particles"`` adds global particles, ``"none"`` adds neither. The two are never
+    mixed: global particles times global shapes contributes a world-count-independent constant, which
+    would break the exact 4x scaling the caller checks.
+    """
+    sub = newton.ModelBuilder()
+    sub.add_shape_sphere(body=-1, radius=0.5)
+    for i in range(8):
+        sub.add_particle(pos=wp.vec3(0.1 * i, 0.0, 2.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+    def add_global(builder, z):
+        if globals_kind == "shapes":
+            builder.add_shape_sphere(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()), radius=0.25)
+        elif globals_kind == "particles":
+            builder.add_particle(pos=wp.vec3(0.0, 0.0, z), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+    builder = newton.ModelBuilder()
+    add_global(builder, 5.0)  # Global head range.
+    for _ in range(world_count):
+        builder.add_world(sub)
+    add_global(builder, 6.0)  # Global tail range.
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def _soft_contact_presize_is_world_aware(test, device):
+    """Verify SolverVBD pre-sizes body-particle buffers from world-compatible pairs, not every particle-shape pair."""
+    for globals_kind in ("none", "shapes", "particles"):
+        sizes = {}
+        for world_count in (1, 4):
+            model = _build_multi_world_particle_shape_scene(world_count, device, globals_kind=globals_kind)
+            if globals_kind != "none":
+                # Guard the scene: an empty head or tail range would silently weaken the check below.
+                array = model.particle_world_start if globals_kind == "particles" else model.shape_world_start
+                start = array.numpy()
+                test.assertGreater(start[0], 0, f"{globals_kind=} {world_count=}")
+                test.assertGreater(start[-1], start[-2], f"{globals_kind=} {world_count=}")
+            # Constructed before any CollisionPipeline exists, as downstream users (Isaac Lab) do.
+            solver = newton.solvers.SolverVBD(model)
+            sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
+            test.assertEqual(
+                sizes[world_count],
+                newton.CollisionPipeline(model, broad_phase="nxn").soft_rigid_contact_pair_count,
+                f"{globals_kind=} {world_count=}",
+            )
+        test.assertEqual(sizes[4], 4 * sizes[1], f"{globals_kind=}")
+
+
 class TestSolverVBD(unittest.TestCase):
     pass
 
@@ -2822,6 +2872,12 @@ add_function_test(
     TestSolverVBD,
     "test_collect_rigid_contact_forces_reports_surface_points",
     _collect_rigid_contact_forces_reports_surface_points,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_contact_presize_is_world_aware",
+    _soft_contact_presize_is_world_aware,
     devices=devices,
 )
 

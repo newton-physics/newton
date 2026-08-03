@@ -114,9 +114,10 @@ _PROXY_RELAXATION_MODE_BY_NAME = {
 
 @wp.func
 def _reset_world_selected(world: int, world_mask: wp.array[wp.bool]) -> bool:
-    if world >= 0 and world < world_mask.shape[0]:
+    global_world_index = world_mask.shape[0] - 1
+    if world >= 0 and world < global_world_index:
         return world_mask[world]
-    return world < 0 and world_mask.shape[0] == 1 and world_mask[0]
+    return world == -1 and world_mask[global_world_index]
 
 
 @wp.kernel(module="unique", enable_backward=False)

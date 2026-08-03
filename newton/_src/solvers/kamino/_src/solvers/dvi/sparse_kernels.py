@@ -9,16 +9,14 @@ import warp as wp
 
 from ...core.math import FLOAT32_EPS
 from ...core.types import vec6f
+from .kernels import _sync_threads
 from .projections import (
-    contact_trace_preconditioner as _contact_trace_preconditioner,
-)
-from .projections import (
-    project_contact_block_update as _project_contact_block_update,
+    contact_diagonal_preconditioner as _contact_diagonal_preconditioner,
 )
 from .projections import (
     project_contact_diagonal_update as _project_contact_diagonal_update,
 )
-from .types import DVIConfigStruct, DVIStatus
+from .types import DVIConfigStruct
 
 wp.set_module_options({"enable_backward": False})
 
@@ -135,436 +133,325 @@ def _sparse_delassus_gemv_rows(
     wp.atomic_add(y, row_start[wid] + row, acc)
 
 
-@wp.func
-def _apply_limit_offset_update(
-    limit_id: int32,
-    # Matrix data:
-    num_nzb: wp.array[int32],
-    nzb_start: wp.array[int32],
-    nzb_coords: wp.array2d[int32],
-    nzb_values: wp.array[vec6f],
-    row_start: wp.array[int32],
-    col_start: wp.array[int32],
-    # Active limits:
+@wp.kernel
+def _map_active_limits(
     limits_model_active: wp.array[int32],
     limits_wid: wp.array[int32],
     limits_lid: wp.array[int32],
-    limits_nzb_offsets: wp.array[int32],
-    # Problem data:
-    problem_vio: wp.array[int32],
-    problem_nl: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_diag: wp.array[float32],
-    problem_P: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    eta: wp.array[float32],
-    body_space: wp.array[float32],
-    block_iteration: int32,
-    contact_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
-    # Outputs:
-    solution_lambdas: wp.array[float32],
+    limits_bids: wp.array[wp.vec2i],
+    problem_lio: wp.array[int32],
+    problem_uio: wp.array[int32],
+    limit_indices: wp.array[int32],
+    inequality_bodies: wp.array[wp.vec2i],
 ):
-    if limit_id >= limits_model_active[0]:
-        return
-
-    wid = limits_wid[limit_id]
-    cfg = solver_config[wid]
-    if block_iteration >= cfg.block_iterations or contact_iteration >= cfg.contact_iterations:
-        return
-
-    lid = limits_lid[limit_id]
-    if lid >= problem_nl[wid]:
-        return
-
-    row = problem_lcgo[wid] + lid
-    vec_idx = problem_vio[wid] + row
-    eta_idx = row_start[wid] + row
-    value = eta[eta_idx] * solution_lambdas[vec_idx]
-    matrix_end = nzb_start[wid] + num_nzb[wid]
-    nzb_offset = limits_nzb_offsets[limit_id]
-    for k in range(2):
-        nzb_idx = nzb_offset + k
-        if nzb_idx < matrix_end:
-            block_coord = nzb_coords[nzb_idx]
-            if block_coord[0] == row:
-                block = nzb_values[nzb_idx]
-                x_idx_base = col_start[wid] + block_coord[1]
-                for j in range(6):
-                    value += block[j] * body_space[x_idx_base + j]
-
-    v_i = value + problem_v_f[vec_idx]
-    P_i = problem_P[vec_idx]
-    D_ii_raw = wp.abs(problem_diag[vec_idx]) * P_i * P_i
-    D_ii = D_ii_raw + cfg.regularization + FLOAT32_EPS
-
-    # Each active limit row references at most two body blocks. The resulting
-    # matrix-free velocity is followed by projection onto the nonnegative ray.
-    lambda_limit_old = solution_lambdas[vec_idx]
-    lambda_limit_new = lambda_limit_old
-    if D_ii_raw > FLOAT32_EPS:
-        lambda_limit_new = wp.max(0.0, lambda_limit_old - cfg.omega * v_i / D_ii)
-    solution_lambdas[vec_idx] = lambda_limit_new
+    """Map active limits into the unified inequality topology."""
+    limit_id = wp.tid()
+    if limit_id < limits_model_active[0]:
+        wid = limits_wid[limit_id]
+        lid = limits_lid[limit_id]
+        limit_indices[problem_lio[wid] + lid] = limit_id
+        inequality_bodies[problem_uio[wid] + lid] = limits_bids[limit_id]
 
 
 @wp.kernel
-def _solve_dvi_sparse_limits_offset_update(
-    # Matrix data:
-    num_nzb: wp.array[int32],
-    nzb_start: wp.array[int32],
-    nzb_coords: wp.array2d[int32],
-    nzb_values: wp.array[vec6f],
-    row_start: wp.array[int32],
-    col_start: wp.array[int32],
-    # Active limits:
-    limits_model_active: wp.array[int32],
-    limits_wid: wp.array[int32],
-    limits_lid: wp.array[int32],
-    limits_nzb_offsets: wp.array[int32],
-    # Problem data:
-    problem_vio: wp.array[int32],
+def _map_active_contacts(
+    contacts_model_active: wp.array[int32],
+    contacts_wid: wp.array[int32],
+    contacts_cid: wp.array[int32],
+    contacts_bid_AB: wp.array[wp.vec2i],
     problem_nl: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_diag: wp.array[float32],
-    problem_P: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    eta: wp.array[float32],
-    body_space: wp.array[float32],
-    block_iteration: int32,
-    contact_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
-    # Outputs:
-    solution_lambdas: wp.array[float32],
+    problem_cio: wp.array[int32],
+    problem_uio: wp.array[int32],
+    contact_indices: wp.array[int32],
+    inequality_bodies: wp.array[wp.vec2i],
 ):
-    _apply_limit_offset_update(
-        wp.tid(),
-        num_nzb,
-        nzb_start,
-        nzb_coords,
-        nzb_values,
-        row_start,
-        col_start,
-        limits_model_active,
-        limits_wid,
-        limits_lid,
-        limits_nzb_offsets,
-        problem_vio,
-        problem_nl,
-        problem_lcgo,
-        problem_diag,
-        problem_P,
-        problem_v_f,
-        eta,
-        body_space,
-        block_iteration,
-        contact_iteration,
-        solver_config,
-        solution_lambdas,
-    )
+    """Map active contacts into the unified inequality topology."""
+    contact_id = wp.tid()
+    if contact_id < contacts_model_active[0]:
+        wid = contacts_wid[contact_id]
+        cid = contacts_cid[contact_id]
+        contact_indices[problem_cio[wid] + cid] = contact_id
+        inequality_bodies[problem_uio[wid] + problem_nl[wid] + cid] = contacts_bid_AB[contact_id]
 
 
 @wp.func
-def _apply_contact_offset_update(
-    contact_id: int32,
-    # Matrix data:
-    num_nzb: wp.array[int32],
-    nzb_start: wp.array[int32],
-    nzb_coords: wp.array2d[int32],
-    nzb_values: wp.array[vec6f],
-    row_start: wp.array[int32],
-    col_start: wp.array[int32],
-    # Active contacts:
-    contacts_model_active: wp.array[int32],
-    contacts_wid: wp.array[int32],
-    contacts_cid: wp.array[int32],
-    contacts_nzb_offsets: wp.array[int32],
-    # Problem data:
-    problem_vio: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    problem_diag: wp.array[float32],
-    problem_P: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    eta: wp.array[float32],
-    body_space: wp.array[float32],
-    contact_block_inv: wp.array[mat33f],
-    block_iteration: int32,
-    contact_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
-    # Outputs:
-    solution_lambdas: wp.array[float32],
-):
-    if contact_id >= contacts_model_active[0]:
-        return
+def _inequalities_share_dynamic_body(a: wp.vec2i, b: wp.vec2i) -> bool:
+    shares_body = bool(False)
+    if a[0] >= int32(0) and (a[0] == b[0] or a[0] == b[1]):
+        shares_body = bool(True)
+    if a[1] >= int32(0) and (a[1] == b[0] or a[1] == b[1]):
+        shares_body = bool(True)
+    return shares_body
 
-    wid = contacts_wid[contact_id]
-    cfg = solver_config[wid]
-    if block_iteration >= cfg.block_iterations or contact_iteration >= cfg.contact_iterations:
-        return
 
-    cid = contacts_cid[contact_id]
-    nc = problem_nc[wid]
-    if cid >= nc:
-        return
-
-    ccio = problem_ccgo[wid] + int32(3) * cid
-    row_0 = ccio + int32(0)
-    row_1 = ccio + int32(1)
-    row_2 = ccio + int32(2)
-    vio = problem_vio[wid]
-    ccio_v = vio + ccio
-    row_offset = row_start[wid]
-
-    value_0 = eta[row_offset + row_0] * solution_lambdas[ccio_v + 0]
-    value_1 = eta[row_offset + row_1] * solution_lambdas[ccio_v + 1]
-    value_2 = eta[row_offset + row_2] * solution_lambdas[ccio_v + 2]
-
-    matrix_end = nzb_start[wid] + num_nzb[wid]
-    nzb_offset = contacts_nzb_offsets[contact_id]
-    for k in range(3):
-        nzb_idx = nzb_offset + k
-        block = nzb_values[nzb_idx]
-        x_idx_base = col_start[wid] + nzb_coords[nzb_idx, 1]
-        acc = float32(0.0)
-        for j in range(6):
-            acc += block[j] * body_space[x_idx_base + j]
-        if k == 0:
-            value_0 += acc
-        elif k == 1:
-            value_1 += acc
-        else:
-            value_2 += acc
-
-    second_body_offset = nzb_offset + 3
-    if second_body_offset < matrix_end and nzb_coords[second_body_offset, 0] == row_0:
-        for k in range(3):
-            nzb_idx = second_body_offset + k
-            block = nzb_values[nzb_idx]
-            x_idx_base = col_start[wid] + nzb_coords[nzb_idx, 1]
-            acc = float32(0.0)
-            for j in range(6):
-                acc += block[j] * body_space[x_idx_base + j]
-            if k == 0:
-                value_0 += acc
-            elif k == 1:
-                value_1 += acc
-            else:
-                value_2 += acc
-
-    mu_c = problem_mu[problem_cio[wid] + cid]
-    v_t0 = value_0 + problem_v_f[ccio_v + 0]
-    v_t1 = value_1 + problem_v_f[ccio_v + 1]
-    v_n = value_2 + problem_v_f[ccio_v + 2] + mu_c * wp.sqrt(v_t0 * v_t0 + v_t1 * v_t1)
-    v_c = vec3f(v_t0, v_t1, v_n)
-
-    P_0 = problem_P[ccio_v + 0]
-    P_1 = problem_P[ccio_v + 1]
-    P_2 = problem_P[ccio_v + 2]
-    D_00 = wp.abs(problem_diag[ccio_v + 0]) * P_0 * P_0
-    D_11 = wp.abs(problem_diag[ccio_v + 1]) * P_1 * P_1
-    D_22 = wp.abs(problem_diag[ccio_v + 2]) * P_2 * P_2
-
-    # Contact topology offsets select the one or two body blocks contributing
-    # to this [t0, t1, n] row triplet before its Coulomb-cone projection.
-    lambda_contact_old = vec3f(
-        solution_lambdas[ccio_v + 0],
-        solution_lambdas[ccio_v + 1],
-        solution_lambdas[ccio_v + 2],
-    )
-    D_diag = _contact_trace_preconditioner(vec3f(D_00, D_11, D_22))
-    if cfg.contact_block_preconditioner:
-        lambda_projected = _project_contact_block_update(
-            lambda_contact_old,
-            v_c,
-            D_diag,
-            contact_block_inv[problem_cio[wid] + cid],
-            cfg.regularization,
-            cfg.contact_jacobi_omega,
-            mu_c,
-        )
-    else:
-        lambda_projected = _project_contact_diagonal_update(
-            lambda_contact_old,
-            v_c,
-            D_diag,
-            cfg.regularization,
-            cfg.contact_jacobi_omega,
-            mu_c,
-        )
-    lambda_contact_new = lambda_contact_old + cfg.contact_jacobi_relaxation * (lambda_projected - lambda_contact_old)
-
-    solution_lambdas[ccio_v + 0] = lambda_contact_new.x
-    solution_lambdas[ccio_v + 1] = lambda_contact_new.y
-    solution_lambdas[ccio_v + 2] = lambda_contact_new.z
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+return ((int)__ffsll((long long)mask)) - 1;
+#else
+if (mask == 0) return -1;
+int position = 0;
+while ((mask & 1LL) == 0LL) { mask >>= 1; position++; }
+return position;
+#endif
+""")
+def _lowest_set_color(mask: wp.int64) -> wp.int32:
+    """Return the lowest set bit, or -1 when no bit is set."""
+    ...
 
 
 @wp.kernel
-def _solve_dvi_sparse_contacts_offset_update(
-    # Matrix data:
-    num_nzb: wp.array[int32],
-    nzb_start: wp.array[int32],
-    nzb_coords: wp.array2d[int32],
-    nzb_values: wp.array[vec6f],
-    row_start: wp.array[int32],
-    col_start: wp.array[int32],
-    # Active contacts:
-    contacts_model_active: wp.array[int32],
-    contacts_wid: wp.array[int32],
-    contacts_cid: wp.array[int32],
-    contacts_nzb_offsets: wp.array[int32],
-    # Problem data:
-    problem_vio: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    problem_diag: wp.array[float32],
-    problem_P: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    eta: wp.array[float32],
-    body_space: wp.array[float32],
-    contact_block_inv: wp.array[mat33f],
-    block_iteration: int32,
-    contact_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
-    # Outputs:
-    solution_lambdas: wp.array[float32],
-):
-    _apply_contact_offset_update(
-        wp.tid(),
-        num_nzb,
-        nzb_start,
-        nzb_coords,
-        nzb_values,
-        row_start,
-        col_start,
-        contacts_model_active,
-        contacts_wid,
-        contacts_cid,
-        contacts_nzb_offsets,
-        problem_vio,
-        problem_nc,
-        problem_ccgo,
-        problem_cio,
-        problem_mu,
-        problem_diag,
-        problem_P,
-        problem_v_f,
-        eta,
-        body_space,
-        contact_block_inv,
-        block_iteration,
-        contact_iteration,
-        solver_config,
-        solution_lambdas,
-    )
-
-
-@wp.kernel
-def _solve_dvi_sparse_unilateral_offset_update(
-    limits_capacity: int32,
-    # Shared matrix data:
-    num_nzb: wp.array[int32],
-    nzb_start: wp.array[int32],
-    nzb_coords: wp.array2d[int32],
-    nzb_values: wp.array[vec6f],
-    row_start: wp.array[int32],
-    col_start: wp.array[int32],
-    # Active limits:
-    limits_model_active: wp.array[int32],
-    limits_wid: wp.array[int32],
-    limits_lid: wp.array[int32],
-    limits_nzb_offsets: wp.array[int32],
+def _color_mapped_dvi_inequalities(
     problem_nl: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    # Active contacts:
-    contacts_model_active: wp.array[int32],
-    contacts_wid: wp.array[int32],
-    contacts_cid: wp.array[int32],
-    contacts_nzb_offsets: wp.array[int32],
     problem_nc: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    contact_block_inv: wp.array[mat33f],
-    # Shared problem data:
-    problem_vio: wp.array[int32],
-    problem_diag: wp.array[float32],
-    problem_P: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    eta: wp.array[float32],
-    body_space: wp.array[float32],
-    block_iteration: int32,
-    contact_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
-    # Outputs:
-    solution_lambdas: wp.array[float32],
+    problem_uio: wp.array[int32],
+    inequality_bodies: wp.array[wp.vec2i],
+    body_color_masks: wp.array[wp.uint64],
+    inequality_colors: wp.array[int32],
+    inequality_num_colors: wp.array[int32],
+    inequality_ids_by_color: wp.array[int32],
+    inequality_color_starts: wp.array[int32],
 ):
-    """Fused limit + contact projection sweep.
+    """Greedily color one world per thread using per-body 64-bit masks.
 
-    Threads ``[0, limits_capacity)`` update joint limits; the remainder update
-    contacts. Both read the same ``body_space`` and write disjoint regions of
-    ``solution_lambdas``, so merging them into one launch is equivalent to the
-    two separate sweeps while removing a per-iteration kernel launch.
+    This favors the many-small-world workload. Unusually high-degree graphs
+    that exhaust 64 colors use a slower pairwise fallback without a color cap.
+    The same pass emits compact color ranges shared by dense and sparse PGS.
     """
+    wid = wp.tid()
+    nu = problem_nl[wid] + problem_nc[wid]
+    uio = problem_uio[wid]
+    num_colors = int32(0)
+    for uid in range(nu):
+        pair = inequality_bodies[uio + uid]
+        forbidden = wp.uint64(0)
+        if pair[0] >= int32(0):
+            forbidden |= body_color_masks[pair[0]]
+        if pair[1] >= int32(0):
+            forbidden |= body_color_masks[pair[1]]
+
+        color = _lowest_set_color(wp.int64(forbidden) ^ wp.int64(-1))
+        if color < int32(0):
+            # All lower colors conflict, so only overflow colors need scanning.
+            color = int32(64)
+            found = int32(0)
+            while found == int32(0) and color < nu:
+                conflict = int32(0)
+                for previous_uid in range(uid):
+                    if inequality_colors[uio + previous_uid] == color:
+                        previous_pair = inequality_bodies[uio + previous_uid]
+                        if _inequalities_share_dynamic_body(pair, previous_pair):
+                            conflict = int32(1)
+                            break
+                if conflict == int32(0):
+                    found = int32(1)
+                else:
+                    color += int32(1)
+        inequality_colors[uio + uid] = color
+        num_colors = wp.max(num_colors, color + int32(1))
+        if color < int32(64):
+            color_bit = wp.uint64(1) << wp.uint64(color)
+            if pair[0] >= int32(0):
+                body_color_masks[pair[0]] |= color_bit
+            if pair[1] >= int32(0):
+                body_color_masks[pair[1]] |= color_bit
+
+    inequality_num_colors[wid] = num_colors
+
+    schedule_offset = uio + wid
+    for color in range(num_colors + int32(1)):
+        inequality_color_starts[schedule_offset + color] = int32(0)
+    for uid in range(nu):
+        color = inequality_colors[uio + uid]
+        inequality_color_starts[schedule_offset + color + int32(1)] += int32(1)
+    for color in range(num_colors):
+        inequality_color_starts[schedule_offset + color + int32(1)] += inequality_color_starts[schedule_offset + color]
+    for uid in range(nu):
+        color = inequality_colors[uio + uid]
+        slot = inequality_color_starts[schedule_offset + color]
+        inequality_ids_by_color[uio + slot] = uid
+        inequality_color_starts[schedule_offset + color] = slot + int32(1)
+    previous = int32(0)
+    for color in range(num_colors + int32(1)):
+        cursor = inequality_color_starts[schedule_offset + color]
+        inequality_color_starts[schedule_offset + color] = previous
+        previous = cursor
+
+
+@wp.kernel
+def _solve_dvi_sparse_inequalities_pgs(
+    bsm_num_nzb: wp.array[int32],
+    bsm_nzb_start: wp.array[int32],
+    bsm_nzb_coords: wp.array2d[int32],
+    bsm_nzb_values: wp.array[vec6f],
+    jacobian_nzb_values: wp.array[vec6f],
+    bsm_row_start: wp.array[int32],
+    bsm_col_start: wp.array[int32],
+    limit_nzb_offsets: wp.array[int32],
+    contact_nzb_offsets: wp.array[int32],
+    limit_indices: wp.array[int32],
+    contact_indices: wp.array[int32],
+    problem_nl: wp.array[int32],
+    problem_nc: wp.array[int32],
+    problem_lio: wp.array[int32],
+    problem_cio: wp.array[int32],
+    problem_uio: wp.array[int32],
+    problem_lcgo: wp.array[int32],
+    problem_ccgo: wp.array[int32],
+    problem_vio: wp.array[int32],
+    problem_mu: wp.array[float32],
+    problem_P: wp.array[float32],
+    problem_v_f: wp.array[float32],
+    problem_diag: wp.array[float32],
+    eta: wp.array[float32],
+    inequality_num_colors: wp.array[int32],
+    inequality_ids_by_color: wp.array[int32],
+    inequality_color_starts: wp.array[int32],
+    block_iteration: int32,
+    solver_config: wp.array[DVIConfigStruct],
+    body_space: wp.array[float32],
+    solution_lambdas: wp.array[float32],
+):
+    """Apply one conflict-free sparse PGS schedule to every inequality."""
     tid = wp.tid()
-    if tid < limits_capacity:
-        _apply_limit_offset_update(
-            tid,
-            num_nzb,
-            nzb_start,
-            nzb_coords,
-            nzb_values,
-            row_start,
-            col_start,
-            limits_model_active,
-            limits_wid,
-            limits_lid,
-            limits_nzb_offsets,
-            problem_vio,
-            problem_nl,
-            problem_lcgo,
-            problem_diag,
-            problem_P,
-            problem_v_f,
-            eta,
-            body_space,
-            block_iteration,
-            contact_iteration,
-            solver_config,
-            solution_lambdas,
-        )
-    else:
-        _apply_contact_offset_update(
-            tid - limits_capacity,
-            num_nzb,
-            nzb_start,
-            nzb_coords,
-            nzb_values,
-            row_start,
-            col_start,
-            contacts_model_active,
-            contacts_wid,
-            contacts_cid,
-            contacts_nzb_offsets,
-            problem_vio,
-            problem_nc,
-            problem_ccgo,
-            problem_cio,
-            problem_mu,
-            problem_diag,
-            problem_P,
-            problem_v_f,
-            eta,
-            body_space,
-            contact_block_inv,
-            block_iteration,
-            contact_iteration,
-            solver_config,
-            solution_lambdas,
-        )
+    threads_per_world = int32(wp.block_dim())
+    lane = tid % threads_per_world
+    wid = tid / threads_per_world
+    cfg = solver_config[wid]
+    if block_iteration >= int32(0) and block_iteration >= cfg.max_alternating_iterations:
+        return
+    nl = problem_nl[wid]
+    nc = problem_nc[wid]
+    nu = nl + nc
+    if nu == 0:
+        return
+    lio = problem_lio[wid]
+    cio = problem_cio[wid]
+    uio = problem_uio[wid]
+    schedule_offset = uio + wid
+    lcgo = problem_lcgo[wid]
+    ccgo = problem_ccgo[wid]
+    vio = problem_vio[wid]
+    row_start = bsm_row_start[wid]
+    col_start = bsm_col_start[wid]
+    matrix_end = bsm_nzb_start[wid] + bsm_num_nzb[wid]
+    for _sweep in range(cfg.inequality_sweeps_per_iteration):
+        for color in range(inequality_num_colors[wid]):
+            color_start = inequality_color_starts[schedule_offset + color]
+            color_end = inequality_color_starts[schedule_offset + color + int32(1)]
+            color_slot = color_start + lane
+            while color_slot < color_end:
+                uid = inequality_ids_by_color[uio + color_slot]
+                # An inequality without mapped topology has no Jacobian offsets
+                # to read, so it is skipped rather than dereferenced.
+                mapped_id = int32(-1)
+                if uid < nl:
+                    mapped_id = limit_indices[lio + uid]
+                else:
+                    mapped_id = contact_indices[cio + uid - nl]
+                if mapped_id >= int32(0):
+                    if uid < nl:
+                        limit_id = mapped_id
+                        row = lcgo + uid
+                        vec_idx = vio + row
+                        nzb_offset = limit_nzb_offsets[limit_id]
+                        limit_value = eta[row_start + row] * solution_lambdas[vec_idx]
+                        for k in range(2):
+                            nzb_idx = nzb_offset + k
+                            if nzb_idx < matrix_end and bsm_nzb_coords[nzb_idx, 0] == row:
+                                block = bsm_nzb_values[nzb_idx]
+                                x_idx_base = col_start + bsm_nzb_coords[nzb_idx, 1]
+                                for j in range(6):
+                                    limit_value += block[j] * body_space[x_idx_base + j]
+                        limit_value += problem_v_f[vec_idx]
+                        P_i = problem_P[vec_idx]
+                        diagonal_raw = wp.abs(problem_diag[vec_idx]) * P_i * P_i
+                        lambda_limit_old = solution_lambdas[vec_idx]
+                        lambda_limit_new = lambda_limit_old
+                        if diagonal_raw > FLOAT32_EPS:
+                            lambda_limit_new = wp.max(
+                                float32(0.0),
+                                lambda_limit_old
+                                - cfg.omega * limit_value / (diagonal_raw + cfg.regularization + FLOAT32_EPS),
+                            )
+                        limit_delta_body = P_i * (lambda_limit_new - lambda_limit_old)
+                        solution_lambdas[vec_idx] = lambda_limit_new
+                        for k in range(2):
+                            nzb_idx = nzb_offset + k
+                            if nzb_idx < matrix_end and bsm_nzb_coords[nzb_idx, 0] == row:
+                                x_idx_base = col_start + bsm_nzb_coords[nzb_idx, 1]
+                                jacobian_row = jacobian_nzb_values[nzb_idx]
+                                for j in range(6):
+                                    body_space[x_idx_base + j] += jacobian_row[j] * limit_delta_body
+                    else:
+                        cid = uid - nl
+                        row = ccgo + int32(3) * cid
+                        vec_idx = vio + row
+                        contact_id = mapped_id
+                        nzb_offset = contact_nzb_offsets[contact_id]
+                        contact_value = vec3f(0.0)
+                        for component in range(3):
+                            contact_value[component] = (
+                                eta[row_start + row + component] * solution_lambdas[vec_idx + component]
+                            )
+                        block_count = int32(3)
+                        second_body_offset = nzb_offset + int32(3)
+                        if second_body_offset < matrix_end and bsm_nzb_coords[second_body_offset, 0] == row:
+                            block_count = int32(6)
+                        for local_block in range(block_count):
+                            nzb_idx = nzb_offset + local_block
+                            component = local_block % int32(3)
+                            block = bsm_nzb_values[nzb_idx]
+                            x_idx_base = col_start + bsm_nzb_coords[nzb_idx, 1]
+                            for j in range(6):
+                                contact_value[component] += block[j] * body_space[x_idx_base + j]
+                        contact_value += vec3f(problem_v_f[vec_idx], problem_v_f[vec_idx + 1], problem_v_f[vec_idx + 2])
+                        mu = problem_mu[cio + cid]
+                        contact_value.z += mu * wp.sqrt(
+                            contact_value.x * contact_value.x + contact_value.y * contact_value.y
+                        )
+                        lambda_contact_old = vec3f(
+                            solution_lambdas[vec_idx],
+                            solution_lambdas[vec_idx + 1],
+                            solution_lambdas[vec_idx + 2],
+                        )
+                        contact_diagonal = vec3f(
+                            wp.abs(problem_diag[vec_idx]) * problem_P[vec_idx] * problem_P[vec_idx],
+                            wp.abs(problem_diag[vec_idx + 1]) * problem_P[vec_idx + 1] * problem_P[vec_idx + 1],
+                            wp.abs(problem_diag[vec_idx + 2]) * problem_P[vec_idx + 2] * problem_P[vec_idx + 2],
+                        )
+                        lambda_contact_new = _project_contact_diagonal_update(
+                            lambda_contact_old,
+                            contact_value,
+                            _contact_diagonal_preconditioner(contact_diagonal),
+                            cfg.regularization,
+                            cfg.omega,
+                            mu,
+                        )
+                        contact_delta = lambda_contact_new - lambda_contact_old
+                        contact_delta_body = vec3f(
+                            problem_P[vec_idx] * contact_delta.x,
+                            problem_P[vec_idx + 1] * contact_delta.y,
+                            problem_P[vec_idx + 2] * contact_delta.z,
+                        )
+                        solution_lambdas[vec_idx] = lambda_contact_new.x
+                        solution_lambdas[vec_idx + 1] = lambda_contact_new.y
+                        solution_lambdas[vec_idx + 2] = lambda_contact_new.z
+                        body_group = int32(0)
+                        while body_group < block_count:
+                            nzb_idx = nzb_offset + body_group
+                            x_idx_base = col_start + bsm_nzb_coords[nzb_idx, 1]
+                            row_0 = jacobian_nzb_values[nzb_idx]
+                            row_1 = jacobian_nzb_values[nzb_idx + 1]
+                            row_2 = jacobian_nzb_values[nzb_idx + 2]
+                            for j in range(6):
+                                body_space[x_idx_base + j] += (
+                                    row_0[j] * contact_delta_body.x
+                                    + row_1[j] * contact_delta_body.y
+                                    + row_2[j] * contact_delta_body.z
+                                )
+                            body_group += int32(3)
+                color_slot += threads_per_world
+            _sync_threads()
 
 
 @wp.kernel
@@ -628,6 +515,11 @@ def _set_sparse_bilateral_diagonal(
     wid, row = wp.tid()
 
     njc = problem_njc[wid]
+    if njc == 0:
+        if row == 0:
+            bilateral_D[bilateral_mio[wid]] = float32(1.0)
+            bilateral_P[bilateral_vio[wid]] = float32(1.0)
+        return
     if row >= njc:
         return
 
@@ -638,316 +530,6 @@ def _set_sparse_bilateral_diagonal(
     p = wp.sqrt(1.0 / (diag + FLOAT32_EPS))
     bilateral_P[bvio + row] = p
     bilateral_D[bmio + njc * row + row] = p * diag * p + float32(7.0e-7)
-
-
-@wp.kernel
-def _compute_sparse_contact_block_inverse(
-    # Inputs:
-    model_info_bodies_offset: wp.array[int32],
-    model_bodies_inv_m_i: wp.array[float32],
-    data_bodies_inv_I_i: wp.array[mat33f],
-    jacobian_cts_nzb_start: wp.array[int32],
-    jacobian_cts_num_nzb: wp.array[int32],
-    jacobian_cts_nzb_coords: wp.array2d[int32],
-    jacobian_cts_nzb_values: wp.array[vec6f],
-    problem_nc: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_P: wp.array[float32],
-    solver_config: wp.array[DVIConfigStruct],
-    max_num_nzb: int32,
-    # Outputs:
-    contact_block_inv: wp.array[mat33f],
-):
-    wid, cid = wp.tid()
-
-    nc = problem_nc[wid]
-    cio = problem_cio[wid]
-    if cid >= nc:
-        return
-
-    cfg = solver_config[wid]
-    if not cfg.contact_block_preconditioner:
-        contact_block_inv[cio + cid] = mat33f(0.0)
-        return
-
-    ccgo = problem_ccgo[wid]
-    ccio = ccgo + int32(3) * cid
-    nzb_start = jacobian_cts_nzb_start[wid]
-    num_nzb = jacobian_cts_num_nzb[wid]
-    pvio = problem_vio[wid]
-
-    D = mat33f(0.0)
-
-    for block_id_i in range(max_num_nzb):
-        if block_id_i >= num_nzb:
-            continue
-
-        global_block_id_i = nzb_start + block_id_i
-        block_coords_i = jacobian_cts_nzb_coords[global_block_id_i]
-        local_i = block_coords_i[0] - ccio
-        if local_i < 0 or local_i >= int32(3):
-            continue
-
-        block_i = jacobian_cts_nzb_values[global_block_id_i]
-        Jv_i = vec3f(block_i[0], block_i[1], block_i[2])
-        Jw_i = vec3f(block_i[3], block_i[4], block_i[5])
-        p_i = problem_P[pvio + ccio + local_i]
-
-        for block_id_j in range(max_num_nzb):
-            if block_id_j >= num_nzb:
-                continue
-
-            global_block_id_j = nzb_start + block_id_j
-            block_coords_j = jacobian_cts_nzb_coords[global_block_id_j]
-            local_j = block_coords_j[0] - ccio
-            if local_j < 0 or local_j >= int32(3) or block_coords_i[1] != block_coords_j[1]:
-                continue
-
-            block_j = jacobian_cts_nzb_values[global_block_id_j]
-            Jv_j = vec3f(block_j[0], block_j[1], block_j[2])
-            Jw_j = vec3f(block_j[3], block_j[4], block_j[5])
-            p_j = problem_P[pvio + ccio + local_j]
-
-            bid = model_info_bodies_offset[wid] + block_coords_i[1] // int32(6)
-            inv_m = model_bodies_inv_m_i[bid]
-            inv_I = data_bodies_inv_I_i[bid]
-            D[local_i, local_j] += p_i * (inv_m * wp.dot(Jv_i, Jv_j) + wp.dot(Jw_i, inv_I @ Jw_j)) * p_j
-
-    D[0, 0] += cfg.regularization
-    D[1, 1] += cfg.regularization
-    D[2, 2] += cfg.regularization
-
-    diag_max = wp.max(wp.max(wp.abs(D[0, 0]), wp.abs(D[1, 1])), wp.abs(D[2, 2]))
-    if diag_max > FLOAT32_EPS:
-        det = wp.determinant(D)
-        det_min = FLOAT32_EPS * diag_max * diag_max * diag_max
-        if det > det_min:
-            contact_block_inv[cio + cid] = wp.inverse(D)
-            return
-
-    contact_block_inv[cio + cid] = mat33f(0.0)
-
-
-@wp.kernel
-def _solve_dvi_sparse_jacobi_update(
-    # Inputs:
-    problem_dim: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_njc: wp.array[int32],
-    problem_nl: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    problem_diag: wp.array[float32],
-    problem_P: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    state_v_aug: wp.array[float32],
-    contact_block_inv: wp.array[mat33f],
-    iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
-    # Outputs:
-    solution_lambdas: wp.array[float32],
-):
-    wid, tid = wp.tid()
-
-    ncts = problem_dim[wid]
-    if tid >= ncts:
-        return
-
-    cfg = solver_config[wid]
-    if iteration >= cfg.max_iterations:
-        return
-
-    # Every row uses the same matrix-free D * lambda snapshot. Only the first
-    # row of each contact updates its three-row block, preserving Jacobi semantics.
-    vio = problem_vio[wid]
-    v_i = state_v_aug[vio + tid] + problem_v_f[vio + tid]
-    P_i = problem_P[vio + tid]
-    D_ii_raw = wp.abs(problem_diag[vio + tid]) * P_i * P_i
-    D_ii = D_ii_raw + cfg.regularization + FLOAT32_EPS
-
-    njc = problem_njc[wid]
-    if tid < njc:
-        solution_lambdas[vio + tid] += -cfg.omega * v_i / D_ii
-        return
-
-    nl = problem_nl[wid]
-    lcgo = problem_lcgo[wid]
-    lid = tid - lcgo
-    if lid >= 0 and lid < nl:
-        lambda_limit_old = solution_lambdas[vio + tid]
-        lambda_limit_new = lambda_limit_old
-        if D_ii_raw > FLOAT32_EPS:
-            lambda_limit_new = wp.max(0.0, lambda_limit_old - cfg.omega * v_i / D_ii)
-        solution_lambdas[vio + tid] = lambda_limit_new
-        return
-
-    nc = problem_nc[wid]
-    ccgo = problem_ccgo[wid]
-    contact_row = tid - ccgo
-    if contact_row < 0 or contact_row >= int32(3) * nc or contact_row % int32(3) != int32(0):
-        return
-
-    cid = contact_row // int32(3)
-    ccio = ccgo + int32(3) * cid
-    ccio_v = vio + ccio
-    mu_c = problem_mu[problem_cio[wid] + cid]
-
-    v_t0 = state_v_aug[ccio_v + 0] + problem_v_f[ccio_v + 0]
-    v_t1 = state_v_aug[ccio_v + 1] + problem_v_f[ccio_v + 1]
-    v_n = state_v_aug[ccio_v + 2] + problem_v_f[ccio_v + 2] + mu_c * wp.sqrt(v_t0 * v_t0 + v_t1 * v_t1)
-    v_c = vec3f(v_t0, v_t1, v_n)
-
-    P_0 = problem_P[ccio_v + 0]
-    P_1 = problem_P[ccio_v + 1]
-    P_2 = problem_P[ccio_v + 2]
-    D_00 = wp.abs(problem_diag[ccio_v + 0]) * P_0 * P_0
-    D_11 = wp.abs(problem_diag[ccio_v + 1]) * P_1 * P_1
-    D_22 = wp.abs(problem_diag[ccio_v + 2]) * P_2 * P_2
-
-    lambda_contact_old = vec3f(
-        solution_lambdas[ccio_v + 0],
-        solution_lambdas[ccio_v + 1],
-        solution_lambdas[ccio_v + 2],
-    )
-    D_diag = _contact_trace_preconditioner(vec3f(D_00, D_11, D_22))
-    if cfg.contact_block_preconditioner:
-        lambda_projected = _project_contact_block_update(
-            lambda_contact_old,
-            v_c,
-            D_diag,
-            contact_block_inv[problem_cio[wid] + cid],
-            cfg.regularization,
-            cfg.contact_jacobi_omega,
-            mu_c,
-        )
-    else:
-        lambda_projected = _project_contact_diagonal_update(
-            lambda_contact_old,
-            v_c,
-            D_diag,
-            cfg.regularization,
-            cfg.contact_jacobi_omega,
-            mu_c,
-        )
-    lambda_contact_new = lambda_contact_old + cfg.contact_jacobi_relaxation * (lambda_projected - lambda_contact_old)
-
-    solution_lambdas[ccio_v + 0] = lambda_contact_new.x
-    solution_lambdas[ccio_v + 1] = lambda_contact_new.y
-    solution_lambdas[ccio_v + 2] = lambda_contact_new.z
-
-
-@wp.kernel
-def _solve_dvi_sparse_unilateral_jacobi_update(
-    # Inputs:
-    problem_dim: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_njc: wp.array[int32],
-    problem_nl: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    problem_diag: wp.array[float32],
-    problem_P: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    state_v_aug: wp.array[float32],
-    contact_block_inv: wp.array[mat33f],
-    block_iteration: int32,
-    contact_iteration: int32,
-    solver_config: wp.array[DVIConfigStruct],
-    # Outputs:
-    solution_lambdas: wp.array[float32],
-):
-    wid, tid = wp.tid()
-
-    ncts = problem_dim[wid]
-    if tid >= ncts:
-        return
-
-    cfg = solver_config[wid]
-    if block_iteration >= cfg.block_iterations or contact_iteration >= cfg.contact_iterations:
-        return
-
-    njc = problem_njc[wid]
-    if tid < njc:
-        return
-
-    vio = problem_vio[wid]
-    v_i = state_v_aug[vio + tid] + problem_v_f[vio + tid]
-    P_i = problem_P[vio + tid]
-    D_ii_raw = wp.abs(problem_diag[vio + tid]) * P_i * P_i
-    D_ii = D_ii_raw + cfg.regularization + FLOAT32_EPS
-
-    nl = problem_nl[wid]
-    lcgo = problem_lcgo[wid]
-    lid = tid - lcgo
-    if lid >= 0 and lid < nl:
-        lambda_limit_old = solution_lambdas[vio + tid]
-        lambda_limit_new = lambda_limit_old
-        if D_ii_raw > FLOAT32_EPS:
-            lambda_limit_new = wp.max(0.0, lambda_limit_old - cfg.omega * v_i / D_ii)
-        solution_lambdas[vio + tid] = lambda_limit_new
-        return
-
-    nc = problem_nc[wid]
-    ccgo = problem_ccgo[wid]
-    contact_row = tid - ccgo
-    if contact_row < 0 or contact_row >= int32(3) * nc or contact_row % int32(3) != int32(0):
-        return
-
-    cid = contact_row // int32(3)
-    ccio = ccgo + int32(3) * cid
-    ccio_v = vio + ccio
-    mu_c = problem_mu[problem_cio[wid] + cid]
-
-    v_t0 = state_v_aug[ccio_v + 0] + problem_v_f[ccio_v + 0]
-    v_t1 = state_v_aug[ccio_v + 1] + problem_v_f[ccio_v + 1]
-    v_n = state_v_aug[ccio_v + 2] + problem_v_f[ccio_v + 2] + mu_c * wp.sqrt(v_t0 * v_t0 + v_t1 * v_t1)
-    v_c = vec3f(v_t0, v_t1, v_n)
-
-    P_0 = problem_P[ccio_v + 0]
-    P_1 = problem_P[ccio_v + 1]
-    P_2 = problem_P[ccio_v + 2]
-    D_00 = wp.abs(problem_diag[ccio_v + 0]) * P_0 * P_0
-    D_11 = wp.abs(problem_diag[ccio_v + 1]) * P_1 * P_1
-    D_22 = wp.abs(problem_diag[ccio_v + 2]) * P_2 * P_2
-
-    lambda_contact_old = vec3f(
-        solution_lambdas[ccio_v + 0],
-        solution_lambdas[ccio_v + 1],
-        solution_lambdas[ccio_v + 2],
-    )
-    D_diag = _contact_trace_preconditioner(vec3f(D_00, D_11, D_22))
-    if cfg.contact_block_preconditioner:
-        lambda_projected = _project_contact_block_update(
-            lambda_contact_old,
-            v_c,
-            D_diag,
-            contact_block_inv[problem_cio[wid] + cid],
-            cfg.regularization,
-            cfg.contact_jacobi_omega,
-            mu_c,
-        )
-    else:
-        lambda_projected = _project_contact_diagonal_update(
-            lambda_contact_old,
-            v_c,
-            D_diag,
-            cfg.regularization,
-            cfg.contact_jacobi_omega,
-            mu_c,
-        )
-    lambda_contact_new = lambda_contact_old + cfg.contact_jacobi_relaxation * (lambda_projected - lambda_contact_old)
-
-    solution_lambdas[ccio_v + 0] = lambda_contact_new.x
-    solution_lambdas[ccio_v + 1] = lambda_contact_new.y
-    solution_lambdas[ccio_v + 2] = lambda_contact_new.z
 
 
 @wp.kernel
@@ -972,22 +554,3 @@ def _compute_dvi_sparse_solution_vectors(
     solution_v_plus[v_i] = v_plus
     state_v_aug[v_i] = v_plus
     state_s[v_i] = 0.0
-
-
-@wp.kernel
-def _set_dvi_sparse_status_iterations(
-    # Inputs:
-    problem_dim: wp.array[int32],
-    solver_config: wp.array[DVIConfigStruct],
-    # Outputs:
-    solver_status: wp.array[DVIStatus],
-):
-    wid = wp.tid()
-    status = solver_status[wid]
-    if problem_dim[wid] == int32(0):
-        status.iterations = int32(0)
-    else:
-        # Sparse Jacobi currently runs a fixed iteration count; terminal DVI
-        # residuals are computed by the shared dense/sparse status kernel.
-        status.iterations = solver_config[wid].max_iterations
-    solver_status[wid] = status

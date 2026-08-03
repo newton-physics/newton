@@ -857,6 +857,143 @@ def _expand_indexed_primvar(
     return values[indices]
 
 
+def _split_corners_into_vertices(
+    points: np.ndarray,
+    indices: np.ndarray,
+    corner_dirs: np.ndarray,
+    corner_uvs: np.ndarray | None,
+    angle_threshold_deg: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    """Duplicate vertices whose faceVarying corners disagree in normal direction or UV.
+
+    The corners of a vertex are clustered greedily in corner order: a corner joins the
+    first cluster whose mean direction is within ``angle_threshold_deg`` and whose UV
+    matches, otherwise it starts a new cluster. Every cluster becomes one output vertex,
+    numbered by the corner that created it.
+
+    Most vertices resolve to a single cluster, which is decided for all of them at once
+    with array operations; only the vertices that fail that test run the sequential
+    clustering. A vertex whose corner directions all lie within half the threshold angle
+    of their mean lie within the full threshold of each other, so the sequential pass
+    would place every one of them in the first cluster.
+
+    A corner whose angle to the cluster mean is exactly ``angle_threshold_deg`` may fall
+    on either side of the comparison: the dot product is rounded differently depending on
+    the arithmetic used, so which cluster such a corner lands in is not defined beyond
+    "one of the clusters it is within the threshold of".
+
+    Args:
+        points: Source vertex positions, shape [vertex_count, 3].
+        indices: Face-corner vertex indices, shape [corner_count].
+        corner_dirs: Unit corner normals, shape [corner_count, 3].
+        corner_uvs: Per-corner UVs, shape [corner_count, channels], or ``None``.
+        angle_threshold_deg: Maximum angle between a corner normal and its cluster mean [deg].
+
+    Returns:
+        Split positions, the remapped corner indices, the per-vertex normals, and the
+        per-vertex UVs (``None`` when ``corner_uvs`` is ``None``).
+    """
+    corner_count = len(indices)
+    if corner_count == 0:
+        empty_uvs = None if corner_uvs is None else corner_uvs[:0]
+        return points[:0], indices.copy(), np.zeros((0, 3), dtype=np.float32), empty_uvs
+
+    cos_thresh = math.cos(math.radians(angle_threshold_deg))
+    cos_half_thresh = math.cos(math.radians(angle_threshold_deg) * 0.5)
+
+    # Group the corners by vertex; the stable sort keeps corner order inside each group.
+    order = np.argsort(indices, kind="stable")
+    grouped_vertices = indices[order]
+    grouped_dirs = corner_dirs[order]
+    grouped_uvs = None if corner_uvs is None else corner_uvs[order]
+
+    starts = np.flatnonzero(np.concatenate(([True], grouped_vertices[1:] != grouped_vertices[:-1])))
+    group_sizes = np.diff(np.append(starts, corner_count))
+    group_vertices = grouped_vertices[starts]
+    group_of_corner = np.repeat(np.arange(len(starts)), group_sizes)
+
+    # The normalized sum of a group's corner directions is the cluster mean it would end
+    # up with if every corner joined the same cluster.
+    dir_sums = np.add.reduceat(grouped_dirs, starts, axis=0)
+    dir_means = dir_sums / np.clip(np.linalg.norm(dir_sums, axis=1, keepdims=True), 1e-30, None)
+    dots = np.einsum("ij,ij->i", grouped_dirs, dir_means[group_of_corner])
+    single_cluster = np.minimum.reduceat(dots, starts) >= cos_half_thresh
+    if grouped_uvs is not None:
+        same_uv = np.all(grouped_uvs == grouped_uvs[starts][group_of_corner], axis=1)
+        single_cluster &= np.logical_and.reduceat(same_uv, starts)
+
+    # Provisional ids: the single-cluster groups first, then the sequential pass.
+    simple_groups = np.flatnonzero(single_cluster)
+    provisional_of_group = np.full(len(starts), -1, dtype=np.int64)
+    provisional_of_group[simple_groups] = np.arange(len(simple_groups))
+    provisional_of_corner = provisional_of_group[group_of_corner]
+
+    next_id = len(simple_groups)
+    split_creation: list[int] = []
+    split_vertices: list[int] = []
+    split_dir_sums: list[tuple[float, float, float]] = []
+    split_uvs: list[tuple[float, ...]] = []
+    for group in np.flatnonzero(~single_cluster):
+        begin = int(starts[group])
+        end = begin + int(group_sizes[group])
+        source_vertex = int(group_vertices[group])
+        clusters: list[list] = []
+        for corner in range(begin, end):
+            dir_x, dir_y, dir_z = (float(value) for value in grouped_dirs[corner])
+            corner_uv = None if grouped_uvs is None else tuple(grouped_uvs[corner].tolist())
+            for cluster in clusters:
+                sum_x, sum_y, sum_z = cluster[0], cluster[1], cluster[2]
+                # Scalar arithmetic rounds this dot product differently from the
+                # equivalent NumPy expression (which uses FMA and a scaled norm), so a
+                # corner sitting exactly on the threshold can cluster either way.
+                scale = max(math.sqrt(sum_x * sum_x + sum_y * sum_y + sum_z * sum_z), 1e-30)
+                if (sum_x * dir_x + sum_y * dir_y + sum_z * dir_z) / scale < cos_thresh:
+                    continue
+                if corner_uv is not None and cluster[3] != corner_uv:
+                    continue
+                cluster[0] = sum_x + dir_x
+                cluster[1] = sum_y + dir_y
+                cluster[2] = sum_z + dir_z
+                provisional_of_corner[corner] = cluster[4]
+                break
+            else:
+                clusters.append([dir_x, dir_y, dir_z, corner_uv, next_id])
+                provisional_of_corner[corner] = next_id
+                split_creation.append(int(order[corner]))
+                split_vertices.append(source_vertex)
+                if corner_uv is not None:
+                    split_uvs.append(corner_uv)
+                next_id += 1
+        # Cluster order matches the id order assigned above.
+        split_dir_sums.extend((cluster[0], cluster[1], cluster[2]) for cluster in clusters)
+
+    creation_corners = np.concatenate([order[starts[simple_groups]], np.asarray(split_creation, dtype=np.int64)])
+    source_vertices = np.concatenate([group_vertices[simple_groups], np.asarray(split_vertices, dtype=np.int64)])
+    new_dir_sums = np.concatenate(
+        [dir_sums[simple_groups], np.asarray(split_dir_sums, dtype=np.float64).reshape(-1, 3)]
+    )
+
+    # Number the output vertices by the corner that created them, matching the order a
+    # purely sequential pass over the corners would produce.
+    final_of_provisional = np.empty(len(creation_corners), dtype=np.int64)
+    final_of_provisional[np.argsort(creation_corners, kind="stable")] = np.arange(len(creation_corners))
+    provisional_in_final_order = np.argsort(final_of_provisional, kind="stable")
+
+    new_indices = np.empty(corner_count, dtype=indices.dtype)
+    new_indices[order] = final_of_provisional[provisional_of_corner]
+    new_points = points[source_vertices[provisional_in_final_order]]
+    ordered_sums = new_dir_sums[provisional_in_final_order]
+    lengths = np.clip(np.linalg.norm(ordered_sums, axis=1, keepdims=True), 1e-30, None)
+    new_normals = (ordered_sums / lengths).astype(np.float32)
+
+    new_uvs = None
+    if grouped_uvs is not None:
+        split_uv_rows = np.asarray(split_uvs, dtype=grouped_uvs.dtype).reshape(-1, grouped_uvs.shape[1])
+        new_uvs = np.concatenate([grouped_uvs[starts[simple_groups]], split_uv_rows])[provisional_in_final_order]
+
+    return new_points, new_indices, new_normals, new_uvs
+
+
 def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool) -> np.ndarray:
     """Return flattened corner indices for fan-triangulated face-varying data."""
     counts_i32 = np.asarray(counts, dtype=np.int32)
@@ -1473,12 +1610,6 @@ def get_mesh(
                 nlen = np.clip(nlen, 1e-30, None)
                 Ndir = Nfv / nlen
 
-                cos_thresh = np.cos(np.deg2rad(vertex_splitting_angle_threshold_deg))
-
-                # For each original vertex v, we'll keep a list of clusters:
-                # each cluster stores (sum_dir, count, new_vid, uv)
-                clusters_per_v = [[] for _ in range(V)]
-
                 # faceVarying UVs carry one value per corner; if the count does
                 # not match, they can't be indexed per-corner, so drop them
                 # (matching the non-splitting UV path below).
@@ -1493,70 +1624,19 @@ def get_mesh(
                     uvs = None
                     uvs_facevarying = False
 
-                def _corner_uv(v, corner_idx):
-                    if uvs is None:
-                        return None
-                    return uvs[corner_idx] if uvs_facevarying else uvs[v]
+                # Corners that share a smooth normal but carry different faceVarying UVs
+                # lie on a texture seam and must not be merged, or the seam's UVs would
+                # collapse onto one value.
+                if uvs is None:
+                    corner_uvs = None
+                else:
+                    corner_uvs = np.asarray(uvs).reshape(len(uvs), -1)
+                    if not uvs_facevarying:
+                        corner_uvs = corner_uvs[indices]
 
-                new_points = []
-                new_norm_sums = []  # accumulate directions per new vertex id
-                new_indices = np.empty_like(indices)
-                new_uvs = [] if uvs is not None else None
-
-                # Helper to create a new vertex clone from original v
-                def _new_vertex_from(v, n_dir, corner_uv):
-                    new_vid = len(new_points)
-                    new_points.append(points[v])
-                    new_norm_sums.append(n_dir.copy())
-                    clusters_per_v[v].append([n_dir.copy(), 1, new_vid, corner_uv])
-                    if new_uvs is not None:
-                        new_uvs.append(corner_uv)
-                    return new_vid
-
-                # Assign each corner to a cluster (new vertex) based on angular
-                # proximity. Corners that share a smooth normal but carry
-                # different faceVarying UVs lie on a texture seam and must not be
-                # merged, or the seam's UVs would collapse onto one value.
-                for c in range(C):
-                    v = int(indices[c])
-                    n_dir = Ndir[c]
-                    corner_uv = _corner_uv(v, c)
-
-                    clusters = clusters_per_v[v]
-                    assigned = False
-                    # try to match an existing cluster
-                    for cl in clusters:
-                        sum_dir, cnt, new_vid, cluster_uv = cl
-                        # compare with current mean direction (sum_dir normalized)
-                        mean_dir = sum_dir / max(np.linalg.norm(sum_dir), 1e-30)
-                        if float(np.dot(mean_dir, n_dir)) < cos_thresh:
-                            continue
-                        if corner_uv is not None and not np.array_equal(cluster_uv, corner_uv):
-                            continue
-                        # assign to this cluster
-                        cl[0] = sum_dir + n_dir
-                        cl[1] = cnt + 1
-                        new_norm_sums[new_vid] += n_dir
-                        new_indices[c] = new_vid
-                        assigned = True
-                        break
-
-                    if not assigned:
-                        new_vid = _new_vertex_from(v, n_dir, corner_uv)
-                        new_indices[c] = new_vid
-
-                new_points = np.asarray(new_points, dtype=np.float64)
-
-                # Produce per-vertex normalized normals for the new vertices
-                new_norm_sums = np.asarray(new_norm_sums, dtype=np.float64)
-                nn = np.linalg.norm(new_norm_sums, axis=1, keepdims=True)
-                nn = np.clip(nn, 1e-30, None)
-                new_vertex_normals = (new_norm_sums / nn).astype(np.float32)
-
-                points = new_points
-                indices = new_indices
-                normals = new_vertex_normals
-                uvs = new_uvs
+                points, indices, normals, uvs = _split_corners_into_vertices(
+                    points, indices, Ndir, corner_uvs, vertex_splitting_angle_threshold_deg
+                )
                 # Vertex splitting creates a new per-vertex layout (and UVs
                 # if available). Skip the later faceVarying UV split to avoid
                 # dropping/duplicating UVs.
