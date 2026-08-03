@@ -179,8 +179,8 @@ class ConstraintTriangleElastic:
         self.host_stiffnesses = tuple(np.asarray(stiffness, dtype=np.float32).reshape(3) for stiffness in stiffnesses)
 
         for triangle in self.host_triangle_indices:
-            if len(set(triangle)) != 3:
-                raise ValueError("Triangle particle indices must be distinct")
+            if len(triangle) != 3 or len(set(triangle)) != 3:
+                raise ValueError("Triangles must contain exactly three distinct particle indices")
             if any(index < 0 or index >= particle_count for index in triangle):
                 raise ValueError(f"Triangle {triangle} is outside particle_count={particle_count}")
         for inverse_rest in self.host_inverse_rest_matrices:

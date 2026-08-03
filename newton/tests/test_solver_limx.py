@@ -524,6 +524,7 @@ class TestConstraintTriangleElastic(unittest.TestCase):
             ([], [], [], [], 3),
             ([(0, 1, 2)], [], [0.5], [valid_stiffness], 3),
             ([(0, 0, 2)], [identity], [0.5], [valid_stiffness], 3),
+            ([(0, 1, 2, 2)], [identity], [0.5], [valid_stiffness], 3),
             ([(0, 1, 3)], [identity], [0.5], [valid_stiffness], 3),
             ([(0, 1, 2)], [wp.mat22(1.0, 0.0, 0.0, 0.0)], [0.5], [valid_stiffness], 3),
             ([(0, 1, 2)], [wp.mat22(float("nan"), 0.0, 0.0, 1.0)], [0.5], [valid_stiffness], 3),
