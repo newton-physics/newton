@@ -194,6 +194,8 @@ def actuator_coords_from_units(
             coords.extend([angle_val])
         elif dof_type == JointDoFType.SPHERICAL:
             coords.extend([quat_val, quat_val, quat_val, quat_val])
+        elif dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+            coords.extend([angle_val, angle_val, angle_val])
         elif dof_type == JointDoFType.UNIVERSAL:
             coords.extend([angle_val, angle_val])
     return np.asarray(coords)
@@ -232,6 +234,8 @@ def actuator_dofs_from_units(
         elif dof_type == JointDoFType.REVOLUTE:
             dofs.extend([ang_vel_val])
         elif dof_type == JointDoFType.SPHERICAL:
+            dofs.extend([ang_vel_val, ang_vel_val, ang_vel_val])
+        elif dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
             dofs.extend([ang_vel_val, ang_vel_val, ang_vel_val])
         elif dof_type == JointDoFType.UNIVERSAL:
             dofs.extend([ang_vel_val, ang_vel_val])

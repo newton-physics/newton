@@ -136,7 +136,12 @@ def extract_dofs_jacobians(
     verbose: bool = False,
 ) -> list[np.ndarray]:
     if isinstance(jacobians, SparseSystemJacobians):
-        return jacobians._J_cts.bsm.numpy()
+        j_dofs = jacobians._J_dofs.bsm.numpy()
+        num_joint_dofs = model.info.num_joint_dofs.numpy().astype(int)
+        num_body_dofs = model.info.num_body_dofs.numpy().astype(int)
+        return [
+            j_dofs[world_id][: num_joint_dofs[world_id], : num_body_dofs[world_id]] for world_id in range(len(j_dofs))
+        ]
 
     # Retrieve the number of worlds in the model
     num_worlds = model.info.num_worlds

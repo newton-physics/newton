@@ -76,8 +76,20 @@ class TestMuJoCoReset(unittest.TestCase):
     def test_reset_masked_world_only(self):
         """A per-world mask clears the selected world and leaves the others intact."""
         self._poison()
-        mask = wp.array([True, False], dtype=wp.bool, device=self.model.device)
+        mask = wp.array([True, False, True], dtype=wp.bool, device=self.model.device)
         self.solver.reset(self.state_out, world_mask=mask)
+
+        for name, buf in self._cleared_buffers().items():
+            values = buf.numpy()
+            self.assertTrue(np.all(values[0] == 0.0), f"{name} not cleared in masked world 0")
+            self.assertTrue(np.all(values[1] == 7.0), f"{name} wrongly cleared in unmasked world 1")
+
+    def test_reset_deprecates_local_only_mask(self):
+        """Preserve local-only mask behavior through the deprecation period."""
+        self._poison()
+        mask = wp.array([True, False], dtype=wp.bool, device=self.model.device)
+        with self.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
+            self.solver.reset(self.state_out, world_mask=mask)
 
         for name, buf in self._cleared_buffers().items():
             values = buf.numpy()
@@ -94,7 +106,8 @@ class TestMuJoCoReset(unittest.TestCase):
             self.assertTrue(np.all(values == 0.0), f"{name} not cleared in all worlds")
 
     def test_reset_rejects_wrong_length_mask(self):
-        mask = wp.array([True, False, True], dtype=wp.bool, device=self.model.device)
+        """Reject masks without local-world entries plus the global slot."""
+        mask = wp.array([True, False, True, False], dtype=wp.bool, device=self.model.device)
         with self.assertRaises(ValueError):
             self.solver.reset(self.state_out, world_mask=mask)
 
@@ -107,7 +120,7 @@ class TestMuJoCoReset(unittest.TestCase):
         poisoned[0, :] = np.nan
         warmstart.assign(poisoned)
 
-        mask = wp.array([True, False], dtype=wp.bool, device=self.model.device)
+        mask = wp.array([True, False, False], dtype=wp.bool, device=self.model.device)
         self.solver.reset(self.state_out, world_mask=mask)
         self.assertTrue(np.all(np.isfinite(self.solver.mjw_data.qacc_warmstart.numpy())))
 
@@ -118,7 +131,7 @@ class TestMuJoCoReset(unittest.TestCase):
         # Corrupt the live joint coordinates in both worlds.
         self.state_out.joint_q.assign(np.full_like(defaults, 9.0))
 
-        mask = wp.array([True, False], dtype=wp.bool, device=self.model.device)
+        mask = wp.array([True, False, False], dtype=wp.bool, device=self.model.device)
         self.solver.reset(self.state_out, world_mask=mask, flags=StateFlags.JOINT_Q)
 
         result = self.state_out.joint_q.numpy()

@@ -10,6 +10,7 @@ import ctypes
 import functools
 import inspect
 import math
+import os
 import warnings
 import weakref
 from collections import Counter, deque
@@ -53,7 +54,7 @@ from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import deprecate_nonkeyword_arguments
-from ..utils.mesh import MeshAdjacency
+from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -79,6 +80,8 @@ if TYPE_CHECKING:
 else:
     UsdStage = Any
 
+
+_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 _SCALAR_GRAVITY_DEPRECATION_MSG = (
     "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
@@ -374,7 +377,7 @@ class ModelBuilder:
         frame = frame.f_back
         stacklevel = 1
         try:
-            while frame is not None and frame.f_code.co_filename == __file__:
+            while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
                 frame = frame.f_back
                 stacklevel += 1
             return stacklevel
@@ -4531,6 +4534,12 @@ class ModelBuilder:
 
         Returns:
             The index of the added joint.
+
+        .. note::
+            Avoid creating several joints between the same pair of bodies, as this is ambiguous and may be handled
+            differently by different solvers. Bodies created with :meth:`add_body` are implicitly connected to the
+            world by a free joint. To connect a body to the world with a different joint type, use :meth:`add_link`
+            instead.
         """
         if linear_axes is None:
             linear_axes = []
@@ -4566,6 +4575,38 @@ class ModelBuilder:
                 f"Cannot create joint: child body {child} belongs to world {self.body_world[child]}, "
                 f"but current world is {self.current_world}"
             )
+
+        has_parallel_joint = False
+        parallel_free = False
+        for existing_body, existing_joint_idx in (
+            *self.joint_parents.get(child, ()),
+            *self.joint_children.get(child, ()),
+        ):
+            if existing_body == parent:
+                has_parallel_joint = True
+                parallel_free = joint_type == JointType.FREE or self.joint_type[existing_joint_idx] == JointType.FREE
+                if parallel_free:
+                    break
+
+        if has_parallel_joint:
+            if parallel_free:
+                warnings.warn(
+                    f"Adding a {joint_type.name} joint between parent {parent} and "
+                    f"child {child} (label: {self.body_label[child]!r}), but another joint already connects these "
+                    f"bodies. A FREE joint parallel to another joint is inconsistent. Use add_link() "
+                    f"with the appropriate joint type instead of add_body().",
+                    UserWarning,
+                    stacklevel=self._external_warning_stacklevel(),
+                )
+            else:
+                warnings.warn(
+                    f"Adding a {joint_type.name} joint between parent {parent} and "
+                    f"child {child} (label: {self.body_label[child]!r}), but another joint already connects these "
+                    f"bodies. Parallel joints between the same pair of bodies have undefined semantics and may not "
+                    f"behave as expected.",
+                    UserWarning,
+                    stacklevel=self._external_warning_stacklevel(),
+                )
 
         self.joint_type.append(joint_type)
         joint_idx = self.joint_count - 1
@@ -7344,6 +7385,8 @@ class ModelBuilder:
 
             The ``coacd`` and ``vhacd`` methods require additional dependencies (``coacd`` or ``trimesh`` and ``vhacdx`` respectively) to be installed.
             The convex hull approximation requires ``scipy`` to be installed.
+            For ``coacd`` and ``vhacd``, each geometrically connected component
+            is decomposed separately and may produce one or more convex shapes.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -7473,6 +7516,15 @@ class ModelBuilder:
                     import trimesh
 
                 decompositions = {}
+                filtered_shapes_by_shape: dict[int, set[int]] = {}
+                convex_parts_by_shape: dict[int, list[int]] = {}
+                source_shapes = set(shape_indices)
+                # Snapshot source filters before adding convex parts, without materializing compact storage.
+                for shape_a, shape_b in self._shape_collision_filter_pairs:
+                    if shape_a in source_shapes:
+                        filtered_shapes_by_shape.setdefault(shape_a, set()).add(shape_b)
+                    if shape_b in source_shapes:
+                        filtered_shapes_by_shape.setdefault(shape_b, set()).add(shape_a)
 
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
@@ -7481,33 +7533,42 @@ class ModelBuilder:
                     if hash_m in decompositions:
                         decomposition = decompositions[hash_m]
                     else:
-                        if method == "coacd":
-                            cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
-                            coacd_settings = {
-                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
-                                "mcts_nodes": 20,
-                                "mcts_iterations": 5,
-                                "mcts_max_depth": 1,
-                                "merge": False,
-                                "max_convex_hull": mesh.maxhullvert,
-                            }
-                            coacd_settings.update(remeshing_kwargs)
-                            decomposition = coacd.run_coacd(cmesh, **coacd_settings)
-                        else:
-                            tmesh = trimesh.Trimesh(mesh.vertices, mesh.indices.reshape(-1, 3))
-                            vhacd_settings = {
-                                "maxNumVerticesPerCH": mesh.maxhullvert,
-                            }
-                            vhacd_settings.update(remeshing_kwargs)
-                            decomposition = trimesh.decomposition.convex_decomposition(tmesh, **vhacd_settings)
-                            decomposition = [(d["vertices"], d["faces"]) for d in decomposition]
+                        decomposition = []
+                        # Decomposition backends may merge disconnected convex parts into one hull.
+                        for component_vertices, component_faces in split_mesh_components(mesh):
+                            if method == "coacd":
+                                cmesh = coacd.Mesh(component_vertices, component_faces)
+                                coacd_settings = {
+                                    "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                    "mcts_nodes": 20,
+                                    "mcts_iterations": 5,
+                                    "mcts_max_depth": 1,
+                                    "merge": False,
+                                    "max_convex_hull": mesh.maxhullvert,
+                                }
+                                coacd_settings.update(remeshing_kwargs)
+                                decomposition.extend(coacd.run_coacd(cmesh, **coacd_settings))
+                            else:
+                                tmesh = trimesh.Trimesh(component_vertices, component_faces)
+                                vhacd_settings = {
+                                    "maxNumVerticesPerCH": mesh.maxhullvert,
+                                }
+                                vhacd_settings.update(remeshing_kwargs)
+                                component_decomposition = trimesh.decomposition.convex_decomposition(
+                                    tmesh, **vhacd_settings
+                                )
+                                decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         continue
                     # note we need to copy the mesh to avoid modifying the original mesh
-                    self.shape_source[shape] = self.shape_source[shape].copy(
+                    replacement_mesh = self.shape_source[shape].copy(
                         vertices=decomposition[0][0], indices=decomposition[0][1]
                     )
+                    # Decomposition outputs do not provide attributes remapped to the new vertices.
+                    replacement_mesh._normals = None
+                    replacement_mesh._uvs = None
+                    self.shape_source[shape] = replacement_mesh
                     # mark as convex mesh type
                     self.shape_type[shape] = GeoType.CONVEX_MESH
                     if len(decomposition) > 1:
@@ -7515,8 +7576,12 @@ class ModelBuilder:
                         xform = self.shape_transform[shape]
                         color = self.shape_color[shape]
                         custom_attributes = get_shape_custom_attributes(shape)
+                        filtered_shapes = sorted(
+                            filtered_shape
+                            for filtered_shape in filtered_shapes_by_shape.get(shape, ())
+                            if self.shape_body[filtered_shape] != body
+                        )
                         cfg = ModelBuilder.ShapeConfig(
-                            density=0.0,  # do not add extra mass / inertia
                             ke=self.shape_material_ke[shape],
                             kd=self.shape_material_kd[shape],
                             kf=self.shape_material_kf[shape],
@@ -7528,13 +7593,16 @@ class ModelBuilder:
                             kh=self.shape_material_kh[shape],
                             margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
-                            collision_group=self.shape_collision_group[shape],
-                            collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
+                            force_sdf=self.shape_force_sdf[shape],
                         )
                         cfg.flags = self.shape_flags[shape]
+                        cfg.density = 0.0  # do not add extra mass / inertia
+                        cfg.gap = self.shape_gap[shape]
+                        cfg.collision_group = self.shape_collision_group[shape]
+                        cfg.collision_filter_parent = False
                         for i in range(1, len(decomposition)):
                             # add additional convex parts as convex meshes
-                            self.add_shape_convex_hull(
+                            extra_shape = self.add_shape_convex_hull(
                                 body=body,
                                 xform=xform,
                                 mesh=Mesh(decomposition[i][0], decomposition[i][1]),
@@ -7544,6 +7612,11 @@ class ModelBuilder:
                                 label=f"{self.shape_label[shape]}_convex_{i}",
                                 custom_attributes=custom_attributes,
                             )
+                            for filtered_shape in filtered_shapes:
+                                self.add_shape_collision_filter_pair(filtered_shape, extra_shape)
+                                for filtered_part in convex_parts_by_shape.get(filtered_shape, ()):
+                                    self.add_shape_collision_filter_pair(filtered_part, extra_shape)
+                            convex_parts_by_shape.setdefault(shape, []).append(extra_shape)
                     remeshed_shapes.add(shape)
             except Exception as e:
                 if raise_on_failure:
@@ -11146,6 +11219,7 @@ class ModelBuilder:
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             heightfield_meshes = []
+            mesh_keep_alive = []
             for geo in generated_shape_sources:
                 if not geo:
                     geo_sources.append(0)
@@ -11183,6 +11257,11 @@ class ModelBuilder:
                             device=device,
                             bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                         )
+                        # keep mesh alive for the model's lifetime: geometry objects
+                        # can be shared with other builders (see replicate() and
+                        # add_builder()), so the model must not rely on the geometry
+                        # object keeping the finalized wp.Mesh alive
+                        mesh_keep_alive.append(geo.mesh)
                     elif isinstance(geo, Gaussian):
                         finalized_geos[geo_hash] = len(gaussians)
                         gaussians.append(
@@ -11216,6 +11295,7 @@ class ModelBuilder:
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
+            m._mesh_keep_alive = mesh_keep_alive
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)

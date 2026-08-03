@@ -1953,6 +1953,7 @@ def update_solver_options_kernel(
     newton_tolerance: wp.array[float],
     newton_ls_tolerance: wp.array[float],
     newton_ccd_tolerance: wp.array[float],
+    newton_sleep_tolerance: wp.array[float],
     newton_density: wp.array[float],
     newton_viscosity: wp.array[float],
     newton_wind: wp.array[wp.vec3],
@@ -1962,6 +1963,7 @@ def update_solver_options_kernel(
     opt_tolerance: wp.array[float],
     opt_ls_tolerance: wp.array[float],
     opt_ccd_tolerance: wp.array[float],
+    opt_sleep_tolerance: wp.array[float],
     opt_density: wp.array[float],
     opt_viscosity: wp.array[float],
     opt_wind: wp.array[wp.vec3],
@@ -1974,6 +1976,7 @@ def update_solver_options_kernel(
         newton_tolerance: Per-world tolerance values (None if overridden)
         newton_ls_tolerance: Per-world line search tolerance values (None if overridden)
         newton_ccd_tolerance: Per-world CCD tolerance values (None if overridden)
+        newton_sleep_tolerance: Per-world sleep tolerance values (None if overridden)
         newton_density: Per-world medium density values (None if overridden)
         newton_viscosity: Per-world medium viscosity values (None if overridden)
         newton_wind: Per-world wind velocity vectors (None if overridden)
@@ -1982,6 +1985,7 @@ def update_solver_options_kernel(
         opt_tolerance: MuJoCo Warp opt.tolerance array (shape: nworld)
         opt_ls_tolerance: MuJoCo Warp opt.ls_tolerance array (shape: nworld)
         opt_ccd_tolerance: MuJoCo Warp opt.ccd_tolerance array (shape: nworld)
+        opt_sleep_tolerance: MuJoCo Warp opt.sleep_tolerance array (shape: nworld)
         opt_density: MuJoCo Warp opt.density array (shape: nworld)
         opt_viscosity: MuJoCo Warp opt.viscosity array (shape: nworld)
         opt_wind: MuJoCo Warp opt.wind array (shape: nworld)
@@ -2008,6 +2012,9 @@ def update_solver_options_kernel(
 
     if newton_ccd_tolerance:
         opt_ccd_tolerance[worldid] = newton_ccd_tolerance[worldid]
+
+    if newton_sleep_tolerance:
+        opt_sleep_tolerance[worldid] = newton_sleep_tolerance[worldid]
 
     if newton_density:
         opt_density[worldid] = newton_density[worldid]
@@ -3181,6 +3188,159 @@ def reset_world_buffers_kernel(
         act[worldid, i] = 0.0
     if i < xfrc_applied.shape[1]:
         xfrc_applied[worldid, i] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+@wp.kernel(enable_backward=False)
+def reset_sleeping_state_kernel(
+    world_mask: wp.array[wp.bool],
+    clear_overflow: int,
+    nv: int,
+    nbody: int,
+    ntree: int,
+    awake_value: int,
+    sleep_state_static: int,
+    sleep_state_awake: int,
+    body_rootid: wp.array[wp.int32],
+    body_mocapid: wp.array[wp.int32],
+    body_treeid: wp.array[wp.int32],
+    tree_asleep: wp.array2d[wp.int32],
+    tree_awake: wp.array2d[wp.int32],
+    body_awake: wp.array2d[wp.int32],
+    body_awake_ind: wp.array2d[wp.int32],
+    dof_awake_ind: wp.array2d[wp.int32],
+    ntree_awake: wp.array[wp.int32],
+    nbody_awake: wp.array[wp.int32],
+    nv_awake: wp.array[wp.int32],
+    overflow: wp.array[wp.int32],
+):
+    """Wake every tree and rebuild sleep bookkeeping in selected worlds."""
+    worldid, elemid = wp.tid()
+    if world_mask and not world_mask[worldid]:
+        return
+
+    if elemid < ntree:
+        tree_asleep[worldid, elemid] = awake_value
+        tree_awake[worldid, elemid] = 1
+
+    if elemid < nbody:
+        if body_treeid[elemid] < 0:
+            rootid = body_rootid[elemid]
+            if body_mocapid[rootid] < 0:
+                body_awake[worldid, elemid] = sleep_state_static
+            else:
+                body_awake[worldid, elemid] = sleep_state_awake
+        else:
+            body_awake[worldid, elemid] = sleep_state_awake
+        body_awake_ind[worldid, elemid] = elemid
+
+    if elemid < nv:
+        dof_awake_ind[worldid, elemid] = elemid
+
+    if elemid == 0:
+        ntree_awake[worldid] = ntree
+        nbody_awake[worldid] = nbody
+        nv_awake[worldid] = nv
+        if clear_overflow:
+            overflow[worldid] = 0
+
+
+@wp.kernel(enable_backward=False)
+def restore_sleeping_state_kernel(
+    world_mask: wp.array[wp.bool],
+    clear_overflow: int,
+    nv: int,
+    nbody: int,
+    ntree: int,
+    initial_ntree_awake: int,
+    initial_nbody_awake: int,
+    initial_nv_awake: int,
+    initial_tree_asleep: wp.array[wp.int32],
+    initial_tree_awake: wp.array[wp.int32],
+    initial_body_awake: wp.array[wp.int32],
+    initial_body_awake_ind: wp.array[wp.int32],
+    initial_dof_awake_ind: wp.array[wp.int32],
+    tree_asleep: wp.array2d[wp.int32],
+    tree_awake: wp.array2d[wp.int32],
+    body_awake: wp.array2d[wp.int32],
+    body_awake_ind: wp.array2d[wp.int32],
+    dof_awake_ind: wp.array2d[wp.int32],
+    ntree_awake: wp.array[wp.int32],
+    nbody_awake: wp.array[wp.int32],
+    nv_awake: wp.array[wp.int32],
+    overflow: wp.array[wp.int32],
+):
+    """Restore the initial sleep bookkeeping in selected worlds."""
+    worldid, elemid = wp.tid()
+    if world_mask and not world_mask[worldid]:
+        return
+
+    if elemid < ntree:
+        tree_asleep[worldid, elemid] = initial_tree_asleep[elemid]
+        tree_awake[worldid, elemid] = initial_tree_awake[elemid]
+
+    if elemid < nbody:
+        body_awake[worldid, elemid] = initial_body_awake[elemid]
+        body_awake_ind[worldid, elemid] = initial_body_awake_ind[elemid]
+
+    if elemid < nv:
+        dof_awake_ind[worldid, elemid] = initial_dof_awake_ind[elemid]
+
+    if elemid == 0:
+        ntree_awake[worldid] = initial_ntree_awake
+        nbody_awake[worldid] = initial_nbody_awake
+        nv_awake[worldid] = initial_nv_awake
+        if clear_overflow:
+            overflow[worldid] = 0
+
+
+@wp.kernel(enable_backward=False)
+def copy_qpos_and_detect_tree_change_kernel(
+    qpos_new: wp.array2d[wp.float32],
+    tolerance: float,
+    qpos_treeid: wp.array[wp.int32],
+    qpos: wp.array2d[wp.float32],
+    tree_changed: wp.array2d[wp.int32],
+):
+    """Copy converted coordinates and flag trees with external pose edits."""
+    worldid, i = wp.tid()
+    value = qpos_new[worldid, i]
+    if wp.abs(value - qpos[worldid, i]) > tolerance:
+        treeid = qpos_treeid[i]
+        if treeid >= 0:
+            wp.atomic_max(tree_changed, worldid, treeid, 1)
+    qpos[worldid, i] = value
+
+
+@wp.kernel(enable_backward=False)
+def wake_changed_trees_kernel(
+    tree_changed: wp.array2d[wp.int32],
+    ntree: int,
+    awake_value: int,
+    tree_asleep: wp.array2d[wp.int32],
+):
+    """Wake edited trees and every tree in their sleeping-island cycles."""
+    # Negative values mean awake; non-negative values link the next tree in a
+    # sleeping-island cycle. The O(ntree) scan intentionally uses one walker
+    # per world because parallel walkers for overlapping edits could overwrite
+    # a link before a peer reads it.
+    worldid = wp.tid()
+    for treeid in range(ntree):
+        if tree_changed[worldid, treeid] == 0:
+            continue
+
+        asleep_value = tree_asleep[worldid, treeid]
+        if asleep_value < 0:
+            if awake_value < asleep_value:
+                tree_asleep[worldid, treeid] = awake_value
+            continue
+
+        current = treeid
+        for _step in range(ntree + 1):
+            next_tree = tree_asleep[worldid, current]
+            tree_asleep[worldid, current] = awake_value
+            current = next_tree
+            if current == treeid:
+                break
 
 
 @wp.kernel(enable_backward=False)

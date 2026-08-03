@@ -154,6 +154,8 @@ class Example:
         linear_solver: str | None = None,
         linear_solver_maxiter: int = 0,
         use_graph_conditionals: bool = False,
+        sparse: bool = False,
+        asset: str = "dr_legs_with_meshes_and_boxes.usda",
         headless: bool = False,
         record_video: bool = False,
         async_save: bool = False,
@@ -179,7 +181,7 @@ class Example:
 
         # Load the DR Legs USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
-        asset_file = str(asset_path / "dr_legs/usd" / "dr_legs_with_meshes_and_boxes.usda")
+        asset_file = str(asset_path / "dr_legs/usd" / asset)
 
         # Create a model builder from the imported USD
         msg.notif("Constructing builder from imported USD ...")
@@ -234,8 +236,10 @@ class Example:
         config.solver = SolverKamino.Config(dynamics_solver=dynamics_solver)
         config.dt = self.sim_dt
         config.collision_detector.pipeline = "unified"  # Select from {"primitive", "unified"}
-        config.solver.sparse_jacobian = dynamics_solver == "dvi"
-        config.solver.sparse_dynamics = dynamics_solver == "dvi"
+        # DVI requires the sparse path; otherwise honor the explicit --sparse flag.
+        sparse = sparse or dynamics_solver == "dvi"
+        config.solver.sparse_jacobian = sparse
+        config.solver.sparse_dynamics = sparse
         config.solver.integrator = "moreau"  # Select from {"euler", "moreau"}
         config.solver.constraints.alpha = 0.1
         config.solver.constraints.beta = 0.011
@@ -245,10 +249,10 @@ class Example:
         config.solver.padmm.compl_tolerance = 1e-4
         config.solver.padmm.max_iterations = 200
         config.solver.padmm.eta = 1e-5
+        config.solver.padmm.use_acceleration = True
         config.solver.padmm.rho_0 = 0.02  # try 0.02 for Balanced update
         config.solver.padmm.rho_min = 0.05
         config.solver.padmm.penalty_update_method = "fixed"  # try "balanced"
-        config.solver.padmm.use_acceleration = True
         config.solver.padmm.warmstart_mode = "containers"
         config.solver.padmm.contact_warmstart_method = "geom_pair_net_force"
         config.solver.collect_solver_info = False
@@ -258,15 +262,15 @@ class Example:
         config.solver.dynamics.preconditioning = dynamics_solver != "dvi"
         if dynamics_solver == "dvi":
             config.solver.constraints.gamma = 0.015
-            config.solver.dvi.max_iterations = 200
+            config.solver.dynamics.linear_solver_type = "CR"
+            config.solver.dynamics.linear_solver_kwargs = {"maxiter": 9}
+            config.solver.dvi.bilateral_solver_type = "LLTBRCM"
+            config.solver.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
             config.solver.dvi.tolerance = 1e-4
             config.solver.dvi.regularization = 1e-5
-            config.solver.dvi.omega = 0.3
-            config.solver.dvi.block_iterations = 4
-            config.solver.dvi.contact_iterations = 2
-            config.solver.dvi.bilateral_solve_period = 1
-            config.solver.dvi.contact_jacobi_omega = 0.45
-            config.solver.dvi.contact_jacobi_relaxation = 0.9
+            config.solver.dvi.max_alternating_iterations = 4
+            config.solver.dvi.inequality_sweeps_per_iteration = 3
+            config.solver.dvi.bilateral_solve_interval = 1
             config.solver.dvi.warmstart_mode = "containers"
             config.solver.dvi.contact_warmstart_method = "key_and_position_with_net_force_backup"
         config.solver.padmm.use_graph_conditionals = use_graph_conditionals
@@ -522,6 +526,18 @@ if __name__ == "__main__":
         default=True,
         help="Use CUDA graph conditional nodes in iterative solvers",
     )
+    parser.add_argument(
+        "--sparse",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use the sparse Jacobian and sparse dynamics solver path",
+    )
+    parser.add_argument(
+        "--asset",
+        type=str,
+        default="dr_legs_with_meshes_and_boxes.usda",
+        help="dr_legs USD asset filename under dr_legs/usd/",
+    )
     args = parser.parse_args()
 
     # Set global numpy configurations
@@ -559,6 +575,8 @@ if __name__ == "__main__":
         linear_solver=args.linear_solver,
         linear_solver_maxiter=args.linear_solver_maxiter,
         use_graph_conditionals=args.use_graph_conditionals,
+        sparse=args.sparse,
+        asset=args.asset,
         max_steps=args.num_steps,
         implicit_pd=args.implicit_pd,
         gravity=args.gravity,
