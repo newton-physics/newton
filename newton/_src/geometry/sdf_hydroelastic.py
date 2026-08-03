@@ -792,7 +792,8 @@ class HydroelasticSDF:
         Args:
             texture_sdf_data: Compact texture SDF table.
             shape_sdf_index: Per-shape SDF index into texture_sdf_data.
-            shape_data: Per-shape scale and collision margin.
+            shape_data: Per-shape ``(scale_x, scale_y, scale_z, margin)`` values;
+                scale is dimensionless and margin is [m].
             shape_transform: World transforms for each shape.
             shape_gap: Per-shape contact gap (detection threshold) for each shape.
             shape_collision_aabb_lower: Per-shape collision AABB lower bounds.
@@ -1488,7 +1489,7 @@ def get_decode_contacts_kernel(
     read from the contact buffer after being evaluated once during generation.
 
     Args:
-        margin_contact_area: Deprecated compatibility area for speculative
+        margin_contact_area: Deprecated compatibility area [m^2] for speculative
             contact activation stiffness.
         writer_func: Warp function for writing decoded contacts.
 
