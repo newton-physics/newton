@@ -1,13 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Full-surface (edge/face) rigid-soft coupling onto proxy bodies.
-
-Covers ``_harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel``, which reads the
-unified ``soft_contact_indices`` / ``soft_contact_barycentric`` records so a soft edge/face
-contact reacts on a proxy-coupled rigid body. The kernel is launched on one hand-seeded record,
-so the reaction is deterministic and does not depend on SDF collision detection.
-"""
+"""Test full-surface rigid-soft coupling onto proxy bodies."""
 
 import unittest
 
@@ -32,13 +26,7 @@ _VERTS = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.5]])
 
 
 def _run_proxy_harvest(device, corners, bary):
-    """Seed one soft contact record and return the harvested proxy-body wrench.
-
-    ``corners`` is the -1-padded ``vec3i`` of soft particle ids and ``bary`` the matching weights,
-    so ``(p, -1, -1)`` / ``(1, 0, 0)`` is a particle record and ``(p0, p1, p2)`` a face record.
-    Body and particles are static (prev == cur) and damping/friction are zero, so the reaction is
-    a pure normal force at the barycentric contact point.
-    """
+    """Seed one soft contact and return its proxy-body reaction."""
     builder = newton.ModelBuilder()
     builder.gravity = (0.0, 0.0, 0.0)
     inertia = wp.mat33(1.0e-2, 0.0, 0.0, 0.0, 1.0e-2, 0.0, 0.0, 0.0, 1.0e-2)
@@ -106,28 +94,24 @@ def _run_proxy_harvest(device, corners, bary):
 
 
 def _assert_reaction(test, wrench, cp_world, com_world):
-    """The reaction is ke * penetration along -normal, with the matching contact-point torque."""
+    """Verify the expected proxy-body contact reaction."""
     force, torque = wrench[:3], wrench[3:]
     np.testing.assert_allclose(force, [0.0, 0.0, -_KE * _PENETRATION], rtol=2e-4, atol=1e-4)
     np.testing.assert_allclose(torque, np.cross(cp_world - com_world, force), rtol=2e-4, atol=1e-5)
 
 
 def test_face_contact_reacts_on_proxy_body(test, device):
-    """A soft FACE record, dropped by the pre-change per-particle harvest, reacts on the proxy body."""
+    """Verify a soft face contact reacts on the proxy body."""
     _assert_reaction(test, *_run_proxy_harvest(device, [0, 1, 2], [0.6, 0.3, 0.1]))
 
 
 def test_edge_contact_reacts_on_proxy_body(test, device):
-    """A soft EDGE record ``(v0, v1, -1)`` reacts on the proxy body.
-
-    Spans v0 and the lifted v2 so the contact point still depends on the weights; an edge along
-    v0-v1 would lie in z = 0 and be insensitive to them.
-    """
+    """Verify a soft edge contact uses barycentric weights."""
     _assert_reaction(test, *_run_proxy_harvest(device, [0, 2, -1], [0.7, 0.3, 0.0]))
 
 
 def test_particle_contact_reacts_on_proxy_body(test, device):
-    """A particle record ``(p, -1, -1)`` still yields the identical analytic reaction."""
+    """Verify particle contacts preserve proxy-body reactions."""
     _assert_reaction(test, *_run_proxy_harvest(device, [0, -1, -1], [1.0, 0.0, 0.0]))
 
 

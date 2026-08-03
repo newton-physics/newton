@@ -19,7 +19,7 @@
 - Add contact examples for Newton's cradle, a balance bird, and a domino spiral
 - Add `ViewerUSD(points_as_spheres=...)` to render `log_points` particles as a `UsdGeom.PointInstancer` of sphere prototypes; enabled by default (opt out with `points_as_spheres=False` for flat `UsdGeom.Points` splats)
 - Add list-of-pattern and explicit-index selectors to `ArticulationView`.
-- Add full-surface (edge/face) rigid-soft contact support to `SolverVBD` proxy-body coupling under `SolverCoupledProxy`, using either the contact buffer passed to the coupled solver or the proxy's own `collision_pipeline`. Proxy particles do not support full-surface contacts and raise.
+- Add full-surface (edge/face) rigid-soft contacts to `SolverVBD` proxy-body coupling under `SolverCoupledProxy` through shared or proxy-local collision pipelines. Proxy-particle coupling rejects full-surface contacts.
 - Add `newton[onnx]` for ONNX policy inference through Warp-NN; `ControllerNeuralMLP`, `ControllerNeuralLSTM`, and RL policy examples can run exported `.onnx` policies without requiring PyTorch for ONNX execution.
 - Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts
 - Add masked rigid-body reset support to `SolverVBD`; particle resets are not yet supported. (#3256)
@@ -49,7 +49,7 @@
 ### Changed
 
 - Decide collider visibility from USD `purpose` and visibility rather than from a bound render material. A collider whose `purpose` resolves to `default` is viewport geometry and is drawn; mark it `guide` to state that it is collision-only. Previously an unrelated visual elsewhere in the scene could make a collider vanish. `force_show_colliders` and `hide_collision_shapes` are unchanged.
-- Preserve full-surface (edge/face) soft-contact records for capable `SolverCoupled` entries, and gracefully drop them for sub-solvers that consume only particle contacts. A record is kept only when the entry owns every corner it references, so one spanning two entries is dropped by both.
+- Filter shared full-surface soft contacts per `SolverCoupled` entry, preserving them for capable solvers and dropping them for particle-only solvers or records spanning entries.
 - Disable the implicit positive Dahl-friction defaults in `SolverVBD.register_custom_attributes()` (deprecated in 1.3.0): `vbd:dahl_eps_max` and `vbd:dahl_tau` now default to zero, and Dahl cable friction is enabled only where both are authored positive. Pass `dahl_defaults_enabled=True` to temporarily restore the old defaults; the compatibility mode will be removed in a future release.
 - Keep the authored render mesh when `ModelBuilder.add_usd()` approximates a collider. `physics:approximation` is scoped to collision, so a Mesh that is both render geometry and a collider now imports as an approximated collision shape plus a visual shape carrying the original topology, instead of replacing the render mesh with the approximation. This raises `Model.shape_count` for such prims: iterate on `ShapeFlags.COLLIDE_SHAPES` rather than assuming one shape per collider prim. The visual shape adds no mass and no collision, appends after the originals so existing shape indices and `path_shape_map` entries are unchanged, and is skipped when `load_visual_shapes=False`.
 - Compile tiled camera render kernels with CUDA fast math by default for faster rendering; set `SensorTiledCamera.render_config.enable_fast_math = False` for bit-exact, IEEE-precise output.

@@ -3019,7 +3019,7 @@ def test_edge_face_reacts_on_rigid_body(test, device):
 
 
 def test_edge_face_reacts_through_coupled_proxy(test, device):
-    """Propagate a detected face contact through coupled proxy harvesting."""
+    """Verify a detected face contact propagates through proxy coupling."""
     model, body = _build_sphere_on_fixed_soft_triangle(device)
     model.gravity.zero_()
     coupled = SolverCoupledProxy(
@@ -3252,11 +3252,7 @@ def test_flag_off_is_inert(test, device):
 
 
 def test_full_surface_rejected_for_vbd_proxy_particles(test, device):
-    """SolverVBD's proxy-particle harvest fails loud on full-surface contacts.
-
-    The harvest kernel consumes per-particle records only, so an edge/face reaction on a proxy
-    particle would be dropped without a word. Standalone SolverVBD is unaffected -- this only
-    guards the SolverCoupledProxy path (coupling_* hooks)."""
+    """Reject full-surface contacts during VBD proxy-particle harvesting."""
     builder = newton.ModelBuilder()
     b = builder.add_body()
     builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
