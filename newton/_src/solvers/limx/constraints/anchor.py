@@ -106,13 +106,6 @@ class ConstraintAnchor:
         block_indices = [matrix.block_index(index, index) for index in self.host_indices]
         self.hessian_block_indices = wp.array(block_indices, dtype=int, device=self.device)
 
-    def append_hessian(self, builder: BlockCsrBuilder) -> None:
-        """Append the fixed projective-dynamics Hessian blocks."""
-        if builder.row_count != self.particle_count:
-            raise ValueError("Constraint and block matrix particle counts differ")
-        for index, stiffness in zip(self.host_indices, self.host_stiffnesses, strict=True):
-            builder.add_scaled_identity(index, index, stiffness)
-
     def accumulate_force(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:
         """Add anchor forces evaluated at ``positions`` to ``output``."""
         self._validate_runtime_arrays(positions, output)

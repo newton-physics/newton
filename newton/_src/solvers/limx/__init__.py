@@ -6,7 +6,7 @@
 from .constraints import ConstraintAnchor, ConstraintDistance
 from .linear_solver import PcgSolver
 from .operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
-from .solver_limx import SolverLIMX
+from .solver_newton import SolverLIMX
 
 __all__ = [
     "CompositeLinearOperator",

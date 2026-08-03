@@ -141,16 +141,6 @@ class ConstraintDistance:
         ]
         self.hessian_block_indices = wp.array2d(block_indices, dtype=int, device=self.device)
 
-    def append_hessian(self, builder: BlockCsrBuilder) -> None:
-        """Append the fixed projective-dynamics Hessian blocks."""
-        if builder.row_count != self.particle_count:
-            raise ValueError("Constraint and block matrix particle counts differ")
-        for (particle_i, particle_j), stiffness in zip(self.host_index_pairs, self.host_stiffnesses, strict=True):
-            builder.add_scaled_identity(particle_i, particle_i, stiffness)
-            builder.add_scaled_identity(particle_i, particle_j, -stiffness)
-            builder.add_scaled_identity(particle_j, particle_i, -stiffness)
-            builder.add_scaled_identity(particle_j, particle_j, stiffness)
-
     def accumulate_force(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:
         """Add distance-spring forces evaluated at ``positions`` to ``output``."""
         self._validate_runtime_arrays(positions, output)

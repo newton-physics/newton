@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Implicit particle solver using decoupled LIMX constraints and PCG."""
+"""Projected-Newton particle solver using block-CSR elasticity and PCG."""
 
 from __future__ import annotations
 
@@ -76,13 +76,14 @@ def _finish_step(
 
 
 class SolverLIMX(SolverBase):
-    r"""Implicit particle solver with block-CSR elasticity and matrix-free dynamics.
+    r"""Implicit projected-Newton particle solver.
 
-    Static constraints evaluate their own forces and assemble a fixed
-    projective-dynamics Hessian approximation. The resulting ``3 x 3``
-    block-CSR system is solved independently with block-Jacobi PCG. Dynamic
-    constraints, such as future collision terms, can add matrix-free force,
-    Hessian-vector, and diagonal contributions through ``dynamic_operator``.
+    Static constraints assemble forces and analytic positive-semidefinite
+    Hessian blocks at the current Newton iterate. Their fixed topology is
+    stored in a ``3 x 3`` block-CSR matrix whose values are rebuilt before
+    every PCG solve. Dynamic constraints, such as future collision terms, can
+    add matrix-free force, Hessian-vector, and diagonal contributions through
+    ``dynamic_operator``.
     """
 
     def __init__(
@@ -94,14 +95,14 @@ class SolverLIMX(SolverBase):
         velocity_damping: float = 1.0,
         dynamic_operator: Any | None = None,
     ):
-        """Create a LIMX particle solver.
+        """Create a LIMX projected-Newton particle solver.
 
         Args:
             model: Particle-only model containing active, positive-mass particles.
-            constraints: Static constraint batches that provide force and
-                fixed-Hessian assembly methods.
-            nonlinear_iterations: Nonlinear position iterations per step.
-            linear_iterations: Fixed PCG iterations per nonlinear iteration.
+            constraints: Static constraint batches that provide current-position
+                force and Hessian assembly methods.
+            nonlinear_iterations: Newton position iterations per step.
+            linear_iterations: Fixed PCG iterations per Newton iteration.
             velocity_damping: Per-step velocity multiplier.
             dynamic_operator: Optional matrix-free dynamic constraint operator.
         """
@@ -135,8 +136,11 @@ class SolverLIMX(SolverBase):
                 raise ValueError("Every constraint must match the model particle count")
             if getattr(constraint, "device", None) != self.device:
                 raise ValueError("Every constraint must use the model device")
-            constraint.append_hessian(matrix_builder)
+            constraint.append_hessian_structure(matrix_builder)
         self.static_matrix = matrix_builder.finalize(self.device)
+        for constraint in self.constraints:
+            constraint.bind_hessian(self.static_matrix)
+
         self.operator = CompositeLinearOperator(
             masses=model.particle_mass,
             static_matrix=self.static_matrix,
@@ -194,6 +198,7 @@ class SolverLIMX(SolverBase):
 
         inv_dt_squared = 1.0 / (dt * dt)
         for _ in range(self.nonlinear_iterations):
+            self.static_matrix.clear_values()
             wp.launch(
                 _initialize_rhs,
                 dim=model.particle_count,
@@ -207,9 +212,14 @@ class SolverLIMX(SolverBase):
                 device=self.device,
             )
             for constraint in self.constraints:
-                constraint.accumulate_force(self.iterate_positions, self.rhs)
+                constraint.accumulate_force_and_hessian(
+                    self.iterate_positions,
+                    self.rhs,
+                    self.static_matrix.values,
+                )
             self.dynamic_operator.accumulate_force(self.iterate_positions, self.rhs)
 
+            self.static_matrix.update_diagonal()
             self.operator.prepare(self.iterate_positions, dt)
             self.linear_solver.solve(
                 self.operator,

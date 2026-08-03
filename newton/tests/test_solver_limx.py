@@ -12,7 +12,7 @@ from newton._src.solvers.limx.constraints.anchor import ConstraintAnchor
 from newton._src.solvers.limx.constraints.distance import ConstraintDistance
 from newton._src.solvers.limx.linear_solver import PcgSolver
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
-from newton._src.solvers.limx.solver_limx import SolverLIMX
+from newton._src.solvers.limx.solver_newton import SolverLIMX
 
 
 class TestBlockCsr(unittest.TestCase):
@@ -490,6 +490,30 @@ class TestSolverLIMX(unittest.TestCase):
         self.assertTrue(np.isfinite(velocities).all())
         self.assertLess(float(np.max(current_edge_lengths)), 2.0 * float(np.max(rest_lengths)))
         self.assertGreater(positions[center_index, 2], initial_positions[center_index, 2] - 0.5 * 9.81)
+
+    def test_current_position_hessian_does_not_lock_transverse_prediction(self):
+        builder = newton.ModelBuilder(up_axis="Z")
+        builder.add_particles(
+            pos=[wp.vec3(0.0), wp.vec3(0.5, 0.0, 0.0)],
+            vel=[wp.vec3(0.0), wp.vec3(0.0, 5.0, 0.0)],
+            mass=[1.0, 1.0],
+            radius=[0.01, 0.01],
+        )
+        model = builder.finalize(device="cpu")
+        model.set_gravity((0.0, 0.0, 0.0))
+        constraints = [
+            ConstraintAnchor([0], [wp.vec3(0.0)], [1.0e8], 2, "cpu"),
+            ConstraintDistance([(0, 1)], [0.5], [1.0e4], 2, "cpu"),
+        ]
+        solver = SolverLIMX(model, constraints, nonlinear_iterations=1, linear_iterations=20)
+        state_in = model.state()
+        state_out = model.state()
+
+        solver.step(state_in, state_out, None, None, 0.1)
+
+        positions = state_out.particle_q.numpy()
+        self.assertGreater(positions[1, 1], 0.4)
+        np.testing.assert_allclose(positions[0], [0.0, 0.0, 0.0], atol=1.0e-5)
 
     def test_public_exports(self):
         self.assertIs(newton.solvers.SolverLIMX, SolverLIMX)
