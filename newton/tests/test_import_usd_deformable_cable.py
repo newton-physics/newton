@@ -1017,6 +1017,31 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertTrue(non_adjacent_pair_filtered(schema_resolvers=[SchemaResolverPhysx()]))
         self.assertFalse(non_adjacent_pair_filtered())
 
+    def test_cable_self_collision_newton_over_physx_precedence(self):
+        """A cable authoring both attributes resolves newton:selfCollisionEnabled over the PhysX one.
+
+        With both resolvers active, the Newton value wins regardless of the authored PhysX value, so
+        the segments are filtered iff the Newton value is False.
+        """
+        from pxr import Sdf
+
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.4, 0.0, 1.0)]
+
+        def non_adjacent_pair_filtered(newton_value, physx_value):
+            stage = _deformable_stage()
+            prim = _add_cable_curve(stage, "/World/Cable", pts).GetPrim()
+            prim.CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(newton_value)
+            prim.CreateAttribute("physxArticulation:enabledSelfCollisions", Sdf.ValueTypeNames.Bool).Set(physx_value)
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()])
+            b0, _ = group_range(builder, "cable", "/World/Cable", "body")
+            return self._shape_pair(builder, b0, b0 + 2) in set(builder.shape_collision_filter_pairs)
+
+        # Newton True beats PhysX False -> self-collision enabled -> not filtered.
+        self.assertFalse(non_adjacent_pair_filtered(newton_value=True, physx_value=False))
+        # Newton False beats PhysX True -> self-collision disabled -> filtered.
+        self.assertTrue(non_adjacent_pair_filtered(newton_value=False, physx_value=True))
+
     def test_cable_schema_attrs_collect_all_resolvers(self):
         """Cable import records schema attrs from every active resolver, even for non-colliding cables.
 
