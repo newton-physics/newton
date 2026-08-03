@@ -86,7 +86,7 @@ dihedral_indices = interior_edges[:, [2, 3, 0, 1]]
 
 Newton edge rows are `[o0, o1, v0, v1]`. For consistently oriented triangles,
 `o0` belongs to the triangle containing directed edge `v0 -> v1`, so the
-column permutation above matches the Ai-Phyiscs convention exactly. Boundary
+column permutation above matches the reference repository's convention exactly. Boundary
 edges are excluded because they have no second opposite vertex.
 
 Every dihedral registers all sixteen ordered particle-pair block coordinates.
@@ -177,7 +177,7 @@ H_exact = k [J^T J + delta_theta Hessian(theta)].
 ```
 
 The residual-weighted second term is indefinite in general. The first version
-follows Ai-Phyiscs and drops that complete term:
+follows the reference implementation and drops that complete term:
 
 ```text
 H_ij_plus = k outer(J_i, J_j).

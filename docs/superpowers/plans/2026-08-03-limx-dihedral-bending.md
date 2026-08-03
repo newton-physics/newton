@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an Ai-Phyiscs-style four-particle dihedral-angle bending constraint to LIMX and enable it in the CUDA hanging-cloth example.
+**Goal:** Add a four-particle dihedral-angle bending constraint to LIMX and enable it in the CUDA hanging-cloth example.
 
 **Architecture:** `ConstraintDihedralBending` stores fixed four-particle topology and rest angles, evaluates exact wrapped-angle forces at the current Newton iterate, and assembles sixteen Gauss-Newton PSD 3-by-3 Hessian blocks per hinge. The existing solver, block-CSR matrix, block-Jacobi PCG, dynamic operator, and cross-frame warm start remain unchanged.
 
