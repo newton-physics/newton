@@ -474,12 +474,13 @@ MJCF import compiles the effective ``contype`` / ``conaffinity`` pair matrix
 into Newton collision groups plus exact sparse exclusions. The original
 32-bit values are also retained as ``model.mujoco.contype`` and
 ``model.mujoco.conaffinity`` custom attributes. When every selected collision
-shape has those imported attributes,
+shape has those imported attributes from one MJCF import,
 ``use_mujoco_contacts=True`` forwards them verbatim when all Newton pair
 filters are already covered by the masks, same-body filtering, or body-wide
-MuJoCo ``<exclude>`` elements. A narrower Newton pair filter instead triggers
-the exact native-graph conversion below. Preserved masks remain authoritative
-over later Newton collision-group edits.
+MuJoCo ``<exclude>`` elements. A narrower Newton pair filter or a selection
+that combines independent MJCF imports instead triggers the exact native-graph
+conversion below. Preserved masks remain authoritative over later Newton
+collision-group edits within a single import.
 
 For native Newton models, :class:`~newton.solvers.SolverMuJoCo` instead
 compiles the signed collision groups and pair filters into MuJoCo mask bits.

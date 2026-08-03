@@ -41,7 +41,9 @@ from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..solver import SolverBase
 from . import kernels
 from .collision_masks import (
+    MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
     MUJOCO_COLLISION_MASK_UNSET,
+    NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT,
     compile_newton_collision_graph,
     mujoco_mask_to_signed,
 )
@@ -884,6 +886,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:conaffinity",
                 mjcf_attribute_name="conaffinity",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="collision_mask_domain",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int64,
+                default=MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
+                namespace="mujoco",
             )
         )
         builder.add_custom_attribute(
@@ -4985,11 +4997,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     @staticmethod
     def _compile_newton_collision_masks(model: Model, selected_shapes: np.ndarray):
         """Compile selected Newton groups and filters into MuJoCo masks."""
-        local_a, local_b = np.triu_indices(selected_shapes.shape[0], 1)
-        candidate_pairs = np.column_stack((selected_shapes[local_a], selected_shapes[local_b]))
-        filtered = model.shape_collision_filter_mask(candidate_pairs)
-        local_filter_pairs = np.column_stack((local_a[filtered], local_b[filtered]))
         groups = model.shape_collision_group.numpy()[selected_shapes]
+        if selected_shapes.shape[0] > NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT:
+            return compile_newton_collision_graph(groups)
+
+        # Group edges are derived by the compiler; only sparse explicit filters need local indices.
+        filter_pairs = model.shape_collision_filter_pairs_array()
+        if filter_pairs.shape[0]:
+            to_local = np.full(model.shape_count, -1, dtype=np.int64)
+            to_local[selected_shapes] = np.arange(selected_shapes.shape[0], dtype=np.int64)
+            local_filter_pairs = to_local[filter_pairs]
+            local_filter_pairs = local_filter_pairs[np.all(local_filter_pairs >= 0, axis=1)]
+        else:
+            local_filter_pairs = np.empty((0, 2), dtype=np.int64)
         return compile_newton_collision_graph(groups, excluded_pairs=local_filter_pairs)
 
     @staticmethod
@@ -5510,6 +5530,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         shape_mjc_contype = get_custom_attribute("contype")
         shape_mjc_conaffinity = get_custom_attribute("conaffinity")
+        shape_mjc_collision_mask_domain = get_custom_attribute("collision_mask_domain")
         shape_condim = get_custom_attribute("condim")
         shape_geom_group = get_custom_attribute("geom_group")
         shape_priority = get_custom_attribute("geom_priority")
@@ -5777,11 +5798,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             colliding_shapes,
         )
 
+        # Source mask bits are comparable only within one independent MJCF import.
         use_preserved_collision_masks = (
             shape_mjc_contype is not None
             and shape_mjc_conaffinity is not None
+            and shape_mjc_collision_mask_domain is not None
             and np.all(shape_mjc_contype[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
             and np.all(shape_mjc_conaffinity[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
+            and np.all(shape_mjc_collision_mask_domain[colliding_shapes] != MUJOCO_COLLISION_MASK_DOMAIN_UNSET)
+            and np.unique(shape_mjc_collision_mask_domain[colliding_shapes]).shape[0] <= 1
             and self._preserved_masks_cover_collision_filters(
                 model,
                 colliding_shapes,

@@ -21,7 +21,7 @@ from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_conv
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
-from ..solvers.mujoco.collision_masks import compile_collision_masks
+from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_KD,
     DEFAULT_LIMIT_KE,
@@ -382,6 +382,16 @@ def parse_mjcf(
     # Register the MuJoCo custom attributes needed to preserve imported model
     # properties. The operation is idempotent.
     SolverMuJoCo.register_custom_attributes(builder)
+    # MuJoCo mask bits have source-local meaning, so independent imports need distinct domains.
+    collision_mask_domain_key = "mujoco:collision_mask_domain"
+    collision_mask_domain_attr = builder.custom_attributes[collision_mask_domain_key]
+    collision_mask_domain = (
+        max(
+            (int(value) for value in collision_mask_domain_attr.values.values()),
+            default=MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
+        )
+        + 1
+    )
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
@@ -1000,6 +1010,7 @@ def parse_mjcf(
                     custom_attributes["mujoco:contype"] = contype & 0xFFFFFFFF
                 if "mujoco:conaffinity" in builder.custom_attributes:
                     custom_attributes["mujoco:conaffinity"] = conaffinity & 0xFFFFFFFF
+                custom_attributes[collision_mask_domain_key] = collision_mask_domain
             if has_solref_mode and shape_builder is builder:
                 # Authored solref → RAW (forwarded verbatim); unauthored →
                 # MJCF_DEFAULT (force-space scaling is strictly opt-in for

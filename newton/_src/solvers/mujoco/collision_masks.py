@@ -13,6 +13,12 @@ import numpy as np
 MUJOCO_COLLISION_MASK_UNSET = np.iinfo(np.int64).min
 """Sentinel for Newton shapes without preserved MuJoCo collision masks."""
 
+MUJOCO_COLLISION_MASK_DOMAIN_UNSET = -1
+"""Sentinel for Newton shapes without an imported MuJoCo mask domain."""
+
+NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT = 256
+NEWTON_COLLISION_MASK_MAX_EXCLUDED_PAIR_COUNT = 1024
+
 
 def mujoco_mask_to_signed(value: int) -> int:
     """Return a 32-bit MuJoCo mask as its signed integer representation."""
@@ -601,8 +607,8 @@ def compile_newton_collision_graph(
     *,
     excluded_pairs: Sequence[tuple[int, int]] | np.ndarray = (),
     max_bits: int = 32,
-    max_shape_count: int | None = 256,
-    max_excluded_pair_count: int | None = 1024,
+    max_shape_count: int | None = NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT,
+    max_excluded_pair_count: int | None = NEWTON_COLLISION_MASK_MAX_EXCLUDED_PAIR_COUNT,
 ) -> CollisionGraphCompileResult:
     """Compile Newton groups and exclusions into exact MuJoCo masks when possible.
 
@@ -826,7 +832,10 @@ def verify_newton_collision_graph_compilation(
 
 
 __all__ = [
+    "MUJOCO_COLLISION_MASK_DOMAIN_UNSET",
     "MUJOCO_COLLISION_MASK_UNSET",
+    "NEWTON_COLLISION_MASK_MAX_EXCLUDED_PAIR_COUNT",
+    "NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT",
     "CollisionGraphCompileResult",
     "CollisionMaskCompileResult",
     "compile_collision_masks",
