@@ -17,7 +17,7 @@ reviews:
   path_instructions:
     - path: "**"
       instructions: |
-        Follow changelog.d/README.md. Check that a normal pull request adds one
+        Follow changelog/README.md. Check that a normal pull request adds one
         logical Towncrier fragment set, or one .skip fragment for a change with
         no user-facing impact, and does not edit CHANGELOG.md directly. A
         numeric fragment identifier must refer to a GitHub issue, not the pull

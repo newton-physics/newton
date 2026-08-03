@@ -166,8 +166,8 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 3. Load the pending or released changelog source by mode:
    - **Pre-release / RC**: pending user-facing changes are the `.md` fragments
      on the resolved head plus legacy `[Unreleased]` entries until the first
-     Towncrier release. Enumerate `changelog.d/*.md` with
-     `git ls-tree -r --name-only <head> -- changelog.d`, exclude `README.md`,
+     Towncrier release. Enumerate `changelog/*.md` with
+     `git ls-tree -r --name-only <head> -- changelog`, exclude `README.md`,
      and read each file with `git show <head>:<path>`. Inventory `.skip` files
      separately. Read `CHANGELOG.md` with `git show <head>:CHANGELOG.md`; legacy
      entries, when present, are between
@@ -205,7 +205,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
    - For each pending fragment, find the commit that added its exact path:
      ```bash
      git log --reverse --diff-filter=A --format='%H|%s|%cs' \
-       <base-ref>..<head-ref> -- changelog.d/<fragment-filename>
+       <base-ref>..<head-ref> -- changelog/<fragment-filename>
      ```
      Numeric identifiers link to issues, not necessarily to the implementing
      pull request, so the fragment-addition commit is the authoritative join.
@@ -214,7 +214,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
      shell source, then search exact text across both storage forms:
      ```bash
      git log --reverse -S"$entry_text" \
-       --format='%H|%s|%cs' <base-ref>..<head-ref> -- CHANGELOG.md changelog.d
+       --format='%H|%s|%cs' <base-ref>..<head-ref> -- CHANGELOG.md changelog
      ```
      The first commit that is not a Towncrier build, synchronization, or another
      changelog-only edit usually is the code change associated with the entry.
@@ -588,7 +588,7 @@ Never pass `--public`. Never file a destination the user did not choose.
 
 - GH ref: `\bGH-(\d+)` — word boundary prevents matching inside other identifiers.
 - Bare PR ref: `(?<![\w/])#(\d+)\b` — Newton entries occasionally reference PR numbers as `#NNNN`. Treat as a GH ref candidate.
-- Pending fragment filename: `changelog.d/(ISSUE|+SLUG-RANDOM).TYPE[.COUNTER].md`.
+- Pending fragment filename: `changelog/(ISSUE|+SLUG-RANDOM).TYPE[.COUNTER].md`.
 - Towncrier insertion marker: `<!-- towncrier release notes start -->`.
 - CHANGELOG subsection headers: `### Added`, `### Changed`, `### Deprecated`, `### Removed`, `### Fixed`.
 - Symbol extraction from entry text: backtick-quoted `newton.X`, `newton.X.Y`, `ClassName.method`, bare `ClassName` (capitalized identifier), bare `snake_case_name()`. The FIRST backtick-quoted symbol in the bullet is usually the primary subject.

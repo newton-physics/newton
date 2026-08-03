@@ -5,9 +5,9 @@ description: Use when auditing Newton changelog fragments, building a dated rele
 
 # Newton Release Changelog
 
-Pending user-facing changes live in Towncrier fragments under `changelog.d/`.
+Pending user-facing changes live in Towncrier fragments under `changelog/`.
 `CHANGELOG.md` keeps immutable dated history and is generated only on a release
-branch. Follow `changelog.d/README.md` as the command and format authority.
+branch. Follow `changelog/README.md` as the command and format authority.
 
 ## Audit pending changes
 
@@ -47,8 +47,8 @@ uvx --from towncrier==25.8.0 towncrier build --draft \
   --version X.Y.Z --date YYYY-MM-DD
 uvx --from towncrier==25.8.0 towncrier build --yes \
   --version X.Y.Z --date YYYY-MM-DD
-git rm --ignore-unmatch "changelog.d/*.skip"
-git add -A CHANGELOG.md changelog.d
+git rm --ignore-unmatch "changelog/*.skip"
+git add -A CHANGELOG.md changelog
 ```
 
 Review and approve the draft before running the mutating command. Towncrier
@@ -68,7 +68,7 @@ After tagging:
 1. Create a changelog-only branch from current `main`.
 2. Cherry-pick the exact Towncrier build commit from `release-X.Y`.
 3. Confirm fragments deleted by the release disappear while fragments added to
-   `main` after the branch cut remain under `changelog.d/`.
+   `main` after the branch cut remain under `changelog/`.
 4. Confirm the dated section matches the release tag and older history is
    unchanged.
 5. Open a changelog-only pull request labeled `release-management`.
@@ -80,10 +80,10 @@ path-level deletions are what preserve main-only fragments.
 
 ```bash
 uv run --no-project python scripts/changelog_policy.py validate
-git diff v<latest-release> -- CHANGELOG.md changelog.d
-git diff --cached --name-status -- CHANGELOG.md changelog.d
+git diff v<latest-release> -- CHANGELOG.md changelog
+git diff --cached --name-status -- CHANGELOG.md changelog
 rg -ni "removed|deprecated|in favor of|use .* instead|renam|replac|default|breaking" \
-  CHANGELOG.md changelog.d
+  CHANGELOG.md changelog
 ```
 
 Confirm that `[Unreleased]` is empty after the first migration, no dated history

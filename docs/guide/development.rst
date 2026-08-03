@@ -604,7 +604,7 @@ documentation.
 Changelog
 ---------
 
-Normal pull requests add one logical fragment set under ``changelog.d/``
+Normal pull requests add one logical fragment set under ``changelog/``
 instead of editing ``CHANGELOG.md``. Use a GitHub issue number as the
 identifier when one exists, or a readable identifier beginning with ``+`` for
 work without an issue. For example:
@@ -630,7 +630,7 @@ Use a one-line ``.skip`` fragment for work with no user-facing impact.
 Multiline entries, multiple categories, same-category counters, creation
 commands, validation, and Towncrier's non-mutating ``--draft`` preview are
 documented in the `changelog fragment guide
-<https://github.com/newton-physics/newton/blob/main/changelog.d/README.md>`__.
+<https://github.com/newton-physics/newton/blob/main/changelog/README.md>`__.
 
 Style Guide
 -----------

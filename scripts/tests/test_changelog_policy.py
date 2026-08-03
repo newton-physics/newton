@@ -78,15 +78,15 @@ class ChangelogPolicyTest(unittest.TestCase):
     def test_requires_one_logical_fragment_for_main(self):
         """Require one identifier while allowing several categories and counters."""
         accepted = [
-            changelog_policy.Change("A", PurePosixPath("changelog.d/3607.added.md")),
-            changelog_policy.Change("A", PurePosixPath("changelog.d/3607.fixed.md")),
-            changelog_policy.Change("A", PurePosixPath("changelog.d/3607.fixed.1.md")),
+            changelog_policy.Change("A", PurePosixPath("changelog/3607.added.md")),
+            changelog_policy.Change("A", PurePosixPath("changelog/3607.fixed.md")),
+            changelog_policy.Change("A", PurePosixPath("changelog/3607.fixed.1.md")),
         ]
         rejected = [
             *accepted,
             changelog_policy.Change(
                 "A",
-                PurePosixPath("changelog.d/+another-a1b2c3d4.changed.md"),
+                PurePosixPath("changelog/+another-a1b2c3d4.changed.md"),
             ),
         ]
 
@@ -106,11 +106,11 @@ class ChangelogPolicyTest(unittest.TestCase):
     def test_allows_multiple_backport_fragment_identifiers(self):
         """Allow a release backport to carry user-facing and skip fragments."""
         changes = [
-            changelog_policy.Change("A", PurePosixPath("changelog.d/3607.fixed.md")),
-            changelog_policy.Change("A", PurePosixPath("changelog.d/3610.fixed.md")),
+            changelog_policy.Change("A", PurePosixPath("changelog/3607.fixed.md")),
+            changelog_policy.Change("A", PurePosixPath("changelog/3610.fixed.md")),
             changelog_policy.Change(
                 "A",
-                PurePosixPath("changelog.d/+support-a1b2c3d4.skip"),
+                PurePosixPath("changelog/+support-a1b2c3d4.skip"),
             ),
         ]
 
@@ -133,7 +133,7 @@ class ChangelogPolicyTest(unittest.TestCase):
             ),
             changelog_policy.Change(
                 "A",
-                PurePosixPath("changelog.d/+towncrier-workflow-7d9e3a1c.skip"),
+                PurePosixPath("changelog/+towncrier-workflow-7d9e3a1c.skip"),
             ),
         ]
 
@@ -150,8 +150,8 @@ class ChangelogPolicyTest(unittest.TestCase):
         """Allow release management to update only the changelog and deletions."""
         accepted = [
             changelog_policy.Change("M", PurePosixPath("CHANGELOG.md")),
-            changelog_policy.Change("D", PurePosixPath("changelog.d/3607.added.md")),
-            changelog_policy.Change("D", PurePosixPath("changelog.d/3608.skip")),
+            changelog_policy.Change("D", PurePosixPath("changelog/3607.added.md")),
+            changelog_policy.Change("D", PurePosixPath("changelog/3608.skip")),
         ]
         rejected = [
             *accepted,
@@ -180,7 +180,7 @@ class TowncrierWorkflowTest(unittest.TestCase):
         """Create an isolated Git repository with the Newton Towncrier config."""
         self.temp_directory = tempfile.TemporaryDirectory()
         self.repository = Path(self.temp_directory.name)
-        (self.repository / "changelog.d").mkdir()
+        (self.repository / "changelog").mkdir()
         shutil.copyfile(REPOSITORY_ROOT / "pyproject.toml", self.repository / "pyproject.toml")
         (self.repository / "CHANGELOG.md").write_text(INITIAL_CHANGELOG, encoding="utf-8")
         self._git("init", "-b", "main")
@@ -212,21 +212,21 @@ class TowncrierWorkflowTest(unittest.TestCase):
 
     def test_build_preserves_legacy_unreleased_entries(self):
         """Keep legacy unreleased entries beneath the first generated release."""
-        (self.repository / "changelog.d" / "3607.added.md").write_text(
+        (self.repository / "changelog" / "3607.added.md").write_text(
             "Add issue-linked fragments.\n",
             encoding="utf-8",
         )
-        (self.repository / "changelog.d" / "3607.added.1.md").write_text(
+        (self.repository / "changelog" / "3607.added.1.md").write_text(
             "Add multiple entries in one category.\n",
             encoding="utf-8",
         )
-        (self.repository / "changelog.d" / "3607.deprecated.md").write_text(
+        (self.repository / "changelog" / "3607.deprecated.md").write_text(
             "Deprecate direct changelog edits in favor of fragments with:\n\n"
             "  - Multiple lines.\n"
             "  - Migration guidance.\n",
             encoding="utf-8",
         )
-        (self.repository / "changelog.d" / "+orphan-a1b2c3d4.fixed.md").write_text(
+        (self.repository / "changelog" / "+orphan-a1b2c3d4.fixed.md").write_text(
             "Fix orphan rendering.\n",
             encoding="utf-8",
         )
@@ -248,14 +248,14 @@ class TowncrierWorkflowTest(unittest.TestCase):
             changelog,
         )
         self.assertIn("- Fix orphan rendering.", changelog)
-        self.assertFalse((self.repository / "changelog.d" / "3607.added.md").exists())
-        self.assertFalse((self.repository / "changelog.d" / "3607.added.1.md").exists())
-        self.assertFalse((self.repository / "changelog.d" / "3607.deprecated.md").exists())
-        self.assertFalse((self.repository / "changelog.d" / "+orphan-a1b2c3d4.fixed.md").exists())
+        self.assertFalse((self.repository / "changelog" / "3607.added.md").exists())
+        self.assertFalse((self.repository / "changelog" / "3607.added.1.md").exists())
+        self.assertFalse((self.repository / "changelog" / "3607.deprecated.md").exists())
+        self.assertFalse((self.repository / "changelog" / "+orphan-a1b2c3d4.fixed.md").exists())
 
     def test_cherry_pick_keeps_main_only_fragments(self):
         """Keep post-branch fragments when synchronizing a release build to main."""
-        fragment_directory = self.repository / "changelog.d"
+        fragment_directory = self.repository / "changelog"
         (fragment_directory / "100.added.md").write_text(
             "Add branch-point feature.\n",
             encoding="utf-8",

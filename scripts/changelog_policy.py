@@ -14,8 +14,8 @@ from pathlib import Path, PurePosixPath
 
 CHANGELOG_PATH = PurePosixPath("CHANGELOG.md")
 BOOTSTRAP_POLICY_PATH = PurePosixPath("scripts/changelog_policy.py")
-FRAGMENT_DIRECTORY = PurePosixPath("changelog.d")
-METADATA_FILES = {PurePosixPath("changelog.d/README.md")}
+FRAGMENT_DIRECTORY = PurePosixPath("changelog")
+METADATA_FILES = {PurePosixPath("changelog/README.md")}
 RELEASE_MANAGEMENT_LABEL = "release-management"
 CATEGORIES = ("added", "changed", "deprecated", "removed", "fixed")
 
@@ -185,7 +185,7 @@ def validate_pr_changes(
     if not is_bootstrap and any(
         change.path == CHANGELOG_PATH or change.old_path == CHANGELOG_PATH for change in changes
     ):
-        errors.append("Normal pull requests must not edit CHANGELOG.md; add a fragment under changelog.d/")
+        errors.append("Normal pull requests must not edit CHANGELOG.md; add a fragment under changelog/")
 
     fragment_changes = [
         change
@@ -193,7 +193,7 @@ def validate_pr_changes(
         if _is_fragment_path(change.path) or (change.old_path is not None and _is_fragment_path(change.old_path))
     ]
     if not fragment_changes:
-        errors.append("Add a changelog.d fragment or a one-line .skip reason")
+        errors.append("Add a changelog fragment or a one-line .skip reason")
         return errors
 
     fragments: list[Fragment] = []

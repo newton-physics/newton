@@ -239,7 +239,7 @@ otherwise.
      - On ``release-X.Y``, run
        ``uvx --from towncrier==25.8.0 towncrier build --draft`` with the GA
        version and date, audit and approve the preview, then rerun with
-       ``--yes`` as documented in ``changelog.d/README.md``.  Delete ``.skip``
+       ``--yes`` as documented in ``changelog/README.md``.  Delete ``.skip``
        fragments and merge the changelog-only pull request with the
        ``release-management`` label before preparing the final version.  For
        the first Towncrier release, also merge duplicate category headings
@@ -322,7 +322,7 @@ Post-release
        onto a changelog-only branch from ``main``.  Review the resulting diff
        before merging it in a pull request with the ``release-management``
        label.  Confirm that post-cut fragments remain pending under
-       ``changelog.d/``.
+       ``changelog/``.
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐

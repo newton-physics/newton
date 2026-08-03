@@ -111,8 +111,8 @@ uvx --from towncrier==25.8.0 towncrier build --draft \
   --version X.Y.Z --date YYYY-MM-DD
 uvx --from towncrier==25.8.0 towncrier build --yes \
   --version X.Y.Z --date YYYY-MM-DD
-git rm --ignore-unmatch "changelog.d/*.skip"
-git add -A CHANGELOG.md changelog.d
+git rm --ignore-unmatch "changelog/*.skip"
+git add -A CHANGELOG.md changelog
 ```
 
 Towncrier inserts the dated section below `[Unreleased]` and deletes the

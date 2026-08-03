@@ -297,7 +297,7 @@ reportOptionalOperand = false
 reportUnusedCallResult = false
 
 [tool.towncrier]
-directory = "changelog.d"
+directory = "changelog"
 filename = "CHANGELOG.md"
 start_string = "<!-- towncrier release notes start -->\n"
 title_format = "## [{version}] - {project_date}"
