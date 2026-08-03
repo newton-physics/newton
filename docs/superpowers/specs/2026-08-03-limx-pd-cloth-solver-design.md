@@ -209,6 +209,12 @@ host readback, preserving CUDA Graph capture. A debug/test mode may check the
 residual every configurable number of iterations; that mode is documented as
 host-synchronizing and is not used by the viewer example.
 
+Every scalar dot product uses 256-particle tiled blocks. Threads first reduce
+their products cooperatively inside the block with `wp.tile_sum`; only lane zero
+per block atomically adds the block sum to the global scalar. This bounds global
+atomic contention to `ceil(particle_count/256)` operations while handling a
+partial final block with zero-filled tile loads.
+
 If `r^Tz` or `p^TAp` is non-finite or has absolute value below `1e-30`, the
 iteration applies zero `alpha`/`beta` and terminates safely in debug mode. No
 code path may write NaN to the solution.
@@ -317,6 +323,7 @@ PCG tests verify:
 - a known SPD block system converges to the expected solution;
 - a nonzero initial guess produces the same solution;
 - breakdown guards leave all outputs finite.
+- tiled dot products remain correct across multiple blocks and a partial tail.
 
 Solver integration tests construct a small cloth without a viewer, simulate at
 least one second, and require:

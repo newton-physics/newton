@@ -161,7 +161,7 @@ git commit -m "Add LIMX particle constraints"
 
 - [ ] **Step 1: Write failing operator and PCG tests**
 
-Construct a two-particle block system with masses `[2, 3]`, `dt=0.5`, and static blocks `[[2I, -I], [-I, 4I]]`. Verify composite multiplication includes mass blocks `[8I, 12I]`. Choose an exact two-vector solution, compute the corresponding right-hand side, and require PCG to reproduce it within `rtol=1e-5`, `atol=1e-6`. Repeat with a nonzero initial guess and verify a zero right-hand side remains finite. Add a debug-mode solve with `tolerance=1e-6` and require it to return fewer iterations than a deliberately large maximum while preserving the solution.
+Construct a two-particle block system with masses `[2, 3]`, `dt=0.5`, and static blocks `[[2I, -I], [-I, 4I]]`. Verify composite multiplication includes mass blocks `[8I, 12I]`. Choose an exact two-vector solution, compute the corresponding right-hand side, and require PCG to reproduce it within `rtol=1e-5`, `atol=1e-6`. Repeat with a nonzero initial guess and verify a zero right-hand side remains finite. Add a debug-mode solve with `tolerance=1e-6` and require it to return fewer iterations than a deliberately large maximum while preserving the solution. Add a 517-vector dot-product case so the reduction spans more than two 256-thread blocks and exercises a partial final block.
 
 - [ ] **Step 2: Run tests and verify RED**
 
@@ -183,7 +183,7 @@ inverse_diagonal[i] = wp.inverse(diag)
 
 - [ ] **Step 4: Implement PCG without host reads in its fixed-iteration path**
 
-Preallocate `r`, `z`, `p`, `Ap`, `rz`, `rz_previous`, `pAp`, and one debug residual scalar. Implement dot products using a Warp reduction kernel with atomic addition into one-element arrays and clear those arrays before reuse. Compute guarded `alpha` and `beta` inside Warp kernels; use zero whenever a denominator is non-finite or below `1e-30`. When `tolerance is None`, execute the requested fixed count without host reads and return that count. Otherwise, every `check_interval` iterations reduce `r^T r`, read the single scalar on the host, and stop once it is below `tolerance**2`. Do not import constraint modules from `pcg.py`.
+Preallocate `r`, `z`, `p`, `Ap`, `rz`, `rz_previous`, `pAp`, and one debug residual scalar. Implement dot products in 256-particle tiled blocks: use `wp.tile_sum` for the block-local cooperative reduction and allow only lane zero to atomically add each block sum into the one-element output. Launch `ceil(dimension/256)` blocks, relying on zero-filled tile loads for the partial tail, and clear scalar outputs before reuse. Compute guarded `alpha` and `beta` inside Warp kernels; use zero whenever a denominator is non-finite or below `1e-30`. When `tolerance is None`, execute the requested fixed count without host reads and return that count. Otherwise, every `check_interval` iterations reduce `r^T r`, read the single scalar on the host, and stop once it is below `tolerance**2`. Do not import constraint modules from `pcg.py`.
 
 - [ ] **Step 5: Run Task 3 and prior tests and verify GREEN**
 
