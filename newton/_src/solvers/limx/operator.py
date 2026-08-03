@@ -59,7 +59,7 @@ class EmptyDynamicConstraintOperator:
 
 
 class CompositeLinearOperator:
-    """Combine inertia, fixed-topology block-CSR, and matrix-free Hessians."""
+    """Combine inertia, assembled block-CSR elasticity, and matrix-free Hessians."""
 
     def __init__(
         self,
@@ -86,7 +86,7 @@ class CompositeLinearOperator:
         self._inv_dt_squared = 0.0
 
     def prepare(self, positions: wp.array[wp.vec3], dt: float) -> None:
-        """Prepare the operator and its block-Jacobi inverse diagonal.
+        """Prepare the current operator and its block-Jacobi inverse diagonal.
 
         Args:
             positions: Linearization positions [m], shape ``[particle_count, 3]``.

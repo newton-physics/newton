@@ -305,6 +305,29 @@ class TestCompositeLinearOperator(unittest.TestCase):
         np.testing.assert_allclose(operator.inverse_diagonal.numpy()[0], np.eye(3) * 0.1)
         np.testing.assert_allclose(operator.inverse_diagonal.numpy()[1], np.eye(3) * 0.0625)
 
+    def test_reassembled_values_update_operator_and_preconditioner(self):
+        operator = self.make_operator()
+        values = wp.array(
+            np.asarray([np.eye(3) * 5.0, np.eye(3) * -2.0, np.eye(3) * -2.0, np.eye(3) * 6.0]),
+            dtype=wp.mat33,
+            device="cpu",
+        )
+        wp.copy(operator.static_matrix.values, values)
+        operator.static_matrix.update_diagonal()
+        operator.prepare(wp.zeros(2, dtype=wp.vec3, device="cpu"), 0.5)
+        x = wp.array(
+            [wp.vec3(1.0, 2.0, 3.0), wp.vec3(4.0, 5.0, 6.0)],
+            dtype=wp.vec3,
+            device="cpu",
+        )
+        output = wp.empty_like(x)
+
+        operator.multiply(x, output)
+
+        np.testing.assert_allclose(output.numpy(), [[5.0, 16.0, 27.0], [70.0, 86.0, 102.0]])
+        np.testing.assert_allclose(operator.inverse_diagonal.numpy()[0], np.eye(3) / 13.0)
+        np.testing.assert_allclose(operator.inverse_diagonal.numpy()[1], np.eye(3) / 18.0)
+
 
 class TestPcgSolver(unittest.TestCase):
     def make_operator(self):
