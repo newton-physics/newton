@@ -12099,12 +12099,13 @@ class ModelBuilder:
             # enable ground plane
             m.up_axis = self.up_axis
 
-            # Append the global default so world index -1 selects it directly.
+            # Explicit local worlds need a trailing global entry. Implicit
+            # single-world models retain their legacy shared gravity entry.
             global_gravity = self._gravity_as_vector()
             if self.world_gravity:
                 gravity_vecs = [*self.world_gravity, global_gravity]
             else:
-                gravity_vecs = [self._gravity_as_vector() for _ in range(self.world_count + 1)]
+                gravity_vecs = [global_gravity for _ in range(self.world_count)]
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,

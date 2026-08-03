@@ -1277,9 +1277,12 @@ class Model:
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity: wp.array[wp.vec3] | None = None
-        """Local-world and global gravity vectors [m/s²], shape [world_count + 1, 3], dtype :class:`vec3`.
+        """Local-world and global gravity vectors [m/s²], dtype :class:`vec3`.
 
-        The final element is the gravity for global world ``-1``.
+        Models with explicit local worlds have shape [world_count + 1], where
+        the final element is the gravity for global world ``-1``. Legacy
+        implicit single-world models have shape [1], shared by world ``0``
+        and global world ``-1``.
         """
 
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
@@ -1967,10 +1970,10 @@ class Model:
         Set gravity for runtime modification.
 
         Args:
-            gravity: Gravity vector [m/s²] with shape ``(3,)``, a local-world array with shape
-                ``(world_count, 3)``, or a local-and-global array with shape
-                ``(world_count + 1, 3)``. A single vector updates every local world and
-                the global world. A local-world array preserves the global gravity.
+            gravity: A single gravity vector [m/s²], one vector per local world, or one
+                vector per local world plus a final global vector. A single vector
+                updates every local world and the global world. Local-world-only
+                inputs preserve a distinct global gravity entry.
             world: If provided, set gravity only for this world. Use ``-1`` for the
                 global world.
 
@@ -1993,13 +1996,13 @@ class Model:
             self.gravity.fill_(gravity_np)
         else:
             local_shape = (self.world_count, 3)
-            full_shape = (self.world_count + 1, 3)
-            if gravity_np.shape == local_shape:
+            full_shape = (self.gravity.shape[0], 3)
+            if gravity_np.shape == full_shape:
+                self.gravity.assign(gravity_np)
+            elif gravity_np.shape == local_shape:
                 current = self.gravity.numpy()
                 current[: self.world_count] = gravity_np
                 self.gravity.assign(current)
-            elif gravity_np.shape == full_shape:
-                self.gravity.assign(gravity_np)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
 

@@ -12,6 +12,7 @@ import warp as wp
 
 from .....geometry import ShapeFlags
 from .....sim.model import Model
+from ....coupled.model_view import ModelView
 from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
@@ -1030,7 +1031,7 @@ def convert_model_materials(
 
 
 def convert_rigid_bodies(
-    model: Model,
+    model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
 ) -> RigidBodiesModel:

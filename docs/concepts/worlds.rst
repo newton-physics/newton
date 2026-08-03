@@ -306,7 +306,9 @@ or modified at runtime via :meth:`~newton.Model.set_gravity`:
 The builder's :attr:`~newton.ModelBuilder.gravity` is the default for new local worlds and the
 dedicated gravity for global entities (world index ``-1``). The final element of
 :attr:`~newton.Model.gravity` stores this global gravity, so the array has shape
-``(world_count + 1, 3)``.
+``(world_count + 1,)`` and ``vec3`` elements when the builder contains explicit local
+worlds. Legacy implicit single-world models retain one shared entry with shape ``(1,)``;
+updates for world ``0`` therefore continue to affect their global entities.
 
 .. testcode::
 
@@ -326,11 +328,11 @@ dedicated gravity for global entities (world index ``-1``). The final element of
    model.set_gravity((0.0, 0.0, -1.62), world=1)  # Moon
    model.set_gravity((0.0, 0.0, -3.71), world=-1)  # Global entities
 
-   print("Gravity shape:", model.gravity.numpy().shape)
+   print("Gravity shape:", model.gravity.shape)
 
 .. testoutput::
 
-   Gravity shape: (3, 3)
+   Gravity shape: (3,)
 
 
 .. _World-entity partitioning:

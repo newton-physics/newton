@@ -375,12 +375,13 @@ def test_global_gravity_bodies(test, device, solver_fn):
     solver = solver_fn(model)
     solver.step(state_in, state_out, model.control(), None, 0.1)
 
+    np.testing.assert_array_equal(model.body_world.numpy(), (-1, 0))
     body_qd = state_out.body_qd.numpy()
     test.assertAlmostEqual(body_qd[global_body, 2], -0.2, places=6)
     test.assertAlmostEqual(body_qd[local_body, 2], -0.5, places=6)
 
 
-def test_global_gravity_coupling_acceleration(test, device):
+def test_global_gravity_coupling_acceleration(test, device, solver_fn):
     """Report dedicated global gravity through solver coupling hooks."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
     global_particle = builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
@@ -392,7 +393,7 @@ def test_global_gravity_coupling_acceleration(test, device):
     builder.end_world()
 
     model = builder.finalize(device=device)
-    solver = SolverSemiImplicit(model)
+    solver = solver_fn(model)
     particle_acceleration = wp.empty(model.particle_count, dtype=wp.vec3, device=device)
     body_acceleration = wp.empty(model.body_count, dtype=wp.vec3, device=device)
     solver.coupling_eval_gravity_acceleration(body_acceleration, particle_acceleration)
@@ -576,6 +577,27 @@ def test_set_gravity_global_world(test, device):
 
     model.set_gravity((0.0, 0.0, -6.0))
     np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -6.0), (0.0, 0.0, -6.0)), atol=1.0e-6)
+
+
+def test_set_gravity_implicit_world_compatibility(test, device):
+    """Preserve legacy gravity updates for implicit single-world models."""
+    builder = newton.ModelBuilder()
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+    model = builder.finalize(device=device)
+
+    test.assertEqual(model.world_count, 1)
+    test.assertEqual(model.gravity.shape, (1,))
+
+    model.set_gravity((0.0, 0.0, -2.0), world=0)
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -2.0),), atol=1.0e-6)
+
+    model.set_gravity(np.array(((0.0, 0.0, -3.0),), dtype=np.float32))
+    np.testing.assert_allclose(model.gravity.numpy(), ((0.0, 0.0, -3.0),), atol=1.0e-6)
+
+    model.gravity.assign(np.array(((0.0, 0.0, -4.0),), dtype=np.float32))
+    state_in, state_out = model.state(), model.state()
+    SolverSemiImplicit(model).step(state_in, state_out, model.control(), None, 0.1)
+    test.assertAlmostEqual(state_out.particle_qd.numpy()[0, 2], -0.4, places=6)
 
 
 def test_set_gravity_invalid_world(test, device):
@@ -791,6 +813,9 @@ solvers_global_bodies = {
     "xpbd": SolverXPBD,
     "semi_implicit": SolverSemiImplicit,
     "vbd": SolverVBD,
+    "mujoco_cpu": solvers_bodies["mujoco_cpu"],
+    "mujoco_warp": solvers_bodies["mujoco_warp"],
+    "kamino": SolverKamino,
 }
 
 # Add tests for each device and solver combination
@@ -862,6 +887,8 @@ for device in devices:
         )
 
     for solver_name, solver_fn in solvers_global_bodies.items():
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
         add_function_test(
             TestRuntimeGravity,
             f"test_global_gravity_bodies_{solver_name}",
@@ -870,12 +897,16 @@ for device in devices:
             solver_fn=solver_fn,
         )
 
-    add_function_test(
-        TestRuntimeGravity,
-        "test_global_gravity_coupling_acceleration",
-        test_global_gravity_coupling_acceleration,
-        devices=[device],
-    )
+    for solver_name in ("semi_implicit", "mujoco_cpu", "mujoco_warp"):
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestRuntimeGravity,
+            f"test_global_gravity_coupling_acceleration_{solver_name}",
+            test_global_gravity_coupling_acceleration,
+            devices=[device],
+            solver_fn=solvers_bodies[solver_name],
+        )
 
     # Per-world gravity for MuJoCo Warp (only on CUDA - CPU MuJoCo uses single gravity)
     if device.is_cuda:
@@ -907,6 +938,12 @@ for device in devices:
         TestRuntimeGravity,
         "test_set_gravity_global_world",
         test_set_gravity_global_world,
+        devices=[device],
+    )
+    add_function_test(
+        TestRuntimeGravity,
+        "test_set_gravity_implicit_world_compatibility",
+        test_set_gravity_implicit_world_compatibility,
         devices=[device],
     )
     add_function_test(
