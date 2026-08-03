@@ -146,8 +146,9 @@ def test_global_particles_use_global_gravity(test, device):
         cell_y=0.1,
         mass=0.1,
     )
+    builder.begin_world(gravity=(0.0, 0.0, 0.0))
+    builder.end_world()
     model = builder.finalize(device=device)
-    model.set_gravity((0.0, 0.0, 0.0), world=0)
     solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
     state_0, state_1 = model.state(), model.state()
     contacts = newton.CollisionPipeline(model).contacts()

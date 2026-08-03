@@ -643,7 +643,6 @@ def test_multiworld_global_particles_rejected(test, device):
 def test_single_world_global_particles_supported(test, device):
     """Verify single world global particles supported."""
     model = _make_mpm_particle_builder().finalize(device=device)
-    model.set_gravity((0.0, 0.0, 0.0), world=0)
     config = _make_mpm_config()
     config.collider_basis = "pic"
     config.strain_basis = "pic"
