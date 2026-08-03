@@ -517,6 +517,41 @@ class TestConstraintTriangleElastic(unittest.TestCase):
         np.testing.assert_array_equal(matrix.column_indices.numpy(), column_indices)
         self.assertFalse(np.allclose(matrix.values.numpy(), initial_values))
 
+    def test_rejects_invalid_input(self):
+        identity = wp.mat22(1.0, 0.0, 0.0, 1.0)
+        valid_stiffness = wp.vec3(1.0, 1.0, 1.0)
+        invalid_arguments = [
+            ([], [], [], [], 3),
+            ([(0, 1, 2)], [], [0.5], [valid_stiffness], 3),
+            ([(0, 0, 2)], [identity], [0.5], [valid_stiffness], 3),
+            ([(0, 1, 3)], [identity], [0.5], [valid_stiffness], 3),
+            ([(0, 1, 2)], [wp.mat22(1.0, 0.0, 0.0, 0.0)], [0.5], [valid_stiffness], 3),
+            ([(0, 1, 2)], [wp.mat22(float("nan"), 0.0, 0.0, 1.0)], [0.5], [valid_stiffness], 3),
+            ([(0, 1, 2)], [identity], [0.0], [valid_stiffness], 3),
+            ([(0, 1, 2)], [identity], [float("inf")], [valid_stiffness], 3),
+            ([(0, 1, 2)], [identity], [0.5], [wp.vec3(-1.0, 1.0, 1.0)], 3),
+            ([(0, 1, 2)], [identity], [0.5], [wp.vec3(1.0, float("nan"), 1.0)], 3),
+        ]
+        for triangle_indices, inverse_rest_matrices, rest_areas, stiffnesses, particle_count in invalid_arguments:
+            with self.subTest(triangle_indices=triangle_indices, rest_areas=rest_areas), self.assertRaises(ValueError):
+                ConstraintTriangleElastic(
+                    triangle_indices,
+                    inverse_rest_matrices,
+                    rest_areas,
+                    stiffnesses,
+                    particle_count,
+                    "cpu",
+                )
+
+    def test_rejects_runtime_array_size_mismatch(self):
+        constraint = self.make_constraint()
+
+        with self.assertRaisesRegex(ValueError, "3 particle rows"):
+            constraint.accumulate_force(
+                wp.zeros(2, dtype=wp.vec3, device="cpu"),
+                wp.zeros(3, dtype=wp.vec3, device="cpu"),
+            )
+
 
 class TestCompositeLinearOperator(unittest.TestCase):
     def make_operator(self):
@@ -829,6 +864,7 @@ class TestSolverLIMX(unittest.TestCase):
         self.assertIs(newton.solvers.SolverLIMX, SolverLIMX)
         self.assertIs(newton.solvers.ConstraintAnchor, ConstraintAnchor)
         self.assertIs(newton.solvers.ConstraintDistance, ConstraintDistance)
+        self.assertIs(newton.solvers.ConstraintTriangleElastic, ConstraintTriangleElastic)
 
     def test_rejects_model_with_rigid_bodies(self):
         builder = newton.ModelBuilder()

@@ -5,6 +5,7 @@
 ### Features
 
 - Add `SolverLIMX` with current-position projected-Newton assembly, analytic batched anchor and distance Hessians, fixed-topology 3×3 block-CSR storage, matrix-free dynamic constraint hooks, and block-Jacobi PCG.
+- Add `ConstraintTriangleElastic` with anisotropic warp, weft, and shear membrane energy plus analytic PSD-projected 3×3 block-CSR Hessians.
 
 ### Design Rationale
 

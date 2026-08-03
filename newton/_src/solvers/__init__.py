@@ -5,7 +5,7 @@ from .featherstone import SolverFeatherstone
 from .flags import SolverNotifyFlags
 from .implicit_mpm import SolverImplicitMPM
 from .kamino import SolverKamino
-from .limx import ConstraintAnchor, ConstraintDistance, SolverLIMX
+from .limx import ConstraintAnchor, ConstraintDistance, ConstraintTriangleElastic, SolverLIMX
 from .mujoco import SolverMuJoCo
 from .semi_implicit import SolverSemiImplicit
 from .solver import SolverBase
@@ -16,6 +16,7 @@ from .xpbd import SolverXPBD
 __all__ = [
     "ConstraintAnchor",
     "ConstraintDistance",
+    "ConstraintTriangleElastic",
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",

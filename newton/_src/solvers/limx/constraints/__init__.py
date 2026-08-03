@@ -5,5 +5,6 @@
 
 from .anchor import ConstraintAnchor
 from .distance import ConstraintDistance
+from .triangle_elastic import ConstraintTriangleElastic
 
-__all__ = ["ConstraintAnchor", "ConstraintDistance"]
+__all__ = ["ConstraintAnchor", "ConstraintDistance", "ConstraintTriangleElastic"]

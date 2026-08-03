@@ -412,6 +412,7 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
 from ._src.solvers import (
     ConstraintAnchor,
     ConstraintDistance,
+    ConstraintTriangleElastic,
     SolverBase,
     SolverFeatherstone,
     SolverImplicitMPM,
@@ -431,6 +432,7 @@ from ._src.solvers.flags import SolverNotifyFlags
 __all__ = [
     "ConstraintAnchor",
     "ConstraintDistance",
+    "ConstraintTriangleElastic",
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",
