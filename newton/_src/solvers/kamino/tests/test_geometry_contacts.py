@@ -189,6 +189,34 @@ def build_dynamic_static_sphere_scene(
     return builder
 
 
+def build_box_on_plane_scene(
+    box_z: float,
+    margin: float = 0.0,
+    gap: float = 0.0,
+    half_extent: float = 0.25,
+) -> ModelBuilder:
+    """Construct a single free box hovering above / resting on a static ground plane.
+
+    The box centre is placed at ``box_z`` so that its bottom face sits at
+    ``box_z - half_extent`` above the ground surface (``z = 0``).
+    """
+    cfg = ModelBuilder.ShapeConfig(margin=margin, gap=gap)
+    builder = ModelBuilder()
+    builder.begin_world()
+    body = builder.add_link(xform=wp.transform(p=wp.vec3(0.0, 0.0, box_z), q=wp.quat_identity()))
+    builder.add_shape_box(body, hx=half_extent, hy=half_extent, hz=half_extent, cfg=cfg)
+    joint = builder.add_joint_free(
+        parent=-1,
+        child=body,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([joint])
+    builder.add_ground_plane(cfg=cfg)
+    builder.end_world()
+    return builder
+
+
 ###
 # Module configs
 ###
@@ -1472,6 +1500,76 @@ class TestGeometryContactConversions(unittest.TestCase):
         self.assertEqual(int(kamino.model_active_contacts.numpy()[0]), 2)
         bid_AB = kamino.bid_AB.numpy()[:2]
         self.assertTrue(np.all(bid_AB[:, 1] >= 0))
+
+    def test_10_speculative_contacts_culled(self):
+        """Speculative box-plane contacts are dropped by default.
+
+        Both configurations use a non-zero gap so that the collision detector
+        reports contacts while the box still hovers above the rest offset.
+        """
+        HALF_EXTENT = 0.25
+
+        for margin, gap, box_z in (
+            (0.0, 0.1, HALF_EXTENT + 0.05),
+            (0.02, 0.1, HALF_EXTENT + 0.08),
+        ):
+            with self.subTest(margin=margin, gap=gap):
+                scene = build_box_on_plane_scene(box_z, margin=margin, gap=gap, half_extent=HALF_EXTENT)
+                model = scene.finalize(self.default_device)
+                state = model.state()
+                collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=_NEWTON_CONTACT_CAPACITY)
+                contacts = collision_pipeline.contacts()
+                collision_pipeline.collide(state, contacts)
+                nc = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(nc, 0, "Detector must report the hovering box as a (speculative) contact")
+
+                # Sanity: with culling disabled every converted contact is speculative.
+                kamino_off = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
+                convert_contacts_newton_to_kamino(model, state, contacts, kamino_off, cull_speculative_contacts=False)
+                n_off = int(kamino_off.model_active_contacts.numpy()[0])
+                self.assertEqual(n_off, nc, "Disabling culling must keep every detected contact")
+                w = kamino_off.gapfunc.numpy()[:n_off, 3]
+                self.assertTrue(np.all(w > 0.0), f"Expected speculative contacts (w > 0), got {w}")
+
+                # Default conversion culls all of them.
+                kamino_on = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
+                convert_contacts_newton_to_kamino(model, state, contacts, kamino_on)
+                self.assertEqual(
+                    int(kamino_on.model_active_contacts.numpy()[0]),
+                    0,
+                    "Speculative contacts must be culled by default",
+                )
+
+    def test_11_genuine_contacts_kept(self):
+        """Genuine box-plane contacts (gapfunc.w <= 0) survive culling.
+
+        Covers the full ``(gap, margin)`` matrix with the box placed at or below
+        the rest offset so no contact is speculative.
+        """
+        HALF_EXTENT = 0.25
+
+        for margin, gap, box_z in (
+            (0.0, 0.0, HALF_EXTENT - 0.01),
+            (0.0, 0.1, HALF_EXTENT - 0.01),
+            (0.02, 0.0, HALF_EXTENT + 0.02),
+            (0.02, 0.1, HALF_EXTENT + 0.02),
+        ):
+            with self.subTest(margin=margin, gap=gap):
+                scene = build_box_on_plane_scene(box_z, margin=margin, gap=gap, half_extent=HALF_EXTENT)
+                model = scene.finalize(self.default_device)
+                state = model.state()
+                collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=_NEWTON_CONTACT_CAPACITY)
+                contacts = collision_pipeline.contacts()
+                collision_pipeline.collide(state, contacts)
+                nc = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertGreater(nc, 0, "Detector must report the penetrating box as a contact")
+
+                kamino = ContactsKamino(capacity=contacts.rigid_contact_max, device=self.default_device)
+                convert_contacts_newton_to_kamino(model, state, contacts, kamino)
+                n_kamino = int(kamino.model_active_contacts.numpy()[0])
+                self.assertEqual(n_kamino, nc, "Genuine contacts must not be culled")
+                w = kamino.gapfunc.numpy()[:n_kamino, 3]
+                self.assertTrue(np.all(w <= 1e-6), f"Expected genuine contacts (w <= 0), got {w}")
 
 
 ###
