@@ -553,6 +553,23 @@ class TestConstraintTriangleElastic(unittest.TestCase):
                 wp.zeros(3, dtype=wp.vec3, device="cpu"),
             )
 
+    def test_rejects_hessian_value_count_mismatch_before_kernel_launch(self):
+        constraint = self.make_constraint()
+        builder = BlockCsrBuilder(3)
+        constraint.append_hessian_structure(builder)
+        matrix = builder.finalize("cpu")
+        constraint.bind_hessian(matrix)
+        positions = wp.zeros(3, dtype=wp.vec3, device="cpu")
+        forces = wp.zeros(3, dtype=wp.vec3, device="cpu")
+
+        for block_count in (len(matrix.values) + 1, len(matrix.values) - 1):
+            with self.subTest(block_count=block_count), self.assertRaisesRegex(ValueError, "9 Hessian blocks"):
+                constraint.accumulate_force_and_hessian(
+                    positions,
+                    forces,
+                    wp.zeros(block_count, dtype=wp.mat33, device="cpu"),
+                )
+
 
 class TestCompositeLinearOperator(unittest.TestCase):
     def make_operator(self):

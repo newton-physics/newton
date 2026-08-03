@@ -202,6 +202,7 @@ class ConstraintTriangleElastic:
         self.rest_areas = wp.array(self.host_rest_areas, dtype=float, device=self.device)
         self.stiffnesses = wp.array(np.asarray(self.host_stiffnesses), dtype=wp.vec3, device=self.device)
         self.hessian_block_indices: wp.array2d[int] | None = None
+        self.hessian_value_count: int | None = None
 
     def append_hessian_structure(self, builder: BlockCsrBuilder) -> None:
         """Append all nine ordered particle-pair blocks for every triangle."""
@@ -221,6 +222,7 @@ class ConstraintTriangleElastic:
             for triangle in self.host_triangle_indices
         ]
         self.hessian_block_indices = wp.array2d(block_indices, dtype=int, device=self.device)
+        self.hessian_value_count = len(matrix.values)
 
     def accumulate_force(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:
         """Add membrane forces evaluated at ``positions`` to ``output``."""
@@ -251,6 +253,8 @@ class ConstraintTriangleElastic:
             raise RuntimeError("bind_hessian() must be called before Hessian assembly")
         if hessian_values.device != self.device:
             raise ValueError("Constraint and Hessian values must use the same device")
+        if len(hessian_values) != self.hessian_value_count:
+            raise ValueError(f"Expected {self.hessian_value_count} Hessian blocks")
         wp.launch(
             _accumulate_triangle_elastic_force_and_hessian,
             dim=len(self.rest_areas),
