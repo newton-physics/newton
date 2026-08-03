@@ -103,10 +103,10 @@ def _run_triangle_mpr(triangle_b, triangle_c, shape_type, shape_scale, shape_pos
 
 
 class TestMPRTriangleInitialization(unittest.TestCase):
-    """Test triangle MPR initialization across disparate geometry scales."""
+    """Cover triangle MPR initialization across disparate geometry scales."""
 
     def test_small_cylinder_on_large_triangle(self):
-        """A small cylinder on a large triangle must resolve along the face normal.
+        """Resolve a small cylinder on a large triangle along the face normal.
 
         A fixed 1% triangle-centroid blend moves the initial point by nearly
         half a meter in this case.  With the cylinder center only 0.36 mm above
@@ -121,7 +121,7 @@ class TestMPRTriangleInitialization(unittest.TestCase):
         radius = 0.02
         half_height = 0.07
 
-        collision, _point_a, _point_b, normals, penetrations = _run_triangle_mpr(
+        collision, points_a, points_b, normals, penetrations = _run_triangle_mpr(
             triangle_b=[[100.0, 320.0, 0.0]],
             triangle_c=[[0.0, 320.0, 0.0]],
             shape_type=GeoType.CYLINDER,
@@ -140,9 +140,40 @@ class TestMPRTriangleInitialization(unittest.TestCase):
         self.assertEqual(collision[0], 1)
         self.assertAlmostEqual(float(penetrations[0]), float(expected_penetration), delta=2.0e-5)
         np.testing.assert_allclose(normals[0], [0.0, 0.0, 1.0], atol=2.0e-4)
+        self.assertLess(float(np.linalg.norm(points_a[0, :2] - cylinder_position[:2])), 0.1)
+        self.assertLess(float(np.linalg.norm(points_b[0] - cylinder_position)), 0.08)
+
+    def test_coplanar_cylinder_center_on_large_triangle(self):
+        """Handle an exactly coplanar convex center without a tangential roundoff ray."""
+        cylinder_orientation = np.array(
+            [-0.16498479, 0.36682746, -0.48718625, 0.77515626],
+            dtype=np.float32,
+        )
+        radius = 0.02
+        half_height = 0.07
+
+        cylinder_position = np.array([28.87991333, 260.53430176, 0.0], dtype=np.float32)
+        collision, points_a, points_b, normals, penetrations = _run_triangle_mpr(
+            triangle_b=[[100.0, 320.0, 0.0]],
+            triangle_c=[[0.0, 320.0, 0.0]],
+            shape_type=GeoType.CYLINDER,
+            shape_scale=(radius, half_height, radius),
+            shape_positions=[cylinder_position],
+            shape_orientations=[cylinder_orientation],
+        )
+
+        qx, qy, _qz, _qw = cylinder_orientation
+        axis_z = 1.0 - 2.0 * (qx * qx + qy * qy)
+        expected_penetration = half_height * abs(axis_z) + radius * np.sqrt(max(0.0, 1.0 - axis_z * axis_z))
+
+        self.assertEqual(collision[0], 1)
+        self.assertAlmostEqual(float(penetrations[0]), float(expected_penetration), delta=2.0e-5)
+        np.testing.assert_allclose(normals[0], [0.0, 0.0, 1.0], atol=2.0e-4)
+        self.assertLess(float(np.linalg.norm(points_a[0, :2] - cylinder_position[:2])), 0.1)
+        self.assertLess(float(np.linalg.norm(points_b[0] - cylinder_position)), 0.08)
 
     def test_shared_edge_witnesses_remain_triangle_specific(self):
-        """The bounded nudge must retain distinct witnesses across a mesh seam.
+        """Retain distinct witnesses across a mesh seam with the bounded nudge.
 
         The two triangles form a square split along x=y, and the box center is
         directly above that shared edge.  The witness on each triangle should
@@ -162,6 +193,23 @@ class TestMPRTriangleInitialization(unittest.TestCase):
         self.assertGreater(float(points_a[1, 1] - points_a[1, 0]), 1.0e-4)
         np.testing.assert_allclose(normals, [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], atol=1.0e-5)
         np.testing.assert_allclose(penetrations, [0.005, 0.005], atol=1.0e-5)
+
+    def test_coplanar_shared_edge_witnesses_remain_triangle_specific(self):
+        """Retain the triangle-specific fallback when both centers coincide."""
+        collision, points_a, _points_b, normals, penetrations = _run_triangle_mpr(
+            triangle_b=[[2.0, 0.0, 0.0], [2.0, 2.0, 0.0]],
+            triangle_c=[[2.0, 2.0, 0.0], [0.0, 2.0, 0.0]],
+            shape_type=GeoType.BOX,
+            shape_scale=(0.15, 0.12, 0.1),
+            shape_positions=[[1.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+            shape_orientations=[[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]],
+        )
+
+        np.testing.assert_array_equal(collision, [1, 1])
+        self.assertGreater(float(points_a[0, 0] - points_a[0, 1]), 1.0e-4)
+        self.assertGreater(float(points_a[1, 1] - points_a[1, 0]), 1.0e-4)
+        np.testing.assert_allclose(normals, [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], atol=1.0e-5)
+        np.testing.assert_allclose(penetrations, [0.1, 0.1], atol=1.0e-5)
 
 
 if __name__ == "__main__":
