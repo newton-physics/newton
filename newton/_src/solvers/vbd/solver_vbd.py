@@ -867,6 +867,10 @@ class SolverVBD(SolverBase, CouplingInterface):
     def coupling_supports_inertial_property_refresh(self) -> bool:
         return True
 
+    @override
+    def coupling_supports_full_surface_soft_contacts(self) -> bool:
+        return True
+
     def coupling_notify_input_state_update(
         self,
         state: State,
@@ -1055,7 +1059,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0:
             return
 
-        # Reaching here means proxy particles exist.
         if contacts is not None:
             contacts._assert_particle_only_soft_contacts("SolverVBD proxy-particle coupling")
 

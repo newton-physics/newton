@@ -2305,6 +2305,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return contacts
 
         filtered = self._ensure_entry_contact_buffer(entry, contacts)
+        keep_full_surface_contacts = filtered._enable_rigid_soft_full_surface_contact
         force_contact_update = int(self._entry_contact_sources.get(entry.name) is not contacts)
         if force_contact_update:
             self._entry_contact_sources[entry.name] = contacts
@@ -2443,6 +2444,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
                     int(ParticleFlags.ACTIVE),
+                    int(keep_full_surface_contacts),
                     filtered.soft_contact_count,
                     filtered.soft_contact_particle,
                     filtered.soft_contact_shape,
@@ -2510,9 +2512,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 dtype=wp.int32,
                 device=contacts.device,
             )
-        # Carry the capability marker: the filter now preserves edge/face records, so a sub-solver
-        # that cannot consume them must still be able to reject the buffer it is handed.
-        filtered._enable_rigid_soft_full_surface_contact = contacts._enable_rigid_soft_full_surface_contact
+        filtered._enable_rigid_soft_full_surface_contact = bool(
+            contacts._enable_rigid_soft_full_surface_contact
+            and entry.solver.coupling_supports_full_surface_soft_contacts()
+        )
         return filtered
 
     @staticmethod
@@ -3279,6 +3282,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
     active_particle_mask: int,
+    keep_full_surface_contacts: int,
     dst_count: wp.array[wp.int32],
     dst_particle: wp.array[int],
     dst_shape: wp.array[int],
@@ -3299,14 +3303,14 @@ def _filter_soft_contacts_global_shape_ids_kernel(
 
     particle = src_particle[contact_id]
     shape = src_shape[contact_id]
+    if particle < 0 and keep_full_surface_contacts == 0:
+        return
     if shape < 0 or shape >= shape_flags.shape[0]:
         return
     if (shape_flags[shape] & collide_particles_mask) == 0:
         return
 
-    # Validate every soft corner the record references: one for a particle record, two for an edge,
-    # three for a face. Requiring all of them to be owned and active keeps a record whose corners
-    # straddle two entries out of both, rather than letting one entry read a particle it does not own.
+    # Keep records only when the entry owns every referenced corner.
     corners = src_indices[contact_id]
     if corners[0] < 0:
         return
@@ -3327,8 +3331,6 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
     dst_tids[dst_id] = src_tids[contact_id]
-    # Carry the unified feature record too (the particle-only path writes (p, -1, -1) + (1, 0, 0)); VBD
-    # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
-    # VBD even with full-surface contact off (E7).
+    # VBD consumes the unified particle, edge, and face representation.
     dst_indices[dst_id] = src_indices[contact_id]
     dst_barycentric[dst_id] = src_barycentric[contact_id]

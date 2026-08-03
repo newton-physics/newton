@@ -44,6 +44,9 @@ Supported hook signatures are:
     def coupling_supports_inertial_property_refresh() -> bool: ...
 
 
+    def coupling_supports_full_surface_soft_contacts() -> bool: ...
+
+
     def coupling_rewind_proxy_body(
         body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
     ) -> None: ...
@@ -250,6 +253,10 @@ class CouplingInterface:
         this to return ``True`` and provide a graph-capturable implementation
         of :meth:`notify_model_changed` for BODY_INERTIAL_PROPERTIES.
         """
+        return False
+
+    def coupling_supports_full_surface_soft_contacts(self) -> bool:
+        """Return whether the solver consumes edge and face soft contacts."""
         return False
 
     def coupling_eval_gravity_acceleration(
