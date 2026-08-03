@@ -153,7 +153,7 @@ class SolverLIMX(SolverBase):
         self.inertia_positions = wp.empty_like(self.previous_positions)
         self.iterate_positions = wp.empty_like(self.previous_positions)
         self.rhs = wp.empty_like(self.previous_positions)
-        self.increment = wp.empty_like(self.previous_positions)
+        self.increment = wp.zeros_like(self.previous_positions)
 
     @override
     def step(
@@ -197,7 +197,7 @@ class SolverLIMX(SolverBase):
         )
 
         inv_dt_squared = 1.0 / (dt * dt)
-        for _ in range(self.nonlinear_iterations):
+        for nonlinear_iteration in range(self.nonlinear_iterations):
             self.static_matrix.clear_values()
             wp.launch(
                 _initialize_rhs,
@@ -226,6 +226,7 @@ class SolverLIMX(SolverBase):
                 self.rhs,
                 self.increment,
                 iterations=self.linear_iterations,
+                zero_initial_guess=nonlinear_iteration > 0,
             )
             wp.launch(
                 _apply_increment,

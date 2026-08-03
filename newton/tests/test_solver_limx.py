@@ -411,6 +411,41 @@ class TestPcgSolver(unittest.TestCase):
 
 
 class TestSolverLIMX(unittest.TestCase):
+    def test_first_pcg_solve_warm_starts_from_previous_frame_increment(self):
+        builder = newton.ModelBuilder(up_axis="Z")
+        builder.add_particles(pos=[wp.vec3(0.0)], vel=[wp.vec3(0.0)], mass=[1.0], radius=[0.01])
+        model = builder.finalize(device="cpu")
+        solver = SolverLIMX(model, [], nonlinear_iterations=1, linear_iterations=1)
+        state_in = model.state()
+        state_out = model.state()
+        pcg = solver.linear_solver
+        initial_guesses = []
+        solutions = []
+        zero_initial_guesses = []
+
+        class RecordingPcgSolver:
+            def solve(self, operator, rhs, solution, iterations, zero_initial_guess=True):
+                initial_guesses.append(solution.numpy().copy())
+                zero_initial_guesses.append(zero_initial_guess)
+                executed = pcg.solve(
+                    operator,
+                    rhs,
+                    solution,
+                    iterations,
+                    zero_initial_guess=zero_initial_guess,
+                )
+                solutions.append(solution.numpy().copy())
+                return executed
+
+        solver.linear_solver = RecordingPcgSolver()
+        solver.step(state_in, state_out, None, None, 0.01)
+        state_in, state_out = state_out, state_in
+        solver.step(state_in, state_out, None, None, 0.01)
+
+        self.assertEqual(zero_initial_guesses, [False, False])
+        np.testing.assert_array_equal(initial_guesses[0], np.zeros((1, 3)))
+        np.testing.assert_array_equal(initial_guesses[1], solutions[0])
+
     def test_example_advances_one_001_second_physics_step_per_frame(self):
         with wp.ScopedDevice("cpu"):
             example = ClothLimxExample(ViewerNull(num_frames=1), None)
