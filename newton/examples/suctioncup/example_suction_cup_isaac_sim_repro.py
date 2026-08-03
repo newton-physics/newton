@@ -348,7 +348,11 @@ class Example:
 
         # The newton scene is complete.
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model, nconmax=256, njmax=2048, iterations=10)
+        # use_mujoco_contacts=False: Newton's collide pipeline (model.collide, run each sub-step) owns
+        # collision -- the solver consumes those contacts instead of MuJoCo's internal collision.
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model, nconmax=256, njmax=2048, iterations=10, use_mujoco_contacts=False
+        )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
