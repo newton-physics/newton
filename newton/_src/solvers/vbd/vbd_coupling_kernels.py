@@ -152,12 +152,6 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     shape_body: wp.array[wp.int32],
     out_body_f: wp.array[wp.spatial_vector],
 ):
-    """Accumulate soft-vs-proxy-body contact wrenches onto proxy bodies.
-
-    Handles every record kind through :func:`_eval_soft_ef_contact`. Edge/face records carry a
-    zeroed ``soft_contact_body_vel``; the helper rebuilds the rigid surface velocity from
-    ``body_q_prev`` so damping and friction survive.
-    """
     contact_idx = wp.tid()
     if contact_idx >= body_particle_contact_count[0]:
         return
