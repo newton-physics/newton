@@ -34,10 +34,14 @@ https://newton-physics.github.io/newton/stable/solvers/index.html.
    :toctree: _generated
    :nosignatures:
 
+   ConstraintAnchor
+   ConstraintDistance
+   ConstraintTriangleElastic
    SolverBase
    SolverFeatherstone
    SolverImplicitMPM
    SolverKamino
+   SolverLIMX
    SolverMuJoCo
    SolverSemiImplicit
    SolverStyle3D

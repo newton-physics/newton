@@ -33,6 +33,7 @@ rspec.xml
 # Claude Code
 .claude/settings.local.json
 .claude/worktrees/
+.worktrees/
 .mcp.json
 /docs/superpowers/
 

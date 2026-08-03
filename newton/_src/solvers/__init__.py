@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from .featherstone import SolverFeatherstone
     from .implicit_mpm import SolverImplicitMPM
     from .kamino import SolverKamino
+    from .limx import ConstraintAnchor, ConstraintDistance, ConstraintTriangleElastic, SolverLIMX
     from .mujoco import SolverMuJoCo
     from .semi_implicit import SolverSemiImplicit
     from .solver import SolverBase
@@ -17,10 +18,14 @@ if TYPE_CHECKING:
     from .xpbd import SolverXPBD
 
 __all__ = [
+    "ConstraintAnchor",
+    "ConstraintDistance",
+    "ConstraintTriangleElastic",
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",
     "SolverKamino",
+    "SolverLIMX",
     "SolverMuJoCo",
     "SolverSemiImplicit",
     "SolverStyle3D",
@@ -34,10 +39,14 @@ __all__ = [
 # resolved on first attribute access (PEP 562) so that importing Newton does
 # not pay the import cost of every solver backend.
 _LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
+    "ConstraintAnchor": (".limx", "ConstraintAnchor"),
+    "ConstraintDistance": (".limx", "ConstraintDistance"),
+    "ConstraintTriangleElastic": (".limx", "ConstraintTriangleElastic"),
     "SolverBase": (".solver", "SolverBase"),
     "SolverFeatherstone": (".featherstone", "SolverFeatherstone"),
     "SolverImplicitMPM": (".implicit_mpm", "SolverImplicitMPM"),
     "SolverKamino": (".kamino", "SolverKamino"),
+    "SolverLIMX": (".limx", "SolverLIMX"),
     "SolverMuJoCo": (".mujoco", "SolverMuJoCo"),
     "SolverSemiImplicit": (".semi_implicit", "SolverSemiImplicit"),
     "SolverStyle3D": (".style3d.solver_style3d", "SolverStyle3D"),

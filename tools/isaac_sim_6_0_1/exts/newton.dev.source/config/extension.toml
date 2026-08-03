@@ -1,0 +1,11 @@
+[core]
+order = -2000
+reloadable = false
+
+[package]
+version = "0.1.0"
+title = "Newton Development Source"
+description = "Load Newton from the active source checkout before Isaac Sim's bundled package"
+
+[[python.module]]
+path = "../../../.."
