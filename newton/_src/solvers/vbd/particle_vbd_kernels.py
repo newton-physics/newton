@@ -24,6 +24,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
+from ...geometry.tri_mesh_collision import TriMeshCollisionInfo
 from ...utils.mesh import (
     MeshAdjacencyData,
     get_vertex_adjacent_edge_id_order,
@@ -33,7 +34,6 @@ from ...utils.mesh import (
     get_vertex_num_adjacent_faces,
     get_vertex_num_adjacent_tets,
 )
-from .tri_mesh_collision import TriMeshCollisionInfo
 
 # TODO: Grab changes from Warp that has fixed the backward pass
 wp.set_module_options({"enable_backward": False})

@@ -11,6 +11,10 @@ import warp as wp
 
 from ...core.types import override
 from ...geometry import ParticleFlags
+from ...geometry.tri_mesh_collision import (
+    TriMeshCollisionDetector,
+    TriMeshCollisionInfo,
+)
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -75,10 +79,6 @@ from .rigid_vbd_kernels import (
     update_duals_body_body_contacts,
     update_duals_body_particle_contacts,
     update_duals_joint,
-)
-from .tri_mesh_collision import (
-    TriMeshCollisionDetector,
-    TriMeshCollisionInfo,
 )
 from .vbd_coupling_kernels import (
     _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
