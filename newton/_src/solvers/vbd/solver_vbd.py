@@ -1874,14 +1874,18 @@ class SolverVBD(SolverBase, CouplingInterface):
         history is intentionally left untouched: ``particle_q_prev`` is rebaselined
         from the incoming state at the start of the next :meth:`step`, self-contact
         and body-particle contacts rebuild per step, and tet/cloth elasticity is
-        stateless, so no particle history cold-start is required. When particle
-        self-contact is enabled, reset rebuilds the self-contact BVH from the
-        post-reset positions so the discontinuous jump does not degrade tree
-        quality; a rebuild is not graph-capturable, so issue reset outside capture
-        in that case.
+        stateless, so no particle history cold-start is required. Reset does not
+        refresh the particle self-contact BVH; the next :meth:`step` refits it from
+        the incoming positions. After a large reset displacement, call
+        :meth:`rebuild_bvh` to restore acceleration-structure quality. Both reset
+        and :meth:`rebuild_bvh` are graph-capturable, so either may run inside a
+        captured episode-reset graph.
 
-        Reset does not run collision detection: after moving bodies, regenerate
-        contacts and let the next :meth:`step` refresh rigid contact state. The next
+        Reset does not run collision detection, and :meth:`step` consumes the
+        supplied contacts rather than rerunning
+        :meth:`~newton.CollisionPipeline.collide`. After moving bodies or
+        particles, regenerate contacts so stale soft contacts are not reused, and
+        let the next :meth:`step` refresh rigid contact state. The next
         rigid :meth:`step` consumes the pose and cable rebaseline even when
         ``contacts=None``, so author the final pose (or run :func:`~newton.eval_fk`)
         before stepping; contact invalidation instead waits for a fresh refresh.
@@ -1971,14 +1975,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                     outputs=[particle_q, particle_qd],
                     device=self.device,
                 )
-
-            if particle_q is not None and self.particle_enable_self_contact:
-                # A reset teleports particles discontinuously; refitting the
-                # self-contact BVH across that jump keeps a valid but low-quality
-                # tree, so rebuild it from the post-reset positions. Rebuild is not
-                # graph-capturable, so issue reset outside capture when self-contact
-                # is enabled (as with any episode reset).
-                self.trimesh_collision_detector.rebuild(state.particle_q)
 
         if not internal_body_reset:
             return

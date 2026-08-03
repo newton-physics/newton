@@ -2014,7 +2014,7 @@ def _rigid_reset_state_and_history(test, device):
 
 
 def _reset_masked_rigid_and_soft(test, device):
-    """A single masked reset restores rigid bodies and deformables together per world.
+    """Verify one masked reset restores rigid bodies and deformables together per world.
 
     ``reset()`` is one entry point for both maximal body state and particle state.
     With fixed bodies, a cloth grid, and a tetrahedral soft grid sharing the same
@@ -2176,7 +2176,7 @@ def _reset_masked_rigid_and_soft(test, device):
 
 
 def _soft_reset_particle_only_and_external(test, device):
-    """Deformable reset runs when SolverVBD performs no internal rigid integration.
+    """Verify deformable reset runs when SolverVBD performs no internal rigid integration.
 
     Covers a particle-only model (no bodies) and a model whose bodies are
     integrated by an external rigid solver; both take the reset path that
@@ -2249,7 +2249,7 @@ def _soft_reset_particle_only_and_external(test, device):
 
 
 def _soft_reset_captured_graph_restores_particles(test, device):
-    """A masked particle reset recorded in a CUDA graph restores defaults on replay.
+    """Verify a captured masked particle reset restores selected-world defaults on replay.
 
     ``reset()`` launches ``reset_particle_state`` without allocation, so it is
     capturable, and the ``world_mask`` is read device-side, so a replay honors the
@@ -2296,60 +2296,79 @@ def _soft_reset_captured_graph_restores_particles(test, device):
     np.testing.assert_allclose(result_q[~selected], moved_q[~selected])
 
 
-def _soft_reset_rebuilds_self_contact_bvh(test, device):
-    """Reset rebuilds the self-contact BVH from post-reset positions, not just refit.
+def _soft_reset_then_step_advances_cloth_and_tet(test, device):
+    """Verify a finite step after reset advances cloth and tet from the restored state.
 
-    A reset teleports particles discontinuously; refitting the existing tree would
-    keep a valid but low-quality hierarchy, so reset rebuilds it. The rebuild is
-    skipped when the reset moves no particle positions.
+    Issue #3400 requires a real solver step after a deformable reset for both cloth
+    and volumetric (tet) soft bodies. The step rebaselines from the restored
+    positions, so reset-then-step must reproduce a fresh step from the model
+    defaults: the pre-reset perturbation must not leak through particle history.
     """
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     builder.add_cloth_grid(
-        pos=(0.0, 0.0, 0.0),
+        pos=(0.0, 0.0, 1.0),
         rot=wp.quat_identity(),
         vel=(0.0, 0.0, 0.0),
-        dim_x=4,
-        dim_y=4,
+        dim_x=3,
+        dim_y=3,
         cell_x=0.1,
         cell_y=0.1,
         mass=1.0,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=1.0e-1,
+    )
+    cloth_count = len(builder.particle_q)
+    builder.add_soft_grid(
+        pos=wp.vec3(1.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        dim_z=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        cell_z=0.1,
+        density=100.0,
+        k_mu=1.0e4,
+        k_lambda=1.0e4,
+        k_damp=1.0e-2,
     )
     builder.color()
     model = builder.finalize(device=device)
+    test.assertGreater(cloth_count, 0)
+    test.assertGreater(model.particle_count - cloth_count, 0)
 
-    solver = newton.solvers.SolverVBD(model, iterations=0, particle_enable_self_contact=True)
-
-    # Count BVH rebuilds routed through the detector.
-    detector = solver.trimesh_collision_detector
-    original_rebuild = detector.rebuild
-    rebuild_calls = {"n": 0}
-
-    def counting_rebuild(*args, **kwargs):
-        rebuild_calls["n"] += 1
-        return original_rebuild(*args, **kwargs)
-
-    detector.rebuild = counting_rebuild
-
-    state = model.state()
+    dt = 5.0e-3
+    solver = newton.solvers.SolverVBD(model, iterations=5)
     model_q = model.particle_q.numpy()
-    moved_q = model_q.copy()
-    moved_q[:, 0] += 5.0
 
-    # A reset that restores positions rebuilds the BVH exactly once.
-    state.particle_q.assign(moved_q)
-    solver.reset(state, flags=newton.StateFlags.PARTICLE_Q)
-    np.testing.assert_allclose(state.particle_q.numpy(), model_q)
-    test.assertEqual(rebuild_calls["n"], 1)
+    # Reference: one step from the model defaults.
+    ref_in = model.state()
+    ref_out = model.state()
+    solver.step(ref_in, ref_out, None, None, dt)
+    ref_q = ref_out.particle_q.numpy()
+    test.assertTrue(np.all(np.isfinite(ref_q)))
 
-    # A velocity-only reset moves no geometry, so it does not rebuild.
-    state.particle_q.assign(moved_q)
-    rebuild_calls["n"] = 0
-    solver.reset(state, flags=newton.StateFlags.PARTICLE_QD)
-    test.assertEqual(rebuild_calls["n"], 0)
+    # Trial: perturb far away, reset back to the defaults, then step. Reusing the
+    # same solver means its particle history holds the reference step; matching it
+    # proves the reset-then-step rebaselines from the restored state.
+    trial_in = model.state()
+    trial_out = model.state()
+    moved = model_q.copy()
+    moved[:, 0] += 3.0
+    trial_in.particle_q.assign(moved)
+    trial_in.particle_qd.assign(np.full_like(model.particle_qd.numpy(), 1.0))
+    solver.reset(trial_in)
+    np.testing.assert_allclose(trial_in.particle_q.numpy(), model_q)
+    solver.step(trial_in, trial_out, None, None, dt)
+    trial_q = trial_out.particle_q.numpy()
 
-    # A flags=0 reset touches no particle state, so it does not rebuild.
-    solver.reset(state, flags=0)
-    test.assertEqual(rebuild_calls["n"], 0)
+    test.assertTrue(np.all(np.isfinite(trial_q)))
+    np.testing.assert_allclose(trial_q, ref_q, rtol=1.0e-5, atol=1.0e-6)
+    # Both deformable types advanced under gravity (not a trivial no-op).
+    test.assertTrue(np.any(np.abs(ref_q[:cloth_count] - model_q[:cloth_count]) > 1.0e-8))
+    test.assertTrue(np.any(np.abs(ref_q[cloth_count:] - model_q[cloth_count:]) > 1.0e-8))
 
 
 def _rigid_reset_replays_captured_step(test, device):
@@ -3163,8 +3182,8 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_soft_reset_rebuilds_self_contact_bvh",
-    _soft_reset_rebuilds_self_contact_bvh,
+    "test_soft_reset_then_step_advances_cloth_and_tet",
+    _soft_reset_then_step_advances_cloth_and_tet,
     devices=devices,
 )
 add_function_test(
