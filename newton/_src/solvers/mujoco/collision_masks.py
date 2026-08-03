@@ -14,7 +14,7 @@ MUJOCO_COLLISION_MASK_UNSET = np.iinfo(np.int64).min
 """Sentinel for Newton shapes without preserved MuJoCo collision masks."""
 
 MUJOCO_COLLISION_MASK_DOMAIN_UNSET = -1
-"""Sentinel for Newton shapes without an imported MuJoCo mask domain."""
+"""Sentinel for shapes whose collision masks have no MJCF import provenance."""
 
 NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT = 256
 NEWTON_COLLISION_MASK_MAX_EXCLUDED_PAIR_COUNT = 1024

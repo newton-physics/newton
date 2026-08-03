@@ -470,28 +470,63 @@ detection.
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
 
-MJCF import compiles the effective ``contype`` / ``conaffinity`` pair matrix
-into Newton collision groups plus exact sparse exclusions. The original
-32-bit values are also retained as ``model.mujoco.contype`` and
-``model.mujoco.conaffinity`` custom attributes. When every selected collision
-shape has those imported attributes from one MJCF import,
-``use_mujoco_contacts=True`` forwards them verbatim when all Newton pair
-filters are already covered by the masks, same-body filtering, or body-wide
-MuJoCo ``<exclude>`` elements. A narrower Newton pair filter or a selection
-that combines independent MJCF imports instead triggers the exact native-graph
-conversion below. Preserved masks remain authoritative over later Newton
-collision-group edits within a single import.
+MuJoCo assigns every geom two 32-bit masks, ``contype`` and ``conaffinity``.
+For a candidate pair ``a, b``, its mask test passes when
+``(contype_a & conaffinity_b) != 0`` or
+``(contype_b & conaffinity_a) != 0``. MuJoCo then applies other selection
+rules, including same-body suppression and body-wide ``<exclude>`` elements;
+explicit ``<pair>`` elements bypass the automatic mask test. See MuJoCo's
+`collision selection documentation
+<https://mujoco.readthedocs.io/en/stable/computation/index.html#selection>`__
+and the `geom mask attributes
+<https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-geom>`__.
 
-For native Newton models, :class:`~newton.solvers.SolverMuJoCo` instead
-compiles the signed collision groups and pair filters into MuJoCo mask bits.
-Each bit represents a complete bipartite collision subgraph, so the conversion
-is exact only when the Newton pair graph has a biclique cover of at most
-32 bits. The compiler is guaranteed to find an exact representation for up to
-33 selected shapes, and commonly fits much larger group-structured models.
+**Importing MJCF masks.**
+
+:func:`~newton.utils.parse_mjcf` resolves inherited ``contype`` and
+``conaffinity`` values and evaluates the complete pair relation. It lowers
+that relation exactly into Newton signed collision groups plus sparse pair
+exclusions. The original 32-bit values are also retained as
+``model.mujoco.contype`` and ``model.mujoco.conaffinity`` custom attributes
+for a lossless round trip back to MuJoCo.
+
+A mask bit has meaning only within the MJCF source that assigned it. For
+example, bit 0 in two independently imported files may describe unrelated
+shape sets. Treating those equal bit numbers as one namespace would create
+unintended cross-import contacts. Each :func:`~newton.utils.parse_mjcf`
+call therefore assigns its shapes an internal
+``model.mujoco.collision_mask_domain`` value. This value records provenance;
+it is not a collision mask and does not itself enable or disable contacts.
+
+**Choosing masks for a MuJoCo solver.**
+
+With ``use_mujoco_contacts=True``, preserved source masks are forwarded
+verbatim only when every selected collision shape has masks from the same
+import domain and those masks already cover all active Newton pair filters.
+Same-body filtering and imported body-wide ``<exclude>`` elements also count
+as covered. This path preserves the source MJCF exactly, so its masks remain
+authoritative over later edits to Newton collision groups.
+
+A native shape, a selection spanning multiple import domains, or a narrower
+Newton pair filter makes direct forwarding unsafe. The solver instead builds
+the selected shapes' combined Newton pair graph and compiles that graph into
+a fresh set of MuJoCo masks. Thus separately imported models compose
+according to their Newton groups and filters rather than accidentally
+sharing source-local mask bits.
+
+**Compiling Newton filtering to MuJoCo masks.**
+
+Each output bit represents a complete bipartite collision subgraph: shapes
+carrying the bit in ``contype`` collide with shapes carrying it in
+``conaffinity``. Conversion is exact when the Newton pair graph has a
+biclique cover of at most 32 bits. The compiler is guaranteed to find an
+exact representation for up to 33 selected shapes and commonly fits much
+larger group-structured models.
+
 Graphs that do not fit use the established legacy graph-color approximation,
-which may admit extra contacts. To bound the dense pair-matrix work, graphs
-above 256 selected shapes or 1,024 sparse filters skip directly to that
-fallback.
+which may admit extra contacts. Because exact compilation materializes a
+dense pair matrix, graphs above 256 selected shapes or 1,024 sparse filters
+skip directly to that fallback.
 
 .. _mujoco-margin-gap-mapping:
 

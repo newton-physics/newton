@@ -888,6 +888,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjcf_attribute_name="conaffinity",
             )
         )
+        # This is import provenance, not a MuJoCo geom attribute or a mask.
+        # Keeping it as per-shape model data lets it survive finalization and
+        # replication, so unrelated bit namespaces are not later combined.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="collision_mask_domain",
@@ -4998,10 +5001,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _compile_newton_collision_masks(model: Model, selected_shapes: np.ndarray):
         """Compile selected Newton groups and filters into MuJoCo masks."""
         groups = model.shape_collision_group.numpy()[selected_shapes]
+        # The exact compiler materializes a dense pair graph. Enforce its size
+        # limit before even reading sparse filters; the fallback needs only the
+        # selected collision groups.
         if selected_shapes.shape[0] > NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT:
             return compile_newton_collision_graph(groups)
 
-        # Group edges are derived by the compiler; only sparse explicit filters need local indices.
+        # The compiler derives group-based edges itself. Map only explicit
+        # exclusions whose two endpoints are in this solver's shape selection.
         filter_pairs = model.shape_collision_filter_pairs_array()
         if filter_pairs.shape[0]:
             to_local = np.full(model.shape_count, -1, dtype=np.int64)
@@ -5798,7 +5805,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             colliding_shapes,
         )
 
-        # Source mask bits are comparable only within one independent MJCF import.
+        # MuJoCo mask bit positions are meaningful only within the MJCF source
+        # that assigned them. Forwarding preserved masks is therefore safe only
+        # for a complete, single-domain selection whose masks already cover all
+        # active Newton filters. Mixed or multi-domain selections must instead
+        # be compiled from their combined Newton collision graph.
         use_preserved_collision_masks = (
             shape_mjc_contype is not None
             and shape_mjc_conaffinity is not None
