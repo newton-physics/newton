@@ -11,6 +11,7 @@ from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.constraints.anchor import ConstraintAnchor
 from newton._src.solvers.limx.constraints.dihedral_bending import ConstraintDihedralBending
 from newton._src.solvers.limx.constraints.distance import ConstraintDistance
+from newton._src.solvers.limx.constraints.self_collision import ConstraintSelfCollision, _ContactBuffer
 from newton._src.solvers.limx.constraints.triangle_elastic import ConstraintTriangleElastic
 from newton._src.solvers.limx.linear_solver import PcgSolver
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
@@ -1065,7 +1066,312 @@ class TestPcgSolver(unittest.TestCase):
         np.testing.assert_array_equal(solution.numpy(), np.zeros((2, 3)))
 
 
+@unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+class TestSelfCollisionContactBuffer(unittest.TestCase):
+    def test_four_particle_contact_matches_dense_rank_one_system(self):
+        self._assert_contact_matches_dense_reference(
+            weights=np.asarray([1.0, -0.2, -0.3, -0.5], dtype=np.float32),
+            direction=np.asarray([0.0, 0.6, 0.8], dtype=np.float32),
+            depth=0.04,
+            stiffness=7.0,
+        )
+
+    def test_five_particle_contact_matches_dense_rank_one_system(self):
+        self._assert_contact_matches_dense_reference(
+            weights=np.asarray([0.35, 0.65, -0.2, -0.3, -0.5], dtype=np.float32),
+            direction=np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
+            depth=0.02,
+            stiffness=11.0,
+        )
+
+    def _assert_contact_matches_dense_reference(self, weights, direction, depth, stiffness):
+        particle_count = len(weights)
+        ids = np.arange(particle_count, dtype=np.int32)
+        vectors = np.asarray(
+            [
+                [0.2, -0.1, 0.4],
+                [-0.3, 0.7, 0.1],
+                [0.5, 0.2, -0.6],
+                [-0.4, -0.2, 0.3],
+                [0.1, 0.6, -0.5],
+            ][:particle_count],
+            dtype=np.float32,
+        )
+        dense_direction = np.concatenate([weight * direction for weight in weights])
+        dense_hessian = stiffness * np.outer(dense_direction, dense_direction)
+        expected_force = (stiffness * depth * dense_direction).reshape(particle_count, 3)
+        expected_hvp = (dense_hessian @ vectors.reshape(-1)).reshape(particle_count, 3)
+        expected_diagonal = np.asarray(
+            [stiffness * weight * weight * np.outer(direction, direction) for weight in weights],
+            dtype=np.float32,
+        )
+
+        with wp.ScopedDevice("cuda:0"):
+            contacts = _ContactBuffer(arity=particle_count, capacity=2, device="cuda:0")
+            contact_ids = np.zeros((2, particle_count), dtype=np.int32)
+            contact_weights = np.zeros((2, particle_count), dtype=np.float32)
+            contact_ids[0] = ids
+            contact_weights[0] = weights
+            contacts.ids.assign(contact_ids)
+            contacts.weights.assign(contact_weights)
+            contacts.directions.assign(np.asarray([direction, [0.0, 0.0, 0.0]], dtype=np.float32))
+            contacts.depths.assign(np.asarray([depth, 0.0], dtype=np.float32))
+            contacts.count.assign(np.asarray([1], dtype=np.int32))
+
+            vector = wp.array(vectors, dtype=wp.vec3, device="cuda:0")
+            force = wp.zeros(particle_count, dtype=wp.vec3, device="cuda:0")
+            hvp = wp.zeros_like(force)
+            diagonal = wp.zeros(particle_count, dtype=wp.mat33, device="cuda:0")
+            contacts.accumulate_force(stiffness, force)
+            contacts.hessian_multiply(stiffness, vector, hvp)
+            contacts.accumulate_diagonal(stiffness, diagonal)
+
+            force_np = force.numpy()
+            hvp_np = hvp.numpy()
+            diagonal_np = diagonal.numpy()
+
+        np.testing.assert_allclose(force_np, expected_force, rtol=2.0e-6, atol=1.0e-7)
+        np.testing.assert_allclose(np.sum(force_np, axis=0), np.zeros(3), atol=1.0e-7)
+        np.testing.assert_allclose(hvp_np, expected_hvp, rtol=2.0e-6, atol=1.0e-7)
+        np.testing.assert_allclose(diagonal_np, expected_diagonal, rtol=2.0e-6, atol=1.0e-7)
+        self.assertGreaterEqual(float(vectors.reshape(-1) @ dense_hessian @ vectors.reshape(-1)), -1.0e-7)
+
+
+@unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+class TestConstraintSelfCollisionDetection(unittest.TestCase):
+    @staticmethod
+    def _make_model(positions, triangles):
+        builder = newton.ModelBuilder(up_axis="Z")
+        builder.add_particles(
+            pos=np.asarray(positions, dtype=np.float32),
+            vel=[wp.vec3(0.0)] * len(positions),
+            mass=[1.0] * len(positions),
+            radius=[0.01] * len(positions),
+        )
+        triangles = np.asarray(triangles, dtype=np.int32)
+        builder.add_triangles(triangles[:, 0], triangles[:, 1], triangles[:, 2])
+        return builder.finalize(device="cuda:0")
+
+    @staticmethod
+    def _stored_contacts(buffer):
+        count = min(int(buffer.count.numpy()[0]), buffer.capacity)
+        return (
+            buffer.ids.numpy()[:count],
+            buffer.weights.numpy()[:count],
+            buffer.directions.numpy()[:count],
+            buffer.depths.numpy()[:count],
+        )
+
+    def test_vertex_face_detection_emits_signed_barycentric_contact(self):
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, 0.05],
+            [3.0, 3.0, 3.0],
+            [4.0, 3.0, 3.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0, max_contacts=16)
+            collision.prepare(model.particle_q)
+            ids, weights, directions, depths = self._stored_contacts(collision.vertex_face_contacts)
+
+        matches = np.nonzero(np.all(ids == [3, 0, 1, 2], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        contact = int(matches[0])
+        np.testing.assert_allclose(weights[contact], [1.0, -0.5, -0.25, -0.25], atol=1.0e-6)
+        np.testing.assert_allclose(np.sum(weights[contact]), 0.0, atol=1.0e-7)
+        np.testing.assert_allclose(directions[contact], [0.0, 0.0, 1.0], atol=1.0e-6)
+        self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
+
+    def test_edge_edge_detection_uses_distinct_closest_parameters(self):
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, -2.0, 0.0],
+            [0.25, -0.3, 0.05],
+            [0.25, 0.7, 0.05],
+            [3.0, 0.7, 2.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0, max_contacts=32)
+            collision.prepare(model.particle_q)
+            ids, weights, directions, depths = self._stored_contacts(collision.edge_edge_contacts)
+
+        matches = np.nonzero(np.all(ids == [0, 1, 3, 4], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        contact = int(matches[0])
+        np.testing.assert_allclose(weights[contact], [0.75, 0.25, -0.7, -0.3], atol=1.0e-6)
+        np.testing.assert_allclose(np.sum(weights[contact]), 0.0, atol=1.0e-7)
+        np.testing.assert_allclose(directions[contact], [0.0, 0.0, -1.0], atol=1.0e-6)
+        self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
+
+    def test_shared_edge_endpoints_do_not_generate_edge_edge_contacts(self):
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (1, 3, 2)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0, max_contacts=32)
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
+
+        for contact_ids in ids:
+            self.assertEqual(len(set(contact_ids[:2]).intersection(contact_ids[2:])), 0)
+
+    def test_edge_face_crossing_emits_five_particle_untangle_contact(self):
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, -0.5],
+            [0.25, 0.25, 0.5],
+            [0.75, 0.25, 0.5],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0, max_contacts=32)
+            collision.prepare(model.particle_q)
+            ids, weights, directions, depths = self._stored_contacts(collision.edge_face_contacts)
+
+        matches = np.nonzero(np.all(ids == [3, 4, 0, 1, 2], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        contact = int(matches[0])
+        np.testing.assert_allclose(weights[contact], [0.5, 0.5, -0.5, -0.25, -0.25], atol=1.0e-6)
+        np.testing.assert_allclose(np.sum(weights[contact]), 0.0, atol=1.0e-7)
+        np.testing.assert_allclose(directions[contact], [1.0, 0.0, 0.0], atol=1.0e-6)
+        np.testing.assert_allclose(np.linalg.norm(directions[contact]), 1.0, atol=1.0e-6)
+        self.assertAlmostEqual(float(depths[contact]), 0.2, places=6)
+
+    def test_small_triangle_vertex_face_contact_is_not_treated_as_degenerate(self):
+        positions = [
+            [0.0, 0.0, 0.0],
+            [0.01, 0.0, 0.0],
+            [0.0, 0.01, 0.0],
+            [0.0025, 0.0025, 0.001],
+            [1.0, 1.0, 1.0],
+            [1.1, 1.0, 1.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(model, thickness=0.005, stiffness=10.0, max_contacts=16)
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.vertex_face_contacts)
+
+        self.assertTrue(np.any(np.all(ids == [3, 0, 1, 2], axis=1)))
+
+    def test_contact_overflow_is_counted_without_writing_past_capacity(self):
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.2, 0.2, 0.05],
+            [3.0, 3.0, 3.0],
+            [4.0, 3.0, 3.0],
+            [0.6, 0.2, 0.05],
+            [5.0, 5.0, 4.0],
+            [6.0, 5.0, 4.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5), (6, 7, 8)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0, max_contacts=1)
+            collision.prepare(model.particle_q)
+            attempted = int(collision.vertex_face_contacts.count.numpy()[0])
+            overflow = int(collision.vertex_face_contacts.overflow_count.numpy()[0])
+            stored_ids = collision.vertex_face_contacts.ids.numpy()
+            stored_weights = collision.vertex_face_contacts.weights.numpy()
+
+        self.assertGreaterEqual(attempted, 2)
+        self.assertEqual(overflow, attempted - 1)
+        self.assertEqual(stored_ids.shape, (1, 4))
+        self.assertTrue(np.isfinite(stored_weights).all())
+
+    def test_newton_step_increases_vertex_face_separation(self):
+        positions = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.25, 0.25, 0.05],
+                [3.0, 3.0, 3.0],
+                [4.0, 3.0, 3.0],
+            ],
+            dtype=np.float32,
+        )
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            model.set_gravity((0.0, 0.0, 0.0))
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=1.0e3, max_contacts=32)
+            solver = SolverLIMX(
+                model,
+                [],
+                nonlinear_iterations=1,
+                linear_iterations=50,
+                dynamic_operator=collision,
+            )
+            state_out = model.state()
+            solver.step(model.state(), state_out, None, None, 0.01)
+            result = state_out.particle_q.numpy()
+
+        face_normal = np.cross(result[1] - result[0], result[2] - result[0])
+        face_normal /= np.linalg.norm(face_normal)
+        final_distance = abs(float(np.dot(result[3] - result[0], face_normal)))
+        self.assertGreater(final_distance, 0.05)
+        self.assertTrue(np.isfinite(result).all())
+
+
 class TestSolverLIMX(unittest.TestCase):
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_dynamic_contacts_prepare_once_before_each_newton_linearization(self):
+        events = []
+        prepare_positions = []
+
+        class RecordingDynamicOperator:
+            def prepare(self, positions):
+                events.append("prepare")
+                prepare_positions.append(positions)
+
+            def accumulate_force(self, positions, output):
+                events.append("force")
+
+            def accumulate_diagonal(self, positions, output):
+                events.append("diagonal")
+
+            def hessian_multiply(self, positions, vector, output):
+                events.append("hvp")
+
+        with wp.ScopedDevice("cuda:0"):
+            builder = newton.ModelBuilder(up_axis="Z")
+            builder.add_particles(pos=[wp.vec3(0.0)], vel=[wp.vec3(0.0)], mass=[1.0], radius=[0.01])
+            model = builder.finalize(device="cuda:0")
+            dynamic_operator = RecordingDynamicOperator()
+            solver = SolverLIMX(
+                model,
+                [],
+                nonlinear_iterations=2,
+                linear_iterations=1,
+                dynamic_operator=dynamic_operator,
+            )
+            solver.step(model.state(), model.state(), None, None, 0.01)
+
+        self.assertEqual(events.count("prepare"), 2)
+        self.assertEqual(events.count("force"), 2)
+        self.assertEqual(events.count("diagonal"), 2)
+        self.assertGreaterEqual(events.count("hvp"), 2)
+        first_prepare = events.index("prepare")
+        first_force = events.index("force")
+        first_diagonal = events.index("diagonal")
+        first_hvp = events.index("hvp")
+        self.assertLess(first_prepare, first_force)
+        self.assertLess(first_force, first_diagonal)
+        self.assertLess(first_diagonal, first_hvp)
+        self.assertTrue(all(positions is solver.iterate_positions for positions in prepare_positions))
+
     def test_first_pcg_solve_warm_starts_from_previous_frame_increment(self):
         builder = newton.ModelBuilder(up_axis="Z")
         builder.add_particles(pos=[wp.vec3(0.0)], vel=[wp.vec3(0.0)], mass=[1.0], radius=[0.01])
@@ -1140,6 +1446,9 @@ class TestSolverLIMX(unittest.TestCase):
         self.assertEqual(bending_constraints[0].stiffness, 0.01)
         self.assertEqual(len(bending_constraints[0].host_dihedral_indices), 1160)
         self.assertEqual(distance_constraints, [])
+        self.assertIsInstance(example.solver.dynamic_operator, ConstraintSelfCollision)
+        self.assertAlmostEqual(example.solver.dynamic_operator.thickness, 0.01)
+        self.assertGreater(example.solver.dynamic_operator.stiffness, 0.0)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_example_cuda_graph_advances_odd_substep_state(self):
@@ -1264,6 +1573,7 @@ class TestSolverLIMX(unittest.TestCase):
         self.assertIs(newton.solvers.ConstraintAnchor, ConstraintAnchor)
         self.assertIs(newton.solvers.ConstraintDihedralBending, ConstraintDihedralBending)
         self.assertIs(newton.solvers.ConstraintDistance, ConstraintDistance)
+        self.assertIs(newton.solvers.ConstraintSelfCollision, ConstraintSelfCollision)
         self.assertIs(newton.solvers.ConstraintTriangleElastic, ConstraintTriangleElastic)
 
     def test_rejects_model_with_rigid_bodies(self):

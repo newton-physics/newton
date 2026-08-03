@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         ConstraintAnchor,
         ConstraintDihedralBending,
         ConstraintDistance,
+        ConstraintSelfCollision,
         ConstraintTriangleElastic,
         SolverLIMX,
     )
@@ -27,6 +28,7 @@ __all__ = [
     "ConstraintAnchor",
     "ConstraintDihedralBending",
     "ConstraintDistance",
+    "ConstraintSelfCollision",
     "ConstraintTriangleElastic",
     "SolverBase",
     "SolverFeatherstone",
@@ -49,6 +51,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
     "ConstraintAnchor": (".limx", "ConstraintAnchor"),
     "ConstraintDihedralBending": (".limx", "ConstraintDihedralBending"),
     "ConstraintDistance": (".limx", "ConstraintDistance"),
+    "ConstraintSelfCollision": (".limx", "ConstraintSelfCollision"),
     "ConstraintTriangleElastic": (".limx", "ConstraintTriangleElastic"),
     "SolverBase": (".solver", "SolverBase"),
     "SolverFeatherstone": (".featherstone", "SolverFeatherstone"),

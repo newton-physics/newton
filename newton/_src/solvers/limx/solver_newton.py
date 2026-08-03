@@ -198,6 +198,9 @@ class SolverLIMX(SolverBase):
 
         inv_dt_squared = 1.0 / (dt * dt)
         for nonlinear_iteration in range(self.nonlinear_iterations):
+            prepare_dynamic_constraints = getattr(self.dynamic_operator, "prepare", None)
+            if prepare_dynamic_constraints is not None:
+                prepare_dynamic_constraints(self.iterate_positions)
             self.static_matrix.clear_values()
             wp.launch(
                 _initialize_rhs,

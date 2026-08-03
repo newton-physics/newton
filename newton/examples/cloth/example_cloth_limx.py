@@ -89,11 +89,18 @@ class Example:
                 self.model.device,
             ),
         ]
+        self.self_collision = newton.solvers.ConstraintSelfCollision(
+            self.model,
+            thickness=0.01,
+            stiffness=1.0e4,
+            max_contacts=32768,
+        )
         self.solver = newton.solvers.SolverLIMX(
             self.model,
             constraints,
             nonlinear_iterations=1,
             linear_iterations=50,
+            dynamic_operator=self.self_collision,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
