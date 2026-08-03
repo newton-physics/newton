@@ -373,18 +373,48 @@ def eval_effective_damping(
 # --------------------------------------------------------------------------------------------------
 
 
-class SurfaceGripper:
-    """An individual simple (linear) surface gripper (authoring object); see the section header.
+def nat_freq_damping_ratio_to_stiffness_damping(mu: float, zeta: float, m_eff: float) -> tuple[float, float]:
+    """``(k, d)`` for a 1-DOF spring-damper of effective mass/inertia ``m_eff`` tuned to angular natural
+    frequency ``mu`` [rad/s] and damping ratio ``zeta``: ``k = m_eff*mu^2``, ``d = 2*zeta*mu*m_eff``.
+    ``m_eff`` is a mass [kg] for a translation DOF, an inertia [kg.m^2] for a rotation DOF.
+    """
+    return m_eff * mu * mu, 2.0 * zeta * mu * m_eff
 
-    Author it directly and add pads with :meth:`add_pad`. Every axis has an independent stiffness and
-    damping; the caps are per DOF-group (normal, combined shear, combined peel, twist). Flatten a set
-    with :class:`SurfaceGripperBuilder`.
+
+class SurfaceGripper:
+    """An individual linear surface gripper (authoring object); see the section header.
+
+    Construct with the target ``body_id`` and gripper ``xform`` only, then set the seal parameters with
+    exactly one of :meth:`set_stiffness_damping` (per-axis stiffness/damping directly) or
+    :meth:`set_natural_frequency_damping_ratio` (per-axis natural frequency / damping ratio, converted
+    against a design box). Add pads with :meth:`add_pad` and flatten with :class:`SurfaceGripperBuilder`.
     """
 
-    def __init__(
+    def __init__(self, body_id: int, xform: wp.transform):
+        self.body_id = body_id
+        self.xform = xform
+        self.pads: list[wp.transform] = []  # pad poses in the gripper frame
+        # Seal parameters -- zero (no seal force) until set via one of the two setters below.
+        self.f_grip_max = 0.0
+        self.k_normal = 0.0
+        self.d_normal = 0.0
+        self.f_normal_max = 0.0
+        self.k_shear_x = 0.0
+        self.d_shear_x = 0.0
+        self.k_shear_y = 0.0
+        self.d_shear_y = 0.0
+        self.f_shear_max = 0.0
+        self.k_peel_x = 0.0
+        self.d_peel_x = 0.0
+        self.k_peel_y = 0.0
+        self.d_peel_y = 0.0
+        self.f_peel_max = 0.0
+        self.k_torsion = 0.0
+        self.d_torsion = 0.0
+        self.f_torsion_max = 0.0
+
+    def set_stiffness_damping(
         self,
-        body_id: int,
-        xform: wp.transform,
         f_grip_max: float,
         k_normal: float,
         d_normal: float,
@@ -402,13 +432,13 @@ class SurfaceGripper:
         k_torsion: float,
         d_torsion: float,
         f_torsion_max: float,
-    ):
-        self.body_id = body_id
-        self.xform = xform
-        self.f_grip_max = f_grip_max  # suction preload [N]; f_min = control * f_grip_max, added on z
-        # Independent stiffness and damping on every axis; the caps are per DOF-group: one for normal,
-        # one shared by the two shear axes (combined magnitude), one shared by the two peel axes, one
-        # for twist (0 => uncapped).
+    ) -> "SurfaceGripper":
+        """Set the seal from per-axis stiffness and damping directly; returns ``self``.
+
+        ``f_grip_max`` is the vacuum grip [N] (the normal pull cap = ``control * f_grip_max``); the
+        ``f_*_max`` are the per DOF-group force caps (0 => uncapped).
+        """
+        self.f_grip_max = f_grip_max
         self.k_normal = k_normal
         self.d_normal = d_normal
         self.f_normal_max = f_normal_max
@@ -416,16 +446,67 @@ class SurfaceGripper:
         self.d_shear_x = d_shear_x
         self.k_shear_y = k_shear_y
         self.d_shear_y = d_shear_y
-        self.f_shear_max = f_shear_max  # combined shear cap sqrt(fx^2 + fy^2) [N]
+        self.f_shear_max = f_shear_max
         self.k_peel_x = k_peel_x
         self.d_peel_x = d_peel_x
         self.k_peel_y = k_peel_y
         self.d_peel_y = d_peel_y
-        self.f_peel_max = f_peel_max  # combined peel cap sqrt(mx^2 + my^2) [N.m]
+        self.f_peel_max = f_peel_max
         self.k_torsion = k_torsion
         self.d_torsion = d_torsion
         self.f_torsion_max = f_torsion_max
-        self.pads: list[wp.transform] = []  # pad poses in the gripper frame
+        return self
+
+    def set_natural_frequency_damping_ratio(
+        self,
+        box: tuple,
+        f_grip_max: float,
+        normal_mode: tuple,
+        shear_x_mode: tuple,
+        shear_y_mode: tuple,
+        peel_x_mode: tuple,
+        peel_y_mode: tuple,
+        torsion_mode: tuple,
+        f_normal_max: float = 0.0,
+        f_shear_max: float = 0.0,
+        f_peel_max: float = 0.0,
+        f_torsion_max: float = 0.0,
+    ) -> "SurfaceGripper":
+        """Set the seal from per-axis modes ``(angular natural frequency [rad/s], damping ratio)``,
+        converted to stiffness/damping (:func:`nat_freq_damping_ratio_to_stiffness_damping`) against a
+        design ``box`` = ``((hx, hy, hz) half-extents [m], mass [kg])``. Translation DOFs use the box
+        mass; peel/twist use its solid-box inertia about that axis. Returns ``self``.
+        """
+        (hx, hy, hz), m = box
+        ixx = m / 3.0 * (hy * hy + hz * hz)  # solid-box inertia about x (peel-x)
+        iyy = m / 3.0 * (hx * hx + hz * hz)  # about y (peel-y)
+        izz = m / 3.0 * (hx * hx + hy * hy)  # about z (twist)
+        to = nat_freq_damping_ratio_to_stiffness_damping
+        k_normal, d_normal = to(*normal_mode, m)
+        k_shear_x, d_shear_x = to(*shear_x_mode, m)
+        k_shear_y, d_shear_y = to(*shear_y_mode, m)
+        k_peel_x, d_peel_x = to(*peel_x_mode, ixx)
+        k_peel_y, d_peel_y = to(*peel_y_mode, iyy)
+        k_torsion, d_torsion = to(*torsion_mode, izz)
+        return self.set_stiffness_damping(
+            f_grip_max,
+            k_normal,
+            d_normal,
+            f_normal_max,
+            k_shear_x,
+            d_shear_x,
+            k_shear_y,
+            d_shear_y,
+            f_shear_max,
+            k_peel_x,
+            d_peel_x,
+            k_peel_y,
+            d_peel_y,
+            f_peel_max,
+            k_torsion,
+            d_torsion,
+            f_torsion_max,
+        )
 
     def add_pad(self, xform: wp.transform) -> int:
         """Add a pad at ``xform`` (gripper frame). Returns its index within this gripper."""
