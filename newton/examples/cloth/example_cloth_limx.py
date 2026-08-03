@@ -65,6 +65,7 @@ class Example:
         )
         self.anchor_indices = [0, grid_cells]
         self.anchor_targets = positions_np[self.anchor_indices].copy()
+        self.anchor_y = float(self.anchor_targets[0, 1])
         self.center_index = particle_count // 2
         self.initial_center_height = float(positions_np[self.center_index, 2])
 
@@ -87,8 +88,8 @@ class Example:
         self.solver = newton.solvers.SolverLIMX(
             self.model,
             constraints,
-            nonlinear_iterations=4,
-            linear_iterations=32,
+            nonlinear_iterations=64,
+            linear_iterations=10,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -130,6 +131,8 @@ class Example:
         np.testing.assert_allclose(positions[self.anchor_indices], self.anchor_targets, atol=1.0e-3)
         if positions[self.center_index, 2] >= self.initial_center_height - 5.0e-2:
             raise AssertionError("LIMX cloth center did not sag under gravity")
+        if positions[self.center_index, 1] >= self.anchor_y:
+            raise AssertionError("LIMX cloth center did not swing past the anchor line")
         if float(np.max(current_edge_lengths)) >= 2.0 * float(np.max(self.rest_lengths)):
             raise AssertionError("LIMX cloth springs stretched beyond the expected bound")
 
