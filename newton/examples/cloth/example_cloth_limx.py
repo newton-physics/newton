@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Mass-spring cloth solved by the LIMX block-CSR/PCG pipeline."""
+"""Mass-spring cloth solved by the LIMX projected-Newton pipeline."""
 
 import numpy as np
 import warp as wp
@@ -88,8 +88,8 @@ class Example:
         self.solver = newton.solvers.SolverLIMX(
             self.model,
             constraints,
-            nonlinear_iterations=64,
-            linear_iterations=10,
+            nonlinear_iterations=4,
+            linear_iterations=32,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

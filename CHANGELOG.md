@@ -4,11 +4,11 @@
 
 ### Features
 
-- Add `SolverLIMX` with batched anchor and distance constraints, fixed-topology 3×3 block-CSR assembly, matrix-free dynamic constraint hooks, and block-Jacobi PCG.
+- Add `SolverLIMX` with current-position projected-Newton assembly, analytic batched anchor and distance Hessians, fixed-topology 3×3 block-CSR storage, matrix-free dynamic constraint hooks, and block-Jacobi PCG.
 
 ### Design Rationale
 
-- Keep constraint force/Hessian evaluation independent from linear solving so new particle constraints can compose without changing PCG.
+- Keep current-position constraint force/Hessian evaluation independent from linear solving so new particle constraints can compose without changing PCG.
 
 ### Notes & Caveats
 
