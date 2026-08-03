@@ -3,6 +3,7 @@
 
 import unittest
 
+import newton
 import numpy as np
 import warp as wp
 
@@ -11,6 +12,7 @@ from newton._src.solvers.limx.constraints.anchor import ConstraintAnchor
 from newton._src.solvers.limx.constraints.distance import ConstraintDistance
 from newton._src.solvers.limx.linear_solver import PcgSolver
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
+from newton._src.solvers.limx.solver_limx import SolverLIMX
 
 
 class TestBlockCsr(unittest.TestCase):
@@ -256,6 +258,92 @@ class TestPcgSolver(unittest.TestCase):
 
         self.assertTrue(np.isfinite(solution.numpy()).all())
         np.testing.assert_array_equal(solution.numpy(), np.zeros((2, 3)))
+
+
+class TestSolverLIMX(unittest.TestCase):
+    @staticmethod
+    def make_cloth():
+        side = 5
+        positions = [wp.vec3(x / (side - 1), y / (side - 1), 1.0) for y in range(side) for x in range(side)]
+        triangles = []
+        for y in range(side - 1):
+            for x in range(side - 1):
+                lower_left = y * side + x
+                lower_right = lower_left + 1
+                upper_left = lower_left + side
+                upper_right = upper_left + 1
+                if (x + y) % 2 == 0:
+                    triangles.extend(
+                        [(lower_left, lower_right, upper_right), (lower_left, upper_right, upper_left)]
+                    )
+                else:
+                    triangles.extend(
+                        [(lower_left, lower_right, upper_left), (lower_right, upper_right, upper_left)]
+                    )
+
+        builder = newton.ModelBuilder(up_axis="Z")
+        builder.add_particles(
+            pos=positions,
+            vel=[wp.vec3(0.0)] * len(positions),
+            mass=[0.3 / len(positions)] * len(positions),
+            radius=[0.01] * len(positions),
+        )
+        triangle_array = np.asarray(triangles, dtype=np.int32)
+        builder.add_triangles(triangle_array[:, 0], triangle_array[:, 1], triangle_array[:, 2])
+        model = builder.finalize(device="cpu")
+
+        edges = sorted(
+            {
+                tuple(sorted(edge))
+                for triangle in triangles
+                for edge in ((triangle[0], triangle[1]), (triangle[1], triangle[2]), (triangle[2], triangle[0]))
+            }
+        )
+        positions_np = np.asarray(positions, dtype=np.float32)
+        rest_lengths = [float(np.linalg.norm(positions_np[j] - positions_np[i])) for i, j in edges]
+        anchor_indices = [0, side - 1]
+        anchor_targets = [positions[index] for index in anchor_indices]
+        constraints = [
+            ConstraintAnchor(anchor_indices, anchor_targets, [1.0e6] * 2, len(positions), "cpu"),
+            ConstraintDistance(edges, rest_lengths, [1.0e3] * len(edges), len(positions), "cpu"),
+        ]
+        return model, constraints, edges, np.asarray(rest_lengths), anchor_indices, side * side // 2
+
+    def test_two_corner_anchored_cloth_sags_without_mutating_input(self):
+        model, constraints, edges, rest_lengths, anchor_indices, center_index = self.make_cloth()
+        solver = SolverLIMX(model, constraints, nonlinear_iterations=4, linear_iterations=32)
+        state_in = model.state()
+        state_out = model.state()
+        initial_positions = state_in.particle_q.numpy().copy()
+        input_velocities = state_in.particle_qd.numpy().copy()
+        input_forces = state_in.particle_f.numpy().copy()
+
+        solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+
+        np.testing.assert_array_equal(state_in.particle_q.numpy(), initial_positions)
+        np.testing.assert_array_equal(state_in.particle_qd.numpy(), input_velocities)
+        np.testing.assert_array_equal(state_in.particle_f.numpy(), input_forces)
+
+        state_in, state_out = state_out, state_in
+        for _ in range(239):
+            solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+            state_in, state_out = state_out, state_in
+
+        positions = state_in.particle_q.numpy()
+        velocities = state_in.particle_qd.numpy()
+        current_edge_lengths = np.asarray([np.linalg.norm(positions[j] - positions[i]) for i, j in edges])
+
+        np.testing.assert_allclose(positions[anchor_indices], initial_positions[anchor_indices], atol=1.0e-3)
+        self.assertLess(positions[center_index, 2], initial_positions[center_index, 2] - 5.0e-2)
+        self.assertTrue(np.isfinite(positions).all())
+        self.assertTrue(np.isfinite(velocities).all())
+        self.assertLess(float(np.max(current_edge_lengths)), 2.0 * float(np.max(rest_lengths)))
+        self.assertGreater(positions[center_index, 2], initial_positions[center_index, 2] - 0.5 * 9.81)
+
+    def test_public_exports(self):
+        self.assertIs(newton.solvers.SolverLIMX, SolverLIMX)
+        self.assertIs(newton.solvers.ConstraintAnchor, ConstraintAnchor)
+        self.assertIs(newton.solvers.ConstraintDistance, ConstraintDistance)
 
 
 if __name__ == "__main__":
