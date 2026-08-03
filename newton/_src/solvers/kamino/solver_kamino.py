@@ -778,13 +778,15 @@ class SolverKamino(SolverBase, CouplingInterface):
         if self._collision_detector_kamino is not None:
             self._contacts_kamino = self._collision_detector_kamino.contacts
         else:
-            # If collision detector is disabled allocate contacts manually
-            # TODO: We need to fix this logic to properly handle the case where the collision
-            # detector is disabled but contacts are still provided by Newton's collision pipeline.
+            # If collision detector is disabled allocate contacts based on the capacity estimate from the Newton CollisionPipeline.
+            world_count = self.model.world_count
             if self.model.rigid_contact_max == 0:
-                world_max_contacts = self._model_kamino.geoms.world_minimum_contacts
-            else:
-                world_max_contacts = [model.rigid_contact_max // self.model.world_count] * self.model.world_count
+                estimated_contacts = _estimate_rigid_contact_max(model)
+                # Write back to the model to ensure the CollisionPipeline capacity is consistent.
+                model.rigid_contact_max = ((estimated_contacts + world_count - 1) // world_count) * world_count
+
+            # Round up to the nearest multiple of the world count to account for Kamino's per world capacity.
+            world_max_contacts = [(model.rigid_contact_max + world_count - 1) // world_count] * world_count
             self._contacts_kamino = self._kamino.ContactsKamino(
                 # TODO: model=self._model_kamino,
                 capacity=world_max_contacts,
@@ -1102,8 +1104,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         if self._contacts_kamino is None or self._contacts_kamino.model_max_contacts_host == 0:
             return
 
-        # Ensure the output contacts containers has sufficient size to hold the contact data from Kamino
-        if self._contacts_kamino.model_max_contacts_host > contacts.rigid_contact_max:
+        # Kamino-generated contacts must fit in the Newton output buffer.
+        if self._detector is not None and self._contacts_kamino.model_max_contacts_host > contacts.rigid_contact_max:
             raise RuntimeError(
                 f"Contacts container has insufficient capacity for Kamino contacts: "
                 f"model_max_contacts={self._contacts_kamino.model_max_contacts_host} > "

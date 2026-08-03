@@ -41,7 +41,6 @@ from ..geometry.contacts import (
     make_contact_frame_znorm,
 )
 from ..geometry.keying import build_pair_key2
-from ..utils import logger as _msg
 
 ###
 # Module configs
@@ -609,18 +608,6 @@ class CollisionPipelineUnifiedKamino:
                 f"ContactsKamino container device ({contacts.device}) "
                 f"does not match the CD pipeline device ({self._device})."
             )
-
-        # Check if contacts can hold the maximum number of contacts.
-        # When max_contacts_per_world is set, the buffer is intentionally smaller
-        # than the theoretical maximum — excess contacts are dropped per world.
-        if contacts.model_max_contacts_host < self._max_contacts:
-            if not getattr(self, "_capacity_warning_shown", False):
-                _msg.warning(
-                    f"ContactsKamino capacity ({contacts.model_max_contacts_host}) is less than "
-                    f"the theoretical maximum ({self._max_contacts}). "
-                    f"Per-world contact limits will cap actual contacts."
-                )
-                self._capacity_warning_shown = True
 
         # Clear contacts
         contacts.clear()

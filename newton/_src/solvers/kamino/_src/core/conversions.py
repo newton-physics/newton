@@ -826,8 +826,8 @@ def compute_required_contact_capacity(
         max_contacts_per_pair: Optional maximum number of contacts to allocate per shape pair.
             If `None`, no per-pair limit is applied.
         max_contacts_per_world: Optional maximum number of contacts to allocate per world.
-            If `None`, no per-world limit is applied, otherwise it will
-            override the computed per-world requirements if it is larger.
+            If `None`, no per-world limit is applied, otherwise caps the computed
+            per-world requirements at this value.
 
     Returns:
         (model_required_contacts, world_required_contacts):
@@ -860,7 +860,7 @@ def compute_required_contact_capacity(
     )
     world_max_contacts = world_max_contacts_wp.numpy()
 
-    # Override the per-world maximum contacts if specified in the settings
+    # Cap per-world totals when a per-world maximum is specified
     if max_contacts_per_world is not None:
         world_max_contacts = np.minimum(world_max_contacts, max_contacts_per_world)
 

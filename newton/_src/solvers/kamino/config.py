@@ -100,18 +100,20 @@ class CollisionDetectorConfig(ConfigBase):
 
     max_contacts: int | None = None
     """
-    The maximum number of contacts to generate over the entire model.\n
-    Used to compute the total maximum contacts allocated for the model,
-    in conjunction with the total number of candidate geom-pairs.\n
-    Defaults to `DEFAULT_MODEL_MAX_CONTACTS` (`1000`) if unspecified.
+    Model-wide cap on contact buffer capacity during collision-detector
+    initialization.\n
+    When ``max_contacts_per_world`` is None, the geometry-based estimate is
+    capped at this value; otherwise this field is ignored.\n
+    Defaults to ``DEFAULT_MODEL_MAX_CONTACTS`` (``1000``) if unspecified.
     """
 
     max_contacts_per_world: int | None = None
     """
-    The per-world maximum contacts allocation override.\n
-    If specified, it will override the per-world maximum number of contacts
-    computed according to the candidate geom-pairs represented in the model.\n
-    Defaults to `None`, allowing contact allocations to occur according to the model.
+    Per-world contact buffer capacity override.\n
+    When set, allocates ``max_contacts_per_world`` contacts for every world
+    (``num_worlds * max_contacts_per_world`` total), bypassing the
+    geometry-based estimate and ``max_contacts``.\n
+    Defaults to ``None``.
     """
 
     max_contacts_per_pair: int | None = None
