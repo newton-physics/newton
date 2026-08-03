@@ -969,6 +969,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         filtered = coupled._entry_contact_buffers["A"]
         self.assertEqual(int(filtered.soft_contact_count.numpy()[0]), 1, "face record must survive the filter")
         np.testing.assert_array_equal(filtered.soft_contact_indices.numpy()[0], particles)
+        np.testing.assert_allclose(filtered.soft_contact_barycentric.numpy()[0], [0.6, 0.3, 0.1])
         self.assertTrue(filtered._enable_rigid_soft_full_surface_contact, "capability marker must be carried over")
 
     def test_full_surface_records_straddling_entries_are_dropped(self):
@@ -3317,7 +3318,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),  # particle_flags
             int(ShapeFlags.COLLIDE_PARTICLES),
             int(ParticleFlags.ACTIVE),
-            1,  # keep_full_surface_contacts
+            0,  # keep_full_surface_contacts
             wp.zeros(1, dtype=wp.int32, device=device),  # dst_count
             wp.full(1, -1, dtype=wp.int32, device=device),  # dst_particle
             wp.full(1, -1, dtype=wp.int32, device=device),  # dst_shape
