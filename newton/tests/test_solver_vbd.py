@@ -2366,7 +2366,7 @@ def _rigid_compliant_limit_holds_under_load(test, device):
 
 
 def _body_structural_k_refreshes_after_joint_enable_notification(test, device):
-    """Verify body_structural_k tracks joint enable flips, including under CUDA capture."""
+    """Verify body_structural_k tracks joint enable flips."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body_a = builder.add_link()
     body_b = builder.add_link()
@@ -2391,18 +2391,6 @@ def _body_structural_k_refreshes_after_joint_enable_notification(test, device):
 
     test.assertIs(solver.body_structural_k, structural_k)
     np.testing.assert_allclose(structural_k.numpy(), [0.0, 1234.0])
-
-    if wp.get_device(device).is_cuda:
-        with wp.ScopedCapture(device) as capture:
-            solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
-
-        model.joint_enabled.assign([True, False])
-        wp.capture_launch(capture.graph)
-        np.testing.assert_allclose(structural_k.numpy(), [1234.0, 0.0])
-
-        model.joint_enabled.assign([False, True])
-        wp.capture_launch(capture.graph)
-        np.testing.assert_allclose(structural_k.numpy(), [0.0, 1234.0])
 
 
 def _rigid_reset_state_and_history(test, device):

@@ -814,7 +814,10 @@ class Example:
             )
         elif self.solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(
-                self.model, iterations=VBD_ITERATIONS, rigid_body_contact_buffer_size=2048
+                self.model,
+                iterations=VBD_ITERATIONS,
+                rigid_compliant_alm=True,
+                rigid_body_contact_buffer_size=2048,
             )
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=XPBD_ITERATIONS)

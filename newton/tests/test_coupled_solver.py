@@ -2851,23 +2851,24 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         parent_joint_is_hard = model.vbd.joint_is_hard.numpy().copy()
         vbd_joint_order = [2, 3, 4, soft_joint]
 
-        coupled = SolverCoupled(
-            model=model,
-            entries=[
-                SolverCoupled.Entry(
-                    name="src",
-                    solver=SolverSemiImplicit,
-                    bodies=[0, 1],
-                    joints=[0, 1],
-                ),
-                SolverCoupled.Entry(
-                    name="dst",
-                    solver=lambda view: SolverVBD(view, iterations=1, rigid_compliant_alm=False),
-                    bodies=[2, 3, 4],
-                    joints=vbd_joint_order,
-                ),
-            ],
-        )
+        with self.assertWarnsRegex(DeprecationWarning, "joint_is_hard"):
+            coupled = SolverCoupled(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(
+                        name="src",
+                        solver=SolverSemiImplicit,
+                        bodies=[0, 1],
+                        joints=[0, 1],
+                    ),
+                    SolverCoupled.Entry(
+                        name="dst",
+                        solver=lambda view: SolverVBD(view, iterations=1, rigid_compliant_alm=False),
+                        bodies=[2, 3, 4],
+                        joints=vbd_joint_order,
+                    ),
+                ],
+            )
 
         np.testing.assert_array_equal(model.vbd.joint_is_hard.numpy(), parent_joint_is_hard)
 
