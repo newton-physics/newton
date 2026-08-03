@@ -11,6 +11,8 @@ import warp as wp
 
 from .operator import CompositeLinearOperator
 
+_DOT_BLOCK_DIM = 256
+
 
 @wp.kernel
 def _subtract(
@@ -32,10 +34,20 @@ def _apply_preconditioner(
     output[particle] = inverse_diagonal[particle] * residual[particle]
 
 
+@wp.func
+def _dot_vec3(lhs: wp.vec3, rhs: wp.vec3) -> float:
+    return wp.dot(lhs, rhs)
+
+
 @wp.kernel
 def _reduce_dot(lhs: wp.array[wp.vec3], rhs: wp.array[wp.vec3], output: wp.array[float]):
-    particle = wp.tid()
-    wp.atomic_add(output, 0, wp.dot(lhs[particle], rhs[particle]))
+    block, lane = wp.tid()
+    offset = block * _DOT_BLOCK_DIM
+    lhs_tile = wp.tile_load(lhs, shape=_DOT_BLOCK_DIM, offset=offset)
+    rhs_tile = wp.tile_load(rhs, shape=_DOT_BLOCK_DIM, offset=offset)
+    block_sum = wp.tile_sum(wp.tile_map(_dot_vec3, lhs_tile, rhs_tile))
+    if lane == 0:
+        wp.atomic_add(output, 0, block_sum[0])
 
 
 @wp.kernel
@@ -91,6 +103,7 @@ class PcgSolver:
         self._rz_previous = wp.zeros_like(self._rz)
         self._p_ap = wp.zeros_like(self._rz)
         self._residual_squared = wp.zeros_like(self._rz)
+        self._dot_block_count = (dimension + _DOT_BLOCK_DIM - 1) // _DOT_BLOCK_DIM
 
     def solve(
         self,
@@ -144,14 +157,7 @@ class PcgSolver:
                 outputs=[self.preconditioned_residual],
                 device=self.device,
             )
-            self._rz.zero_()
-            wp.launch(
-                _reduce_dot,
-                dim=self.dimension,
-                inputs=[self.residual, self.preconditioned_residual],
-                outputs=[self._rz],
-                device=self.device,
-            )
+            self._dot(self.residual, self.preconditioned_residual, self._rz)
 
             if iteration == 0:
                 wp.copy(self.direction, self.preconditioned_residual)
@@ -165,14 +171,7 @@ class PcgSolver:
                 )
 
             operator.multiply(self.direction, self.operator_direction)
-            self._p_ap.zero_()
-            wp.launch(
-                _reduce_dot,
-                dim=self.dimension,
-                inputs=[self.direction, self.operator_direction],
-                outputs=[self._p_ap],
-                device=self.device,
-            )
+            self._dot(self.direction, self.operator_direction, self._p_ap)
             wp.launch(
                 _update_solution_and_residual,
                 dim=self.dimension,
@@ -184,18 +183,32 @@ class PcgSolver:
 
             executed = iteration + 1
             if tolerance is not None and executed % check_interval == 0:
-                self._residual_squared.zero_()
-                wp.launch(
-                    _reduce_dot,
-                    dim=self.dimension,
-                    inputs=[self.residual, self.residual],
-                    outputs=[self._residual_squared],
-                    device=self.device,
-                )
+                self._dot(self.residual, self.residual, self._residual_squared)
                 if float(self._residual_squared.numpy()[0]) <= tolerance * tolerance:
                     return executed
 
         return iterations
+
+    def _dot(
+        self,
+        lhs: wp.array[wp.vec3],
+        rhs: wp.array[wp.vec3],
+        output: wp.array[float],
+    ) -> None:
+        self._validate_vector(lhs, "lhs")
+        self._validate_vector(rhs, "rhs")
+        if len(output) != 1 or output.device != self.device:
+            raise ValueError("Dot-product output must be one scalar on the solver device")
+
+        output.zero_()
+        wp.launch_tiled(
+            _reduce_dot,
+            dim=self._dot_block_count,
+            inputs=[lhs, rhs],
+            outputs=[output],
+            block_dim=_DOT_BLOCK_DIM,
+            device=self.device,
+        )
 
     def _validate_vector(self, vector: wp.array[wp.vec3], name: str) -> None:
         if len(vector) != self.dimension:

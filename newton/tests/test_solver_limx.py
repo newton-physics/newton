@@ -204,6 +204,25 @@ class TestPcgSolver(unittest.TestCase):
     def make_operator(self):
         return TestCompositeLinearOperator().make_operator()
 
+    def test_tiled_dot_reduction_handles_partial_final_block(self):
+        dimension = 517
+        lhs_values = np.ones((dimension, 3), dtype=np.float32)
+        rhs_values = np.tile(np.asarray([1.0, 2.0, 3.0], dtype=np.float32), (dimension, 1))
+        devices = ["cpu"]
+        if wp.is_cuda_available():
+            devices.append("cuda:0")
+
+        for device in devices:
+            with self.subTest(device=device):
+                solver = PcgSolver(dimension, device)
+                lhs = wp.array(lhs_values, dtype=wp.vec3, device=device)
+                rhs = wp.array(rhs_values, dtype=wp.vec3, device=device)
+                output = wp.empty(1, dtype=float, device=device)
+
+                solver._dot(lhs, rhs, output)
+
+                self.assertEqual(float(output.numpy()[0]), 517.0 * 6.0)
+
     def test_solves_known_spd_block_system(self):
         operator = self.make_operator()
         rhs = wp.array(
