@@ -6,8 +6,10 @@ description: Use when auditing Newton changelog fragments, building a dated rele
 # Newton Release Changelog
 
 Pending user-facing changes live in Towncrier fragments under `changelog/`.
-`CHANGELOG.md` keeps immutable dated history and is generated only on a release
-branch. Follow `changelog/README.md` as the command and format authority.
+`CHANGELOG.md` is generated only on a release branch. Shipped sections are
+immutable; the assembled section for the pending release remains a rolling
+document until tagging. Follow `changelog/README.md` as the command and format
+authority.
 
 ## Audit pending changes
 
@@ -38,9 +40,10 @@ branch. Follow `changelog/README.md` as the command and format authority.
 10. A numeric fragment identifier is a GitHub issue number. Towncrier renders
     its issue link automatically; do not rewrite it as a pull request number.
 
-## Build the final release
+## Assemble the release during RC stabilization
 
-Build only on `release-X.Y`, after the release audit and final cherry-picks:
+After the initial release scope has been audited on `release-X.Y`, assemble the
+current fragments early enough for maintainer review:
 
 ```bash
 uvx --from towncrier==25.8.0 towncrier build --draft \
@@ -56,24 +59,45 @@ inserts the dated section below `[Unreleased]` and deletes rendered fragments.
 It ignores `.skip` files, so remove those explicitly. Review the staged diff in
 a changelog-only pull request labeled `release-management`.
 
+After assembly, apply the audit rules above to the dated section: verify
+completeness, grouping, deduplication, wording, categories, and migration
+guidance. Keep editorial cleanup in the changelog-management commits that will
+later be synchronized to `main`.
+
 The first Towncrier release requires one migration audit. The insertion marker
 sits above the legacy `[Unreleased]` entries so they remain under the first
 generated release title. Merge duplicate category headings without dropping or
 duplicating an entry. Later releases need no special handling.
+
+Treat the assembled section as a rolling document. For every later cherry-pick
+before tagging:
+
+1. Validate the new fragments and render them with `towncrier build --draft`.
+2. Fold the previewed entries into the existing dated section without creating
+   a second release heading.
+3. Delete exactly the consumed `.md` and `.skip` fragments, then stage
+   `CHANGELOG.md` and `changelog/`.
+4. Rerun the changelog cleanup and `release-audit` checks, and merge the update
+   as another changelog-only `release-management` pull request.
+
+Final GA preparation verifies the completed section and confirms that no
+release-branch fragments remain. Do not postpone the full cleanup until GA.
 
 ## Synchronize to main
 
 After tagging:
 
 1. Create a changelog-only branch from current `main`.
-2. Cherry-pick the exact Towncrier build commit from `release-X.Y`.
-3. Confirm fragments deleted by the release disappear while fragments added to
+2. Cherry-pick, in order, every changelog-management commit from `release-X.Y`:
+   the initial Towncrier build, editorial cleanup, and all later cherry-pick
+   additions.
+3. Confirm fragments deleted by those commits disappear while fragments added to
    `main` after the branch cut remain under `changelog/`.
 4. Confirm the dated section matches the release tag and older history is
    unchanged.
 5. Open a changelog-only pull request labeled `release-management`.
 
-Do not replace the whole file with the release-branch copy. The build commit's
+Do not replace the whole file with the release-branch copy. The commits'
 path-level deletions are what preserve main-only fragments.
 
 ## Checks

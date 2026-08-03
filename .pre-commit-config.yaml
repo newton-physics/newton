@@ -56,15 +56,15 @@ repos:
       - id: towncrier-check
         entry: towncrier build --draft
         args: [--version, "0.0.0", --date, "1970-01-01"]
-        files: ^(CHANGELOG\.md|changelog/.*\.md|pyproject\.toml)$
+        files: ^(CHANGELOG\.md|changelog/|pyproject\.toml)
   - repo: local
     hooks:
       - id: changelog-policy
         name: check changelog fragment policy
-        entry: python scripts/changelog_policy.py validate
+        entry: python scripts/changelog_policy.py check-staged
         language: python
         pass_filenames: false
-        files: ^(changelog/|scripts/changelog_policy\.py|pyproject\.toml)
+        files: ^(CHANGELOG\.md|changelog/|scripts/changelog_policy\.py|pyproject\.toml)
       - id: check-warp-array-syntax
         name: check warp array syntax
         entry: python scripts/check_warp_array_syntax.py

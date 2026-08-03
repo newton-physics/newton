@@ -166,8 +166,17 @@ Prefer sequential cherry-picks in ``main`` order with ``git cherry-pick -x``
 and keep the backport PR unsquashed.  Keep change/revert pairs together.  A bulk
 merge is appropriate only when every intervening commit belongs in the release.
 
-Build the Towncrier fragments on ``release-X.Y`` and synchronize that build
-commit to ``main`` after release, as described in :ref:`post-release`.
+After the initial release scope audit, build the Towncrier fragments on
+``release-X.Y`` early enough during RC stabilization for maintainer review.
+Run the ``release-changelog`` skill against the assembled section for
+completeness, grouping, deduplication, wording, category, and migration-guidance
+cleanup.
+
+Treat the assembled section as a rolling document.  For later cherry-picks,
+render their fragments with ``--draft``, fold the entries into the existing
+section, delete the consumed fragments, and rerun the changelog cleanup and
+``release-audit`` checks.  Synchronize every changelog-management commit to
+``main`` after release, as described in :ref:`post-release`.
 
 For each new RC, repeat the version, generated-file, validation, and tag steps
 used for RC1.
@@ -236,14 +245,11 @@ otherwise.
    * - ☐
      - Go/no-go approval obtained from maintainers.
    * - ☐
-     - On ``release-X.Y``, run
-       ``uvx --from towncrier==25.8.0 towncrier build --draft`` with the GA
-       version and date, audit and approve the preview, then rerun with
-       ``--yes`` as documented in ``changelog/README.md``.  Delete ``.skip``
-       fragments and merge the changelog-only pull request with the
-       ``release-management`` label before preparing the final version.  For
-       the first Towncrier release, also merge duplicate category headings
-       while retaining every legacy ``[Unreleased]`` entry.
+     - Verify the rolling ``X.Y.Z`` changelog section is complete and has
+       passed the ``release-changelog`` and ``release-audit`` checks.  Confirm
+       no release fragments remain under ``changelog/``.  For the first
+       Towncrier release, also confirm duplicate category headings were merged
+       while every legacy ``[Unreleased]`` entry was retained.
    * - ☐
      - Update ``README.md`` documentation links to point to versioned URLs
        (e.g. ``/X.Y.Z/guide.html`` instead of ``/latest/``).
@@ -318,11 +324,12 @@ Post-release
    :header-rows: 0
 
    * - ☐
-     - Inspect the release's exact Towncrier build commit, then cherry-pick it
-       onto a changelog-only branch from ``main``.  Review the resulting diff
-       before merging it in a pull request with the ``release-management``
-       label.  Confirm that post-cut fragments remain pending under
-       ``changelog/``.
+     - Inspect and cherry-pick, in order, every changelog-management commit
+       from ``release-X.Y`` onto a changelog-only branch from ``main``: the
+       initial Towncrier build, editorial cleanup, and later cherry-pick
+       additions.  Review the resulting diff before merging it in a pull
+       request with the ``release-management`` label.  Confirm that post-cut
+       fragments remain pending under ``changelog/``.
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐

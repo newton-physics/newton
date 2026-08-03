@@ -84,7 +84,8 @@ uvx --from towncrier==25.8.0 towncrier create 3607.added.md \
 For an orphan, supply the readable random identifier directly. Towncrier's
 shorter `+.added.md` form also works, but generates an opaque random name.
 
-Validate all pending fragments:
+Validate Newton-specific fragment policy, then use Towncrier to validate and
+preview every renderable filename:
 
 ```console
 uv run --no-project python scripts/changelog_policy.py validate
@@ -100,10 +101,10 @@ uvx --from towncrier==25.8.0 towncrier build --draft \
 
 `--draft` is the safe command to run during development.
 
-## Build a release
+## Assemble and maintain a release
 
-Build only on `release-X.Y`, after the release audit has selected and
-cherry-picked every change that will ship. First render and approve the
+Build only on `release-X.Y`. After the initial release scope audit, assemble the
+current fragments early during RC stabilization. First render and approve the
 non-mutating preview, then run the mutating build:
 
 ```console
@@ -125,7 +126,18 @@ under the first generated release title. During that release audit, merge any
 duplicate category headings and verify that every legacy entry is retained.
 
 Open the build as a changelog-only pull request with the existing
-`release-management` label. After the release, cherry-pick that build commit
-onto a changelog-only branch from `main` and open another `release-management`
-pull request. Git removes only fragments that shipped; fragments added to
-`main` after the release branch was cut remain pending for the next release.
+`release-management` label. Run the `release-changelog` cleanup against the
+assembled section for completeness, grouping, deduplication, wording,
+categories, and migration guidance.
+
+If more changes are cherry-picked before tagging, render only their fragments
+with `--draft`, fold the previewed entries into the existing dated section,
+delete exactly those `.md` and `.skip` fragments, and rerun the changelog and
+release audits. Final GA preparation verifies the completed section and that no
+release fragments remain.
+
+After the release, cherry-pick every changelog-management commit in order onto
+a changelog-only branch from `main`: the initial build, editorial cleanup, and
+later fragment additions. Open another `release-management` pull request. Git
+removes only fragments that shipped; fragments added to `main` after the
+release branch was cut remain pending for the next release.

@@ -3,7 +3,7 @@ name: release-audit
 description: "Use when auditing Newton's pending Towncrier fragments for keep/defer decisions, reviewing an RC for readiness, or calibrating against an already-shipped release."
 disable-model-invocation: true
 argument-hint: "[target-version]"
-allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(git ls-tree *) Bash(uv run --no-project python scripts/changelog_policy.py validate) Bash(uvx --from towncrier==25.8.0 towncrier build --draft *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
+allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(git ls-tree *) Bash(uv run --no-project python scripts/changelog_policy.py validate) Bash(uvx --from towncrier==25.8.0 towncrier build --draft *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
 ---
 
 # Release Audit
@@ -164,22 +164,27 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
    - If a new package is proprietary, copyleft, commercial, unknown, not declared, or not checked due to lookup failure, mention that in the release highlights only when users can install it through a published extra or documented workflow.
 
 3. Load the pending or released changelog source by mode:
-   - **Pre-release / RC**: pending user-facing changes are the `.md` fragments
-     on the resolved head plus legacy `[Unreleased]` entries until the first
-     Towncrier release. Enumerate `changelog/*.md` with
+   - **Pre-release / RC**: user-facing release scope is the rolling
+     `## [<target-version>]` section in `CHANGELOG.md`, when already assembled,
+     plus any later `.md` fragments on the resolved head. Before the first
+     Towncrier build, use the fragments plus legacy `[Unreleased]` entries.
+     Enumerate `changelog/*.md` with
      `git ls-tree -r --name-only <head> -- changelog`, exclude `README.md`,
      and read each file with `git show <head>:<path>`. Inventory `.skip` files
-     separately. Read `CHANGELOG.md` with `git show <head>:CHANGELOG.md`; legacy
-     entries, when present, are between
-     `<!-- towncrier release notes start -->` and the next dated `##` heading.
+     separately. Read `CHANGELOG.md` with `git show <head>:CHANGELOG.md`. If the
+     target's dated section exists, collect it through the next dated heading
+     and treat it as the assembled baseline. Otherwise, legacy entries are
+     between `<!-- towncrier release notes start -->` and the next dated `##`
+     heading.
      If the audited head is the checked-out clean working tree, also run:
      ```bash
      uv run --no-project python scripts/changelog_policy.py validate
      uvx --from towncrier==25.8.0 towncrier build --draft \
        --version X.Y.Z --date YYYY-MM-DD
      ```
-     Use the draft output as the canonical fragment preview; it does not modify
-     `CHANGELOG.md` or delete fragments.
+     Use the draft output as the canonical preview for fragments not yet folded
+     into the rolling section; it does not modify `CHANGELOG.md` or delete
+     fragments. Audit the assembled baseline and draft additions together.
    - **Retrospective**: read the target tag's changelog with
      `git show v<target>:CHANGELOG.md`. Locate the `## [<target-version>]`
      header and collect content up to the next dated `##` heading.
@@ -560,7 +565,7 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
    Capture the gist URL from stdout.
 3. Delete the validated temporary report with:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py /tmp/<gist-filename>
+   uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py /tmp/<gist-filename>
    ```
 4. Print a one-line chat summary:
    - Gist URL.
@@ -575,7 +580,7 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
    `gh` matches the basename to the existing file in the gist and replaces its contents; the prior version is preserved in the gist's git history. Do NOT pass `--desc` — keeping the description stable is what lets the next run match this gist again.
 3. Delete the validated temporary report with:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py /tmp/<gist-filename>
+   uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py /tmp/<gist-filename>
    ```
 4. Print a one-line chat summary:
    - Gist URL (`https://gist.github.com/<id>`).
@@ -600,6 +605,6 @@ Never pass `--public`. Never file a destination the user did not choose.
 - **`Added` entry names a symbol not resolvable at HEAD**: render with a ⚠️ note; do NOT emit synthetic `newton.*` stub names.
 - **`upstream/` remote missing**: substitute `origin/`. Note the substitution in the report header.
 - **Release branch exists but contains no new commits past main**: treat as head==main effectively; skip cherry-pick detection.
-- **No pending `.md` fragments or legacy `[Unreleased]` entries in pre-release / RC mode**: header warns: "No user-facing pending changelog entries found on the audited ref." Report the `.skip` count separately so an intentionally quiet release is distinguishable from missing data.
+- **No rolling target section, pending `.md` fragments, or legacy `[Unreleased]` entries in pre-release / RC mode**: header warns: "No user-facing pending changelog entries found on the audited ref." Report the `.skip` count separately so an intentionally quiet release is distinguishable from missing data.
 - **`gh` installed but not authenticated**: treat as `gh` unavailable; skip gist matching and gist prompt; add one-line chat note.
 - **`pyproject.toml` version is non-standard** (not matching `X.Y.ZdevN`, `X.Y.ZrcN`, or `X.Y.Z`): treat as pre-release mode, record the raw string in the header, and continue.

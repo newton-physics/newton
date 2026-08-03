@@ -57,10 +57,11 @@ class ChangelogPolicyTest(unittest.TestCase):
             self.assertEqual(changelog_policy.validate_directory(fragment_directory), [])
 
     def test_rejects_invalid_fragment_content(self):
-        """Reject invalid names, bullets, punctuation, and skip reasons."""
+        """Reject invalid skip names, bullets, punctuation, and skip reasons."""
         with tempfile.TemporaryDirectory() as temp_directory:
             fragment_directory = Path(temp_directory)
             (fragment_directory / "feature.md").write_text("Add feature.\n", encoding="utf-8")
+            (fragment_directory / "feature.skip").write_text("Internal change.\n", encoding="utf-8")
             (fragment_directory / "3607.added.md").write_text("- Add feature\n", encoding="utf-8")
             (fragment_directory / "3608.skip").write_text(
                 "Internal change.\nSecond line.\n",
@@ -70,7 +71,8 @@ class ChangelogPolicyTest(unittest.TestCase):
             errors = changelog_policy.validate_directory(fragment_directory)
 
         self.assertEqual(len(errors), 4)
-        self.assertTrue(any("use ISSUE.CATEGORY.md" in error for error in errors))
+        self.assertTrue(any("use ISSUE.skip" in error for error in errors))
+        self.assertFalse(any("feature.md" in error for error in errors))
         self.assertTrue(any("omit the leading bullet" in error for error in errors))
         self.assertTrue(any("end with a period" in error for error in errors))
         self.assertTrue(any("one-line reason" in error for error in errors))
@@ -101,6 +103,19 @@ class ChangelogPolicyTest(unittest.TestCase):
                 target_branch="main",
                 labels=set(),
             ),
+        )
+
+    def test_rejects_direct_changelog_edits_for_normal_pull_requests(self):
+        """Reject a normal pull request that edits the generated changelog."""
+        errors = changelog_policy.validate_pr_changes(
+            [changelog_policy.Change("M", PurePosixPath("CHANGELOG.md"))],
+            target_branch="main",
+            labels=set(),
+        )
+
+        self.assertIn(
+            "Normal pull requests must not edit CHANGELOG.md; add a fragment under changelog/",
+            errors,
         )
 
     def test_allows_multiple_backport_fragment_identifiers(self):
@@ -147,7 +162,7 @@ class ChangelogPolicyTest(unittest.TestCase):
         )
 
     def test_enforces_release_management_scope(self):
-        """Allow release management to update only the changelog and deletions."""
+        """Require release builds to consume fragments while preserving main-only work."""
         accepted = [
             changelog_policy.Change("M", PurePosixPath("CHANGELOG.md")),
             changelog_policy.Change("D", PurePosixPath("changelog/3607.added.md")),
@@ -163,6 +178,26 @@ class ChangelogPolicyTest(unittest.TestCase):
                 accepted,
                 target_branch="release-1.5",
                 labels={"release-management"},
+                pending_fragments=set(),
+            ),
+            [],
+        )
+        self.assertIn(
+            "release-management pull requests to a release branch must consume all fragments; remaining paths: "
+            "changelog/3609.fixed.md",
+            changelog_policy.validate_pr_changes(
+                accepted,
+                target_branch="release-1.5",
+                labels={"release-management"},
+                pending_fragments={PurePosixPath("changelog/3609.fixed.md")},
+            ),
+        )
+        self.assertEqual(
+            changelog_policy.validate_pr_changes(
+                accepted,
+                target_branch="main",
+                labels={"release-management"},
+                pending_fragments={PurePosixPath("changelog/3609.fixed.md")},
             ),
             [],
         )
@@ -171,7 +206,63 @@ class ChangelogPolicyTest(unittest.TestCase):
                 rejected,
                 target_branch="release-1.5",
                 labels={"release-management"},
+                pending_fragments=set(),
             )
+        )
+
+    def test_checks_merge_group_diff_policy(self):
+        """Check composable fragment and release rules at the merge queue."""
+        fragment_types = changelog_policy.load_towncrier_fragment_types()
+        normal_changes = [
+            changelog_policy.Change("A", PurePosixPath("changelog/3607.added.md")),
+            changelog_policy.Change("A", PurePosixPath("changelog/3608.fixed.md")),
+        ]
+        direct_changelog_edit = [
+            changelog_policy.Change("M", PurePosixPath("CHANGELOG.md")),
+            changelog_policy.Change("M", PurePosixPath("newton/__init__.py")),
+        ]
+
+        self.assertEqual(
+            changelog_policy.validate_merge_group_changes(
+                normal_changes,
+                target_branch="refs/heads/main",
+                fragment_types=fragment_types,
+                pending_fragments=set(),
+            ),
+            [],
+        )
+        self.assertTrue(
+            changelog_policy.validate_merge_group_changes(
+                direct_changelog_edit,
+                target_branch="refs/heads/main",
+                fragment_types=fragment_types,
+                pending_fragments=set(),
+            )
+        )
+
+    def test_checks_staged_changelog_edits(self):
+        """Reject direct staged changelog edits while allowing release-shaped changes."""
+        fragment_types = changelog_policy.load_towncrier_fragment_types()
+        direct_edit = [changelog_policy.Change("M", PurePosixPath("CHANGELOG.md"))]
+        release_changes = [
+            *direct_edit,
+            changelog_policy.Change("D", PurePosixPath("changelog/3607.added.md")),
+        ]
+
+        self.assertTrue(
+            changelog_policy.validate_staged_changes(
+                direct_edit,
+                fragment_types=fragment_types,
+                pending_fragments=set(),
+            )
+        )
+        self.assertEqual(
+            changelog_policy.validate_staged_changes(
+                release_changes,
+                fragment_types=fragment_types,
+                pending_fragments=set(),
+            ),
+            [],
         )
 
 
@@ -191,11 +282,11 @@ class TowncrierWorkflowTest(unittest.TestCase):
         """Remove the isolated test repository."""
         self.temp_directory.cleanup()
 
-    def _run(self, *command: str) -> subprocess.CompletedProcess[str]:
+    def _run(self, *command: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             command,
             cwd=self.repository,
-            check=True,
+            check=check,
             capture_output=True,
             encoding="utf-8",
             env={**os.environ, "PYTHONUTF8": "1"},
@@ -204,11 +295,28 @@ class TowncrierWorkflowTest(unittest.TestCase):
     def _git(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return self._run("git", *arguments)
 
-    def _towncrier(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+    def _towncrier(self, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         executable = shutil.which("towncrier")
         if executable is None:
             self.skipTest("Towncrier is not installed in the test environment")
-        return self._run(executable, *arguments)
+        return self._run(executable, *arguments, check=check)
+
+    def test_build_rejects_invalid_renderable_filenames(self):
+        """Let Towncrier reject invalid non-skip fragment names."""
+        (self.repository / "changelog" / "feature.md").write_text("Add a feature.\n", encoding="utf-8")
+
+        result = self._towncrier(
+            "build",
+            "--draft",
+            "--version",
+            "1.5.0",
+            "--date",
+            "2026-08-01",
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Invalid news fragment name", result.stderr)
 
     def test_build_preserves_legacy_unreleased_entries(self):
         """Keep legacy unreleased entries beneath the first generated release."""
