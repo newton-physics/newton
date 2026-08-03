@@ -91,7 +91,7 @@ class SolverLIMX(SolverBase):
         constraints: Sequence[Any],
         nonlinear_iterations: int = 4,
         linear_iterations: int = 32,
-        velocity_damping: float = 0.998,
+        velocity_damping: float = 1.0,
         dynamic_operator: Any | None = None,
     ):
         """Create a LIMX particle solver.

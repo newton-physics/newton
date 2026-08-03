@@ -314,15 +314,22 @@ class TestSolverLIMX(unittest.TestCase):
         input_velocities = state_in.particle_qd.numpy().copy()
         input_forces = state_in.particle_f.numpy().copy()
 
-        solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+        dt = 1.0 / 240.0
+        solver.step(state_in, state_out, None, None, dt)
 
         np.testing.assert_array_equal(state_in.particle_q.numpy(), initial_positions)
         np.testing.assert_array_equal(state_in.particle_qd.numpy(), input_velocities)
         np.testing.assert_array_equal(state_in.particle_f.numpy(), input_forces)
+        np.testing.assert_allclose(
+            state_out.particle_qd.numpy(),
+            (state_out.particle_q.numpy() - initial_positions) / dt,
+            rtol=1.0e-6,
+            atol=1.0e-7,
+        )
 
         state_in, state_out = state_out, state_in
         for _ in range(239):
-            solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+            solver.step(state_in, state_out, None, None, dt)
             state_in, state_out = state_out, state_in
 
         positions = state_in.particle_q.numpy()

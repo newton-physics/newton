@@ -12,7 +12,7 @@
 
 ### Notes & Caveats
 
-- Support active, positive-mass particles only in this initial version; fixed positions use `ConstraintAnchor`, collision terms are currently a no-op, and rigid-body degrees of freedom are intentionally rejected.
+- Support active, positive-mass particles only in this initial version; fixed positions use `ConstraintAnchor`, velocity damping is opt-in and defaults to `1.0`, collision terms are currently a no-op, and rigid-body degrees of freedom are intentionally rejected.
 
 ## [isaacsim-6.0.1-dev] - 2026-07-29
 
