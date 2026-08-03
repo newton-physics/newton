@@ -1648,10 +1648,24 @@ def evaluate_cable_stretch_shear_force_hessian(
 
     t = _quat_rotate_local_z(q_wp)
     K_eff = h_s * wp.identity(3, float) + (h_z - h_s) * wp.outer(t, t)
-    rx = wp.skew(r)
     H_ll = K_eff
-    H_al = rx * K_eff
-    H_aa = wp.transpose(rx) * K_eff * rx
+    if is_parent:
+        # The isotropic solve-metric contribution is frame-invariant, so use the
+        # parent-anchor Jacobian for it and the material-frame Jacobian only for
+        # the anisotropic remainder.
+        # Choosing the smaller directional stiffness keeps both split blocks PSD.
+        h_iso = wp.min(h_s, h_z)
+        K_aniso = K_eff - h_iso * wp.identity(3, float)
+        r_iso = x_p - com_w
+        rx_aniso = wp.skew(r)
+        # Isotropic blocks use skew(r)^T skew(r) = |r|^2 I - outer(r, r).
+        H_al = h_iso * wp.skew(r_iso) + rx_aniso * K_aniso
+        H_aa = h_iso * (wp.length_sq(r_iso) * wp.identity(3, float) - wp.outer(r_iso, r_iso))
+        H_aa = H_aa + wp.transpose(rx_aniso) * K_aniso * rx_aniso
+    else:
+        rx = wp.skew(r)
+        H_al = rx * K_eff
+        H_aa = wp.transpose(rx) * K_eff * rx
 
     torque = wp.cross(r, force)
     return force, torque, H_ll, H_al, H_aa
