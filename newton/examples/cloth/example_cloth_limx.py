@@ -13,9 +13,9 @@ import newton.examples
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
-        self.fps = 60
+        self.fps = 100
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 4
+        self.sim_substeps = 1
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
@@ -88,8 +88,8 @@ class Example:
         self.solver = newton.solvers.SolverLIMX(
             self.model,
             constraints,
-            nonlinear_iterations=4,
-            linear_iterations=32,
+            nonlinear_iterations=1,
+            linear_iterations=50,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -108,11 +108,14 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         if self.graph:

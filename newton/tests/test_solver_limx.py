@@ -13,6 +13,8 @@ from newton._src.solvers.limx.constraints.distance import ConstraintDistance
 from newton._src.solvers.limx.linear_solver import PcgSolver
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
 from newton._src.solvers.limx.solver_newton import SolverLIMX
+from newton.examples.cloth.example_cloth_limx import Example as ClothLimxExample
+from newton.viewer import ViewerNull
 
 
 class TestBlockCsr(unittest.TestCase):
@@ -409,6 +411,34 @@ class TestPcgSolver(unittest.TestCase):
 
 
 class TestSolverLIMX(unittest.TestCase):
+    def test_example_advances_one_001_second_physics_step_per_frame(self):
+        with wp.ScopedDevice("cpu"):
+            example = ClothLimxExample(ViewerNull(num_frames=1), None)
+            solver_step = example.solver.step
+            solver_time_steps = []
+
+            def record_solver_step(state_in, state_out, control, contacts, dt):
+                solver_time_steps.append(dt)
+                solver_step(state_in, state_out, control, contacts, dt)
+
+            example.solver.step = record_solver_step
+            example.step()
+
+        self.assertEqual(solver_time_steps, [0.01])
+        self.assertAlmostEqual(example.sim_time, 0.01)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_example_cuda_graph_advances_odd_substep_state(self):
+        with wp.ScopedDevice("cuda:0"):
+            example = ClothLimxExample(ViewerNull(num_frames=2), None)
+            example.step()
+            first_height = float(example.state_0.particle_q.numpy()[example.center_index, 2])
+
+            example.step()
+            second_height = float(example.state_0.particle_q.numpy()[example.center_index, 2])
+
+        self.assertLess(second_height, first_height - 1.0e-4)
+
     @staticmethod
     def make_cloth():
         side = 5
