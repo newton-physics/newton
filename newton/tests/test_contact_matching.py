@@ -383,7 +383,7 @@ def test_deterministic_implied(test, device):
 
 
 def test_contacts_exposes_matching_mode(test, device):
-    """Contacts should report their associated or most recent matching mode."""
+    """Expose the associated or most recent contact matching mode."""
     with wp.ScopedDevice(device):
         model, state = _build_simple_scene(device)
         test.assertEqual(newton.Contacts(0, 0, device=device).contact_matching_mode, "disabled")
@@ -395,8 +395,23 @@ def test_contacts_exposes_matching_mode(test, device):
         with test.assertRaises(AttributeError):
             contacts.contact_matching_mode = "sticky"
 
+        incompatible_pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            rigid_contact_max=contacts.rigid_contact_max + 1,
+            contact_matching="sticky",
+        )
+        with test.assertRaisesRegex(ValueError, "capacity"):
+            incompatible_pipeline.collide(state, contacts)
+        test.assertEqual(contacts.contact_matching_mode, "latest")
+
         for mode in ("sticky", "disabled"):
-            pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching=mode)
+            pipeline = newton.CollisionPipeline(
+                model,
+                broad_phase="nxn",
+                rigid_contact_max=contacts.rigid_contact_max,
+                contact_matching=mode,
+            )
             pipeline.collide(state, contacts)
             test.assertEqual(contacts.contact_matching_mode, mode)
 

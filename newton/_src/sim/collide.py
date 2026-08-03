@@ -1303,9 +1303,6 @@ class CollisionPipeline:
                 contact threshold also incorporates per-shape margins from
                 ``model.shape_margin``.
         """
-        # Keep result provenance in sync when a buffer is reused across pipelines.
-        contacts._contact_matching_mode = self.contact_matching
-
         # Keep the buffer's full-surface capability marker in sync with this pipeline on every call.
         # collide() may be handed a Contacts created elsewhere (or by a flag-off pipeline); the edge/
         # face passes below would otherwise populate records while the marker stayed False, so
@@ -1644,3 +1641,6 @@ class CollisionPipeline:
                 face_pairs=self.soft_face_rigid_pairs,
                 n_particle_pairs=self.soft_rigid_contact_pair_count,
             )
+
+        # Preserve the previous provenance if validation or collision setup fails.
+        contacts._contact_matching_mode = self.contact_matching
