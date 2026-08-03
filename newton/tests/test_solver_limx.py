@@ -129,9 +129,15 @@ class TestConstraintAnchor(unittest.TestCase):
     def test_hessian_adds_anchor_diagonal(self):
         anchors = ConstraintAnchor([1], [wp.vec3(0.0)], [7.0], 2, "cpu")
         builder = BlockCsrBuilder(2)
-
-        anchors.append_hessian(builder)
+        anchors.append_hessian_structure(builder)
         matrix = builder.finalize("cpu")
+        anchors.bind_hessian(matrix)
+        positions = wp.zeros(2, dtype=wp.vec3, device="cpu")
+        forces = wp.zeros_like(positions)
+
+        matrix.clear_values()
+        anchors.accumulate_force_and_hessian(positions, forces, matrix.values)
+        matrix.update_diagonal()
 
         np.testing.assert_allclose(matrix.diagonal.numpy()[0], np.zeros((3, 3)))
         np.testing.assert_allclose(matrix.diagonal.numpy()[1], np.eye(3) * 7.0)
@@ -150,6 +156,22 @@ class TestConstraintAnchor(unittest.TestCase):
 
 
 class TestConstraintDistance(unittest.TestCase):
+    @staticmethod
+    def assemble_single_spring(current_position, device="cpu"):
+        springs = ConstraintDistance([(0, 1)], [1.0], [5.0], 2, device)
+        builder = BlockCsrBuilder(2)
+        springs.append_hessian_structure(builder)
+        matrix = builder.finalize(device)
+        springs.bind_hessian(matrix)
+        positions = wp.array([wp.vec3(0.0), wp.vec3(*current_position)], dtype=wp.vec3, device=device)
+        forces = wp.zeros(2, dtype=wp.vec3, device=device)
+
+        matrix.clear_values()
+        springs.accumulate_force_and_hessian(positions, forces, matrix.values)
+        matrix.update_diagonal()
+
+        return springs, matrix, positions, forces
+
     def test_stretched_spring_forces_are_equal_and_opposite(self):
         springs = ConstraintDistance([(0, 1)], [1.0], [20.0], 2, "cpu")
         positions = wp.array(
@@ -173,29 +195,67 @@ class TestConstraintDistance(unittest.TestCase):
         np.testing.assert_allclose(forces.numpy(), np.zeros((2, 3)), atol=1.0e-7)
 
     def test_zero_length_spring_is_finite(self):
-        springs = ConstraintDistance([(0, 1)], [1.0], [20.0], 2, "cpu")
-        positions = wp.zeros(2, dtype=wp.vec3, device="cpu")
-        forces = wp.zeros(2, dtype=wp.vec3, device="cpu")
-
-        springs.accumulate_force(positions, forces)
+        _, matrix, _, forces = self.assemble_single_spring((0.0, 0.0, 0.0))
 
         self.assertTrue(np.isfinite(forces.numpy()).all())
         np.testing.assert_array_equal(forces.numpy(), np.zeros((2, 3)))
+        self.assertTrue(np.isfinite(matrix.values.numpy()).all())
+        np.testing.assert_array_equal(matrix.values.numpy(), np.zeros((4, 3, 3)))
 
-    def test_hessian_adds_four_projective_dynamics_blocks(self):
-        springs = ConstraintDistance([(0, 1)], [1.0], [5.0], 2, "cpu")
-        builder = BlockCsrBuilder(2)
+    def test_rest_hessian_has_zero_transverse_curvature(self):
+        devices = ["cpu"]
+        if wp.is_cuda_available():
+            devices.append("cuda:0")
+        for device in devices:
+            with self.subTest(device=device):
+                _, matrix, _, forces = self.assemble_single_spring((1.0, 0.0, 0.0), device)
+                expected = np.diag([5.0, 0.0, 0.0])
 
-        springs.append_hessian(builder)
-        matrix = builder.finalize("cpu")
+                np.testing.assert_allclose(forces.numpy(), np.zeros((2, 3)), atol=1.0e-7)
+                np.testing.assert_allclose(
+                    matrix.values.numpy(),
+                    [expected, -expected, -expected, expected],
+                    atol=1.0e-6,
+                )
 
-        np.testing.assert_allclose(matrix.diagonal.numpy()[0], np.eye(3) * 5.0)
-        np.testing.assert_allclose(matrix.diagonal.numpy()[1], np.eye(3) * 5.0)
-        np.testing.assert_array_equal(matrix.column_indices.numpy(), [0, 1, 0, 1])
+    def test_stretched_hessian_preserves_positive_transverse_curvature(self):
+        _, matrix, _, forces = self.assemble_single_spring((1.2, 0.0, 0.0))
+        expected = np.diag([5.0, 5.0 / 6.0, 5.0 / 6.0])
+
+        np.testing.assert_allclose(forces.numpy(), [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]], atol=1.0e-6)
         np.testing.assert_allclose(
             matrix.values.numpy(),
-            [np.eye(3) * 5.0, np.eye(3) * -5.0, np.eye(3) * -5.0, np.eye(3) * 5.0],
+            [expected, -expected, -expected, expected],
+            rtol=1.0e-6,
+            atol=1.0e-6,
         )
+
+    def test_compressed_hessian_removes_negative_transverse_curvature(self):
+        _, matrix, _, forces = self.assemble_single_spring((0.8, 0.0, 0.0))
+        expected = np.diag([5.0, 0.0, 0.0])
+
+        np.testing.assert_allclose(forces.numpy(), [[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], atol=1.0e-6)
+        np.testing.assert_allclose(
+            matrix.values.numpy(),
+            [expected, -expected, -expected, expected],
+            atol=1.0e-6,
+        )
+
+    def test_reassembly_updates_values_without_changing_pattern(self):
+        springs, matrix, _, _ = self.assemble_single_spring((1.2, 0.0, 0.0))
+        row_offsets = matrix.row_offsets.numpy().copy()
+        column_indices = matrix.column_indices.numpy().copy()
+        x_axis_values = matrix.values.numpy().copy()
+        positions = wp.array([wp.vec3(0.0), wp.vec3(0.0, 1.2, 0.0)], dtype=wp.vec3, device="cpu")
+        forces = wp.zeros(2, dtype=wp.vec3, device="cpu")
+
+        matrix.clear_values()
+        springs.accumulate_force_and_hessian(positions, forces, matrix.values)
+
+        np.testing.assert_array_equal(matrix.row_offsets.numpy(), row_offsets)
+        np.testing.assert_array_equal(matrix.column_indices.numpy(), column_indices)
+        self.assertFalse(np.allclose(matrix.values.numpy(), x_axis_values))
+        np.testing.assert_allclose(matrix.values.numpy()[0], np.diag([5.0 / 6.0, 5.0, 5.0 / 6.0]), atol=1.0e-6)
 
     def test_rejects_invalid_input(self):
         invalid_arguments = [

@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ..block_csr import BlockCsrBuilder
+from ..block_csr import BlockCsrBuilder, BlockCsrMatrix
 
 
 @wp.kernel
@@ -26,6 +26,25 @@ def _accumulate_anchor_force(
     particle = indices[constraint]
     force = -stiffnesses[constraint] * (positions[particle] - targets[constraint])
     wp.atomic_add(forces, particle, force)
+
+
+@wp.kernel
+def _accumulate_anchor_force_and_hessian(
+    indices: wp.array[int],
+    targets: wp.array[wp.vec3],
+    stiffnesses: wp.array[float],
+    hessian_block_indices: wp.array[int],
+    positions: wp.array[wp.vec3],
+    forces: wp.array[wp.vec3],
+    hessian_values: wp.array[wp.mat33],
+):
+    constraint = wp.tid()
+    particle = indices[constraint]
+    stiffness = stiffnesses[constraint]
+    force = -stiffness * (positions[particle] - targets[constraint])
+    hessian = stiffness * wp.identity(3, float)
+    wp.atomic_add(forces, particle, force)
+    wp.atomic_add(hessian_values, hessian_block_indices[constraint], hessian)
 
 
 class ConstraintAnchor:
@@ -71,6 +90,21 @@ class ConstraintAnchor:
         self.indices = wp.array(self.host_indices, dtype=int, device=self.device)
         self.targets = wp.array(self.host_targets, dtype=wp.vec3, device=self.device)
         self.stiffnesses = wp.array(self.host_stiffnesses, dtype=float, device=self.device)
+        self.hessian_block_indices: wp.array[int] | None = None
+
+    def append_hessian_structure(self, builder: BlockCsrBuilder) -> None:
+        """Append block coordinates required by this constraint batch."""
+        if builder.row_count != self.particle_count:
+            raise ValueError("Constraint and block matrix particle counts differ")
+        for index in self.host_indices:
+            builder.ensure_block(index, index)
+
+    def bind_hessian(self, matrix: BlockCsrMatrix) -> None:
+        """Bind anchor constraints to finalized block-CSR value indices."""
+        if matrix.row_count != self.particle_count or matrix.device != self.device:
+            raise ValueError("Constraint and block matrix must have matching particle counts and devices")
+        block_indices = [matrix.block_index(index, index) for index in self.host_indices]
+        self.hessian_block_indices = wp.array(block_indices, dtype=int, device=self.device)
 
     def append_hessian(self, builder: BlockCsrBuilder) -> None:
         """Append the fixed projective-dynamics Hessian blocks."""
@@ -87,6 +121,26 @@ class ConstraintAnchor:
             dim=len(self.indices),
             inputs=[self.indices, self.targets, self.stiffnesses, positions],
             outputs=[output],
+            device=self.device,
+        )
+
+    def accumulate_force_and_hessian(
+        self,
+        positions: wp.array[wp.vec3],
+        force_output: wp.array[wp.vec3],
+        hessian_values: wp.array[wp.mat33],
+    ) -> None:
+        """Add anchor force and exact Hessian blocks evaluated at ``positions``."""
+        self._validate_runtime_arrays(positions, force_output)
+        if self.hessian_block_indices is None:
+            raise RuntimeError("bind_hessian() must be called before Hessian assembly")
+        if hessian_values.device != self.device:
+            raise ValueError("Constraint and Hessian values must use the same device")
+        wp.launch(
+            _accumulate_anchor_force_and_hessian,
+            dim=len(self.indices),
+            inputs=[self.indices, self.targets, self.stiffnesses, self.hessian_block_indices, positions],
+            outputs=[force_output, hessian_values],
             device=self.device,
         )
 

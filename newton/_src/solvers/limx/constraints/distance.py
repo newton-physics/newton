@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ..block_csr import BlockCsrBuilder
+from ..block_csr import BlockCsrBuilder, BlockCsrMatrix
 
 
 @wp.kernel
@@ -32,6 +32,39 @@ def _accumulate_distance_force(
         force = stiffnesses[constraint] * (length - rest_lengths[constraint]) * direction
         wp.atomic_add(forces, particle_i, force)
         wp.atomic_sub(forces, particle_j, force)
+
+
+@wp.kernel
+def _accumulate_distance_force_and_hessian(
+    index_pairs: wp.array2d[int],
+    rest_lengths: wp.array[float],
+    stiffnesses: wp.array[float],
+    hessian_block_indices: wp.array2d[int],
+    positions: wp.array[wp.vec3],
+    forces: wp.array[wp.vec3],
+    hessian_values: wp.array[wp.mat33],
+):
+    constraint = wp.tid()
+    particle_i = index_pairs[constraint, 0]
+    particle_j = index_pairs[constraint, 1]
+    displacement = positions[particle_j] - positions[particle_i]
+    length = wp.length(displacement)
+    if length > 1.0e-8:
+        rest_length = rest_lengths[constraint]
+        stiffness = stiffnesses[constraint]
+        direction = displacement / length
+        normal_outer = wp.outer(direction, direction)
+        tangent_projection = wp.identity(3, float) - normal_outer
+        transverse_eigenvalue = wp.max(stiffness * (1.0 - rest_length / length), 0.0)
+        hessian = stiffness * normal_outer + transverse_eigenvalue * tangent_projection
+        force = stiffness * (length - rest_length) * direction
+
+        wp.atomic_add(forces, particle_i, force)
+        wp.atomic_sub(forces, particle_j, force)
+        wp.atomic_add(hessian_values, hessian_block_indices[constraint, 0], hessian)
+        wp.atomic_add(hessian_values, hessian_block_indices[constraint, 1], -hessian)
+        wp.atomic_add(hessian_values, hessian_block_indices[constraint, 2], -hessian)
+        wp.atomic_add(hessian_values, hessian_block_indices[constraint, 3], hessian)
 
 
 class ConstraintDistance:
@@ -81,6 +114,32 @@ class ConstraintDistance:
         self.index_pairs = wp.array2d(self.host_index_pairs, dtype=int, device=self.device)
         self.rest_lengths = wp.array(self.host_rest_lengths, dtype=float, device=self.device)
         self.stiffnesses = wp.array(self.host_stiffnesses, dtype=float, device=self.device)
+        self.hessian_block_indices: wp.array2d[int] | None = None
+
+    def append_hessian_structure(self, builder: BlockCsrBuilder) -> None:
+        """Append block coordinates required by this constraint batch."""
+        if builder.row_count != self.particle_count:
+            raise ValueError("Constraint and block matrix particle counts differ")
+        for particle_i, particle_j in self.host_index_pairs:
+            builder.ensure_block(particle_i, particle_i)
+            builder.ensure_block(particle_i, particle_j)
+            builder.ensure_block(particle_j, particle_i)
+            builder.ensure_block(particle_j, particle_j)
+
+    def bind_hessian(self, matrix: BlockCsrMatrix) -> None:
+        """Bind distance constraints to finalized block-CSR value indices."""
+        if matrix.row_count != self.particle_count or matrix.device != self.device:
+            raise ValueError("Constraint and block matrix must have matching particle counts and devices")
+        block_indices = [
+            (
+                matrix.block_index(particle_i, particle_i),
+                matrix.block_index(particle_i, particle_j),
+                matrix.block_index(particle_j, particle_i),
+                matrix.block_index(particle_j, particle_j),
+            )
+            for particle_i, particle_j in self.host_index_pairs
+        ]
+        self.hessian_block_indices = wp.array2d(block_indices, dtype=int, device=self.device)
 
     def append_hessian(self, builder: BlockCsrBuilder) -> None:
         """Append the fixed projective-dynamics Hessian blocks."""
@@ -100,6 +159,32 @@ class ConstraintDistance:
             dim=len(self.rest_lengths),
             inputs=[self.index_pairs, self.rest_lengths, self.stiffnesses, positions],
             outputs=[output],
+            device=self.device,
+        )
+
+    def accumulate_force_and_hessian(
+        self,
+        positions: wp.array[wp.vec3],
+        force_output: wp.array[wp.vec3],
+        hessian_values: wp.array[wp.mat33],
+    ) -> None:
+        """Add spring force and projected Hessian blocks evaluated at ``positions``."""
+        self._validate_runtime_arrays(positions, force_output)
+        if self.hessian_block_indices is None:
+            raise RuntimeError("bind_hessian() must be called before Hessian assembly")
+        if hessian_values.device != self.device:
+            raise ValueError("Constraint and Hessian values must use the same device")
+        wp.launch(
+            _accumulate_distance_force_and_hessian,
+            dim=len(self.rest_lengths),
+            inputs=[
+                self.index_pairs,
+                self.rest_lengths,
+                self.stiffnesses,
+                self.hessian_block_indices,
+                positions,
+            ],
+            outputs=[force_output, hessian_values],
             device=self.device,
         )
 
