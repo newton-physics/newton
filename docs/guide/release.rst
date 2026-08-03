@@ -83,7 +83,8 @@ Pre-release planning
        published before the branch cut, stabilize it on ``main``: replace the
        dev or RC requirement in ``pyproject.toml`` and the pin in
        ``asv.conf.json`` with the stable version and regenerate ``uv.lock``.
-       Keep the NVIDIA ``warp-lang`` package-index override on ``main`` so it
+       Keep both the NVIDIA ``warp-lang`` package-index override and the ASV
+       ``--extra-index-url=https://pypi.nvidia.com/`` option on ``main`` so it
        is ready for the next dev-nightly update.  Cut the upcoming release
        branch after this change; do not apply the new Warp minor version to
        previously released Newton branches.
