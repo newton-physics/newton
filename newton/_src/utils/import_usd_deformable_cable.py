@@ -437,6 +437,12 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             body_frame_origin="com",
         )
 
+        # get_value records only the winning resolver and runs only when the graph collides; collect
+        # every member from all resolvers here so schema_attrs stays complete for non-colliding graphs.
+        if ctx.collect_schema_attrs:
+            for key in comp_paths:
+                ctx.resolver.collect_prim_attrs(curve_recs[key].prim)
+
         # Resolve self-collision only for a colliding graph; for the welded-graph policy see
         # docs/concepts/usd_parsing.rst. get_value_with_resolver returns resolver=None for an
         # unauthored curve (it stays neutral); the default= below does not feed the result, it
@@ -674,6 +680,9 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
+        # Collect all resolvers here; get_value below records only the winning one.
+        if ctx.collect_schema_attrs:
+            ctx.resolver.collect_prim_attrs(prim)
         # Each curve in this prim becomes its own articulation via add_rod below, so resolve the
         # prim's self-collision flag once and apply the filter per curve (not across sibling curves).
         self_collision_enabled = bool(

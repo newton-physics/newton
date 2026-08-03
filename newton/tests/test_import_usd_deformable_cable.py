@@ -23,7 +23,7 @@ from newton.tests._usd_deformable_test_utils import (
     group_range,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
-from newton.usd import SchemaResolverPhysx
+from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1016,6 +1016,41 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         self.assertTrue(non_adjacent_pair_filtered(schema_resolvers=[SchemaResolverPhysx()]))
         self.assertFalse(non_adjacent_pair_filtered())
+
+    def test_cable_schema_attrs_collect_all_resolvers(self):
+        """Cable import records schema attrs from every active resolver, even for non-colliding cables.
+
+        ``get_value`` records only the winning resolver and the welded path resolves only when the
+        graph collides, so each accepted cable prim is collected from all resolvers up front (as the
+        rigid importer does). Otherwise a non-colliding cable, or an attribute authored under a
+        non-winning resolver, would be dropped from ``result["schema_attrs"]``.
+        """
+        from pxr import Sdf
+
+        # A non-colliding welded pair plus a standalone non-colliding cable, each authoring an
+        # attribute under a different resolver's namespace, exercising both import paths.
+        stage = self._author_attached_cable_pair(gap=0.0, collision=False)
+        _add_cable_curve(stage, "/World/Solo", [(0.0, 1.0, 1.0), (0.1, 1.0, 1.0), (0.2, 1.0, 1.0)], collision=False)
+        for path, attr in (
+            ("/World/CableA", "newton:selfCollisionEnabled"),
+            ("/World/CableB", "physxArticulation:enabledSelfCollisions"),
+            ("/World/Solo", "physxArticulation:enabledSelfCollisions"),
+        ):
+            stage.GetPrimAtPath(path).CreateAttribute(attr, Sdf.ValueTypeNames.Bool).Set(False)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(
+            stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()], return_deformable_results=True
+        )
+        schema_attrs = result["schema_attrs"]
+
+        # Every cable prim appears under both resolvers, and each authored attribute is captured.
+        for name in ("newton", "physx"):
+            for path in ("/World/CableA", "/World/CableB", "/World/Solo"):
+                self.assertIn(path, schema_attrs[name])
+        self.assertIn("newton:selfCollisionEnabled", schema_attrs["newton"]["/World/CableA"])
+        self.assertIn("physxArticulation:enabledSelfCollisions", schema_attrs["physx"]["/World/CableB"])
+        self.assertIn("physxArticulation:enabledSelfCollisions", schema_attrs["physx"]["/World/Solo"])
 
     def test_welded_graph_self_collision_disabled_filters_non_adjacent_pairs(self):
         """A welded cable graph honors newton:selfCollisionEnabled=False on any member curve.
