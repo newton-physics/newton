@@ -1507,14 +1507,14 @@ class TestGeometryContactConversions(unittest.TestCase):
         Both configurations use a non-zero gap so that the collision detector
         reports contacts while the box still hovers above the rest offset.
         """
-        HALF_EXTENT = 0.25
+        half_extent = 0.25
 
         for margin, gap, box_z in (
-            (0.0, 0.1, HALF_EXTENT + 0.05),
-            (0.02, 0.1, HALF_EXTENT + 0.08),
+            (0.0, 0.1, half_extent + 0.05),
+            (0.02, 0.1, half_extent + 0.08),
         ):
             with self.subTest(margin=margin, gap=gap):
-                scene = build_box_on_plane_scene(box_z, margin=margin, gap=gap, half_extent=HALF_EXTENT)
+                scene = build_box_on_plane_scene(box_z, margin=margin, gap=gap, half_extent=half_extent)
                 model = scene.finalize(self.default_device)
                 state = model.state()
                 collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=_NEWTON_CONTACT_CAPACITY)
@@ -1546,16 +1546,16 @@ class TestGeometryContactConversions(unittest.TestCase):
         Covers the full ``(gap, margin)`` matrix with the box placed at or below
         the rest offset so no contact is speculative.
         """
-        HALF_EXTENT = 0.25
+        half_extent = 0.25
 
         for margin, gap, box_z in (
-            (0.0, 0.0, HALF_EXTENT - 0.01),
-            (0.0, 0.1, HALF_EXTENT - 0.01),
-            (0.02, 0.0, HALF_EXTENT + 0.02),
-            (0.02, 0.1, HALF_EXTENT + 0.02),
+            (0.0, 0.0, half_extent - 0.01),
+            (0.0, 0.1, half_extent - 0.01),
+            (0.02, 0.0, half_extent + 0.02),
+            (0.02, 0.1, half_extent + 0.02),
         ):
             with self.subTest(margin=margin, gap=gap):
-                scene = build_box_on_plane_scene(box_z, margin=margin, gap=gap, half_extent=HALF_EXTENT)
+                scene = build_box_on_plane_scene(box_z, margin=margin, gap=gap, half_extent=half_extent)
                 model = scene.finalize(self.default_device)
                 state = model.state()
                 collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=_NEWTON_CONTACT_CAPACITY)
@@ -1570,6 +1570,50 @@ class TestGeometryContactConversions(unittest.TestCase):
                 self.assertEqual(n_kamino, nc, "Genuine contacts must not be culled")
                 w = kamino.gapfunc.numpy()[:n_kamino, 3]
                 self.assertTrue(np.all(w <= 1e-6), f"Expected genuine contacts (w <= 0), got {w}")
+
+    def test_12_culled_contacts_report_zero_force(self):
+        """Culled contacts report zero force through the K->N existing path.
+
+        Regression: the existing-contacts write-back only touches surviving
+        (remapped) contacts, so culled slots must be zeroed rather than left
+        holding stale prior-frame force data.
+        """
+        half_extent = 0.25
+
+        # Box hovering within the detection gap -> every contact is speculative.
+        scene = build_box_on_plane_scene(half_extent + 0.05, margin=0.0, gap=0.1, half_extent=half_extent)
+        scene.request_contact_attributes("force")
+        model = scene.finalize(self.default_device)
+        state = model.state()
+        collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=_NEWTON_CONTACT_CAPACITY)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
+        nc = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(nc, 0)
+
+        # Seed stale prior-frame force data on every active contact slot.
+        force_np = contacts.force.numpy()
+        force_np[:nc] = 9.0
+        contacts.force.assign(force_np)
+
+        # N->K culls every (speculative) contact.
+        kamino = ContactsKamino(
+            capacity=contacts.rigid_contact_max,
+            device=self.default_device,
+            remappable=True,
+        )
+        convert_contacts_newton_to_kamino(model, state, contacts, kamino, convert_forces=True)
+        self.assertEqual(int(kamino.model_active_contacts.numpy()[0]), 0, "All contacts should be culled")
+
+        # K->N existing path must not leave stale force on the culled contacts.
+        convert_contacts_kamino_to_newton(model, state, kamino, contacts, clear_output=False, convert_forces=True)
+
+        force_after = contacts.force.numpy()[:nc]
+        np.testing.assert_array_equal(
+            force_after,
+            np.zeros_like(force_after),
+            err_msg="Culled contacts must not retain stale force data",
+        )
 
 
 ###

@@ -1589,6 +1589,12 @@ def convert_contacts_kamino_to_newton(
                 "construct `ContactsKamino` with `remappable=True`."
             )
 
+        # Speculative-contact culling (and capacity truncation) can leave active
+        # Newton contacts without a matching Kamino contact, so the kernel below
+        # never writes their wrench. Zero the rigid force region first so those
+        # slots report zero instead of stale prior-frame data.
+        contacts_out_force[: contacts_out.rigid_contact_max].zero_()
+
         # Launch the kernel to fill in solver-specific
         # contact attributes for already populated contacts.
         wp.launch(
