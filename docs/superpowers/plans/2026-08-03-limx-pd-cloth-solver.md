@@ -4,13 +4,13 @@
 
 **Goal:** Build an independent particle-only LIMX solver whose batched anchor and distance constraints feed a static `3 x 3` block-CSR elastic operator and whose block-Jacobi PCG holds a two-corner-anchored mass-spring cloth under gravity.
 
-**Architecture:** Static elastic constraint batches own nonlinear force evaluation and emit one-time Hessian triplets into a generic block-CSR matrix. A composite operator adds mass and an empty matrix-free dynamic-constraint term, while a standalone PCG solver only consumes matrix-vector multiplication and inverse diagonal blocks. `SolverLimx` adapts these components to Newton's public `Model`/`State` interface without modifying Newton internals.
+**Architecture:** Static elastic constraint batches own nonlinear force evaluation and emit one-time Hessian triplets into a generic block-CSR matrix. A composite operator adds mass and an empty matrix-free dynamic-constraint term, while a standalone PCG solver only consumes matrix-vector multiplication and inverse diagonal blocks. `SolverLIMX` lives beside Newton's existing internal solvers and is exported through the public `newton.solvers` module.
 
 **Tech Stack:** Python 3.12, NVIDIA Warp 1.13, Newton public Python API, `unittest`, repository pre-commit hooks.
 
 ## Global Constraints
 
-- Work only in the repository-root `limx/` package and its design/plan documents; do not register a public `newton.solvers` symbol.
+- Place implementation under `newton/_src/solvers/limx/`, expose user-facing classes through `newton.solvers`, and keep examples/tests in Newton's standard directories.
 - Use Warp kernels and Newton's existing model/state interface; do not add dependencies or handwritten CUDA.
 - Implement particle `vec3` unknowns only; do not add rigid-body 6-DoF types or placeholders.
 - Assemble fixed-topology elastic Hessians once in `wp.mat33` block-CSR.
@@ -24,23 +24,22 @@
 
 ## File Map
 
-- `limx/linalg/block_csr.py`: Host block-triplet assembly, device block-CSR storage, and Warp SpMV.
-- `limx/constraints/anchor.py`: Batched one-particle anchor validation, Hessian emission, and force kernel.
-- `limx/constraints/distance.py`: Batched two-particle spring validation, Hessian emission, and force kernel.
-- `limx/linalg/operator.py`: Empty dynamic operator and mass/static/dynamic composite operator.
-- `limx/linalg/pcg.py`: Preallocated, capture-safe block-Jacobi PCG.
-- `limx/solver.py`: Implicit Euler nonlinear loop and Newton `SolverBase` adapter.
-- `limx/examples/cloth_hanging.py`: Alternating-diagonal grid, constraints, viewer integration, and final-state checks.
-- `limx/tests/*.py`: Focused unit and integration tests.
+- `newton/_src/solvers/limx/block_csr.py`: Host block-triplet assembly, device block-CSR storage, and Warp SpMV.
+- `newton/_src/solvers/limx/constraints/anchor.py`: Batched one-particle anchor validation, Hessian emission, and force kernel.
+- `newton/_src/solvers/limx/constraints/distance.py`: Batched two-particle spring validation, Hessian emission, and force kernel.
+- `newton/_src/solvers/limx/operator.py`: Empty dynamic operator and mass/static/dynamic composite operator.
+- `newton/_src/solvers/limx/linear_solver.py`: Preallocated, capture-safe block-Jacobi PCG.
+- `newton/_src/solvers/limx/solver_limx.py`: Implicit Euler nonlinear loop and Newton `SolverBase` adapter.
+- `newton/examples/cloth/example_cloth_limx.py`: Alternating-diagonal grid, constraints, viewer integration, and final-state checks.
+- `newton/tests/test_solver_limx.py`: Focused unit and integration tests.
+- `newton/solvers.py`: Public `SolverLIMX`, `ConstraintAnchor`, and `ConstraintDistance` exports.
 
 ### Task 1: Package skeleton and block-CSR matrix
 
 **Files:**
-- Create: `limx/__init__.py`
-- Create: `limx/linalg/__init__.py`
-- Create: `limx/linalg/block_csr.py`
-- Create: `limx/tests/__init__.py`
-- Create: `limx/tests/test_block_csr.py`
+- Create: `newton/_src/solvers/limx/__init__.py`
+- Create: `newton/_src/solvers/limx/block_csr.py`
+- Create: `newton/tests/test_solver_limx.py`
 
 **Interfaces:**
 - Produces: `BlockCsrBuilder(row_count: int)`.
@@ -70,7 +69,7 @@ np.testing.assert_allclose(output.numpy(), [[-2.0, -1.0, 0.0], [11.0, 13.0, 15.0
 - [ ] **Step 2: Run the focused test and verify RED**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m unittest limx.tests.test_block_csr -v
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_solver_limx_block_csr
 ```
 
 Expected: import failure for missing `BlockCsrBuilder`, not an environment error.
@@ -100,23 +99,22 @@ def _block_csr_multiply(
 - [ ] **Step 5: Commit Task 1**
 
 ```bash
-git add limx/__init__.py limx/linalg limx/tests/__init__.py limx/tests/test_block_csr.py
+git add newton/_src/solvers/limx newton/tests/test_solver_limx.py
 git commit -m "Add LIMX block CSR matrix"
 ```
 
 ### Task 2: Batched anchor and distance constraints
 
 **Files:**
-- Create: `limx/constraints/__init__.py`
-- Create: `limx/constraints/anchor.py`
-- Create: `limx/constraints/distance.py`
-- Create: `limx/tests/test_constraints.py`
-- Modify: `limx/__init__.py`
+- Create: `newton/_src/solvers/limx/constraints/__init__.py`
+- Create: `newton/_src/solvers/limx/constraints/anchor.py`
+- Create: `newton/_src/solvers/limx/constraints/distance.py`
+- Modify: `newton/tests/test_solver_limx.py`
 
 **Interfaces:**
 - Consumes: `BlockCsrBuilder.add_scaled_identity()` from Task 1.
-- Produces: `AnchorConstraintBatch(indices, targets, stiffnesses, particle_count, device)`.
-- Produces: `DistanceConstraintBatch(index_pairs, rest_lengths, stiffnesses, particle_count, device)`.
+- Produces: `ConstraintAnchor(indices, targets, stiffnesses, particle_count, device)`.
+- Produces: `ConstraintDistance(index_pairs, rest_lengths, stiffnesses, particle_count, device)`.
 - Both produce `append_hessian(builder) -> None` and `accumulate_force(positions, output) -> None`.
 
 - [ ] **Step 1: Write failing force, Hessian, and validation tests**
@@ -126,7 +124,7 @@ Require an anchor displaced from `(1, 0, 0)` to `(1.5, 0, 0)` at stiffness `10` 
 - [ ] **Step 2: Run tests and verify RED**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m unittest limx.tests.test_constraints -v
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_solver_limx_constraints
 ```
 
 - [ ] **Step 3: Implement batched validation, force kernels, and Hessian emission**
@@ -136,23 +134,23 @@ Anchor force is `-k * (x-target)`. Distance force atomically adds `k * (length-r
 - [ ] **Step 4: Run constraint and CSR tests and verify GREEN**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m unittest limx.tests.test_constraints limx.tests.test_block_csr -v
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_solver_limx
 ```
 
 - [ ] **Step 5: Commit Task 2**
 
 ```bash
-git add limx/constraints limx/tests/test_constraints.py limx/__init__.py
+git add newton/_src/solvers/limx/constraints newton/tests/test_solver_limx.py
 git commit -m "Add LIMX particle constraints"
 ```
 
 ### Task 3: Composite operator and capture-safe PCG
 
 **Files:**
-- Create: `limx/linalg/operator.py`
-- Create: `limx/linalg/pcg.py`
-- Create: `limx/tests/test_pcg.py`
-- Modify: `limx/linalg/__init__.py`
+- Create: `newton/_src/solvers/limx/operator.py`
+- Create: `newton/_src/solvers/limx/linear_solver.py`
+- Modify: `newton/tests/test_solver_limx.py`
+- Modify: `newton/_src/solvers/limx/__init__.py`
 
 **Interfaces:**
 - Consumes: `BlockCsrMatrix.multiply()` and `.diagonal` from Task 1.
@@ -168,7 +166,7 @@ Construct a two-particle block system with masses `[2, 3]`, `dt=0.5`, and static
 - [ ] **Step 2: Run tests and verify RED**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m unittest limx.tests.test_pcg -v
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_solver_limx_pcg
 ```
 
 - [ ] **Step 3: Implement the empty dynamic boundary and composite operator**
@@ -190,26 +188,28 @@ Preallocate `r`, `z`, `p`, `Ap`, `rz`, `rz_previous`, `pAp`, and one debug resid
 - [ ] **Step 5: Run Task 3 and prior tests and verify GREEN**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m unittest limx.tests.test_pcg limx.tests.test_constraints limx.tests.test_block_csr -v
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_solver_limx
 ```
 
 - [ ] **Step 6: Commit Task 3**
 
 ```bash
-git add limx/linalg/operator.py limx/linalg/pcg.py limx/linalg/__init__.py limx/tests/test_pcg.py
+git add newton/_src/solvers/limx newton/tests/test_solver_limx.py
 git commit -m "Add LIMX composite PCG solve"
 ```
 
 ### Task 4: Newton solver adapter and cloth integration test
 
 **Files:**
-- Create: `limx/solver.py`
-- Create: `limx/tests/test_solver.py`
-- Modify: `limx/__init__.py`
+- Create: `newton/_src/solvers/limx/solver_limx.py`
+- Modify: `newton/_src/solvers/limx/__init__.py`
+- Modify: `newton/_src/solvers/__init__.py`
+- Modify: `newton/solvers.py`
+- Modify: `newton/tests/test_solver_limx.py`
 
 **Interfaces:**
 - Consumes: constraint batches, `BlockCsrBuilder`, `CompositeLinearOperator`, and `PcgSolver`.
-- Produces: `SolverLimx(model, constraints, nonlinear_iterations=4, linear_iterations=32, velocity_damping=0.998)`.
+- Produces: `SolverLIMX(model, constraints, nonlinear_iterations=4, linear_iterations=32, velocity_damping=0.998)`.
 - Produces: standard `step(state_in, state_out, control, contacts, dt) -> None`.
 
 - [ ] **Step 1: Write a failing solver integration test**
@@ -230,7 +230,7 @@ Also snapshot `state_in` before one call and assert `step()` does not mutate it.
 - [ ] **Step 2: Run integration test and verify RED**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m unittest limx.tests.test_solver -v
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_solver_limx_integration
 ```
 
 - [ ] **Step 3: Implement time integration and solver construction**
@@ -251,51 +251,53 @@ Use `model.particle_world` and per-world `model.gravity`. Every nonlinear iterat
 - [ ] **Step 4: Run the complete focused suite and verify GREEN**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m unittest discover -s limx/tests -t . -v
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_solver_limx
 ```
 
 - [ ] **Step 5: Commit Task 4**
 
 ```bash
-git add limx/solver.py limx/tests/test_solver.py limx/__init__.py
+git add newton/_src/solvers newton/solvers.py newton/tests/test_solver_limx.py
 git commit -m "Add LIMX particle cloth solver"
 ```
 
 ### Task 5: Runnable viewer example and final verification
 
 **Files:**
-- Create: `limx/examples/__init__.py`
-- Create: `limx/examples/cloth_hanging.py`
+- Create: `newton/examples/cloth/example_cloth_limx.py`
+- Modify: `README.md`
+- Modify: `CHANGELOG.md`
+- Modify: generated API files from `docs/generate_api.py`
 
 **Interfaces:**
-- Produces command `python -m limx.examples.cloth_hanging`.
+- Produces command `python -m newton.examples cloth_limx`.
 - Produces an `Example` class following Newton's lifecycle and implementing `test_final()`.
 
 - [ ] **Step 1: Verify the example module is initially absent**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m limx.examples.cloth_hanging --viewer null --test --num-frames 60 --device cpu
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.examples cloth_limx --viewer null --test --num-frames 60 --device cpu
 ```
 
-Expected: module-not-found failure for `limx.examples.cloth_hanging`.
+Expected: the Newton example runner reports that `cloth_limx` is not registered.
 
 - [ ] **Step 2: Implement the example**
 
-Create a `20 x 20`-cell, `1 m x 1 m` alternating-diagonal horizontal grid at `z=2 m`. Add positive-mass particles and render triangles to a Newton model, distribute total mass `0.3 kg` uniformly, and create every unique triangle edge exactly once. Construct two anchors at stiffness `1e7 N/m`, distance springs at `1e4 N/m`, and `SolverLimx` with four nonlinear and 32 PCG iterations. Use four substeps per 60 Hz frame, no ground, and no collision generation.
+Create a `20 x 20`-cell, `1 m x 1 m` alternating-diagonal horizontal grid at `z=2 m`. Add positive-mass particles and render triangles to a Newton model, distribute total mass `0.3 kg` uniformly, and create every unique triangle edge exactly once. Construct two `ConstraintAnchor` instances at stiffness `1e7 N/m`, `ConstraintDistance` springs at `1e4 N/m`, and `SolverLIMX` with four nonlinear and 32 PCG iterations. Use four substeps per 60 Hz frame, no ground, and no collision generation.
 
 Implement fixed-iteration CUDA graph capture, state swapping, `viewer.log_state()`, and `test_final()` checks for finite state, anchor drift below `1e-3 m`, center sag above `5e-2 m`, and bounded edge stretch.
 
 - [ ] **Step 3: Run the headless example and focused suite**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m limx.examples.cloth_hanging --viewer null --test --num-frames 60 --device cpu
-/home/limx/apps/isaacsim-6.0.1/python.sh -m unittest discover -s limx/tests -t . -v
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.examples cloth_limx --viewer null --test --num-frames 60 --device cpu
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_solver_limx
 ```
 
 - [ ] **Step 4: Run CUDA verification when `cuda:0` is available**
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m limx.examples.cloth_hanging --viewer null --test --num-frames 60 --device cuda:0
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.examples cloth_limx --viewer null --test --num-frames 60 --device cuda:0
 ```
 
 - [ ] **Step 5: Run project lint and formatting checks**
@@ -311,7 +313,7 @@ If `uvx` is unavailable, run an installed repository pre-commit executable when 
 ```bash
 git diff --check
 git status --short
-git add limx/examples
+git add newton/examples/cloth/example_cloth_limx.py newton/solvers.py newton/_src/solvers README.md CHANGELOG.md docs/api
 git commit -m "Add LIMX hanging cloth example"
 ```
 

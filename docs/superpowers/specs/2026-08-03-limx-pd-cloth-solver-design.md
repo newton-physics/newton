@@ -2,8 +2,9 @@
 
 ## Goal
 
-Build a first particle-only cloth solver under the repository-root `limx/`
-package. The solver must keep constraint evaluation, static Hessian assembly,
+Build a first particle-only cloth solver under
+`newton/_src/solvers/limx/`, alongside Newton's existing solvers. The solver
+must keep constraint evaluation, static Hessian assembly,
 linear-operator application, and PCG solution independent from one another.
 The first runnable scene is a triangulated mass-spring sheet released under
 gravity and held by two single-particle anchor constraints.
@@ -20,7 +21,9 @@ The first version includes:
 - A composite linear operator that combines mass, static block-CSR elasticity,
   and an optional matrix-free dynamic term.
 - A standalone block-Jacobi-preconditioned PCG implementation.
-- A viewer example launched with `python -m limx.examples.cloth_hanging`.
+- Public `SolverLIMX`, `ConstraintAnchor`, and `ConstraintDistance` exports
+  through `newton.solvers`.
+- A viewer example launched with `python -m newton.examples cloth_limx`.
 - Unit and integration tests written with `unittest`.
 
 The first version intentionally excludes:
@@ -29,7 +32,6 @@ The first version intentionally excludes:
 - Collision detection and collision response.
 - Three-particle area constraints, anisotropic triangle elasticity, bending,
   damping constraints, tearing, and plasticity.
-- Registration in the public `newton.solvers` API.
 - Exact Dirichlet elimination for pinned particles. Anchors use a finite,
   configurable penalty stiffness and are verified by displacement tolerance.
 
@@ -123,7 +125,7 @@ safe PCG operator.
 Static constraints are grouped by type so each type uses one Warp kernel
 launch per force evaluation rather than one launch per constraint.
 
-`AnchorConstraintBatch` owns:
+`ConstraintAnchor` owns a batched set of anchors:
 
 - particle indices;
 - target positions;
@@ -131,7 +133,7 @@ launch per force evaluation rather than one launch per constraint.
 - `append_hessian(builder)` for one-time block triplet generation;
 - `accumulate_force(positions, output)` for runtime force accumulation.
 
-`DistanceConstraintBatch` owns:
+`ConstraintDistance` owns a batched set of springs:
 
 - pairs of particle indices;
 - rest lengths;
@@ -170,7 +172,7 @@ Future topology-changing collision energies implement a matrix-free boundary:
 - `accumulate_diagonal(positions, output)`.
 
 The first version uses an empty dynamic operator. It must implement the same
-boundary as a no-op so `SolverLimx` and `PcgSolver` contain no collision-specific
+boundary as a no-op so `SolverLIMX` and `PcgSolver` contain no collision-specific
 branches beyond selecting the no-op implementation.
 
 ### Composite linear operator
@@ -213,7 +215,7 @@ code path may write NaN to the solution.
 
 ## Time-Stepping Data Flow
 
-`SolverLimx` derives from Newton's `SolverBase` and implements the standard
+`SolverLIMX` derives from Newton's `SolverBase` and implements the standard
 `step(state_in, state_out, control, contacts, dt)` signature. `control` and
 `contacts` are unused in the first version.
 
@@ -240,36 +242,29 @@ scratch arrays are preallocated in the constructor and reused by every step.
 ## File Layout
 
 ```text
-limx/
-├── __init__.py
-├── constraints/
+newton/
+├── _src/solvers/limx/
 │   ├── __init__.py
-│   ├── anchor.py
-│   └── distance.py
-├── linalg/
-│   ├── __init__.py
+│   ├── constraints/
+│   │   ├── __init__.py
+│   │   ├── anchor.py
+│   │   └── distance.py
 │   ├── block_csr.py
 │   ├── operator.py
-│   └── pcg.py
-├── examples/
-│   ├── __init__.py
-│   └── cloth_hanging.py
-├── tests/
-│   ├── __init__.py
-│   ├── test_constraints.py
-│   ├── test_block_csr.py
-│   ├── test_pcg.py
-│   └── test_solver.py
-└── solver.py
+│   ├── linear_solver.py
+│   └── solver_limx.py
+├── examples/cloth/example_cloth_limx.py
+├── tests/test_solver_limx.py
+└── solvers.py
 ```
 
-`limx` remains an experimental source-tree package. It does not import from
-`newton._src`; it uses Newton's public `Model`, `State`, `SolverBase`, example,
-and viewer interfaces.
+Implementation modules may use Newton internals because they live under
+`newton._src`. The example and generated documentation must import only the
+public `newton.solvers` symbols.
 
 ## Example Scene
 
-`python -m limx.examples.cloth_hanging` creates a `1 m x 1 m` horizontal
+`python -m newton.examples cloth_limx` creates a `1 m x 1 m` horizontal
 triangulated grid at `z = 2 m`. Adjacent cells alternate their triangle
 diagonal direction to reduce mesh-direction bias. Every unique triangle edge
 becomes one distance constraint, including cell diagonals. The two corners on
@@ -346,8 +341,8 @@ instructions.
 
 ## Acceptance Criteria
 
-The design is complete when the repository contains an independent `limx`
-solver whose anchor and distance constraint batches generate forces and static
+The design is complete when Newton contains a `SolverLIMX` whose public anchor
+and distance constraint batches generate forces and static
 Hessian blocks, whose block-CSR and composite operator feed an independent
 PCG solver, and whose two-corner-anchored cloth visibly sags under gravity
 without either anchor escaping or the sheet entering ballistic free fall.
