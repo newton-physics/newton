@@ -6575,14 +6575,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # here and in ``update_axis_properties_kernel``), so without this step
         # a drive authored as critically damped imports completely undamped.
         #
-        # ``actuator_acc0`` is MuJoCo's unit-force acceleration for the
-        # actuator, i.e. 1 / dof_M0, so MuJoCo's compile-time formula
-        # ``kv = 2 * dampratio * sqrt(kp * dof_M0)`` becomes
-        # ``2 * dampratio * sqrt(kp / acc0)``.
+        # MuJoCo's compile-time formula is ``kv = 2 * dampratio * sqrt(kp * dof_M0)``,
+        # where ``dof_M0`` is the reflected inertia of the driven DOF in the
+        # reference configuration. Note this is *not* interchangeable with
+        # ``1 / actuator_acc0``: the two agree only when the actuated joint is the
+        # sole DOF in its kinematic subtree, and diverge badly otherwise (on a
+        # three-link chain the acc0 form is off by roughly 6x).
         if mujoco_attrs is not None:
             act_biasprm = get_custom_attribute("actuator_biasprm")
             act_gainprm = get_custom_attribute("actuator_gainprm")
             act_trnid = get_custom_attribute("actuator_trnid")
+            act_trntype = get_custom_attribute("actuator_trntype")
             act_ctrl_source = get_custom_attribute("ctrl_source")
             act_ctrl_type = get_custom_attribute("ctrl_type")
             if (
@@ -6598,6 +6601,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         continue
                     if int(act_ctrl_type[row]) != int(SolverMuJoCo.CtrlType.POSITION):
                         continue
+                    # trnid only names a DOF for joint transmissions; for tendon/body/site
+                    # actuators it indexes a different array entirely.
+                    if act_trntype is not None and int(act_trntype[row]) != int(SolverMuJoCo.TrnType.JOINT):
+                        continue
                     dampratio = float(act_biasprm[row][2])
                     # Negative encodes an explicit kv, zero means neither was authored.
                     if dampratio <= 0.0:
@@ -6605,19 +6612,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     kp = float(act_gainprm[row][0])
                     if kp <= 0.0:
                         continue
-                    joint_idx = int(act_trnid[row][0])
-                    if joint_idx < 0 or joint_idx >= len(joint_qd_start):
+                    # For joint transmissions actuator_trnid[:, 0] is the Newton DOF
+                    # index itself (see import_mjcf.py, which stores qd_start here),
+                    # not a joint index -- an actuator drives exactly that one DOF.
+                    dof = int(act_trnid[row][0])
+                    if dof < 0 or dof >= len(axis_to_actuator):
                         continue
-                    dof_start = int(joint_qd_start[joint_idx])
-                    lin_dofs, ang_dofs = joint_dof_dim[joint_idx]
-                    for dof in range(dof_start, dof_start + int(lin_dofs) + int(ang_dofs)):
-                        mjc_actuator = int(axis_to_actuator[dof, 0]) if dof < len(axis_to_actuator) else -1
-                        if mjc_actuator < 0:
-                            continue
-                        acc0 = float(self.mj_model.actuator_acc0[mjc_actuator])
-                        if acc0 <= 0.0:
-                            continue
-                        resolved_kd[dof] = 2.0 * dampratio * np.sqrt(kp / acc0)
+                    mjc_actuator = int(axis_to_actuator[dof, 0])
+                    if mjc_actuator < 0:
+                        continue
+                    # Resolve the MuJoCo DOF this actuator drives so we can read its
+                    # reflected inertia; trnid on the compiled model is a joint index.
+                    mjc_jnt = int(self.mj_model.actuator_trnid[mjc_actuator, 0])
+                    if mjc_jnt < 0 or mjc_jnt >= self.mj_model.njnt:
+                        continue
+                    mjc_dof = int(self.mj_model.jnt_dofadr[mjc_jnt])
+                    if mjc_dof < 0 or mjc_dof >= self.mj_model.nv:
+                        continue
+                    dof_m0 = float(self.mj_model.dof_M0[mjc_dof])
+                    if dof_m0 <= 0.0:
+                        continue
+                    resolved_kd[dof] = 2.0 * dampratio * np.sqrt(kp * dof_m0)
                 if resolved_kd:
                     kd_host = model.joint_target_kd.numpy()
                     for dof, kd_value in resolved_kd.items():
