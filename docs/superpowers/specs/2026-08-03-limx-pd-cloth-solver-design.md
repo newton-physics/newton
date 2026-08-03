@@ -236,6 +236,10 @@ One substep performs:
 6. Set `state_out.particle_qd = velocity_damping *
    (state_out.particle_q-x_previous)/dt`.
 
+`velocity_damping` defaults to `1.0`, so the default update is the undamped
+position finite difference. Values below one remain available as an explicit
+opt-in.
+
 `state_in.particle_q` and `state_in.particle_qd` are not modified. Solver
 scratch arrays are preallocated in the constructor and reused by every step.
 
@@ -280,7 +284,7 @@ Initial defaults are:
 - frame rate `60 Hz` with `4` substeps;
 - `4` nonlinear iterations per substep;
 - `32` PCG iterations per nonlinear iteration;
-- velocity damping `0.998`.
+- velocity damping `1.0` (no damping by default).
 
 The example has no ground plane and does not call collision generation. It
 implements `test_final()` to verify finite particle state, bounded anchor drift,

@@ -209,7 +209,7 @@ git commit -m "Add LIMX composite PCG solve"
 
 **Interfaces:**
 - Consumes: constraint batches, `BlockCsrBuilder`, `CompositeLinearOperator`, and `PcgSolver`.
-- Produces: `SolverLIMX(model, constraints, nonlinear_iterations=4, linear_iterations=32, velocity_damping=0.998)`.
+- Produces: `SolverLIMX(model, constraints, nonlinear_iterations=4, linear_iterations=32, velocity_damping=1.0)`.
 - Produces: standard `step(state_in, state_out, control, contacts, dt) -> None`.
 
 - [ ] **Step 1: Write a failing solver integration test**
@@ -226,6 +226,8 @@ self.assertGreater(positions[center_index, 2], initial_center_z - 0.5 * 9.81)
 ```
 
 Also snapshot `state_in` before one call and assert `step()` does not mutate it.
+Require the default output velocity to equal
+`(state_out.particle_q-state_in.particle_q)/dt` without a damping multiplier.
 
 - [ ] **Step 2: Run integration test and verify RED**
 
@@ -243,8 +245,10 @@ Implement Warp kernels for:
 x_inertia = x + dt * velocity + dt * dt * (world_gravity + external_force / mass)
 rhs = mass / (dt * dt) * (x_inertia - x_iter)
 x_iter += dx
-velocity_out = damping * (position_out - x_previous) / dt
+velocity_out = velocity_damping * (position_out - x_previous) / dt
 ```
+
+Set `velocity_damping=1.0` by default so damping is explicitly opt-in.
 
 Use `model.particle_world` and per-world `model.gravity`. Every nonlinear iteration rebuilds the right-hand side, accumulates static and dynamic force, prepares the operator, solves from a zero increment, and updates `x_iter`. Only final arrays are written to `state_out`.
 
