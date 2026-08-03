@@ -56,6 +56,33 @@ class TestMuJoCoSolver(unittest.TestCase):
         """
         self.assertTrue(True, "setUp method completed.")
 
+    def test_collision_coloring_uses_all_32_mujoco_mask_bits(self):
+        """The graph-color fallback uses bits 0 through 31 before degrading to MuJoCo defaults."""
+        builder = newton.ModelBuilder()
+        for i in range(32):
+            body = builder.add_link(label=f"body_{i}")
+            builder.add_shape_sphere(body, radius=0.1, label=f"shape_{i}")
+            joint = builder.add_joint_free(body)
+            builder.add_articulation([joint])
+
+        model = builder.finalize(device="cpu")
+        colors = SolverMuJoCo._color_collision_shapes(model, np.arange(model.shape_count))
+        np.testing.assert_array_equal(np.sort(np.unique(colors)), np.arange(32))
+
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        expected_masks = {SolverMuJoCo._collision_color_masks(color) for color in range(32)}
+        actual_masks = {
+            (int(contype), int(conaffinity))
+            for contype, conaffinity in zip(
+                solver.mj_model.geom_contype,
+                solver.mj_model.geom_conaffinity,
+                strict=True,
+            )
+        }
+        self.assertEqual(actual_masks, expected_masks)
+        self.assertIn((-2147483648, 2147483647), actual_masks)
+        self.assertEqual(SolverMuJoCo._collision_color_masks(32), (1, 1))
+
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia
