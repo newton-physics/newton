@@ -1745,11 +1745,27 @@ def solve_body_joints(
         axis_limits_lower = wp.spatial_top(axis_limits)
         axis_limits_upper = wp.spatial_bottom(axis_limits)
 
+        # A relative offset can contain both valid joint motion and error. For example,
+        # a prismatic joint may be 0.5 m along its free axis and 1 m off it.
+        # Start from the current offset so unconstrained coordinates keep their extension.
+        projected_rel_p = rel_p
+        for dim in range(3):
+            lower = axis_limits_lower[dim]
+            upper = axis_limits_upper[dim]
+            # Limit violations project to the nearest admissible boundary.
+            if rel_p[dim] < lower:
+                projected_rel_p[dim] = lower
+            elif rel_p[dim] > upper:
+                projected_rel_p[dim] = upper
+            # A position-driven coordinate projects to its target. Locked coordinates
+            # have zero-width limits above and therefore already project to zero.
+            elif axis_stiffness[dim] > 0.0:
+                projected_rel_p[dim] = wp.clamp(axis_target_pos[dim], lower, upper)
+
         frame_p = wp.quat_to_matrix(wp.transform_get_rotation(X_wp))
-        r_p = x_c - world_com_p
-        if lin_axis_count == 0:
-            # Keep angular effective mass independent of anchor separation.
-            r_p = wp.transform_get_translation(X_wp) - world_com_p
+        # Use the admissible point for the parent lever arm: the parent anchor would
+        # discard valid extension, while the child anchor would include separation error.
+        r_p = wp.transform_point(X_wp, projected_rel_p) - world_com_p
         r_c = x_c - world_com_c
 
         # for loop will be unrolled, so we can modify local variables

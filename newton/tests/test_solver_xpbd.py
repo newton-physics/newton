@@ -223,6 +223,131 @@ def test_ball_joint_recovers_from_large_anchor_separation(test, device):
     )
 
 
+def test_prismatic_joint_recovers_from_large_transverse_separation(test, device):
+    """Recover transverse errors while retaining a valid prismatic coordinate."""
+    capsule_radius = 0.0625
+    capsule_half_height = 0.25
+    capsule_volume = np.pi * capsule_radius**2 * (2.0 * capsule_half_height) + 4.0 / 3.0 * np.pi * capsule_radius**3
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    shape_cfg = newton.ModelBuilder.ShapeConfig(density=1.0 / capsule_volume, collision_group=0)
+    shape_xform = wp.transform(
+        wp.vec3(0.0),
+        wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5 * wp.pi),
+    )
+
+    parent = builder.add_link()
+    builder.add_shape_capsule(
+        parent,
+        xform=shape_xform,
+        radius=capsule_radius,
+        half_height=capsule_half_height,
+        cfg=shape_cfg,
+    )
+    child = builder.add_link()
+    builder.add_shape_capsule(
+        child,
+        xform=shape_xform,
+        radius=capsule_radius,
+        half_height=capsule_half_height,
+        cfg=shape_cfg,
+    )
+
+    root_joint = builder.add_joint_free(child=parent)
+    prismatic_joint = builder.add_joint_prismatic(
+        parent=parent,
+        child=child,
+        axis=newton.Axis.X,
+        limit_lower=-2.0,
+        limit_upper=2.0,
+    )
+    builder.add_articulation([root_joint, prismatic_joint])
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+    state_0 = model.state()
+    state_1 = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    body_q = state_0.body_q.numpy()
+    body_q[child, :3] += np.array((0.5, 1.0, 1.0), dtype=np.float32)
+    state_0.body_q.assign(body_q)
+
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    solver.step(state_0, state_1, None, None, 1.0 / 240.0)
+
+    body_q = state_1.body_q.numpy()
+    parent_q = body_q[parent, 3:]
+    parent_q_inv = np.array((-parent_q[0], -parent_q[1], -parent_q[2], parent_q[3]))
+    qv = parent_q_inv[:3]
+    offset = body_q[child, :3] - body_q[parent, :3]
+    relative_offset = (
+        2.0 * np.dot(qv, offset) * qv
+        + (parent_q_inv[3] * parent_q_inv[3] - np.dot(qv, qv)) * offset
+        + 2.0 * parent_q_inv[3] * np.cross(qv, offset)
+    )
+    transverse_gap = float(np.linalg.norm(relative_offset[1:]))
+
+    test.assertLess(
+        transverse_gap,
+        0.5,
+        msg=f"Prismatic joint did not recover from transverse separation: gap={transverse_gap:.6g} m",
+    )
+    test.assertGreaterEqual(
+        float(relative_offset[0]),
+        -2.0,
+        msg=f"Prismatic joint violated its lower limit: position={relative_offset[0]:.6g} m",
+    )
+    test.assertLessEqual(
+        float(relative_offset[0]),
+        2.0,
+        msg=f"Prismatic joint violated its upper limit: position={relative_offset[0]:.6g} m",
+    )
+
+
+def test_prismatic_joint_retains_extension_in_parent_moment_arm(test, device):
+    """Retain valid prismatic extension in the parent moment arm."""
+    extension = 0.5
+    transverse_error = 0.1
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    parent = builder.add_link()
+    builder.add_shape_sphere(parent, radius=0.25)
+    child = builder.add_link()
+    builder.add_shape_sphere(child, radius=0.25)
+
+    root_joint = builder.add_joint_free(child=parent)
+    prismatic_joint = builder.add_joint_prismatic(
+        parent=parent,
+        child=child,
+        axis=newton.Axis.X,
+        limit_lower=-2.0,
+        limit_upper=2.0,
+        damping=0.0,
+    )
+    builder.add_articulation([root_joint, prismatic_joint])
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+    state_0 = model.state()
+    state_1 = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    body_q = state_0.body_q.numpy()
+    body_q[child, :2] += np.array((extension, transverse_error), dtype=np.float32)
+    state_0.body_q.assign(body_q)
+
+    solver = newton.solvers.SolverXPBD(model, iterations=2, angular_damping=0.0)
+    solver.step(state_0, state_1, None, None, 1.0 / 240.0)
+
+    parent_rotation_z = abs(float(state_1.body_q.numpy()[parent, 5]))
+    test.assertGreater(
+        parent_rotation_z,
+        0.01,
+        msg="Prismatic correction omitted torque from the valid joint extension",
+    )
+
+
 def test_optional_control_and_contacts(test, device):
     """Test that XPBD accepts omitted control and contact data.
 
@@ -1667,6 +1792,22 @@ add_function_test(
     TestSolverXPBD,
     "test_ball_joint_recovers_from_large_anchor_separation",
     test_ball_joint_recovers_from_large_anchor_separation,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_prismatic_joint_recovers_from_large_transverse_separation",
+    test_prismatic_joint_recovers_from_large_transverse_separation,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_prismatic_joint_retains_extension_in_parent_moment_arm",
+    test_prismatic_joint_retains_extension_in_parent_moment_arm,
     devices=devices,
     check_output=False,
 )
