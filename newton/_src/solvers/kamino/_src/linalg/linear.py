@@ -434,7 +434,7 @@ class IterativeSolver(LinearSolver[ScalarType, IndexType]):
     def get_solve_metadata(self) -> dict[str, Any]:
         return {"iterations": self._solve_iterations, "residual_norm": self._solve_residual_norm}
 
-    def prepare_step(self) -> None:
+    def prepare_solve(self) -> None:
         """Hook run once per sim step before the (possibly graph-captured) solve loop.
 
         Raw-Jacobian solvers override this to rebuild their per-step index structures outside the
@@ -965,7 +965,7 @@ class ConjugateResidualSolver(IterativeSolver[ScalarType, IndexType]):
         )
 
 
-class ConjugateResidualSolverFused(IterativeSolver):
+class ConjugateResidualSolverFused(IterativeSolver[wp.float32, wp.int32]):
     """Single-kernel sparse Conjugate Residual solver for the matrix-free Delassus operator.
 
     Unlike :class:`ConjugateResidualSolver` (a multi-launch CR loop over the operator's ``matvec``),
@@ -985,9 +985,9 @@ class ConjugateResidualSolverFused(IterativeSolver):
         self._delassus_op = None
         if int(block_dim) <= 0:
             raise ValueError("ConjugateResidualSolverFused requires block_dim > 0.")
-        # Threads per block (one block solves one world). 128 (four warps) is the measured sweet
-        # spot for the dr_legs workload: faster than 64 (more warps hide matvec memory latency) and
-        # than 256 (which over-subscribes and loses occupancy).
+        # Threads per block (one block solves one world). 128 (four warps) is the experimental sweet
+        # spot for moderately complex workloads: faster than 64 (more warps hide matvec memory
+        # latency) and than 256 (which over-subscribes and loses occupancy).
         self._block_dim = int(block_dim)
         super().__init__(**kwargs)
 
@@ -1082,20 +1082,20 @@ class ConjugateResidualSolverFused(IterativeSolver):
         self._rtol_arr = wp.full(n_worlds, 1e-8, dtype=wp.float32, device=device)
 
     @override
-    def _reset_impl(self, A: wp.array | None = None, **kwargs: dict[str, Any]) -> None:
+    def _reset_impl(self, A: wp.array[wp.float32] | None = None, **kwargs: dict[str, Any]) -> None:
         self._solve_iterations = None
         self._solve_residual_norm = None
 
     @override
-    def _compute_impl(self, A: wp.array | None = None, **kwargs: dict[str, Any]) -> None:
+    def _compute_impl(self, A: wp.array[wp.float32] | None = None, **kwargs: dict[str, Any]) -> None:
         # Matrix-free: nothing to precompute; the index structures are rebuilt per solve.
         pass
 
     @override
-    def _solve_inplace_impl(self, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _solve_inplace_impl(self, x: wp.array[wp.float32], **kwargs: dict[str, Any]) -> None:
         self._solve_impl(x, x, **kwargs)
 
-    def _refresh_combined_regularization(self, op) -> wp.array:
+    def _refresh_combined_regularization(self, op) -> wp.array[wp.float32]:
         # Mirror BlockSparseMatrixFreeDelassusOperator.update()'s regularization step (eta plus
         # armature) without assembling any Jacobian copy. Uses the raw Jacobian's row_start.
         if op._combined_regularization is None:
@@ -1144,18 +1144,21 @@ class ConjugateResidualSolverFused(IterativeSolver):
             )
         return op._combined_regularization
 
-    def prepare_step(self) -> None:
+    def prepare_solve(self) -> None:
         """Rebuild the per-step index structures and combined regularization, if the operator was
         marked changed since the last build.
 
         The index structures and combined regularization depend only on the Jacobian sparsity and
-        the regularization -- both fixed across a sim step's PADMM iterations -- so this only does
-        work once per step (when ``_raw_jacobian_dirty`` is set). PADMM calls this *before* the
-        (possibly CUDA-graph-captured) iteration loop, keeping the build (which includes a segmented
-        sort) out of the replayed graph; ``_solve_impl`` also calls it as a lazy fallback.
+        the regularization. Since sparsity is fixed across a sim step's PADMM iterations, building
+        the index structure only needs to happen once per step (when ``_raw_jacobian_needs_update``
+        is set), and PADMM calls it accordingly. The regularization might change between solves when
+        an adaptive strategy is used, so the regularization precomputation might run before every
+        solve. The flags will prevent unnecessary computations (and keep them out of graph-captured
+        iteration loops); ensure that any wanted updates use the proper host-side flags when being
+        graph-captured. ``_solve_impl`` also calls this as a lazy fallback.
         """
         op = self._delassus_op
-        if not (op._raw_jacobian_dirty or op._regularization_dirty):
+        if not (op._raw_jacobian_needs_update or op._regularization_needs_update):
             return
         device = op.device
         cj = op.constraint_jacobian  # raw constraint Jacobian J (coordinate block-sparse)
@@ -1164,11 +1167,11 @@ class ConjugateResidualSolverFused(IterativeSolver):
         # preconditioner, not on the Jacobian sparsity, so it never needs the index structures.
         eta = self._refresh_combined_regularization(op)
         self._cached_eta = eta if eta is not None else self._eta_dummy
-        op._regularization_dirty = False
+        op._regularization_needs_update = False
 
         # The index structures depend only on the Jacobian sparsity, so rebuild them (the segmented
         # transpose sort is the expensive part) only when the structure actually changed.
-        if not op._raw_jacobian_dirty:
+        if not op._raw_jacobian_needs_update:
             return
         build_row_index(
             num_nzb=cj.num_nzb,
@@ -1195,10 +1198,10 @@ class ConjugateResidualSolverFused(IterativeSolver):
             out_row_idx_sorted=self._row_idx_sorted,
             device=device,
         )
-        op._raw_jacobian_dirty = False
+        op._raw_jacobian_needs_update = False
 
     @override
-    def _solve_impl(self, b: wp.array, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _solve_impl(self, b: wp.array[wp.float32], x: wp.array[wp.float32], **kwargs: dict[str, Any]) -> None:
         op = self._delassus_op
         model = op._model
         data = op._data
@@ -1206,7 +1209,7 @@ class ConjugateResidualSolverFused(IterativeSolver):
         cj = op.constraint_jacobian  # raw constraint Jacobian J (coordinate block-sparse)
 
         # Lazy fallback: build once per step if PADMM hasn't already done so before the loop.
-        self.prepare_step()
+        self.prepare_solve()
 
         eta = self._cached_eta
         use_precond = 1 if op._preconditioner is not None else 0
@@ -1234,7 +1237,6 @@ class ConjugateResidualSolverFused(IterativeSolver):
                 self._world_active,
                 cj.num_nzb,
                 cj.nzb_start,
-                cj.nzb_coords,
                 cj.nzb_values,
                 self._row_blk,
                 self._sort_key,

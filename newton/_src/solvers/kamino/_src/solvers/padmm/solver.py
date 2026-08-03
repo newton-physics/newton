@@ -494,14 +494,12 @@ class PADMMSolver:
         eta update, so the new regularization is captured inside ``wp.capture_while``.
 
         Under graph-conditional capture the iteration body is traced once: the lazy refresh inside the
-        linear solve runs *before* the eta update in that single trace, so it records the stale eta and
-        the replayed graph never picks up the per-iteration update (-> divergence/NaN). Calling
-        ``prepare_step`` here, *after* the update, records the refresh in the body. It is cheap and
-        capture-safe: only eta changed, so it refreshes the combined regularization and skips the
-        index rebuild + segmented sort (see the dirty-flag split in ``delassus``)."""
-        prepare_step = getattr(problem._delassus._solver, "prepare_step", None)
-        if prepare_step is not None:
-            prepare_step()
+        linear solve runs *before* the eta update in that single trace, so it might skip the update
+        because the (host-side) flags that signal an update have been cleared before the loop start.
+        The replayed graph then never picks up the per-iteration eta update (-> divergence/NaN).
+        Calling ``prepare_solve`` here, *after* the update, records the refresh in the body."""
+        if problem.sparse:
+            problem._delassus._solver.prepare_solve()
 
     def _update_regularization(self, problem: DualProblem):
         """
@@ -517,7 +515,7 @@ class PADMMSolver:
             # Let a raw-Jacobian linear solver (e.g. the fused single-kernel CR) rebuild its
             # per-step index structures here, before the (possibly graph-captured) iteration loop,
             # so that one-off work stays out of the replayed graph. No-op for other solvers.
-            problem._delassus._solver.prepare_step()
+            problem._delassus._solver.prepare_solve()
         else:
             # Update the proximal regularization term in the Delassus matrix
             wp.launch(

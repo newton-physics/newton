@@ -157,7 +157,6 @@ def _solve_fused(worlds, use_precond, device, rng):
             wp.array(np.ones(W, np.uint8), dtype=wp.bool, device=device),
             cj_num_nzb,
             cj_nzb_start,
-            cj_coords,
             cj_values,
             row_blk,
             sort_key,

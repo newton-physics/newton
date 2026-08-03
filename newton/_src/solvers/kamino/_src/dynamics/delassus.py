@@ -1251,20 +1251,20 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         # Flag to indicate that the operator needs an update to its data structure
         self._needs_update: bool = False
 
-        # Whether to assemble the row-major (P·J·M⁻¹) and column-major (P·J)ᵀ Jacobian copies used
-        # by the multi-launch matvec. Set False in finalize() when the solver reads the raw
-        # Jacobian directly (e.g. the fused single-kernel CR), to avoid duplicating matrix values.
-        self._assemble: bool = True
+        # Flag indicating whether the row-major (P·J·M⁻¹) and column-major (P·J)ᵀ Jacobian copies
+        # are required. Set automatically in ``finalize()`` based on solver choice.
+        self._assemble_preconditioned_jacobians: bool = True
 
         # Dirty flags for raw-Jacobian solvers (e.g. the fused CR), cleared by the solver once it
-        # has acted on them. ``_raw_jacobian_dirty`` means the Jacobian *structure* changed and the
-        # per-step index structures (row index + segmented transpose sort) must be rebuilt.
-        # ``_regularization_dirty`` means only the diagonal regularization (eta) changed -- the
-        # sparsity is unchanged, so the solver refreshes its combined-regularization copy but skips
-        # the index rebuild. Keeping these separate avoids re-sorting on eta-only updates (adaptive
-        # penalty, or the transient set_regularization(None)/restore around info collection).
-        self._raw_jacobian_dirty: bool = True
-        self._regularization_dirty: bool = True
+        # has acted on them. ``_raw_jacobian_needs_update`` means the Jacobian *structure* changed
+        # and the per-step index structures (row index + segmented transpose sort) must be rebuilt.
+        # ``_regularization_needs_update`` means only the diagonal regularization (eta) changed --
+        # the sparsity is unchanged, so the solver refreshes its combined-regularization copy but
+        # skips the index rebuild. Keeping these separate avoids re-sorting on eta-only updates
+        # (adaptive penalty, or the transient set_regularization(None)/restore around info
+        # collection).
+        self._raw_jacobian_needs_update: bool = True
+        self._regularization_needs_update: bool = True
 
         # Temporary vector to store results, sized to the number of body dofs in a model.
         self._vec_temp_body_space: wp.array[wp.float32] | None = None
@@ -1390,9 +1390,9 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         # Solvers that read the raw constraint Jacobian directly (e.g. the fused single-kernel CR)
         # set ``uses_raw_jacobian = True``; for those we skip assembling the row-major P·J·M⁻¹ copy
         # and the column-major transpose copy entirely, avoiding the matrix-value duplication.
-        self._assemble = not bool(getattr(solver, "uses_raw_jacobian", False))
+        self._assemble_preconditioned_jacobians = not bool(getattr(solver, "uses_raw_jacobian", False))
 
-        if self._assemble:
+        if self._assemble_preconditioned_jacobians:
             # Check whether any of the maximum row dimensions of the Jacobians is smaller than six.
             # If so, we avoid building the column-major Jacobian due to potential memory access issues.
             min_of_max_rows = np.min(self._model.info.max_total_cts.numpy())
@@ -1433,18 +1433,17 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         Flags the operator as needing to update its data structure.
         """
         self._needs_update = True
-        self._raw_jacobian_dirty = True
+        self._raw_jacobian_needs_update = True
 
     def set_regularization_needs_update(self):
-        """Flag that only the diagonal regularization (eta) changed, not the Jacobian structure.
+        """Flag that the diagonal regularization (eta) changed, but not the Jacobian structure.
 
-        Used by the PADMM proximal/adaptive-penalty update: it rewrites ``_eta`` but leaves the
-        sparsity unchanged, so a raw-Jacobian solver need only refresh its combined regularization
-        (cheap, capture-safe), not rebuild its index structures + segmented sort. ``_needs_update``
-        is still set so the multi-launch assembled operator re-applies eta to its block diagonal.
+        Used by the PADMM proximal/adaptive-penalty update: with sparsity unchanged, a raw-Jacobian
+        solver can avoid rebuilding its index structures + segmented sort.
         """
+        # ``_needs_update`` is still set so the multi-launch assembled operator re-applies eta to its block diagonal.
         self._needs_update = True
-        self._regularization_dirty = True
+        self._regularization_needs_update = True
 
     def update(self):
         """
@@ -1454,7 +1453,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             return
 
         # When assembly is disabled (raw-Jacobian solver), there are no derived copies to refresh.
-        if not self._assemble:
+        if not self._assemble_preconditioned_jacobians:
             self._needs_update = False
             return
 
@@ -1585,12 +1584,10 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 Shape of ``(sum_of_max_total_cts,)``.
         """
         self._eta = eta
-        # Regularization-only change: the Jacobian sparsity is unchanged, so flag the lightweight
-        # regularization-dirty path (eta refresh) rather than ``set_needs_update`` (which would also
-        # force a raw-Jacobian index rebuild / transpose re-sort). ``_needs_update`` still drives the
-        # assembled operator's update().
+        # Flag required update for solvers that use preconditioned Jacobians
         self._needs_update = True
-        self._regularization_dirty = True
+        # Flag sparsity-preserving update for solvers that use raw Jacobians
+        self._regularization_needs_update = True
 
     def set_preconditioner(self, preconditioner: wp.array[wp.float32] | None):
         """
@@ -1815,7 +1812,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
 
     def _require_assembled(self, op_name: str):
         # Matrix-free (uses_raw_jacobian) operators skip assembly -> bsm/_transpose_op_matrix are None.
-        if not self._assemble:
+        if not self._assemble_preconditioned_jacobians:
             raise RuntimeError(
                 f"{op_name} is unavailable on a matrix-free Delassus operator (uses_raw_jacobian "
                 "solver such as CRF): no assembled matrices were allocated."
