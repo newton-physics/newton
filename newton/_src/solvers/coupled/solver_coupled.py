@@ -3331,6 +3331,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
     dst_tids[dst_id] = src_tids[contact_id]
-    # VBD consumes the unified particle, edge, and face representation.
+    # Carry the unified feature record too (the particle-only path writes (p, -1, -1) + (1, 0, 0)); VBD
+    # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
+    # VBD even with full-surface contact off (E7).
     dst_indices[dst_id] = src_indices[contact_id]
     dst_barycentric[dst_id] = src_barycentric[contact_id]
