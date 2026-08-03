@@ -1746,9 +1746,11 @@ def solve_body_joints(
         axis_limits_upper = wp.spatial_bottom(axis_limits)
 
         frame_p = wp.quat_to_matrix(wp.transform_get_rotation(X_wp))
-        # note that x_c appearing in both is correct
         r_p = x_c - world_com_p
-        r_c = x_c - wp.transform_point(pose_c, com_c)
+        if lin_axis_count == 0:
+            # Keep angular effective mass independent of anchor separation.
+            r_p = wp.transform_get_translation(X_wp) - world_com_p
+        r_c = x_c - world_com_c
 
         # for loop will be unrolled, so we can modify local variables
         for dim in range(3):

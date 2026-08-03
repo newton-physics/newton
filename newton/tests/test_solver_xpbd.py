@@ -148,6 +148,81 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
     )
 
 
+def test_ball_joint_recovers_from_large_anchor_separation(test, device):
+    """Recover a ball joint from a large off-axis anchor separation."""
+    capsule_radius = 0.0625
+    capsule_half_height = 0.25
+    capsule_half_extent = capsule_radius + capsule_half_height
+    capsule_volume = np.pi * capsule_radius**2 * (2.0 * capsule_half_height) + 4.0 / 3.0 * np.pi * capsule_radius**3
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    shape_cfg = newton.ModelBuilder.ShapeConfig(density=1.0 / capsule_volume, collision_group=0)
+    shape_xform = wp.transform(
+        wp.vec3(0.0),
+        wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5 * wp.pi),
+    )
+
+    parent = builder.add_link()
+    builder.add_shape_capsule(
+        parent,
+        xform=shape_xform,
+        radius=capsule_radius,
+        half_height=capsule_half_height,
+        cfg=shape_cfg,
+    )
+    child = builder.add_link(xform=wp.transform(wp.vec3(2.0 * capsule_half_extent, 0.0, 0.0), wp.quat_identity()))
+    builder.add_shape_capsule(
+        child,
+        xform=shape_xform,
+        radius=capsule_radius,
+        half_height=capsule_half_height,
+        cfg=shape_cfg,
+    )
+
+    root_joint = builder.add_joint_free(child=parent)
+    ball_joint = builder.add_joint_ball(
+        parent=parent,
+        child=child,
+        parent_xform=wp.transform(wp.vec3(capsule_half_extent, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(-capsule_half_extent, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([root_joint, ball_joint])
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+    state_0 = model.state()
+    state_1 = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    body_q = state_0.body_q.numpy()
+    body_q[child, :3] += np.array((1.0, 1.0, 0.0), dtype=np.float32)
+    state_0.body_q.assign(body_q)
+
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    solver.step(state_0, state_1, None, None, 1.0 / 240.0)
+
+    body_q = state_1.body_q.numpy()
+
+    def transform_point(transform, point):
+        p = transform[:3]
+        q = transform[3:]
+        qv = q[:3]
+        rotated = (
+            2.0 * np.dot(qv, point) * qv + (q[3] * q[3] - np.dot(qv, qv)) * point + 2.0 * q[3] * np.cross(qv, point)
+        )
+        return p + rotated
+
+    parent_anchor = transform_point(body_q[parent], np.array((capsule_half_extent, 0.0, 0.0)))
+    child_anchor = transform_point(body_q[child], np.array((-capsule_half_extent, 0.0, 0.0)))
+    anchor_gap = float(np.linalg.norm(child_anchor - parent_anchor))
+
+    test.assertLess(
+        anchor_gap,
+        0.5,
+        msg=f"Ball joint did not recover from a large anchor separation: gap={anchor_gap:.6g} m",
+    )
+
+
 def test_optional_control_and_contacts(test, device):
     """Test that XPBD accepts omitted control and contact data.
 
@@ -1584,6 +1659,14 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_particle_friction_uses_relative_velocity",
     test_particle_particle_friction_uses_relative_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_ball_joint_recovers_from_large_anchor_separation",
+    test_ball_joint_recovers_from_large_anchor_separation,
     devices=devices,
     check_output=False,
 )
