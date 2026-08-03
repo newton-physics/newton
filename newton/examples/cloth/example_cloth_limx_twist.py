@@ -108,6 +108,7 @@ class Example:
             self.model,
             thickness=0.012,
             stiffness=1.0e4,
+            untangle_stiffness=3.0e4,
             max_contacts=32768,
         )
         self.solver = newton.solvers.SolverLIMX(

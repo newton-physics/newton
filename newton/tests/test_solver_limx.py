@@ -1163,6 +1163,28 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             buffer.depths.numpy()[:count],
         )
 
+    def test_untangle_stiffness_defaults_to_three_times_contact_stiffness(self):
+        positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0)
+
+        self.assertEqual(collision.stiffness, 10.0)
+        self.assertEqual(collision.untangle_stiffness, 30.0)
+
+    def test_explicit_untangle_stiffness_overrides_default_ratio(self):
+        positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                untangle_stiffness=17.0,
+            )
+
+        self.assertEqual(collision.untangle_stiffness, 17.0)
+
     def test_vertex_face_detection_emits_signed_barycentric_contact(self):
         positions = [
             [0.0, 0.0, 0.0],
@@ -1363,6 +1385,8 @@ class TestSolverLIMX(unittest.TestCase):
         self.assertEqual(example.solver.nonlinear_iterations, 1)
         self.assertEqual(example.solver.linear_iterations, 50)
         self.assertEqual(example.solver.velocity_damping, 1.0)
+        self.assertEqual(example.self_collision.stiffness, 1.0e4)
+        self.assertEqual(example.self_collision.untangle_stiffness, 3.0e4)
         self.assertTrue(np.isfinite(positions).all())
         self.assertTrue(np.isfinite(velocities).all())
 

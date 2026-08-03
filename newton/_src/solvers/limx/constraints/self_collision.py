@@ -561,7 +561,7 @@ class ConstraintSelfCollision:
             thickness: One-sided collision activation distance [m].
             stiffness: Vertex-face and edge-edge penalty stiffness [N/m].
             untangle_stiffness: Edge-face recovery stiffness [N/m]. Defaults
-                to ``stiffness``.
+                to three times ``stiffness``.
             max_contacts: Maximum stored contacts for each contact type.
         """
         if not np.isfinite(thickness) or thickness <= 0.0:
@@ -569,7 +569,7 @@ class ConstraintSelfCollision:
         if not np.isfinite(stiffness) or stiffness <= 0.0:
             raise ValueError("stiffness must be finite and positive")
         if untangle_stiffness is None:
-            untangle_stiffness = stiffness
+            untangle_stiffness = 3.0 * stiffness
         if not np.isfinite(untangle_stiffness) or untangle_stiffness <= 0.0:
             raise ValueError("untangle_stiffness must be finite and positive")
         if max_contacts <= 0:
