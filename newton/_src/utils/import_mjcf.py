@@ -865,6 +865,34 @@ def parse_mjcf(
             return wp.quat_from_matrix(wp.mat33(rot_matrix))
         return wp.quat_identity()
 
+    def parse_fromto_transform(
+        attrib, incoming_xform: wp.transform | None = None, zero_length_error: str | None = None
+    ) -> tuple[wp.transform, float]:
+        """Parse a MuJoCo fromto segment into its transform and half-length."""
+        values = parse_vec(attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        start = wp.vec3(values[0:3]) * scale
+        end = wp.vec3(values[3:6]) * scale
+
+        if incoming_xform is not None:
+            start = wp.transform_point(incoming_xform, start)
+            end = wp.transform_point(incoming_xform, end)
+
+        position = (start + end) * 0.5
+        # Match MuJoCo's compiler, which points local +Z from the second endpoint to the first.
+        direction = start - end
+        length = wp.length(direction)
+        if length < 1.0e-6:
+            if zero_length_error is not None:
+                raise ValueError(zero_length_error)
+            return wp.transform(position, wp.quat_identity()), 0.0
+
+        direction /= length
+        if float(direction[2]) < -0.999999:
+            rotation = wp.quat(1.0, 0.0, 0.0, 0.0)
+        else:
+            rotation = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
+        return wp.transform(position, rotation), float(length) * 0.5
+
     def parse_shapes(
         defaults,
         body_name,
@@ -1221,37 +1249,8 @@ def parse_mjcf(
 
             elif geom_type in {"capsule", "cylinder"}:
                 if "fromto" in geom_attrib:
-                    geom_fromto = parse_vec(geom_attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-
-                    start = wp.vec3(geom_fromto[0:3]) * scale
-                    end = wp.vec3(geom_fromto[3:6]) * scale
-
-                    # Apply incoming_xform to fromto coordinates
-                    if incoming_xform is not None:
-                        start = wp.transform_point(incoming_xform, start)
-                        end = wp.transform_point(incoming_xform, end)
-
-                    # Compute pos and quat matching MuJoCo's fromto convention:
-                    # direction = start - end, align Z axis with it (mjuu_z2quat).
-                    # quat_between_vectors degenerates for anti-parallel vectors,
-                    # so handle that case with an explicit 180° rotation around X.
-                    # Guard against zero-length fromto (start == end) which would
-                    # produce NaN from wp.quat_between_vectors.
-                    geom_pos = (start + end) * 0.5
-                    dir_vec = start - end
-                    dir_len = wp.length(dir_vec)
-                    if dir_len < 1.0e-6:
-                        geom_rot = wp.quat_identity()
-                    else:
-                        direction = dir_vec / dir_len
-                        if float(direction[2]) < -0.999999:
-                            geom_rot = wp.quat(1.0, 0.0, 0.0, 0.0)  # 180° around X
-                        else:
-                            geom_rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
-                    tf = wp.transform(geom_pos, geom_rot)
-
+                    tf, geom_height = parse_fromto_transform(geom_attrib, incoming_xform)
                     geom_radius = geom_size[0]
-                    geom_height = dir_len * 0.5
 
                 else:
                     geom_radius = geom_size[0]
@@ -1453,14 +1452,6 @@ def parse_mjcf(
             if ignore_site:
                 continue
 
-            # Parse site transform
-            site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
-            site_rot = parse_orientation(site_attrib)
-            site_xform = wp.transform(site_pos, site_rot)
-
-            if incoming_xform is not None:
-                site_xform = incoming_xform * site_xform
-
             # Parse site type (defaults to sphere if not specified)
             site_type = site_attrib.get("type", "sphere")
 
@@ -1475,7 +1466,29 @@ def parse_mjcf(
                 for i, val in enumerate(size_values):
                     if i < 3:
                         site_size[i] = val
-            site_size = wp.vec3(site_size * scale)
+            site_size *= scale
+
+            if "fromto" in site_attrib:
+                if "pos" in site_attrib:
+                    raise ValueError(f"MJCF site '{site_name}' cannot define both pos and fromto")
+                if site_type not in {"capsule", "cylinder", "ellipsoid", "box"}:
+                    raise ValueError(f"MJCF site '{site_name}' cannot use fromto with type '{site_type}'")
+                site_xform, half_length = parse_fromto_transform(
+                    site_attrib,
+                    incoming_xform,
+                    zero_length_error=f"MJCF site '{site_name}' has a zero-length fromto segment",
+                )
+                if site_type in {"capsule", "cylinder"}:
+                    site_size[1] = half_length
+                else:
+                    site_size = np.array([site_size[0], site_size[0], half_length], dtype=np.float32)
+            else:
+                site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
+                site_xform = wp.transform(site_pos, parse_orientation(site_attrib))
+                if incoming_xform is not None:
+                    site_xform = incoming_xform * site_xform
+
+            site_size = wp.vec3(site_size)
 
             # Map MuJoCo site types to Newton GeoType
             type_map = {
