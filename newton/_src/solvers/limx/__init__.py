@@ -4,5 +4,13 @@
 """LIMX constraint-based particle solver."""
 
 from .constraints import ConstraintAnchor, ConstraintDistance
+from .linear_solver import PcgSolver
+from .operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
 
-__all__ = ["ConstraintAnchor", "ConstraintDistance"]
+__all__ = [
+    "CompositeLinearOperator",
+    "ConstraintAnchor",
+    "ConstraintDistance",
+    "EmptyDynamicConstraintOperator",
+    "PcgSolver",
+]

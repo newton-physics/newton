@@ -9,6 +9,8 @@ import warp as wp
 from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.constraints.anchor import ConstraintAnchor
 from newton._src.solvers.limx.constraints.distance import ConstraintDistance
+from newton._src.solvers.limx.linear_solver import PcgSolver
+from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
 
 
 class TestBlockCsr(unittest.TestCase):
@@ -159,6 +161,101 @@ class TestConstraintDistance(unittest.TestCase):
         for index_pairs, rest_lengths, stiffnesses, particle_count in invalid_arguments:
             with self.subTest(index_pairs=index_pairs), self.assertRaises(ValueError):
                 ConstraintDistance(index_pairs, rest_lengths, stiffnesses, particle_count, "cpu")
+
+
+class TestCompositeLinearOperator(unittest.TestCase):
+    def make_operator(self):
+        builder = BlockCsrBuilder(2)
+        builder.add_scaled_identity(0, 0, 2.0)
+        builder.add_scaled_identity(0, 1, -1.0)
+        builder.add_scaled_identity(1, 0, -1.0)
+        builder.add_scaled_identity(1, 1, 4.0)
+        matrix = builder.finalize("cpu")
+        masses = wp.array([2.0, 3.0], dtype=float, device="cpu")
+        operator = CompositeLinearOperator(
+            masses=masses,
+            static_matrix=matrix,
+            dynamic_operator=EmptyDynamicConstraintOperator(),
+            device="cpu",
+        )
+        positions = wp.zeros(2, dtype=wp.vec3, device="cpu")
+        operator.prepare(positions, 0.5)
+        return operator
+
+    def test_multiply_combines_mass_and_static_hessian(self):
+        operator = self.make_operator()
+        x = wp.array(
+            [wp.vec3(1.0, 2.0, 3.0), wp.vec3(4.0, 5.0, 6.0)],
+            dtype=wp.vec3,
+            device="cpu",
+        )
+        output = wp.empty_like(x)
+
+        operator.multiply(x, output)
+
+        np.testing.assert_allclose(output.numpy(), [[6.0, 15.0, 24.0], [63.0, 78.0, 93.0]])
+        np.testing.assert_allclose(operator.inverse_diagonal.numpy()[0], np.eye(3) * 0.1)
+        np.testing.assert_allclose(operator.inverse_diagonal.numpy()[1], np.eye(3) * 0.0625)
+
+
+class TestPcgSolver(unittest.TestCase):
+    def make_operator(self):
+        return TestCompositeLinearOperator().make_operator()
+
+    def test_solves_known_spd_block_system(self):
+        operator = self.make_operator()
+        rhs = wp.array(
+            [wp.vec3(9.75, -23.0, 6.0), wp.vec3(3.0, 50.0, -16.5)],
+            dtype=wp.vec3,
+            device="cpu",
+        )
+        solution = wp.zeros(2, dtype=wp.vec3, device="cpu")
+        solver = PcgSolver(2, "cpu")
+
+        executed = solver.solve(operator, rhs, solution, iterations=20)
+
+        self.assertEqual(executed, 20)
+        np.testing.assert_allclose(solution.numpy(), [[1.0, -2.0, 0.5], [0.25, 3.0, -1.0]], rtol=1e-5, atol=1e-6)
+
+    def test_nonzero_initial_guess_converges_to_same_solution(self):
+        operator = self.make_operator()
+        rhs = wp.array(
+            [wp.vec3(9.75, -23.0, 6.0), wp.vec3(3.0, 50.0, -16.5)],
+            dtype=wp.vec3,
+            device="cpu",
+        )
+        solution = wp.array([wp.vec3(-2.0, 1.0, 4.0), wp.vec3(3.0, -1.0, 0.5)], dtype=wp.vec3, device="cpu")
+        solver = PcgSolver(2, "cpu")
+
+        solver.solve(operator, rhs, solution, iterations=20, zero_initial_guess=False)
+
+        np.testing.assert_allclose(solution.numpy(), [[1.0, -2.0, 0.5], [0.25, 3.0, -1.0]], rtol=1e-5, atol=1e-6)
+
+    def test_debug_tolerance_stops_before_iteration_limit(self):
+        operator = self.make_operator()
+        rhs = wp.array(
+            [wp.vec3(9.75, -23.0, 6.0), wp.vec3(3.0, 50.0, -16.5)],
+            dtype=wp.vec3,
+            device="cpu",
+        )
+        solution = wp.zeros(2, dtype=wp.vec3, device="cpu")
+        solver = PcgSolver(2, "cpu")
+
+        executed = solver.solve(operator, rhs, solution, iterations=100, tolerance=1.0e-6, check_interval=1)
+
+        self.assertLess(executed, 100)
+        np.testing.assert_allclose(solution.numpy(), [[1.0, -2.0, 0.5], [0.25, 3.0, -1.0]], rtol=1e-5, atol=1e-6)
+
+    def test_zero_rhs_breakdown_guard_stays_finite(self):
+        operator = self.make_operator()
+        rhs = wp.zeros(2, dtype=wp.vec3, device="cpu")
+        solution = wp.zeros(2, dtype=wp.vec3, device="cpu")
+        solver = PcgSolver(2, "cpu")
+
+        solver.solve(operator, rhs, solution, iterations=5)
+
+        self.assertTrue(np.isfinite(solution.numpy()).all())
+        np.testing.assert_array_equal(solution.numpy(), np.zeros((2, 3)))
 
 
 if __name__ == "__main__":
