@@ -41,9 +41,6 @@ Supported hook signatures are:
     def coupling_notify_input_state_update(state, flags, *, iteration_restart=False, dt=0.0) -> None: ...
 
 
-    def coupling_sync_reset_state(state_in, state_out, world_mask, flags) -> None: ...
-
-
     def coupling_supports_inertial_property_refresh() -> bool: ...
 
 
@@ -244,30 +241,6 @@ class CouplingInterface:
         state arrays and public force-input buffers.
         """
         del state, flags, iteration_restart, dt
-
-    def coupling_sync_reset_state(
-        self,
-        state_in: State,
-        state_out: State,
-        world_mask: wp.array[wp.bool],
-        flags: StateFlags | int | None,
-    ) -> None:
-        """Synchronize solver-owned state after a masked coupled reset.
-
-        Public and registered ``STATE`` arrays on frequencies with explicit
-        coupled-entry ownership are synchronized by the coupled solver. This
-        hook synchronizes only the entry input and output states; reconciling
-        other frequencies into the parent state requires coupler-specific
-        logic.
-
-        Args:
-            state_in: Reset entry input state.
-            state_out: Entry output state whose persistent history is synchronized.
-            world_mask: Canonical device mask of shape ``(world_count + 1,)``
-                selecting reset worlds, including the final global slot.
-            flags: Optional state bitmask forwarded from the reset request.
-        """
-        del state_in, state_out, world_mask, flags
 
     def coupling_supports_inertial_property_refresh(self) -> bool:
         """Return whether inertial property refresh is safe during graph capture.

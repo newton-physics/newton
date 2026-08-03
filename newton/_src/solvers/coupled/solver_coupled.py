@@ -2312,8 +2312,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     src,
                     dst,
                 )
-            entry.solver.coupling_sync_reset_state(entry.state_0, entry.state_1, world_mask, flags)
-
         entry_states = (entry.state_0,) if entry.state_1 is entry.state_0 else (entry.state_0, entry.state_1)
         for entry_state in entry_states:
             if entry_state is None:
