@@ -3,7 +3,6 @@
 
 import logging
 import os
-import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -212,28 +211,6 @@ class SDF:
         # Keep texture references alive to prevent GC
         self._coarse_texture = _coarse_texture
         self._subgrid_texture = _subgrid_texture
-
-    @property
-    def texture_block_coords(self) -> None:
-        """Deprecated.  Always returns ``None``.
-
-        Texture-SDF block coordinates were removed when the hydroelastic
-        broadphase started deriving them arithmetically from the per-shape
-        coarse-texture dimensions.  The attribute is retained for one
-        release cycle so existing callers do not break.
-
-        .. deprecated:: 1.3
-            This attribute will be removed in a future release.
-        """
-        warnings.warn(
-            "SDF.texture_block_coords is deprecated and always returns None; "
-            "it will be removed in a future release. The hydroelastic broadphase "
-            "now derives block coordinates arithmetically from each SDF's "
-            "coarse-texture dimensions and no longer needs this attribute.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return None
 
     def to_kernel_data(self) -> SDFData:
         """Return kernel-facing SDF payload."""
@@ -1544,10 +1521,10 @@ def _generate_dense_mc_kernel(
             p_0 = wp.vec3f(corner_offsets_table[ev[0]])
             p_1 = wp.vec3f(corner_offsets_table[ev[1]])
             val_diff = val_1 - val_0
-            if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
+            if wp.abs(val_diff) < MC_EDGE_VAL_DIFF_EPS:
                 p = 0.5 * (p_0 + p_1)
             else:
-                t = wp.clamp((0.0 - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
+                t = wp.clamp((0.0 - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
                 p = p_0 + t * (p_1 - p_0)
             local = base + p
             face_verts[vi] = wp.vec3(
@@ -1557,7 +1534,7 @@ def _generate_dense_mc_kernel(
             )
         n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
         n_sq = wp.dot(n, n)
-        if n_sq < wp.static(MC_DEGENERATE_N_SQ_EPS):
+        if n_sq < MC_DEGENERATE_N_SQ_EPS:
             normal = wp.vec3(0.0, 0.0, 1.0)
         else:
             normal = n / wp.sqrt(n_sq)

@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, override
+from ..geometry.flags import ShapeFlags
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
@@ -31,11 +32,6 @@ if TYPE_CHECKING:
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
-
-_HAS_HEIGHTFIELDS_DEPRECATION_MSG = (
-    "Model.has_heightfields is deprecated; use Model.heightfield_count, "
-    "or model.heightfield_count > 0 for boolean checks, instead."
-)
 
 _SHAPE_COLLISION_FILTER_MUTATION_DEPRECATION_MSG = (
     "Mutating Model.shape_collision_filter_pairs after ModelBuilder.finalize() is deprecated. "
@@ -901,7 +897,7 @@ class Model:
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
-        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
+        """BVH over selected shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
@@ -930,6 +926,9 @@ class Model:
         self.heightfield_meshes: list[wp.Mesh] = []
         """wp.Mesh objects built from heightfield shapes, kept alive for the model's lifetime."""
 
+        self._mesh_keep_alive: list[wp.Mesh] = []
+        """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
+
         # Mesh edge data (packed array + per-shape slice)
         self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
@@ -957,11 +956,6 @@ class Model:
         """Subgrid 3D textures matching _texture_sdf_data by index. Kept for reference counting."""
         self._texture_sdf_subgrid_start_slots: list = []
         """Subgrid start slot arrays matching _texture_sdf_data by index. Kept for reference counting."""
-
-        # Caches for the deprecated lazy ``sdf_block_coords`` / ``sdf_index2blocks``
-        # properties. Populated on first access; cleared when SDF storage changes.
-        self._sdf_block_coords_cache: wp.array | None = None
-        self._sdf_index2blocks_cache: wp.array | None = None
 
         # Local AABB and voxel grid for contact reduction
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
@@ -1563,240 +1557,6 @@ class Model:
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
-    # ----- Deprecated SDF aliases -------------------------------------------
-    # The underlying SDF members on ``Model`` are now underscore-prefixed.
-    # The properties below preserve the historical attribute names for one
-    # release cycle and emit ``DeprecationWarning`` on access.
-
-    @property
-    def shape_sdf_index(self) -> wp.array[wp.int32] | None:
-        """Deprecated alias for :attr:`_shape_sdf_index`.
-
-        .. deprecated:: 1.3
-            Use the underscored private member or the appropriate accessor.
-            This alias will be removed in a future release.
-        """
-        warnings.warn(
-            "Model.shape_sdf_index is deprecated; use Model._shape_sdf_index. "
-            "The public alias will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._shape_sdf_index
-
-    @shape_sdf_index.setter
-    def shape_sdf_index(self, value):
-        warnings.warn(
-            "Model.shape_sdf_index is deprecated; assign to Model._shape_sdf_index. "
-            "The public alias will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._shape_sdf_index = value
-
-    @property
-    def texture_sdf_data(self):
-        """Deprecated alias for :attr:`_texture_sdf_data`.
-
-        .. deprecated:: 1.3
-            Use the underscored private member. The alias will be removed in
-            a future release.
-        """
-        warnings.warn(
-            "Model.texture_sdf_data is deprecated; use Model._texture_sdf_data. "
-            "The public alias will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._texture_sdf_data
-
-    @texture_sdf_data.setter
-    def texture_sdf_data(self, value):
-        warnings.warn(
-            "Model.texture_sdf_data is deprecated; assign to Model._texture_sdf_data. "
-            "The public alias will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._texture_sdf_data = value
-        self._sdf_block_coords_cache = None
-        self._sdf_index2blocks_cache = None
-
-    @property
-    def texture_sdf_coarse_textures(self) -> list:
-        """Deprecated alias for :attr:`_texture_sdf_coarse_textures`.
-
-        .. deprecated:: 1.3
-            Use the underscored private member. The alias will be removed in
-            a future release.
-        """
-        warnings.warn(
-            "Model.texture_sdf_coarse_textures is deprecated; use "
-            "Model._texture_sdf_coarse_textures. The public alias will be "
-            "removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._texture_sdf_coarse_textures
-
-    @texture_sdf_coarse_textures.setter
-    def texture_sdf_coarse_textures(self, value):
-        warnings.warn(
-            "Model.texture_sdf_coarse_textures is deprecated; assign to "
-            "Model._texture_sdf_coarse_textures. The public alias will be "
-            "removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._texture_sdf_coarse_textures = value
-        self._sdf_block_coords_cache = None
-        self._sdf_index2blocks_cache = None
-
-    @property
-    def texture_sdf_subgrid_textures(self) -> list:
-        """Deprecated alias for :attr:`_texture_sdf_subgrid_textures`.
-
-        .. deprecated:: 1.3
-            Use the underscored private member. The alias will be removed in
-            a future release.
-        """
-        warnings.warn(
-            "Model.texture_sdf_subgrid_textures is deprecated; use "
-            "Model._texture_sdf_subgrid_textures. The public alias will be "
-            "removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._texture_sdf_subgrid_textures
-
-    @texture_sdf_subgrid_textures.setter
-    def texture_sdf_subgrid_textures(self, value):
-        warnings.warn(
-            "Model.texture_sdf_subgrid_textures is deprecated; assign to "
-            "Model._texture_sdf_subgrid_textures. The public alias will be "
-            "removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._texture_sdf_subgrid_textures = value
-
-    @property
-    def texture_sdf_subgrid_start_slots(self) -> list:
-        """Deprecated alias for :attr:`_texture_sdf_subgrid_start_slots`.
-
-        .. deprecated:: 1.3
-            Use the underscored private member. The alias will be removed in
-            a future release.
-        """
-        warnings.warn(
-            "Model.texture_sdf_subgrid_start_slots is deprecated; use "
-            "Model._texture_sdf_subgrid_start_slots. The public alias will be "
-            "removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._texture_sdf_subgrid_start_slots
-
-    @texture_sdf_subgrid_start_slots.setter
-    def texture_sdf_subgrid_start_slots(self, value):
-        warnings.warn(
-            "Model.texture_sdf_subgrid_start_slots is deprecated; assign to "
-            "Model._texture_sdf_subgrid_start_slots. The public alias will be "
-            "removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._texture_sdf_subgrid_start_slots = value
-
-    @property
-    def sdf_block_coords(self):
-        """Deprecated.  Lazily-computed flat ``wp.vec3us`` block coords.
-
-        Per-SDF active-block coordinates were dropped when the hydroelastic
-        broadphase started deriving them arithmetically from each SDF's
-        coarse-texture dimensions. This property recomputes the legacy
-        layout on first access (and caches it) so external callers that
-        still read the attribute keep working.
-
-        .. deprecated:: 1.3
-            This attribute will be removed in a future release.
-        """
-        warnings.warn(
-            "Model.sdf_block_coords is deprecated and will be removed in "
-            "a future release. The hydroelastic broadphase now derives block "
-            "coordinates arithmetically from each SDF's coarse-texture "
-            "dimensions and no longer needs this attribute.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._ensure_legacy_sdf_block_arrays()
-        return self._sdf_block_coords_cache
-
-    @property
-    def sdf_index2blocks(self):
-        """Deprecated.  Lazily-computed per-SDF ``[start, end)`` ranges.
-
-        Per-SDF ``[start, end)`` indices into ``sdf_block_coords`` were
-        dropped when the hydroelastic broadphase started deriving block
-        ranges arithmetically from each SDF's coarse-texture dimensions.
-        This property recomputes the legacy layout on first access (and
-        caches it) so external callers that still read the attribute keep
-        working.
-
-        .. deprecated:: 1.3
-            This attribute will be removed in a future release.
-        """
-        warnings.warn(
-            "Model.sdf_index2blocks is deprecated and will be removed in "
-            "a future release. The hydroelastic broadphase now derives block "
-            "ranges arithmetically from each SDF's coarse-texture "
-            "dimensions and no longer needs this attribute.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._ensure_legacy_sdf_block_arrays()
-        return self._sdf_index2blocks_cache
-
-    def _ensure_legacy_sdf_block_arrays(self) -> None:
-        """Populate the legacy SDF block-coord caches on demand."""
-        if self._sdf_block_coords_cache is not None and self._sdf_index2blocks_cache is not None:
-            return
-        # Local import keeps the deprecated module out of the normal load path.
-        from ..geometry._deprecated_sdf_block_coords import (  # noqa: PLC0415
-            build_legacy_sdf_block_arrays,
-        )
-
-        subgrid_size = 8
-        if self._texture_sdf_data is not None and len(self._texture_sdf_data) > 0:
-            subgrid_size = int(self._texture_sdf_data.numpy()[0]["subgrid_size"])
-        block_coords, index2blocks = build_legacy_sdf_block_arrays(
-            self._texture_sdf_coarse_textures,
-            subgrid_size=subgrid_size,
-            device=self.device,
-        )
-        self._sdf_block_coords_cache = block_coords
-        self._sdf_index2blocks_cache = index2blocks
-
-    @property
-    def has_heightfields(self) -> bool:
-        """Deprecated boolean alias for :attr:`heightfield_count`.
-
-        .. deprecated:: 1.3
-            Use :attr:`heightfield_count`, or ``heightfield_count > 0`` for
-            boolean checks, instead.
-        """
-        import warnings  # noqa: PLC0415
-
-        warnings.warn(_HAS_HEIGHTFIELDS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        return self.heightfield_count > 0
-
-    @has_heightfields.setter
-    def has_heightfields(self, value: bool) -> None:
-        import warnings  # noqa: PLC0415
-
-        warnings.warn(_HAS_HEIGHTFIELDS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        self.heightfield_count = 1 if value else 0
-
     @property
     def joint_target_q_start(self) -> wp.array | None:
         """Per-joint start index into :attr:`joint_target_q`, shape
@@ -1806,7 +1566,13 @@ class Model:
         """
         return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
 
-    def bvh_build_shapes(self, state: State, *, bvh_constructor: str | None = None) -> None:
+    def bvh_build_shapes(
+        self,
+        state: State,
+        *,
+        bvh_constructor: str | None = None,
+        shape_flags: ShapeFlags = ShapeFlags.VISIBLE,
+    ) -> None:
         """Build or rebuild the shape BVH stored on this model.
 
         Allocates :attr:`bvh_shapes` and related fields from the current
@@ -1820,6 +1586,8 @@ class Model:
             bvh_constructor: Warp BVH construction algorithm. Valid choices
                 are ``"sah"``, ``"median"``, ``"lbvh"``, or ``None`` to use
                 Warp's device-dependent default.
+            shape_flags: Mask of :class:`~newton.ShapeFlags`; a shape is
+                included in the BVH if any of its flags are set in the mask.
         """
         from ..geometry.bvh import (  # noqa: PLC0415
             compute_bvh_group_roots,
@@ -1857,6 +1625,7 @@ class Model:
             inputs=[
                 self.shape_type,
                 self.shape_flags,
+                int(shape_flags),
                 self.bvh_shape_enabled,
                 num_enabled,
             ],
@@ -1866,6 +1635,9 @@ class Model:
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
 
         if self.bvh_shape_count_enabled == 0:
+            # drop any BVH from a previous build, it would index stale shapes
+            self.bvh_shapes = None
+            self.bvh_shapes_group_roots = None
             return
 
         compute_shape_world_transforms_launch(self, state)

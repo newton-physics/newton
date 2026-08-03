@@ -20,10 +20,12 @@ from ...core.math import (
     unit_quat_conj_apply_jacobian,
     unit_quat_conj_to_rotation_matrix,
 )
+from ...core.types import mat34f
 from ...kinematics.joints import (
     correct_quat_vector_coord,
     correct_rotational_coord,
     get_joint_coords_mapping_function,
+    gimbal_transported_axes,
 )
 from ...linalg.sparse_matrix import BlockDType
 from .types import FKJointDoFType
@@ -110,6 +112,131 @@ def _resolve_fk_actuation_type(act_type: wp.int32, fk_act_flag: wp.int32) -> wp.
     if fk_act_flag == 1:
         return JointActuationType.FORCE
     return act_type
+
+
+@wp.func
+def _load_joint_poses(
+    base_id: wp.int32, follower_id: wp.int32, bodies_q: wp.array[wp.transformf]
+) -> tuple[wp.vec3f, wp.quatf, wp.vec3f, wp.quatf]:
+    """Load the base and follower poses, using the identity pose for the world."""
+    c_base = wp.vec3f(0.0, 0.0, 0.0)
+    q_base = wp.quatf(0.0, 0.0, 0.0, 1.0)
+    if base_id >= 0:
+        c_base = wp.transform_get_translation(bodies_q[base_id])
+        q_base = wp.transform_get_rotation(bodies_q[base_id])
+    c_follower = wp.transform_get_translation(bodies_q[follower_id])
+    q_follower = wp.transform_get_rotation(bodies_q[follower_id])
+    return c_base, q_base, c_follower, q_follower
+
+
+@wp.func
+def _get_reduced_constraint_ids(
+    joint_id: wp.int32, ct_full_to_red_map: wp.array[wp.int32]
+) -> tuple[wp.vec3i, wp.vec3i]:
+    """Load the translational and rotational reduced constraint ids for a joint."""
+    first_ct_id_full = 6 * joint_id
+    trans_ct_ids_red = wp.vec3i(
+        ct_full_to_red_map[first_ct_id_full],
+        ct_full_to_red_map[first_ct_id_full + 1],
+        ct_full_to_red_map[first_ct_id_full + 2],
+    )
+    rot_ct_ids_red = wp.vec3i(
+        ct_full_to_red_map[first_ct_id_full + 3],
+        ct_full_to_red_map[first_ct_id_full + 4],
+        ct_full_to_red_map[first_ct_id_full + 5],
+    )
+    return trans_ct_ids_red, rot_ct_ids_red
+
+
+@wp.func
+def _eval_translation_jacobian_blocks(
+    X_T: wp.mat33f,
+    q_base: wp.quatf,
+    q_follower: wp.quatf,
+    x_follower: wp.vec3f,
+    c_base: wp.vec3f,
+    c_follower: wp.vec3f,
+    has_base: wp.bool,
+) -> tuple[wp.mat33f, mat34f, wp.mat33f, mat34f]:
+    """Evaluate the base and follower blocks of a translational constraint Jacobian."""
+    X_T_R_base_T = X_T * unit_quat_conj_to_rotation_matrix(q_base)
+    jac_trans_c_base = wp.mat33f(0.0)
+    jac_trans_q_base = mat34f(0.0)
+    if has_base:
+        jac_trans_c_base = -X_T_R_base_T
+        delta_pos = unit_quat_apply(q_follower, x_follower) + c_follower - c_base
+        jac_trans_q_base = X_T * unit_quat_conj_apply_jacobian(q_base, delta_pos)
+    jac_trans_c_follower = X_T_R_base_T
+    jac_trans_q_follower = X_T_R_base_T * unit_quat_apply_jacobian(q_follower, x_follower)
+    return jac_trans_c_base, jac_trans_q_base, jac_trans_c_follower, jac_trans_q_follower
+
+
+@wp.func
+def _eval_rotation_jacobian_blocks(
+    X_T: wp.mat33f,
+    q_base: wp.quatf,
+    q_follower: wp.quatf,
+    q_rel_body: wp.quatf,
+    has_base: wp.bool,
+) -> tuple[mat34f, mat34f]:
+    """Evaluate the base and follower blocks of a rotational constraint Jacobian."""
+    q_base_sq_norm = wp.dot(q_base, q_base)
+    q_follower_sq_norm = wp.dot(q_follower, q_follower)
+    R_base_T = unit_quat_conj_to_rotation_matrix(q_base / wp.sqrt(q_base_sq_norm))
+    q_rel = q_follower * wp.quat_inverse(q_rel_body) * wp.quat_inverse(q_base)
+    temp = X_T * R_base_T * quat_left_jacobian_inverse(q_rel)
+    jac_rot_q_base = mat34f(0.0)
+    if has_base:
+        jac_rot_q_base = (-2.0 / q_base_sq_norm) * temp * G_of(q_base)
+    jac_rot_q_follower = (2.0 / q_follower_sq_norm) * temp * G_of(q_follower)
+    return jac_rot_q_base, jac_rot_q_follower
+
+
+@wp.func
+def _eval_passive_universal_jacobian_blocks(
+    X_B_T: wp.mat33f,
+    X_F_T: wp.mat33f,
+    q_base: wp.quatf,
+    q_follower: wp.quatf,
+    has_base: wp.bool,
+) -> tuple[wp.vec4f, wp.vec4f]:
+    """Evaluate the base and follower blocks of a passive universal constraint Jacobian."""
+    a_x = X_B_T[0]  # x-axis on base
+    a_y = X_F_T[1]  # y-axis on follower
+    jac_q_base = wp.vec4f(0.0)
+    if has_base:
+        a_y_follower = unit_quat_apply(q_follower, a_y)
+        jac_q_base = -a_y_follower * unit_quat_apply_jacobian(q_base, a_x)
+    a_x_base = unit_quat_apply(q_base, a_x)
+    jac_q_follower = -a_x_base * unit_quat_apply_jacobian(q_follower, a_y)
+    return jac_q_base, jac_q_follower
+
+
+@wp.func
+def _correct_rotational_actuator_coord(
+    actuators_q: wp.array[wp.float32], actuators_q_ref: wp.array[wp.float32], coord_id: wp.int32
+):
+    """Correct an angular actuator coordinate against its reference."""
+    actuators_q[coord_id] = correct_rotational_coord(actuators_q[coord_id], actuators_q_ref[coord_id])
+
+
+@wp.func
+def _correct_quat_actuator_coords(
+    actuators_q: wp.array[wp.float32], actuators_q_ref: wp.array[wp.float32], coord_id: wp.int32
+):
+    """Correct four quaternion actuator coordinates against their reference."""
+    quat = wp.vec4f(
+        actuators_q[coord_id], actuators_q[coord_id + 1], actuators_q[coord_id + 2], actuators_q[coord_id + 3]
+    )
+    quat_ref = wp.vec4f(
+        actuators_q_ref[coord_id],
+        actuators_q_ref[coord_id + 1],
+        actuators_q_ref[coord_id + 2],
+        actuators_q_ref[coord_id + 3],
+    )
+    quat_corrected = correct_quat_vector_coord(quat, quat_ref)
+    for i in range(4):
+        actuators_q[coord_id + i] = quat_corrected[i]
 
 
 ###
@@ -421,6 +548,12 @@ def _joint_transform_to_coords(
         wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.REVOLUTE))(pos_rel, q_rel, offset, output)
     elif dof_type == FKJointDoFType.SPHERICAL:
         wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.SPHERICAL))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.GIMBAL:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.GIMBAL))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.GIMBAL_LEFT_HANDED))(
+            pos_rel, q_rel, offset, output
+        )
     elif dof_type == FKJointDoFType.UNIVERSAL:
         wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.UNIVERSAL))(pos_rel, q_rel, offset, output)
 
@@ -481,15 +614,8 @@ def _eval_actuator_coords(
 
     # Get base and follower transformations
     base_id = joints_bid_B[jt_id]
-    if base_id < 0:
-        c_base = wp.vec3f(0.0, 0.0, 0.0)
-        q_base = wp.quatf(0.0, 0.0, 0.0, 1.0)
-    else:
-        c_base = wp.transform_get_translation(bodies_q[base_id])
-        q_base = wp.transform_get_rotation(bodies_q[base_id])
     follower_id = joints_bid_F[jt_id]
-    c_follower = wp.transform_get_translation(bodies_q[follower_id])
-    q_follower = wp.transform_get_rotation(bodies_q[follower_id])
+    c_base, q_base, c_follower, q_follower = _load_joint_poses(base_id, follower_id, bodies_q)
 
     # Compute relative pose of follower body in joint frame of base body
     pos_base = c_base + wp.quat_rotate(q_base, x_base)
@@ -540,46 +666,20 @@ def _correct_actuator_coords(
     ):  # No correction needed
         return
     elif dof_type == FKJointDoFType.CYLINDRICAL:  # Correct angle up to +/- 2 pi
-        angle = actuators_q[coord_id + 1]
-        angle_ref = actuators_q_ref[coord_id + 1]
-        actuators_q[coord_id + 1] = correct_rotational_coord(angle, angle_ref)
+        _correct_rotational_actuator_coord(actuators_q, actuators_q_ref, coord_id + 1)
     elif dof_type == FKJointDoFType.FREE:  # Correct quaternion up to sign
-        quat = wp.vec4f(
-            actuators_q[coord_id + 3], actuators_q[coord_id + 4], actuators_q[coord_id + 5], actuators_q[coord_id + 6]
-        )
-        quat_ref = wp.vec4f(
-            actuators_q_ref[coord_id + 3],
-            actuators_q_ref[coord_id + 4],
-            actuators_q_ref[coord_id + 5],
-            actuators_q_ref[coord_id + 6],
-        )
-        quat_corrected = correct_quat_vector_coord(quat, quat_ref)
-        for i in range(4):
-            actuators_q[coord_id + 3 + i] = quat_corrected[i]
+        _correct_quat_actuator_coords(actuators_q, actuators_q_ref, coord_id + 3)
     elif dof_type == FKJointDoFType.REVOLUTE:  # Correct angle up to +/- 2 pi
-        angle = actuators_q[coord_id]
-        angle_ref = actuators_q_ref[coord_id]
-        actuators_q[coord_id] = correct_rotational_coord(angle, angle_ref)
+        _correct_rotational_actuator_coord(actuators_q, actuators_q_ref, coord_id)
     elif dof_type == FKJointDoFType.SPHERICAL:  # Correct quaternion up to sign
-        quat = wp.vec4f(
-            actuators_q[coord_id], actuators_q[coord_id + 1], actuators_q[coord_id + 2], actuators_q[coord_id + 3]
-        )
-        quat_ref = wp.vec4f(
-            actuators_q_ref[coord_id],
-            actuators_q_ref[coord_id + 1],
-            actuators_q_ref[coord_id + 2],
-            actuators_q_ref[coord_id + 3],
-        )
-        quat_corrected = correct_quat_vector_coord(quat, quat_ref)
-        for i in range(4):
-            actuators_q[coord_id + i] = quat_corrected[i]
+        _correct_quat_actuator_coords(actuators_q, actuators_q_ref, coord_id)
     elif dof_type == FKJointDoFType.UNIVERSAL:  # Correct angles up to +/- 2 pi
-        angle = actuators_q[coord_id]
-        angle_ref = actuators_q_ref[coord_id]
-        actuators_q[coord_id] = correct_rotational_coord(angle, angle_ref)
-        angle = actuators_q[coord_id + 1]
-        angle_ref = actuators_q_ref[coord_id + 1]
-        actuators_q[coord_id + 1] = correct_rotational_coord(angle, angle_ref)
+        _correct_rotational_actuator_coord(actuators_q, actuators_q_ref, coord_id)
+        _correct_rotational_actuator_coord(actuators_q, actuators_q_ref, coord_id + 1)
+    elif dof_type == FKJointDoFType.GIMBAL or dof_type == FKJointDoFType.GIMBAL_LEFT_HANDED:
+        # Correct angles up to +/- 2 pi
+        for i in range(3):
+            _correct_rotational_actuator_coord(actuators_q, actuators_q_ref, coord_id + i)
     else:
         assert False, "Unexpected actuator dof type"  # noqa: B011
 
@@ -813,6 +913,18 @@ def _eval_target_relative_transformations(
                 q_X_B = wp.quat_from_matrix(X_B)
                 q_loc = read_quat_from_array(actuators_q, offset_q_j, normalize_quaternions)
                 q = q_X_B * q_loc * wp.quat_inverse(q_X_B)
+            elif dof_type_j == FKJointDoFType.GIMBAL or dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                third_axis_sign = 1.0
+                if dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                    third_axis_sign = -1.0
+                axes = X_B @ gimbal_transported_axes(
+                    wp.vec3f(actuators_q[offset_q_j], actuators_q[offset_q_j + 1], actuators_q[offset_q_j + 2]),
+                    third_axis_sign,
+                )
+                q_0 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 0]), actuators_q[offset_q_j])
+                q_1 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 1]), actuators_q[offset_q_j + 1])
+                q_2 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 2]), actuators_q[offset_q_j + 2])
+                q = q_2 * q_1 * q_0
             elif dof_type_j == FKJointDoFType.UNIVERSAL:
                 q_x = wp.quat_from_axis_angle(wp.vec3f(X_B[:, 0]), actuators_q[offset_q_j])
                 q_y = wp.quat_from_axis_angle(wp.vec3f(X_B[:, 1]), actuators_q[offset_q_j + 1])
@@ -885,6 +997,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
         joints_bid_B: wp.array[wp.int32],
         joints_bid_F: wp.array[wp.int32],
         joints_X_Bj: wp.array[wp.mat33f],
+        joints_X_Fj: wp.array[wp.mat33f],
         joints_B_r_B: wp.array[wp.vec3f],
         joints_F_r_F: wp.array[wp.vec3f],
         bodies_q: wp.array[wp.transformf],
@@ -911,6 +1024,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
             joints_bid_B: Joint base body id
             joints_bid_F: Joint follower body id
             joints_X_Bj: Joint local frame on base body
+            joints_X_Fj: Joint local frame on follower body
             joints_B_r_B: Joint local position on base body
             joints_F_r_F: Joint local position on follower body
             bodies_q: Body poses
@@ -929,17 +1043,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
             jt_id_tot = first_joint_id[wd_id] + jt_id_loc
 
             # Get reduced constraint ids (-1 meaning constraint is not used)
-            first_ct_id_full = 6 * jt_id_tot
-            trans_ct_ids_red = wp.vec3i(
-                ct_full_to_red_map[first_ct_id_full],
-                ct_full_to_red_map[first_ct_id_full + 1],
-                ct_full_to_red_map[first_ct_id_full + 2],
-            )
-            rot_ct_ids_red = wp.vec3i(
-                ct_full_to_red_map[first_ct_id_full + 3],
-                ct_full_to_red_map[first_ct_id_full + 4],
-                ct_full_to_red_map[first_ct_id_full + 5],
-            )
+            trans_ct_ids_red, rot_ct_ids_red = _get_reduced_constraint_ids(jt_id_tot, ct_full_to_red_map)
 
             # Get joint local positions and orientation
             x_base = joints_B_r_B[jt_id_tot]
@@ -948,15 +1052,8 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
 
             # Get base and follower transformations
             base_id = joints_bid_B[jt_id_tot]
-            if base_id < 0:
-                c_base = wp.vec3f(0.0, 0.0, 0.0)
-                q_base = wp.quatf(0.0, 0.0, 0.0, 1.0)
-            else:
-                c_base = wp.transform_get_translation(bodies_q[base_id])
-                q_base = wp.transform_get_rotation(bodies_q[base_id])
             follower_id = joints_bid_F[jt_id_tot]
-            c_follower = wp.transform_get_translation(bodies_q[follower_id])
-            q_follower = wp.transform_get_rotation(bodies_q[follower_id])
+            c_base, q_base, c_follower, q_follower = _load_joint_poses(base_id, follower_id, bodies_q)
 
             # Get target relative transformation, in joint/body frame for translation/rotation part
             t_rel_joint = wp.transform_get_translation(target_rel_transforms[jt_id_tot])
@@ -991,7 +1088,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
 
                 # Compute constraint (dot product between x axis on base and y axis on follower)
                 a_x = X_T[0]
-                a_y = X_T[1]
+                a_y = wp.transpose(joints_X_Fj[jt_id_tot])[1]
                 a_x_base = unit_quat_apply(q_base, a_x)
                 a_y_follower = unit_quat_apply(q_follower, a_y)
                 ct = -wp.dot(a_x_base, a_y_follower)
@@ -1100,6 +1197,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
         joints_bid_B: wp.array[wp.int32],
         joints_bid_F: wp.array[wp.int32],
         joints_X_Bj: wp.array[wp.mat33f],
+        joints_X_Fj: wp.array[wp.mat33f],
         joints_B_r_B: wp.array[wp.vec3f],
         joints_F_r_F: wp.array[wp.vec3f],
         bodies_q: wp.array[wp.transformf],
@@ -1123,6 +1221,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
             joints_bid_B: Joint base body id
             joints_bid_F: Joint follower body id
             joints_X_Bj: Joint local frame on base body
+            joints_X_Fj: Joint local frame on follower body
             joints_B_r_B: Joint local position on base body
             joints_F_r_F: Joint local position on follower body
             bodies_q: Body poses
@@ -1141,17 +1240,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
             jt_id_tot = first_joint_id[wd_id] + jt_id_loc
 
             # Get reduced constraint ids (-1 meaning constraint is not used)
-            first_ct_id_full = 6 * jt_id_tot
-            trans_ct_ids_red = wp.vec3i(
-                ct_full_to_red_map[first_ct_id_full],
-                ct_full_to_red_map[first_ct_id_full + 1],
-                ct_full_to_red_map[first_ct_id_full + 2],
-            )
-            rot_ct_ids_red = wp.vec3i(
-                ct_full_to_red_map[first_ct_id_full + 3],
-                ct_full_to_red_map[first_ct_id_full + 4],
-                ct_full_to_red_map[first_ct_id_full + 5],
-            )
+            trans_ct_ids_red, rot_ct_ids_red = _get_reduced_constraint_ids(jt_id_tot, ct_full_to_red_map)
 
             # Get joint local positions and orientation
             x_follower = joints_F_r_F[jt_id_tot]
@@ -1159,15 +1248,8 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
 
             # Get base and follower transformations
             base_id_tot = joints_bid_B[jt_id_tot]
-            if base_id_tot < 0:
-                c_base = wp.vec3f(0.0, 0.0, 0.0)
-                q_base = wp.quatf(0.0, 0.0, 0.0, 1.0)
-            else:
-                c_base = wp.transform_get_translation(bodies_q[base_id_tot])
-                q_base = wp.transform_get_rotation(bodies_q[base_id_tot])
             follower_id_tot = joints_bid_F[jt_id_tot]
-            c_follower = wp.transform_get_translation(bodies_q[follower_id_tot])
-            q_follower = wp.transform_get_rotation(bodies_q[follower_id_tot])
+            c_base, q_base, c_follower, q_follower = _load_joint_poses(base_id_tot, follower_id_tot, bodies_q)
             base_id_loc = base_id_tot - first_body_id[wd_id]
             follower_id_loc = follower_id_tot - first_body_id[wd_id]
 
@@ -1175,23 +1257,15 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
             q_rel_body = wp.transform_get_rotation(target_rel_transforms[jt_id_tot])
 
             # Translation constraints
-            X_T_R_base_T = X_T * unit_quat_conj_to_rotation_matrix(q_base)
-            if base_id_tot >= 0:
-                jac_trans_c_base = -X_T_R_base_T
-                delta_pos = unit_quat_apply(q_follower, x_follower) + c_follower - c_base
-                jac_trans_q_base = X_T * unit_quat_conj_apply_jacobian(q_base, delta_pos)
-            jac_trans_c_follower = X_T_R_base_T
-            jac_trans_q_follower = X_T_R_base_T * unit_quat_apply_jacobian(q_follower, x_follower)
-
+            jac_trans_c_base, jac_trans_q_base, jac_trans_c_follower, jac_trans_q_follower = (
+                _eval_translation_jacobian_blocks(
+                    X_T, q_base, q_follower, x_follower, c_base, c_follower, base_id_tot >= 0
+                )
+            )
             # Rotation constraints
-            q_base_sq_norm = wp.dot(q_base, q_base)
-            q_follower_sq_norm = wp.dot(q_follower, q_follower)
-            R_base_T = unit_quat_conj_to_rotation_matrix(q_base / wp.sqrt(q_base_sq_norm))
-            q_rel = q_follower * wp.quat_inverse(q_rel_body) * wp.quat_inverse(q_base)
-            temp = X_T * R_base_T * quat_left_jacobian_inverse(q_rel)
-            if base_id_tot >= 0:
-                jac_rot_q_base = (-2.0 / q_base_sq_norm) * temp * G_of(q_base)
-            jac_rot_q_follower = (2.0 / q_follower_sq_norm) * temp * G_of(q_follower)
+            jac_rot_q_base, jac_rot_q_follower = _eval_rotation_jacobian_blocks(
+                X_T, q_base, q_follower, q_rel_body, base_id_tot >= 0
+            )
             # Note: we need X^T * R_base^T both for translation and rotation constraints, but to get the correct
             # derivatives for non-unit quaternions (which may be encountered before convergence) we end up needing
             # to use a separate formula to evaluate R_base in either case
@@ -1228,13 +1302,9 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
                     return
 
                 # Compute constraint Jacobian (cross product between x axis on base and y axis on follower)
-                a_x = X_T[0]
-                a_y = X_T[1]
-                if base_id_tot >= 0:
-                    a_y_follower = unit_quat_apply(q_follower, a_y)
-                    jac_q_base = -a_y_follower * unit_quat_apply_jacobian(q_base, a_x)
-                a_x_base = unit_quat_apply(q_base, a_x)
-                jac_q_follower = -a_x_base * unit_quat_apply_jacobian(q_follower, a_y)
+                jac_q_base, jac_q_follower = _eval_passive_universal_jacobian_blocks(
+                    X_T, wp.transpose(joints_X_Fj[jt_id_tot]), q_base, q_follower, base_id_tot >= 0
+                )
 
                 # Write out Jacobian
                 for i in range(4):
@@ -1265,6 +1335,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
         joints_bid_B: wp.array[wp.int32],
         joints_bid_F: wp.array[wp.int32],
         joints_X_Bj: wp.array[wp.mat33f],
+        joints_X_Fj: wp.array[wp.mat33f],
         joints_B_r_B: wp.array[wp.vec3f],
         joints_F_r_F: wp.array[wp.vec3f],
         bodies_q: wp.array[wp.transformf],
@@ -1289,6 +1360,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
             joints_bid_B: Joint base body id
             joints_bid_F: Joint follower body id
             joints_X_Bj: Joint local frame on base body
+            joints_X_Fj: Joint local frame on follower body
             joints_B_r_B: Joint local position on base body
             joints_F_r_F: Joint local position on follower body
             bodies_q: Body poses
@@ -1319,37 +1391,20 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
 
             # Get base and follower transformations
             base_id = joints_bid_B[jt_id_tot]
-            if base_id < 0:
-                c_base = wp.vec3f(0.0, 0.0, 0.0)
-                q_base = wp.quatf(0.0, 0.0, 0.0, 1.0)
-            else:
-                c_base = wp.transform_get_translation(bodies_q[base_id])
-                q_base = wp.transform_get_rotation(bodies_q[base_id])
             follower_id = joints_bid_F[jt_id_tot]
-            c_follower = wp.transform_get_translation(bodies_q[follower_id])
-            q_follower = wp.transform_get_rotation(bodies_q[follower_id])
+            c_base, q_base, c_follower, q_follower = _load_joint_poses(base_id, follower_id, bodies_q)
 
             # Get target relative transformation (rotation part only, as translation part doesn't affect the Jacobian)
             q_rel_body = wp.transform_get_rotation(target_rel_transforms[jt_id_tot])
 
             # Translation constraints
-            X_T_R_base_T = X_T * unit_quat_conj_to_rotation_matrix(q_base)
-            if base_id >= 0:
-                jac_trans_c_base = -X_T_R_base_T
-                delta_pos = unit_quat_apply(q_follower, x_follower) + c_follower - c_base
-                jac_trans_q_base = X_T * unit_quat_conj_apply_jacobian(q_base, delta_pos)
-            jac_trans_c_follower = X_T_R_base_T
-            jac_trans_q_follower = X_T_R_base_T * unit_quat_apply_jacobian(q_follower, x_follower)
-
+            jac_trans_c_base, jac_trans_q_base, jac_trans_c_follower, jac_trans_q_follower = (
+                _eval_translation_jacobian_blocks(X_T, q_base, q_follower, x_follower, c_base, c_follower, base_id >= 0)
+            )
             # Rotation constraints
-            q_base_sq_norm = wp.dot(q_base, q_base)
-            q_follower_sq_norm = wp.dot(q_follower, q_follower)
-            R_base_T = unit_quat_conj_to_rotation_matrix(q_base / wp.sqrt(q_base_sq_norm))
-            q_rel = q_follower * wp.quat_inverse(q_rel_body) * wp.quat_inverse(q_base)
-            temp = X_T * R_base_T * quat_left_jacobian_inverse(q_rel)
-            if base_id >= 0:
-                jac_rot_q_base = (-2.0 / q_base_sq_norm) * temp * G_of(q_base)
-            jac_rot_q_follower = (2.0 / q_follower_sq_norm) * temp * G_of(q_follower)
+            jac_rot_q_base, jac_rot_q_follower = _eval_rotation_jacobian_blocks(
+                X_T, q_base, q_follower, q_rel_body, base_id >= 0
+            )
             # Note: we need X^T * R_base^T both for translation and rotation constraints, but to get the correct
             # derivatives for non-unit quaternions (which may be encountered before convergence) we end up needing
             # to use a separate formula to evaluate R_base in either case
@@ -1390,13 +1445,9 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
                     return
 
                 # Compute constraint Jacobian (cross product between x axis on base and y axis on follower)
-                a_x = X_T[0]
-                a_y = X_T[1]
-                if base_id >= 0:
-                    a_y_follower = unit_quat_apply(q_follower, a_y)
-                    jac_q_base = -a_y_follower * unit_quat_apply_jacobian(q_base, a_x)
-                a_x_base = unit_quat_apply(q_base, a_x)
-                jac_q_follower = -a_x_base * unit_quat_apply_jacobian(q_follower, a_y)
+                jac_q_base, jac_q_follower = _eval_passive_universal_jacobian_blocks(
+                    X_T, wp.transpose(joints_X_Fj[jt_id_tot]), q_base, q_follower, base_id >= 0
+                )
 
                 # Write out Jacobian
                 if base_id >= 0:
@@ -2042,8 +2093,10 @@ def _eval_target_constraint_velocities(
     first_joint_id: wp.array[wp.int32],
     joints_dof_type: wp.array[wp.int32],
     joints_act_type: wp.array[wp.int32],
+    actuated_coords_offset: wp.array[wp.int32],
     actuated_dofs_offset: wp.array[wp.int32],
     ct_full_to_red_map: wp.array[wp.int32],
+    actuators_q: wp.array[wp.float32],
     actuators_u: wp.array[wp.float32],
     world_mask: wp.array[wp.bool],
     # Outputs
@@ -2074,6 +2127,7 @@ def _eval_target_constraint_velocities(
         if joints_act_type[jt_id_tot] == JointActuationType.PASSIVE:
             return
         dof_type_j = joints_dof_type[jt_id_tot]
+        offset_q_j = actuated_coords_offset[jt_id_tot]
         offset_u_j = actuated_dofs_offset[jt_id_tot]
         offset_cts_j = ct_full_to_red_map[6 * jt_id_tot]
 
@@ -2101,6 +2155,22 @@ def _eval_target_constraint_velocities(
             target_cts_u[wd_id, offset_cts_j + 3] = actuators_u[offset_u_j]
             target_cts_u[wd_id, offset_cts_j + 4] = actuators_u[offset_u_j + 1]
             target_cts_u[wd_id, offset_cts_j + 5] = actuators_u[offset_u_j + 2]
+        elif dof_type_j == FKJointDoFType.GIMBAL or dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+            third_axis_sign = 1.0
+            if dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                third_axis_sign = -1.0
+            axes = gimbal_transported_axes(
+                wp.vec3f(actuators_q[offset_q_j], actuators_q[offset_q_j + 1], actuators_q[offset_q_j + 2]),
+                third_axis_sign,
+            )
+            omega = (
+                wp.vec3f(axes[:, 0]) * actuators_u[offset_u_j]
+                + wp.vec3f(axes[:, 1]) * actuators_u[offset_u_j + 1]
+                + wp.vec3f(axes[:, 2]) * actuators_u[offset_u_j + 2]
+            )
+            target_cts_u[wd_id, offset_cts_j + 3] = omega[0]
+            target_cts_u[wd_id, offset_cts_j + 4] = omega[1]
+            target_cts_u[wd_id, offset_cts_j + 5] = omega[2]
         elif dof_type_j == FKJointDoFType.UNIVERSAL:
             target_cts_u[wd_id, offset_cts_j + 3] = actuators_u[offset_u_j]
             target_cts_u[wd_id, offset_cts_j + 4] = actuators_u[offset_u_j + 1]

@@ -2223,19 +2223,19 @@ class TestControlTargetAttrDefaults(unittest.TestCase):
         return Actuator(indices=indices, controller=controller, **kwargs)
 
     def test_omitted_attrs_default_to_canonical_names(self):
-        """Omitting both keywords selects joint_target_q / joint_target_qd."""
+        """Verify omitted attributes select canonical names."""
         actuator = self._actuator()
         self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
         self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
 
     def test_explicit_none_normalizes_to_canonical_names(self):
-        """Explicit None must normalize rather than be stored verbatim."""
+        """Verify explicit None normalizes to canonical names."""
         actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
         self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
         self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
 
     def test_explicit_none_still_steps(self):
-        """step() must run after None was passed, not raise inside getattr()."""
+        """Verify stepping succeeds after passing explicit None."""
         device = wp.get_device()
         actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
 
@@ -2254,7 +2254,7 @@ class TestControlTargetAttrDefaults(unittest.TestCase):
         self.assertAlmostEqual(float(sim_control.joint_f.numpy()[0]), 10.0, places=4)
 
     def test_custom_attr_names_are_preserved(self):
-        """A caller-supplied attribute name must be stored verbatim."""
+        """Verify caller-supplied attribute names remain unchanged."""
         actuator = self._actuator(control_target_pos_attr="my_pos", control_target_vel_attr="my_vel")
         self.assertEqual(actuator.control_target_pos_attr, "my_pos")
         self.assertEqual(actuator.control_target_vel_attr, "my_vel")
