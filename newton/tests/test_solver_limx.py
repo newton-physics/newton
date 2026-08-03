@@ -16,6 +16,52 @@ from newton._src.solvers.limx.solver_limx import SolverLIMX
 
 
 class TestBlockCsr(unittest.TestCase):
+    def test_zero_pattern_maps_sorted_block_indices(self):
+        builder = BlockCsrBuilder(2)
+        builder.ensure_block(1, 0)
+        builder.ensure_block(0, 1)
+        builder.ensure_block(0, 0)
+
+        matrix = builder.finalize("cpu")
+
+        np.testing.assert_array_equal(matrix.row_offsets.numpy(), [0, 2, 3])
+        np.testing.assert_array_equal(matrix.column_indices.numpy(), [0, 1, 0])
+        self.assertEqual(matrix.block_index(0, 0), 0)
+        self.assertEqual(matrix.block_index(0, 1), 1)
+        self.assertEqual(matrix.block_index(1, 0), 2)
+        np.testing.assert_array_equal(matrix.values.numpy(), np.zeros((3, 3, 3)))
+
+    def test_mutable_values_refresh_multiply_and_diagonal(self):
+        builder = BlockCsrBuilder(2)
+        builder.ensure_block(0, 0)
+        builder.ensure_block(0, 1)
+        builder.ensure_block(1, 0)
+        matrix = builder.finalize("cpu")
+        values = wp.array(
+            [wp.mat33(np.eye(3) * 2.0), wp.mat33(np.eye(3) * -1.0), wp.mat33(np.eye(3) * -1.0)],
+            dtype=wp.mat33,
+            device="cpu",
+        )
+        wp.copy(matrix.values, values)
+        matrix.update_diagonal()
+        x = wp.array(
+            [wp.vec3(1.0, 2.0, 3.0), wp.vec3(4.0, 5.0, 6.0)],
+            dtype=wp.vec3,
+            device="cpu",
+        )
+        output = wp.empty_like(x)
+
+        matrix.multiply(x, output)
+
+        np.testing.assert_allclose(output.numpy(), [[-2.0, -1.0, 0.0], [-1.0, -2.0, -3.0]])
+        np.testing.assert_allclose(matrix.diagonal.numpy()[0], np.eye(3) * 2.0)
+        np.testing.assert_array_equal(matrix.diagonal.numpy()[1], np.zeros((3, 3)))
+
+        matrix.clear_values()
+        matrix.multiply(x, output)
+        np.testing.assert_array_equal(output.numpy(), np.zeros((2, 3)))
+        np.testing.assert_array_equal(matrix.diagonal.numpy(), np.zeros((2, 3, 3)))
+
     def test_duplicate_blocks_accumulate_and_columns_sort(self):
         builder = BlockCsrBuilder(3)
         builder.add_scaled_identity(0, 2, 1.0)
