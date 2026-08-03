@@ -4,7 +4,7 @@
 
 **Goal:** Run and render the LIMX cloth example one-to-one at a 0.01 s time step using one Newton iteration and up to 50 PCG iterations per step.
 
-**Architecture:** Keep the existing example loop and solver interfaces unchanged. Change only the example's timing and iteration configuration, then cover the values through a real `Example` instance backed by `ViewerNull` and verify the resulting dynamics on CPU and CUDA.
+**Architecture:** Keep the existing example loop and solver interfaces unchanged. Change only the example's timing and iteration configuration, then exercise a real `Example` instance backed by `ViewerNull` to verify that one rendered-frame step performs exactly one 0.01 s solver call. Verify the resulting dynamics on CPU and CUDA.
 
 **Tech Stack:** Python, Warp, Newton examples, `unittest`.
 
@@ -26,7 +26,7 @@
 
 **Interfaces:**
 - Consumes: `newton.examples.cloth.example_cloth_limx.Example`, `newton.viewer.ViewerNull`, and the existing public solver fields `nonlinear_iterations` and `linear_iterations`.
-- Produces: an example where `frame_dt == sim_dt == 0.01`, `sim_substeps == 1`, `nonlinear_iterations == 1`, and `linear_iterations == 50`.
+- Produces: an example where one displayed-frame step advances simulation time by 0.01 s through exactly one 0.01 s solver call, using one Newton iteration and up to 50 PCG iterations.
 
 - [ ] **Step 1: Write the failing configuration test**
 
@@ -36,16 +36,21 @@ Add public imports and this test to `TestSolverLIMX` in `newton/tests/test_solve
 from newton.examples.cloth.example_cloth_limx import Example as ClothLimxExample
 from newton.viewer import ViewerNull
 
-def test_example_uses_one_to_one_001_timestep(self):
+def test_example_advances_one_001_second_physics_step_per_frame(self):
     with wp.ScopedDevice("cpu"):
         example = ClothLimxExample(ViewerNull(num_frames=1), None)
+        solver_step = example.solver.step
+        solver_time_steps = []
 
-    self.assertEqual(example.fps, 100)
-    self.assertAlmostEqual(example.frame_dt, 0.01)
-    self.assertEqual(example.sim_substeps, 1)
-    self.assertAlmostEqual(example.sim_dt, 0.01)
-    self.assertEqual(example.solver.nonlinear_iterations, 1)
-    self.assertEqual(example.solver.linear_iterations, 50)
+        def record_solver_step(state_in, state_out, control, contacts, dt):
+            solver_time_steps.append(dt)
+            solver_step(state_in, state_out, control, contacts, dt)
+
+        example.solver.step = record_solver_step
+        example.step()
+
+    self.assertEqual(solver_time_steps, [0.01])
+    self.assertAlmostEqual(example.sim_time, 0.01)
 ```
 
 - [ ] **Step 2: Run the focused test and verify RED**
@@ -53,10 +58,10 @@ def test_example_uses_one_to_one_001_timestep(self):
 Run:
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_example_uses_one_to_one_001_timestep
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_example_advances_one_001_second_physics_step_per_frame
 ```
 
-Expected: FAIL because the current example uses `fps == 60`, `sim_substeps == 4`, `sim_dt == 1/240`, four Newton iterations, and 32 PCG iterations.
+Expected: FAIL because the current example makes four solver calls with `dt == 1/240` and advances the displayed-frame simulation time by `1/60`.
 
 - [ ] **Step 3: Apply the minimal example configuration**
 
@@ -81,7 +86,7 @@ linear_iterations=50,
 Run:
 
 ```bash
-/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_example_uses_one_to_one_001_timestep
+/home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k test_example_advances_one_001_second_physics_step_per_frame
 /home/limx/apps/isaacsim-6.0.1/python.sh -m newton.tests -k limx
 ```
 
