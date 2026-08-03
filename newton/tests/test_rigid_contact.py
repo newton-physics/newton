@@ -849,6 +849,7 @@ solvers = {
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
+    "kamino": newton.solvers.SolverKamino,
 }
 
 
