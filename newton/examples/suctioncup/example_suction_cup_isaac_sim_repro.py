@@ -133,7 +133,7 @@ GRIPPER_PADS = (
 
 
 @dataclass(frozen=True)
-class SimpleGripperParams:
+class GripperParams:
     """Per-pad tuning for the simple linear seal model (:class:`SurfaceGripper`).
 
     Field-for-field the ``SurfaceGripper`` keyword arguments except ``body_id`` / ``xform``, so
@@ -161,27 +161,66 @@ class SimpleGripperParams:
     f_torsion_max: float  # twist cap |mz| [N.m]; 0 => uncapped
 
 
-# Baseline for the simple model: the same normal/shear/peel/twist stiffness and damping the default
-# model presents for the CIRCLE pad (k_peel = k_normal * R^2/4, k_torsion = (k_shear_x+k_shear_y) *
-# R^2/4 with R = 0.03), so it holds like the default seal. Caps start uncapped (0) except the normal;
-# set f_shear_max / f_peel_max / f_torsion_max to add a limit.
-GRIPPER_PARAMS_SIMPLE = SimpleGripperParams(
-    f_grip_max=50.0,
-    k_normal=96000.0,
-    d_normal=40.0,
-    f_normal_max=2000.0,
-    k_shear_x=6000.0,
-    d_shear_x=20.0,
-    k_shear_y=6000.0,
-    d_shear_y=20.0,
+def nat_freq_damping_ratio_to_stiffness_damping(mu: float, zeta: float, m_eff: float) -> tuple[float, float]:
+    """``(k, d)`` for a 1-DOF spring-damper of effective mass/inertia ``m_eff`` tuned to angular
+    natural frequency ``mu`` [rad/s] and damping ratio ``zeta``. Inverts ``mu = sqrt(k/m_eff)`` and
+    ``zeta = d / (2*sqrt(k*m_eff))``::
+
+        k = m_eff*mu^2 ;  d = 2*zeta*mu*m_eff
+
+    ``m_eff`` is a mass [kg] for a translation DOF, an inertia [kg.m^2] for a rotation DOF.
+    """
+    return m_eff * mu * mu, 2.0 * zeta * mu * m_eff
+
+
+# Seal tuning by mode: each DOF is given as (angular natural frequency mu [rad/s], damping ratio) and
+# converted to (k, d) via nat_freq_damping_ratio_to_stiffness_damping against the gripped body's effective mass -- the
+# crate mass for the translation DOFs, the crate's box inertia about the DOF axis for the rotation DOFs.
+# The mode values were back-computed from the original hand-tuned crate k/d, so they reproduce them
+# exactly. Retune the seal by editing the modes below (or swap in another body's mass/inertia).
+_CRATE_M = CRATE[1]  # crate mass [kg]
+(_CHX, _CHY, _CHZ), _ = CRATE  # crate half-extents [m]
+_CRATE_IXX = _CRATE_M / 3.0 * (_CHY**2 + _CHZ**2)  # solid-box inertia about x (peel-x) [kg.m^2]
+_CRATE_IYY = _CRATE_M / 3.0 * (_CHX**2 + _CHZ**2)  # about y (peel-y)
+_CRATE_IZZ = _CRATE_M / 3.0 * (_CHX**2 + _CHY**2)  # about z (twist)
+
+# (angular natural frequency mu [rad/s], damping ratio) per DOF
+NORMAL_MODE = (89.44272, 0.018634)
+SHEAR_X_MODE = (22.36068, 0.037268)
+SHEAR_Y_MODE = (22.36068, 0.037268)
+PEEL_X_MODE = (10.79666, 0.124961)
+PEEL_Y_MODE = (8.35631, 0.096717)
+TWIST_MODE = (2.79962, 0.0)
+
+_k_normal, _d_normal = nat_freq_damping_ratio_to_stiffness_damping(*NORMAL_MODE, _CRATE_M)
+_k_shear_x, _d_shear_x = nat_freq_damping_ratio_to_stiffness_damping(*SHEAR_X_MODE, _CRATE_M)
+_k_shear_y, _d_shear_y = nat_freq_damping_ratio_to_stiffness_damping(*SHEAR_Y_MODE, _CRATE_M)
+_k_peel_x, _d_peel_x = nat_freq_damping_ratio_to_stiffness_damping(*PEEL_X_MODE, _CRATE_IXX)
+_k_peel_y, _d_peel_y = nat_freq_damping_ratio_to_stiffness_damping(*PEEL_Y_MODE, _CRATE_IYY)
+_k_torsion, _d_torsion = nat_freq_damping_ratio_to_stiffness_damping(*TWIST_MODE, _CRATE_IZZ)
+
+# Caps start uncapped (0) except the normal; set f_shear_max / f_peel_max / f_torsion_max to add a limit.
+GRIPPER_PARAMS = GripperParams(
+    # Suction interpretation: the preload (vacuum grip) is the hold, so it must carry the panel. Static
+    # need is 30 kg / 4 pads ~= 74 N/pad, but the recorded palletizer motion drives the normal load to
+    # ~384 N/pad, so size the vacuum above that. f_normal_max matches so the seal can't pull past the
+    # vacuum (a real cup detaches beyond its capacity).
+    f_grip_max=450.0,
+    k_normal=_k_normal,
+    d_normal=_d_normal,
+    f_normal_max=450.0,
+    k_shear_x=_k_shear_x,
+    d_shear_x=_d_shear_x,
+    k_shear_y=_k_shear_y,
+    d_shear_y=_d_shear_y,
     f_shear_max=0.0,
-    k_peel_x=21.6,  # 96000 * 0.03^2 / 4
-    d_peel_x=0.5,
-    k_peel_y=21.6,
-    d_peel_y=0.5,
+    k_peel_x=_k_peel_x,
+    d_peel_x=_d_peel_x,
+    k_peel_y=_k_peel_y,
+    d_peel_y=_d_peel_y,
     f_peel_max=0.0,
-    k_torsion=2.7,  # (6000 + 6000) * 0.03^2 / 4
-    d_torsion=0.0,
+    k_torsion=_k_torsion,
+    d_torsion=_d_torsion,
     f_torsion_max=0.0,
 )
 
@@ -357,7 +396,7 @@ class Example:
         gripper = SurfaceGripper(
             body_id=ee_body,
             xform=wp.transform_identity(),  # gripper frame == flange body frame
-            **asdict(GRIPPER_PARAMS_SIMPLE),
+            **asdict(GRIPPER_PARAMS),
         )
         gripper_builder = SurfaceGripperBuilder()
         pad_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # pad +z -> flange +x

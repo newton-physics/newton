@@ -617,10 +617,15 @@ def eval_pad_force_linear(
         )
     )
 
-    # normal (z): controllable preload + spring-damper, clamped to +/-f_normal_max
-    f_min = pad_grip_control[pad] * gripper_f_grip_max[g]
-    fz = f_min + gripper_k_normal[g] * pz + d_normal_eff * vz
-    fz = clamp_symmetric(fz, gripper_f_normal_max[g])
+    # normal (z): a pure spring pull capped at the vacuum grip (control * f_grip_max) -- no preload
+    # baseline, so the spring has authority from zero stretch up to the vacuum, and the cap is the
+    # pull-off limit (pull harder than the vacuum and the cup lets go). Compression (push) is left
+    # uncapped (contact-like). Damping is applied on top of the cap.
+    f_vac = pad_grip_control[pad] * gripper_f_grip_max[g]
+    fz_elastic = gripper_k_normal[g] * pz
+    if fz_elastic > f_vac:
+        fz_elastic = f_vac
+    fz = fz_elastic + d_normal_eff * vz
 
     # shear (x, y): spring-damper per axis, combined magnitude capped at f_shear_max
     fx = gripper_k_shear_x[g] * px + d_shear_x_eff * vx
