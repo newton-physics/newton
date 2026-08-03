@@ -98,6 +98,14 @@ Supported Features
      - ✅
      - ❌
      - ❌
+   * - :class:`~newton.solvers.SolverLIMX`
+     - Implicit
+     - ❌
+     - ❌
+     - ✅
+     - ✅ mass-spring
+     - ❌
+     - ❌
    * - :class:`~newton.solvers.SolverVBD`
      - Implicit
      - ✅
@@ -134,7 +142,8 @@ The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
 :class:`~newton.solvers.SolverVBD` supports a subset of joint types via soft constraints (AVBD).
-:class:`~newton.solvers.SolverStyle3D` and :class:`~newton.solvers.SolverImplicitMPM` do not support joints.
+:class:`~newton.solvers.SolverStyle3D`, :class:`~newton.solvers.SolverLIMX`, and
+:class:`~newton.solvers.SolverImplicitMPM` do not support joints.
 
 **Joint types**
 
@@ -418,10 +427,13 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
    :toctree: _generated
    :nosignatures:
 
+   ConstraintAnchor
+   ConstraintDistance
    SolverBase
    SolverFeatherstone
    SolverImplicitMPM
    SolverKamino
+   SolverLIMX
    SolverMuJoCo
    SolverNotifyFlags
    SolverSemiImplicit

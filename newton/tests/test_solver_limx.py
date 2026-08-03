@@ -3,10 +3,10 @@
 
 import unittest
 
-import newton
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.constraints.anchor import ConstraintAnchor
 from newton._src.solvers.limx.constraints.distance import ConstraintDistance
@@ -273,13 +273,9 @@ class TestSolverLIMX(unittest.TestCase):
                 upper_left = lower_left + side
                 upper_right = upper_left + 1
                 if (x + y) % 2 == 0:
-                    triangles.extend(
-                        [(lower_left, lower_right, upper_right), (lower_left, upper_right, upper_left)]
-                    )
+                    triangles.extend([(lower_left, lower_right, upper_right), (lower_left, upper_right, upper_left)])
                 else:
-                    triangles.extend(
-                        [(lower_left, lower_right, upper_left), (lower_right, upper_right, upper_left)]
-                    )
+                    triangles.extend([(lower_left, lower_right, upper_left), (lower_right, upper_right, upper_left)])
 
         builder = newton.ModelBuilder(up_axis="Z")
         builder.add_particles(
@@ -344,6 +340,23 @@ class TestSolverLIMX(unittest.TestCase):
         self.assertIs(newton.solvers.SolverLIMX, SolverLIMX)
         self.assertIs(newton.solvers.ConstraintAnchor, ConstraintAnchor)
         self.assertIs(newton.solvers.ConstraintDistance, ConstraintDistance)
+
+    def test_rejects_model_with_rigid_bodies(self):
+        builder = newton.ModelBuilder()
+        builder.add_particles(pos=[wp.vec3(0.0)], vel=[wp.vec3(0.0)], mass=[1.0])
+        builder.add_body()
+        model = builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "particle-only"):
+            SolverLIMX(model, [])
+
+    def test_rejects_inactive_particles_in_favor_of_anchor_constraints(self):
+        builder = newton.ModelBuilder()
+        builder.add_particles(pos=[wp.vec3(0.0)], vel=[wp.vec3(0.0)], mass=[1.0], flags=[0])
+        model = builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "ConstraintAnchor"):
+            SolverLIMX(model, [])
 
 
 if __name__ == "__main__":

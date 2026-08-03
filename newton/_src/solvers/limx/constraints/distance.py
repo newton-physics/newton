@@ -64,7 +64,9 @@ class ConstraintDistance:
         self.host_stiffnesses = tuple(float(stiffness) for stiffness in stiffnesses)
         for particle_i, particle_j in self.host_index_pairs:
             if particle_i < 0 or particle_i >= particle_count or particle_j < 0 or particle_j >= particle_count:
-                raise ValueError(f"Distance pair ({particle_i}, {particle_j}) is outside particle_count={particle_count}")
+                raise ValueError(
+                    f"Distance pair ({particle_i}, {particle_j}) is outside particle_count={particle_count}"
+                )
             if particle_i == particle_j:
                 raise ValueError("Distance constraint endpoints must differ")
         for length in self.host_rest_lengths:
@@ -84,9 +86,7 @@ class ConstraintDistance:
         """Append the fixed projective-dynamics Hessian blocks."""
         if builder.row_count != self.particle_count:
             raise ValueError("Constraint and block matrix particle counts differ")
-        for (particle_i, particle_j), stiffness in zip(
-            self.host_index_pairs, self.host_stiffnesses, strict=True
-        ):
+        for (particle_i, particle_j), stiffness in zip(self.host_index_pairs, self.host_stiffnesses, strict=True):
             builder.add_scaled_identity(particle_i, particle_i, stiffness)
             builder.add_scaled_identity(particle_i, particle_j, -stiffness)
             builder.add_scaled_identity(particle_j, particle_i, -stiffness)

@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
+from ...geometry import ParticleFlags
 from ...sim import Contacts, Control, Model, State
 from ..solver import SolverBase
 from .block_csr import BlockCsrBuilder
@@ -49,9 +50,7 @@ def _initialize_rhs(
     rhs: wp.array[wp.vec3],
 ):
     particle = wp.tid()
-    rhs[particle] = masses[particle] * inv_dt_squared * (
-        inertia_positions[particle] - iterate_positions[particle]
-    )
+    rhs[particle] = masses[particle] * inv_dt_squared * (inertia_positions[particle] - iterate_positions[particle])
 
 
 @wp.kernel
@@ -98,7 +97,7 @@ class SolverLIMX(SolverBase):
         """Create a LIMX particle solver.
 
         Args:
-            model: Model containing the particles to integrate.
+            model: Particle-only model containing active, positive-mass particles.
             constraints: Static constraint batches that provide force and
                 fixed-Hessian assembly methods.
             nonlinear_iterations: Nonlinear position iterations per step.
@@ -107,11 +106,16 @@ class SolverLIMX(SolverBase):
             dynamic_operator: Optional matrix-free dynamic constraint operator.
         """
         super().__init__(model)
+        if model.body_count > 0:
+            raise ValueError("SolverLIMX is particle-only and does not accept rigid bodies")
         if model.particle_count <= 0 or model.particle_mass is None:
             raise ValueError("SolverLIMX requires at least one particle")
         masses = model.particle_mass.numpy()
         if not np.isfinite(masses).all() or np.any(masses <= 0.0):
             raise ValueError("SolverLIMX requires finite positive particle masses")
+        flags = model.particle_flags.numpy()
+        if np.any((flags & ParticleFlags.ACTIVE) == 0):
+            raise ValueError("SolverLIMX requires active particles; use ConstraintAnchor to fix particle positions")
         if nonlinear_iterations <= 0:
             raise ValueError("nonlinear_iterations must be positive")
         if linear_iterations <= 0:
@@ -123,9 +127,7 @@ class SolverLIMX(SolverBase):
         self.nonlinear_iterations = nonlinear_iterations
         self.linear_iterations = linear_iterations
         self.velocity_damping = float(velocity_damping)
-        self.dynamic_operator = (
-            dynamic_operator if dynamic_operator is not None else EmptyDynamicConstraintOperator()
-        )
+        self.dynamic_operator = dynamic_operator if dynamic_operator is not None else EmptyDynamicConstraintOperator()
 
         matrix_builder = BlockCsrBuilder(model.particle_count)
         for constraint in self.constraints:

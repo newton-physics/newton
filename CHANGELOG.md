@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] - 2026-08-03
+
+### Features
+
+- Add `SolverLIMX` with batched anchor and distance constraints, fixed-topology 3×3 block-CSR assembly, matrix-free dynamic constraint hooks, and block-Jacobi PCG.
+
+### Design Rationale
+
+- Keep constraint force/Hessian evaluation independent from linear solving so new particle constraints can compose without changing PCG.
+
+### Notes & Caveats
+
+- Support active, positive-mass particles only in this initial version; fixed positions use `ConstraintAnchor`, collision terms are currently a no-op, and rigid-body degrees of freedom are intentionally rejected.
+
 ## [isaacsim-6.0.1-dev] - 2026-07-29
 
 ### Features
