@@ -17,6 +17,7 @@ from newton._src.solvers.limx.linear_solver import PcgSolver
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
 from newton._src.solvers.limx.solver_newton import SolverLIMX
 from newton.examples.cloth.example_cloth_limx import Example as ClothLimxExample
+from newton.examples.cloth.example_cloth_limx_twist import Example as ClothLimxTwistExample
 from newton.viewer import ViewerNull
 
 
@@ -1326,6 +1327,45 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
 
 
 class TestSolverLIMX(unittest.TestCase):
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_twist_example_drives_opposite_boundary_rotations(self):
+        with wp.ScopedDevice("cuda:0"):
+            example = ClothLimxTwistExample(ViewerNull(num_frames=1), None)
+            targets = example._compute_anchor_targets(0.5 * np.pi)
+
+        boundary_count = example.boundary_particle_count
+        rest_targets = example.anchor_rest_targets
+        left = targets[:boundary_count]
+        right = targets[boundary_count:]
+        left_rest = rest_targets[:boundary_count]
+        right_rest = rest_targets[boundary_count:]
+
+        np.testing.assert_allclose(targets[:, 0], rest_targets[:, 0], atol=1.0e-7)
+        np.testing.assert_allclose(left[:, 1], np.zeros(boundary_count), atol=1.0e-6)
+        np.testing.assert_allclose(right[:, 1], np.zeros(boundary_count), atol=1.0e-6)
+        np.testing.assert_allclose(left[:, 2] - example.strip_center_z, left_rest[:, 1], atol=1.0e-6)
+        np.testing.assert_allclose(right[:, 2] - example.strip_center_z, -right_rest[:, 1], atol=1.0e-6)
+        left_radius = np.linalg.norm(left[:, 1:3] - [0.0, example.strip_center_z], axis=1)
+        right_radius = np.linalg.norm(right[:, 1:3] - [0.0, example.strip_center_z], axis=1)
+        np.testing.assert_allclose(left_radius, np.abs(left_rest[:, 1]), atol=1.0e-6)
+        np.testing.assert_allclose(right_radius, np.abs(right_rest[:, 1]), atol=1.0e-6)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_twist_example_runs_limx_self_collision_cuda_graph(self):
+        with wp.ScopedDevice("cuda:0"):
+            example = ClothLimxTwistExample(ViewerNull(num_frames=1), None)
+            example.step()
+            positions = example.state_0.particle_q.numpy()
+            velocities = example.state_0.particle_qd.numpy()
+
+        self.assertIsInstance(example.solver.dynamic_operator, ConstraintSelfCollision)
+        self.assertAlmostEqual(example.sim_dt, 0.01)
+        self.assertEqual(example.solver.nonlinear_iterations, 1)
+        self.assertEqual(example.solver.linear_iterations, 50)
+        self.assertEqual(example.solver.velocity_damping, 1.0)
+        self.assertTrue(np.isfinite(positions).all())
+        self.assertTrue(np.isfinite(velocities).all())
+
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_dynamic_contacts_prepare_once_before_each_newton_linearization(self):
         events = []
