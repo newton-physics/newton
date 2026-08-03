@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""LIMX constraint-based particle solver."""
+"""Static particle constraint batches for the LIMX solver."""
 
-from .constraints import ConstraintAnchor, ConstraintDistance
+from .anchor import ConstraintAnchor
+from .distance import ConstraintDistance
 
 __all__ = ["ConstraintAnchor", "ConstraintDistance"]
