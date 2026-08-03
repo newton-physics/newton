@@ -80,6 +80,16 @@ MAX_MC_FACES_PER_VOXEL = 5
 _MAX_FACE_FINGERPRINT = 0x200000
 
 
+class _MarginContactAreaUnset:
+    """Mark an omitted deprecated margin contact area."""
+
+    def __repr__(self) -> str:
+        return "_DEPRECATED_MARGIN_CONTACT_AREA_UNSET"
+
+
+_DEPRECATED_MARGIN_CONTACT_AREA_UNSET: Any = _MarginContactAreaUnset()
+
+
 def _validate_deterministic_fingerprint_range(max_num_iso_voxels: int) -> None:
     """Warn when face fingerprints can no longer be distinguished.
 
@@ -347,7 +357,7 @@ class HydroelasticSDF:
         friction moment per normal bin is preserved between reduced and
         unreduced contacts. Automatically enables ``anchor_contact``.
         Only active when reduce_contacts is True."""
-        margin_contact_area: float = 1e-2
+        margin_contact_area: float = _DEPRECATED_MARGIN_CONTACT_AREA_UNSET
         """Deprecated speculative-contact area [m^2] retained for compatibility.
 
         .. deprecated:: 1.5
@@ -409,6 +419,14 @@ class HydroelasticSDF:
         bias measurably damps the contact response."""
 
         def __post_init__(self):
+            if self.margin_contact_area is _DEPRECATED_MARGIN_CONTACT_AREA_UNSET:
+                self.margin_contact_area = 1.0e-2
+            else:
+                warnings.warn(
+                    "HydroelasticSDF.Config.margin_contact_area is deprecated; remove this setting.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
             # NaN fails both bounds (NaN comparisons return False) and lands here too.
             if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
                 raise ValueError(
@@ -454,12 +472,6 @@ class HydroelasticSDF:
     ) -> None:
         if config is None:
             config = HydroelasticSDF.Config()
-        if config.margin_contact_area != 1.0e-2:
-            warnings.warn(
-                "HydroelasticSDF.Config.margin_contact_area is deprecated; remove this setting.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         if deterministic and config.pre_prune_contacts:
             # Pre-pruning keeps a per-thread top-K of faces, so which faces reach
             # the contact buffer depends on how voxels are distributed over threads.

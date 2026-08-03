@@ -1028,6 +1028,19 @@ def test_hydroelastic_zero_gap_omits_speculative_contacts(test, device, reduce_c
 def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_contacts):
     """Preserve and warn about a deprecated margin contact area override."""
     model, state, _ = _build_margin_gap_boxes(device)
+    with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
+        newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            rigid_contact_max=20000,
+            sdf_hydroelastic_config=HydroelasticSDF.Config(
+                margin_contact_area=1.0e-2,
+                reduce_contacts=reduce_contacts,
+                pre_prune_contacts=reduce_contacts,
+                buffer_fraction=1.0,
+            ),
+        )
+
     margin_contact_area = 0.02
     with test.assertWarnsRegex(DeprecationWarning, "margin_contact_area.*deprecated"):
         pipeline = newton.CollisionPipeline(
