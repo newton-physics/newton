@@ -950,6 +950,8 @@ def make_convert_contacts_newton_to_kamino(
         wid = wid_0
         if wid_0 < 0:
             wid = wid_1
+        if wid < 0 and num_worlds == 1:
+            wid = 0
         if wid < 0 or wid >= num_worlds:
             return
 

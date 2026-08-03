@@ -631,11 +631,6 @@ class TestGeometryContactConversions(unittest.TestCase):
     ) -> tuple[Model, State, Contacts]:
         """Finalize a scene and return ``(model, state, contacts)``.
 
-        For single-world models, Newton assigns ``shape_world = -1`` (global)
-        to all shapes. The N->K conversion kernel requires non-negative world
-        assignments, so we normalize ``shape_world`` to match what
-        ``ModelKamino.from_newton`` does internally.
-
         Args:
             builder_fn: Scene builder function returning a populated
                 :class:`ModelBuilder`.
@@ -649,12 +644,6 @@ class TestGeometryContactConversions(unittest.TestCase):
         if with_force:
             builder.request_contact_attributes("force")
         model = builder.finalize(self.default_device)
-
-        if model.world_count == 1:
-            sw = model.shape_world.numpy()
-            if np.any(sw < 0):
-                sw[sw < 0] = 0
-                model.shape_world.assign(sw)
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)

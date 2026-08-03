@@ -682,11 +682,11 @@ class ModelKamino:
                 f"ModelKamino.from_newton() requires a newton.Model or ModelView instance, got {type(model).__name__}."
             )
 
-        # Normalize conversion-only grouping metadata for single-world models;
-        # body world indices still select Model.gravity directly.
+        # Normalize conversion-only grouping metadata for single-world models.
         conversion_model = model
         if model.world_count == 1:
             conversion_model = ModelView(model, "kamino_worlds")
+            has_dedicated_global_gravity = model.gravity.shape[0] > model.world_count
             for attr, start_attr in (
                 ("body_world", "body_world_start"),
                 ("joint_world", "joint_world_start"),
@@ -695,7 +695,8 @@ class ModelKamino:
                 arr = getattr(model, attr)
                 arr_np = arr.numpy()
                 if np.any(arr_np < 0):
-                    if attr != "body_world":
+                    # Preserve body -1 only when it selects a dedicated global gravity entry.
+                    if attr != "body_world" or not has_dedicated_global_gravity:
                         arr_np = arr_np.copy()
                         arr_np[arr_np < 0] = 0
                         setattr(conversion_model, attr, wp.array(arr_np, dtype=wp.int32, device=model.device))
