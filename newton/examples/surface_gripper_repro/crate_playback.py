@@ -13,10 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Advancing the crates from their waiting pose to their grip pose for ``example_suction_cup_isaac_sim_repro``.
+"""Advancing the crates from their waiting pose to their grip pose for ``example_surface_gripper_repro``.
 
 The crate bodies and their pallet are created up front (see
-:mod:`~newton.examples.suctioncup.box_placements`); this module owns only the runtime advancing. Newton
+:mod:`~newton.examples.surface_gripper_repro.box_placements`); this module owns only the runtime advancing. Newton
 models are fixed after ``finalize``, so the conveyor is faked: in the idle gap before each pick cycle
 the next crate is teleported from its parked waiting pose onto the shared pick pallet (its grip pose),
 driven each frame from the sim clock.
@@ -36,7 +36,7 @@ class CratePlayback:
     release (``falling[0]``).
 
     Args:
-        playback: :class:`~newton.examples.suctioncup.robot_playback.RobotPlayback`; its ``falling`` edges
+        playback: :class:`~newton.examples.surface_gripper_repro.robot_playback.RobotPlayback`; its ``falling`` edges
             and sample times set the thresholds.
         model: finalized Newton ``Model`` (for the crate free-joint DOF slices).
         crate_bodies: crate body ids, in pick order.

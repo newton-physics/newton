@@ -14,18 +14,18 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Suction Cup Isaac Sim Repro
+# Example Surface Gripper Isaac Sim Repro
 #
-# Reproduction scene for the suction-cup gripper on a robot arm. Loads the robot arm from a USD stage
+# Reproduction scene for the surface-gripper on a robot arm. Loads the robot arm from a USD stage
 # (Assets/robot_only_newton_flattened.usda) with a fixed base on a ground plane, then plays back a
 # recorded FANUC palletizer cycle (Assets/robot_recording_truncated.jsonl -- the leading idle removed
 # from robot_recording.jsonl so the arm moves right away). Playback is time-accurate: the six
 # arm joint position targets are interpolated from the recorded timestamps at the current simulation
 # time (J3 coupled to J2, degrees -> radians) and updated before every physics sub-step, so the arm
-# follows the recording at its true speed. The recording's suction-cup engagement command (ro[0]) is
-# extracted per frame; the suction gripper itself is wired up and added in later steps.
+# follows the recording at its true speed. The recording's surface-gripper engagement command (ro[0]) is
+# extracted per frame; the surface gripper itself is wired up and added in later steps.
 #
-# Command: python -m newton.examples suction_cup_isaac_sim_repro
+# Command: python -m newton.examples surface_gripper_repro
 ###########################################################################
 
 from pathlib import Path
@@ -35,16 +35,16 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.suctioncup.box_placements import PlacementConfig, compute_box_placements
-from newton.examples.suctioncup.crate_playback import CratePlayback
-from newton.examples.suctioncup.debug_recorders import (
+from newton.examples.surface_gripper_repro.box_placements import PlacementConfig, compute_box_placements
+from newton.examples.surface_gripper_repro.crate_playback import CratePlayback
+from newton.examples.surface_gripper_repro.debug_recorders import (
     DriveTargetRecorder,
     EndEffectorAccelerationRecorder,
     GripperForceRecorder,
     PadBreakMetricRecorder,
 )
-from newton.examples.suctioncup.robot_playback import RobotPlayback
-from newton.examples.suctioncup.surface_gripper import (
+from newton.examples.surface_gripper_repro.robot_playback import RobotPlayback
+from newton.examples.surface_gripper_repro.surface_gripper import (
     SurfaceGripper,
     SurfaceGripperBuilder,
     attach_seal,
@@ -54,7 +54,7 @@ from newton.examples.suctioncup.surface_gripper import (
 
 # assets live alongside this example
 ASSETS = Path(__file__).parent / "Assets"
-# robot USD with convex-hull collision added to the suction-gripper (EOAT) meshes
+# robot USD with convex-hull collision added to the surface-gripper (EOAT) meshes
 ROBOT_USD = ASSETS / "fanuc_arm_flattened_collision.usda"
 # recording with the leading idle removed (truncated from robot_recording.jsonl); it starts just
 # before the first joint motion, so the arm moves right away.
@@ -73,7 +73,7 @@ NUM_ARM_DOFS = 6  # J1-J6; recorded joints 6-8 are unused finger DOFs
 
 # The arm picks two boxes in sequence over the recording's two engage/disengage cycles: a wide shallow
 # panel at the 1st engagement, then a deep crate at the 2nd. Each rests on its own static pallet until
-# the suction grips it (the gripper parameters are fixed -- a statement of the tool). (half-extents [m],
+# the gripper grips it (the gripper parameters are fixed -- a statement of the tool). (half-extents [m],
 # mass [kg]); shape density is 0, so mass/inertia are set on the body.
 PANEL = ((0.5, 0.5, 0.04), 30.0)  # 1st engagement -- wide shallow panel, size [1.0, 1.0, 0.08] m
 CRATE = ((0.242, 0.166, 0.137), 12.0)  # 2nd engagement -- deep crate, size [0.484, 0.332, 0.274] m
@@ -81,12 +81,12 @@ PANEL_PALLET_HALF = (0.54, 0.54, 0.5)
 CRATE_PALLET_HALF = (0.206, 0.282, 0.5)
 NUM_CRATES = 6
 
-# Deepest reach of the finger collision geometry along the suction axis, in the J6_link (flange)
+# Deepest reach of the finger collision geometry along the grip axis, in the J6_link (flange)
 # frame [m] -- the point that would first penetrate the box. The box top is seated here so the fingers
 # rest on the box without sinking in. Resolved from the USD (max +x over the Finger_0x meshes).
 FINGER_HULL_DEEPEST_X = 0.3109
 
-# Set False to disable the suction cup: the seal wrench is never applied, so the arm plays back the
+# Set False to disable the surface gripper: the seal wrench is never applied, so the arm plays back the
 # recorded trajectory and the pick box just sits on the pallet (useful for inspecting the bare arm
 # motion). Read at graph-capture time, so set it before constructing the example.
 ENABLE_GRIPPER = True
@@ -96,9 +96,9 @@ ENABLE_GRIPPER = True
 # alone owns the hold.
 ENABLE_PAD_BOX_CONTACT = False
 
-# On engagement, fit the gripped box's pose to the suction-cup lips (surface_gripper.attach_seal_seated,
+# On engagement, fit the gripped box's pose to the pad lips (surface_gripper.attach_seal_seated,
 # an on-device Gauss-Newton fit) and anchor the seal to that fitted pose, so the seal seats the box flush
-# on the cups (the lip-SDF standoff becomes a bias the seal pulls closed). Fully kernel-driven, so it
+# on the pads (the lip-SDF standoff becomes a bias the seal pulls closed). Fully kernel-driven, so it
 # graph-captures and runs on CPU and graphed CUDA alike.
 SEAL_SEAT_ON_ENGAGE = True
 
@@ -106,9 +106,9 @@ SEAL_SEAT_ON_ENGAGE = True
 # curved gripped objects, where each iteration re-samples the SDF at the updated pose to converge.
 SEAT_ITERS = 4
 
-# Draw a small non-colliding disk at each suction cup (GRIPPER_PADS) so the cup layout is visible in
+# Draw a small non-colliding disk at each pad (GRIPPER_PADS) so the pad layout is visible in
 # the viewer. Purely visual (has_shape_collision off); does not affect the physics.
-SHOW_CUP_MARKERS = True
+SHOW_PAD_MARKERS = True
 
 # Set False to disable the debug CSV recording -- the end-effector acceleration and the smoothed
 # runtime drive targets (see EndEffectorAccelerationRecorder / DriveTargetRecorder). Recording is
@@ -117,7 +117,7 @@ RECORD_DEBUG = False
 
 # Seal fractures (releases) once its brittle break metric exceeds this. 1.0 = nominal capacity; a
 # value > 1 is a capacity safety factor (the seal tolerates sqrt(threshold)x the nominal elastic peel
-# before breaking). Set to 5 (~2.2x): the wide panel (box 1) overhangs the cups, so the arm's
+# before breaking). Set to 5 (~2.2x): the wide panel (box 1) overhangs the pads, so the arm's
 # reorientations spike its peel to ~2x nominal -- the holding force still carries it, so a strict 1.0
 # would drop it ~60 frames before the recorded release. The crate (box 0) stays far below either way.
 BREAK_THRESHOLD = 5.0
@@ -128,11 +128,11 @@ BREAK_THRESHOLD = 5.0
 # round(BREAK_HOLD_TIME / sim_dt), floored at 1.
 BREAK_HOLD_TIME = 0.033  # [s]
 
-# Suction gripper on the end-effector (body EE_BODY / J6_link). Four cups at the suction vents at the
+# Surface gripper on the end-effector (body EE_BODY / J6_link). Four pads at the vents at the
 # tips of Finger_01..04, resolved into the J6_link (flange) frame from the USD. Each finger is an
 # L-shaped arm whose vent faces the box; the vents are wide-set at the crate edges (a cross ~+/-6 cm on
 # one axis, ~+/-13 cm on the other), giving the tilt leverage a real palletizer needs. x=0.309 is the
-# vent (suction-face) plane. The suction axis is the flange +x (world-down at the pick), so each pad's
+# vent plane. The grip axis is the flange +x (world-down at the pick), so each pad's
 # local +z is rotated onto +x. Positions in the EE body frame [m].
 GRIPPER_PADS = (
     (0.2880, 0.1286, 0.0035),
@@ -141,16 +141,16 @@ GRIPPER_PADS = (
     (0.2886, -0.0025, 0.2085),
 )
 
-# Each suction cup is a short cylinder of this radius and half-height [m] (also the SHOW_CUP_MARKERS
-# disk). Its lip is the circle of PAD_RADIUS on the cup's bottom face (the face toward the box,
-# +PAD_CUP_HALF_HEIGHT along the suction axis); PAD_LIP_SAMPLES points are sampled around that lip for
+# Each pad is a short cylinder of this radius and half-height [m] (also the SHOW_PAD_MARKERS
+# disk). Its lip is the circle of PAD_RADIUS on the pad's bottom face (the face toward the box,
+# +PAD_HALF_HEIGHT along the grip axis); PAD_LIP_SAMPLES points are sampled around that lip for
 # the on-device seating fit (attach_seal_seated).
 PAD_RADIUS = 0.03
-PAD_CUP_HALF_HEIGHT = 0.004
+PAD_HALF_HEIGHT = 0.004
 PAD_LIP_SAMPLES = 16
 
 
-# Suction grip force (vacuum) [N] per pad. Static hold of the 30 kg panel needs ~74 N/pad, but the
+# Grip force (vacuum) [N] per pad. Static hold of the 30 kg panel needs ~74 N/pad, but the
 # recorded palletizer motion drives the normal load to ~384 N/pad, so the vacuum must clear that.
 F_GRIP_MAX = 450.0
 
@@ -171,7 +171,7 @@ def update_seal_break_kernel(
     pad_break_metric: wp.array[float],  # [pads] brittle break envelope from the previous force eval
     pad_engaged: wp.array[wp.bool],  # [pads] whether each pad held last sub-step (from attach_seal)
     break_threshold: float,  # break metric above this counts as over-capacity (1.0 = nominal capacity)
-    break_hold_steps: int,  # sub-steps a cup must stay over threshold before the gripper fractures
+    break_hold_steps: int,  # sub-steps a pad must stay over threshold before the gripper fractures
     pad_offsets: wp.array[int],  # [grippers+1] CSR offsets: gripper g owns pads [pad_offsets[g], pad_offsets[g+1])
     pad_seal_break_count: wp.array[int],  # [pads] in/out: consecutive over-threshold sub-steps, per pad
     gripper_seal_broken: wp.array[wp.bool],  # [grippers] in/out: latched gripper-wide break within an engaged window
@@ -201,7 +201,7 @@ def update_seal_break_kernel(
             if pad_engaged[pad] and pad_break_metric[pad] > break_threshold:
                 pad_seal_break_count[pad] = pad_seal_break_count[pad] + 1
                 if pad_seal_break_count[pad] >= break_hold_steps:
-                    gripper_seal_broken[g] = True  # sustained overload at this cup vents the whole gripper
+                    gripper_seal_broken[g] = True  # sustained overload at this pad vents the whole gripper
             else:
                 pad_seal_break_count[pad] = 0  # dipped back under -> not a sustained overload
     hold = cmd and not gripper_seal_broken[g]  # whole gripper engages or releases as a unit
@@ -295,9 +295,9 @@ class Example:
         self.pad_seal_engaged_wp = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)  # [pads] per-pad seal command
         self.pad_offsets = wp.array([0, len(GRIPPER_PADS)], dtype=wp.int32)
 
-        # RECORDING_JSONL contains time-stamped joint drive target positions and suction pad engagement
+        # RECORDING_JSONL contains time-stamped joint drive target positions and pad engagement
         # states. Load and extract the time-stamps, the joint drive target positions and the
-        # suction pad engagement states.
+        # pad engagement states.
         # Apply gaussian smoothing to the raw drive target after loading.
         self.robot_arm_playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA, NUM_ARM_DOFS)
 
@@ -367,9 +367,9 @@ class Example:
                     for cs in crate_shape_ids:
                         builder.add_shape_collision_filter_pair(cs, shape)
 
-        # Cup markers: a thin non-colliding disk of the cup radius (PAD_RADIUS) at each suction cup so
-        # the cup layout is visible in the viewer (oriented so the disk faces along the suction axis).
-        if SHOW_CUP_MARKERS:
+        # Pad markers: a thin non-colliding disk of the pad radius (PAD_RADIUS) at each pad so
+        # the pad layout is visible in the viewer (oriented so the disk faces along the grip axis).
+        if SHOW_PAD_MARKERS:
             marker_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # disk axis -> flange +x
             marker_cfg = builder.default_shape_cfg.copy()
             marker_cfg.density = 0.0
@@ -379,7 +379,7 @@ class Example:
                     ee_body,
                     xform=wp.transform(wp.vec3(px, py, pz), marker_down),
                     radius=PAD_RADIUS,
-                    half_height=PAD_CUP_HALF_HEIGHT,
+                    half_height=PAD_HALF_HEIGHT,
                     cfg=marker_cfg,
                 )
 
@@ -402,8 +402,8 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
-        # Suction gripper on the end-effector: one SurfaceGripper on the flange with four pads at
-        # the recorded finger offsets, suction axis along the flange +x (pad local +z rotated onto +x).
+        # Surface gripper on the end-effector: one SurfaceGripper on the flange with four pads at
+        # the recorded finger offsets, grip axis along the flange +x (pad local +z rotated onto +x).
         # Driven by the recorded ro[0] command -- all four pads engage/release together, sealing the box.
         # The seal is tuned per-DOF by natural frequency / damping ratio against the crate.
         gripper = SurfaceGripper(ee_body, wp.transform_identity())  # gripper frame == flange body frame
@@ -425,7 +425,7 @@ class Example:
         self.gripper_model = gripper_builder.finalize(device=self.model.device)
         self.gripper_state = self.gripper_model.state()
         self.gripper_control = self.gripper_model.control()
-        self.gripper_control.pad_grip_control.fill_(1.0)  # full suction command
+        self.gripper_control.pad_grip_control.fill_(1.0)  # full grip command
 
         self.pad_body_b = wp.full(len(GRIPPER_PADS), panel_body_id, dtype=wp.int32)
         # Moves each parked crate onto the pick pallet on its disengagement cue (see CratePlayback).
@@ -483,7 +483,7 @@ class Example:
                 self.control.joint_target_q,
                 self.gripper_command_engaged_wp,
             )
-            self.state_0.clear_forces()  # zero body_f each sub-step (the suction cup accumulates into it)
+            self.state_0.clear_forces()  # zero body_f each sub-step (the surface gripper accumulates into it)
 
             # Break the gripper (and per pad) seal based on pad_break_metric and a threshold time for
             # pad_break_metric being continuously True.
@@ -505,7 +505,7 @@ class Example:
             # Commit this sub-step's per-pad seal command into the gripper state: set pad_engaged, and on
             # each pad's rising edge cache its seal anchor frame relative to its target body (pad_body_b).
             # SEAL_SEAT_ON_ENGAGE: anchor to the on-device fitted (seated) box pose instead of the actual
-            # one, so the seal seats the box on the cups. Fully kernel-driven, so it graph-captures.
+            # one, so the seal seats the box on the pads. Fully kernel-driven, so it graph-captures.
             if SEAL_SEAT_ON_ENGAGE:
                 attach_seal_seated(
                     self.state_0,
@@ -515,7 +515,7 @@ class Example:
                     self.pad_body_b,
                     self.body_mesh_id,
                     PAD_RADIUS,
-                    PAD_CUP_HALF_HEIGHT,
+                    PAD_HALF_HEIGHT,
                     PAD_LIP_SAMPLES,
                     iters=SEAT_ITERS,
                 )
@@ -571,12 +571,12 @@ class Example:
         self.viewer.end_frame()
 
     def gui(self, ui):
-        # commanded suction (recorded ro[0], sampled per sub-step by sample_playback_kernel) vs the
+        # commanded grip (recorded ro[0], sampled per sub-step by sample_playback_kernel) vs the
         # actual latched seal (command AND-ed with the break/proximity logic in update_seal_break_kernel /
         # attach_seal) -- the two differ if a seal fractured or failed to grab.
         commanded = bool(self.gripper_command_engaged_wp.numpy()[0])
         held = int(self.pad_seal_engaged_wp.numpy().sum())
-        ui.text(f"Suction cmd:  {'On' if commanded else 'Off'}  (recording)")
+        ui.text(f"Grip cmd:  {'On' if commanded else 'Off'}  (recording)")
         ui.text(f"Seal engaged: {held}/{len(GRIPPER_PADS)} pads  (actual)")
         # Seal modes for the box currently gripped: same tool k/d, but natural frequency and damping
         # ratio depend on that box's mass/inertia and its pose relative to the seal. Zero when nothing

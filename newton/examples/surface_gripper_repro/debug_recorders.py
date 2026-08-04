@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Optional debug telemetry recorders for ``example_suction_cup_isaac_sim_repro``.
+"""Optional debug telemetry recorders for ``example_surface_gripper_repro``.
 
 Each recorder logs a quantity per sim sub-step over the first engaged (suction-on) window and writes it
 to CSV at the first disengagement. Recording is host-side (reads device state each sub-step), so it only

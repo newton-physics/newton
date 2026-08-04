@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Surface-gripper (suction-cup) model: authoring types, the finalized model/state/control,
-and the per-pad force kernel. Imported by ``example_suction_cup``; not a runnable example.
+"""Surface-gripper model: authoring types, the finalized model/state/control,
+and the per-pad force kernel. Imported by ``example_surface_gripper_repro``; not a runnable example.
 
 Mirrors Newton's Builder -> Model -> State/Control layout::
 
@@ -1001,7 +1001,7 @@ def attach_seal_seated_kernel(
     pad_world: wp.array[int],  # world of each pad (see SurfaceGripperModel)
     pad_world_start: wp.array[int],  # CSR: world w's pads are [pad_world_start[w], pad_world_start[w+1])
     pad_radius: float,  # lip circle radius [m]
-    pad_face_offset: float,  # lip plane offset along the suction axis (pad local z) [m]
+    pad_face_offset: float,  # lip plane offset along the grip axis (pad local z) [m]
     n_samples_per_pad: int,  # lip points per pad
     max_dist: float,  # SDF search radius [m]
     grad_h: float,  # SDF central-difference step [m]
@@ -1086,7 +1086,7 @@ def attach_seal_seated(
         pad_body_b_id: Gripped body each pad seals against this step (< 0 = none), shape [n_pads].
         body_b_mesh_id: Body id -> gripped-object SDF mesh id (a :class:`warp.Mesh` id), shape [n_bodies].
         pad_radius: Pad lip circle radius [m].
-        pad_face_offset: Lip-plane offset along the pad suction axis (pad local +z) [m].
+        pad_face_offset: Lip-plane offset along the pad's z axis (pad local +z) [m].
         n_samples_per_pad: Number of lip sample points placed around each pad's lip.
         max_dist: SDF search radius [m].
         grad_h: SDF central-difference step [m].
