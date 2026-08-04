@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+import importlib
+import unittest
+
+import numpy as np
+import warp as wp
+
+import newton.examples
+from newton.viewer import ViewerNull
+
+
+def _load_example_module(test_case: unittest.TestCase):
+    module_name = "newton.examples.cloth.example_cloth_limx_ee_chatter"
+    if "cloth_limx_ee_chatter" not in newton.examples.get_examples():
+        test_case.fail(f"Missing example module {module_name}")
+    return importlib.import_module(module_name)
+
+
+@unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+class TestClothLimxEeChatter(unittest.TestCase):
+    def test_cuda_graph_step_preserves_the_two_patch_configuration(self):
+        """Keep one captured step finite with collision enabled only on the reproduction patch."""
+        module = _load_example_module(self)
+
+        with wp.ScopedDevice("cuda:0"):
+            example = module.Example(ViewerNull(num_frames=1), None)
+            example.step()
+            example.test_post_step()
+            example.test_final()
+            control_positions = example.control_patch.state_0.particle_q.numpy()
+            control_velocities = example.control_patch.state_0.particle_qd.numpy()
+            collision_positions = example.collision_patch.state_0.particle_q.numpy()
+            collision_velocities = example.collision_patch.state_0.particle_qd.numpy()
+
+        self.assertEqual(example.patch_vertex_count, 74)
+        self.assertEqual(example.patch_triangle_count, 112)
+        self.assertEqual(example.boundary_vertex_count, 34)
+        self.assertEqual(example.control_patch.model.particle_count, 74)
+        self.assertEqual(example.collision_patch.model.particle_count, 74)
+        self.assertIsNone(example.control_patch.self_collision)
+        self.assertIsNotNone(example.collision_patch.self_collision)
+        self.assertEqual(example.collision_patch.self_collision.max_contacts, 4096)
+        self.assertEqual(example.control_patch.solver.nonlinear_iterations, 1)
+        self.assertEqual(example.collision_patch.solver.nonlinear_iterations, 1)
+        self.assertEqual(example.control_patch.solver.linear_iterations, 50)
+        self.assertEqual(example.collision_patch.solver.linear_iterations, 50)
+        self.assertEqual(example.control_patch.solver.velocity_damping, 1.0)
+        self.assertEqual(example.collision_patch.solver.velocity_damping, 1.0)
+        self.assertTrue(np.isfinite(control_positions).all())
+        self.assertTrue(np.isfinite(control_velocities).all())
+        self.assertTrue(np.isfinite(collision_positions).all())
+        self.assertTrue(np.isfinite(collision_velocities).all())
+
+    def test_reproduces_late_edge_edge_contact_churn(self):
+        """Reproduce persistent EE pair churn while the no-collision control settles."""
+        module = _load_example_module(self)
+        frame_count = 1400
+        sample_start = 1000
+
+        with wp.ScopedDevice("cuda:0"):
+            example = module.Example(ViewerNull(num_frames=frame_count), None)
+            control_rms_speeds = []
+            collision_rms_speeds = []
+            previous_ee_ids = None
+            ee_births = 0
+            ee_deaths = 0
+            maximum_overflow = np.zeros(3, dtype=np.int32)
+            for frame in range(frame_count):
+                example.step()
+                self_collision = example.collision_patch.self_collision
+                maximum_overflow = np.maximum(
+                    maximum_overflow,
+                    np.asarray(
+                        [
+                            self_collision.vertex_face_contacts.overflow_count.numpy()[0],
+                            self_collision.edge_edge_contacts.overflow_count.numpy()[0],
+                            self_collision.edge_face_contacts.overflow_count.numpy()[0],
+                        ],
+                        dtype=np.int32,
+                    ),
+                )
+                if frame < sample_start:
+                    continue
+
+                interior_indices = example.interior_indices
+                control_velocities = example.control_patch.state_0.particle_qd.numpy()[interior_indices]
+                collision_velocities = example.collision_patch.state_0.particle_qd.numpy()[interior_indices]
+                control_rms_speeds.append(float(np.sqrt(np.mean(control_velocities * control_velocities))))
+                collision_rms_speeds.append(float(np.sqrt(np.mean(collision_velocities * collision_velocities))))
+
+                contacts = self_collision.edge_edge_contacts
+                contact_count = min(int(contacts.count.numpy()[0]), contacts.capacity)
+                current_ee_ids = {tuple(map(int, ids)) for ids in contacts.ids[:contact_count].numpy()}
+                if previous_ee_ids is not None:
+                    ee_births += len(current_ee_ids - previous_ee_ids)
+                    ee_deaths += len(previous_ee_ids - current_ee_ids)
+                previous_ee_ids = current_ee_ids
+
+        control_rms_mean = float(np.mean(control_rms_speeds))
+        collision_rms_mean = float(np.mean(collision_rms_speeds))
+        summary = (
+            f"control_rms={control_rms_mean:.8f}, collision_rms={collision_rms_mean:.8f}, "
+            f"EE_births={ee_births}, EE_deaths={ee_deaths}"
+        )
+        self.assertLess(control_rms_mean, 1.0e-6, summary)
+        self.assertGreater(collision_rms_mean, 1.0e-3, summary)
+        self.assertGreater(ee_births, 100, summary)
+        self.assertGreater(ee_deaths, 100, summary)
+        np.testing.assert_array_equal(maximum_overflow, np.zeros(3, dtype=np.int32), err_msg=summary)
+
+
+if __name__ == "__main__":
+    unittest.main()
