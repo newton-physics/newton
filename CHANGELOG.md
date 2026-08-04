@@ -13,6 +13,12 @@
 - Add CUDA-graph-capturable rebuildable sparse grids to `SolverImplicitMPM` when `max_active_cell_count` is positive, with optional `max_leaf_node_count`, `max_lower_node_count`, and `max_upper_node_count` hierarchy capacities.
 - Add opt-in isolated multi-world implicit MPM with capacity-bounded rebuildable sparse grids, selective world resets, outer graph capture, and asynchronous overflow reporting; legacy shared topology remains the default.
 - Add contact examples for Newton's cradle, a balance bird, and a domino spiral
+- Document geometry-pair contact behavior and clarify that MuJoCo Warp currently produces a single contact for cylinder--box pairs even with MultiCCD enabled.
+- Add `ViewerUSD(points_as_spheres=...)` to render `log_points` particles as a `UsdGeom.PointInstancer` of sphere prototypes; enabled by default (opt out with `points_as_spheres=False` for flat `UsdGeom.Points` splats)
+- Add list-of-pattern and explicit-index selectors to `ArticulationView`.
+- Add `newton[onnx]` for ONNX policy inference through Warp-NN; `ControllerNeuralMLP`, `ControllerNeuralLSTM`, and RL policy examples can run exported `.onnx` policies without requiring PyTorch for ONNX execution.
+- Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts
+- Add masked rigid-body reset support to `SolverVBD`. (#3256)
 - Add `Mesh.invalidate_cache()` to drop cached derived data (hash, edges, finalized Warp meshes) after in-place modification of `Mesh.vertices` or `Mesh.indices`; reassigning those properties invalidates automatically.
 - Add `Heightfield.create_from_mesh()` and `newton.utils.rasterize_mesh_to_heightfield()` to build a heightfield collider by ray-casting a `wp.Mesh`, replacing a large static terrain mesh with an equivalent heightfield.
 - Add read-only `Contacts.contact_matching_mode` metadata reporting whether the `CollisionPipeline` that produced or last filled the buffer used `"disabled"`, `"latest"`, or `"sticky"` contact matching.
@@ -77,6 +83,36 @@
 - Remove the deprecated `Model.has_heightfields` property (deprecated in 1.3.0); use `Model.heightfield_count`, or `model.heightfield_count > 0` for boolean checks, instead. (#3619)
 - Remove the deprecated `SolverNotifyFlags` enum (deprecated in 1.3.0); use `ModelFlags` instead. (#3619)
 - Remove the deprecated `ls_parallel` parameter of `SolverMuJoCo` (deprecated in 1.3.0); parallel line search was removed from `mujoco_warp` and the option had no effect. (#3619)
+- Deprecate scalar `ModelBuilder.gravity`; pass a three-component gravity vector instead.
+- Deprecate local-only `SolverBase.reset()` world masks in favor of masks with shape `(world_count + 1,)`; append a final entry that selects global entities in world `-1`. (#3374)
+- Deprecate and ignore `SolverVBD`'s `rigid_contact_stick_motion_eps`, `rigid_contact_stick_freeze_translation_eps`, and `rigid_contact_stick_freeze_angular_eps`; use collision-pipeline sticky matching for persistent geometry. The SolverVBD body deadzone was removed without replacement.
+- Deprecate per-DOF `newton:{axis}:limitStiffness` and `newton:{axis}:limitDamping` attributes (where `{axis}` is `linear`, `angular`, `rotX`, `rotY`, or `rotZ`). Use the broadcast `newton:limitStiffness` and `newton:limitDamping` attributes from `NewtonJointAPI` instead; the broadcast value applies uniformly to all DOFs on the joint. For joints requiring per-DOF variance, split into separate 1-DOF (revolute / prismatic) joints.
+- Deprecate passing solver constructor options positionally after stable positional inputs such as `model` and explicit solver configs; migrate calls such as `SolverVBD(model, 10)` to `SolverVBD(model, iterations=10)`.
+- Deprecate `Model.contacts()` and `Model.collide()` in favor of explicitly creating a `CollisionPipeline`, allocating with `pipeline.contacts()`, and detecting collisions with `pipeline.collide(state, contacts)`.
+- Deprecate `ModelBuilder.find_shape_contact_pairs()`; shape contact pairs are generated automatically by `ModelBuilder.finalize()`, so configure collision filters before finalization instead of rebuilding contact pairs manually.
+- Deprecate `newton.EqType` in favor of `newton.solvers.SolverMuJoCo.EqType`; migrate equality-constraint type references to the MuJoCo-scoped enum.
+- Deprecate `newton.geometry.MATCH_BROKEN` and `newton.geometry.MATCH_NOT_FOUND` without replacement; do not rely on or import these values.
+- Deprecate unsorted integer indices for `ArticulationView.include_joints` and `ArticulationView.include_links`, and reject out-of-range indices; sort indices in ascending order and ensure they are within the articulation's joint or link range.
+- Deprecate `State.body_q_prev` without replacement because solvers now manage previous body transforms internally; applications that need pose history should clone `State.body_q` explicitly.
+- Deprecate passing option-heavy helper API parameters positionally, including `ModelBuilder.ShapeConfig`, `ModelBuilder.JointDofConfig`, `Contacts`, `ArticulationView`, and selected `ModelBuilder` body, joint, shape, rod, cloth, soft-body, and FEM helpers. Keep stable identifiers such as `body`, `parent`/`child`, capacity counts, and topology indices positional; migrate calls such as `add_shape_box(body, xform, hx=...)` to `add_shape_box(body, xform=xform, hx=...)`.
+- Deprecate loading TorchScript (`torch.jit.save`) and dict (`torch.save`) neural-network checkpoints in `ControllerNeuralMLP` and `ControllerNeuralLSTM` in favor of pt2 archives saved via `torch.export.save`.
+- Deprecate omitting `body_frame_origin` in `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()`; the implicit behavior still uses the existing start-node body-frame convention during the deprecation window, but the implicit default will change to `body_frame_origin="com"` in a future release. Pass `body_frame_origin="start"` to preserve the legacy frame or `body_frame_origin="com"` to opt into the future COM-centered frame.
+- Deprecate mutating `Model.shape_collision_filter_pairs`; modify `ModelBuilder.shape_collision_filter_pairs` before calling `finalize()` and rebuild the model instead, because mutating finalized collision filters does not rebuild `Model.shape_contact_pairs`.
+- Deprecate reading legacy vendor-namespaced deformable material attributes (`omniphysics:`, `physxDeformableBody:`) off any bound material in `newton.usd.get_tetmesh()`, `newton.TetMesh.create_from_usd()`, and `ModelBuilder.add_usd()`. They are still read during the deprecation window, with a `DeprecationWarning`; a future release will read only canonical `physics:` attributes from a material applying `PhysicsVolumeDeformableMaterialAPI`. Migrate by authoring the canonical attributes, or keep the old behavior without the warning via `compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES` (`get_tetmesh` / `create_from_usd`) or `schema_resolvers=[..., SchemaResolverPhysx()]` (`add_usd`). `compat_namespaces` is now keyword-only; pass `()` to opt into the canonical-only behavior today.
+- Deprecate implicit render-config updates in `SensorTiledCamera.utils.create_default_light()` and `SensorTiledCamera.utils.assign_checkerboard_material()`; set `sensor.default_render_config.enable_shadows` or `sensor.default_render_config.enable_textures` explicitly instead.
+- Deprecate `SensorTiledCamera(..., config=...)` in favor of `SensorTiledCamera(..., default_render_config=...)`; migrate constructor calls that pass a render config to the new keyword.
+- Deprecate `SensorTiledCamera.render_config` in favor of `SensorTiledCamera.default_render_config`; migrate `sensor.render_config.enable_shadows = True` to `sensor.default_render_config.enable_shadows = True`.
+- Deprecate `SensorTiledCamera.utils.compute_pinhole_camera_rays()` in favor of `SensorTiledCamera.utils.compute_camera_rays_pinhole()`.
+- Deprecate the legacy DOF-shaped `joint_target_q` layout (`newton.use_coord_layout_targets = False`) for models whose joint coordinate and DOF counts differ (free/ball/distance joints); `ModelBuilder.finalize()` now emits a `DeprecationWarning` for such models. Set `newton.use_coord_layout_targets = True` before building models and index targets via `Model.joint_target_q_start`. A future release will make the coordinate layout the only layout and remove the flag.
+
+### Removed
+
+- Remove the deprecated `joint_target_pos` / `joint_target_vel` aliases from `Model`, `Control`, and `ModelBuilder` (deprecated in 1.3.0); use `joint_target_q` / `joint_target_qd` instead. Reading or assigning the removed names raises `AttributeError` naming the replacement, so a stale `control.joint_target_pos = targets` fails loudly instead of being silently ignored. `Actuator` now always defaults `control_target_pos_attr` / `control_target_vel_attr` to the canonical `joint_target_q` / `joint_target_qd` names; passing `None` explicitly selects the same defaults.
+- Remove the deprecated SDF compatibility attributes `Model.shape_sdf_index`, `Model.texture_sdf_data`, `Model.texture_sdf_coarse_textures`, `Model.texture_sdf_subgrid_textures`, `Model.texture_sdf_subgrid_start_slots`, `Model.sdf_block_coords`, `Model.sdf_index2blocks`, and `SDF.texture_block_coords` (deprecated in 1.3.0); the hydroelastic broadphase derives block coordinates arithmetically and the remaining storage is internal.
+- Remove the deprecated `newton.geometry.build_bvh_shape()`, `refit_bvh_shape()`, `build_bvh_particle()`, and `refit_bvh_particle()` helpers (deprecated in 1.3.0); use `Model.bvh_build_shapes()`, `Model.bvh_refit_shapes()`, `Model.bvh_build_particles()`, and `Model.bvh_refit_particles()` instead.
+- Remove the deprecated `Model.has_heightfields` property (deprecated in 1.3.0); use `Model.heightfield_count`, or `model.heightfield_count > 0` for boolean checks, instead.
+- Remove the deprecated `SolverNotifyFlags` enum (deprecated in 1.3.0); use `ModelFlags` instead.
+- Remove the deprecated `ls_parallel` parameter of `SolverMuJoCo` (deprecated in 1.3.0); parallel line search was removed from `mujoco_warp` and the option had no effect.
 
 ### Fixed
 
@@ -132,6 +168,7 @@
 - Fix masked PID state reset to execute on the integral-state device. (#3447)
 - Fix `SolverKamino` to preserve resets for bodies whose center of mass is offset from the body frame. (#3605)
 - Fix a spurious `SolverKamino` floating-base reset warning. (#3563)
+- Fix `eval_inverse_dynamics_passive()` reading past a DOF-sized scratch buffer under `newton.use_coord_layout_targets = True`, producing intermittent NaNs for models with free, ball, or distance joints.
 - Fix MJCF imports ignoring `fromto` transforms and lengths on sites.
 - Reject invalid hollow primitive shell thickness before computing inertia.
 - Fix convex decomposition of disconnected mesh components so unified multi-part collision meshes preserve separate convex parts. (#3261)
