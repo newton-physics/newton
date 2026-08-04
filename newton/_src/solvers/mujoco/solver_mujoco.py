@@ -3813,7 +3813,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def reset(
         self,
         state: State,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Reset joint state to model defaults and clear MuJoCo's internal buffers.
@@ -3843,8 +3843,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ``qpos`` / ``qvel`` are normally synced from the reset ``state`` at the
         start of the next :meth:`step`. When ``update_data_interval != 1`` that
         per-step sync is disabled or sparse, so the reset joint coordinates are
-        pushed into ``qpos`` / ``qvel`` immediately instead (for all worlds;
-        unmasked worlds round-trip through their current joint coordinates).
+        pushed into ``qpos`` / ``qvel`` immediately for the selected worlds.
         When sleeping is enabled, reset synchronizes immediately, rebuilds
         MuJoCo Warp's cached position- and velocity-dependent data, and restores
         the initial sleep state in the selected worlds.
@@ -3855,14 +3854,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 selecting which worlds to reset. The final entry represents
                 global world ``-1`` and is a no-op because MuJoCo does not
                 support global dynamic objects. If ``None``, all worlds are
-                reset. Passing the deprecated shape ``(world_count,)`` selects
-                local worlds only.
+                reset.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling which
                 joint-state quantities are reset. If ``None``, all are reset.
                 The internal MuJoCo buffers are always cleared regardless.
         """
-        world_count = self.model.world_count
+        if state is None:
+            raise ValueError("'state' argument is required.")
+
         world_mask = self._normalize_reset_world_mask(world_mask)
+        world_count = self.model.world_count
+        native_template_world_selected = not self.use_mujoco_cpu or world_mask is None or bool(world_mask.numpy()[0])
 
         # Reset joint coordinates/velocities to model defaults for the selected
         # worlds. body_q/body_qd are FK outputs and intentionally not touched.
@@ -3894,13 +3901,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # below before rebuilding its cached data.
                 if self.update_data_interval != 1 and not self.enable_sleeping:
                     data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
-                    if data is not None:
-                        self._update_mjc_data(data, self.model, state)
+                    if data is not None and native_template_world_selected:
+                        self._update_mjc_data(data, self.model, state, world_mask=world_mask)
 
         # Clear the internal buffers that persist between steps.
         if self.use_mujoco_cpu:
             d = self.mj_data
             if d is None:
+                return
+            # Native MuJoCo owns one template-world MjData instance even when
+            # separate_worlds=True was requested for a multi-world Newton
+            # model. Its persistent buffers therefore belong to local world 0.
+            if not native_template_world_selected:
                 return
             # Single MjData instance: clear the whole buffers (no per-world mask).
             d.qacc_warmstart[:] = 0.0
@@ -3923,7 +3935,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
         if self.enable_sleeping:
-            self._update_mjc_data(d, self.model, state)
+            self._update_mjc_data(d, self.model, state, world_mask=world_mask)
             self._wake_sleeping_worlds(world_mask, clear_overflow=True)
             # Sleeping trees retain derived state, so rebuild it at the reset
             # coordinates before restoring the initial sleep bookkeeping.
@@ -4695,6 +4707,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self.mjc_body_to_newton,
                     model.body_flags,
                     state.body_f,
+                    model.body_mass,
+                    model.body_world,
+                    model.gravity,
+                    self.mjw_model.body_gravcomp,
                 ],
                 outputs=[
                     xfrc,
@@ -4723,7 +4739,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mj_data.ctrl[:] = ctrl.numpy().flatten()
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
-    def _update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
+    def _update_mjc_data(
+        self,
+        mj_data: MjWarpData | MjData,
+        model: Model,
+        state: State | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
+    ):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False
         if is_mjwarp:
@@ -4761,6 +4783,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 joint_q,
                 joint_qd,
+                world_mask,
                 joints_per_world,
                 model.joint_type,
                 model.joint_q_start,
@@ -4783,7 +4806,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wp.launch(
                 copy_qpos_and_detect_tree_change_kernel,
                 dim=qpos.shape,
-                inputs=[self._sleep_qpos, 1.0e-6, self._sleep_qpos_treeid],
+                inputs=[self._sleep_qpos, world_mask, 1.0e-6, self._sleep_qpos_treeid],
                 outputs=[qpos, self._sleep_tree_changed],
                 device=model.device,
             )

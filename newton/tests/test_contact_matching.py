@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry.contact_match import MATCH_BROKEN, MATCH_NOT_FOUND
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 class TestContactMatching(unittest.TestCase):
@@ -49,6 +49,26 @@ def _collide_once(pipeline, state, contacts):
     contacts.clear()
     pipeline.collide(state, contacts)
     return contacts.rigid_contact_count.numpy()[0]
+
+
+def _build_two_world_contact_scene(device):
+    """Build two local sphere-plane contacts sharing one global ground."""
+    world = newton.ModelBuilder()
+    body = world.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1)))
+    world.add_shape_sphere(body=body, radius=0.1)
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    builder.add_world(world, xform=wp.transform(wp.vec3(-0.5, 0.0, 0.0)))
+    builder.add_world(world, xform=wp.transform(wp.vec3(0.5, 0.0, 0.0)))
+    model = builder.finalize(device=device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        contact_matching="latest",
+        contact_report=True,
+    )
+    return model, state, pipeline, pipeline.contacts()
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +140,85 @@ def test_stable_scene_identity_across_three_frames(test, device):
                 expected,
                 err_msg=f"Frame {frame}: match_index must be identity",
             )
+
+
+def test_masked_reset_restarts_only_selected_contact_history(test, device):
+    """Restart local or global contact pairs while preserving other matches."""
+    with wp.ScopedDevice(device):
+        model, state, pipeline, contacts = _build_two_world_contact_scene(device)
+
+        count = _collide_once(pipeline, state, contacts)
+        test.assertEqual(_collide_once(pipeline, state, contacts), count)
+        np.testing.assert_array_equal(
+            contacts.rigid_contact_match_index.numpy()[:count],
+            np.arange(count, dtype=np.int32),
+        )
+
+        pipeline.reset_contact_matching(wp.array((False, False, False), dtype=wp.bool, device=device))
+        _collide_once(pipeline, state, contacts)
+        test.assertTrue(np.all(contacts.rigid_contact_match_index.numpy()[:count] >= 0))
+
+        pipeline.reset_contact_matching(wp.array((True, False, False), dtype=wp.bool, device=device))
+        _collide_once(pipeline, state, contacts)
+        shape_world = model.shape_world.numpy()
+        shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+        shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+        world0 = shape_world[shape0]
+        world1 = shape_world[shape1]
+        contact_world = np.where(world0 >= 0, world0, world1)
+        matches = contacts.rigid_contact_match_index.numpy()[:count]
+        np.testing.assert_array_equal(matches[contact_world == 0], MATCH_NOT_FOUND)
+        test.assertTrue(np.all(matches[contact_world == 1] >= 0))
+        test.assertEqual(int(contacts.rigid_contact_broken_count.numpy()[0]), 0)
+
+        _collide_once(pipeline, state, contacts)
+        pipeline.reset_contact_matching(wp.array((False, False, True), dtype=wp.bool, device=device))
+        _collide_once(pipeline, state, contacts)
+        np.testing.assert_array_equal(contacts.rigid_contact_match_index.numpy()[:count], MATCH_NOT_FOUND)
+        test.assertEqual(int(contacts.rigid_contact_broken_count.numpy()[0]), 0)
+
+
+def test_reset_rejects_invalid_world_masks(test, device):
+    """Reject malformed contact reset masks through the shared contract."""
+    with wp.ScopedDevice(device):
+        _model, _state, pipeline, _contacts = _build_two_world_contact_scene(device)
+        invalid_masks = (
+            ((False, False, False), TypeError),
+            (wp.zeros(3, dtype=wp.int32, device=device), TypeError),
+            (wp.zeros((1, 3), dtype=wp.bool, device=device), ValueError),
+            (wp.zeros(2, dtype=wp.bool, device=device), ValueError),
+            (wp.zeros(4, dtype=wp.bool, device=device), ValueError),
+        )
+        for world_mask, error in invalid_masks:
+            with test.subTest(world_mask=world_mask), test.assertRaises(error):
+                pipeline.reset_contact_matching(world_mask)
+
+        if device.is_cuda:
+            with test.assertRaises(ValueError):
+                pipeline.reset_contact_matching(wp.zeros(3, dtype=wp.bool, device="cpu"))
+
+
+def test_reset_accumulates_live_mask_during_cuda_graph_replay(test, device):
+    """Accumulate the current device mask each time a reset graph is replayed."""
+    with wp.ScopedDevice(device):
+        _model, _state, pipeline, _contacts = _build_two_world_contact_scene(device)
+        matcher = pipeline._contact_matcher
+        test.assertIsNotNone(matcher)
+
+        # Materialize the reset kernel before capture, then clear its pending state.
+        pipeline.reset_contact_matching(wp.array((True, False, False), dtype=wp.bool, device=device))
+        pipeline.reset_contact_matching()
+        world_mask = wp.zeros(3, dtype=wp.bool, device=device)
+        with wp.ScopedCapture(device=device) as capture:
+            pipeline.reset_contact_matching(world_mask)
+
+        world_mask.assign((True, False, False))
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(matcher._reset_world_mask.numpy(), (True, False, False))
+
+        world_mask.assign((False, True, True))
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(matcher._reset_world_mask.numpy(), (True, True, True))
 
 
 def test_new_contact_detection(test, device):
@@ -670,6 +769,7 @@ def test_sticky_disabled_no_sticky_buffers(test, device):
 # ---------------------------------------------------------------------------
 
 devices = get_test_devices()
+cuda_devices = get_cuda_test_devices()
 
 add_function_test(
     TestContactMatching, "test_first_frame_all_not_found", test_first_frame_all_not_found, devices=devices
@@ -682,6 +782,24 @@ add_function_test(
     "test_stable_scene_identity_across_three_frames",
     test_stable_scene_identity_across_three_frames,
     devices=devices,
+)
+add_function_test(
+    TestContactMatching,
+    "test_masked_reset_restarts_only_selected_contact_history",
+    test_masked_reset_restarts_only_selected_contact_history,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatching,
+    "test_reset_rejects_invalid_world_masks",
+    test_reset_rejects_invalid_world_masks,
+    devices=get_test_devices(mode="basic"),
+)
+add_function_test(
+    TestContactMatching,
+    "test_reset_accumulates_live_mask_during_cuda_graph_replay",
+    test_reset_accumulates_live_mask_during_cuda_graph_replay,
+    devices=cuda_devices,
 )
 add_function_test(TestContactMatching, "test_new_contact_detection", test_new_contact_detection, devices=devices)
 add_function_test(

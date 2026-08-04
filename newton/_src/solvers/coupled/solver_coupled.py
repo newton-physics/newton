@@ -8,13 +8,14 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
 
+from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
-from ...sim import Model, ModelFlags, StateFlags
+from ...sim import JointType, Model, ModelFlags, StateFlags
 from ..solver import SolverBase
 from .interface import (
     CouplingEndpointKind,
@@ -107,6 +108,54 @@ def _compact_visible_shape_contact_pairs_kernel(
         filtered_pairs[offsets[pair_index]] = pairs[pair_index]
     if pair_index == pair_count - 1:
         filtered_count[0] = offsets[pair_index] + visible[pair_index]
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _copy_reset_view_rows_kernel(
+    local_to_global: wp.array[int],
+    global_row_world: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    src_is_global: bool,
+    src: wp.array[Any],
+    dst: wp.array[Any],
+):
+    local_id = wp.tid()
+    global_id = local_to_global[local_id]
+    if global_id >= 0 and _reset_world_selected(global_row_world[global_id], world_mask, world_count):
+        src_id = global_id if src_is_global else local_id
+        dst[local_id] = src[src_id]
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _scatter_reset_owned_rows_kernel(
+    owned_local: wp.array[int],
+    owned_global: wp.array[int],
+    global_row_world: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    src: wp.array[Any],
+    dst: wp.array[Any],
+):
+    row = wp.tid()
+    global_id = owned_global[row]
+    if _reset_world_selected(global_row_world[global_id], world_mask, world_count):
+        dst[global_id] = src[owned_local[row]]
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _zero_reset_view_rows_kernel(
+    local_to_global: wp.array[int],
+    global_row_world: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    values: wp.array[Any],
+    zero_value: Any,
+):
+    local_id = wp.tid()
+    global_id = local_to_global[local_id]
+    if global_id >= 0 and _reset_world_selected(global_row_world[global_id], world_mask, world_count):
+        values[local_id] = zero_value
 
 
 def _identity_index_map(count: int, device) -> wp.array:
@@ -213,6 +262,7 @@ class SolverEntry:
     joint_dof_global_to_local: wp.array
     attribute_projections: dict[Model.AttributeFrequency | str, _CompactIndexProjection]
     attribute_local_to_global: dict[Model.AttributeFrequency | str, wp.array]
+    attribute_owned_rows: dict[Model.AttributeFrequency | str, tuple[wp.array[int], wp.array[int]]]
     in_place: bool
     state_0: State | None = None
     state_1: State | None = None
@@ -222,6 +272,37 @@ class SolverEntry:
     has_particle_force_input: bool = False
     body_gravity_acceleration: wp.array[wp.vec3] | None = None
     particle_gravity_acceleration: wp.array[wp.vec3] | None = None
+
+
+_CORE_RESET_STATE_FLAGS = {
+    "body_q": StateFlags.BODY_Q,
+    "body_qd": StateFlags.BODY_QD,
+    "particle_q": StateFlags.PARTICLE_Q,
+    "particle_qd": StateFlags.PARTICLE_QD,
+    "joint_q": StateFlags.JOINT_Q,
+    "joint_qd": StateFlags.JOINT_QD,
+}
+_RESET_FORCE_INPUT_FREQUENCIES = {
+    "body_f": Model.AttributeFrequency.BODY,
+    "particle_f": Model.AttributeFrequency.PARTICLE,
+}
+_RESET_TRANSIENT_FIELDS = (
+    ("body_f", Model.AttributeFrequency.BODY),
+    ("particle_f", Model.AttributeFrequency.PARTICLE),
+    ("body_qdd", Model.AttributeFrequency.BODY),
+    ("body_parent_f", Model.AttributeFrequency.BODY),
+)
+_RESET_RECONCILABLE_FREQUENCIES = frozenset(
+    {
+        Model.AttributeFrequency.BODY,
+        Model.AttributeFrequency.PARTICLE,
+        Model.AttributeFrequency.JOINT,
+        Model.AttributeFrequency.SHAPE,
+        Model.AttributeFrequency.JOINT_COORD,
+        Model.AttributeFrequency.JOINT_DOF,
+        Model.AttributeFrequency.JOINT_CONSTRAINT,
+    }
+)
 
 
 class SolverCoupled(SolverBase, CouplingInterface):
@@ -299,6 +380,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
         super().__init__(model)
 
         self._attribute_projections = self._build_attribute_projections()
+        self._joint_constraint_starts = self._build_joint_constraint_starts()
+        self._reset_state_attributes = self._build_reset_state_attributes()
+        self._reset_input_attributes = self._build_reset_input_attributes()
+        self._reset_row_world = self._build_reset_row_world_maps()
+        self._full_reset_world_mask = wp.ones(model.world_count + 1, dtype=wp.bool, device=model.device)
         self._entry_configs = list(entries)
         self._entry_configs_by_name = {entry.name: entry for entry in self._entry_configs}
         self._coupling = coupling
@@ -341,6 +427,103 @@ class SolverCoupled(SolverBase, CouplingInterface):
             for name, spec in model._iter_attribute_specs()
             if spec.compaction_policy in {"generic", "end"} and not self._is_deprecated_namespace_alias(name)
         )
+
+    def _build_joint_constraint_starts(self) -> np.ndarray:
+        """Reconstruct the finalized builder's per-joint constraint ranges."""
+        model = self.model
+        starts = np.zeros(int(model.joint_count) + 1, dtype=np.int32)
+        if model.joint_count == 0:
+            if model.joint_constraint_count != 0:
+                raise ValueError("A model without joints cannot contain joint-constraint rows.")
+            return starts
+
+        joint_type = model.joint_type.numpy()
+        joint_dof_dim = model.joint_dof_dim.numpy()
+        for joint in range(int(model.joint_count)):
+            axis_count = int(joint_dof_dim[joint][0]) + int(joint_dof_dim[joint][1])
+            starts[joint + 1] = starts[joint] + JointType(int(joint_type[joint])).constraint_count(axis_count)
+        if int(starts[-1]) != int(model.joint_constraint_count):
+            raise ValueError(
+                "Cannot reconstruct joint-constraint ownership: "
+                f"joint metadata describes {int(starts[-1])} rows, "
+                f"but joint_constraint_count is {int(model.joint_constraint_count)}."
+            )
+        return starts
+
+    def _build_reset_state_attributes(
+        self,
+    ) -> dict[str, tuple[Model.AttributeFrequency | str, StateFlags | None]]:
+        """Select reset-managed state arrays with explicit entry ownership."""
+        attributes = {}
+        unsupported = []
+        for full_name, spec in self.model._iter_attribute_specs():
+            flag = _CORE_RESET_STATE_FLAGS.get(full_name)
+            if flag is None and spec.assignment != Model.AttributeAssignment.STATE:
+                continue
+            if self._is_deprecated_namespace_alias(full_name):
+                continue
+            if flag is None and spec.frequency not in _RESET_RECONCILABLE_FREQUENCIES:
+                unsupported.append((full_name, spec.frequency))
+                continue
+            attributes[full_name] = (spec.frequency, flag)
+
+        if unsupported:
+            details = ", ".join(f"{name!r} ({frequency!r})" for name, frequency in unsupported)
+            logger.warning(
+                "SolverCoupled generic reset reconciliation skips STATE attributes "
+                f"whose frequencies do not define entry ownership: {details}."
+            )
+        return attributes
+
+    def _build_reset_input_attributes(self) -> dict[str, Model.AttributeFrequency | str]:
+        """Add public force inputs to the arrays distributed before reset."""
+        attributes = {
+            name: frequency for name, (frequency, flag) in self._reset_state_attributes.items() if flag is not None
+        }
+        attributes.update(_RESET_FORCE_INPUT_FREQUENCIES)
+        return attributes
+
+    @staticmethod
+    def _row_worlds_from_starts(starts: wp.array[wp.int32], count: int, world_count: int) -> np.ndarray:
+        """Expand a per-world start array into one world id per row."""
+        row_world = np.full(int(count), -1, dtype=np.int32)
+        starts_host = starts.numpy()
+        for world in range(int(world_count)):
+            row_world[int(starts_host[world]) : int(starts_host[world + 1])] = world
+        return row_world
+
+    def _build_reset_row_world_maps(self) -> dict[Model.AttributeFrequency | str, wp.array[wp.int32]]:
+        """Precompute immutable parent row-to-world maps used by masked reset."""
+        model = self.model
+        frequency = model.AttributeFrequency
+        required = {frequency for frequency, _ in self._reset_state_attributes.values()}
+        required.update(self._reset_input_attributes.values())
+        required.update(item_frequency for _, item_frequency in _RESET_TRANSIENT_FIELDS)
+        direct = {
+            frequency.BODY: model.body_world,
+            frequency.PARTICLE: model.particle_world,
+            frequency.JOINT: model.joint_world,
+            frequency.SHAPE: model.shape_world,
+        }
+        world_starts = {
+            frequency.JOINT_COORD: model.joint_coord_world_start,
+            frequency.JOINT_DOF: model.joint_dof_world_start,
+            frequency.JOINT_CONSTRAINT: model.joint_constraint_world_start,
+        }
+
+        result = {}
+        for item_frequency in required:
+            count = int(model._attribute_frequency_count(item_frequency))
+            row_world = direct.get(item_frequency)
+            if isinstance(row_world, wp.array):
+                result[item_frequency] = row_world
+                continue
+            starts = world_starts.get(item_frequency)
+            if not isinstance(starts, wp.array):
+                raise ValueError(f"Cannot map reset rows for unsupported frequency {item_frequency!r}.")
+            host = self._row_worlds_from_starts(starts, count, model.world_count)
+            result[item_frequency] = wp.array(host, dtype=wp.int32, device=model.device)
+        return result
 
     def _is_deprecated_namespace_alias(self, full_name: str) -> bool:
         """Return whether metadata names a warning-producing namespace alias."""
@@ -488,6 +671,23 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 frequency: wp.array(projection.local_to_global, dtype=int, device=device)
                 for frequency, projection in attribute_projections.items()
             }
+            attribute_owned_rows = {}
+            for frequency in self._reset_row_world:
+                projection = attribute_projections.get(frequency)
+                if projection is None:
+                    continue
+                owned_pairs = []
+                for global_id in self._entry_owned_rows(cfg, frequency, joint_q_indices, joint_qd_indices):
+                    if 0 <= global_id < len(projection.global_to_local):
+                        local_id = projection.global_to_local[global_id]
+                        if local_id >= 0:
+                            owned_pairs.append((local_id, global_id))
+                if not owned_pairs:
+                    continue
+                attribute_owned_rows[frequency] = (
+                    wp.array([local_id for local_id, _ in owned_pairs], dtype=int, device=device),
+                    wp.array([global_id for _, global_id in owned_pairs], dtype=int, device=device),
+                )
 
             solver = cfg.solver(view)
             _require_supports_coupling(solver)
@@ -519,6 +719,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 joint_dof_global_to_local=index_maps.joint_dof_global_to_local,
                 attribute_projections=attribute_projections,
                 attribute_local_to_global=attribute_local_to_global,
+                attribute_owned_rows=attribute_owned_rows,
                 in_place=bool(cfg.in_place),
             )
 
@@ -550,6 +751,37 @@ class SolverCoupled(SolverBase, CouplingInterface):
             q_indices.extend(range(int(q_start[joint]), int(q_start[joint + 1])))
             qd_indices.extend(range(int(qd_start[joint]), int(qd_start[joint + 1])))
         return wp.array(q_indices, dtype=int, device=device), wp.array(qd_indices, dtype=int, device=device)
+
+    def _entry_owned_rows(
+        self,
+        cfg: SolverCoupled.Entry,
+        frequency: Model.AttributeFrequency | str,
+        joint_q_indices: wp.array[int],
+        joint_qd_indices: wp.array[int],
+    ) -> list[int]:
+        """Return parent-global rows owned by an entry for one state frequency."""
+        model_frequency = self.model.AttributeFrequency
+        if frequency == model_frequency.BODY:
+            return [int(index) for index in cfg.bodies]
+        if frequency == model_frequency.PARTICLE:
+            return [int(index) for index in cfg.particles]
+        if frequency == model_frequency.JOINT:
+            return [int(index) for index in cfg.joints]
+        if frequency == model_frequency.SHAPE:
+            return [int(index) for index in cfg.shapes]
+        if frequency == model_frequency.JOINT_COORD:
+            return joint_q_indices.numpy().astype(np.int32, copy=False).tolist()
+        if frequency == model_frequency.JOINT_DOF:
+            return joint_qd_indices.numpy().astype(np.int32, copy=False).tolist()
+        if frequency == model_frequency.JOINT_CONSTRAINT:
+            rows = []
+            for raw_joint in cfg.joints:
+                joint = int(raw_joint)
+                rows.extend(
+                    range(int(self._joint_constraint_starts[joint]), int(self._joint_constraint_starts[joint + 1]))
+                )
+            return rows
+        return []
 
     def _entry_proxy_body_keep_indices(self, name: str) -> set[int]:
         """Return body indices that should remain dynamic as proxies in one view."""
@@ -939,9 +1171,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
         joint_qd_start = model.joint_qd_start.numpy()
         joint_coord_order: list[int] = []
         joint_dof_order: list[int] = []
+        joint_constraint_order: list[int] = []
         for joint in joint_order:
             joint_coord_order.extend(range(int(joint_q_start[joint]), int(joint_q_start[joint + 1])))
             joint_dof_order.extend(range(int(joint_qd_start[joint]), int(joint_qd_start[joint + 1])))
+            joint_constraint_order.extend(
+                range(int(self._joint_constraint_starts[joint]), int(self._joint_constraint_starts[joint + 1]))
+            )
 
         keep_deformables = bool(particle_order)
         built_in_frequency_orders = {
@@ -950,7 +1186,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.JOINT: joint_order,
             model.AttributeFrequency.JOINT_COORD: joint_coord_order,
             model.AttributeFrequency.JOINT_DOF: joint_dof_order,
-            model.AttributeFrequency.JOINT_CONSTRAINT: [],
+            model.AttributeFrequency.JOINT_CONSTRAINT: joint_constraint_order,
             model.AttributeFrequency.SHAPE: shape_order,
             model.AttributeFrequency.ARTICULATION: articulation_order,
             model.AttributeFrequency.CONSTRAINT_MIMIC: mimic_order,
@@ -1219,7 +1455,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
 
-        self._set_world_start_arrays(view)
+        self._set_world_start_arrays(view, joint_constraint_order)
 
     def _compact_projections_by_frequency(
         self,
@@ -1452,7 +1688,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             remapped.append(wp.array(local, dtype=wp.int32, device=self.model.device))
         view.body_color_groups = remapped
 
-    def _set_world_start_arrays(self, view: ModelView) -> None:
+    def _set_world_start_arrays(self, view: ModelView, joint_constraint_order: Sequence[int]) -> None:
         view.particle_world_start = self._world_start_array(view.particle_world, int(view.particle_count))
         view.body_world_start = self._world_start_array(view.body_world, int(view.body_count))
         view.shape_world_start = self._world_start_array(view.shape_world, int(view.shape_count))
@@ -1471,8 +1707,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
             view.joint_qd_start,
             int(view.joint_dof_count),
         )
-        view.joint_constraint_world_start = wp.zeros(
-            int(self.model.world_count) + 2, dtype=wp.int32, device=self.model.device
+        parent_constraint_world = self._row_worlds_from_starts(
+            self.model.joint_constraint_world_start,
+            int(self.model.joint_constraint_count),
+            int(self.model.world_count),
+        )
+        constraint_world = parent_constraint_world[np.asarray(joint_constraint_order, dtype=np.int32)]
+        view.joint_constraint_world_start = self._weighted_world_start_array(
+            constraint_world,
+            np.ones(len(constraint_world), dtype=np.int32),
+            int(view.joint_constraint_count),
         )
 
     def _world_start_array(self, world_array: wp.array, count: int) -> wp.array:
@@ -1912,18 +2156,28 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def reset(
         self,
         state: State,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Reset coupled sub-solvers and clear coupled-solver transient state.
+
+        Generic reconciliation of registered ``STATE`` attributes is limited
+        to body, particle, joint, shape, joint-coordinate, joint-DOF, and
+        joint-constraint frequencies, whose rows have explicit entry
+        ownership. Other frequencies require coupler-specific parent
+        reconciliation.
 
         Args:
             state: Parent-model simulation state to reset (modified in place).
             world_mask: Optional boolean mask of shape ``(world_count + 1,)``
                 selecting which worlds to reset. The final entry selects global
                 entities whose world is ``-1``. If ``None``, all local and
-                global entities are reset. Passing the deprecated shape
-                ``(world_count,)`` selects local worlds only.
+                global entities are reset.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling
                 which state quantities sub-solvers should reset. If ``None``,
                 all state quantities are reset.
@@ -1932,16 +2186,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
             raise ValueError("'state' argument is required.")
         world_mask = self._normalize_reset_world_mask(world_mask)
 
-        self._distribute_state(state, iteration_restart=True)
+        output_state_was_valid = self._entry_output_state_valid
+        reset_world_mask = self._full_reset_world_mask if world_mask is None else world_mask
+        self._distribute_reset_state(state, reset_world_mask)
         for entry in self._entries.values():
             entry.solver.reset(entry.state_0, world_mask=world_mask, flags=flags)
-            self._sync_entry_reset_state(entry)
+            self._sync_entry_reset_state(entry, reset_world_mask, flags)
 
-        self._reconcile_state(state)
+        self._reconcile_reset_state(state, reset_world_mask, flags)
         self._reset_coupling_state(state, world_mask=world_mask, flags=flags)
-        self._clear_entry_contact_buffers()
+        if world_mask is None:
+            self._clear_entry_contact_buffers()
         self._rebuild_entry_solver_state_caches()
-        self._entry_output_state_valid = False
+        self._entry_output_state_valid = False if world_mask is None else output_state_was_valid
 
     # ------------------------------------------------------------------
     # SolverBase interface
@@ -1975,24 +2232,121 @@ class SolverCoupled(SolverBase, CouplingInterface):
         for entry in self._entries.values():
             self._ensure_entry_contact_buffer(entry, contacts)
 
-    def _sync_entry_reset_state(self, entry: SolverEntry) -> None:
-        """Mirror a reset entry input state to persistent entry buffers."""
-        if entry.state_1 is not None and entry.state_1 is not entry.state_0:
-            _copy_same_view_state(entry.state_0, entry.state_1)
+    def _launch_reset_view_kernel(
+        self,
+        kernel,
+        entry: SolverEntry,
+        frequency: Model.AttributeFrequency | str,
+        world_mask: wp.array[wp.bool],
+        *inputs,
+    ) -> None:
+        """Launch a masked operation over every row in an entry view."""
+        local_to_global = entry.attribute_local_to_global.get(frequency)
+        row_world = self._reset_row_world.get(frequency)
+        if local_to_global is None or row_world is None or local_to_global.shape[0] == 0:
+            return
+        wp.launch(
+            kernel,
+            dim=local_to_global.shape[0],
+            inputs=[
+                local_to_global,
+                row_world,
+                world_mask,
+                self.model.world_count,
+                *inputs,
+            ],
+            device=self.model.device,
+        )
 
-        for entry_state in (entry.state_0, entry.state_1):
-            if entry_state is not None:
-                _clear_transient_state_buffers(entry_state)
+    def _launch_reset_owned_scatter(
+        self,
+        entry: SolverEntry,
+        frequency: Model.AttributeFrequency | str,
+        world_mask: wp.array[wp.bool],
+        src: wp.array[Any],
+        dst: wp.array[Any],
+    ) -> None:
+        """Copy selected entry-owned rows into a parent state."""
+        owned_rows = entry.attribute_owned_rows.get(frequency)
+        row_world = self._reset_row_world.get(frequency)
+        if owned_rows is None or row_world is None:
+            return
+        owned_local, owned_global = owned_rows
+        wp.launch(
+            _scatter_reset_owned_rows_kernel,
+            dim=owned_global.shape[0],
+            inputs=[
+                owned_local,
+                owned_global,
+                row_world,
+                world_mask,
+                self.model.world_count,
+                src,
+                dst,
+            ],
+            device=self.model.device,
+        )
+
+    def _sync_entry_reset_state(
+        self,
+        entry: SolverEntry,
+        world_mask: wp.array[wp.bool],
+        flags: StateFlags | int | None,
+    ) -> None:
+        """Synchronize selected public and solver-owned output history."""
+        if entry.state_1 is not None and entry.state_1 is not entry.state_0:
+            reset_flags = int(StateFlags.ALL if flags is None else flags)
+            for name, (frequency, flag) in self._reset_state_attributes.items():
+                if flag is not None and not reset_flags & int(flag):
+                    continue
+                src = _nested_attribute_value(entry.state_0, name)
+                dst = _nested_attribute_value(entry.state_1, name)
+                if not isinstance(src, wp.array) or not isinstance(dst, wp.array):
+                    continue
+                self._launch_reset_view_kernel(
+                    _copy_reset_view_rows_kernel,
+                    entry,
+                    frequency,
+                    world_mask,
+                    False,
+                    src,
+                    dst,
+                )
+        entry_states = (entry.state_0,) if entry.state_1 is entry.state_0 else (entry.state_0, entry.state_1)
+        for entry_state in entry_states:
+            if entry_state is None:
+                continue
+            for name, frequency in _RESET_TRANSIENT_FIELDS:
+                values = getattr(entry_state, name, None)
+                if isinstance(values, wp.array):
+                    self._launch_reset_view_kernel(
+                        _zero_reset_view_rows_kernel,
+                        entry,
+                        frequency,
+                        world_mask,
+                        values,
+                        values.dtype(0),
+                    )
 
     def _reset_coupling_state(
         self,
         state: State,
         *,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Hook for subclasses to clear algorithm-specific reset state."""
         del state, world_mask, flags
+
+    @staticmethod
+    def _reset_collision_provider_contact_matching(
+        pipeline: object,
+        world_mask: wp.array[wp.bool] | None,
+    ) -> None:
+        """Reset an optional provider's contact history using the shared mask contract."""
+        reset_contact_matching = getattr(pipeline, "reset_contact_matching", None)
+        if callable(reset_contact_matching):
+            reset_contact_matching(world_mask)
 
     def _clear_entry_contact_buffers(self) -> None:
         """Invalidate cached entry-local contact buffers after a reset."""
@@ -2026,6 +2380,40 @@ class SolverCoupled(SolverBase, CouplingInterface):
     # ------------------------------------------------------------------
     # State distribution and reconciliation
     # ------------------------------------------------------------------
+
+    def _distribute_reset_state(
+        self,
+        state_in: State,
+        world_mask: wp.array[wp.bool],
+    ) -> None:
+        """Copy reset-selected parent rows into entry input states."""
+        for entry in self._entries.values():
+            for name, frequency in self._reset_input_attributes.items():
+                src = _nested_attribute_value(state_in, name)
+                dst = _nested_attribute_value(entry.state_0, name)
+                if not isinstance(dst, wp.array):
+                    continue
+                if isinstance(src, wp.array):
+                    self._launch_reset_view_kernel(
+                        _copy_reset_view_rows_kernel,
+                        entry,
+                        frequency,
+                        world_mask,
+                        True,
+                        src,
+                        dst,
+                    )
+                else:
+                    self._launch_reset_view_kernel(
+                        _zero_reset_view_rows_kernel,
+                        entry,
+                        frequency,
+                        world_mask,
+                        dst,
+                        dst.dtype(0),
+                    )
+            notify_flags = self._input_state_copy_flags(state_in, entry.state_0)
+            self._notify_input_state_update(entry, notify_flags, iteration_restart=True)
 
     def _distribute_state(
         self,
@@ -2109,6 +2497,24 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
+
+    def _reconcile_reset_state(
+        self,
+        state_out: State,
+        world_mask: wp.array[wp.bool],
+        flags: StateFlags | int | None,
+    ) -> None:
+        """Merge reset-selected entry input rows into the parent state."""
+        reset_flags = int(StateFlags.ALL if flags is None else flags)
+        for entry in self._entries.values():
+            for name, (frequency, flag) in self._reset_state_attributes.items():
+                if flag is not None and not reset_flags & int(flag):
+                    continue
+                src = _nested_attribute_value(entry.state_0, name)
+                dst = _nested_attribute_value(state_out, name)
+                if not isinstance(src, wp.array) or not isinstance(dst, wp.array):
+                    continue
+                self._launch_reset_owned_scatter(entry, frequency, world_mask, src, dst)
 
     # ------------------------------------------------------------------
     # Generic proxy implementation
@@ -2866,14 +3272,6 @@ def _copy_forces(src: State, dst: State) -> None:
             _copy_prefix(dst.particle_f, src.particle_f, "particle_f")
         else:
             dst.particle_f.zero_()
-
-
-def _clear_transient_state_buffers(state: State) -> None:
-    """Clear force and acceleration buffers that should not survive reset."""
-    for name in ("body_f", "particle_f", "body_qdd", "body_parent_f"):
-        array = getattr(state, name, None)
-        if array is not None:
-            array.zero_()
 
 
 def _copy_prefix(dst: wp.array, src: wp.array, name: str) -> None:

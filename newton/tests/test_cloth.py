@@ -1070,7 +1070,7 @@ def test_cloth_free_fall_with_internal_forces_and_damping(test, device, solver):
     position_diff = final_pos - initial_pos
 
     # Get gravity direction (normalized)
-    gravity_vector = example.model.gravity.numpy()[0]  # Extract first element from warp array
+    gravity_vector = example.model.gravity.numpy()[-1]
     gravity_direction = gravity_vector / np.linalg.norm(gravity_vector)
 
     # For each vertex, project its displacement onto gravity direction
@@ -1127,7 +1127,7 @@ def test_cloth_free_fall(test, device, solver):
     # examine that the simulation has moved
     test.assertTrue((example.init_pos != final_pos).any())
 
-    gravity = example.model.gravity.numpy()[0]
+    gravity = example.model.gravity.numpy()[-1]
     diff = final_pos - initial_pos
     vertical_translation_norm = diff @ gravity[..., None] / (np.linalg.norm(gravity) ** 2)
     # ensure it's free-falling

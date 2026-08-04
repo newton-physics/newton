@@ -2659,7 +2659,7 @@ def apply_rigid_restitution(
     rxn_b = wp.vec3(0.0)
     if body_a >= 0:
         world_idx_a = body_world[body_a]
-        world_a_g = gravity[wp.max(world_idx_a, 0)]
+        world_a_g = gravity[world_idx_a]
         v_a = velocity_at_point(body_qd_prev[body_a], r_a) + world_a_g * dt
         v_a_new = velocity_at_point(body_qd[body_a], r_a)
         q_a = wp.transform_get_rotation(X_wb_a_prev)
@@ -2669,7 +2669,7 @@ def apply_rigid_restitution(
         inv_mass += inv_mass_a
     if body_b >= 0:
         world_idx_b = body_world[body_b]
-        world_b_g = gravity[wp.max(world_idx_b, 0)]
+        world_b_g = gravity[world_idx_b]
         v_b = velocity_at_point(body_qd_prev[body_b], r_b) + world_b_g * dt
         v_b_new = velocity_at_point(body_qd[body_b], r_b)
         q_b = wp.transform_get_rotation(X_wb_b_prev)

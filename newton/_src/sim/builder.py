@@ -1539,7 +1539,7 @@ class ModelBuilder:
         self.up_axis: Axis = Axis.from_any(up_axis)
         """Up axis used by geometry helpers and for resolving default or scalar gravity."""
         self._gravity: float | wp.vec3 | None = None
-        """Explicitly set gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
+        """Explicit global/default gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
         if gravity is not None:
             self._set_gravity(gravity, stacklevel=3)
 
@@ -2370,7 +2370,7 @@ class ModelBuilder:
 
     @property
     def gravity(self) -> float | wp.vec3:
-        """Default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
+        """Global/default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
         if np.isscalar(self._gravity):
             warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
             return self._gravity
@@ -12179,12 +12179,13 @@ class ModelBuilder:
             # enable ground plane
             m.up_axis = self.up_axis
 
-            # set gravity - create per-world gravity array for multi-world support
+            # Explicit local worlds need a trailing global entry. Implicit
+            # single-world models retain their legacy shared gravity entry.
+            global_gravity = self._gravity_as_vector()
             if self.world_gravity:
-                # Use per-world gravity from world_gravity list
-                gravity_vecs = self.world_gravity
+                gravity_vecs = [*self.world_gravity, global_gravity]
             else:
-                gravity_vecs = [self._gravity_as_vector()] * self.world_count
+                gravity_vecs = [global_gravity for _ in range(self.world_count)]
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,
