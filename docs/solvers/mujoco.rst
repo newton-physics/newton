@@ -495,7 +495,9 @@ A *mask domain* is the set of shapes whose mask bits were authored together.
 Each :func:`~newton.utils.parse_mjcf` call creates a new domain and records it
 in the internal ``model.mujoco.collision_mask_domain`` attribute. The domain
 is only a source label. It is not another collision mask and does not enable
-or disable contacts.
+or disable contacts. When :meth:`~newton.ModelBuilder.add_builder` combines
+separately built models, it gives the copied domains new IDs so they remain
+distinct from domains already in the destination builder.
 
 **Choosing masks for a MuJoCo solver.**
 

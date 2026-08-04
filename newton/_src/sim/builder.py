@@ -4078,6 +4078,33 @@ class ModelBuilder:
     ) -> None:
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
+        # Builders allocate MJCF mask-domain IDs independently. Remap every
+        # incoming domain as one unit so its IDs cannot collide with domains
+        # already present in the destination builder.
+        collision_mask_domain_key = "mujoco:collision_mask_domain"
+        collision_mask_domain_remap: dict[int, int] = {}
+        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+        if source_domain_attr is not None and source_domain_attr.values:
+            source_values = (
+                source_domain_attr.values.values()
+                if isinstance(source_domain_attr.values, dict)
+                else source_domain_attr.values
+            )
+            source_domains = sorted({int(value) for value in source_values if int(value) >= 0})
+            merged_domain_attr = self.custom_attributes.get(collision_mask_domain_key)
+            if merged_domain_attr is not None and merged_domain_attr.values:
+                merged_values = (
+                    merged_domain_attr.values.values()
+                    if isinstance(merged_domain_attr.values, dict)
+                    else merged_domain_attr.values
+                )
+                next_domain = max((int(value) for value in merged_values if int(value) >= 0), default=-1) + 1
+            else:
+                next_domain = 0
+            collision_mask_domain_remap = {
+                source_domain: next_domain + index for index, source_domain in enumerate(source_domains)
+            }
+
         def get_offset(entity_or_key: str | None) -> int:
             if entity_or_key is None:
                 return 0
@@ -4114,7 +4141,10 @@ class ModelBuilder:
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
-            needs_remap = value_offset != 0 or use_current_world or is_equality_target_attr
+            is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
+            needs_remap = (
+                value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
+            )
 
             if needs_remap:
 
@@ -4170,9 +4200,12 @@ class ModelBuilder:
                     entity_idx: int,
                     value: Any,
                     is_equality_target: bool = is_equality_target_attr,
+                    is_collision_mask_domain: bool = is_collision_mask_domain_attr,
                 ) -> Any:
                     if is_equality_target:
                         return transform_equality_target_value(entity_idx, value)
+                    if is_collision_mask_domain:
+                        return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
 
             merged = self.custom_attributes.get(full_key)
