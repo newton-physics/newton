@@ -23,14 +23,14 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJaco
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.extract import (
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.extract import (
     extract_active_constraint_vectors,
     extract_actuation_forces,
     extract_cts_jacobians,
     extract_dofs_jacobians,
 )
-from newton._src.solvers.kamino.tests.utils.make import (
+from newton.tests.kamino.utils.make import (
     make_constraint_multiplier_arrays,
     make_containers,
     make_test_problem_fourbar,

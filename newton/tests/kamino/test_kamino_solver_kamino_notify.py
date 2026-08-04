@@ -14,7 +14,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.kamino import setup_tests, test_context
 
 
 def _build_revolute(

@@ -23,7 +23,7 @@ from newton._src.solvers.kamino._src.core.types import (
     to_warp_int32_array,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.kamino import setup_tests, test_context
 
 ###
 # Constants

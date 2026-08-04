@@ -34,7 +34,7 @@ from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import (
 )
 from newton._src.solvers.kamino._src.models.builders import basics, testing
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.kamino import setup_tests, test_context
 
 ###
 # Constants

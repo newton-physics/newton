@@ -23,10 +23,10 @@ from newton._src.solvers.kamino._src.linalg.sparse_matrix import (
     dense_to_block_sparse_copy_values,
 )
 from newton._src.solvers.kamino._src.linalg.utils.rand import random_spd_matrix
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.extract import get_vector_block
-from newton._src.solvers.kamino.tests.utils.print import print_error_stats
-from newton._src.solvers.kamino.tests.utils.rand import RandomProblemLLT
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.extract import get_vector_block
+from newton.tests.kamino.utils.print import print_error_stats
+from newton.tests.kamino.utils.rand import RandomProblemLLT
 
 
 class TestLinalgConjugate(unittest.TestCase):

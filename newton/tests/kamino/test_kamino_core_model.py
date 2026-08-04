@@ -12,7 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton._src.solvers.kamino.tests.utils.checks as test_util_checks
+import newton.tests.kamino.utils.checks as test_util_checks
 from newton._src.sim import Control, Model, ModelBuilder, State
 from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_origin, convert_body_origin_to_com
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
@@ -26,9 +26,9 @@ from newton._src.solvers.kamino._src.models.builders import utils as model_utils
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils import print as print_utils
 from newton.tests import get_kamino_basics_asset
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils import print as print_utils
 from newton.tests.utils import basics as basics_newton
 
 ###

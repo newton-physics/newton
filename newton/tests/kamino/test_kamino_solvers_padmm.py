@@ -18,13 +18,13 @@ from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaus
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.extract import (
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.extract import (
     extract_delassus,
     extract_info_vectors,
     extract_problem_vector,
 )
-from newton._src.solvers.kamino.tests.utils.make import make_containers, update_containers
+from newton.tests.kamino.utils.make import make_containers, update_containers
 
 ###
 # Helper functions

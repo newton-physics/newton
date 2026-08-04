@@ -7,8 +7,8 @@ KAMINO: UNIT TESTS: GENERAL UTILITIES
 
 import numpy as np
 
-from ..._src.core.data import DataKamino
-from ..._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.core.data import DataKamino
+from newton._src.solvers.kamino._src.core.model import ModelKamino
 
 ###
 # Model Functions

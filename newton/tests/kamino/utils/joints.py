@@ -13,10 +13,10 @@ from collections.abc import Callable
 import numpy as np
 import warp as wp
 
-from ......tests import get_kamino_testing_asset
-from ..._src.core.joints import JointActuationType, JointDoFType
-from ..._src.core.model import ModelKamino
-from ..._src.utils.io.usd import USDImporter
+from newton._src.solvers.kamino._src.core.joints import JointActuationType, JointDoFType
+from newton._src.solvers.kamino._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
+from newton.tests import get_kamino_testing_asset
 
 ###
 # Module interface

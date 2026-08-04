@@ -38,10 +38,10 @@ from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
 from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, convert_config_to_struct
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.test_solvers_padmm import TestSetup
-from newton._src.solvers.kamino.tests.utils.extract import extract_delassus, extract_problem_vector
-from newton._src.solvers.kamino.tests.utils.make import make_containers, make_test_problem_fourbar, update_containers
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
+from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
+from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
 from newton.tests.utils import basics as public_basics
 
 

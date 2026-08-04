@@ -31,8 +31,8 @@ from newton._src.solvers.kamino._src.solvers import PADMMSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.sampling import sample_world_mask
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.sampling import sample_world_mask
 from newton.tests.utils import basics
 
 ###

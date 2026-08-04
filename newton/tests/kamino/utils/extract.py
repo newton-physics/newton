@@ -6,12 +6,12 @@
 import numpy as np
 import warp as wp
 
-from ..._src.core.data import DataKamino
-from ..._src.core.model import ModelKamino
-from ..._src.dynamics.delassus import BlockSparseMatrixFreeDelassusOperator, DelassusOperator
-from ..._src.geometry.contacts import ContactsKamino
-from ..._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
-from ..._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.core.data import DataKamino
+from newton._src.solvers.kamino._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.dynamics.delassus import BlockSparseMatrixFreeDelassusOperator, DelassusOperator
+from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
+from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
+from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 
 ###
 # Module configs

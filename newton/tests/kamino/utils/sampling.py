@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.core.model import ModelKamino
+
 from .joints import actuator_coords_from_units, actuator_dofs_from_units, get_actuators_q_quaternion_first_ids
 
 ###

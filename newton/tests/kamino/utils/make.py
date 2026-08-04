@@ -11,20 +11,28 @@ from collections.abc import Callable
 import numpy as np
 import warp as wp
 
-from ..._src.core.bodies import update_body_inertias
-from ..._src.core.builder import ModelBuilderKamino
-from ..._src.core.data import DataKamino
-from ..._src.core.math import quat_exp
-from ..._src.core.model import ModelKamino
-from ..._src.core.state import StateKamino
-from ..._src.geometry.contacts import ContactsKamino
-from ..._src.geometry.detector import CollisionDetector
-from ..._src.kinematics.constraints import make_unilateral_constraints_info, update_constraints_info
-from ..._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians, SystemJacobiansType
-from ..._src.kinematics.joints import compute_joints_data
-from ..._src.kinematics.limits import LimitsKamino
-from ..._src.models.builders import basics as _model_basics
-from ..._src.models.builders import utils as _model_utils
+from newton._src.solvers.kamino._src.core.bodies import update_body_inertias
+from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton._src.solvers.kamino._src.core.data import DataKamino
+from newton._src.solvers.kamino._src.core.math import quat_exp
+from newton._src.solvers.kamino._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.core.state import StateKamino
+from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
+from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
+from newton._src.solvers.kamino._src.kinematics.constraints import (
+    make_unilateral_constraints_info,
+    update_constraints_info,
+)
+from newton._src.solvers.kamino._src.kinematics.jacobians import (
+    DenseSystemJacobians,
+    SparseSystemJacobians,
+    SystemJacobiansType,
+)
+from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
+from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.models.builders import basics as _model_basics
+from newton._src.solvers.kamino._src.models.builders import utils as _model_utils
+
 from .print import (
     print_data_info,
     print_model_constraint_info,

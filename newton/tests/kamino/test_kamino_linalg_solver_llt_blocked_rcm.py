@@ -12,10 +12,10 @@ from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData,
 from newton._src.solvers.kamino._src.linalg.factorize import rcm_batch
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.extract import get_matrix_block, get_vector_block
-from newton._src.solvers.kamino.tests.utils.print import print_error_stats
-from newton._src.solvers.kamino.tests.utils.rand import RandomProblemLLT
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.extract import get_matrix_block, get_vector_block
+from newton.tests.kamino.utils.print import print_error_stats
+from newton.tests.kamino.utils.rand import RandomProblemLLT
 
 ###
 # Tests

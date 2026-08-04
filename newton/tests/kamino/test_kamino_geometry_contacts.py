@@ -25,7 +25,7 @@ from newton._src.solvers.kamino._src.geometry.contacts import (
     make_contact_frame_znorm,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.kamino import setup_tests, test_context
 
 _NEWTON_CONTACT_CAPACITY = 64
 

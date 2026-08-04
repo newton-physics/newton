@@ -14,7 +14,7 @@ from newton._src.solvers.kamino._src.linalg.core import (
     make_dtype_tolerance,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.kamino import setup_tests, test_context
 
 ###
 # Tests

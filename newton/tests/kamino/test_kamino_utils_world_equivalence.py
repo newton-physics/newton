@@ -8,7 +8,7 @@ import unittest
 import warp as wp
 
 from newton._src.solvers.kamino._src.utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
-from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.kamino import setup_tests, test_context
 
 ###
 # Tests

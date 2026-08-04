@@ -13,10 +13,10 @@ import warp as wp
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.linalg import ConjugateGradientSolver
 from newton._src.solvers.kamino._src.models.builders.basics import make_basics_heterogeneous_builder
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.extract import extract_problem_vector
-from newton._src.solvers.kamino.tests.utils.make import make_containers, update_containers
-from newton._src.solvers.kamino.tests.utils.print import print_model_info
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.extract import extract_problem_vector
+from newton.tests.kamino.utils.make import make_containers, update_containers
+from newton.tests.kamino.utils.print import print_model_info
 
 ###
 # Tests

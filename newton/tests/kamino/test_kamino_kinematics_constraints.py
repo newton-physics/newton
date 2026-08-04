@@ -19,8 +19,8 @@ from newton._src.solvers.kamino._src.models.builders.basics import (
 )
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.print import print_data_info, print_model_constraint_info
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.print import print_data_info, print_model_constraint_info
 
 ###
 # Module configs

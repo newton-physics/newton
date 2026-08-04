@@ -16,7 +16,7 @@ from newton._src.solvers.kamino._src.kinematics.joints import JointActuationType
 from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.kamino import setup_tests, test_context
 
 ###
 # Module configs

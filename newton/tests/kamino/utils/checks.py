@@ -10,16 +10,16 @@ from typing import Any
 
 import numpy as np
 
-from ..._src.core.bodies import RigidBodiesModel
-from ..._src.core.builder import ModelBuilderKamino
-from ..._src.core.control import ControlKamino
-from ..._src.core.geometry import GeometriesModel
-from ..._src.core.joints import JointsModel
-from ..._src.core.materials import MaterialPairsModel, MaterialsModel
-from ..._src.core.model import ModelKamino, ModelKaminoInfo
-from ..._src.core.size import SizeKamino
-from ..._src.core.state import StateKamino
-from ..._src.utils import logger as msg
+from newton._src.solvers.kamino._src.core.bodies import RigidBodiesModel
+from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
+from newton._src.solvers.kamino._src.core.control import ControlKamino
+from newton._src.solvers.kamino._src.core.geometry import GeometriesModel
+from newton._src.solvers.kamino._src.core.joints import JointsModel
+from newton._src.solvers.kamino._src.core.materials import MaterialPairsModel, MaterialsModel
+from newton._src.solvers.kamino._src.core.model import ModelKamino, ModelKaminoInfo
+from newton._src.solvers.kamino._src.core.size import SizeKamino
+from newton._src.solvers.kamino._src.core.state import StateKamino
+from newton._src.solvers.kamino._src.utils import logger as msg
 
 ###
 # Module interface

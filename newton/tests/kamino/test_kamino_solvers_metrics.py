@@ -16,9 +16,9 @@ from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.padmm.types import PADMMData
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.test_solvers_padmm import TestSetup
-from newton._src.solvers.kamino.tests.utils.extract import (
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
+from newton.tests.kamino.utils.extract import (
     extract_cts_jacobians,
     extract_delassus,
     extract_info_vectors,

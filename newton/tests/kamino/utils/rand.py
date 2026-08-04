@@ -8,8 +8,8 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
-from ..._src.core.types import FloatArrayLike
-from ..._src.linalg.utils.rand import (
+from newton._src.solvers.kamino._src.core.types import FloatArrayLike
+from newton._src.solvers.kamino._src.linalg.utils.rand import (
     random_rhs_for_matrix,
     random_spd_matrix,
     random_symmetric_matrix,

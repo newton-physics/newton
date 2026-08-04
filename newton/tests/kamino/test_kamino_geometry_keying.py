@@ -17,7 +17,7 @@ from newton._src.solvers.kamino._src.geometry.keying import (
     make_build_pair_key3_func,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.kamino import setup_tests, test_context
 
 ###
 # Module configs

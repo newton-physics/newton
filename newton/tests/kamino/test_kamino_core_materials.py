@@ -15,7 +15,7 @@ from newton._src.solvers.kamino._src.core.materials import (
 )
 
 # Test utilities
-from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton.tests.kamino import setup_tests, test_context
 
 ###
 # Utilities

@@ -27,8 +27,8 @@ from newton._src.solvers.kamino._src.linalg.conjugate_fused import (
 )
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
-from newton._src.solvers.kamino.tests import setup_tests
-from newton._src.solvers.kamino.tests.utils.make import make_containers, update_containers
+from newton.tests.kamino import setup_tests
+from newton.tests.kamino.utils.make import make_containers, update_containers
 
 MB = MAX_BLOCKS_PER_ROW
 

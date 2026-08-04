@@ -21,8 +21,8 @@ from newton._src.solvers.kamino._src.kinematics.joints import (
     map_gimbal_angular_velocity_to_rates,
     select_gimbal_coords,
 )
-from newton._src.solvers.kamino.tests.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
 from newton.solvers import SolverKamino, SolverMuJoCo
+from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
 
 _DEVICE = "cuda:0"
 _DT = 1.0 / 240.0

@@ -22,8 +22,8 @@ from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.models.builders import basics, testing
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.test_geometry_primitive import check_contacts
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
 
 ###
 # Constants

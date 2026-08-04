@@ -23,12 +23,12 @@ from newton._src.solvers.kamino._src.models.builders.testing import build_all_jo
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.fk import ForwardKinematicsSolver
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.diff_check import diff_check
-from newton._src.solvers.kamino.tests.utils.joints import (
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.diff_check import diff_check
+from newton.tests.kamino.utils.joints import (
     run_test_single_joint_examples,
 )
-from newton._src.solvers.kamino.tests.utils.sampling import (
+from newton.tests.kamino.utils.sampling import (
     sample_actuator_coords,
     sample_actuator_velocities,
     sample_base_state,

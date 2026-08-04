@@ -23,21 +23,21 @@ from newton._src.solvers.kamino._src.models.builders.basics import (
 )
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.extract import (
+from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.extract import (
     extract_active_constraint_dims,
     extract_cts_jacobians,
     extract_delassus,
     extract_delassus_sparse,
     extract_problem_vector,
 )
-from newton._src.solvers.kamino.tests.utils.make import (
+from newton.tests.kamino.utils.make import (
     make_containers,
     make_inverse_generalized_mass_matrices,
     update_containers,
 )
-from newton._src.solvers.kamino.tests.utils.print import print_error_stats
-from newton._src.solvers.kamino.tests.utils.rand import random_rhs_for_matrix
+from newton.tests.kamino.utils.print import print_error_stats
+from newton.tests.kamino.utils.rand import random_rhs_for_matrix
 
 ###
 # Helper functions
