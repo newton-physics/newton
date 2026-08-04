@@ -541,7 +541,7 @@ class Example:
             device,
         )
 
-        self.viewer.set_camera(wp.vec3(0.25, -0.35, 0.58), 2.0, 126.0)
+        self.viewer.set_camera(wp.vec3(-0.02, -0.02, 0.56), -10.0, 129.0)
         self.capture()
 
     def capture(self):
