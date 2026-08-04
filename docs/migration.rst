@@ -148,9 +148,9 @@ Joint-target layout (``newton.use_coord_layout_targets``)
 
 In ``warp.sim`` the target array was DOF-shaped like ``joint_qd``. Newton is moving position
 targets to the coordinate layout of :attr:`~newton.State.joint_q` instead, since that is what a
-position semantically is: the two layouts diverge whenever an articulation contains a free joint
-(7 coords vs. 6 DOFs) or ball joint (4 coords vs. 3 DOFs), and under the DOF layout every actuated
-DOF downstream of such a joint is indexed with the wrong stride.
+position semantically is: the two layouts diverge whenever an articulation contains a free or
+distance joint (7 coords vs. 6 DOFs) or ball joint (4 coords vs. 3 DOFs), and under the DOF layout
+every actuated DOF downstream of such a joint is indexed with the wrong stride.
 
 New code should opt into the coordinate layout, which will become the only layout in a future
 release:

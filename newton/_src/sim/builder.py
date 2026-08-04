@@ -11970,7 +11970,7 @@ class ModelBuilder:
                         "will be removed. Set newton.use_coord_layout_targets = True before "
                         "building models and index targets via Model.joint_target_q_start.",
                         DeprecationWarning,
-                        stacklevel=3,
+                        stacklevel=2,
                     )
                 target_q_values = self._project_target_q_to_dof()
             m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)

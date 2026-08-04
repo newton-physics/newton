@@ -1955,6 +1955,47 @@ class TestModelJoints(unittest.TestCase):
         # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
         self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
 
+    def test_legacy_target_layout_warning_uses_finalize_call_site(self):
+        """Verify the legacy target-layout warning and its call-site attribution."""
+        previous_flag = newton.use_coord_layout_targets
+        newton.use_coord_layout_targets = False
+        try:
+            unaffected_builder = ModelBuilder()
+            child = unaffected_builder.add_link(mass=1.0)
+            joint = unaffected_builder.add_joint_revolute(parent=-1, child=child, axis=newton.Axis.Z)
+            unaffected_builder.add_articulation([joint])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                unaffected_builder.finalize()
+            layout_warnings = [
+                warning
+                for warning in caught
+                if issubclass(warning.category, DeprecationWarning)
+                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
+            ]
+            self.assertEqual(layout_warnings, [])
+
+            affected_builder = ModelBuilder()
+            child = affected_builder.add_link(mass=1.0)
+            joint = affected_builder.add_joint_free(child=child)
+            affected_builder.add_articulation([joint])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                warning_line = inspect.currentframe().f_lineno + 1
+                affected_builder.finalize()
+
+            layout_warnings = [
+                warning
+                for warning in caught
+                if issubclass(warning.category, DeprecationWarning)
+                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
+            ]
+            self.assertEqual(len(layout_warnings), 1)
+            self.assertEqual(layout_warnings[0].filename, __file__)
+            self.assertEqual(layout_warnings[0].lineno, warning_line)
+        finally:
+            newton.use_coord_layout_targets = previous_flag
+
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are

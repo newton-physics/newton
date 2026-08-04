@@ -15,6 +15,23 @@ class TestJointController(unittest.TestCase):
     pass
 
 
+def _quat_from_axis_angle(axis_angle):
+    """Convert an axis-angle vector to a quaternion."""
+    axis_angle = np.asarray(axis_angle, dtype=np.float32)
+    angle = float(np.linalg.norm(axis_angle))
+    if angle == 0.0:
+        return [0.0, 0.0, 0.0, 1.0]
+
+    axis = axis_angle / angle
+    sin_half_angle = float(np.sin(angle / 2.0))
+    return [
+        axis[0] * sin_half_angle,
+        axis[1] * sin_half_angle,
+        axis[2] * sin_half_angle,
+        float(np.cos(angle / 2.0)),
+    ]
+
+
 def test_revolute_controller(
     test: TestJointController,
     device,
@@ -95,8 +112,9 @@ def test_ball_controller(
     target_ke,
     target_kd,
 ):
-    """Ball-joint position and velocity targets: the user writes a target
-    quaternion and the MuJoCo solver must convert it to the matching
+    """Verify ball-joint position and velocity targets.
+
+    The user writes a target quaternion and the MuJoCo solver must convert it to the matching
     axis-angle component before feeding it to per-axis position actuators.
     Without the conversion the equilibrium for a 90° setpoint sits at ~40.5°.
     Velocity targets are per-axis 3-vectors.
@@ -124,15 +142,7 @@ def test_ball_controller(
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    # Convert axis-angle target to a quaternion and write to joint_target_q.
-    ax = np.asarray(target_axis_angle, dtype=np.float32)
-    angle = float(np.linalg.norm(ax))
-    if angle > 0.0:
-        n = ax / angle
-        s = float(np.sin(angle / 2.0))
-        target_quat = [n[0] * s, n[1] * s, n[2] * s, float(np.cos(angle / 2.0))]
-    else:
-        target_quat = [0.0, 0.0, 0.0, 1.0]
+    target_quat = _quat_from_axis_angle(target_axis_angle)
     control = model.control()
     control.joint_target_q = wp.array(target_quat, dtype=wp.float32, device=device)
     control.joint_target_qd = wp.array(vel_target_vals, dtype=wp.float32, device=device)
@@ -171,7 +181,7 @@ def test_ball_controller_rotated_anchor(
     target_ke,
     target_kd,
 ):
-    """Ball-joint targets under non-identity ``child_xform`` rotation.
+    """Verify ball-joint targets under non-identity ``child_xform`` rotation.
 
     The joint_target_q quaternion and joint_target_qd 3-vector live in Newton's
     parent anchor frame; the MuJoCo solver must conjugate them by ``q_cj``
@@ -212,14 +222,7 @@ def test_ball_controller_rotated_anchor(
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    ax = np.asarray(target_axis_angle, dtype=np.float32)
-    angle = float(np.linalg.norm(ax))
-    if angle > 0.0:
-        n = ax / angle
-        s = float(np.sin(angle / 2.0))
-        target_quat = [n[0] * s, n[1] * s, n[2] * s, float(np.cos(angle / 2.0))]
-    else:
-        target_quat = [0.0, 0.0, 0.0, 1.0]
+    target_quat = _quat_from_axis_angle(target_axis_angle)
     control = model.control()
     joint_target_q = control.joint_target_q.numpy()
     joint_target_q[q_start : q_start + 4] = target_quat
@@ -256,9 +259,11 @@ def test_free_plus_revolute_position_target(
     device,
     solver_fn,
 ):
-    """Position target on a revolute behind a free joint must be applied at
-    coord index 7, not DOF index 6. One step + ``qfrc_actuator`` isolates the
-    indexing path from floating-base dynamics.
+    """Verify a revolute target behind a free joint uses coordinate indexing.
+
+    The target must be applied at coordinate index 7, not DOF index 6. One
+    step plus ``qfrc_actuator`` isolates the indexing path from floating-base
+    dynamics.
     """
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
