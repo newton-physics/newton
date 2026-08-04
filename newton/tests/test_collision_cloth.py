@@ -1535,6 +1535,62 @@ def test_collision_info_injection(test, device):
         )
 
 
+def test_pipeline_soft_self_contact(test, device):
+    """Verify pipeline-driven self-contact matches a standalone detector and rebinds per buffer.
+
+    Configures a CollisionPipeline via init_soft_self_contact, runs
+    collide(soft_self_contact=True) into two independent Contacts buffers, and
+    compares counts and minimum distances against a standalone
+    TriMeshCollisionDetector queried at the same radius.
+    """
+    vertices, faces = get_data()
+    model, detector_ref = init_model(vertices, faces, device, record_triangle_contacting_vertices=False)
+
+    query_radius = 5e-2
+    detector_ref.vertex_triangle_collision_detection(query_radius)
+    detector_ref.edge_edge_collision_detection(query_radius)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    pipeline.init_soft_self_contact(radius=1e-2, margin=query_radius, topological_filter_threshold=0)
+
+    state = model.state()
+    contacts_a = pipeline.contacts()
+    contacts_b = pipeline.contacts()
+    test.assertIsNotNone(contacts_a.soft_self_contact_data)
+    test.assertIsNot(contacts_a.soft_self_contact_data, contacts_b.soft_self_contact_data)
+
+    for contacts in (contacts_a, contacts_b):
+        pipeline.collide(state, contacts, soft_self_contact=True)
+        data = contacts.soft_self_contact_data
+        assert_np_equal(
+            data.vertex_colliding_triangles_count.numpy(),
+            detector_ref.vertex_colliding_triangles_count.numpy(),
+        )
+        assert_np_equal(
+            data.vertex_colliding_triangles_min_dist.numpy(),
+            detector_ref.vertex_colliding_triangles_min_dist.numpy(),
+        )
+        assert_np_equal(
+            data.edge_colliding_edges_count.numpy(),
+            detector_ref.edge_colliding_edges_count.numpy(),
+        )
+        assert_np_equal(
+            data.edge_colliding_edges_min_dist.numpy(),
+            detector_ref.edge_colliding_edges_min_dist.numpy(),
+        )
+
+    # The first buffer's results must survive detection into the second (independent storage).
+    assert_np_equal(
+        contacts_a.soft_self_contact_data.vertex_colliding_triangles_count.numpy(),
+        detector_ref.vertex_colliding_triangles_count.numpy(),
+    )
+
+    # Misuse guards.
+    unconfigured = newton.CollisionPipeline(model, broad_phase="nxn")
+    with test.assertRaises(ValueError):
+        unconfigured.collide(state, unconfigured.contacts(), soft_self_contact=True)
+
+
 devices = get_test_devices()
 
 
@@ -1612,6 +1668,12 @@ add_function_test(
     TestCollision,
     "test_collision_info_injection",
     test_collision_info_injection,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_pipeline_soft_self_contact",
+    test_pipeline_soft_self_contact,
     devices=devices,
 )
 
