@@ -18,13 +18,14 @@
 #
 # Reproduction scene for the surface-gripper on a robot arm. Loads the robot arm from a USD stage
 # (Assets/robot_only_newton_flattened.usda) with a fixed base on a ground plane, then plays back a
-# recorded FANUC palletizer cycle (Assets/robot_recording_truncated.jsonl -- the leading idle removed
-# from robot_recording.jsonl so the arm moves right away). Playback is time-accurate: the six
-# arm joint position targets are interpolated from the recorded timestamps at the current simulation
+# recorded FANUC palletizer cycle (Assets/robot_recording_truncated.jsonl). Playback is time-accurate: 
+# the six arm joint position targets are interpolated from the recorded timestamps at the current simulation
 # time (J3 coupled to J2, degrees -> radians) and updated before every physics sub-step, so the arm
-# follows the recording at its true speed. The recording's surface-gripper engagement command (ro[0]) is
-# extracted per frame; the surface gripper itself is wired up and added in later steps.
-#
+# follows the recording at its true speed. The recording's surface-gripper engagement and disengagement 
+# commands are extracted per frame. Objects are placed in the scene so that they may be gripped 
+# and manipulated by the the surface gripper as required by the motion of the robot arm and the 
+# engagement/disengagement commands.
+
 # Command: python -m newton.examples surface_gripper_repro
 ###########################################################################
 
@@ -54,37 +55,70 @@ from newton.examples.surface_gripper_repro.surface_gripper import (
 
 # assets live alongside this example
 ASSETS = Path(__file__).parent / "Assets"
-# robot USD with convex-hull collision added to the surface-gripper (EOAT) meshes
-ROBOT_USD = ASSETS / "fanuc_arm_flattened_collision.usda"
-# recording with the leading idle removed (truncated from robot_recording.jsonl); it starts just
-# before the first joint motion, so the arm moves right away.
-RECORDING_JSONL = ASSETS / "robot_recording_truncated.jsonl"
 
+# rendered frames per second
+FPS = 60  
+# target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
+SIM_HZ = 120  
+
+# recording of the robot arm motion and surface gripper engagement/disengagement.
+RECORDING_JSONL = ASSETS / "robot_recording_truncated.jsonl"
 # Gaussian smoothing of the recorded drive targets [s]. The recording is a coarse waypoint staircase
 # (values held, then stepped ~17 deg), so smoothing recovers a continuous motion. 0 = raw recording;
 # larger = smoother (and further from the exact recorded knots). ~1 waypoint interval (~0.08 s) is a
 # reasonable start.
 SMOOTHING_SIGMA = 0.06
 
-FPS = 60  # rendered frames per second
-SIM_HZ = 120  # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
-
-NUM_ARM_DOFS = 6  # J1-J6; recorded joints 6-8 are unused finger DOFs
+# robot arm USD
+ROBOT_USD = ASSETS / "fanuc_arm_flattened_collision.usda"
+# J1-J6; recorded joints 6-8 are unused finger DOFs
+NUM_ARM_DOFS = 6  
+# Deepest reach of the finger collision geometry along the grip axis, in the J6_link (flange)
+# frame [m] -- the point that would first penetrate the box. The box top is seated here so the fingers
+# rest on the box without sinking in. Resolved from the USD (max +x over the Finger_0x meshes).
+FINGER_HULL_DEEPEST_X = 0.3109
+# Surface gripper on the end-effector (body EE_BODY / J6_link). Four pads at the vents at the
+# tips of Finger_01..04, resolved into the J6_link (flange) frame from the USD. Each finger is an
+# L-shaped arm whose vent faces the box; the vents are wide-set at the crate edges (a cross ~+/-6 cm on
+# one axis, ~+/-13 cm on the other), giving the tilt leverage a real palletizer needs. x=0.309 is the
+# vent plane. The grip axis is the flange +x (world-down at the pick), so each pad's
+# local +z is rotated onto +x. Positions in the EE body frame [m].
+GRIPPER_PADS = (
+    (0.2880, 0.1286, 0.0035),
+    (0.2885, -0.0024, -0.2022),
+    (0.2880, -0.1323, 0.0035),
+    (0.2886, -0.0025, 0.2085),
+)
+# Each pad is a short cylinder of this radius and half-height [m] (also the SHOW_PAD_MARKERS
+# disk). Its lip is the circle of PAD_RADIUS on the pad's bottom face (the face toward the box,
+# +PAD_HALF_HEIGHT along the grip axis); PAD_LIP_SAMPLES points are sampled around that lip for
+# the on-device seating fit (attach_seal_seated).
+PAD_RADIUS = 0.03
+PAD_HALF_HEIGHT = 0.004
+PAD_LIP_SAMPLES = 16
+# Grip force (vacuum) [N] per pad. Static hold of the 30 kg panel needs ~74 N/pad, but the
+# recorded palletizer motion drives the normal load to ~384 N/pad, so the vacuum must clear that.
+F_GRIP_MAX = 450.0
+# Per-DOF seal modes (angular natural frequency mu [rad/s], damping ratio). Converted to stiffness/
+# damping against the crate by SurfaceGripper.set_natural_frequency_damping_ratio (translation DOFs use
+# the crate mass, peel/twist its box inertia).
+NORMAL_MODE = (89.44272, 0.018634)
+SHEAR_X_MODE = (22.36068, 0.037268)
+SHEAR_Y_MODE = (22.36068, 0.037268)
+PEEL_X_MODE = (10.79666, 0.124961)
+PEEL_Y_MODE = (8.35631, 0.096717)
+TWIST_MODE = (2.79962, 0.0)
 
 # The arm picks two boxes in sequence over the recording's two engage/disengage cycles: a wide shallow
-# panel at the 1st engagement, then a deep crate at the 2nd. Each rests on its own static pallet until
-# the gripper grips it (the gripper parameters are fixed -- a statement of the tool). (half-extents [m],
+# panel at the 1st engagement, then a deep crate at the 2nd and subsequent engagements. Each rests 
+# on a static pallet until the surface gripper grips and manipulates it.
+# (half-extents [m],
 # mass [kg]); shape density is 0, so mass/inertia are set on the body.
 PANEL = ((0.5, 0.5, 0.04), 30.0)  # 1st engagement -- wide shallow panel, size [1.0, 1.0, 0.08] m
 CRATE = ((0.242, 0.166, 0.137), 12.0)  # 2nd engagement -- deep crate, size [0.484, 0.332, 0.274] m
 PANEL_PALLET_HALF = (0.54, 0.54, 0.5)
 CRATE_PALLET_HALF = (0.206, 0.282, 0.5)
 NUM_CRATES = 6
-
-# Deepest reach of the finger collision geometry along the grip axis, in the J6_link (flange)
-# frame [m] -- the point that would first penetrate the box. The box top is seated here so the fingers
-# rest on the box without sinking in. Resolved from the USD (max +x over the Finger_0x meshes).
-FINGER_HULL_DEEPEST_X = 0.3109
 
 # Set False to disable the surface gripper: the seal wrench is never applied, so the arm plays back the
 # recorded trajectory and the pick box just sits on the pallet (useful for inspecting the bare arm
@@ -127,43 +161,6 @@ BREAK_THRESHOLD = 5.0
 # brief sub-step spike. Expressed as a time so it is independent of the sim rate; the sub-step count is
 # round(BREAK_HOLD_TIME / sim_dt), floored at 1.
 BREAK_HOLD_TIME = 0.033  # [s]
-
-# Surface gripper on the end-effector (body EE_BODY / J6_link). Four pads at the vents at the
-# tips of Finger_01..04, resolved into the J6_link (flange) frame from the USD. Each finger is an
-# L-shaped arm whose vent faces the box; the vents are wide-set at the crate edges (a cross ~+/-6 cm on
-# one axis, ~+/-13 cm on the other), giving the tilt leverage a real palletizer needs. x=0.309 is the
-# vent plane. The grip axis is the flange +x (world-down at the pick), so each pad's
-# local +z is rotated onto +x. Positions in the EE body frame [m].
-GRIPPER_PADS = (
-    (0.2880, 0.1286, 0.0035),
-    (0.2885, -0.0024, -0.2022),
-    (0.2880, -0.1323, 0.0035),
-    (0.2886, -0.0025, 0.2085),
-)
-
-# Each pad is a short cylinder of this radius and half-height [m] (also the SHOW_PAD_MARKERS
-# disk). Its lip is the circle of PAD_RADIUS on the pad's bottom face (the face toward the box,
-# +PAD_HALF_HEIGHT along the grip axis); PAD_LIP_SAMPLES points are sampled around that lip for
-# the on-device seating fit (attach_seal_seated).
-PAD_RADIUS = 0.03
-PAD_HALF_HEIGHT = 0.004
-PAD_LIP_SAMPLES = 16
-
-
-# Grip force (vacuum) [N] per pad. Static hold of the 30 kg panel needs ~74 N/pad, but the
-# recorded palletizer motion drives the normal load to ~384 N/pad, so the vacuum must clear that.
-F_GRIP_MAX = 450.0
-
-# Per-DOF seal modes (angular natural frequency mu [rad/s], damping ratio). Converted to stiffness/
-# damping against the crate by SurfaceGripper.set_natural_frequency_damping_ratio (translation DOFs use
-# the crate mass, peel/twist its box inertia).
-NORMAL_MODE = (89.44272, 0.018634)
-SHEAR_X_MODE = (22.36068, 0.037268)
-SHEAR_Y_MODE = (22.36068, 0.037268)
-PEEL_X_MODE = (10.79666, 0.124961)
-PEEL_Y_MODE = (8.35631, 0.096717)
-TWIST_MODE = (2.79962, 0.0)
-
 
 @wp.kernel
 def update_seal_break_kernel(
