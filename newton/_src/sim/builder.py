@@ -4085,25 +4085,21 @@ class ModelBuilder:
         collision_mask_domain_remap: dict[int, int] = {}
         source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
         if source_domain_attr is not None and source_domain_attr.values:
-            source_values = (
-                source_domain_attr.values.values()
+            source_items = (
+                source_domain_attr.values.items()
                 if isinstance(source_domain_attr.values, dict)
-                else source_domain_attr.values
+                else enumerate(source_domain_attr.values)
             )
-            source_domains = sorted({int(value) for value in source_values if int(value) >= 0})
-            merged_domain_attr = self.custom_attributes.get(collision_mask_domain_key)
-            if merged_domain_attr is not None and merged_domain_attr.values:
-                merged_values = (
-                    merged_domain_attr.values.values()
-                    if isinstance(merged_domain_attr.values, dict)
-                    else merged_domain_attr.values
-                )
-                next_domain = max((int(value) for value in merged_values if int(value) >= 0), default=-1) + 1
-            else:
-                next_domain = 0
-            collision_mask_domain_remap = {
-                source_domain: next_domain + index for index, source_domain in enumerate(source_domains)
-            }
+            # Copied shape ranges never overlap, so the first destination shape
+            # in each source domain is already a unique, deterministic ID. This
+            # avoids rescanning the growing destination during replication.
+            shape_offset = entity_offsets["shape"]
+            for shape, value in source_items:
+                if value is None:
+                    continue
+                source_domain = int(value)
+                if source_domain >= 0:
+                    collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
 
         def get_offset(entity_or_key: str | None) -> int:
             if entity_or_key is None:
