@@ -205,7 +205,7 @@ class Example:
         self.control = self.model.control()
 
         self.viewer.set_model(self.model)
-        self.viewer.set_camera(wp.vec3(2.35, -2.75, 2.55), 13.0, 137.0)
+        self.viewer.set_camera(wp.vec3(2.0, -2.3, 1.9), -19.0, 131.0)
         self.capture()
 
     def _add_box_shapes(self, builder: newton.ModelBuilder) -> None:
