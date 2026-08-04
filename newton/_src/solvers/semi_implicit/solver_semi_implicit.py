@@ -116,9 +116,16 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         self.joint_attach_kd = joint_attach_kd
         self.enable_tri_contact = enable_tri_contact
 
+        # The model-level grid signals that particle-particle contacts are
+        # enabled; the solver owns its actual grid scratch (rebuilt every
+        # step) so multiple solvers over the same model or views of it never
+        # share rebuild state.
         if model.particle_count > 1 and model.particle_grid is not None:
             with wp.ScopedDevice(model.device):
-                model.particle_grid.reserve(model.particle_count)
+                self.particle_grid = wp.HashGrid(128, 128, 128)
+                self.particle_grid.reserve(model.particle_count)
+        else:
+            self.particle_grid = None
 
     @override
     def step(
@@ -145,7 +152,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         .. warning::
             The ``eval_particle_contact`` kernel for particle-particle contact handling may corrupt the gradient computation
             for simulations involving particle collisions.
-            To disable it, set :attr:`newton.Model.particle_grid` to `None` prior to calling :meth:`step`.
+            To disable it, set :attr:`newton.Model.particle_grid` to `None` prior to constructing the solver.
         """
         self._apply_module_options()
         with wp.ScopedTimer("simulate", False):
@@ -188,11 +195,11 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 eval_muscle_forces(model, state_in, control, body_f)
 
             # particle-particle interactions
-            if model.particle_count > 1 and model.particle_grid is not None:
+            if model.particle_count > 1 and self.particle_grid is not None:
                 search_radius = model.particle_max_radius * 2.0 + model.particle_cohesion
                 with wp.ScopedDevice(model.device):
-                    model.particle_grid.build(state_in.particle_q, radius=search_radius)
-            eval_particle_contact_forces(model, state_in, particle_f)
+                    self.particle_grid.build(state_in.particle_q, radius=search_radius)
+            eval_particle_contact_forces(model, state_in, particle_f, particle_grid=self.particle_grid)
 
             # triangle/triangle contacts
             if self.enable_tri_contact:

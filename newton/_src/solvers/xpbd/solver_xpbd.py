@@ -176,10 +176,16 @@ class SolverXPBD(SolverBase, CouplingInterface):
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
 
+        # The model-level grid signals that particle-particle contacts are
+        # enabled; the solver owns its actual grid scratch (rebuilt every
+        # step) so multiple solvers over the same model or views of it never
+        # share rebuild state.
         if model.particle_count > 1 and model.particle_grid is not None:
-            # reserve space for the particle hash grid
             with wp.ScopedDevice(model.device):
-                model.particle_grid.reserve(model.particle_count)
+                self.particle_grid = wp.HashGrid(128, 128, 128)
+                self.particle_grid.reserve(model.particle_count)
+        else:
+            self.particle_grid = None
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -401,11 +407,11 @@ class SolverXPBD(SolverBase, CouplingInterface):
                 self.integrate_particles(model, state_in, state_out, dt)
 
                 # Build/update the particle hash grid for particle-particle contact queries
-                if model.particle_count > 1 and model.particle_grid is not None:
+                if model.particle_count > 1 and self.particle_grid is not None:
                     # Search radius must cover the maximum interaction distance used by the contact query
                     search_radius = model.particle_max_radius * 2.0 + model.particle_cohesion
                     with wp.ScopedDevice(model.device):
-                        model.particle_grid.build(state_out.particle_q, radius=search_radius)
+                        self.particle_grid.build(state_out.particle_q, radius=search_radius)
 
             if model.body_count:
                 body_q = state_out.body_q
@@ -517,13 +523,12 @@ class SolverXPBD(SolverBase, CouplingInterface):
                             )
 
                         if model.particle_max_radius > 0.0 and model.particle_count > 1:
-                            # assert model.particle_grid.reserved, "model.particle_grid must be built, see HashGrid.build()"
-                            assert model.particle_grid is not None
+                            assert self.particle_grid is not None
                             wp.launch(
                                 kernel=solve_particle_particle_contacts,
                                 dim=model.particle_count,
                                 inputs=[
-                                    model.particle_grid.id,
+                                    self.particle_grid.id,
                                     particle_q,
                                     particle_qd,
                                     model.particle_inv_mass,
