@@ -5257,8 +5257,8 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         self.assertNotIn(gaussian.GetPath().pathString, result_no_visuals["path_shape_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_disabled_static_collider_loads_as_visual(self):
-        """Load disabled static colliders as visual-only shapes."""
+    def test_disabled_static_collider_has_no_collision_flags(self):
+        """Disable shape and particle collisions regardless of visual loading."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -5271,7 +5271,14 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         flags = builder.shape_flags[result["path_shape_map"][collider.GetPath().pathString]]
 
         self.assertFalse(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.COLLIDE_PARTICLES)
         self.assertFalse(flags & ShapeFlags.VISIBLE)
+
+        headless_builder = newton.ModelBuilder()
+        headless_result = headless_builder.add_usd(stage, load_visual_shapes=False)
+        headless_flags = headless_builder.shape_flags[headless_result["path_shape_map"][collider.GetPath().pathString]]
+        self.assertFalse(headless_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(headless_flags & ShapeFlags.COLLIDE_PARTICLES)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_granular_loading_flags(self):
@@ -11964,7 +11971,8 @@ def Xform "Body" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_guide_purpose_shapes_not_visible(self):
-        """Verify guide-purpose shapes retain their authored visibility and collision state."""
+        """Guide-purpose prims (e.g. collision geometry authored by MuJoCo-USD
+        converters) should not be loaded as visible visual shapes."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -12052,7 +12060,6 @@ def Xform "Body" (
         # A disabled guide-purpose collider is loaded as a visual-only shape but must not be drawn.
         flags_guide = builder.shape_flags[path_shape_map["/Body/GuideCollisionBox"]]
         self.assertFalse(flags_guide & ShapeFlags.COLLIDE_SHAPES)
-        self.assertFalse(flags_guide & ShapeFlags.COLLIDE_PARTICLES)
         self.assertFalse(flags_guide & ShapeFlags.VISIBLE)
 
         # An enabled guide-purpose collider still collides; its display keeps following
@@ -12071,14 +12078,6 @@ def Xform "Body" (
         self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
         flags_disabled_forced = builder2.shape_flags[result2["path_shape_map"]["/Body/GuideCollisionBox"]]
         self.assertFalse(flags_disabled_forced & ShapeFlags.VISIBLE)
-
-        headless_builder = newton.ModelBuilder()
-        headless_result = headless_builder.add_usd(stage, load_visual_shapes=False)
-        flags_disabled_headless = headless_builder.shape_flags[
-            headless_result["path_shape_map"]["/Body/GuideCollisionBox"]
-        ]
-        self.assertFalse(flags_disabled_headless & ShapeFlags.COLLIDE_SHAPES)
-        self.assertFalse(flags_disabled_headless & ShapeFlags.COLLIDE_PARTICLES)
 
     @staticmethod
     def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
