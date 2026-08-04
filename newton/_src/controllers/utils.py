@@ -24,7 +24,7 @@ def _normalize_indices(
         raise TypeError(f"Port '{name}': idx must be wp.array[uint32] or None, got {type(idx).__name__}.")
 
     if idx.size != default_idx.size:
-        raise TypeError(
+        raise ValueError(
             f"Port '{name}': indices must be the same size as default_dof_indices: {idx.size} != {default_idx.size}."
         )
 
