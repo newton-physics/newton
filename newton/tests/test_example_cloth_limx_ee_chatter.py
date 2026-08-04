@@ -38,7 +38,9 @@ class TestClothLimxEeChatterConfiguration(unittest.TestCase):
             "_MASSES",
             "_BOUNDARY_INDICES",
         ):
-            self.assertFalse(getattr(module, name).flags.writeable, name)
+            patch_data = getattr(module, name)
+            with self.assertRaisesRegex(ValueError, "read-only", msg=name):
+                patch_data.flat[0] = patch_data.flat[0]
 
 
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")

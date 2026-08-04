@@ -415,7 +415,7 @@ for _patch_array in (
     _MASSES,
     _BOUNDARY_INDICES,
 ):
-    _patch_array.flags.writeable = False
+    _patch_array.setflags(write=False)
 
 
 class _PatchSimulation:
