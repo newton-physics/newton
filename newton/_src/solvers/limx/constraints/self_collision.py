@@ -16,6 +16,7 @@ from ....utils.mesh import MeshAdjacency
 _MIN_BARYCENTRIC_DENOMINATOR = 1.0e-12
 _MIN_CONTACT_DISTANCE = 1.0e-7
 _MIN_GEOMETRY_NORM = 1.0e-8
+_MIN_STIFFNESS_DENOMINATOR = 1.0e-12
 
 
 @wp.func
@@ -194,7 +195,20 @@ def _detect_edge_edge_contacts(
         closest_1 = wp.lerp(position_2, position_3, parameter_1)
         separation = closest_0 - closest_1
         distance = wp.length(separation)
-        if distance <= _MIN_CONTACT_DISTANCE or distance >= thickness:
+        limited_thickness = thickness
+        if (
+            edge_indices[edge, 0] == index_2
+            or edge_indices[edge, 1] == index_2
+            or edge_indices[edge, 0] == index_3
+            or edge_indices[edge, 1] == index_3
+            or edge_indices[other_edge, 0] == index_0
+            or edge_indices[other_edge, 1] == index_0
+            or edge_indices[other_edge, 0] == index_1
+            or edge_indices[other_edge, 1] == index_1
+        ):
+            average_length = 0.5 * (wp.length(position_1 - position_0) + wp.length(position_3 - position_2))
+            limited_thickness = wp.min(limited_thickness, 0.5 * average_length)
+        if distance <= _MIN_CONTACT_DISTANCE or distance >= limited_thickness:
             continue
 
         contact = wp.atomic_add(contact_count, 0, 1)
@@ -211,7 +225,7 @@ def _detect_edge_edge_contacts(
         contact_weights[contact, 2] = -(1.0 - parameter_1)
         contact_weights[contact, 3] = -parameter_1
         contact_directions[contact] = separation / distance
-        contact_depths[contact] = thickness - distance
+        contact_depths[contact] = limited_thickness - distance
 
 
 @wp.func
@@ -445,16 +459,169 @@ def _accumulate_contact_diagonal(
         wp.atomic_add(output, particle, weight * weight * rank_one)
 
 
+@wp.func
+def _adaptive_contact_stiffness(
+    ids: wp.array2d[int],
+    directions: wp.array[wp.vec3],
+    contact: int,
+    arity: int,
+    feature_split: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+):
+    direction = directions[contact]
+    scale_0 = float(0.0)
+    scale_1 = float(0.0)
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        directional_scale = wp.dot(direction, static_diagonal[particle] * direction)
+        directional_scale += masses[particle] * inv_dt_squared
+        if local_index < feature_split:
+            scale_0 += directional_scale
+        else:
+            scale_1 += directional_scale
+
+    scale_0 /= float(feature_split)
+    scale_1 /= float(arity - feature_split)
+    denominator = scale_0 + scale_1
+    if denominator <= _MIN_STIFFNESS_DENOMINATOR:
+        return float(0.0)
+    return factor * scale_0 * scale_1 / denominator
+
+
+@wp.kernel
+def _accumulate_contact_force_adaptive(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    count: wp.array[int],
+    arity: int,
+    feature_split: int,
+    capacity: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    stiffness = _adaptive_contact_stiffness(
+        ids,
+        directions,
+        contact,
+        arity,
+        feature_split,
+        factor,
+        static_diagonal,
+        masses,
+        inv_dt_squared,
+    )
+    scaled_direction = stiffness * depths[contact] * directions[contact]
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        wp.atomic_add(output, particle, weights[contact, local_index] * scaled_direction)
+
+
+@wp.kernel
+def _contact_hessian_multiply_adaptive(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    count: wp.array[int],
+    arity: int,
+    feature_split: int,
+    capacity: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+    vector: wp.array[wp.vec3],
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    direction = directions[contact]
+    projected_sum = float(0.0)
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        projected_sum += weights[contact, local_index] * wp.dot(direction, vector[particle])
+
+    stiffness = _adaptive_contact_stiffness(
+        ids,
+        directions,
+        contact,
+        arity,
+        feature_split,
+        factor,
+        static_diagonal,
+        masses,
+        inv_dt_squared,
+    )
+    scaled_direction = stiffness * projected_sum * direction
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        wp.atomic_add(output, particle, weights[contact, local_index] * scaled_direction)
+
+
+@wp.kernel
+def _accumulate_contact_diagonal_adaptive(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    count: wp.array[int],
+    arity: int,
+    feature_split: int,
+    capacity: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+    output: wp.array[wp.mat33],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    direction = directions[contact]
+    stiffness = _adaptive_contact_stiffness(
+        ids,
+        directions,
+        contact,
+        arity,
+        feature_split,
+        factor,
+        static_diagonal,
+        masses,
+        inv_dt_squared,
+    )
+    rank_one = stiffness * wp.outer(direction, direction)
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        weight = weights[contact, local_index]
+        wp.atomic_add(output, particle, weight * weight * rank_one)
+
+
 class _ContactBuffer:
     """Fixed-capacity rank-one contact data and matrix-free operations."""
 
-    def __init__(self, arity: int, capacity: int, device: Any):
+    def __init__(self, arity: int, capacity: int, device: Any, feature_split: int | None = None):
         if arity not in (4, 5):
             raise ValueError("contact arity must be four or five")
+        if feature_split is not None and (feature_split <= 0 or feature_split >= arity):
+            raise ValueError("feature_split must partition the contact particles")
         if capacity <= 0:
             raise ValueError("contact capacity must be positive")
 
         self.arity = arity
+        self.feature_split = feature_split
         self.capacity = capacity
         self.device = wp.get_device(device)
         self.ids = wp.zeros((capacity, arity), dtype=wp.int32, device=self.device)
@@ -536,6 +703,123 @@ class _ContactBuffer:
             device=self.device,
         )
 
+    def accumulate_force_adaptive(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add contact forces using directional feature stiffness."""
+        self._validate_adaptive_data(factor, static_diagonal, masses, inv_dt_squared)
+        self._validate_output(output, wp.vec3)
+        wp.launch(
+            _accumulate_contact_force_adaptive,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                self.count,
+                self.arity,
+                self.feature_split,
+                self.capacity,
+                factor,
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def hessian_multiply_adaptive(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+        vector: wp.array[wp.vec3],
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add adaptive rank-one contact Hessian-vector products."""
+        self._validate_adaptive_data(factor, static_diagonal, masses, inv_dt_squared)
+        self._validate_output(vector, wp.vec3)
+        self._validate_output(output, wp.vec3)
+        if len(vector) != len(output):
+            raise ValueError("vector and output must have the same length")
+        wp.launch(
+            _contact_hessian_multiply_adaptive,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.count,
+                self.arity,
+                self.feature_split,
+                self.capacity,
+                factor,
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                vector,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def accumulate_diagonal_adaptive(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+        output: wp.array[wp.mat33],
+    ) -> None:
+        """Add exact diagonal blocks using adaptive contact stiffness."""
+        self._validate_adaptive_data(factor, static_diagonal, masses, inv_dt_squared)
+        self._validate_output(output, wp.mat33)
+        wp.launch(
+            _accumulate_contact_diagonal_adaptive,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.count,
+                self.arity,
+                self.feature_split,
+                self.capacity,
+                factor,
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def _validate_adaptive_data(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+    ) -> None:
+        if self.feature_split is None:
+            raise RuntimeError("adaptive contact operations require feature_split")
+        if not np.isfinite(factor) or factor <= 0.0:
+            raise ValueError("adaptive contact factor must be finite and positive")
+        if not np.isfinite(inv_dt_squared) or inv_dt_squared <= 0.0:
+            raise ValueError("inv_dt_squared must be finite and positive")
+        self._validate_output(static_diagonal, wp.mat33)
+        self._validate_output(masses, wp.float32)
+        if len(static_diagonal) != len(masses):
+            raise ValueError("static_diagonal and masses must have the same length")
+
     def _validate_output(self, output: wp.array, dtype: Any) -> None:
         if output.device != self.device:
             raise ValueError(f"array must use device {self.device}")
@@ -550,28 +834,55 @@ class ConstraintSelfCollision:
         self,
         model: Model,
         thickness: float,
-        stiffness: float,
+        stiffness: float | None,
         untangle_stiffness: float | None = None,
         max_contacts: int = 32768,
+        stiffness_factors: tuple[float, float, float] | None = None,
     ):
         """Create a fixed-capacity GPU cloth self-collision operator.
 
         Args:
             model: Particle triangle-mesh model whose topology remains fixed.
             thickness: One-sided collision activation distance [m].
-            stiffness: Vertex-face and edge-edge penalty stiffness [N/m].
+            stiffness: Fixed vertex-face and edge-edge penalty stiffness [N/m].
+                Set to ``None`` to use adaptive feature stiffness.
             untangle_stiffness: Edge-face recovery stiffness [N/m]. Defaults
-                to three times ``stiffness``.
+                to three times fixed ``stiffness``. Must be ``None`` in
+                adaptive mode.
             max_contacts: Maximum stored contacts for each contact type.
+            stiffness_factors: Adaptive dimensionless ``(VF, EE, EF)``
+                stiffness factors. Must be provided exactly when ``stiffness``
+                is ``None``.
         """
         if not np.isfinite(thickness) or thickness <= 0.0:
             raise ValueError("thickness must be finite and positive")
-        if not np.isfinite(stiffness) or stiffness <= 0.0:
-            raise ValueError("stiffness must be finite and positive")
-        if untangle_stiffness is None:
-            untangle_stiffness = 3.0 * stiffness
-        if not np.isfinite(untangle_stiffness) or untangle_stiffness <= 0.0:
-            raise ValueError("untangle_stiffness must be finite and positive")
+        if stiffness_factors is None:
+            if stiffness is None:
+                raise ValueError("stiffness_factors must be provided when stiffness is None")
+            if not np.isfinite(stiffness) or stiffness <= 0.0:
+                raise ValueError("stiffness must be finite and positive")
+            if untangle_stiffness is None:
+                untangle_stiffness = 3.0 * stiffness
+            if not np.isfinite(untangle_stiffness) or untangle_stiffness <= 0.0:
+                raise ValueError("untangle_stiffness must be finite and positive")
+            validated_stiffness = float(stiffness)
+            validated_untangle_stiffness = float(untangle_stiffness)
+            validated_stiffness_factors = None
+        else:
+            if stiffness is not None:
+                raise ValueError("Specify either fixed stiffness or stiffness_factors, not both")
+            if untangle_stiffness is not None:
+                raise ValueError("untangle_stiffness must be None in adaptive mode")
+            factors = np.asarray(stiffness_factors, dtype=np.float64)
+            if factors.shape != (3,):
+                raise ValueError("stiffness_factors must contain three values")
+            if not np.isfinite(factors).all():
+                raise ValueError("stiffness_factors must be finite")
+            if np.any(factors <= 0.0):
+                raise ValueError("stiffness_factors must be positive")
+            validated_stiffness = None
+            validated_untangle_stiffness = None
+            validated_stiffness_factors = tuple(float(value) for value in factors)
         if max_contacts <= 0:
             raise ValueError("max_contacts must be positive")
         if model.particle_count <= 0 or model.tri_count <= 0 or model.tri_indices is None:
@@ -580,10 +891,14 @@ class ConstraintSelfCollision:
         self.device = wp.get_device(model.device)
         self.particle_count = model.particle_count
         self.thickness = float(thickness)
-        self.stiffness = float(stiffness)
-        self.untangle_stiffness = float(untangle_stiffness)
+        self.stiffness = validated_stiffness
+        self.untangle_stiffness = validated_untangle_stiffness
+        self.stiffness_factors = validated_stiffness_factors
         self.max_contacts = int(max_contacts)
         self.particle_world = model.particle_world
+        self._static_diagonal: wp.array[wp.mat33] | None = None
+        self._masses: wp.array[float] | None = None
+        self._inv_dt_squared = 0.0
 
         triangle_indices = np.asarray(model.tri_indices.numpy(), dtype=np.int32).reshape(-1, 3)
         if triangle_indices.shape != (model.tri_count, 3):
@@ -613,9 +928,30 @@ class ConstraintSelfCollision:
         self.triangle_bvh = wp.Bvh(self.triangle_lower_bounds, self.triangle_upper_bounds)
         self.edge_bvh = wp.Bvh(self.edge_lower_bounds, self.edge_upper_bounds)
 
-        self.vertex_face_contacts = _ContactBuffer(4, max_contacts, self.device)
-        self.edge_edge_contacts = _ContactBuffer(4, max_contacts, self.device)
-        self.edge_face_contacts = _ContactBuffer(5, max_contacts, self.device)
+        self.vertex_face_contacts = _ContactBuffer(4, max_contacts, self.device, feature_split=1)
+        self.edge_edge_contacts = _ContactBuffer(4, max_contacts, self.device, feature_split=2)
+        self.edge_face_contacts = _ContactBuffer(5, max_contacts, self.device, feature_split=2)
+
+    def bind_static_system(
+        self,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+    ) -> None:
+        """Bind static diagonal blocks and masses used by adaptive contact.
+
+        Args:
+            static_diagonal: Current assembled elastic diagonal blocks [N/m],
+                shape ``[particle_count, 3, 3]``.
+            masses: Particle masses [kg], shape ``[particle_count]``.
+        """
+        if static_diagonal.device != self.device or masses.device != self.device:
+            raise ValueError(f"static_diagonal and masses must use device {self.device}")
+        if static_diagonal.dtype != wp.mat33 or len(static_diagonal) != self.particle_count:
+            raise ValueError(f"static_diagonal must contain {self.particle_count} wp.mat33 values")
+        if masses.dtype != wp.float32 or len(masses) != self.particle_count:
+            raise ValueError(f"masses must contain {self.particle_count} float values")
+        self._static_diagonal = static_diagonal
+        self._masses = masses
 
     def begin_step(
         self,
@@ -623,7 +959,19 @@ class ConstraintSelfCollision:
         velocities: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Cache no per-step state."""
+        """Cache the inverse squared time step for adaptive contact."""
+        if self.stiffness_factors is None:
+            return
+        self._validate_positions(positions)
+        if velocities.device != self.device:
+            raise ValueError(f"velocities must use device {self.device}")
+        if velocities.dtype != wp.vec3 or len(velocities) != self.particle_count:
+            raise ValueError(f"velocities must contain {self.particle_count} wp.vec3 values")
+        if not np.isfinite(dt) or dt <= 0.0:
+            raise ValueError("dt must be finite and positive")
+        if self._static_diagonal is None or self._masses is None:
+            raise RuntimeError("bind_static_system() must be called before begin_step() in adaptive mode")
+        self._inv_dt_squared = 1.0 / (dt * dt)
 
     def prepare(self, positions: wp.array[wp.vec3]) -> None:
         """Detect and freeze contacts at the current Newton iterate."""
@@ -702,9 +1050,22 @@ class ConstraintSelfCollision:
     def accumulate_force(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:
         """Add frozen-contact physical forces to ``output``."""
         self._validate_positions(positions)
-        self.vertex_face_contacts.accumulate_force(self.stiffness, output)
-        self.edge_edge_contacts.accumulate_force(self.stiffness, output)
-        self.edge_face_contacts.accumulate_force(self.untangle_stiffness, output)
+        if self.stiffness_factors is None:
+            self.vertex_face_contacts.accumulate_force(self.stiffness, output)
+            self.edge_edge_contacts.accumulate_force(self.stiffness, output)
+            self.edge_face_contacts.accumulate_force(self.untangle_stiffness, output)
+            return
+
+        static_diagonal, masses, inv_dt_squared = self._adaptive_system()
+        self.vertex_face_contacts.accumulate_force_adaptive(
+            self.stiffness_factors[0], static_diagonal, masses, inv_dt_squared, output
+        )
+        self.edge_edge_contacts.accumulate_force_adaptive(
+            self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, output
+        )
+        self.edge_face_contacts.accumulate_force_adaptive(
+            self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, output
+        )
 
     def hessian_multiply(
         self,
@@ -714,16 +1075,47 @@ class ConstraintSelfCollision:
     ) -> None:
         """Add full frozen-contact Hessian-vector products to ``output``."""
         self._validate_positions(positions)
-        self.vertex_face_contacts.hessian_multiply(self.stiffness, vector, output)
-        self.edge_edge_contacts.hessian_multiply(self.stiffness, vector, output)
-        self.edge_face_contacts.hessian_multiply(self.untangle_stiffness, vector, output)
+        if self.stiffness_factors is None:
+            self.vertex_face_contacts.hessian_multiply(self.stiffness, vector, output)
+            self.edge_edge_contacts.hessian_multiply(self.stiffness, vector, output)
+            self.edge_face_contacts.hessian_multiply(self.untangle_stiffness, vector, output)
+            return
+
+        static_diagonal, masses, inv_dt_squared = self._adaptive_system()
+        self.vertex_face_contacts.hessian_multiply_adaptive(
+            self.stiffness_factors[0], static_diagonal, masses, inv_dt_squared, vector, output
+        )
+        self.edge_edge_contacts.hessian_multiply_adaptive(
+            self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, vector, output
+        )
+        self.edge_face_contacts.hessian_multiply_adaptive(
+            self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, vector, output
+        )
 
     def accumulate_diagonal(self, positions: wp.array[wp.vec3], output: wp.array[wp.mat33]) -> None:
         """Add frozen-contact diagonal Hessian blocks to ``output``."""
         self._validate_positions(positions)
-        self.vertex_face_contacts.accumulate_diagonal(self.stiffness, output)
-        self.edge_edge_contacts.accumulate_diagonal(self.stiffness, output)
-        self.edge_face_contacts.accumulate_diagonal(self.untangle_stiffness, output)
+        if self.stiffness_factors is None:
+            self.vertex_face_contacts.accumulate_diagonal(self.stiffness, output)
+            self.edge_edge_contacts.accumulate_diagonal(self.stiffness, output)
+            self.edge_face_contacts.accumulate_diagonal(self.untangle_stiffness, output)
+            return
+
+        static_diagonal, masses, inv_dt_squared = self._adaptive_system()
+        self.vertex_face_contacts.accumulate_diagonal_adaptive(
+            self.stiffness_factors[0], static_diagonal, masses, inv_dt_squared, output
+        )
+        self.edge_edge_contacts.accumulate_diagonal_adaptive(
+            self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, output
+        )
+        self.edge_face_contacts.accumulate_diagonal_adaptive(
+            self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, output
+        )
+
+    def _adaptive_system(self) -> tuple[wp.array[wp.mat33], wp.array[float], float]:
+        if self._static_diagonal is None or self._masses is None or self._inv_dt_squared <= 0.0:
+            raise RuntimeError("bind_static_system() and begin_step() are required before adaptive contact evaluation")
+        return self._static_diagonal, self._masses, self._inv_dt_squared
 
     def _update_bounds(self, positions: wp.array[wp.vec3]) -> None:
         wp.launch(

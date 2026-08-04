@@ -119,7 +119,7 @@ class Example:
             newton.solvers.ConstraintDihedralBending(
                 dihedral_indices=dihedral_indices,
                 rest_positions=rest_positions,
-                stiffness=0.01,
+                stiffness=1.0e-4,
                 particle_count=particle_count,
                 device=self.model.device,
             ),
@@ -127,9 +127,9 @@ class Example:
         self.self_collision = newton.solvers.ConstraintSelfCollision(
             self.model,
             thickness=0.006,
-            stiffness=1.0e4,
-            untangle_stiffness=3.0e4,
+            stiffness=None,
             max_contacts=131072,
+            stiffness_factors=(0.5, 0.1, 1.5),
         )
         self.table_contact = newton.solvers.ConstraintStaticPlaneContact(
             normal=(0.0, 0.0, 1.0),

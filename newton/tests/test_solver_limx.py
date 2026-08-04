@@ -1069,6 +1069,52 @@ class TestPcgSolver(unittest.TestCase):
 
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
 class TestSelfCollisionContactBuffer(unittest.TestCase):
+    def test_adaptive_contact_uses_directional_feature_stiffness(self):
+        weights = np.asarray([1.0, -1.0 / 3.0, -1.0 / 3.0, -1.0 / 3.0], dtype=np.float32)
+        static_diagonal = np.zeros((4, 3, 3), dtype=np.float32)
+        static_diagonal[:, 0, 0] = [6.0, 16.0, 26.0, 36.0]
+
+        with wp.ScopedDevice("cuda:0"):
+            contacts = _ContactBuffer(arity=4, feature_split=1, capacity=1, device="cuda:0")
+            contacts.ids.assign(np.asarray([[0, 1, 2, 3]], dtype=np.int32))
+            contacts.weights.assign(weights.reshape(1, 4))
+            contacts.directions.assign(np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32))
+            contacts.depths.assign(np.asarray([0.2], dtype=np.float32))
+            contacts.count.assign(np.asarray([1], dtype=np.int32))
+
+            diagonal_blocks = wp.array(static_diagonal, dtype=wp.mat33, device="cuda:0")
+            masses = wp.ones(4, dtype=float, device="cuda:0")
+            vector = wp.array(
+                [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                dtype=wp.vec3,
+                device="cuda:0",
+            )
+            force = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+            product = wp.zeros_like(force)
+            diagonal = wp.zeros(4, dtype=wp.mat33, device="cuda:0")
+
+            contacts.accumulate_force_adaptive(0.5, diagonal_blocks, masses, 4.0, force)
+            contacts.hessian_multiply_adaptive(0.5, diagonal_blocks, masses, 4.0, vector, product)
+            contacts.accumulate_diagonal_adaptive(0.5, diagonal_blocks, masses, 4.0, diagonal)
+
+            force_np = force.numpy()
+            product_np = product.numpy()
+            diagonal_np = diagonal.numpy()
+
+        np.testing.assert_allclose(
+            force_np,
+            [[0.75, 0.0, 0.0], [-0.25, 0.0, 0.0], [-0.25, 0.0, 0.0], [-0.25, 0.0, 0.0]],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            product_np,
+            [[3.75, 0.0, 0.0], [-1.25, 0.0, 0.0], [-1.25, 0.0, 0.0], [-1.25, 0.0, 0.0]],
+            atol=1.0e-6,
+        )
+        expected_diagonal = np.zeros((4, 3, 3), dtype=np.float32)
+        expected_diagonal[:, 0, 0] = [3.75, 3.75 / 9.0, 3.75 / 9.0, 3.75 / 9.0]
+        np.testing.assert_allclose(diagonal_np, expected_diagonal, atol=1.0e-6)
+
     def test_four_particle_contact_matches_dense_rank_one_system(self):
         self._assert_contact_matches_dense_reference(
             weights=np.asarray([1.0, -0.2, -0.3, -0.5], dtype=np.float32),
@@ -1185,6 +1231,41 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
 
         self.assertEqual(collision.untangle_stiffness, 17.0)
 
+    def test_adaptive_stiffness_mode_accepts_three_positive_feature_factors(self):
+        positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=None,
+                stiffness_factors=(0.5, 0.1, 1.5),
+            )
+
+        self.assertIsNone(collision.stiffness)
+        self.assertIsNone(collision.untangle_stiffness)
+        self.assertEqual(collision.stiffness_factors, (0.5, 0.1, 1.5))
+
+    def test_rejects_ambiguous_or_invalid_stiffness_modes(self):
+        positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        cases = [
+            ({"stiffness": None}, "stiffness_factors"),
+            ({"stiffness": 10.0, "stiffness_factors": (0.5, 0.1, 1.5)}, "either"),
+            (
+                {"stiffness": None, "untangle_stiffness": 10.0, "stiffness_factors": (0.5, 0.1, 1.5)},
+                "untangle_stiffness",
+            ),
+            ({"stiffness": None, "stiffness_factors": (0.5, 0.1)}, "three"),
+            ({"stiffness": None, "stiffness_factors": (0.5, 0.0, 1.5)}, "positive"),
+            ({"stiffness": None, "stiffness_factors": (0.5, np.nan, 1.5)}, "finite"),
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2)])
+            for kwargs, message in cases:
+                with self.subTest(kwargs=kwargs):
+                    with self.assertRaisesRegex(ValueError, message):
+                        ConstraintSelfCollision(model, thickness=0.1, **kwargs)
+
     def test_vertex_face_detection_emits_signed_barycentric_contact(self):
         positions = [
             [0.0, 0.0, 0.0],
@@ -1246,6 +1327,22 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
 
         for contact_ids in ids:
             self.assertEqual(len(set(contact_ids[:2]).intersection(contact_ids[2:])), 0)
+
+    def test_adjacent_opposite_edges_limit_contact_thickness(self):
+        positions = [
+            [-0.05, 0.0, 0.0],
+            [0.05, 0.0, 0.0],
+            [0.0, -0.05, 0.08],
+            [0.0, 0.05, 0.08],
+            [1.0, 0.05, 0.08],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (2, 3, 4)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0, max_contacts=32)
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
+
+        self.assertFalse(np.any(np.all(ids == [0, 1, 2, 3], axis=1)))
 
     def test_edge_face_crossing_emits_five_particle_untangle_contact(self):
         positions = [
@@ -1395,8 +1492,12 @@ class TestSolverLIMX(unittest.TestCase):
         events = []
         begin_step_arguments = []
         prepare_positions = []
+        bound_systems = []
 
         class RecordingDynamicOperator:
+            def bind_static_system(self, static_diagonal, masses):
+                bound_systems.append((static_diagonal, masses))
+
             def begin_step(self, positions, velocities, dt):
                 events.append("begin_step")
                 begin_step_arguments.append((positions, velocities, dt))
@@ -1426,6 +1527,7 @@ class TestSolverLIMX(unittest.TestCase):
                 linear_iterations=1,
                 dynamic_operator=dynamic_operator,
             )
+            self.assertEqual(bound_systems, [(solver.static_matrix.diagonal, model.particle_mass)])
             state_in = model.state()
             state_out = model.state()
             solver.step(state_in, state_out, None, None, 0.01)

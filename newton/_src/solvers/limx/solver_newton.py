@@ -140,6 +140,9 @@ class SolverLIMX(SolverBase):
         self.static_matrix = matrix_builder.finalize(self.device)
         for constraint in self.constraints:
             constraint.bind_hessian(self.static_matrix)
+        bind_dynamic_static_system = getattr(self.dynamic_operator, "bind_static_system", None)
+        if bind_dynamic_static_system is not None:
+            bind_dynamic_static_system(self.static_matrix.diagonal, model.particle_mass)
 
         self.operator = CompositeLinearOperator(
             masses=model.particle_mass,
@@ -224,9 +227,8 @@ class SolverLIMX(SolverBase):
                     self.rhs,
                     self.static_matrix.values,
                 )
-            self.dynamic_operator.accumulate_force(self.iterate_positions, self.rhs)
-
             self.static_matrix.update_diagonal()
+            self.dynamic_operator.accumulate_force(self.iterate_positions, self.rhs)
             self.operator.prepare(self.iterate_positions, dt)
             self.linear_solver.solve(
                 self.operator,

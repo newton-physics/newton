@@ -7,6 +7,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton.viewer import ViewerNull
 
 
@@ -43,6 +44,15 @@ class TestClothLimxTshirtTable(unittest.TestCase):
         self.assertEqual(example.solver.velocity_damping, 1.0)
         self.assertEqual(example.model.particle_count, 6436)
         self.assertEqual(example.model.tri_count, 12736)
+        bending = next(
+            constraint
+            for constraint in example.solver.constraints
+            if isinstance(constraint, newton.solvers.ConstraintDihedralBending)
+        )
+        self.assertEqual(bending.stiffness, 1.0e-4)
+        self.assertIsNone(example.self_collision.stiffness)
+        self.assertIsNone(example.self_collision.untangle_stiffness)
+        self.assertEqual(example.self_collision.stiffness_factors, (0.5, 0.1, 1.5))
         self.assertTrue(np.isfinite(positions).all())
         self.assertTrue(np.isfinite(velocities).all())
 

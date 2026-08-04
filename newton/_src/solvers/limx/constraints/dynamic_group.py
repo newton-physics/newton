@@ -32,6 +32,23 @@ class ConstraintGroupDynamic:
             if wp.get_device(constraint.device) != self.device:
                 raise ValueError("Every dynamic constraint must use the same device")
 
+    def bind_static_system(
+        self,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+    ) -> None:
+        """Bind assembled static-system data to children that consume it.
+
+        Args:
+            static_diagonal: Current assembled diagonal blocks [N/m], shape
+                ``[particle_count, 3, 3]``.
+            masses: Particle masses [kg], shape ``[particle_count]``.
+        """
+        for constraint in self.constraints:
+            bind_static_system = getattr(constraint, "bind_static_system", None)
+            if bind_static_system is not None:
+                bind_static_system(static_diagonal, masses)
+
     def begin_step(
         self,
         positions: wp.array[wp.vec3],

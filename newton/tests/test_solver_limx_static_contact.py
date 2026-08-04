@@ -80,6 +80,27 @@ class TestConstraintGroupDynamic(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "particle count"):
             group_type([Domain(2, device), Domain(3, device)])
 
+    def test_static_system_binding_is_forwarded_only_to_consumers(self):
+        device = wp.get_device("cuda:0")
+        bindings = []
+
+        class Constraint:
+            def __init__(self):
+                self.particle_count = 2
+                self.device = device
+
+        class AdaptiveConstraint(Constraint):
+            def bind_static_system(self, static_diagonal, masses):
+                bindings.append((static_diagonal, masses))
+
+        group = newton.solvers.ConstraintGroupDynamic([AdaptiveConstraint(), Constraint()])
+        static_diagonal = wp.zeros(2, dtype=wp.mat33, device=device)
+        masses = wp.ones(2, dtype=float, device=device)
+
+        group.bind_static_system(static_diagonal, masses)
+
+        self.assertEqual(bindings, [(static_diagonal, masses)])
+
 
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
 class TestConstraintStaticPlaneContact(unittest.TestCase):
