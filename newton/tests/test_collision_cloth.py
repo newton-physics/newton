@@ -1551,7 +1551,7 @@ def test_pipeline_soft_self_contact(test, device):
     detector_ref.edge_edge_collision_detection(query_radius)
 
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-    pipeline.init_soft_self_contact(radius=1e-2, margin=query_radius, topological_filter_threshold=0)
+    pipeline.init_soft_self_contact(margin=1e-2, gap=query_radius - 1e-2, topological_filter_threshold=0)
 
     state = model.state()
     contacts_a = pipeline.contacts()
@@ -1584,6 +1584,10 @@ def test_pipeline_soft_self_contact(test, device):
         contacts_a.soft_self_contact_data.vertex_colliding_triangles_count.numpy(),
         detector_ref.vertex_colliding_triangles_count.numpy(),
     )
+
+    # The per-call soft_contact_margin override is deprecated but still honored.
+    with test.assertWarns(DeprecationWarning):
+        pipeline.collide(state, contacts_a, soft_contact_margin=0.1)
 
     # Misuse guards.
     unconfigured = newton.CollisionPipeline(model, broad_phase="nxn")

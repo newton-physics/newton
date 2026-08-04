@@ -1284,8 +1284,8 @@ class CollisionPipeline:
     def init_soft_self_contact(
         self,
         *,
-        radius: float = 0.2,
         margin: float = 0.2,
+        gap: float = 0.0,
         min_query_radius: float = 0.0,
         vertex_buffer_pre_alloc: int = 32,
         edge_buffer_pre_alloc: int = 64,
@@ -1307,9 +1307,11 @@ class CollisionPipeline:
         own self-contact parameters.
 
         Args:
-            radius: Self-contact interaction distance [m], consumed by solver
-                force terms.
-            margin: Detection query radius [m]; must be >= ``radius``.
+            margin: Self-contact interaction distance [m] (surface offset at
+                which force terms begin to act), consumed by solver force terms.
+            gap: Additional detection-only distance [m]; detection queries use
+                ``margin + gap``, mirroring the ``ShapeConfig.margin`` /
+                ``ShapeConfig.gap`` convention.
             min_query_radius: Lower query bound [m] for excluding
                 topologically-close rest-shape pairs.
             vertex_buffer_pre_alloc: Per-vertex collision buffer capacity.
@@ -1322,17 +1324,14 @@ class CollisionPipeline:
             external_vertex_filter_map: Extra vertex-triangle exclusions.
             external_edge_filter_map: Extra edge-edge exclusions.
         """
-        if margin < radius:
-            raise ValueError(
-                f"soft self-contact margin ({margin}) must be >= radius ({radius}); "
-                "a smaller margin misses contacts and causes instability."
-            )
+        if gap < 0.0:
+            raise ValueError(f"soft self-contact gap must be >= 0, got {gap}")
         if self.model.tri_count == 0:
             raise ValueError("init_soft_self_contact() requires a model with triangles (cloth/soft mesh).")
         self._soft_self_contact = True
         self._soft_self_contact_config = {
-            "radius": radius,
             "margin": margin,
+            "gap": gap,
             "min_query_radius": min_query_radius,
             "vertex_buffer_pre_alloc": vertex_buffer_pre_alloc,
             "edge_buffer_pre_alloc": edge_buffer_pre_alloc,
@@ -1455,10 +1454,10 @@ class CollisionPipeline:
         Args:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
-            soft_contact_margin: Margin for soft contact generation.
-                If ``None``, uses the value from construction. The effective
-                contact threshold also incorporates per-shape margins from
-                ``model.shape_margin``.
+            soft_contact_margin: Deprecated; set ``soft_contact_margin`` on the
+                :class:`CollisionPipeline` constructor instead. When not
+                ``None``, the value is still honored for this call and a
+                :class:`DeprecationWarning` is emitted.
             soft_self_contact: Also run soft (cloth) self-contact detection
                 into ``contacts.soft_self_contact_data``. Requires
                 :meth:`init_soft_self_contact` to have been called.
@@ -1479,7 +1478,15 @@ class CollisionPipeline:
 
         model = self.model
         # update any additional parameters
-        soft_contact_margin = soft_contact_margin if soft_contact_margin is not None else self.soft_contact_margin
+        if soft_contact_margin is not None:
+            warnings.warn(
+                "The soft_contact_margin argument of CollisionPipeline.collide() is deprecated; "
+                "set soft_contact_margin on the CollisionPipeline constructor instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        else:
+            soft_contact_margin = self.soft_contact_margin
 
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
@@ -1815,6 +1822,7 @@ class CollisionPipeline:
                 )
             detector = self._get_soft_self_contact_detector(contacts)
             cfg = self._soft_self_contact_config
+            query_radius = cfg["margin"] + cfg["gap"]
             detector.refit(state.particle_q)
-            detector.vertex_triangle_collision_detection(cfg["margin"], min_query_radius=cfg["min_query_radius"])
-            detector.edge_edge_collision_detection(cfg["margin"], min_query_radius=cfg["min_query_radius"])
+            detector.vertex_triangle_collision_detection(query_radius, min_query_radius=cfg["min_query_radius"])
+            detector.edge_edge_collision_detection(query_radius, min_query_radius=cfg["min_query_radius"])
