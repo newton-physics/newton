@@ -495,7 +495,8 @@ allows up to four contact points per geom pair instead of one. Pairs
 where either geom has non-zero MuJoCo ``geom_margin`` still fall back
 to a single contact regardless of the flag (see *Margin zeroing*
 below for how Newton's :attr:`~newton.Model.shape_margin` is forwarded
-to it).
+to it). MuJoCo Warp currently remains single-contact for cylinder--box;
+see :ref:`Geometry Pair Contact Behavior`.
 
 **Margin zeroing.** ``mujoco_warp`` rejects non-zero geom margins on
 box-box pairs (its default NATIVECCD path) and on any box/mesh pair
