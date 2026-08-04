@@ -6,7 +6,7 @@ newton.controllers
 
 GPU-accelerated, vectorized control laws.
 
-This module provides standalone controllers which compute control signals
+This module provides standalone controllers that compute signals
 for the robot to track. Each controller is a concrete
 subclass of :class:`ControllerBase`.
 
