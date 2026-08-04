@@ -16,6 +16,7 @@ from newton._src.geometry.kernels import (
     triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
+from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, leq_n_ring_vertices, set_to_csr
 from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import (
@@ -1484,6 +1485,56 @@ def test_collision_filter_decouple(test, device):
     test.assertIn(1, detector.edge_filtering_list.numpy().tolist())
 
 
+def test_collision_info_injection(test, device):
+    """Verify an injected TriMeshCollisionInfo yields results identical to self-allocation.
+
+    Builds one detector that self-allocates its result struct and one that
+    receives an externally built struct of the same sizes, runs vertex-triangle
+    and edge-edge detection on both, and compares counts and minimum distances.
+    """
+    vertices, faces = get_data()
+    model, detector_self = init_model(vertices, faces, device)
+
+    info = build_tri_mesh_collision_info(
+        model.particle_count,
+        model.tri_count,
+        model.edge_count,
+        record_triangle_contacting_vertices=True,
+        device=device,
+    )
+    detector_injected = TriMeshCollisionDetector(
+        model=model, record_triangle_contacting_vertices=True, collision_info=info
+    )
+    test.assertIs(detector_injected.collision_info, info)
+
+    for query_radius in [1e-2, 5e-2, 1e-1]:
+        detector_self.vertex_triangle_collision_detection(query_radius)
+        detector_self.edge_edge_collision_detection(query_radius)
+        detector_injected.vertex_triangle_collision_detection(query_radius)
+        detector_injected.edge_edge_collision_detection(query_radius)
+
+        assert_np_equal(
+            detector_injected.vertex_colliding_triangles_count.numpy(),
+            detector_self.vertex_colliding_triangles_count.numpy(),
+        )
+        assert_np_equal(
+            detector_injected.vertex_colliding_triangles_min_dist.numpy(),
+            detector_self.vertex_colliding_triangles_min_dist.numpy(),
+        )
+        assert_np_equal(
+            detector_injected.edge_colliding_edges_count.numpy(),
+            detector_self.edge_colliding_edges_count.numpy(),
+        )
+        assert_np_equal(
+            detector_injected.edge_colliding_edges_min_dist.numpy(),
+            detector_self.edge_colliding_edges_min_dist.numpy(),
+        )
+        assert_np_equal(
+            detector_injected.triangle_colliding_vertices_min_dist.numpy(),
+            detector_self.triangle_colliding_vertices_min_dist.numpy(),
+        )
+
+
 devices = get_test_devices()
 
 
@@ -1557,6 +1608,12 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestCollision, "test_collision_filter_decouple", test_collision_filter_decouple, devices=devices)
+add_function_test(
+    TestCollision,
+    "test_collision_info_injection",
+    test_collision_info_injection,
+    devices=devices,
+)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
