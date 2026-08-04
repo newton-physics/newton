@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import warp as wp
 from warp import DeviceLike as Devicelike
 
@@ -198,6 +200,7 @@ class Contacts:
             raise ValueError("contact_report=True requires contact_matching=True")
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
+        self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
         with wp.ScopedDevice(device):
             # One int32[2] array holding two independent contact counts: [0] rigid, [1] soft.
             # rigid_contact_count (the [0:1] view) and soft_contact_count (the [1:2] view) index
@@ -462,6 +465,16 @@ class Contacts:
         Returns the device on which the contact buffers are allocated.
         """
         return self.rigid_contact_count.device
+
+    @property
+    def contact_matching_mode(self) -> Literal["disabled", "latest", "sticky"]:
+        """Frame-to-frame rigid-contact matching mode associated with this buffer.
+
+        This read-only value is set by :meth:`newton.CollisionPipeline.contacts` and
+        refreshed by :meth:`newton.CollisionPipeline.collide` when a buffer is reused.
+        Directly constructed buffers report ``"disabled"`` until then.
+        """
+        return self._contact_matching_mode
 
     def _assert_particle_only_soft_contacts(self, solver_name: str):
         """Raise if these contacts include full-surface (edge/face) soft records.

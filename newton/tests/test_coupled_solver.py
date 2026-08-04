@@ -1114,6 +1114,37 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 entries=[SolverCoupled.Entry(name="unsupported", solver=SolverBase, bodies=[0])],
             )
 
+    def test_entry_contacts_preserves_contact_matching_mode(self):
+        """Preserve matching mode metadata when coupled entry buffers are reused."""
+        coupled = SolverCoupled(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=SolverSemiImplicit,
+                    bodies=[0],
+                    shapes=[0],
+                )
+            ],
+        )
+        state = self.model.state()
+        pipeline = newton.CollisionPipeline(self.model, broad_phase="nxn", contact_matching="latest")
+        contacts = pipeline.contacts()
+        filtered = coupled.entry_contacts("A", contacts)
+
+        self.assertEqual(filtered.contact_matching_mode, "latest")
+        for mode in ("sticky", "disabled"):
+            pipeline = newton.CollisionPipeline(
+                self.model,
+                broad_phase="nxn",
+                rigid_contact_max=contacts.rigid_contact_max,
+                contact_matching=mode,
+            )
+            pipeline.collide(state, contacts)
+            reused = coupled.entry_contacts("A", contacts)
+            self.assertIs(reused, filtered)
+            self.assertEqual(reused.contact_matching_mode, mode)
+
     def test_configure_view_applies_after_compaction(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         cloth_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
