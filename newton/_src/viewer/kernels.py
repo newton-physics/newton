@@ -434,6 +434,7 @@ def compute_contact_disk_transforms(
 
     # Mode coloring (default to "color_open" when force is unavailable).
     color = color_open
+    thickness_scaling = 1.0  # Apply slightly different thickness based on color to avoid visible z-fighting
     if contact_force:
         f_lin = wp.spatial_top(contact_force[tid])
         f_mag = wp.length(f_lin)
@@ -457,11 +458,13 @@ def compute_contact_disk_transforms(
             v_t = v_rel - wp.dot(v_rel, n) * n
             if wp.length(v_t) < eps_velocity:
                 color = color_stick
+                thickness_scaling = 1.02
             else:
                 color = color_slip
+                thickness_scaling = 1.01
 
     transforms[tid] = wp.transform(contact_center, q)
-    scales[tid] = wp.vec3(disk_radius, disk_radius, disk_thickness)
+    scales[tid] = wp.vec3(disk_radius, disk_radius, disk_thickness * thickness_scaling)
     colors[tid] = color
 
 
