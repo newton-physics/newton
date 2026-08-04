@@ -194,6 +194,7 @@ class SDF:
         block_coords: np.ndarray | Sequence[wp.vec3us] | None = None,
         texture_data: "TextureSDFData | None" = None,
         shape_margin: float = 0.0,
+        construction_padding: float | None = None,
         _coarse_texture: wp.Texture3D | None = None,
         _subgrid_texture: wp.Texture3D | None = None,
         _internal: bool = False,
@@ -208,6 +209,7 @@ class SDF:
         self.block_coords = block_coords
         self.texture_data = texture_data
         self.shape_margin = shape_margin
+        self._construction_padding = construction_padding
         # Keep texture references alive to prevent GC
         self._coarse_texture = _coarse_texture
         self._subgrid_texture = _subgrid_texture
@@ -551,6 +553,7 @@ class SDF:
             block_coords=[],
             texture_data=texture_data,
             shape_margin=shape_margin,
+            construction_padding=margin,
             _coarse_texture=coarse_texture,
             _subgrid_texture=subgrid_texture,
             _internal=True,
@@ -595,6 +598,7 @@ class SDF:
             block_coords=block_coords,
             shape_margin=shape_margin,
             texture_data=texture_data,
+            construction_padding=None,
             _internal=True,
         )
         sdf.validate()
