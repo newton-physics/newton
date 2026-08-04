@@ -1,13 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""GPU-accelerated, vectorized control laws for Newton physics simulations.
+"""GPU-accelerated, vectorized control laws.
 
-This module provides standalone controllers that compute joint torques or
-other actuation signals from simulation state. Each controller is a concrete
-subclass of :class:`ControllerBase` and operates on flat 1D arrays matching the
-layout of :class:`~newton.State` fields, making them composable with any
-Newton solver.
+This module provides standalone controllers that compute signals
+for the robot to track. Each controller is a concrete
+subclass of :class:`ControllerBase`.
 
 .. experimental::
 """
