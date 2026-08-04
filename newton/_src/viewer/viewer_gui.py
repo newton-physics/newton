@@ -790,8 +790,15 @@ class ViewerGui:
                     imgui.separator()
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[viewer.model.up_axis]}")
-                    gravity = viewer.model.gravity.numpy()[0]
-                    imgui.text(f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})")
+                    gravity = viewer.model.gravity.numpy()
+                    world_gravity = gravity[0]
+                    global_gravity = gravity[-1]
+                    imgui.text(
+                        f"World 0 Gravity: ({world_gravity[0]:.2f}, {world_gravity[1]:.2f}, {world_gravity[2]:.2f})"
+                    )
+                    imgui.text(
+                        f"Global Gravity: ({global_gravity[0]:.2f}, {global_gravity[1]:.2f}, {global_gravity[2]:.2f})"
+                    )
 
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Visualization", flags=header_flags):

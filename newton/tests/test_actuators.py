@@ -2146,7 +2146,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
 
 class TestTargetPosIndicesSeparation(unittest.TestCase):
-    """Actuator must read joint_target_pos via target_pos_indices, not pos_indices."""
+    """Actuator must read joint_target_q via target_pos_indices, not pos_indices."""
 
     def test_target_pos_read_from_dof_index_not_coord_index(self):
         device = wp.get_device()
@@ -2161,32 +2161,29 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (legacy DOF target layout)
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
-        # This test deliberately exercises the legacy DOF-shaped target layout via
-        # the default attr resolution, which is deprecated and warns.
-        with self.assertWarns(DeprecationWarning):
-            actuator = Actuator(
-                indices=indices,
-                controller=ctrl,
-                pos_indices=pos_indices,
-                target_pos_indices=target_pos_indices,
-            )
+        actuator = Actuator(
+            indices=indices,
+            controller=ctrl,
+            pos_indices=pos_indices,
+            target_pos_indices=target_pos_indices,
+        )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])
         joint_qd = _a([0.0, 0.0])
-        # joint_target_pos padded to size 4 so both index 1 (correct) and
+        # joint_target_q padded to size 4 so both index 1 (correct) and
         # index 3 (sentinel) are reachable — lets us distinguish the two code paths
-        joint_target_pos = _a([0.0, correct_target, 0.0, sentinel])
-        joint_target_vel = _a([0.0, 0.0, 0.0, 0.0])
+        joint_target_q = _a([0.0, correct_target, 0.0, sentinel])
+        joint_target_qd = _a([0.0, 0.0, 0.0, 0.0])
         joint_f = wp.zeros(4, dtype=wp.float32, device=device)
 
         sim_state = types.SimpleNamespace(joint_q=joint_q, joint_qd=joint_qd)
         sim_control = types.SimpleNamespace(
-            joint_target_pos=joint_target_pos,
-            joint_target_vel=joint_target_vel,
+            joint_target_q=joint_target_q,
+            joint_target_qd=joint_target_qd,
             joint_act=None,
             joint_f=joint_f,
         )
@@ -2205,6 +2202,62 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
                 f"got {got}. If {wrong}, pos_indices was wrongly used for target lookup."
             ),
         )
+
+
+class TestControlTargetAttrDefaults(unittest.TestCase):
+    """``control_target_pos_attr`` / ``control_target_vel_attr`` accept ``None``.
+
+    Both parameters used to default to ``None``, meaning "resolve against the
+    active target layout". The layout switch removed that resolution step, but
+    callers may still pass ``None`` explicitly; it must keep selecting the
+    canonical names instead of reaching ``getattr()`` with a non-string.
+    """
+
+    def _actuator(self, **kwargs):
+        device = wp.get_device()
+        indices = wp.array([0], dtype=wp.uint32, device=device)
+        controller = ControllerPD(
+            kp=wp.array([10.0], dtype=wp.float32, device=device),
+            kd=wp.array([0.0], dtype=wp.float32, device=device),
+        )
+        return Actuator(indices=indices, controller=controller, **kwargs)
+
+    def test_omitted_attrs_default_to_canonical_names(self):
+        """Verify omitted attributes select canonical names."""
+        actuator = self._actuator()
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_normalizes_to_canonical_names(self):
+        """Verify explicit None normalizes to canonical names."""
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_still_steps(self):
+        """Verify stepping succeeds after passing explicit None."""
+        device = wp.get_device()
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+
+        def _a(vals):
+            return wp.array(vals, dtype=wp.float32, device=device)
+
+        sim_state = types.SimpleNamespace(joint_q=_a([0.0]), joint_qd=_a([0.0]))
+        sim_control = types.SimpleNamespace(
+            joint_target_q=_a([1.0]),
+            joint_target_qd=_a([0.0]),
+            joint_act=None,
+            joint_f=wp.zeros(1, dtype=wp.float32, device=device),
+        )
+        actuator.step(sim_state, sim_control, dt=0.01)
+        # kp * (target - pos) = 10 * (1.0 - 0.0)
+        self.assertAlmostEqual(float(sim_control.joint_f.numpy()[0]), 10.0, places=4)
+
+    def test_custom_attr_names_are_preserved(self):
+        """Verify caller-supplied attribute names remain unchanged."""
+        actuator = self._actuator(control_target_pos_attr="my_pos", control_target_vel_attr="my_vel")
+        self.assertEqual(actuator.control_target_pos_attr, "my_pos")
+        self.assertEqual(actuator.control_target_vel_attr, "my_vel")
 
 
 if __name__ == "__main__":

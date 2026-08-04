@@ -207,9 +207,12 @@ usually better served by a custom harvest hook.
 Proxy-local collision detection is optional. A proxy can provide a
 ``collision_pipeline`` factory that receives the destination ``ModelView``. If
 the factory returns a pipeline, the coupler owns a persistent contact buffer and
-refreshes it at ``collide_interval``. If the factory returns ``None`` or no
-factory is supplied, the destination solve uses contacts passed to the outer
-``step()`` call.
+refreshes it at ``collide_interval``; inner proxy iterations reuse that result.
+Masked resets preserve both this cadence and cached contacts, and mark matching
+history for entities selected by the mask, including global entities when the
+final mask entry is set, for invalidation on the next refresh. If the factory
+returns ``None`` or no factory is supplied, the destination solve uses contacts
+passed to the outer ``step()`` call.
 
 The generic proxy loop currently supports at most two solver entries. Within
 that limit, body and particle mappings are grouped by ``(source,

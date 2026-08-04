@@ -42,6 +42,7 @@ from .particle_vbd_kernels import (
     apply_truncation_ts,
     # Solver kernels (particle VBD)
     forward_step,
+    reset_particle_state,
     solve_elasticity,
     solve_elasticity_tile,
     update_velocity,
@@ -1840,7 +1841,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
-        """Reset rigid solver history and optional body state for selected worlds.
+        """Reset rigid solver history and optional body and particle state for selected worlds.
 
         Body fields selected by *flags* are copied from the model defaults.
         Joint penalty is restored to its minimum; joint C0 and AVBD dual history
@@ -1850,7 +1851,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         Selected-world contact warm-start is cold-started when fresh rigid contacts
         are next processed. Internal rigid history is reset regardless of *flags*.
         When an external solver integrates the bodies, reset performs no rigid
-        mutation; ``state`` and ``world_mask`` validation and particle warnings still
+        mutation; ``state`` and ``world_mask`` validation and particle reset still
         apply, but body State arrays are not accessed or validated.
 
         ``BODY_Q`` / ``BODY_QD`` copy ``model.body_q`` / ``model.body_qd`` into
@@ -1861,12 +1862,30 @@ class SolverVBD(SolverBase, CouplingInterface):
         ``JOINT_Q`` / ``JOINT_QD`` are ignored (VBD uses maximal ``body_q`` /
         ``body_qd``); to reset from joint coordinates, run :func:`~newton.eval_fk`
         after reset so the resulting ``body_q`` supersedes reset's model copy.
-        Particle flags are unsupported and warn only if the model contains
-        particles (``flags=None`` means ``ALL``); particle and body-particle history
-        is unchanged.
 
-        Reset does not run collision detection: after moving bodies, regenerate
-        contacts and let the next :meth:`step` refresh rigid contact state. The next
+        ``PARTICLE_Q`` / ``PARTICLE_QD`` likewise copy ``model.particle_q`` /
+        ``model.particle_qd`` into *state* for particles in the selected worlds,
+        using the same masking as the body fields (``world_mask=None`` also
+        restores global ``world == -1`` particles; an explicit mask restores
+        globals only through its final entry). One path covers both cloth and
+        volumetric (tet) soft bodies, and it runs even when an external solver
+        integrates the bodies or the model has none. A requested particle field is
+        skipped if its *state* array is ``None``. Particle and body-particle solver
+        history is intentionally left untouched: ``particle_q_prev`` is rebaselined
+        from the incoming state at the start of the next :meth:`step`, self-contact
+        and body-particle contacts rebuild per step, and tet/cloth elasticity is
+        stateless, so no particle history cold-start is required. Reset does not
+        refresh the particle self-contact BVH; the next :meth:`step` refits it from
+        the incoming positions. After a large reset displacement, call
+        :meth:`rebuild_bvh` to restore acceleration-structure quality. Both reset
+        and :meth:`rebuild_bvh` are graph-capturable, so either may run inside a
+        captured episode-reset graph.
+
+        Reset does not run collision detection, and :meth:`step` consumes the
+        supplied contacts rather than rerunning
+        :meth:`~newton.CollisionPipeline.collide`. After moving bodies or
+        particles, regenerate contacts so stale soft contacts are not reused, and
+        let the next :meth:`step` refresh rigid contact state. The next
         rigid :meth:`step` consumes the pose and cable rebaseline even when
         ``contacts=None``, so author the final pose (or run :func:`~newton.eval_fk`)
         before stepping; contact invalidation instead waits for a fresh refresh.
@@ -1884,12 +1903,18 @@ class SolverVBD(SolverBase, CouplingInterface):
             world_mask: One-dimensional Warp boolean mask on the solver device.
                 Shape ``(world_count + 1,)``, with the final entry selecting
                 entities in global world ``-1``. ``None`` selects all local and
-                global entities. Passing the deprecated shape ``(world_count,)``
-                selects local worlds only and leaves global entities unselected.
+                global entities.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
             flags: :class:`~newton.StateFlags` (or ``int``) selecting which body
-                fields to copy from the model defaults. VBD honors
-                :attr:`~newton.StateFlags.BODY_Q` and
-                :attr:`~newton.StateFlags.BODY_QD`; ``None`` requests all flags.
+                and particle fields to copy from the model defaults. VBD honors
+                :attr:`~newton.StateFlags.BODY_Q`,
+                :attr:`~newton.StateFlags.BODY_QD`,
+                :attr:`~newton.StateFlags.PARTICLE_Q`, and
+                :attr:`~newton.StateFlags.PARTICLE_QD`; ``None`` requests all flags.
         """
         if state is None:
             raise ValueError("'state' argument is required.")
@@ -1918,12 +1943,42 @@ class SolverVBD(SolverBase, CouplingInterface):
                     )
                 body_qd = state.body_qd
 
-        if model.particle_count > 0 and (flags_value & (int(StateFlags.PARTICLE_Q) | int(StateFlags.PARTICLE_QD))):
-            warnings.warn(
-                "SolverVBD.reset() does not yet support particle resets; StateFlags.PARTICLE_Q and "
-                "StateFlags.PARTICLE_QD are ignored; particle and body-particle solver history is unchanged.",
-                stacklevel=2,
-            )
+        # Particle state reset mirrors the rigid path: only a requested, on-device
+        # State array binds, and a bound array is itself the kernel's per-field
+        # reset signal. This runs before the rigid early-return so particle-only
+        # models and external-rigid coupling still restore deformables.
+        if model.particle_count > 0:
+            particle_q = None
+            particle_qd = None
+            if flags_value & int(StateFlags.PARTICLE_Q) and state.particle_q is not None:
+                if state.particle_q.device != self.device:
+                    raise ValueError(
+                        f"state.particle_q is on device {state.particle_q.device}, "
+                        f"expected solver device {self.device}."
+                    )
+                particle_q = state.particle_q
+            if flags_value & int(StateFlags.PARTICLE_QD) and state.particle_qd is not None:
+                if state.particle_qd.device != self.device:
+                    raise ValueError(
+                        f"state.particle_qd is on device {state.particle_qd.device}, "
+                        f"expected solver device {self.device}."
+                    )
+                particle_qd = state.particle_qd
+            if particle_q is not None or particle_qd is not None:
+                wp.launch(
+                    kernel=reset_particle_state,
+                    dim=model.particle_count,
+                    inputs=[
+                        world_mask,
+                        world_mask is None,
+                        model.world_count,
+                        model.particle_world,
+                        model.particle_q,
+                        model.particle_qd,
+                    ],
+                    outputs=[particle_q, particle_qd],
+                    device=self.device,
+                )
 
         if not internal_body_reset:
             return
@@ -2082,6 +2137,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             inputs=[
                 dt,
                 model.gravity,
+                model.particle_world,
                 self.particle_q_prev,
                 state_in.particle_q,
                 state_in.particle_qd,

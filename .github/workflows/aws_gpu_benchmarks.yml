@@ -137,6 +137,9 @@ jobs:
         run: uvx asv machine --yes
 
       - name: Run Benchmarks
+        env:
+          # Keep resolution 128 in the shared benchmark for nightly ASV collection.
+          NEWTON_ASV_PR_GATE: "1"
         run: |
           # Gate this PR job on directly measured runtimes only.
           uvx --with virtualenv asv continuous \
