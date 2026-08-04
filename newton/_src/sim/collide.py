@@ -1251,6 +1251,7 @@ class CollisionPipeline:
             contact_matching=self._matching_enabled,
             contact_report=self.contact_report,
         )
+        contacts._contact_matching_mode = self.contact_matching
         # Flag the buffer so solvers that only consume particle contacts can refuse it (see
         # Contacts._enable_rigid_soft_full_surface_contact); edge/face records appear only when this is set.
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
@@ -1665,3 +1666,6 @@ class CollisionPipeline:
                 face_pairs=self.soft_face_rigid_pairs,
                 n_particle_pairs=self.soft_rigid_contact_pair_count,
             )
+
+        # Preserve the previous provenance if validation or collision setup fails.
+        contacts._contact_matching_mode = self.contact_matching

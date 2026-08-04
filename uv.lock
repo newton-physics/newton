@@ -3977,7 +3977,7 @@ requires-dist = [
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.2.0" },
     { name = "viser", marker = "extra == 'docs'", specifier = "==1.0.26" },
     { name = "viser", marker = "extra == 'notebook'", specifier = "==1.0.26" },
-    { name = "warp-lang", specifier = ">=1.16.0.dev20260716", index = "https://pypi.nvidia.com/" },
+    { name = "warp-lang", specifier = ">=1.16.0", index = "https://pypi.nvidia.com/" },
     { name = "warp-nn", extras = ["onnx"], marker = "extra == 'onnx'", specifier = "==0.3.0" },
 ]
 provides-extras = ["sim", "onnx", "importers", "remesh", "examples", "rtx", "torch-cu12", "torch-cu13", "dev", "docs", "notebook"]
@@ -7377,7 +7377,7 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.16.0.dev20260716"
+version = "1.16.0"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
@@ -7385,10 +7385,10 @@ dependencies = [
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.16.0.dev20260716-py3-none-macosx_11_0_arm64.whl", hash = "sha256:d6b60f48837902301e198d4f60480e64db1ad19ca6ad76323428d1c918ba567d" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.16.0.dev20260716-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:7c8132fdcf3a32f7412a1d2556722ac0a618f062d0f7c0bcf9f8605f394ab449" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.16.0.dev20260716-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:dd1ce88352347c40dc9748734c8c5a73a2eca364b07dd8a20a39c216695e0155" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.16.0.dev20260716-py3-none-win_amd64.whl", hash = "sha256:81048816bf91359b7785512e3ea8dfd85e974f11f057343aab215c731e473920" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.16.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:19a7590c4484e8250ab19165311d2a1774138663b361c41e8be2865c7515c4ae" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.16.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:96449fc1e3b354185e2f09434fb794b5953ab2e8673b104d7e7f48d5d418bb35" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.16.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:d4715171bd6821436b82293d774c9a082ace08215c189572b4348d1e48fb8ee8" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.16.0-py3-none-win_amd64.whl", hash = "sha256:8690c9096e0a271985339d4aa4b37675e7d62852620ca861ac032dc85b124542" },
 ]
 
 [[package]]

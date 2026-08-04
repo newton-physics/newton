@@ -99,7 +99,8 @@ STOPPING_PATCH_HY = 0.6
 STOPPING_PATCH_HZ = 0.05
 STOPPING_BOX_PITCH_Y = 5.0
 STOPPING_SETTLE_FRAMES = 30
-STOPPING_V_FINAL_MAX = 0.05  # m/s - sanity bound: box must have come to rest
+STOPPING_REST_FRAMES = 15  # 0.25 s window for averaging residual planar motion
+STOPPING_REST_SPEED_MAX = 0.05  # m/s - sanity bound on average planar motion after stopping
 
 _ROW_COLORS = (
     (0.90, 0.30, 0.30),
@@ -269,13 +270,14 @@ def build_stopping_distance_scene(device):
     return builder.finalize(device=device), box_ids
 
 
-def test_friction_stopping_distance(test, device, solver_fn, rel_tol, v_final_max, native_contacts=False):
+def test_friction_stopping_distance(test, device, solver_fn, rel_tol, rest_speed_max, native_contacts=False):
     """Verify a sliding box stops at d = v0^2 / (2 mu g).
 
     Three boxes at mu in STOPPING_MUS settle on matching ground patches, then
     start with v0 along world-X. Run for 1.5 * t_stop(mu_min) so every box has
     come to rest for Coulomb-cone solvers, then compare measured stopping
-    distance against the analytical value with per-solver bounds.
+    distance against the analytical value and check average planar motion over
+    a short trailing rest window.
     """
     model, box_ids = build_stopping_distance_scene(device)
     solver = solver_fn(model)
@@ -314,12 +316,21 @@ def test_friction_stopping_distance(test, device, solver_fn, rel_tol, v_final_ma
 
     state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames)
 
-    final_q = state_0.body_q.numpy()
-    final_qd = state_0.body_qd.numpy()
+    final_q = state_0.body_q.numpy().copy()
+    final_qd = state_0.body_qd.numpy().copy()
 
-    if np.any(np.isnan(final_q)) or np.any(np.isnan(final_qd)):
+    # A trailing displacement is insensitive to one-frame normal contact jitter
+    # while still detecting residual sliding after the stopping-distance check.
+    state_0, state_1 = simulate(
+        solver, model, state_0, state_1, control, collision_pipeline, contacts, STOPPING_REST_FRAMES
+    )
+    rest_q = state_0.body_q.numpy()
+    rest_qd = state_0.body_qd.numpy()
+
+    if any(np.any(np.isnan(values)) for values in (final_q, final_qd, rest_q, rest_qd)):
         test.fail("Simulation produced NaN values (numerical instability)")
 
+    rest_duration = STOPPING_REST_FRAMES * SIM_DT
     failures = []
     for bid, mu in zip(box_ids, STOPPING_MUS, strict=True):
         d_expected = STOPPING_V0 * STOPPING_V0 / (2.0 * mu * g)
@@ -327,15 +338,23 @@ def test_friction_stopping_distance(test, device, solver_fn, rel_tol, v_final_ma
         dy = final_q[bid, 1] - initial_q[bid, 1]
         d_measured = float(math.sqrt(dx * dx + dy * dy))
         rel_err = (d_measured - d_expected) / d_expected
-        v_final = float(np.linalg.norm(final_qd[bid, :3]))
+        rest_displacement = float(np.linalg.norm(rest_q[bid, :2] - final_q[bid, :2]))
+        rest_speed = rest_displacement / rest_duration
         tag = f"(mu={mu:.2f})"
         if abs(rel_err) > rel_tol:
             failures.append(
                 f"{tag}: d_measured={d_measured:.4f} m vs d_expected={d_expected:.4f} m "
                 f"(rel_err={rel_err:+.2%}, tol={rel_tol:.0%})"
             )
-        if v_final >= v_final_max:
-            failures.append(f"{tag}: |v_final|={v_final:.4f} m/s >= {v_final_max} after measurement window")
+        if rest_speed >= rest_speed_max:
+            v_start = final_qd[bid, :3]
+            v_end = rest_qd[bid, :3]
+            failures.append(
+                f"{tag}: average planar drift={rest_speed:.4f} m/s >= {rest_speed_max} "
+                f"over {rest_duration:.2f} s rest window; "
+                f"v_start_xyz=({v_start[0]:+.4f}, {v_start[1]:+.4f}, {v_start[2]:+.4f}) m/s, "
+                f"v_end_xyz=({v_end[0]:+.4f}, {v_end[1]:+.4f}, {v_end[2]:+.4f}) m/s"
+            )
 
     if failures:
         test.fail("\n  ".join([f"{len(failures)} stopping-distance failure(s):", *failures]))
@@ -359,7 +378,7 @@ _SOLVERS = {
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
         "stopping_distance_rel_tol": 0.01,
-        "stopping_distance_v_final_max": STOPPING_V_FINAL_MAX,
+        "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
     "mujoco_warp": {
         "factory": lambda model: newton.solvers.SolverMuJoCo(
@@ -377,7 +396,7 @@ _SOLVERS = {
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
         "stopping_distance_rel_tol": 0.01,
-        "stopping_distance_v_final_max": STOPPING_V_FINAL_MAX,
+        "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
     # Same config as mujoco_warp but consuming Newton CollisionPipeline
     # contacts — covers the elliptic + Newton-contacts constraint path.
@@ -397,7 +416,7 @@ _SOLVERS = {
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
         "stopping_distance_rel_tol": 0.01,
-        "stopping_distance_v_final_max": STOPPING_V_FINAL_MAX,
+        "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
         "friction_ramp_contact_kf": 1000.0,
         # Finite kf has a low-speed viscous tail, so the pure Coulomb
         # stopping-distance oracle does not apply.
@@ -417,7 +436,7 @@ _SOLVERS = {
         "angles_deg": _DEFAULT_ANGLES_DEG,
         "thresholds": _DEFAULT_THRESHOLDS,
         "stopping_distance_rel_tol": 0.01,
-        "stopping_distance_v_final_max": STOPPING_V_FINAL_MAX,
+        "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
     "vbd": {
         "factory": lambda model: newton.solvers.SolverVBD(model, iterations=40, rigid_contact_k_start=1.0e5),
@@ -425,7 +444,7 @@ _SOLVERS = {
         "angles_deg": _VBD_ANGLES_DEG,
         "thresholds": _VBD_THRESHOLDS,
         "stopping_distance_rel_tol": 0.02,
-        "stopping_distance_v_final_max": STOPPING_V_FINAL_MAX,
+        "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
 }
 
@@ -580,7 +599,7 @@ for device in devices:
             check_output=False,
             solver_fn=cfg["factory"],
             rel_tol=cfg["stopping_distance_rel_tol"],
-            v_final_max=cfg["stopping_distance_v_final_max"],
+            rest_speed_max=cfg["stopping_distance_rest_speed_max"],
             native_contacts=cfg.get("native_contacts", False),
         )
 

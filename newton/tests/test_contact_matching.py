@@ -481,6 +481,40 @@ def test_deterministic_implied(test, device):
         test.assertEqual(pipeline.contact_matching, "latest")
 
 
+def test_contacts_exposes_matching_mode(test, device):
+    """Expose the associated or most recent contact matching mode."""
+    with wp.ScopedDevice(device):
+        model, state = _build_simple_scene(device)
+        test.assertEqual(newton.Contacts(0, 0, device=device).contact_matching_mode, "disabled")
+
+        latest_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
+        contacts = latest_pipeline.contacts()
+
+        test.assertEqual(contacts.contact_matching_mode, "latest")
+        with test.assertRaises(AttributeError):
+            contacts.contact_matching_mode = "sticky"
+
+        incompatible_pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            rigid_contact_max=contacts.rigid_contact_max + 1,
+            contact_matching="sticky",
+        )
+        with test.assertRaisesRegex(ValueError, "capacity"):
+            incompatible_pipeline.collide(state, contacts)
+        test.assertEqual(contacts.contact_matching_mode, "latest")
+
+        for mode in ("sticky", "disabled"):
+            pipeline = newton.CollisionPipeline(
+                model,
+                broad_phase="nxn",
+                rigid_contact_max=contacts.rigid_contact_max,
+                contact_matching=mode,
+            )
+            pipeline.collide(state, contacts)
+            test.assertEqual(contacts.contact_matching_mode, mode)
+
+
 def test_matching_disabled_no_allocation(test, device):
     """DISABLED mode: match_index and report arrays should be None."""
     with wp.ScopedDevice(device):
@@ -822,6 +856,9 @@ add_function_test(
     TestContactMatching, "test_contact_report_broken_indices", test_contact_report_broken_indices, devices=devices
 )
 add_function_test(TestContactMatching, "test_deterministic_implied", test_deterministic_implied, devices=devices)
+add_function_test(
+    TestContactMatching, "test_contacts_exposes_matching_mode", test_contacts_exposes_matching_mode, devices=devices
+)
 add_function_test(
     TestContactMatching, "test_matching_disabled_no_allocation", test_matching_disabled_no_allocation, devices=devices
 )

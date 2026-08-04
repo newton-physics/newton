@@ -79,6 +79,16 @@ Pre-release planning
        public PyPI: warp-lang, mujoco, mujoco-warp, newton-usd-schemas.  Land
        release-ready versions on ``main`` before the branch cut when possible.
    * - ☐
+     - When the stable Warp version for the upcoming Newton release is
+       published before the branch cut, stabilize it on ``main``: replace the
+       dev or RC requirement in ``pyproject.toml`` and the pin in
+       ``asv.conf.json`` with the stable version and regenerate ``uv.lock``.
+       Keep both the NVIDIA ``warp-lang`` package-index override and the ASV
+       ``--extra-index-url=https://pypi.nvidia.com/`` option on ``main`` so it
+       is ready for the next dev-nightly update.  Cut the upcoming release
+       branch after this change; do not apply the new Warp minor version to
+       previously released Newton branches.
+   * - ☐
      - Set timeline: code freeze → RC1 → testing window → GA.
    * - ☐
      - Conduct public API audit:
