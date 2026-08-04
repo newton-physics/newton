@@ -4477,14 +4477,23 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
             solver._last_nacon_count,
             "_last_nacon_count must be eagerly pre-allocated in __init__",
         )
+        self.assertIsNotNone(
+            solver._contact_tid_to_cid,
+            "_contact_tid_to_cid must be eagerly pre-allocated in __init__",
+        )
         self.assertIsInstance(solver._last_contact_generation, wp.array)
         self.assertIsInstance(solver._last_nacon_count, wp.array)
+        self.assertIsInstance(solver._contact_tid_to_cid, wp.array)
         self.assertEqual(solver._last_contact_generation.dtype, wp.int32)
         self.assertEqual(solver._last_nacon_count.dtype, wp.int32)
+        self.assertEqual(solver._contact_tid_to_cid.dtype, wp.int32)
         self.assertEqual(solver._last_contact_generation.shape, (1,))
         self.assertEqual(solver._last_nacon_count.shape, (1,))
+        self.assertEqual(solver._contact_tid_to_cid.shape, (solver.mjw_data.naconmax,))
         self.assertEqual(solver._last_contact_generation.device, model.device)
         self.assertEqual(solver._last_nacon_count.device, model.device)
+        self.assertEqual(solver._contact_tid_to_cid.device, model.device)
+        self.assertTrue(np.all(solver._contact_tid_to_cid.numpy() == -1))
 
         # Calling _invalidate_contact_fast_path() before any step must succeed
         # cleanly — this is the exact path that previously hit stale captured
