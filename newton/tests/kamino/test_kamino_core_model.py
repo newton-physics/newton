@@ -523,6 +523,7 @@ class TestModelConversions(unittest.TestCase):
         bid0 = builder_newton.add_link(
             label="base",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
             lock_inertia=True,
         )
@@ -532,6 +533,7 @@ class TestModelConversions(unittest.TestCase):
         bid1 = builder_newton.add_link(
             label="pendulum",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.5), wp.quat_identity(dtype=wp.float32)),
             lock_inertia=True,
         )
@@ -593,6 +595,7 @@ class TestModelConversions(unittest.TestCase):
         bid0 = builder_newton.add_link(
             label="body0",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
             com=wp.vec3f(0.1, 0.0, 0.0),
             lock_inertia=True,
@@ -604,6 +607,7 @@ class TestModelConversions(unittest.TestCase):
         bid1 = builder_newton.add_link(
             label="body1",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), rot_90z),
             com=wp.vec3f(0.1, 0.0, 0.0),
             lock_inertia=True,
@@ -615,6 +619,7 @@ class TestModelConversions(unittest.TestCase):
         bid2 = builder_newton.add_link(
             label="body2",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(1.0, 0.0, 0.0), rot_90x),
             com=wp.vec3f(0.1, 0.2, 0.3),
             lock_inertia=True,
@@ -683,6 +688,7 @@ class TestModelConversions(unittest.TestCase):
         bid = builder_newton.add_link(
             label="body0",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
             com=wp.vec3f(0.1, 0.0, 0.0),
             lock_inertia=True,
@@ -713,6 +719,7 @@ class TestModelConversions(unittest.TestCase):
         bid0 = builder_newton.add_link(
             label="body0",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
             com=wp.vec3f(0.1, 0.0, 0.0),
             lock_inertia=True,
@@ -724,6 +731,7 @@ class TestModelConversions(unittest.TestCase):
         bid1 = builder_newton.add_link(
             label="body1",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), rot_90z),
             com=wp.vec3f(0.1, 0.0, 0.0),
             lock_inertia=True,
@@ -735,6 +743,7 @@ class TestModelConversions(unittest.TestCase):
         bid2 = builder_newton.add_link(
             label="body2",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(1.0, 0.0, 0.0), rot_90x),
             com=wp.vec3f(0.1, 0.2, 0.3),
             lock_inertia=True,
@@ -926,6 +935,7 @@ class TestModelConversions(unittest.TestCase):
         bid = builder_newton.add_link(
             label="body0",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
             com=wp.vec3f(0.1, 0.2, 0.0),
             lock_inertia=True,

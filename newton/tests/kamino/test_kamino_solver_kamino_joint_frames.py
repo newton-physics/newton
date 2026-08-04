@@ -49,6 +49,7 @@ def _build_revolute_with_offset(angle_pj: float, angle_cj: float) -> newton.Mode
     bid = builder.add_link(
         label="link",
         mass=1.0,
+        inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
         xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
         lock_inertia=True,
     )
@@ -118,6 +119,7 @@ class TestKaminoNonAlignedJointFrames(unittest.TestCase):
         bid = builder.add_link(
             label="link",
             mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
             lock_inertia=True,
         )
