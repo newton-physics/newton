@@ -408,6 +408,15 @@ _BOUNDARY_INDICES = np.asarray(
     dtype=np.int32,
 )
 
+for _patch_array in (
+    _REST_POSITIONS,
+    _INITIAL_POSITIONS,
+    _TRIANGLE_INDICES,
+    _MASSES,
+    _BOUNDARY_INDICES,
+):
+    _patch_array.flags.writeable = False
+
 
 class _PatchSimulation:
     def __init__(
@@ -505,6 +514,10 @@ class _PatchSimulation:
 
 class Example:
     def __init__(self, viewer, args):
+        device = wp.get_device()
+        if not device.is_cuda:
+            raise RuntimeError("cloth_limx_ee_chatter requires a CUDA device")
+
         self.viewer = viewer
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -519,7 +532,6 @@ class Example:
             _BOUNDARY_INDICES,
         )
 
-        device = wp.get_device()
         self.control_patch = _PatchSimulation(
             _REST_POSITIONS,
             _INITIAL_POSITIONS,

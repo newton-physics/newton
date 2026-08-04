@@ -18,6 +18,29 @@ def _load_example_module(test_case: unittest.TestCase):
     return importlib.import_module(module_name)
 
 
+class TestClothLimxEeChatterConfiguration(unittest.TestCase):
+    def test_rejects_cpu_execution(self):
+        """Reject running the CUDA-only characterization example on CPU."""
+        module = _load_example_module(self)
+
+        with wp.ScopedDevice("cpu"):
+            with self.assertRaisesRegex(RuntimeError, "requires a CUDA device"):
+                module.Example(ViewerNull(num_frames=1), None)
+
+    def test_keeps_stored_patch_data_immutable(self):
+        """Keep the embedded diagnostic snapshot immutable after import."""
+        module = _load_example_module(self)
+
+        for name in (
+            "_REST_POSITIONS",
+            "_INITIAL_POSITIONS",
+            "_TRIANGLE_INDICES",
+            "_MASSES",
+            "_BOUNDARY_INDICES",
+        ):
+            self.assertFalse(getattr(module, name).flags.writeable, name)
+
+
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
 class TestClothLimxEeChatter(unittest.TestCase):
     def test_cuda_graph_step_preserves_the_two_patch_configuration(self):
@@ -39,6 +62,10 @@ class TestClothLimxEeChatter(unittest.TestCase):
         self.assertEqual(example.boundary_vertex_count, 34)
         self.assertEqual(example.control_patch.model.particle_count, 74)
         self.assertEqual(example.collision_patch.model.particle_count, 74)
+        self.assertEqual(example.control_patch.model.tri_count, 112)
+        self.assertEqual(example.collision_patch.model.tri_count, 112)
+        self.assertEqual(len(example.control_patch.solver.constraints[-1].indices), 34)
+        self.assertEqual(len(example.collision_patch.solver.constraints[-1].indices), 34)
         self.assertIsNone(example.control_patch.self_collision)
         self.assertIsNotNone(example.collision_patch.self_collision)
         self.assertEqual(example.collision_patch.self_collision.max_contacts, 4096)
