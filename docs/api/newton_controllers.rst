@@ -12,9 +12,6 @@ subclass of :class:`ControllerBase` and operates on flat 1D arrays.
 
 .. experimental::
 
-    The controllers API may change without prior notice. Feedback is welcome —
-    please file issues or discussion threads.
-
 .. py:module:: newton.controllers
 .. currentmodule:: newton.controllers
 

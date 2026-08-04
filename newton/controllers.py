@@ -10,9 +10,6 @@ layout of :class:`~newton.State` fields, making them composable with any
 Newton solver.
 
 .. experimental::
-
-    The controllers API may change without prior notice. Feedback is welcome —
-    please file issues or discussion threads.
 """
 
 from ._src.controllers import (
