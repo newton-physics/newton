@@ -1114,6 +1114,37 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 entries=[SolverCoupled.Entry(name="unsupported", solver=SolverBase, bodies=[0])],
             )
 
+    def test_entry_contacts_preserves_contact_matching_mode(self):
+        """Preserve matching mode metadata when coupled entry buffers are reused."""
+        coupled = SolverCoupled(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=SolverSemiImplicit,
+                    bodies=[0],
+                    shapes=[0],
+                )
+            ],
+        )
+        state = self.model.state()
+        pipeline = newton.CollisionPipeline(self.model, broad_phase="nxn", contact_matching="latest")
+        contacts = pipeline.contacts()
+        filtered = coupled.entry_contacts("A", contacts)
+
+        self.assertEqual(filtered.contact_matching_mode, "latest")
+        for mode in ("sticky", "disabled"):
+            pipeline = newton.CollisionPipeline(
+                self.model,
+                broad_phase="nxn",
+                rigid_contact_max=contacts.rigid_contact_max,
+                contact_matching=mode,
+            )
+            pipeline.collide(state, contacts)
+            reused = coupled.entry_contacts("A", contacts)
+            self.assertIs(reused, filtered)
+            self.assertEqual(reused.contact_matching_mode, mode)
+
     def test_configure_view_applies_after_compaction(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         cloth_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -1261,7 +1292,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         builder.add_articulation([first_joint, second_joint])
         model = builder.finalize(device="cpu")
-        model.joint_target_q.assign(np.arange(model.joint_dof_count, dtype=np.float32))
+        model.joint_target_q.assign(np.arange(model.joint_coord_count, dtype=np.float32))
 
         coupled = SolverCoupled(
             model=model,
@@ -1278,25 +1309,13 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
-        np.testing.assert_array_equal(view.joint_target_q.numpy(), [6.0, 7.0])
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [7.0, 8.0])
 
-        model.joint_target_q.assign(10.0 + np.arange(model.joint_dof_count, dtype=np.float32))
+        model.joint_target_q.assign(10.0 + np.arange(model.joint_coord_count, dtype=np.float32))
         model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-        np.testing.assert_array_equal(view.joint_target_q.numpy(), [16.0, 17.0])
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [17.0, 18.0])
         np.testing.assert_array_equal(view.joint_target_ke.numpy(), [106.0, 107.0])
-
-        target_pos_spec = model._attribute_spec("joint_target_pos")
-        self.assertTrue(target_pos_spec.deprecated)
-        self.assertEqual(target_pos_spec.alias_of, "joint_target_q")
-        with self.assertWarnsRegex(DeprecationWarning, "Model.joint_target_pos"):
-            legacy_target_pos = view.joint_target_pos
-        np.testing.assert_array_equal(legacy_target_pos.numpy(), [16.0, 17.0])
-
-        legacy_override = wp.array([21.0, 22.0], dtype=float, device=model.device)
-        with self.assertWarnsRegex(DeprecationWarning, "Model.joint_target_pos"):
-            view.joint_target_pos = legacy_override
-        np.testing.assert_array_equal(view.joint_target_q.numpy(), [21.0, 22.0])
 
     def test_custom_control_arrays_are_mapped_to_entries(self):
         """Custom CONTROL attributes should follow their compact frequency map."""

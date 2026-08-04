@@ -1845,9 +1845,9 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     # Find the revolute joint and its DOF index after finalize().
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     rev_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.REVOLUTE))
-    dof_idx = int(joint_qd_start[rev_idx])
+    dof_idx = int(joint_target_q_start[rev_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -1975,9 +1975,9 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     model.set_gravity((0.0, 0.0, -9.81))
 
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     rev_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.REVOLUTE))
-    dof_idx = int(joint_qd_start[rev_idx])
+    dof_idx = int(joint_target_q_start[rev_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -2251,9 +2251,9 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     # Find the prismatic joint and its DOF index after finalize().
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     prismatic_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.PRISMATIC))
-    dof_idx = int(joint_qd_start[prismatic_idx])
+    dof_idx = int(joint_target_q_start[prismatic_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -2381,9 +2381,9 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     model.set_gravity((0.0, 0.0, -9.81))
 
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     prismatic_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.PRISMATIC))
-    dof_idx = int(joint_qd_start[prismatic_idx])
+    dof_idx = int(joint_target_q_start[prismatic_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -2972,9 +2972,9 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     # Find the D6 joint and its DOF indices after finalize().
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     d6_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.D6))
-    qd_s = int(joint_qd_start[d6_idx])
+    qd_s = int(joint_target_q_start[d6_idx])
     lin_dof_idx = qd_s
     ang_dof_idx = qd_s + 1
 
@@ -3132,9 +3132,9 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     model.set_gravity((0.0, 0.0, -9.81))
 
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     d6_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.D6))
-    qd_s = int(joint_qd_start[d6_idx])
+    qd_s = int(joint_target_q_start[d6_idx])
 
     state0 = model.state()
     state1 = model.state()

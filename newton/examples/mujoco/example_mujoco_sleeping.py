@@ -128,6 +128,7 @@ def build_stack() -> newton.ModelBuilder:
 class Example:
     def __init__(self, viewer, args):
         """Build the articulation stacks, sleeping solver, and island-color mapping."""
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.fps = 60
         self.frame_dt = 1.0 / self.fps

@@ -1488,6 +1488,76 @@ for bp_name in ("explicit", "nxn", "sap"):
     )
 
 
+def _quat_to_rotation_matrix(quaternion):
+    """Convert an xyzw quaternion to a NumPy rotation matrix."""
+    quaternion = np.asarray([quaternion[i] for i in range(4)], dtype=np.float64)
+    quaternion /= np.linalg.norm(quaternion)
+    x, y, z, w = quaternion
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ]
+    )
+
+
+def _assert_box_face_manifold(test, contacts, poses_and_sizes):
+    """Validate the complete four-corner contact contract for two stacked boxes."""
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertEqual(count, 4, f"Expected 4 face-corner contacts, got {count}")
+
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    points0 = contacts.rigid_contact_point0.numpy()[:count]
+    points1 = contacts.rigid_contact_point1.numpy()[:count]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+
+    np.testing.assert_array_equal(shape0, np.zeros(count, dtype=np.int32))
+    np.testing.assert_array_equal(shape1, np.ones(count, dtype=np.int32))
+
+    position0, orientation0, half_extents0 = poses_and_sizes[0]
+    position1, orientation1, half_extents1 = poses_and_sizes[1]
+    position0 = np.asarray([position0[i] for i in range(3)], dtype=np.float64)
+    position1 = np.asarray([position1[i] for i in range(3)], dtype=np.float64)
+    half_extents0 = np.asarray([half_extents0[i] for i in range(3)], dtype=np.float64)
+    half_extents1 = np.asarray([half_extents1[i] for i in range(3)], dtype=np.float64)
+    rotation0 = _quat_to_rotation_matrix(orientation0)
+    rotation1 = _quat_to_rotation_matrix(orientation1)
+
+    tangent_half_extents = np.minimum(half_extents0, half_extents1)
+    expected_point0 = np.array(
+        [
+            [-tangent_half_extents[0], half_extents0[1], -tangent_half_extents[2]],
+            [-tangent_half_extents[0], half_extents0[1], tangent_half_extents[2]],
+            [tangent_half_extents[0], half_extents0[1], -tangent_half_extents[2]],
+            [tangent_half_extents[0], half_extents0[1], tangent_half_extents[2]],
+        ]
+    )
+    expected_point1 = expected_point0.copy()
+    expected_point1[:, 1] = -half_extents1[1]
+
+    tangent_points0 = np.round(points0[:, (0, 2)], decimals=5)
+    tangent_points1 = np.round(points1[:, (0, 2)], decimals=5)
+    order0 = np.lexsort((tangent_points0[:, 1], tangent_points0[:, 0]))
+    order1 = np.lexsort((tangent_points1[:, 1], tangent_points1[:, 0]))
+    np.testing.assert_allclose(points0[order0], expected_point0, atol=2.0e-5)
+    np.testing.assert_allclose(points1[order1], expected_point1, atol=2.0e-5)
+    np.testing.assert_allclose(points0[:, (0, 2)], points1[:, (0, 2)], atol=2.0e-5)
+
+    np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1.0e-6)
+    np.testing.assert_allclose(normals, np.tile([0.0, 1.0, 0.0], (count, 1)), atol=1.0e-5)
+
+    points0_world = points0 @ rotation0.T + position0
+    points1_world = points1 @ rotation1.T + position1
+    actual_separation = np.sum((points1_world - points0_world) * normals, axis=1)
+    support0 = np.abs(normals @ rotation0) @ half_extents0
+    support1 = np.abs(normals @ rotation1) @ half_extents1
+    expected_separation = (normals @ (position1 - position0)) - support0 - support1
+    np.testing.assert_allclose(actual_separation, expected_separation, atol=2.0e-5)
+    test.assertTrue(np.all(actual_separation <= 0.0), f"Expected overlapping witnesses, got {actual_separation}")
+
+
 def test_box_box_quaternion_perturbation(test, device, broad_phase: str):
     """Verify box-box contacts are correct under tiny quaternion perturbation.
 
@@ -1548,6 +1618,93 @@ for bp_name in ("explicit", "nxn", "sap"):
         TestRigidContactNormal,
         f"test_box_box_quaternion_perturbation_{bp_name}",
         test_box_box_quaternion_perturbation,
+        devices=devices,
+        broad_phase=bp_name,
+    )
+
+
+def test_box_box_solver_drift_manifold(test, device, broad_phase: str):
+    """Preserve a face manifold under sub-microradian solver drift.
+
+    The transforms capture two adjacent boxes immediately before an aligned
+    XPBD stack lost its four-point manifold and collapsed.
+    """
+    with wp.ScopedDevice(device):
+        poses_and_sizes = (
+            (
+                wp.vec3(2.22675084e-7, 2.49728513, -9.83917175e-7),
+                wp.quat(-8.44083345e-8, -1.98136689e-8, 3.19972909e-10, 1.0),
+                wp.vec3(0.5, 0.5, 0.5),
+            ),
+            (
+                wp.vec3(3.51331039e-7, 3.49677420, -1.27835642e-6),
+                wp.quat(-8.78333211e-8, -2.35374653e-8, -7.91500110e-9, 1.0),
+                wp.vec3(0.5, 0.5, 0.5),
+            ),
+        )
+
+        builder = newton.ModelBuilder()
+        for position, orientation, half_extents in poses_and_sizes:
+            body = builder.add_body(xform=wp.transform(position, orientation))
+            builder.add_shape_box(body=body, hx=half_extents[0], hy=half_extents[1], hz=half_extents[2])
+
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        _assert_box_face_manifold(test, contacts, poses_and_sizes)
+
+
+for bp_name in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestRigidContactNormal,
+        f"test_box_box_solver_drift_manifold_{bp_name}",
+        test_box_box_solver_drift_manifold,
+        devices=devices,
+        broad_phase=bp_name,
+    )
+
+
+def test_unequal_box_box_solver_drift_manifold(test, device, broad_phase: str):
+    """Preserve a face manifold between unequal boxes under solver drift.
+
+    The transforms capture an initially aligned XPBD stack at the substep where
+    its four-point manifold collapsed to one tilted contact and catapulted the
+    upper box.
+    """
+    with wp.ScopedDevice(device):
+        poses_and_sizes = (
+            (
+                wp.vec3(3.7335610e-9, 4.9998292e-1, 3.5263259e-8),
+                wp.quat(-2.1688921e-8, -5.7160970e-10, -2.0992164e-10, 1.0),
+                wp.vec3(1.0, 0.5, 1.0),
+            ),
+            (
+                wp.vec3(6.4867449e-9, 1.4999746, 9.9460351e-8),
+                wp.quat(-2.5269783e-8, 6.4437003e-8, 3.1298550e-9, 1.0),
+                wp.vec3(0.5, 0.5, 0.5),
+            ),
+        )
+
+        builder = newton.ModelBuilder()
+        for position, orientation, half_extents in poses_and_sizes:
+            body = builder.add_body(xform=wp.transform(position, orientation))
+            builder.add_shape_box(body=body, hx=half_extents[0], hy=half_extents[1], hz=half_extents[2])
+
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        _assert_box_face_manifold(test, contacts, poses_and_sizes)
+
+
+for bp_name in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestRigidContactNormal,
+        f"test_unequal_box_box_solver_drift_manifold_{bp_name}",
+        test_unequal_box_box_solver_drift_manifold,
         devices=devices,
         broad_phase=bp_name,
     )
