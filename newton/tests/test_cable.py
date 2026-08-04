@@ -18,6 +18,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     compute_cable_dahl_parameters,
     compute_geometric_cable_kappa_cached_z,
     evaluate_cable_bend_twist_force_hessian_z,
+    evaluate_cable_stretch_shear_force_hessian,
     update_cable_dahl_state,
 )
 from newton._src.utils import is_graph_capture_allocation_enabled
@@ -4308,8 +4309,46 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
 
 
 # -----------------------------------------------------------------------------
-# Split cable bend/twist verification helpers
+# Split cable verification helpers
 # -----------------------------------------------------------------------------
+
+
+@wp.kernel
+def _eval_isotropic_cable_stretch_shear_world_hessian_error(errors: wp.array[wp.vec2]):
+    parent_pose = wp.transform_identity()
+    parent_com = wp.vec3(0.0)
+    X_wp = wp.transform(
+        wp.vec3(0.12, -0.05, 0.09),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7),
+    )
+    x_p = wp.transform_get_translation(X_wp)
+    X_wc = wp.transform(x_p + wp.vec3(0.21, -0.13, 0.17), wp.quat_identity())
+    stiffness = float(7.0)
+
+    _force, _torque, _H_ll, H_al, H_aa = evaluate_cable_stretch_shear_force_hessian(
+        X_wp,
+        X_wc,
+        X_wp,
+        X_wc,
+        parent_pose,
+        wp.transform_identity(),
+        parent_com,
+        wp.vec3(0.0),
+        True,
+        wp.vec3(stiffness),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        False,
+        1.0,
+    )
+
+    r = x_p
+    rx = wp.skew(r)
+    K = stiffness * wp.identity(3, float)
+    H_al_error = H_al - rx * K
+    H_aa_error = H_aa - wp.transpose(rx) * K * rx
+    errors[0] = wp.vec2(wp.sqrt(wp.ddot(H_al_error, H_al_error)), wp.sqrt(wp.ddot(H_aa_error, H_aa_error)))
 
 
 @wp.kernel
@@ -5357,6 +5396,18 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
 
 
+def _split_cable_isotropic_stretch_shear_hessian_matches_world_form(test, device):
+    """Verify isotropic stretch/shear uses the world-form parent Hessian."""
+    errors = wp.zeros(1, dtype=wp.vec2, device=device)
+    wp.launch(
+        _eval_isotropic_cable_stretch_shear_world_hessian_error,
+        dim=1,
+        outputs=[errors],
+        device=device,
+    )
+    np.testing.assert_allclose(errors.numpy()[0], 0.0, atol=1.0e-6)
+
+
 def _split_cable_material_force_law_matches_ei_gj(test, device):
     """Per-joint bend/twist torques should match EI/h and GJ/h stiffness inputs."""
     segment_length = 0.08
@@ -6011,6 +6062,12 @@ add_function_test(
     TestCable,
     "test_split_cable_routes_explicit_shear_to_second_slot",
     _split_cable_routes_explicit_shear_to_second_slot,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_isotropic_stretch_shear_hessian_matches_world_form",
+    _split_cable_isotropic_stretch_shear_hessian_matches_world_form,
     devices=devices,
 )
 add_function_test(

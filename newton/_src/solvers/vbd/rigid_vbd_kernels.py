@@ -1103,11 +1103,24 @@ def evaluate_cable_stretch_shear_force_hessian(
     force = f_world if is_parent else -f_world
 
     t = _quat_rotate_local_z(q_wp)
-    K_eff = h_s * wp.identity(3, float) + (h_z - h_s) * wp.outer(t, t)
-    rx = wp.skew(r)
+    I = wp.identity(3, float)
+    K_eff = h_s * I + (h_z - h_s) * wp.outer(t, t)
     H_ll = K_eff
-    H_al = rx * K_eff
-    H_aa = wp.transpose(rx) * K_eff * rx
+    if is_parent:
+        # Isotropic response is independent of parent material-frame rotation, so its solve
+        # Hessian uses the parent-anchor lever arm. The directional remainder retains the
+        # material-frame Jacobian; choosing the smaller stiffness keeps it PSD.
+        h_iso = wp.min(h_s, h_z)
+        K_aniso = K_eff - h_iso * I
+        r_iso = x_p - com_w
+        rx_aniso = wp.skew(r)
+        H_al = h_iso * wp.skew(r_iso) + rx_aniso * K_aniso
+        H_aa = h_iso * (wp.length_sq(r_iso) * I - wp.outer(r_iso, r_iso))
+        H_aa = H_aa + wp.transpose(rx_aniso) * K_aniso * rx_aniso
+    else:
+        rx = wp.skew(r)
+        H_al = rx * K_eff
+        H_aa = wp.transpose(rx) * K_eff * rx
 
     torque = wp.cross(r, force)
     return force, torque, H_ll, H_al, H_aa
