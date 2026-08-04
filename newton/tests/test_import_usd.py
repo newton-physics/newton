@@ -11964,8 +11964,7 @@ def Xform "Body" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_guide_purpose_shapes_not_visible(self):
-        """Guide-purpose prims (e.g. collision geometry authored by MuJoCo-USD
-        converters) should not be loaded as visible visual shapes."""
+        """Verify guide-purpose shapes retain their authored visibility and collision state."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -12053,6 +12052,7 @@ def Xform "Body" (
         # A disabled guide-purpose collider is loaded as a visual-only shape but must not be drawn.
         flags_guide = builder.shape_flags[path_shape_map["/Body/GuideCollisionBox"]]
         self.assertFalse(flags_guide & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_guide & ShapeFlags.COLLIDE_PARTICLES)
         self.assertFalse(flags_guide & ShapeFlags.VISIBLE)
 
         # An enabled guide-purpose collider still collides; its display keeps following
@@ -12071,6 +12071,14 @@ def Xform "Body" (
         self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
         flags_disabled_forced = builder2.shape_flags[result2["path_shape_map"]["/Body/GuideCollisionBox"]]
         self.assertFalse(flags_disabled_forced & ShapeFlags.VISIBLE)
+
+        headless_builder = newton.ModelBuilder()
+        headless_result = headless_builder.add_usd(stage, load_visual_shapes=False)
+        flags_disabled_headless = headless_builder.shape_flags[
+            headless_result["path_shape_map"]["/Body/GuideCollisionBox"]
+        ]
+        self.assertFalse(flags_disabled_headless & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_disabled_headless & ShapeFlags.COLLIDE_PARTICLES)
 
     @staticmethod
     def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
