@@ -467,6 +467,80 @@ Newton's pipeline supports non-convex meshes, SDF-based contacts, and
 hydroelastic contacts, which are not available through MuJoCo's collision
 detection.
 
+Collision filtering
+~~~~~~~~~~~~~~~~~~~
+
+MuJoCo gives every geom two 32-bit masks, ``contype`` and ``conaffinity``.
+Together, these masks decide whether two geoms are allowed to collide. For a
+candidate pair ``a, b``, the mask test passes when
+``(contype_a & conaffinity_b) != 0`` or
+``(contype_b & conaffinity_a) != 0``. MuJoCo then applies other selection
+rules, including same-body suppression and body-wide ``<exclude>`` elements;
+explicit ``<pair>`` elements bypass the automatic mask test. See MuJoCo's
+`collision selection documentation
+<https://mujoco.readthedocs.io/en/stable/computation/index.html#selection>`__
+and the `geom mask attributes
+<https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-geom>`__.
+
+**Importing MJCF masks.**
+
+:func:`~newton.utils.parse_mjcf` resolves inherited ``contype`` and
+``conaffinity`` values and determines which shape pairs may collide. It stores
+the same result in Newton collision groups and explicit excluded pairs. The
+original 32-bit values are also retained as
+``model.mujoco.contype`` and ``model.mujoco.conaffinity`` custom attributes
+for a lossless round trip back to MuJoCo.
+
+A *mask domain* is the set of shapes whose mask bits were authored together.
+Each :func:`~newton.utils.parse_mjcf` call creates a new domain and records it
+in the internal ``model.mujoco.collision_mask_domain`` attribute. The domain
+is only a source label. It is not another collision mask and does not enable
+or disable contacts. When :meth:`~newton.ModelBuilder.add_builder` combines
+separately built models, it gives the copied domains new IDs so they remain
+distinct from domains already in the destination builder.
+
+**Choosing masks for a MuJoCo solver.**
+
+With ``use_mujoco_contacts=True``, preserved source masks are forwarded
+verbatim only when every selected collision shape has masks from the same
+domain and those masks already enforce all active Newton pair filters.
+Same-body filtering and imported body-wide ``<exclude>`` elements also count
+as enforced. This path preserves the source MJCF exactly. For a single import,
+the original masks therefore remain the source of truth even if its Newton
+collision groups are later edited.
+
+A native shape, shapes from more than one domain, or a new Newton pair filter
+can make the original masks unsafe to reuse. The solver then lists the shape
+pairs that Newton allows and creates new MuJoCo masks that reproduce that
+list.
+
+**Example: combining two MJCF files.**
+
+Suppose file A and file B both use bit 0. In file A, bit 0 may control contacts
+between its floor and spheres. File B may reuse bit 0 for its own shapes. The
+files were authored independently, so that shared number says nothing about
+how a shape from A should interact with a shape from B.
+
+After both files are added to one builder, Newton's collision groups and
+excluded pairs define those new cross-file interactions. Copying the original
+masks would make MuJoCo treat bit 0 as one global rule and could allow or block
+the wrong cross-file pairs. Because the shapes have different domains, the
+solver instead creates new masks from Newton's final list of allowed pairs.
+
+**Compiling Newton filtering to MuJoCo masks.**
+
+MuJoCo provides only 32 mask bits. One bit can encode all collisions between
+one set of shapes and another set. In graph terminology, that rule is a
+complete bipartite graph, or biclique. The solver tries to reproduce Newton's
+full list of allowed pairs using at most 32 such rules. It is guaranteed to
+find an exact result for up to 33 selected shapes and often handles much larger
+models whose collision groups have a regular structure.
+
+If the rules do not fit in 32 bits, the solver uses the established legacy
+graph-color approximation, which may allow extra contacts. Finding an exact
+result requires checking every shape pair, so models above 256 selected shapes
+or 1,024 explicit excluded pairs skip directly to that fallback.
+
 .. _mujoco-margin-gap-mapping:
 
 Margin and gap mapping
@@ -782,16 +856,10 @@ Caveats
   prescribed. The user-supplied armature on those DOFs is silently
   discarded. See `Kinematic links and fixed roots`_.
 
-**Collision filtering bitmask fallback.**
-  Newton's :attr:`~newton.Model.shape_collision_group` (see
-  :ref:`Collision Groups`) is translated to MuJoCo's ``contype`` /
-  ``conaffinity`` via graph coloring
-  (:github:`newton/_src/sim/graph_coloring.py`). Up to 32 colors are
-  supported (one per ``contype`` bit). If the filtering graph requires
-  more, shapes with color index ≥ 32 fall back to ``contype=1`` /
-  ``conaffinity=1`` and silently collide with every other shape,
-  bypassing the intended filtering and adding extra contact pairs to
-  the broadphase.
+**Collision filtering has a 32-bit capacity.**
+  The solver creates MuJoCo masks that reproduce Newton's allowed collision
+  pairs when they fit in 32 bits. See `Collision filtering`_ for the behavior
+  of imported masks and the warned fallback used when the rules do not fit.
 
 
 .. _mujoco-kinematic-links-and-fixed-roots:
