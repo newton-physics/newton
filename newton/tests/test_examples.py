@@ -1250,6 +1250,19 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
     devices=cuda_test_devices,
+    test_options={"num-frames": 500},
+    use_viewer=True,
+)
+
+
+class TestControllersExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestControllersExamples,
+    name="controllers.example_controller_joint_impedance_heterogeneous",
+    devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
 )

@@ -8495,6 +8495,186 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
 class TestContypeConaffinityZero(unittest.TestCase):
     """Verify MJCF geoms with contype=conaffinity=0 get collision_group=0."""
 
+    def test_asymmetric_masks_compile_exact_newton_pairs(self):
+        """Compile asymmetric MuJoCo masks into the exact Newton pair matrix."""
+        mjcf = """<mujoco>
+            <worldbody>
+                <geom name="floor" type="plane" size="1 1 0.1" contype="0" conaffinity="1"/>
+                <body name="sphere_a">
+                    <freejoint/>
+                    <geom name="sphere_a" type="sphere" size="0.1" contype="1" conaffinity="0"/>
+                </body>
+                <body name="sphere_b">
+                    <freejoint/>
+                    <geom name="sphere_b" type="sphere" size="0.1" contype="1" conaffinity="0"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+        model = builder.finalize(device="cpu")
+
+        labels = {label.rsplit("/", 1)[-1]: shape for shape, label in enumerate(builder.shape_label)}
+        actual = set(map(tuple, model.shape_contact_pairs.numpy().tolist()))
+        expected = {
+            tuple(sorted((labels["floor"], labels["sphere_a"]))),
+            tuple(sorted((labels["floor"], labels["sphere_b"]))),
+        }
+        self.assertEqual(actual, expected)
+
+    def test_solver_forwards_preserved_masks(self):
+        """Forward effective imported masks instead of regenerating them from groups."""
+        mjcf = """<mujoco>
+            <default><geom contype="2" conaffinity="4"/></default>
+            <worldbody>
+                <body name="a">
+                    <freejoint/>
+                    <geom name="a" type="sphere" size="0.1"/>
+                </body>
+                <body name="b">
+                    <freejoint/>
+                    <geom name="b" type="sphere" size="0.1" contype="8" conaffinity="16"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        contype = builder.custom_attributes["mujoco:contype"]
+        conaffinity = builder.custom_attributes["mujoco:conaffinity"]
+        self.assertEqual([contype.values[index] for index in range(2)], [2, 8])
+        self.assertEqual([conaffinity.values[index] for index in range(2)], [4, 16])
+
+        # Preserved source masks are authoritative for native MuJoCo contacts.
+        builder.shape_collision_group[0] = 0
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
+        np.testing.assert_array_equal(solver.mj_model.geom_contype, [2, 8])
+        np.testing.assert_array_equal(solver.mj_model.geom_conaffinity, [4, 16])
+
+    def test_solver_combines_preserved_masks_with_partial_filter(self):
+        """Honor a Newton pair filter that narrows preserved imported masks."""
+        mjcf = """<mujoco>
+            <worldbody>
+                <body name="a">
+                    <freejoint/>
+                    <geom name="a0" type="sphere" size="0.1"/>
+                    <geom name="a1" type="sphere" size="0.1"/>
+                </body>
+                <body name="b">
+                    <freejoint/>
+                    <geom name="b0" type="sphere" size="0.1"/>
+                    <geom name="b1" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+        shapes = {label.rsplit("/", 1)[-1]: index for index, label in enumerate(builder.shape_label)}
+        builder.add_shape_collision_filter_pair(shapes["a0"], shapes["b0"])
+
+        solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_contacts=True)
+        shape_to_geom = {
+            int(shape): geom for geom, shape in enumerate(solver.mjc_geom_to_newton_shape.numpy()[0]) if shape >= 0
+        }
+
+        def masks_allow(shape_a, shape_b):
+            geom_a = shape_to_geom[shape_a]
+            geom_b = shape_to_geom[shape_b]
+            contype = solver.mj_model.geom_contype
+            conaffinity = solver.mj_model.geom_conaffinity
+            return bool(
+                (int(contype[geom_a]) & int(conaffinity[geom_b])) or (int(contype[geom_b]) & int(conaffinity[geom_a]))
+            )
+
+        for name_a in ("a0", "a1"):
+            for name_b in ("b0", "b1"):
+                expected = (name_a, name_b) != ("a0", "b0")
+                self.assertEqual(masks_allow(shapes[name_a], shapes[name_b]), expected)
+
+    def test_solver_combines_separate_import_mask_domains(self):
+        """Combine independent MJCF mask domains before exporting contacts."""
+        mjcf = """<mujoco>
+            <worldbody>
+                <geom name="floor" type="plane" size="1 1 0.1" contype="0" conaffinity="1"/>
+                <body name="sphere_a">
+                    <freejoint/>
+                    <geom name="sphere_a" type="sphere" size="0.1" contype="1" conaffinity="0"/>
+                </body>
+                <body name="sphere_b">
+                    <freejoint/>
+                    <geom name="sphere_b" type="sphere" size="0.1" contype="1" conaffinity="0"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+        first_import_shape_count = builder.shape_count
+        builder.add_mjcf(mjcf, parse_visuals=False)
+        model = builder.finalize(device="cpu")
+        expected_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy().tolist()}
+
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        mapping = solver.mjc_geom_to_newton_shape.numpy()[0]
+        shape_body = model.shape_body.numpy()
+        contype = solver.mj_model.geom_contype
+        conaffinity = solver.mj_model.geom_conaffinity
+        actual_cross_import_pairs = set()
+        expected_cross_import_pairs = set()
+
+        for geom_a in range(solver.mj_model.ngeom - 1):
+            shape_a = int(mapping[geom_a])
+            for geom_b in range(geom_a + 1, solver.mj_model.ngeom):
+                shape_b = int(mapping[geom_b])
+                shapes_share_import = (shape_a < first_import_shape_count) == (shape_b < first_import_shape_count)
+                if shapes_share_import or shape_body[shape_a] == shape_body[shape_b]:
+                    continue
+                pair = tuple(sorted((shape_a, shape_b)))
+                if pair in expected_pairs:
+                    expected_cross_import_pairs.add(pair)
+                if (int(contype[geom_a]) & int(conaffinity[geom_b])) or (
+                    int(contype[geom_b]) & int(conaffinity[geom_a])
+                ):
+                    actual_cross_import_pairs.add(pair)
+
+        self.assertEqual(len(expected_cross_import_pairs), 8)
+        self.assertEqual(actual_cross_import_pairs, expected_cross_import_pairs)
+
+    def test_solver_combines_independently_parsed_builders(self):
+        """Keep MJCF mask domains distinct when merging builders."""
+        mjcf = """<mujoco>
+            <worldbody>
+                <body name="body">
+                    <freejoint/>
+                    <geom name="shape" type="sphere" size="0.1" contype="0" conaffinity="1"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        source_a = newton.ModelBuilder()
+        source_a.add_mjcf(mjcf, parse_visuals=False)
+        source_b = newton.ModelBuilder()
+        source_b.add_mjcf(mjcf, parse_visuals=False)
+
+        builder = newton.ModelBuilder()
+        builder.add_builder(source_a, label_prefix="a")
+        builder.add_builder(source_b, label_prefix="b")
+        model = builder.finalize(device="cpu")
+
+        domains = model.mujoco.collision_mask_domain.numpy()
+        self.assertNotEqual(int(domains[0]), int(domains[1]))
+        np.testing.assert_array_equal(model.shape_contact_pairs.numpy(), [[0, 1]])
+
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        mapping = solver.mjc_geom_to_newton_shape.numpy()[0]
+        shape_to_geom = {int(shape): geom for geom, shape in enumerate(mapping)}
+        geom_a = shape_to_geom[0]
+        geom_b = shape_to_geom[1]
+        contype = solver.mj_model.geom_contype
+        conaffinity = solver.mj_model.geom_conaffinity
+        masks_allow_pair = (int(contype[geom_a]) & int(conaffinity[geom_b])) or (
+            int(contype[geom_b]) & int(conaffinity[geom_a])
+        )
+        self.assertTrue(masks_allow_pair)
+
     def test_collision_group_zero_for_zero_contype(self):
         """Collision-class geoms with contype=conaffinity=0 get collision_group=0."""
         mjcf = """<mujoco>
