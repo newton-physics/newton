@@ -124,8 +124,8 @@ def attach_seal_kernel(
         pad_body_b[pad] = pad_body_b_id[
             pad
         ]  # stays fixed while gripped (matches the body pad_anchor_b is cached against)
-        g = pad_gripper[pad]
-        seal_world = body_q[gripper_body_id[g]] * gripper_xform[g] * pad_xform[pad]  # TA * TAS
+        gripper_id = pad_gripper[pad]
+        seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # TA * TAS
         pad_anchor_b[pad] = wp.transform_inverse(hold_pose_body_b[pad_body_b_id[pad]]) * seal_world
 
     pad_engaged[pad] = pad_seal_engaged[pad]
@@ -400,7 +400,7 @@ class SurfaceGripper:
     Construct with the target ``body_id`` and gripper ``xform`` only, then set the seal parameters with
     exactly one of :meth:`set_stiffness_damping` (per-axis stiffness/damping directly) or
     :meth:`set_natural_frequency_damping_ratio` (per-axis natural frequency / damping ratio, converted
-    against a design box). Add pads with :meth:`add_pad` and flatten with :class:`SurfaceGripperBuilder`.
+    against a reference solid). Add pads with :meth:`add_pad` and flatten with :class:`SurfaceGripperBuilder`.
     """
 
     def __init__(self, body_id: int, xform: wp.transform, world: int = 0):
@@ -473,7 +473,7 @@ class SurfaceGripper:
 
     def set_natural_frequency_damping_ratio(
         self,
-        box: tuple,
+        reference_solid: tuple,
         f_grip_max: float,
         normal_mode: tuple,
         shear_x_mode: tuple,
@@ -488,11 +488,11 @@ class SurfaceGripper:
     ) -> "SurfaceGripper":
         """Set the seal from per-axis modes ``(angular natural frequency [rad/s], damping ratio)``,
         converted to stiffness/damping (:func:`nat_freq_damping_ratio_to_stiffness_damping`) against a
-        design ``box`` = ``((hx, hy, hz) half-extents [m], mass [kg])``. Translation DOFs use the box
-        mass; peel/twist use its solid-box inertia about that axis. Returns ``self``.
+        design ``reference_solid`` = ``((hx, hy, hz) half-extents [m], mass [kg])``. Translation DOFs use
+        its mass; peel/twist use its solid-cuboid inertia about that axis. Returns ``self``.
         """
-        (hx, hy, hz), m = box
-        ixx = m / 3.0 * (hy * hy + hz * hz)  # solid-box inertia about x (peel-x)
+        (hx, hy, hz), m = reference_solid
+        ixx = m / 3.0 * (hy * hy + hz * hz)  # solid-cuboid inertia about x (peel-x)
         iyy = m / 3.0 * (hx * hx + hz * hz)  # about y (peel-y)
         izz = m / 3.0 * (hx * hx + hy * hy)  # about z (twist)
         to = nat_freq_damping_ratio_to_stiffness_damping
@@ -689,11 +689,11 @@ def eval_pad_force_linear_kernel(
         return
     pad_body_b_id = pad_body_b[pad]
 
-    g = pad_gripper[pad]
-    body_a = gripper_body_id[g]
+    gripper_id = pad_gripper[pad]
+    body_a = gripper_body_id[gripper_id]
 
     # world seal frames on A (TA*TAS) and B (TB*TBS); separation and relative velocity per DOF
-    t_a_seal = body_q[body_a] * gripper_xform[g] * pad_xform[pad]
+    t_a_seal = body_q[body_a] * gripper_xform[gripper_id] * pad_xform[pad]
     q_a_seal = wp.transform_get_rotation(t_a_seal)
     p_a_seal = wp.transform_get_translation(t_a_seal)
     t_b_seal = body_q[pad_body_b_id] * pad_anchor_b[pad]
@@ -717,37 +717,39 @@ def eval_pad_force_linear_kernel(
         r_b,
         body_mass[pad_body_b_id],
         body_inertia[pad_body_b_id],
-        gripper_d_normal[g],
-        gripper_d_shear_x[g],
-        gripper_d_shear_y[g],
-        gripper_d_peel_x[g],
-        gripper_d_peel_y[g],
-        gripper_d_torsion[g],
+        gripper_d_normal[gripper_id],
+        gripper_d_shear_x[gripper_id],
+        gripper_d_shear_y[gripper_id],
+        gripper_d_peel_x[gripper_id],
+        gripper_d_peel_y[gripper_id],
+        gripper_d_torsion[gripper_id],
         dt,
     )
 
     # normal (z): a pure spring pull capped at the vacuum grip (control * f_grip_max) -- no preload
     # baseline, so the spring has authority from zero stretch up to the vacuum, and the cap is the
-    # pull-off limit (pull harder than the vacuum and the cup lets go). Compression (push) is left
+    # pull-off limit (pull harder than the vacuum and the pad lets go). Compression (push) is left
     # uncapped (contact-like). Damping is applied on top of the cap.
-    f_vac = pad_grip_control[pad] * gripper_f_grip_max[g]
-    fz_elastic = gripper_k_normal[g] * pz
+    f_vac = pad_grip_control[pad] * gripper_f_grip_max[gripper_id]
+    fz_elastic = gripper_k_normal[gripper_id] * pz
     if fz_elastic > f_vac:
         fz_elastic = f_vac
     fz = fz_elastic + d_normal_eff * vz
 
     # shear (x, y): spring-damper per axis, combined magnitude capped at f_shear_max
-    fx = gripper_k_shear_x[g] * px + d_shear_x_eff * vx
-    fy = gripper_k_shear_y[g] * py + d_shear_y_eff * vy
-    fx, fy = clamp_magnitude_2d(fx, fy, gripper_f_shear_max[g])
+    fx = gripper_k_shear_x[gripper_id] * px + d_shear_x_eff * vx
+    fy = gripper_k_shear_y[gripper_id] * py + d_shear_y_eff * vy
+    fx, fy = clamp_magnitude_2d(fx, fy, gripper_f_shear_max[gripper_id])
 
     # peel (about x, y): spring-damper per axis, combined magnitude capped at f_peel_max
-    m_peel_x = gripper_k_peel_x[g] * theta_x + d_peel_x_eff * omega_x
-    m_peel_y = gripper_k_peel_y[g] * theta_y + d_peel_y_eff * omega_y
-    m_peel_x, m_peel_y = clamp_magnitude_2d(m_peel_x, m_peel_y, gripper_f_peel_max[g])
+    m_peel_x = gripper_k_peel_x[gripper_id] * theta_x + d_peel_x_eff * omega_x
+    m_peel_y = gripper_k_peel_y[gripper_id] * theta_y + d_peel_y_eff * omega_y
+    m_peel_x, m_peel_y = clamp_magnitude_2d(m_peel_x, m_peel_y, gripper_f_peel_max[gripper_id])
 
     # twist (about z): linear spring-damper, clamped to +/-f_torsion_max
-    m_twist = clamp_symmetric(gripper_k_torsion[g] * theta_z + d_torsion_eff * omega_z, gripper_f_torsion_max[g])
+    m_twist = clamp_symmetric(
+        gripper_k_torsion[gripper_id] * theta_z + d_torsion_eff * omega_z, gripper_f_torsion_max[gripper_id]
+    )
 
     # assemble the seal-frame wrench, rotate to world, and accumulate equal-and-opposite on A and B
     force = wp.quat_rotate(q_a_seal, wp.vec3(fx, fy, fz))
@@ -856,14 +858,15 @@ _TWO_PI = wp.constant(2.0 * math.pi)
 
 
 # --------------------------------------------------------------------------------------------------
-# Inline (graph-capturable) Gauss-Newton seat fit of a gripped body's pose to the cup lips.
+# Inline (graph-capturable) Gauss-Newton seat fit of a gripped body's pose to the pad lips.
 #
 # Used by attach_seal_seated_kernel on a pad's rising edge (:func:`_seat_body_pose`). Per lip point the
 # analytic Jacobian row of its SDF w.r.t. a body-frame pose twist xi = (v, omega) is -[grad; q x grad]
 # (q = point in the object frame, grad = SDF gradient there). The normal equations (JtJ, b) are summed
 # over the lips of every pad latching the body; a damped 6x6 solve gives the step dxi and the pose is
-# updated on-manifold: TB <- TB * exp(dxi). A single step (lips sampled once, in the object frame), all
-# in one kernel thread -- no scratch arrays, so it is graph-capturable.
+# updated on-manifold: TB <- TB * exp(dxi). Repeated for a fixed ``iters`` (re-sampling the SDF at the
+# updated pose each step, so it converges for a curved object -- 1 step suffices for planar faces),
+# all in one kernel thread -- no scratch arrays, so it is graph-capturable.
 # --------------------------------------------------------------------------------------------------
 
 _mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
@@ -921,7 +924,6 @@ def _seat_body_pose(
     pad_hi: int,
     pad_body_b_id: wp.array[int],
     pad_seal_engaged: wp.array[wp.bool],
-    pad_engaged: wp.array[wp.bool],
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
     pad_gripper: wp.array[int],
@@ -934,40 +936,56 @@ def _seat_body_pose(
     max_dist: float,
     grad_h: float,
     damping: float,
+    iters: int,
 ) -> wp.transform:
-    """Seated world pose of gripped body ``bdy``: one Gauss-Newton step (from its current pose ``body_q``)
-    minimizing the SDF of the cup lips of every pad latching ``bdy`` this step. Only ``[pad_lo, pad_hi)``
-    (``bdy``'s world's pads) is scanned, since pads only seal bodies in their own world. See the section
-    header for the Jacobian ``a = [grad; q x grad]`` and the on-manifold update ``TB <- TB * exp(dxi)``."""
-    tb0 = body_q[bdy]
-    inv_tb0 = wp.transform_inverse(tb0)
-    jtj = _mat66()
-    rhs = _vec6()
-    for p in range(pad_lo, pad_hi):
-        if pad_body_b_id[p] == bdy and pad_seal_engaged[p] and not pad_engaged[p]:  # a pad latching this same body
-            gp = pad_gripper[p]
-            t_rel = inv_tb0 * (body_q[gripper_body_id[gp]] * gripper_xform[gp] * pad_xform[p])  # seal frame in body
-            for s in range(n_samples_per_pad):
-                th = _TWO_PI * float(s) / float(n_samples_per_pad)
-                q = wp.transform_point(
-                    t_rel, wp.vec3(pad_radius * wp.cos(th), pad_radius * wp.sin(th), pad_face_offset)
-                )
-                sdf = sdf_mesh(mesh_id, q, max_dist)
-                grad = _sdf_grad(mesh_id, q, max_dist, grad_h)
-                cr = wp.cross(q, grad)
-                a = _vec6(grad[0], grad[1], grad[2], cr[0], cr[1], cr[2])  # Jacobian row (sdf grows as -a . xi)
-                jtj = jtj + wp.outer(a, a)
-                rhs = rhs + a * sdf
-    for k in range(6):
-        jtj[k, k] = jtj[k, k] + damping  # Levenberg diagonal; also pins the flat-face DOFs
-    dxi = _solve6(jtj, rhs)
-    v = wp.vec3(dxi[0], dxi[1], dxi[2])
-    om = wp.vec3(dxi[3], dxi[4], dxi[5])
-    ang = wp.length(om)
-    axis = wp.vec3(0.0, 0.0, 1.0)
-    if ang > 1.0e-9:
-        axis = om / ang
-    return tb0 * wp.transform(v, wp.quat_from_axis_angle(axis, ang))
+    """Seated world pose of gripped body ``bdy``: ``iters`` Gauss-Newton steps (from its current pose
+    ``body_q``) minimizing the SDF of the lips of every pad sealing ``bdy`` after this step
+    (``pad_seal_engaged``, i.e. already-engaged or newly-engaging pads on ``bdy``). Each step
+    re-samples the SDF at the updated pose, so it converges for a general (curved) object, not just planar
+    faces -- a flat face needs 1 step, a curved surface a few. Only ``[pad_lo, pad_hi)`` (``bdy``'s world's pads)
+    is scanned, since pads only seal bodies in their own world. See the section header for the Jacobian
+    ``a = [grad; q x grad]`` and the on-manifold update ``TB <- TB * exp(dxi)``."""
+    tb = body_q[bdy]  # current pose estimate; refined by each Gauss-Newton iteration below
+    d_th = _TWO_PI / float(n_samples_per_pad)  # angular step between lip samples (loop-invariant)
+    for _it in range(iters):
+        inv_tb = wp.transform_inverse(tb)  # re-linearize: sample the lip SDFs at the *current* pose
+        jtj = _mat66()
+        rhs = _vec6()
+        for p in range(pad_lo, pad_hi):
+            if pad_body_b_id[p] == bdy and pad_seal_engaged[p]:  # a pad sealing this body after this step
+                gripper_id = pad_gripper[p]
+                t_rel = inv_tb * (
+                    body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[p]
+                )  # seal frame in body
+                for s in range(n_samples_per_pad):
+                    th = d_th * float(s)
+                    # this lip point, expressed in the gripped body's frame (where its SDF is defined)
+                    sample_point_in_body_b_frame = wp.transform_point(
+                        t_rel, wp.vec3(pad_radius * wp.cos(th), pad_radius * wp.sin(th), pad_face_offset)
+                    )
+                    sdf = sdf_mesh(mesh_id, sample_point_in_body_b_frame, max_dist)
+                    grad = _sdf_grad(mesh_id, sample_point_in_body_b_frame, max_dist, grad_h)
+                    cr = wp.cross(sample_point_in_body_b_frame, grad)
+                    # Apply a twist (v,w) to the pose of body b and compute the effect on the sdf of the sample point.
+                    # The sample point moves in the frame of body b by -(v + w X q).
+                    # The difference to the sdf is -grad.(v + w X q)
+                    # dSdf = -grad.(v + w X q) = -grad.V - (q X grad).w = [grad, q X grad].[v, w]
+                    # We seek Sdf + dSdf = 0.
+                    a = _vec6(grad[0], grad[1], grad[2], cr[0], cr[1], cr[2])  # Jacobian row (sdf grows as -a . xi)
+                    # Least squares solution: (J^T*J)*(v.w) = J^T * residual
+                    jtj = jtj + wp.outer(a, a)
+                    rhs = rhs + a * sdf
+        for k in range(6):
+            jtj[k, k] = jtj[k, k] + damping  # steadies the fit; without it a flat face could slide/spin freely
+        dxi = _solve6(jtj, rhs)
+        v = wp.vec3(dxi[0], dxi[1], dxi[2])
+        om = wp.vec3(dxi[3], dxi[4], dxi[5])
+        ang = wp.length(om)
+        axis = wp.vec3(0.0, 0.0, 1.0)
+        if ang > 1.0e-6:
+            axis = om / ang
+        tb = tb * wp.transform(v, wp.quat_from_axis_angle(axis, ang))  # apply the step, then re-linearize
+    return tb
 
 
 @wp.kernel
@@ -987,7 +1005,8 @@ def attach_seal_seated_kernel(
     n_samples_per_pad: int,  # lip points per pad
     max_dist: float,  # SDF search radius [m]
     grad_h: float,  # SDF central-difference step [m]
-    damping: float,  # Levenberg diagonal term; also pins the flat-face DOFs
+    damping: float,  # small stabiliser: steadies the fit when the pads don't fully pin the gripped object
+    iters: int,  # Gauss-Newton iterations for the seat fit (1 for planar faces, more for curved objects)
     # outputs
     pad_engaged: wp.array[wp.bool],
     pad_body_b: wp.array[int],
@@ -995,7 +1014,7 @@ def attach_seal_seated_kernel(
 ):
     """Seated variant of :func:`attach_seal_kernel`: on each pad's rising edge, compute the gripped body's
     seated pose inline (:func:`_seat_body_pose`, scanning only this pad's world's pads) and latch
-    ``pad_anchor_b`` against it (so the seal seats the body on the cups). The seat fit only runs on the
+    ``pad_anchor_b`` against it (so the seal seats the body on the pads). The seat fit only runs on the
     rising edge -- every other sub-step just early-outs and commits state. Pads of one body redundantly
     recompute its (identical) seated pose; that fires only at engagement, which is rare."""
     pad = wp.tid()
@@ -1003,14 +1022,13 @@ def attach_seal_seated_kernel(
         pad_body_b[pad] = pad_body_b_id[pad]  # latch the gripped body id at engagement (stays fixed while gripped)
         bdy = pad_body_b_id[pad]
         if bdy >= 0:
-            w = pad_world[pad]  # this pad's world; scan only that world's pads for bdy's cups
+            w = pad_world[pad]  # this pad's world; scan only that world's pads for bdy
             hold_pose_body_b = _seat_body_pose(
                 bdy,
                 pad_world_start[w],
                 pad_world_start[w + 1],
                 pad_body_b_id,
                 pad_seal_engaged,
-                pad_engaged,
                 gripper_body_id,
                 gripper_xform,
                 pad_gripper,
@@ -1023,9 +1041,10 @@ def attach_seal_seated_kernel(
                 max_dist,
                 grad_h,
                 damping,
+                iters,
             )
-            g = pad_gripper[pad]
-            seal_world = body_q[gripper_body_id[g]] * gripper_xform[g] * pad_xform[pad]  # TA * TAS
+            gripper_id = pad_gripper[pad]
+            seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # TA * TAS
             pad_anchor_b[pad] = wp.transform_inverse(hold_pose_body_b) * seal_world
     pad_engaged[pad] = pad_seal_engaged[pad]
 
@@ -1043,6 +1062,7 @@ def attach_seal_seated(
     max_dist: float = 1.0,
     grad_h: float = 1.0e-4,
     damping: float = 1.0e-3,
+    iters: int = 8,
 ):
     """For each pad that switches engagement False (``gripper_state.pad_engaged``) -> True
     (``pad_seal_engaged``):
@@ -1065,12 +1085,17 @@ def attach_seal_seated(
         pad_seal_engaged: This step's fresh per-pad seal decision, shape [n_pads].
         pad_body_b_id: Gripped body each pad seals against this step (< 0 = none), shape [n_pads].
         body_b_mesh_id: Body id -> gripped-object SDF mesh id (a :class:`warp.Mesh` id), shape [n_bodies].
-        pad_radius: Cup lip circle radius [m].
+        pad_radius: Pad lip circle radius [m].
         pad_face_offset: Lip-plane offset along the pad suction axis (pad local +z) [m].
-        n_samples_per_pad: Number of lip sample points placed around each pad's cup.
+        n_samples_per_pad: Number of lip sample points placed around each pad's lip.
         max_dist: SDF search radius [m].
         grad_h: SDF central-difference step [m].
-        damping: Levenberg diagonal term for the 6x6 seat solve; also pins the flat-face DOFs.
+        damping: A small stabiliser for the fit. When the pads don't fully pin the gripped object down --
+            e.g. a flat face lets it slide sideways or spin without changing any lip distance -- the fit
+            would drift in those free directions. Damping holds them still. Keep it small (too large just
+            slows the fit).
+        iters: Gauss-Newton iterations for the seat fit. 1 suffices for planar faces; increase for
+            curved gripped objects (each iteration re-samples the SDF at the updated pose).
     """
     gm = gripper_model
     n_pads = gm.pad_xform.shape[0]
@@ -1096,6 +1121,7 @@ def attach_seal_seated(
             max_dist,
             grad_h,
             damping,
+            iters,
             gripper_state.pad_engaged,
             gripper_state.pad_body_b,
             gripper_state.pad_anchor_b,

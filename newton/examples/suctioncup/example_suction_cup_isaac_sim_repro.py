@@ -100,7 +100,11 @@ ENABLE_PAD_BOX_CONTACT = False
 # an on-device Gauss-Newton fit) and anchor the seal to that fitted pose, so the seal seats the box flush
 # on the cups (the lip-SDF standoff becomes a bias the seal pulls closed). Fully kernel-driven, so it
 # graph-captures and runs on CPU and graphed CUDA alike.
-SEAL_SEAT_ON_ENGAGE = False
+SEAL_SEAT_ON_ENGAGE = True
+
+# Gauss-Newton iterations for the on-engagement seat fit. 1 is exact for a planar (box) face; raise it for
+# curved gripped objects, where each iteration re-samples the SDF at the updated pose to converge.
+SEAT_ITERS = 4
 
 # Draw a small non-colliding disk at each suction cup (GRIPPER_PADS) so the cup layout is visible in
 # the viewer. Purely visual (has_shape_collision off); does not affect the physics.
@@ -513,6 +517,7 @@ class Example:
                     PAD_RADIUS,
                     PAD_CUP_HALF_HEIGHT,
                     PAD_LIP_SAMPLES,
+                    iters=SEAT_ITERS,
                 )
             else:
                 attach_seal(
