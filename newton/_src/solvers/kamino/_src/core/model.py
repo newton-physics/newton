@@ -401,6 +401,17 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
+    ###
+    # Host-side Metadata
+    ###
+
+    has_world_without_base_body: bool = False
+    """
+    Host-side flag to indicate whether any world could not be assigned a base body.
+    The reason for this could be that the world has no bodies or no articulation root has a free
+    joint attached to the world.
+    """
+
 
 @dataclass
 class ModelKamino:

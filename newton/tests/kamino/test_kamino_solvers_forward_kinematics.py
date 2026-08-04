@@ -35,7 +35,7 @@ from newton.tests.kamino.utils.sampling import (
     sample_body_poses,
 )
 from newton.tests.utils.basics import build_cartpole
-from newton.tests.utils.testing import build_unary_universal_joint_test
+from newton.tests.utils.testing import build_unary_revolute_joint_test, build_unary_universal_joint_test
 
 ###
 # Module configs
@@ -901,6 +901,42 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
                 rows, cols = int(dims[wd_id][0]), int(dims[wd_id][1])
                 residual = jac_dense_np[wd_id, :rows, :cols] - jac_sparse_np[wd_id]
                 self.assertTrue(np.max(np.abs(residual)) < 1e-6)
+
+
+class ForwardKinematicsWarnings(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_solve_fk_warns_without_base_body_when_base_provided(self):
+        """
+        Validate that solve_fk() warns about worlds without a base body, only when a base is provided.
+        """
+        builder = build_unary_revolute_joint_test(ground=False)
+        model_newton = builder.finalize(device=self.default_device)
+        model = ModelKamino.from_newton(model_newton)
+        self.assertTrue(model.info.has_world_without_base_body)
+
+        solver = ForwardKinematicsSolver(model=model)
+        identity = wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32))
+        actuators_q = wp.empty(
+            model.size.sum_of_num_fk_actuated_joint_coords, dtype=wp.float32, device=self.default_device
+        )
+        bodies_q = wp.array([identity] * model.size.sum_of_num_bodies, dtype=wp.transformf, device=self.default_device)
+
+        # Without a base pose, the solve stays silent.
+        with self.assertNoLogs(level="WARNING"):
+            solver.solve_fk(actuators_q, bodies_q, use_graph=False)
+
+        # Providing a base pose triggers the deferred warning.
+        base_q = wp.array([identity], dtype=wp.transformf, device=self.default_device)
+        with self.assertLogs(level="WARNING") as logs:
+            solver.solve_fk(actuators_q, bodies_q, base_q=base_q, use_graph=False)
+        self.assertTrue(any("no base body assigned" in message for message in logs.output))
 
 
 ###

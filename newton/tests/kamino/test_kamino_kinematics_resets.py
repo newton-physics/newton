@@ -19,6 +19,7 @@ from newton._src.solvers.kamino._src.models.builders.testing import build_all_jo
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers import ForwardKinematicsSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
+from newton.solvers import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.sampling import (
     sample_actuator_coords,
@@ -26,6 +27,7 @@ from newton.tests.kamino.utils.sampling import (
     sample_base_state,
     sample_world_mask,
 )
+from newton.tests.utils.testing import build_unary_revolute_joint_test
 
 ###
 # Utils
@@ -577,6 +579,35 @@ class TestSetFloatingBase(unittest.TestCase):
         )
         np.testing.assert_equal(body_q.numpy(), data.bodies.q_i.numpy())
         np.testing.assert_equal(body_u.numpy(), data.bodies.u_i.numpy())
+
+    def test_06_reset_warns_without_base_body_when_base_provided(self):
+        """
+        Validate that reset() warns about worlds without a base body, only when a base is provided.
+        """
+        builder = build_unary_revolute_joint_test(ground=False)
+        model = builder.finalize(device=self.default_device)
+        solver = SolverKamino(model)
+        self.assertTrue(solver._model_kamino.info.has_world_without_base_body)
+
+        # A default reset applies no base transform, so it stays silent.
+        state = model.state()
+        with self.assertNoLogs(level="WARNING"):
+            solver.reset(state=state)
+
+        # Providing a base pose/twist triggers the deferred warning.
+        base_q = wp.array(
+            [wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32))],
+            dtype=wp.transformf,
+            device=self.default_device,
+        )
+        base_u = wp.zeros(1, dtype=wp.spatial_vectorf, device=self.default_device)
+        reset_config = SolverKamino.ResetConfig(
+            base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q),
+            base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u),
+        )
+        with self.assertLogs(level="WARNING") as logs:
+            solver.reset(state=state, config=reset_config)
+        self.assertTrue(any("no base body assigned" in message for message in logs.output))
 
 
 class TestJointBodyStateConversions(unittest.TestCase):

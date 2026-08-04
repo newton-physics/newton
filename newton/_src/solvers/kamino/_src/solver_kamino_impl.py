@@ -611,6 +611,22 @@ class SolverKaminoImpl(SolverBase):
             # Set base_u to provided value
             base_u = config.base_velocity.base_u
 
+        # Warn if any world does not have an assigned base body when base attributes are provided.
+        if (
+            not (
+                isinstance(config.base_pose, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_pose, SolverKamino.ResetConfig.Preserve)
+            )
+            or not (
+                isinstance(config.base_velocity, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_velocity, SolverKamino.ResetConfig.Preserve)
+            )
+        ) and self._model.info.has_world_without_base_body:
+            msg.warning(
+                "Some worlds have no base body assigned (empty world or non-free articulation root). "
+                "Base resets and FK base handling will have no effect for those worlds."
+            )
+
         # Body poses: run FK or reset to default if applicable
         if actuator_q is not None:
             if self._solver_fk is None:
