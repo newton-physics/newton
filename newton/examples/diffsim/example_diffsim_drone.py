@@ -438,6 +438,7 @@ class Drone:
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.args = args
 
         # setup simulation parameters first

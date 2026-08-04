@@ -1250,7 +1250,7 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120},
+    test_options={"num-frames": 500},
     use_viewer=True,
 )
 

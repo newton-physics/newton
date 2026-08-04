@@ -18,6 +18,7 @@ import newton.examples
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        newton.use_coord_layout_targets = True
         # Set simulation run-time configurations
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
@@ -149,8 +150,8 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > -0.006,
         )
-        # Only check velocities on CUDA where we run 500 frames (enough time to settle)
-        # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
+        # Only check velocities on CUDA, where example tests run enough frames to settle.
+        # Short CPU smoke runs may still be falling when they finish.
         if self.device.is_cuda:
             newton.examples.test_body_state(
                 self.model,
