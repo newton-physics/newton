@@ -93,6 +93,9 @@ class RenderConfig:
     render_order: int = RenderOrder.PIXEL_PRIORITY
     """Render traversal order (see :class:`RenderOrder`)."""
 
+    render_worlds_together: bool = False
+    """Render all worlds into one offset view instead of one view per world."""
+
     tile_width: int = 16
     """Tile width [px] for ``RenderOrder.TILED`` traversal."""
 

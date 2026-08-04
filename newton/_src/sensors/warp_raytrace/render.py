@@ -94,6 +94,7 @@ def create_kernel(
         # Camera
         camera_rays: wp.array4d[wp.vec3f],
         camera_transforms: wp.array2d[wp.transformf],
+        world_offsets: wp.array[wp.vec3f],
         # Shapes BVH
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
@@ -191,6 +192,7 @@ def create_kernel(
             bvh_particles_id,
             bvh_particles_group_roots,
             world_index,
+            world_offsets,
             wp.static(config.max_distance),
             shape_enabled,
             shape_types,
@@ -253,6 +255,12 @@ def create_kernel(
 
         if not is_gaussian:
             hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
+            hit_point_local_world = hit_point
+            if wp.static(config.render_worlds_together):
+                if closest_hit.world_index >= 0:
+                    if world_offsets.shape[0] > 0:
+                        if closest_hit.world_index < world_offsets.shape[0]:
+                            hit_point_local_world = hit_point - world_offsets[closest_hit.world_index]
 
             albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
@@ -269,7 +277,7 @@ def create_kernel(
                         shape_source_ptr[closest_hit.shape_index],
                         mesh_data,
                         shape_mesh_data_ids[closest_hit.shape_index],
-                        hit_point,
+                        hit_point_local_world,
                         closest_hit.normal,
                         closest_hit.bary_u,
                         closest_hit.bary_v,
@@ -305,14 +313,19 @@ def create_kernel(
 
             # Apply lighting and shadows
             for light_index in range(light_count):
+                lighting_world_index = world_index
+                if wp.static(config.render_worlds_together):
+                    lighting_world_index = closest_hit.world_index
+
                 light_contribution = compute_lighting(
-                    world_index,
+                    lighting_world_index,
                     bvh_shapes_size,
                     bvh_shapes_id,
                     bvh_shapes_group_roots,
                     bvh_particles_size,
                     bvh_particles_id,
                     bvh_particles_group_roots,
+                    world_offsets,
                     shape_enabled,
                     shape_types,
                     shape_sizes,

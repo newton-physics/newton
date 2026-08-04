@@ -186,6 +186,7 @@ class SensorTiledCamera:
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
+        world_offsets: wp.array[wp.vec3f] | None = None,
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
         kernel_block_dim: int = 64,
@@ -218,6 +219,10 @@ class SensorTiledCamera:
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for packed unshaded surface color, using the
                 same output color space as ``color_image``. None to skip.
+            world_offsets: Per-world display offsets [m], shape
+                ``(world_count,)``. Used when
+                ``render_config.render_worlds_together`` is ``True`` to render
+                all worlds in a single offset view.
             clear_data: Values to clear output buffers with. Packed color and
                 albedo clear values are specified as display/sRGB RGBA and
                 converted to linear when linear output is requested. See
@@ -246,6 +251,7 @@ class SensorTiledCamera:
                 shape_index_image=shape_index_image,
                 normal_image=normal_image,
                 albedo_image=albedo_image,
+                world_offsets=world_offsets,
                 clear_data=clear_data if clear_data is not None else self.default_clear_data,
                 config=render_config if render_config is not None else self.default_render_config,
                 kernel_block_dim=kernel_block_dim,

@@ -84,6 +84,7 @@ class Example:
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
+        self.render_all_worlds = False
 
         self.time = 0.0
         self.time_delta = 0.005
@@ -195,11 +196,14 @@ class Example:
         self.viewer.set_model(self.model)
 
         self.camera_count = 1
-        self.sensor_render_width = 256
-        self.sensor_render_height = 256
+        self.sensor_tile_width = 256
+        self.sensor_tile_height = 256
+        self.sensor_combined_width = self.sensor_tile_width * self.worlds_per_row
+        self.sensor_combined_height = self.sensor_tile_height * self.worlds_per_col
 
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
+        self.set_render_all_worlds(self.render_all_worlds)
         self.tiled_camera_sensor.default_render_config.enable_shadows = True
         self.tiled_camera_sensor.default_render_config.enable_textures = True
         self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
@@ -209,23 +213,41 @@ class Example:
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
 
-        self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
-            self.sensor_render_width, self.sensor_render_height, camera_fovs=math.radians(fov)
+        self.camera_rays_tiled = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+            self.sensor_tile_width, self.sensor_tile_height, camera_fovs=math.radians(fov)
+        )
+        self.camera_rays_combined = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+            self.sensor_combined_width, self.sensor_combined_height, camera_fovs=math.radians(fov)
         )
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.utils.create_color_image_output(
-            self.sensor_render_width, self.sensor_render_height, self.camera_count
+            self.sensor_tile_width,
+            self.sensor_tile_height,
+            self.camera_count,
+            world_count=self.world_count_total,
         )
         self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.utils.create_albedo_image_output(
-            self.sensor_render_width, self.sensor_render_height, self.camera_count
+            self.sensor_tile_width,
+            self.sensor_tile_height,
+            self.camera_count,
+            world_count=self.world_count_total,
         )
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(
-            self.sensor_render_width, self.sensor_render_height, self.camera_count
+            self.sensor_tile_width,
+            self.sensor_tile_height,
+            self.camera_count,
+            world_count=self.world_count_total,
         )
         self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.utils.create_normal_image_output(
-            self.sensor_render_width, self.sensor_render_height, self.camera_count
+            self.sensor_tile_width,
+            self.sensor_tile_height,
+            self.camera_count,
+            world_count=self.world_count_total,
         )
         self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.utils.create_shape_index_image_output(
-            self.sensor_render_width, self.sensor_render_height, self.camera_count
+            self.sensor_tile_width,
+            self.sensor_tile_height,
+            self.camera_count,
+            world_count=self.world_count_total,
         )
 
         # Palette for the "semantic" debug view: looked up by shape index.
@@ -242,8 +264,8 @@ class Example:
 
         device = self.tiled_camera_sensor_color_image.device
         n = self.world_count_total * self.camera_count
-        H = self.sensor_render_height
-        W = self.sensor_render_width
+        H = self.sensor_tile_height
+        W = self.sensor_tile_width
         self.depth_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.normal_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.shape_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
@@ -277,35 +299,65 @@ class Example:
     def render_sensors(self):
         self.model.bvh_refit_shapes(self.state)
         self.model.bvh_refit_particles(self.state)
+        color_image = self.get_sensor_output(self.tiled_camera_sensor_color_image)
+        albedo_image = self.get_sensor_output(self.tiled_camera_sensor_albedo_image)
+        depth_image = self.get_sensor_output(self.tiled_camera_sensor_depth_image)
+        normal_image = self.get_sensor_output(self.tiled_camera_sensor_normal_image)
+        shape_index_image = self.get_sensor_output(self.tiled_camera_sensor_shape_index_image)
         self.tiled_camera_sensor.update(
             self.state,
             self.get_camera_transforms(),
-            self.camera_rays,
-            color_image=self.tiled_camera_sensor_color_image,
-            albedo_image=self.tiled_camera_sensor_albedo_image,
-            depth_image=self.tiled_camera_sensor_depth_image,
-            normal_image=self.tiled_camera_sensor_normal_image,
-            shape_index_image=self.tiled_camera_sensor_shape_index_image,
+            self.get_camera_rays(),
+            color_image=color_image,
+            albedo_image=albedo_image,
+            depth_image=depth_image,
+            normal_image=normal_image,
+            shape_index_image=shape_index_image,
+            world_offsets=self.get_sensor_world_offsets(),
             clear_data=SensorTiledCamera.GRAY_CLEAR_DATA,
         )
         utils = self.tiled_camera_sensor.utils
-        color_rgba = utils.to_rgba_from_color(self.tiled_camera_sensor_color_image)
-        albedo_rgba = utils.to_rgba_from_color(self.tiled_camera_sensor_albedo_image)
-        utils.to_rgba_from_depth(
-            self.tiled_camera_sensor_depth_image, depth_range=(0.0, 10.0), out_buffer=self.depth_rgba
-        )
-        utils.to_rgba_from_normal(self.tiled_camera_sensor_normal_image, out_buffer=self.normal_rgba)
-        utils.to_rgba_from_shape_index(self.tiled_camera_sensor_shape_index_image, out_buffer=self.shape_rgba)
-        utils.to_rgba_from_shape_index(
-            self.tiled_camera_sensor_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
-        )
+        color_rgba = utils.to_rgba_from_color(color_image)
+        albedo_rgba = utils.to_rgba_from_color(albedo_image)
+        depth_rgba = self.get_rgba_output(self.depth_rgba)
+        normal_rgba = self.get_rgba_output(self.normal_rgba)
+        shape_rgba = self.get_rgba_output(self.shape_rgba)
+        semantic_rgba = self.get_rgba_output(self.semantic_rgba)
+        utils.to_rgba_from_depth(depth_image, depth_range=(0.0, 10.0), out_buffer=depth_rgba)
+        utils.to_rgba_from_normal(normal_image, out_buffer=normal_rgba)
+        utils.to_rgba_from_shape_index(shape_index_image, out_buffer=shape_rgba)
+        utils.to_rgba_from_shape_index(shape_index_image, colors=self.semantic_palette, out_buffer=semantic_rgba)
 
         self.viewer.log_image("color", color_rgba)
         self.viewer.log_image("albedo", albedo_rgba)
-        self.viewer.log_image("depth", self.depth_rgba)
-        self.viewer.log_image("normal", self.normal_rgba)
-        self.viewer.log_image("shape_index", self.shape_rgba)
-        self.viewer.log_image("semantic", self.semantic_rgba)
+        self.viewer.log_image("depth", depth_rgba)
+        self.viewer.log_image("normal", normal_rgba)
+        self.viewer.log_image("shape_index", shape_rgba)
+        self.viewer.log_image("semantic", semantic_rgba)
+
+    @property
+    def output_world_count(self) -> int:
+        return 1 if self.render_all_worlds else self.world_count_total
+
+    def set_render_all_worlds(self, render_all_worlds: bool):
+        self.render_all_worlds = bool(render_all_worlds)
+        self.tiled_camera_sensor.default_render_config.render_worlds_together = self.render_all_worlds
+
+    def get_sensor_render_size(self) -> tuple[int, int]:
+        if self.render_all_worlds:
+            return self.sensor_combined_width, self.sensor_combined_height
+        return self.sensor_tile_width, self.sensor_tile_height
+
+    def get_camera_rays(self) -> wp.array4d[wp.vec3f]:
+        return self.camera_rays_combined if self.render_all_worlds else self.camera_rays_tiled
+
+    def get_sensor_output(self, image):
+        width, height = self.get_sensor_render_size()
+        return image.reshape((self.output_world_count, self.camera_count, height, width))
+
+    def get_rgba_output(self, image: wp.array4d[wp.uint8]) -> wp.array4d[wp.uint8]:
+        width, height = self.get_sensor_render_size()
+        return image.reshape((self.output_world_count * self.camera_count, height, width, 4))
 
     def get_camera_transforms(self) -> wp.array[wp.transformf]:
         if isinstance(self.viewer, ViewerGL):
@@ -317,44 +369,73 @@ class Example:
                             wp.quat_from_matrix(wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])),
                         )
                     ]
-                    * self.world_count_total
+                    * self.output_world_count
                 ],
                 dtype=wp.transformf,
             )
         return wp.array(
-            [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))] * self.world_count_total],
+            [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))] * self.output_world_count],
             dtype=wp.transformf,
         )
 
+    def get_sensor_world_offsets(self) -> wp.array[wp.vec3f] | None:
+        if not self.render_all_worlds:
+            return None
+        if self.viewer.world_offsets is not None:
+            return self.viewer.world_offsets
+        offsets = newton.utils.compute_world_offsets(
+            self.world_count_total,
+            (8.0, 8.0, 0.0),
+            up_axis=self.model.up_axis,
+        )
+        return wp.array(offsets, dtype=wp.vec3f, device=self.model.device)
+
     def test_final(self):
         self.render_sensors()
+        self.check_sensor_outputs()
 
-        expected_shape = (24, 1, self.sensor_render_height, self.sensor_render_width)
+        self.set_render_all_worlds(True)
+        self.render_sensors()
+        self.check_sensor_outputs()
 
-        color_image = self.tiled_camera_sensor_color_image.numpy()
+    def check_sensor_outputs(self):
+        width, height = self.get_sensor_render_size()
+
+        expected_shape = (self.output_world_count, 1, height, width)
+
+        color_image = self.get_sensor_output(self.tiled_camera_sensor_color_image).numpy()
         assert color_image.shape == expected_shape
         assert color_image.min() < color_image.max()
 
-        depth_image = self.tiled_camera_sensor_depth_image.numpy()
+        depth_image = self.get_sensor_output(self.tiled_camera_sensor_depth_image).numpy()
         assert depth_image.shape == expected_shape
         assert depth_image.min() < depth_image.max()
 
         # Loose allocation-regression checks on the other outputs: just
         # verify the sensor wrote into arrays with the right shapes/dtypes.
-        albedo_image = self.tiled_camera_sensor_albedo_image.numpy()
+        albedo_image = self.get_sensor_output(self.tiled_camera_sensor_albedo_image).numpy()
         assert albedo_image.shape == expected_shape
         assert albedo_image.dtype == np.uint32
 
-        normal_image = self.tiled_camera_sensor_normal_image.numpy()
-        assert normal_image.shape == (24, 1, self.sensor_render_height, self.sensor_render_width, 3)
+        normal_image = self.get_sensor_output(self.tiled_camera_sensor_normal_image).numpy()
+        assert normal_image.shape == (
+            self.output_world_count,
+            1,
+            height,
+            width,
+            3,
+        )
         assert normal_image.dtype == np.float32
 
-        shape_index_image = self.tiled_camera_sensor_shape_index_image.numpy()
+        shape_index_image = self.get_sensor_output(self.tiled_camera_sensor_shape_index_image).numpy()
         assert shape_index_image.shape == expected_shape
         assert shape_index_image.dtype == np.uint32
 
         albedo_rgba = albedo_image.view(np.uint8).reshape(
-            self.world_count_total * self.camera_count, self.sensor_render_height, self.sensor_render_width, 4
+            self.output_world_count * self.camera_count,
+            height,
+            width,
+            4,
         )
         ground_shape_mask = np.isin(shape_index_image.reshape(albedo_rgba.shape[:3]), self.ground_shape_indices)
         ground_albedo = albedo_rgba[..., :3][ground_shape_mask]
@@ -370,6 +451,14 @@ class Example:
 
     def gui(self, ui):
         show_compile_kernel_info = False
+
+        changed, render_all_worlds = ui.checkbox("Render All Worlds", self.render_all_worlds)
+        if changed:
+            self.set_render_all_worlds(render_all_worlds)
+            show_compile_kernel_info = True
+
+        width, height = self.get_sensor_render_size()
+        ui.text(f"Sensor Resolution: {width} x {height}")
 
         if ui.radio_button(
             "Gaussians: Fast",

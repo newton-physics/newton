@@ -100,6 +100,16 @@ class TestSensorTiledCamera(unittest.TestCase):
         return builder.finalize(device="cpu")
 
     @staticmethod
+    def _build_two_world_sphere_scene() -> newton.Model:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for color in ((0.9, 0.2, 0.2), (0.2, 0.2, 0.9)):
+            builder.begin_world()
+            body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -3.0), q=wp.quat_identity()))
+            builder.add_shape_sphere(body, radius=0.5, color=color)
+            builder.end_world()
+        return builder.finalize(device="cpu")
+
+    @staticmethod
     def _build_single_particle_scene() -> newton.Model:
         builder = newton.ModelBuilder()
         builder.add_particle(pos=wp.vec3(0.0), vel=wp.vec3(0.0), mass=1.0, radius=0.1)
@@ -325,6 +335,56 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         np.testing.assert_array_equal(tiled_color.numpy(), reference_color.numpy())
         np.testing.assert_array_equal(tiled_depth.numpy(), reference_depth.numpy())
+
+    def test_render_worlds_together_applies_world_offsets(self) -> None:
+        """Render offset grouped-BVH worlds into one output view."""
+        model = self._build_two_world_sphere_scene()
+        sensor = SensorTiledCamera(
+            model=model,
+            default_render_config=SensorTiledCamera.RenderConfig(
+                enable_shadows=True,
+                render_worlds_together=True,
+                max_distance=10.0,
+            ),
+        )
+        sensor.utils.create_default_light(enable_shadows=True)
+
+        width = 96
+        height = 48
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(60.0))
+        world_offsets = wp.array(
+            [wp.vec3f(-0.8, 0.0, 0.0), wp.vec3f(0.8, 0.0, 0.0)],
+            dtype=wp.vec3f,
+            device="cpu",
+        )
+        color_image = sensor.utils.create_color_image_output(width, height, world_count=1)
+        depth_image = sensor.utils.create_depth_image_output(width, height, world_count=1)
+        shape_index_image = sensor.utils.create_shape_index_image_output(width, height, world_count=1)
+
+        sensor.update(
+            model.state(),
+            camera_transforms,
+            camera_rays,
+            color_image=color_image,
+            depth_image=depth_image,
+            shape_index_image=shape_index_image,
+            world_offsets=world_offsets,
+        )
+
+        self.assertEqual(depth_image.shape, (1, 1, height, width))
+        self.assertEqual(color_image.shape, (1, 1, height, width))
+        shape_indices = shape_index_image.numpy()[0, 0]
+        hit_shape_indices = {
+            int(i) for i in np.unique(shape_indices) if i != SensorTiledCamera.ClearData().clear_shape_index
+        }
+        self.assertEqual(hit_shape_indices, {0, 1})
+        hit_colors = color_image.numpy()[0, 0][shape_indices != SensorTiledCamera.ClearData().clear_shape_index]
+        self.assertGreater(np.count_nonzero(hit_colors), 0)
 
     def test_forward_depth_image_matches_utility(self) -> None:
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
