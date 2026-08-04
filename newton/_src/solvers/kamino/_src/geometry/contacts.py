@@ -429,7 +429,23 @@ def reserve_contact_capacity(
     contact_world_num: wp.array[wp.int32],
     contact_overflow_warning_emitted: wp.array[wp.int32],
 ) -> wp.vec3i:
-    """Reserve contact capacity and return the model/world indices and number reserved."""
+    """Reserve contact capacity atomically in the per-world and model counters.
+
+    Args:
+        model_max_contacts: Contact capacity of the model buffer.
+        world_max_contacts: Contact capacity of world ``wid``.
+        wid: World index of the contacts to reserve.
+        num_contacts: Number of contacts requested.
+        contact_model_num: Model-level active contact counter, shape ``(1,)``.
+        contact_world_num: Per-world active contact counters, shape ``(num_worlds,)``.
+        contact_overflow_warning_emitted: One-time overflow warning flag, shape ``(1,)``.
+
+    Returns:
+        ``(num_reserved, world_contact_index, model_index)``. ``num_reserved`` is ``0`` when no
+        capacity was reserved, in which case both indices are ``-1``. It can be smaller than
+        ``num_contacts``; callers requesting more than one contact must write only
+        ``num_reserved`` contacts starting at ``world_contact_index`` and ``model_index``.
+    """
     # Note: the world counter must be incremented first to ensure that once
     # a thread increments the global counter, it won't decrease it again after
     # because its world is saturated (leading to potential non-unique
@@ -441,7 +457,7 @@ def reserve_contact_capacity(
         wp.atomic_sub(contact_world_num, wid, num_contacts)
         if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
             _print_world_contact_capacity_warning()
-        return wp.vec3i(-1, 0, 0)
+        return wp.vec3i(0, -1, -1)
 
     # Handle case where this thread saturated the world and only partial contacts can be written
     max_num_contacts = wp.min(world_max_contacts - wcio, num_contacts)
@@ -459,7 +475,7 @@ def reserve_contact_capacity(
         wp.atomic_sub(contact_world_num, wid, max_num_contacts)
         if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
             _print_model_contact_capacity_warning()
-        return wp.vec3i(-1, 0, 0)
+        return wp.vec3i(0, -1, -1)
 
     # Handle case where this thread saturated the model and only partial contacts can be written
     max_num_contacts_prev = max_num_contacts
@@ -471,7 +487,7 @@ def reserve_contact_capacity(
         if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
             _print_model_contact_capacity_warning()
 
-    return wp.vec3i(mcio, max_num_contacts, wcio)
+    return wp.vec3i(max_num_contacts, wcio, mcio)
 
 
 ###
@@ -1103,10 +1119,10 @@ def make_convert_contacts_newton_to_kamino(
             kamino_world_active,
             contact_overflow_warning_emitted,
         )
-        if reservation[0] < 0:
+        if reservation[0] == 0:
             return
-        mcid = reservation[0]
-        wcid = reservation[2]
+        wcid = reservation[1]
+        mcid = reservation[2]
 
         # Store the contact data in the Kamino format if the contact is valid
         kamino_wid[mcid] = wid

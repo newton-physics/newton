@@ -162,11 +162,11 @@ def _write_contact_unified_kamino(
         writer_data.contacts_world_num_active,
         writer_data.contact_overflow_warning_emitted,
     )
-    if reservation[0] < 0:
+    if reservation[0] == 0:
         wp.atomic_add(writer_data.dropped_contact_count, 0, 1)
         return
-    mcid = reservation[0]
-    wcid = reservation[2]
+    wcid = reservation[1]
+    mcid = reservation[2]
 
     # Retrieve the geom/body/material indices
     gid_a = contact_data.shape_a

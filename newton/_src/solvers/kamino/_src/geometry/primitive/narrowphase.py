@@ -271,10 +271,10 @@ def add_single_contact(
         contact_world_num,
         contact_overflow_warning_emitted,
     )
-    if reservation[0] < 0:
+    if reservation[0] == 0:
         return
-    mcid = reservation[0]
-    wcid = reservation[2]
+    wcid = reservation[1]
+    mcid = reservation[2]
 
     # Perform A/B geom and body assignment
     # NOTE: We want the normal to always point from A to B,
@@ -382,11 +382,11 @@ def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
             contact_world_num,
             contact_overflow_warning_emitted,
         )
-        if reservation[0] < 0:
+        if reservation[0] == 0:
             return
-        mcio = reservation[0]
-        max_num_contacts = reservation[1]
-        wcio = reservation[2]
+        max_num_contacts = reservation[0]
+        wcio = reservation[1]
+        mcio = reservation[2]
 
         # Create the common material for this contact set
         material = wp.vec2f(friction, restitution)
@@ -1256,11 +1256,11 @@ def plane_capsule(
         contact_world_num,
         contact_overflow_warning_emitted,
     )
-    if reservation[0] < 0:
+    if reservation[0] == 0:
         return
-    mcio = reservation[0]
-    max_num_contacts = reservation[1]
-    wcio = reservation[2]
+    max_num_contacts = reservation[0]
+    wcio = reservation[1]
+    mcio = reservation[2]
 
     # Create the common properties shared by all contacts in the current set
     q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
