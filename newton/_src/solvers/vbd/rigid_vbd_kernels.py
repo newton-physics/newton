@@ -1088,8 +1088,10 @@ def evaluate_cable_stretch_shear_force_hessian(
     u = wp.quat_rotate_inv(q_wp, C_vec)
     psi = wp.cw_mul(k_diag, u) - C0_force_local + lambda_local
 
-    h_s = k_diag[0]
-    h_z = k_diag[2]
+    k_s = k_diag[0]
+    k_z = k_diag[2]
+    h_s = k_s
+    h_z = k_z
     if damping_active:
         inv_dt = 1.0 / dt
         x_p_prev = wp.transform_get_translation(X_wp_prev)
@@ -1107,16 +1109,16 @@ def evaluate_cable_stretch_shear_force_hessian(
     K_eff = h_s * identity + (h_z - h_s) * wp.outer(t, t)
     H_ll = K_eff
     if is_parent:
-        # Isotropic response is independent of parent material-frame rotation, so its solve
-        # Hessian uses the parent-anchor lever arm. The directional remainder retains the
-        # material-frame Jacobian; choosing the smaller stiffness keeps it PSD.
-        h_iso = wp.min(h_s, h_z)
-        K_aniso = K_eff - h_iso * identity
-        r_iso = x_p - com_w
-        rx_aniso = wp.skew(r)
-        H_al = h_iso * wp.skew(r_iso) + rx_aniso * K_aniso
-        H_aa = h_iso * (wp.length_sq(r_iso) * identity - wp.outer(r_iso, r_iso))
-        H_aa = H_aa + wp.transpose(rx_aniso) * K_aniso * rx_aniso
+        # Isotropic elastic energy is frame-invariant, so it takes the parent-anchor arm that
+        # evaluate_linear_constraint_force_hessian also uses; min() extracts the largest such block
+        # leaving a PSD remainder. Damping keeps the material arm: u_prev is frozen one step back.
+        k_iso = wp.min(k_s, k_z)
+        K_material = K_eff - k_iso * identity
+        r_elastic = x_p - com_w
+        rx_material = wp.skew(r)
+        H_al = k_iso * wp.skew(r_elastic) + rx_material * K_material
+        H_aa = k_iso * (wp.length_sq(r_elastic) * identity - wp.outer(r_elastic, r_elastic))
+        H_aa = H_aa + wp.transpose(rx_material) * K_material * rx_material
     else:
         rx = wp.skew(r)
         H_al = rx * K_eff
