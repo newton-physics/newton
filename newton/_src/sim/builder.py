@@ -53,7 +53,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from ..utils.deprecation import deprecate_nonkeyword_arguments
+from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .enums import (
     BodyFlags,
@@ -2490,102 +2490,10 @@ class ModelBuilder:
         """
         return len(self.articulation_start)
 
-    @property
-    def joint_target_pos(self) -> list[float]:
-        """Deprecated alias for :attr:`joint_target_q` (DOF-shape).
-
-        Returns a fresh DOF-shaped list — for FREE/BALL/DISTANCE the quat-w
-        slot is dropped; other joints copy verbatim. Mutating the returned
-        list does not propagate back; assign to this alias to update the
-        underlying targets during the deprecation window. Raises
-        :class:`AttributeError` under
-        :data:`newton.use_coord_layout_targets` ``True``.
-
-        .. deprecated:: 1.3
-            Use :attr:`joint_target_q` instead.
-        """
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
-            raise AttributeError(
-                "ModelBuilder.joint_target_pos is unavailable when "
-                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_q."
-            )
-        warnings.warn(
-            "ModelBuilder.joint_target_pos is deprecated; use ModelBuilder.joint_target_q "
-            "(coord-shaped). For per-axis configuration set JointDofConfig.target_pos before "
-            "calling add_joint*(). The attribute will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._project_target_q_to_dof()
-
-    @joint_target_pos.setter
-    def joint_target_pos(self, value: Sequence[float]) -> None:
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
-            raise AttributeError(
-                "ModelBuilder.joint_target_pos is unavailable when "
-                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_q."
-            )
-        warnings.warn(
-            "ModelBuilder.joint_target_pos is deprecated; use ModelBuilder.joint_target_q "
-            "(coord-shaped). Assignments to the legacy alias are converted from DOF layout "
-            "during the deprecation window. The attribute will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._assign_target_q_from_dof(value)
-
-    @property
-    def joint_target_vel(self) -> list[float]:
-        """Deprecated alias for :attr:`joint_target_qd`.
-
-        Returns a fresh copy — mutating it does not propagate back; assign to
-        this alias to update :attr:`joint_target_qd` during the deprecation
-        window. Raises
-        :class:`AttributeError` under
-        :data:`newton.use_coord_layout_targets` ``True``.
-
-        .. deprecated:: 1.3
-            Use :attr:`joint_target_qd` instead.
-        """
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
-            raise AttributeError(
-                "ModelBuilder.joint_target_vel is unavailable when "
-                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_qd."
-            )
-        warnings.warn(
-            "ModelBuilder.joint_target_vel is deprecated; use ModelBuilder.joint_target_qd. "
-            "The attribute will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return list(self.joint_target_qd)
-
-    @joint_target_vel.setter
-    def joint_target_vel(self, value: Sequence[float]) -> None:
-        import newton  # noqa: PLC0415
-
-        if newton.use_coord_layout_targets:
-            raise AttributeError(
-                "ModelBuilder.joint_target_vel is unavailable when "
-                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_qd."
-            )
-        warnings.warn(
-            "ModelBuilder.joint_target_vel is deprecated; use ModelBuilder.joint_target_qd. "
-            "Assignments to the legacy alias are forwarded during the deprecation window. "
-            "The attribute will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        values = list(value)
-        if len(values) != self.joint_dof_count:
-            raise ValueError(f"ModelBuilder.joint_target_vel expects {self.joint_dof_count} values, got {len(values)}.")
-        self.joint_target_qd = values
+    # Tombstones so that assigning the 1.3-era names fails loudly instead of
+    # creating an unused instance attribute whose targets are never applied.
+    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
+    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     def _project_target_q_to_dof(self) -> list[float]:
         """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
@@ -2609,31 +2517,6 @@ class ModelBuilder:
                 num_lin, num_ang = self.joint_dof_dim[j]
                 result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
         return result
-
-    def _assign_target_q_from_dof(self, values: Sequence[float]) -> None:
-        """Write DOF-shaped legacy target values into the coord-sized buffer."""
-        values = list(values)
-        if len(values) != self.joint_dof_count:
-            raise ValueError(f"ModelBuilder.joint_target_pos expects {self.joint_dof_count} values, got {len(values)}.")
-
-        value_start = 0
-        for j, jtype in enumerate(self.joint_type):
-            q_start = self.joint_q_start[j]
-            if jtype == JointType.BALL:
-                self.joint_target_q[q_start : q_start + 3] = values[value_start : value_start + 3]
-                self.joint_target_q[q_start + 3] = 1.0
-                value_start += 3
-            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
-                self.joint_target_q[q_start : q_start + 6] = values[value_start : value_start + 6]
-                self.joint_target_q[q_start + 6] = 1.0
-                value_start += 6
-            elif jtype == JointType.FIXED:
-                pass
-            else:
-                num_lin, num_ang = self.joint_dof_dim[j]
-                dof_count = num_lin + num_ang
-                self.joint_target_q[q_start : q_start + dof_count] = values[value_start : value_start + dof_count]
-                value_start += dof_count
 
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
@@ -4078,6 +3961,29 @@ class ModelBuilder:
     ) -> None:
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
+        # Builders allocate MJCF mask-domain IDs independently. Remap every
+        # incoming domain as one unit so its IDs cannot collide with domains
+        # already present in the destination builder.
+        collision_mask_domain_key = "mujoco:collision_mask_domain"
+        collision_mask_domain_remap: dict[int, int] = {}
+        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+        if source_domain_attr is not None and source_domain_attr.values:
+            source_items = (
+                source_domain_attr.values.items()
+                if isinstance(source_domain_attr.values, dict)
+                else enumerate(source_domain_attr.values)
+            )
+            # Copied shape ranges never overlap, so the first destination shape
+            # in each source domain is already a unique, deterministic ID. This
+            # avoids rescanning the growing destination during replication.
+            shape_offset = entity_offsets["shape"]
+            for shape, value in source_items:
+                if value is None:
+                    continue
+                source_domain = int(value)
+                if source_domain >= 0:
+                    collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
+
         def get_offset(entity_or_key: str | None) -> int:
             if entity_or_key is None:
                 return 0
@@ -4114,7 +4020,10 @@ class ModelBuilder:
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
-            needs_remap = value_offset != 0 or use_current_world or is_equality_target_attr
+            is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
+            needs_remap = (
+                value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
+            )
 
             if needs_remap:
 
@@ -4170,9 +4079,12 @@ class ModelBuilder:
                     entity_idx: int,
                     value: Any,
                     is_equality_target: bool = is_equality_target_attr,
+                    is_collision_mask_domain: bool = is_collision_mask_domain_attr,
                 ) -> Any:
                     if is_equality_target:
                         return transform_equality_target_value(entity_idx, value)
+                    if is_collision_mask_domain:
+                        return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
 
             merged = self.custom_attributes.get(full_key)
@@ -12078,6 +11990,17 @@ class ModelBuilder:
             if newton.use_coord_layout_targets:
                 target_q_values = self.joint_target_q
             else:
+                if self.joint_coord_count != self.joint_dof_count:
+                    warnings.warn(
+                        "The legacy DOF-shaped joint_target_q layout is deprecated for models "
+                        "whose joint coordinate and DOF counts differ (free/ball/distance "
+                        "joints). In a future release joint_target_q will always use the "
+                        "coordinate layout (matching joint_q) and newton.use_coord_layout_targets "
+                        "will be removed. Set newton.use_coord_layout_targets = True before "
+                        "building models and index targets via Model.joint_target_q_start.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
                 target_q_values = self._project_target_q_to_dof()
             m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)
@@ -12238,8 +12161,6 @@ class ModelBuilder:
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
                     target_pos_indices=target_pos_indices_arg,
-                    control_target_pos_attr="joint_target_q",
-                    control_target_vel_attr="joint_target_qd",
                     requires_grad=requires_grad,
                 )
 
@@ -12546,34 +12467,36 @@ class ModelBuilder:
                 self._iter_validated_shape_collision_filter_pairs((*filter_pairs.explicit_pairs, *floating_block_pairs))
             )
 
-        # Builder-side compact blocks are valid only while they describe the
-        # model's filters exactly; otherwise the general path queries the model.
-        use_filter_blocks = bool(world_filter_blocks) and allow_filter_blocks
-        if use_filter_blocks:
+        # Builder-side storage is valid only while it describes the model's
+        # filters exactly; otherwise the general path queries the model.
+        use_world_templates = (
+            allow_filter_blocks and self.world_count > 0 and isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs)
+        )
+        if use_world_templates:
             shape_world_np = np.asarray(self.shape_world, dtype=np.int32)
             starts = self.shape_world_start
             if len(starts) != self.world_count + 2:
-                use_filter_blocks = False
+                use_world_templates = False
             else:
                 segment_worlds = np.full(self.shape_count, -1, dtype=np.int32)
                 for world in range(self.world_count):
                     segment_worlds[starts[world] : starts[world + 1]] = world
-                use_filter_blocks = np.array_equal(segment_worlds, shape_world_np)
+                use_world_templates = np.array_equal(segment_worlds, shape_world_np)
 
-        if use_filter_blocks:
+        if use_world_templates:
             blocks_by_world = {}
             global_filter_pairs = set()
             explicit_filters_by_world = {}
             for block in world_filter_blocks:
                 world = block.world
                 if world < 0 or world >= self.world_count:
-                    use_filter_blocks = False
+                    use_world_templates = False
                     break
 
                 world_start = self.shape_world_start[world]
                 world_end = self.shape_world_start[world + 1]
                 if block.shape_start < world_start or block.shape_start + block.shape_count > world_end:
-                    use_filter_blocks = False
+                    use_world_templates = False
                     break
 
                 # Store block starts as world-local offsets for the template cache
@@ -12582,7 +12505,7 @@ class ModelBuilder:
                     (block.shape_start - world_start, block.shape_count, block.local_pairs)
                 )
 
-            if use_filter_blocks:
+            if use_world_templates:
                 # Residual explicit filters may involve global shapes, so split
                 # them into globally keyed filters and per-world local filters.
                 for shape_a, shape_b in explicit_filter_pairs:
@@ -12606,7 +12529,7 @@ class ModelBuilder:
                         )
                     # Cross-world pairs never collide, so filtering them is a no-op.
 
-            if use_filter_blocks:
+            if use_world_templates:
                 contact_pairs = []
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0

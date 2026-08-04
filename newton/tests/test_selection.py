@@ -151,6 +151,33 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.get_dof_velocities(state).shape, (1, 1, 0))
         self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
 
+    def test_root_base_classification_uses_dof_count(self):
+        """Classify zero-DOF roots as fixed while preserving floating roots."""
+        cases = (
+            ("fixed", True, False),
+            ("locked_d6", True, False),
+            ("free", False, True),
+        )
+
+        for root_kind, expected_fixed, expected_floating in cases:
+            with self.subTest(root_kind=root_kind):
+                builder = newton.ModelBuilder()
+                root = builder.add_link(label="root")
+
+                if root_kind == "fixed":
+                    root_joint = builder.add_joint_fixed(parent=-1, child=root)
+                elif root_kind == "locked_d6":
+                    root_joint = builder.add_joint_d6(parent=-1, child=root)
+                else:
+                    root_joint = builder.add_joint_free(parent=-1, child=root)
+
+                builder.add_articulation([root_joint], label=root_kind)
+                model = builder.finalize(device="cpu")
+                view = ArticulationView(model, root_kind)
+
+                self.assertEqual(view.is_fixed_base, expected_fixed)
+                self.assertEqual(view.is_floating_base, expected_floating)
+
     def test_labels_preserve_full_paths(self):
         """Two-finger gripper whose distal bodies, finger joints, and tip
         shapes each share a colliding leaf name. ``*_names`` attributes
