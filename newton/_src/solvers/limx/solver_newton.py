@@ -196,6 +196,10 @@ class SolverLIMX(SolverBase):
             device=self.device,
         )
 
+        begin_dynamic_step = getattr(self.dynamic_operator, "begin_step", None)
+        if begin_dynamic_step is not None:
+            begin_dynamic_step(state_in.particle_q, state_in.particle_qd, dt)
+
         inv_dt_squared = 1.0 / (dt * dt)
         for nonlinear_iteration in range(self.nonlinear_iterations):
             prepare_dynamic_constraints = getattr(self.dynamic_operator, "prepare", None)

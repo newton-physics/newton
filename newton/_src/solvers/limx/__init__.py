@@ -7,6 +7,7 @@ from .constraints import (
     ConstraintAnchor,
     ConstraintDihedralBending,
     ConstraintDistance,
+    ConstraintGroupDynamic,
     ConstraintSelfCollision,
     ConstraintTriangleElastic,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "ConstraintAnchor",
     "ConstraintDihedralBending",
     "ConstraintDistance",
+    "ConstraintGroupDynamic",
     "ConstraintSelfCollision",
     "ConstraintTriangleElastic",
     "EmptyDynamicConstraintOperator",

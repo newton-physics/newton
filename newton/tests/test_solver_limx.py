@@ -1393,9 +1393,14 @@ class TestSolverLIMX(unittest.TestCase):
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_dynamic_contacts_prepare_once_before_each_newton_linearization(self):
         events = []
+        begin_step_arguments = []
         prepare_positions = []
 
         class RecordingDynamicOperator:
+            def begin_step(self, positions, velocities, dt):
+                events.append("begin_step")
+                begin_step_arguments.append((positions, velocities, dt))
+
             def prepare(self, positions):
                 events.append("prepare")
                 prepare_positions.append(positions)
@@ -1421,19 +1426,27 @@ class TestSolverLIMX(unittest.TestCase):
                 linear_iterations=1,
                 dynamic_operator=dynamic_operator,
             )
-            solver.step(model.state(), model.state(), None, None, 0.01)
+            state_in = model.state()
+            state_out = model.state()
+            solver.step(state_in, state_out, None, None, 0.01)
 
+        self.assertEqual(events.count("begin_step"), 1)
         self.assertEqual(events.count("prepare"), 2)
         self.assertEqual(events.count("force"), 2)
         self.assertEqual(events.count("diagonal"), 2)
         self.assertGreaterEqual(events.count("hvp"), 2)
+        first_begin_step = events.index("begin_step")
         first_prepare = events.index("prepare")
         first_force = events.index("force")
         first_diagonal = events.index("diagonal")
         first_hvp = events.index("hvp")
+        self.assertLess(first_begin_step, first_prepare)
         self.assertLess(first_prepare, first_force)
         self.assertLess(first_force, first_diagonal)
         self.assertLess(first_diagonal, first_hvp)
+        self.assertIs(begin_step_arguments[0][0], state_in.particle_q)
+        self.assertIs(begin_step_arguments[0][1], state_in.particle_qd)
+        self.assertEqual(begin_step_arguments[0][2], 0.01)
         self.assertTrue(all(positions is solver.iterate_positions for positions in prepare_positions))
 
     def test_first_pcg_solve_warm_starts_from_previous_frame_increment(self):

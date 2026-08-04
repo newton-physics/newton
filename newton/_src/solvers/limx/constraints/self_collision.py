@@ -617,6 +617,14 @@ class ConstraintSelfCollision:
         self.edge_edge_contacts = _ContactBuffer(4, max_contacts, self.device)
         self.edge_face_contacts = _ContactBuffer(5, max_contacts, self.device)
 
+    def begin_step(
+        self,
+        positions: wp.array[wp.vec3],
+        velocities: wp.array[wp.vec3],
+        dt: float,
+    ) -> None:
+        """Cache no per-step state."""
+
     def prepare(self, positions: wp.array[wp.vec3]) -> None:
         """Detect and freeze contacts at the current Newton iterate."""
         self._validate_positions(positions)

@@ -6,6 +6,7 @@
 from .anchor import ConstraintAnchor
 from .dihedral_bending import ConstraintDihedralBending
 from .distance import ConstraintDistance
+from .dynamic_group import ConstraintGroupDynamic
 from .self_collision import ConstraintSelfCollision
 from .triangle_elastic import ConstraintTriangleElastic
 
@@ -13,6 +14,7 @@ __all__ = [
     "ConstraintAnchor",
     "ConstraintDihedralBending",
     "ConstraintDistance",
+    "ConstraintGroupDynamic",
     "ConstraintSelfCollision",
     "ConstraintTriangleElastic",
 ]

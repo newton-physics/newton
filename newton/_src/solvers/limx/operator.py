@@ -43,6 +43,14 @@ def _add_mass_multiply(
 class EmptyDynamicConstraintOperator:
     """A matrix-free dynamic constraint operator that contributes nothing."""
 
+    def begin_step(
+        self,
+        positions: wp.array[wp.vec3],
+        velocities: wp.array[wp.vec3],
+        dt: float,
+    ) -> None:
+        """Cache no per-step state."""
+
     def prepare(self, positions: wp.array[wp.vec3]) -> None:
         """Perform no preparation for the current Newton linearization."""
 
