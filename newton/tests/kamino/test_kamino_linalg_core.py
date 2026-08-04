@@ -79,8 +79,10 @@ class TestLinAlgCoreMakeTolerance(unittest.TestCase):
         self.assertAlmostEqual(tol, wp.float32(1e-6), places=7)
 
     def test_06_make_tolerance_smaller_than_eps(self):
-        tol = make_dtype_tolerance(tol=1e-10, dtype=wp.float32)
+        with self.assertLogs(level="WARNING") as logs:
+            tol = make_dtype_tolerance(tol=1e-10, dtype=wp.float32)
         msg.debug(f"tol = {tol} (type: {type(tol)})")
+        self.assertTrue(any("is smaller than machine epsilon" in message for message in logs.output))
         self.assertIsInstance(tol, wp.float32)
         self.assertAlmostEqual(tol, wp.float32(np.finfo(np.float32).eps), places=7)
 
