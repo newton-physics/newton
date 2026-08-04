@@ -2729,7 +2729,7 @@ def forward_step_rigid_bodies(
     com_local = body_com[tid]
     I_local = body_inertia[tid]
     inv_I = body_inv_inertia[tid]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     # Integrate rigid body motion (semi-implicit Euler, no angular damping)
     q_new, qd_new = integrate_rigid_body(

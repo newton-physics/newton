@@ -297,25 +297,25 @@ class ForwardKinematicsSolver:
 
             # Add axis joints as needed
             if self.config.add_axis_joints:
-                # Find all bodies incident to two spherical joints (and nothing more)
+                # Find all bodies incident to two pure 3-DoF rotation joints.
                 num_joints_per_body = np.zeros(dtype=np.int32, shape=num_bodies[wd_id])
-                spherical_joints_per_body = [[] for i in range(num_bodies[wd_id])]
+                rotation_joints_per_body = [[] for _ in range(num_bodies[wd_id])]
                 for jt_id_prev in world_joint_ids:
-                    is_spherical = joints_dof_type_prev[jt_id_prev] == JointDoFType.SPHERICAL
+                    is_rotation = JointDoFType(joints_dof_type_prev[jt_id_prev]).is_pure_three_dof_rotation
                     bid_B = joints_bid_B_prev[jt_id_prev]
                     if bid_B >= 0:
                         bid_B -= first_body_id[wd_id]
                         num_joints_per_body[bid_B] += 1
-                        if is_spherical:
-                            spherical_joints_per_body[bid_B].append(jt_id_prev)
+                        if is_rotation:
+                            rotation_joints_per_body[bid_B].append(jt_id_prev)
                     bid_F = joints_bid_F_prev[jt_id_prev] - first_body_id[wd_id]
                     num_joints_per_body[bid_F] += 1
-                    if is_spherical:
-                        spherical_joints_per_body[bid_F].append(jt_id_prev)
+                    if is_rotation:
+                        rotation_joints_per_body[bid_F].append(jt_id_prev)
 
                 # Add an axis joint for each such body
                 for rb_id in range(num_bodies[wd_id]):
-                    if num_joints_per_body[rb_id] != 2 or len(spherical_joints_per_body[rb_id]) != 2:
+                    if num_joints_per_body[rb_id] != 2 or len(rotation_joints_per_body[rb_id]) != 2:
                         continue
                     rb_id_tot = first_body_id[wd_id] + rb_id
                     joints_dof_type.append(FKJointDoFType.AXIS)
@@ -325,8 +325,8 @@ class ForwardKinematicsSolver:
                     joints_source_id.append(-1)
                     fk_axis_joint.append(len(joints_dof_type) - 1)
                     fk_axis_body.append(rb_id_tot)
-                    fk_axis_source_joint_0.append(spherical_joints_per_body[rb_id][0])
-                    fk_axis_source_joint_1.append(spherical_joints_per_body[rb_id][1])
+                    fk_axis_source_joint_0.append(rotation_joints_per_body[rb_id][0])
+                    fk_axis_source_joint_1.append(rotation_joints_per_body[rb_id][1])
                     joints_num_actuated_coords.append(0)
                     joints_num_actuated_dofs.append(0)
 
@@ -444,6 +444,10 @@ class ForwardKinematicsSolver:
                         for i in range(3):
                             constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
                         ct_count += 3
+                    elif dof_type == FKJointDoFType.GIMBAL or dof_type == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                        for i in range(3):
+                            constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
+                        ct_count += 3
                     elif dof_type == FKJointDoFType.UNIVERSAL:
                         for i in range(3):
                             constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
@@ -497,6 +501,9 @@ class ForwardKinematicsSolver:
                     elif dof_type == FKJointDoFType.SPHERICAL:
                         for i in range(4):
                             delta_q_max[coord_id + i] = max_step_quat
+                    elif dof_type == FKJointDoFType.GIMBAL or dof_type == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                        for i in range(3):
+                            delta_q_max[coord_id + i] = max_step_angular
                     elif dof_type == FKJointDoFType.UNIVERSAL:
                         delta_q_max[coord_id] = max_step_angular
                         delta_q_max[coord_id + 1] = max_step_angular
@@ -1833,6 +1840,7 @@ class ForwardKinematicsSolver:
         )
 
         # Compute target constraint velocities (prescribed for actuated dofs, zero for passive constraints)
+        self._eval_actuator_coords(bodies_q, self.actuators_q_next)
         self.target_cts_u.zero_()
         wp.launch(
             _eval_target_constraint_velocities,
@@ -1845,8 +1853,10 @@ class ForwardKinematicsSolver:
                 self.first_joint_id,
                 self.joints_dof_type,
                 self.joints_act_type,
+                self.actuated_coord_offsets,
                 self.actuated_dof_offsets,
                 self.constraint_full_to_red_map,
+                self.actuators_q_next,
                 self.actuators_u,
                 world_mask,
                 self.target_cts_u,

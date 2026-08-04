@@ -312,10 +312,10 @@ class DVISolver:
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
         """Reset scratch state and cached solution data."""
-        self._data.state.reset()
-        if self._data.info is not None:
-            self._data.info.zero()
         if world_mask is None:
+            self._data.state.reset()
+            if self._data.info is not None:
+                self._data.info.zero()
             self._data.solution.zero()
         else:
             if problem is None:

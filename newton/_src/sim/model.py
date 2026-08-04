@@ -1280,7 +1280,13 @@ class Model:
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity: wp.array[wp.vec3] | None = None
-        """Per-world gravity vectors [m/s²], shape [world_count, 3], dtype :class:`vec3`."""
+        """Local-world and global gravity vectors [m/s²], dtype :class:`vec3`.
+
+        Models with explicit local worlds have shape [world_count + 1], where
+        the final element is the gravity for global world ``-1``. Legacy
+        implicit single-world models have shape [1], shared by world ``0``
+        and global world ``-1``.
+        """
 
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
         """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
@@ -1967,31 +1973,41 @@ class Model:
         Set gravity for runtime modification.
 
         Args:
-            gravity: Gravity vector (3,) or per-world array (world_count, 3).
-            world: If provided, set gravity only for this world.
+            gravity: A single gravity vector [m/s²], one vector per local world, or one
+                vector per local world plus a final global vector. A single vector
+                updates every local world and the global world. Local-world-only
+                inputs preserve a distinct global gravity entry.
+            world: If provided, set gravity only for this world. Use ``-1`` for the
+                global world.
 
         Note:
             Call ``solver.notify_model_changed(ModelFlags.MODEL_PROPERTIES)`` after.
-
-            Global entities (particles/bodies not assigned to a specific world) use
-            gravity from world 0.
         """
         gravity_np = np.asarray(gravity, dtype=np.float32)
 
         if world is not None:
             if gravity_np.shape != (3,):
                 raise ValueError("Expected single gravity vector (3,) when world is specified")
-            if world < 0 or world >= self.world_count:
-                raise IndexError(f"world {world} out of range [0, {self.world_count})")
+            if world < -1 or world >= self.world_count:
+                raise IndexError(f"world {world} out of range; expected -1 or [0, {self.world_count})")
             current = self.gravity.numpy()
             current[world] = gravity_np
             self.gravity.assign(current)
         elif gravity_np.ndim == 1:
+            if gravity_np.shape != (3,):
+                raise ValueError(f"Expected gravity with shape (3,), got {gravity_np.shape}")
             self.gravity.fill_(gravity_np)
         else:
-            if len(gravity_np) != self.world_count:
-                raise ValueError(f"Expected {self.world_count} gravity vectors, got {len(gravity_np)}")
-            self.gravity.assign(gravity_np)
+            local_shape = (self.world_count, 3)
+            full_shape = (self.gravity.shape[0], 3)
+            if gravity_np.shape == full_shape:
+                self.gravity.assign(gravity_np)
+            elif gravity_np.shape == local_shape:
+                current = self.gravity.numpy()
+                current[: self.world_count] = gravity_np
+                self.gravity.assign(current)
+            else:
+                raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
 
     def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
         """

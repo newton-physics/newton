@@ -25,6 +25,7 @@ from ...kinematics.joints import (
     correct_quat_vector_coord,
     correct_rotational_coord,
     get_joint_coords_mapping_function,
+    gimbal_transported_axes,
 )
 from ...linalg.sparse_matrix import BlockDType
 from .types import FKJointDoFType
@@ -547,6 +548,12 @@ def _joint_transform_to_coords(
         wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.REVOLUTE))(pos_rel, q_rel, offset, output)
     elif dof_type == FKJointDoFType.SPHERICAL:
         wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.SPHERICAL))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.GIMBAL:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.GIMBAL))(pos_rel, q_rel, offset, output)
+    elif dof_type == FKJointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.GIMBAL_LEFT_HANDED))(
+            pos_rel, q_rel, offset, output
+        )
     elif dof_type == FKJointDoFType.UNIVERSAL:
         wp.static(_make_typed_joint_transform_to_coords_func(JointDoFType.UNIVERSAL))(pos_rel, q_rel, offset, output)
 
@@ -669,6 +676,10 @@ def _correct_actuator_coords(
     elif dof_type == FKJointDoFType.UNIVERSAL:  # Correct angles up to +/- 2 pi
         _correct_rotational_actuator_coord(actuators_q, actuators_q_ref, coord_id)
         _correct_rotational_actuator_coord(actuators_q, actuators_q_ref, coord_id + 1)
+    elif dof_type == FKJointDoFType.GIMBAL or dof_type == FKJointDoFType.GIMBAL_LEFT_HANDED:
+        # Correct angles up to +/- 2 pi
+        for i in range(3):
+            _correct_rotational_actuator_coord(actuators_q, actuators_q_ref, coord_id + i)
     else:
         assert False, "Unexpected actuator dof type"  # noqa: B011
 
@@ -902,6 +913,18 @@ def _eval_target_relative_transformations(
                 q_X_B = wp.quat_from_matrix(X_B)
                 q_loc = read_quat_from_array(actuators_q, offset_q_j, normalize_quaternions)
                 q = q_X_B * q_loc * wp.quat_inverse(q_X_B)
+            elif dof_type_j == FKJointDoFType.GIMBAL or dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                third_axis_sign = 1.0
+                if dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                    third_axis_sign = -1.0
+                axes = X_B @ gimbal_transported_axes(
+                    wp.vec3f(actuators_q[offset_q_j], actuators_q[offset_q_j + 1], actuators_q[offset_q_j + 2]),
+                    third_axis_sign,
+                )
+                q_0 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 0]), actuators_q[offset_q_j])
+                q_1 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 1]), actuators_q[offset_q_j + 1])
+                q_2 = wp.quat_from_axis_angle(wp.vec3f(axes[:, 2]), actuators_q[offset_q_j + 2])
+                q = q_2 * q_1 * q_0
             elif dof_type_j == FKJointDoFType.UNIVERSAL:
                 q_x = wp.quat_from_axis_angle(wp.vec3f(X_B[:, 0]), actuators_q[offset_q_j])
                 q_y = wp.quat_from_axis_angle(wp.vec3f(X_B[:, 1]), actuators_q[offset_q_j + 1])
@@ -2070,8 +2093,10 @@ def _eval_target_constraint_velocities(
     first_joint_id: wp.array[wp.int32],
     joints_dof_type: wp.array[wp.int32],
     joints_act_type: wp.array[wp.int32],
+    actuated_coords_offset: wp.array[wp.int32],
     actuated_dofs_offset: wp.array[wp.int32],
     ct_full_to_red_map: wp.array[wp.int32],
+    actuators_q: wp.array[wp.float32],
     actuators_u: wp.array[wp.float32],
     world_mask: wp.array[wp.bool],
     # Outputs
@@ -2102,6 +2127,7 @@ def _eval_target_constraint_velocities(
         if joints_act_type[jt_id_tot] == JointActuationType.PASSIVE:
             return
         dof_type_j = joints_dof_type[jt_id_tot]
+        offset_q_j = actuated_coords_offset[jt_id_tot]
         offset_u_j = actuated_dofs_offset[jt_id_tot]
         offset_cts_j = ct_full_to_red_map[6 * jt_id_tot]
 
@@ -2129,6 +2155,22 @@ def _eval_target_constraint_velocities(
             target_cts_u[wd_id, offset_cts_j + 3] = actuators_u[offset_u_j]
             target_cts_u[wd_id, offset_cts_j + 4] = actuators_u[offset_u_j + 1]
             target_cts_u[wd_id, offset_cts_j + 5] = actuators_u[offset_u_j + 2]
+        elif dof_type_j == FKJointDoFType.GIMBAL or dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+            third_axis_sign = 1.0
+            if dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+                third_axis_sign = -1.0
+            axes = gimbal_transported_axes(
+                wp.vec3f(actuators_q[offset_q_j], actuators_q[offset_q_j + 1], actuators_q[offset_q_j + 2]),
+                third_axis_sign,
+            )
+            omega = (
+                wp.vec3f(axes[:, 0]) * actuators_u[offset_u_j]
+                + wp.vec3f(axes[:, 1]) * actuators_u[offset_u_j + 1]
+                + wp.vec3f(axes[:, 2]) * actuators_u[offset_u_j + 2]
+            )
+            target_cts_u[wd_id, offset_cts_j + 3] = omega[0]
+            target_cts_u[wd_id, offset_cts_j + 4] = omega[1]
+            target_cts_u[wd_id, offset_cts_j + 5] = omega[2]
         elif dof_type_j == FKJointDoFType.UNIVERSAL:
             target_cts_u[wd_id, offset_cts_j + 3] = actuators_u[offset_u_j]
             target_cts_u[wd_id, offset_cts_j + 4] = actuators_u[offset_u_j + 1]

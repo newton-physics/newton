@@ -520,6 +520,17 @@ def test_masked_reset_restores_only_selected_world_history(test, device):
     solver._grid_status.fill_(wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
     solver._grid_accumulated_status.fill_(wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
 
+    with test.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
+        solver.reset(state, world_mask=wp.array((False, False), dtype=wp.bool, device=device))
+    solver.reset(state, world_mask=wp.array((False, False, False), dtype=wp.bool, device=device))
+    for name, expected in before.items():
+        np.testing.assert_array_equal(_mpm_history_snapshot(state)[name], expected)
+    for field, expected in zip(grid_warmstarts, warmstarts_before, strict=True):
+        np.testing.assert_array_equal(field.dof_values.numpy(), expected)
+    np.testing.assert_array_equal(solver._last_step_data.body_q_prev.numpy(), 0.0)
+    test.assertEqual(int(solver._grid_status.numpy()[0]), wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
+    test.assertEqual(int(solver._grid_accumulated_status.numpy()[0]), wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
+
     world_mask = wp.array((True, False, False), dtype=wp.bool, device=device)
     solver.reset(state, world_mask=world_mask)
 
@@ -733,7 +744,7 @@ def test_reset_validates_state_and_world_mask_before_mutation(test, device):
 
     invalid_masks = (
         wp.array((True,), dtype=wp.bool, device=device),
-        wp.array((True, False), dtype=wp.bool, device=device),
+        wp.array((True, False, False, False), dtype=wp.bool, device=device),
         wp.array((1, 0, 0), dtype=wp.int32, device=device),
         wp.array((True, False, False), dtype=wp.bool, device="cpu"),
     )

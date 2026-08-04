@@ -67,9 +67,9 @@ class _InverseDynamicsScratchBuffer:
             max_joints_per_articulation: Maximum number of joints in any
                 articulation, used to size the per-articulation Jacobian
                 scratch. Matches :attr:`Model.max_joints_per_articulation`.
-            world_count: Number of simulation worlds, used to size the
-                constant-zero gravity vector consumed by the Coriolis
-                compensation pass. Matches :attr:`Model.world_count`.
+            world_count: Number of local simulation worlds, used to size the
+                local-and-global constant-zero gravity vector consumed by the
+                Coriolis compensation pass. Matches :attr:`Model.world_count`.
             device: Warp device on which the buffers are allocated.
         """
         bc = body_count
@@ -97,7 +97,7 @@ class _InverseDynamicsScratchBuffer:
         # Constant-zero inputs (allocated once, never written).
         self.zeros_dof = wp.zeros(jdc, dtype=wp.float32, device=device)
         self.zeros_body = wp.zeros(bc, dtype=wp.spatial_vector, device=device)
-        self.zero_gravity = wp.zeros(world_count, dtype=wp.vec3, device=device)
+        self.zero_gravity = wp.zeros(world_count + 1, dtype=wp.vec3, device=device)
 
 
 def _rnea_compensation_pass(

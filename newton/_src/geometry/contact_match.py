@@ -104,6 +104,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
+from ..core.reset import reset_world_selected
 from ..core.types import Devicelike
 from .contact_sort import SORT_KEY_SENTINEL
 
@@ -126,6 +127,16 @@ MATCH_BROKEN = wp.constant(wp.int32(-2))
 # any packed (flipped_dist << 32 | key_low32) any kernel will ever
 # produce, so the first ``atomic_min`` always wins.
 _CLAIM_SENTINEL = wp.constant(wp.int64(0x7FFFFFFFFFFFFFFF))
+
+
+@wp.kernel(enable_backward=False)
+def _accumulate_reset_world_mask_kernel(
+    world_mask: wp.array[wp.bool],
+    accumulated_world_mask: wp.array[wp.bool],
+):
+    world = wp.tid()
+    if world_mask[world]:
+        accumulated_world_mask[world] = True
 
 
 @wp.func
@@ -220,6 +231,9 @@ class _MatchData:
     prev_pos_world: wp.array[wp.vec3]
     prev_normal: wp.array[wp.vec3]
     prev_count: wp.array[wp.int32]
+    reset_world_mask: wp.array[wp.bool]
+    shape_world: wp.array[wp.int32]
+    world_count: int
 
     # Current frame (unsorted).
     new_keys: wp.array[wp.int64]
@@ -262,6 +276,14 @@ def _match_contacts_kernel(data: _MatchData):
 
     n_old = data.prev_count[0]
     if n_old == 0:
+        data.match_index[tid] = MATCH_NOT_FOUND
+        return
+
+    shape0 = data.new_shape0[tid]
+    shape1 = data.new_shape1[tid]
+    if reset_world_selected(data.shape_world[shape0], data.reset_world_mask, data.world_count) or reset_world_selected(
+        data.shape_world[shape1], data.reset_world_mask, data.world_count
+    ):
         data.match_index[tid] = MATCH_NOT_FOUND
         return
 
@@ -569,13 +591,24 @@ def _collect_new_contacts_kernel(
 @wp.kernel(enable_backward=False)
 def _collect_broken_contacts_kernel(
     prev_was_matched: wp.array[wp.int32],
+    prev_keys: wp.array[wp.int64],
     prev_count: wp.array[wp.int32],
+    shape_world: wp.array[wp.int32],
+    reset_world_mask: wp.array[wp.bool],
+    world_count: int,
     broken_indices: wp.array[wp.int32],
     broken_count: wp.array[wp.int32],
 ):
     """Collect indices of old contacts that were not matched by any new contact."""
     i = wp.tid()
     if i >= prev_count[0]:
+        return
+    key = prev_keys[i]
+    shape0 = wp.int32((key >> wp.int64(43)) & wp.int64(0xFFFFF))
+    shape1 = wp.int32((key >> wp.int64(23)) & wp.int64(0xFFFFF))
+    if reset_world_selected(shape_world[shape0], reset_world_mask, world_count) or reset_world_selected(
+        shape_world[shape1], reset_world_mask, world_count
+    ):
         return
     if prev_was_matched[i] == wp.int32(0):
         slot = wp.atomic_add(broken_count, 0, wp.int32(1))
@@ -618,6 +651,8 @@ class ContactMatcher:
         capacity: Maximum number of contacts (must match :class:`ContactSorter`).
         sorter: The :class:`ContactSorter` whose scratch buffers will be
             reused for storing previous-frame positions and normals.
+        shape_world: Per-shape world ids, with ``-1`` for global shapes.
+        world_count: Number of local worlds.
         pos_threshold: World-space distance threshold [m] between the
             previous and current contact midpoints
             ``0.5 * (world(point0) + world(point1))``.  Contacts whose midpoint
@@ -642,6 +677,8 @@ class ContactMatcher:
         capacity: int,
         *,
         sorter: ContactSorter,
+        shape_world: wp.array[wp.int32],
+        world_count: int,
         pos_threshold: float = 0.0005,
         normal_dot_threshold: float = 0.995,
         contact_report: bool = False,
@@ -653,6 +690,9 @@ class ContactMatcher:
             self._pos_threshold_sq = pos_threshold * pos_threshold
             self._normal_dot_threshold = normal_dot_threshold
             self._sorter = sorter
+            self._shape_world = shape_world
+            self._world_count = int(world_count)
+            self._reset_world_mask = wp.zeros(self._world_count + 1, dtype=wp.bool)
 
             # Only buffer we must own: sorted keys survive across frames
             # (_sort_keys_copy is overwritten by _prepare_sort each frame).
@@ -721,17 +761,31 @@ class ContactMatcher:
         """Device-side previous frame contact count (single-element int32)."""
         return self._prev_count
 
-    def reset(self) -> None:
-        """Clear cross-frame state so the next frame starts fresh.
+    def reset(self, world_mask: wp.array[wp.bool] | None = None) -> None:
+        """Clear all or reset-selected cross-frame contact history.
 
         Use this after any discontinuity that invalidates the previous
         frame's contacts (RL episode reset, teleported bodies, scene
-        reload).  After ``reset()`` the next :meth:`match` produces all
-        :data:`MATCH_NOT_FOUND` and :meth:`build_report` reports zero broken
-        contacts.  Zeroing ``_prev_count`` is sufficient because both kernels
-        gate on it.
+        reload). Masked selections accumulate until the next match consumes
+        them.
+
+        Args:
+            world_mask: Optional one-dimensional Warp boolean mask on the
+                matcher device with shape ``(world_count + 1,)``. The final
+                entry selects global entities. If ``None``, clear all
+                previous-frame history immediately.
         """
-        self._prev_count.zero_()
+        if world_mask is None:
+            self._prev_count.zero_()
+            self._reset_world_mask.zero_()
+            return
+
+        wp.launch(
+            _accumulate_reset_world_mask_kernel,
+            dim=world_mask.shape[0],
+            inputs=[world_mask, self._reset_world_mask],
+            device=self._reset_world_mask.device,
+        )
 
     # ------------------------------------------------------------------
     # Public methods
@@ -795,6 +849,9 @@ class ContactMatcher:
         data.prev_pos_world = self._sorter.scratch_pos_world
         data.prev_normal = self._sorter.scratch_normal
         data.prev_count = self._prev_count
+        data.reset_world_mask = self._reset_world_mask
+        data.shape_world = self._shape_world
+        data.world_count = self._world_count
         data.new_keys = sort_keys
         data.new_point0 = point0
         data.new_point1 = point1
@@ -907,6 +964,7 @@ class ContactMatcher:
             data.has_sticky = 0
 
         wp.launch(_save_sorted_state_kernel, dim=self._capacity, inputs=[data], device=device)
+        self._reset_world_mask.zero_()
 
     def replay_matched(
         self,
@@ -1021,6 +1079,15 @@ class ContactMatcher:
         wp.launch(
             _collect_broken_contacts_kernel,
             dim=self._capacity,
-            inputs=[self._prev_was_matched, self._prev_count, broken_indices, broken_count],
+            inputs=[
+                self._prev_was_matched,
+                self._prev_sorted_keys,
+                self._prev_count,
+                self._shape_world,
+                self._reset_world_mask,
+                self._world_count,
+                broken_indices,
+                broken_count,
+            ],
             device=device,
         )

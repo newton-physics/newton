@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from enum import IntEnum
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -12,6 +13,7 @@ import warp as wp
 
 from .....geometry import ShapeFlags
 from .....sim.model import Model
+from ....coupled.model_view import ModelView
 from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
 ###
 
 __all__ = [
+    "JointUpdateViolation",
     "convert_geometries",
     "convert_joints",
     "convert_model_joint_actuation",
@@ -56,6 +59,18 @@ __all__ = [
 ###
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+
+class JointUpdateViolation(IntEnum):
+    """Indices into the joint-update validation violations array."""
+
+    DYNAMIC_CTS = 0
+    LIMIT_FINITE = 1
+    ACTUATION_PARTITION = 2
+    INVALID_TARGET_MODE = 3
+    NONORTHONORMAL_AXES = 4
+    GIMBAL_HANDEDNESS = 5
+
 
 ###
 # Kernels
@@ -227,12 +242,12 @@ def validate_joint_dof_updates_kernel(
             joint_target_ke,
             joint_target_kd,
         ) != (num_dynamic_cts[tid] > 0):
-            wp.atomic_min(violations, 0, tid)
+            wp.atomic_min(violations, JointUpdateViolation.DYNAMIC_CTS, tid)
 
     if tid < dof_count:
         current_finite = joint_limit_lower[tid] > JOINT_QMIN or joint_limit_upper[tid] < JOINT_QMAX
         if current_finite != (built_limit_finite[tid] != 0):
-            wp.atomic_min(violations, 1, tid)
+            wp.atomic_min(violations, JointUpdateViolation.LIMIT_FINITE, tid)
 
 
 @wp.kernel
@@ -252,9 +267,61 @@ def validate_joint_actuation_updates_kernel(
         joint_target_mode,
     )
     if current_actuation < 0:
-        wp.atomic_min(violations, 3, joint)
+        wp.atomic_min(violations, JointUpdateViolation.INVALID_TARGET_MODE, joint)
     elif (current_actuation == JointActuationType.PASSIVE) != (act_type[joint] == JointActuationType.PASSIVE):
-        wp.atomic_min(violations, 2, joint)
+        wp.atomic_min(violations, JointUpdateViolation.ACTUATION_PARTITION, joint)
+
+
+@wp.kernel
+def validate_joint_axes_kernel(
+    # Inputs:
+    joint_qd_start: wp.array[wp.int32],
+    joint_axis: wp.array[wp.vec3f],
+    joint_dof_type: wp.array[wp.int32],
+    # Outputs:
+    violations: wp.array[wp.int32],
+):
+    """Find the first universal or gimbal joint with invalid axis configuration."""
+    joint = wp.tid()
+    dof_type = joint_dof_type[joint]
+    is_universal = dof_type == JointDoFType.UNIVERSAL
+    is_gimbal = dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED
+    if not is_universal and not is_gimbal:
+        return
+
+    dof_start = joint_qd_start[joint]
+    axis_0 = joint_axis[dof_start]
+    axis_1 = joint_axis[dof_start + 1]
+    valid = (
+        wp.isfinite(axis_0[0])
+        and wp.isfinite(axis_0[1])
+        and wp.isfinite(axis_0[2])
+        and wp.isfinite(axis_1[0])
+        and wp.isfinite(axis_1[1])
+        and wp.isfinite(axis_1[2])
+        and wp.abs(wp.dot(axis_0, axis_0) - 1.0) <= 1.0e-6
+        and wp.abs(wp.dot(axis_1, axis_1) - 1.0) <= 1.0e-6
+        and wp.abs(wp.dot(axis_0, axis_1)) <= 1.0e-6
+    )
+    if is_gimbal:
+        axis_2 = joint_axis[dof_start + 2]
+        valid = (
+            valid
+            and wp.isfinite(axis_2[0])
+            and wp.isfinite(axis_2[1])
+            and wp.isfinite(axis_2[2])
+            and wp.abs(wp.dot(axis_2, axis_2) - 1.0) <= 1.0e-6
+            and wp.abs(wp.dot(axis_0, axis_2)) <= 1.0e-6
+            and wp.abs(wp.dot(axis_1, axis_2)) <= 1.0e-6
+        )
+        if valid:
+            left_handed = wp.dot(wp.cross(axis_0, axis_1), axis_2) < 0.0
+            expected_left_handed = dof_type == JointDoFType.GIMBAL_LEFT_HANDED
+            if left_handed != expected_left_handed:
+                wp.atomic_min(violations, JointUpdateViolation.GIMBAL_HANDEDNESS, joint)
+                return
+    if not valid:
+        wp.atomic_min(violations, JointUpdateViolation.NONORTHONORMAL_AXES, joint)
 
 
 @wp.kernel
@@ -318,6 +385,7 @@ def joint_conversion_kernel(
     model_joint_dof_dim: wp.array2d[wp.int32],
     model_joint_q_start: wp.array[wp.int32],
     model_joint_qd_start: wp.array[wp.int32],
+    model_joint_axis: wp.array[wp.vec3f],
     model_joint_armature: wp.array[wp.float32],
     model_joint_damping: wp.array[wp.float32],
     model_joint_target_ke: wp.array[wp.float32],
@@ -348,10 +416,14 @@ def joint_conversion_kernel(
     qd_count_j = model_joint_qd_start[joint_id + 1] - dofs_start_j
     limit_upper_j = vec6f()
     limit_lower_j = vec6f()
+    dof_axes_j = mat63f()
     for i in range(qd_count_j):
         limit_upper_j[i] = joint_limit_upper[dofs_start_j + i]
         limit_lower_j[i] = joint_limit_lower[dofs_start_j + i]
-    dof_type_j = JointDoFType.from_newton_wp(type_j, q_count_j, qd_count_j, dof_dim_j, limit_lower_j, limit_upper_j)
+        dof_axes_j[i] = model_joint_axis[dofs_start_j + i]
+    dof_type_j = JointDoFType.from_newton_wp(
+        type_j, q_count_j, qd_count_j, dof_dim_j, limit_lower_j, limit_upper_j, dof_axes_j
+    )
     assert dof_type_j >= 0, "Joint DoF type must be valid"
 
     # Get joint type properties
@@ -755,8 +827,8 @@ def compute_required_contact_capacity(
         max_contacts_per_pair: Optional maximum number of contacts to allocate per shape pair.
             If `None`, no per-pair limit is applied.
         max_contacts_per_world: Optional maximum number of contacts to allocate per world.
-            If `None`, no per-world limit is applied, otherwise it will
-            override the computed per-world requirements if it is larger.
+            If `None`, no per-world limit is applied, otherwise caps the computed
+            per-world requirements at this value.
 
     Returns:
         (model_required_contacts, world_required_contacts):
@@ -789,7 +861,7 @@ def compute_required_contact_capacity(
     )
     world_max_contacts = world_max_contacts_wp.numpy()
 
-    # Override the per-world maximum contacts if specified in the settings
+    # Cap per-world totals when a per-world maximum is specified
     if max_contacts_per_world is not None:
         world_max_contacts = np.minimum(world_max_contacts, max_contacts_per_world)
 
@@ -805,15 +877,19 @@ def validate_model_joint_updates(
     *,
     check_dof: bool,
     check_actuation: bool,
+    check_axes: bool,
 ) -> int:
     """Validate that runtime joint edits preserve Kamino's structural layout.
 
-    ``violations`` is a four-entry array containing the first index for each
-    violation type:
-       0: a joint whose dynamic-constraint topology changed
-       1: a DoF whose finite-limit state changed
-       2: a joint whose passive/actuated partition changed
-       3: a joint with an unsupported combination of target modes
+    ``violations`` is a ``len(JointUpdateViolation)``-entry array
+    containing the first index for each violation type:
+
+    - :attr:`JointUpdateViolation.DYNAMIC_CTS`: dynamic-constraint topology changed
+    - :attr:`JointUpdateViolation.LIMIT_FINITE`: finite-limit state changed
+    - :attr:`JointUpdateViolation.ACTUATION_PARTITION`: passive/actuated partition changed
+    - :attr:`JointUpdateViolation.INVALID_TARGET_MODE`: unsupported target-mode combination
+    - :attr:`JointUpdateViolation.NONORTHONORMAL_AXES`: nonorthonormal universal/gimbal axes
+    - :attr:`JointUpdateViolation.GIMBAL_HANDEDNESS`: gimbal axis handedness changed
 
     An entry equal to the maximum of the joint and DoF counts indicates that no
     violation of that type was found.
@@ -825,6 +901,7 @@ def validate_model_joint_updates(
         violations: The array to store the violations.
         check_dof: Whether to check the DoF updates.
         check_actuation: Whether to check the actuation updates.
+        check_axes: Whether to check universal and gimbal axes.
 
     Returns:
         The sentinel value indicating no violations.
@@ -867,6 +944,20 @@ def validate_model_joint_updates(
             ],
             device=model.device,
         )
+    if check_axes and model.joint_count > 0:
+        wp.launch(
+            kernel=validate_joint_axes_kernel,
+            dim=model.joint_count,
+            inputs=[
+                # Inputs:
+                model.joint_qd_start,
+                model.joint_axis,
+                joints.dof_type,
+                # Outputs:
+                violations,
+            ],
+            device=model.device,
+        )
 
     return dim
 
@@ -887,6 +978,44 @@ def convert_model_joint_actuation(model: Model, joints: JointsModel) -> None:
         ],
         device=model.device,
     )
+
+
+def _validate_joint_axes(
+    model: Model,
+    joint_dof_type: wp.array[wp.int32],
+    violations: wp.array[wp.int32],
+) -> None:
+    """Validate universal and gimbal axes before Warp frame conversion."""
+    violations.fill_(model.joint_count)
+    if model.joint_count > 0:
+        wp.launch(
+            kernel=validate_joint_axes_kernel,
+            dim=model.joint_count,
+            inputs=[
+                # Inputs:
+                model.joint_qd_start,
+                model.joint_axis,
+                joint_dof_type,
+                # Outputs:
+                violations,
+            ],
+            device=model.device,
+        )
+    violations_np = violations.numpy()
+    invalid_joint = int(violations_np[JointUpdateViolation.NONORTHONORMAL_AXES])
+    if invalid_joint < model.joint_count:
+        raise ValueError(
+            f"Invalid joint configuration for SolverKamino:\n"
+            f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
+            "universal and gimbal axes must be unit length and orthogonal"
+        )
+    invalid_joint = int(violations_np[JointUpdateViolation.GIMBAL_HANDEDNESS])
+    if invalid_joint < model.joint_count:
+        raise ValueError(
+            f"Invalid joint configuration for SolverKamino:\n"
+            f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
+            "gimbal axes must preserve the solver's original handedness"
+        )
 
 
 def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
@@ -1030,7 +1159,7 @@ def convert_model_materials(
 
 
 def convert_rigid_bodies(
-    model: Model,
+    model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
 ) -> RigidBodiesModel:
@@ -1123,7 +1252,7 @@ def convert_rigid_bodies(
 
 
 def convert_joints(
-    model: Model,
+    model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
 ) -> JointsModel:
@@ -1172,6 +1301,7 @@ def convert_joints(
             model.joint_dof_dim,
             model.joint_q_start,
             model.joint_qd_start,
+            model.joint_axis,
             model.joint_armature,
             model.joint_damping,
             model.joint_target_ke,
@@ -1190,6 +1320,9 @@ def convert_joints(
         ],
         device=model.device,
     )
+
+    axis_validation_violations = wp.empty(len(JointUpdateViolation), dtype=wp.int32, device=model.device)
+    _validate_joint_axes(model, joint_dof_type, axis_validation_violations)
 
     wp.launch(
         kernel=joint_frame_conversion_kernel,
@@ -1626,7 +1759,7 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
 
 
 def convert_geometries(
-    model: Model,
+    model: Model | ModelView,
     model_size: SizeKamino,
     model_bodies: RigidBodiesModel,
     materials_manager: MaterialManager,

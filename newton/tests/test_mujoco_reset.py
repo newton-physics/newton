@@ -76,7 +76,14 @@ class TestMuJoCoReset(unittest.TestCase):
     def test_reset_masked_world_only(self):
         """A per-world mask clears the selected world and leaves the others intact."""
         self._poison()
-        mask = wp.array([True, False, True], dtype=wp.bool, device=self.model.device)
+        self.solver.reset(
+            self.state_out,
+            world_mask=wp.array([False, False, True], dtype=wp.bool, device=self.model.device),
+        )
+        for name, buf in self._cleared_buffers().items():
+            self.assertTrue(np.all(buf.numpy() == 7.0), f"{name} changed for a global-only mask")
+
+        mask = wp.array([True, False, False], dtype=wp.bool, device=self.model.device)
         self.solver.reset(self.state_out, world_mask=mask)
 
         for name, buf in self._cleared_buffers().items():
@@ -95,6 +102,79 @@ class TestMuJoCoReset(unittest.TestCase):
             values = buf.numpy()
             self.assertTrue(np.all(values[0] == 0.0), f"{name} not cleared in masked world 0")
             self.assertTrue(np.all(values[1] == 7.0), f"{name} wrongly cleared in unmasked world 1")
+
+    def test_native_cpu_reset_honors_template_world_mask(self):
+        """Reset native MuJoCo buffers only when local world 0 is selected."""
+        solver = SolverMuJoCo(self.model, separate_worlds=True, use_mujoco_cpu=True)
+        data = solver.mj_data
+        buffers = tuple(
+            buffer
+            for buffer in (
+                data.qacc_warmstart,
+                data.qfrc_applied,
+                data.ctrl,
+                data.act,
+                data.xfrc_applied,
+            )
+            if buffer.size > 0
+        )
+        for mask_values, expected in (
+            ((False, False, True), 7.0),
+            ((False, True, False), 7.0),
+            ((True, False, False), 0.0),
+        ):
+            with self.subTest(mask=mask_values):
+                for buffer in buffers:
+                    buffer[:] = 7.0
+                solver.reset(
+                    self.model.state(),
+                    world_mask=wp.array(mask_values, dtype=wp.bool, device=self.model.device),
+                    flags=0,
+                )
+                for buffer in buffers:
+                    np.testing.assert_array_equal(buffer, expected)
+
+    def test_native_cpu_masked_joint_reset_preserves_template_state(self):
+        """Preserve native MuJoCo coordinates when local world 0 is unselected."""
+        solver = SolverMuJoCo(
+            self.model,
+            separate_worlds=True,
+            use_mujoco_cpu=True,
+            update_data_interval=0,
+        )
+        state = self.model.state()
+        flags = StateFlags.JOINT_Q | StateFlags.JOINT_QD
+        coords_per_world = self.model.joint_coord_count // self.model.world_count
+        dofs_per_world = self.model.joint_dof_count // self.model.world_count
+        default_q = self.model.joint_q.numpy()
+        default_qd = self.model.joint_qd.numpy()
+
+        for mask_values in ((False, True, False), (False, False, True)):
+            with self.subTest(mask=mask_values):
+                joint_q_before = np.arange(self.model.joint_coord_count, dtype=np.float32) + 30.0
+                joint_qd_before = np.arange(self.model.joint_dof_count, dtype=np.float32) + 40.0
+                state.joint_q.assign(joint_q_before)
+                state.joint_qd.assign(joint_qd_before)
+                solver.mj_data.qpos[:] = np.arange(solver.mj_data.qpos.size) + 10.0
+                solver.mj_data.qvel[:] = np.arange(solver.mj_data.qvel.size) + 20.0
+                qpos_before = solver.mj_data.qpos.copy()
+                qvel_before = solver.mj_data.qvel.copy()
+
+                solver.reset(
+                    state,
+                    world_mask=wp.array(mask_values, dtype=wp.bool, device=self.model.device),
+                    flags=flags,
+                )
+
+                np.testing.assert_array_equal(solver.mj_data.qpos, qpos_before)
+                np.testing.assert_array_equal(solver.mj_data.qvel, qvel_before)
+                expected_q = joint_q_before.copy()
+                expected_qd = joint_qd_before.copy()
+                if mask_values[1]:
+                    expected_q[coords_per_world:] = default_q[coords_per_world:]
+                    expected_qd[dofs_per_world:] = default_qd[dofs_per_world:]
+                np.testing.assert_array_equal(state.joint_q.numpy(), expected_q)
+                np.testing.assert_array_equal(state.joint_qd.numpy(), expected_qd)
 
     def test_reset_all_worlds(self):
         """A ``None`` mask clears every world."""
@@ -187,18 +267,23 @@ class TestMuJoCoReset(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        # The reference is whatever syncing the current state produces (the same
-        # path reset uses); capture it, then poison qpos with NaNs.
+        # Capture the same conversion path reset uses, then distinguish worlds.
         solver._update_mjc_data(solver.mjw_data, model, state)
         qpos_synced = solver.mjw_data.qpos.numpy().copy()
-        solver.mjw_data.qpos.assign(np.full_like(qpos_synced, np.nan))
+        poisoned = qpos_synced + np.array(((10.0,), (20.0,)), dtype=np.float32)
+        solver.mjw_data.qpos.assign(poisoned)
 
-        # With the per-step sync disabled, reset must push the state into qpos now.
-        solver.reset(state, world_mask=None, flags=StateFlags.JOINT_Q)
+        # With the per-step sync disabled, reset must push only the selected
+        # world's state into qpos now.
+        solver.reset(
+            state,
+            world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
+            flags=StateFlags.JOINT_Q,
+        )
 
         result = solver.mjw_data.qpos.numpy()
-        self.assertTrue(np.all(np.isfinite(result)), "reset did not overwrite NaN qpos")
-        np.testing.assert_allclose(result, qpos_synced, atol=1e-6)
+        np.testing.assert_allclose(result[0], qpos_synced[0], atol=1e-6)
+        np.testing.assert_allclose(result[1], poisoned[1], atol=1e-6)
 
 
 if __name__ == "__main__":
