@@ -86,7 +86,7 @@ force with coefficient `c_n`. With `v_n = dot(v, n)`, use
 `(c_n / dt) * outer(n, n)` only while `v_n < 0`.
 
 Tangential friction follows the smoothed lagged Coulomb construction used by
-Ai-Phyiscs `StaticContactSet`. Let `u_t` be the previous displacement
+Ai-Physics `StaticContactSet`. Let `u_t` be the previous displacement
 `dt * v` projected onto the tangent plane, `T = I - outer(n, n)`, and
 `f_load = k * p`. Freeze
 

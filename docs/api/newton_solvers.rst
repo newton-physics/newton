@@ -37,7 +37,9 @@ https://newton-physics.github.io/newton/stable/solvers/index.html.
    ConstraintAnchor
    ConstraintDihedralBending
    ConstraintDistance
+   ConstraintGroupDynamic
    ConstraintSelfCollision
+   ConstraintStaticPlaneContact
    ConstraintTriangleElastic
    SolverBase
    SolverFeatherstone
