@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+import importlib
+import unittest
+
+import numpy as np
+import warp as wp
+
+from newton.viewer import ViewerNull
+
+
+@wp.kernel
+def _record_particle_diagnostics(
+    positions: wp.array[wp.vec3],
+    velocities: wp.array[wp.vec3],
+    table_top: float,
+    frame: int,
+    minimum_gaps: wp.array[float],
+    speed_sums: wp.array[float],
+):
+    particle = wp.tid()
+    wp.atomic_min(minimum_gaps, frame, positions[particle][2] - table_top)
+    wp.atomic_add(speed_sums, frame, wp.length(velocities[particle]))
+
+
+@unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+class TestClothLimxTshirtTable(unittest.TestCase):
+    def test_cuda_graph_step_is_finite(self):
+        module = importlib.import_module("newton.examples.cloth.example_cloth_limx_tshirt_table")
+        with wp.ScopedDevice("cuda:0"):
+            example = module.Example(ViewerNull(num_frames=1), None)
+            example.step()
+            positions = example.state_0.particle_q.numpy()
+            velocities = example.state_0.particle_qd.numpy()
+            example.test_post_step()
+            example.test_final()
+
+        self.assertEqual(example.frame_dt, 0.01)
+        self.assertEqual(example.sim_substeps, 1)
+        self.assertEqual(example.solver.nonlinear_iterations, 1)
+        self.assertEqual(example.solver.linear_iterations, 50)
+        self.assertEqual(example.solver.velocity_damping, 1.0)
+        self.assertEqual(example.model.particle_count, 6436)
+        self.assertEqual(example.model.tri_count, 12736)
+        self.assertTrue(np.isfinite(positions).all())
+        self.assertTrue(np.isfinite(velocities).all())
+
+    def test_settles_on_table(self):
+        module = importlib.import_module("newton.examples.cloth.example_cloth_limx_tshirt_table")
+        frame_count = 3000
+        with wp.ScopedDevice("cuda:0"):
+            example = module.Example(ViewerNull(num_frames=frame_count), None)
+            minimum_gaps = wp.full(frame_count, 1.0e6, dtype=float, device="cuda:0")
+            speed_sums = wp.zeros(frame_count, dtype=float, device="cuda:0")
+            for frame in range(frame_count):
+                example.step()
+                wp.launch(
+                    _record_particle_diagnostics,
+                    dim=example.model.particle_count,
+                    inputs=[
+                        example.state_0.particle_q,
+                        example.state_0.particle_qd,
+                        example.table_top,
+                        frame,
+                    ],
+                    outputs=[minimum_gaps, speed_sums],
+                    device="cuda:0",
+                )
+
+            gaps = minimum_gaps.numpy()
+            mean_speeds = speed_sums.numpy() / example.model.particle_count
+
+        self.assertTrue(np.isfinite(gaps).all())
+        self.assertTrue(np.isfinite(mean_speeds).all())
+        self.assertGreaterEqual(float(gaps.min()), -0.008)
+        self.assertLess(float(mean_speeds[-50:].mean()), 0.02)
+
+
+if __name__ == "__main__":
+    unittest.main()
