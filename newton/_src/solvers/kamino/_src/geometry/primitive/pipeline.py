@@ -178,6 +178,7 @@ class CollisionPipelinePrimitive:
         # Clear all active collision candidates and contacts
         self._cdata.clear()
         contacts.clear()
+        self._contact_overflow_warning_emitted.zero_()
 
         # Perform the broad-phase collision detection to generate candidate pairs
         primitive_broadphase_explicit(

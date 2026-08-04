@@ -31,7 +31,7 @@ from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.materials import make_get_material_pair_properties
 from ...core.model import ModelKamino
-from ...geometry.contacts import ContactsKaminoData, make_contact_frame_znorm
+from ...geometry.contacts import ContactsKaminoData, make_contact_frame_znorm, reserve_contact_capacity
 from ...geometry.keying import build_pair_key2
 from .broadphase import CollisionCandidatesData
 
@@ -227,62 +227,6 @@ def make_ellipsoid(pose: wp.transformf, params: wp.vec3f, gid: wp.int32, bid: wp
 
 
 @wp.func
-def _print_world_contact_capacity_warning():
-    wp.printf(
-        "Warning: Kamino per-world contact capacity exceeded. "
-        "Increase CollisionDetectorConfig.max_contacts_per_world.\n"
-    )
-
-
-@wp.func
-def _print_model_contact_capacity_warning():
-    wp.printf("Warning: Kamino model contact capacity exceeded. Increase CollisionDetectorConfig.max_contacts.\n")
-
-
-@wp.func
-def reserve_contact_capacity(
-    model_max_contacts: wp.int32,
-    world_max_contacts: wp.int32,
-    wid: wp.int32,
-    num_contacts: wp.int32,
-    contact_model_num: wp.array[wp.int32],
-    contact_world_num: wp.array[wp.int32],
-    contact_overflow_warning_emitted: wp.array[wp.int32],
-) -> wp.vec3i:
-    """Reserve contact capacity and return the model and world indices and number reserved."""
-    wcio = wp.atomic_add(contact_world_num, wid, num_contacts)
-    if wcio >= world_max_contacts:
-        wp.atomic_sub(contact_world_num, wid, num_contacts)
-        if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
-            _print_world_contact_capacity_warning()
-        return wp.vec3i(-1, 0, 0)
-
-    max_num_contacts = wp.min(world_max_contacts - wcio, num_contacts)
-    if max_num_contacts < num_contacts:
-        wp.atomic_sub(contact_world_num, wid, num_contacts - max_num_contacts)
-        if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
-            _print_world_contact_capacity_warning()
-
-    mcio = wp.atomic_add(contact_model_num, 0, max_num_contacts)
-    if mcio >= model_max_contacts:
-        wp.atomic_sub(contact_model_num, 0, max_num_contacts)
-        wp.atomic_sub(contact_world_num, wid, max_num_contacts)
-        if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
-            _print_model_contact_capacity_warning()
-        return wp.vec3i(-1, 0, 0)
-
-    max_num_contacts_prev = max_num_contacts
-    max_num_contacts = wp.min(model_max_contacts - mcio, max_num_contacts_prev)
-    if max_num_contacts < max_num_contacts_prev:
-        wp.atomic_sub(contact_model_num, 0, max_num_contacts_prev - max_num_contacts)
-        wp.atomic_sub(contact_world_num, wid, max_num_contacts_prev - max_num_contacts)
-        if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
-            _print_model_contact_capacity_warning()
-
-    return wp.vec3i(mcio, max_num_contacts, wcio)
-
-
-@wp.func
 def add_single_contact(
     # Inputs:
     model_max_contacts: wp.int32,
@@ -318,20 +262,19 @@ def add_single_contact(
     if (distance - margin_plus_gap) > 0.0:
         return
 
-    # Safely increment the active contact counters (see notes in _write_contact_unified_kamino in unified.py)
-    wcid = wp.atomic_add(contact_world_num, wid, 1)
-    if wcid >= world_max_contacts:
-        wp.atomic_sub(contact_world_num, wid, 1)
-        if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
-            _print_world_contact_capacity_warning()
+    reservation = reserve_contact_capacity(
+        model_max_contacts,
+        world_max_contacts,
+        wid,
+        1,
+        contact_model_num,
+        contact_world_num,
+        contact_overflow_warning_emitted,
+    )
+    if reservation[0] < 0:
         return
-    mcid = wp.atomic_add(contact_model_num, 0, 1)
-    if mcid >= model_max_contacts:
-        wp.atomic_sub(contact_model_num, 0, 1)
-        wp.atomic_sub(contact_world_num, wid, 1)
-        if wp.atomic_exch(contact_overflow_warning_emitted, 0, 1) == 0:
-            _print_model_contact_capacity_warning()
-        return
+    mcid = reservation[0]
+    wcid = reservation[2]
 
     # Perform A/B geom and body assignment
     # NOTE: We want the normal to always point from A to B,

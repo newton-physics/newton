@@ -1097,18 +1097,27 @@ class TestPipelinePrimitive(unittest.TestCase):
         )
 
     def test_03_reports_contact_capacity_overflow(self):
-        """Report primitive contacts truncated by the final contact capacity."""
+        """Reset the primitive overflow warning flag between collision runs."""
         builder = testing.make_shape_pairs_builder(shape_pairs=[("box", "box")])
         model = builder.finalize(device=self.default_device)
         data = model.data()
         state = model.state()
-        contacts = ContactsKamino(capacity=1, device=self.default_device)
+        contacts_small = ContactsKamino(capacity=1, device=self.default_device)
+        contacts_large = ContactsKamino(capacity=8, device=self.default_device)
         pipeline = CollisionPipelinePrimitive(model=model)
 
-        pipeline.collide(data, state, contacts)
+        pipeline.collide(data, state, contacts_small)
 
-        self.assertEqual(int(contacts.model_active_contacts.numpy()[0]), 1)
-        self.assertEqual(int(contacts.world_active_contacts.numpy()[0]), 1)
+        self.assertEqual(int(contacts_small.model_active_contacts.numpy()[0]), 1)
+        self.assertEqual(int(contacts_small.world_active_contacts.numpy()[0]), 1)
+        self.assertEqual(int(pipeline._contact_overflow_warning_emitted.numpy()[0]), 1)
+
+        pipeline.collide(data, state, contacts_large)
+
+        self.assertEqual(int(pipeline._contact_overflow_warning_emitted.numpy()[0]), 0)
+
+        pipeline.collide(data, state, contacts_small)
+
         self.assertEqual(int(pipeline._contact_overflow_warning_emitted.numpy()[0]), 1)
 
 
