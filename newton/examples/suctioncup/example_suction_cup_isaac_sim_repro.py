@@ -48,6 +48,7 @@ from newton.examples.suctioncup.surface_gripper import (
     SurfaceGripper,
     SurfaceGripperBuilder,
     attach_seal,
+    attach_seal_seated,
     evaluate_gripper_force,
 )
 
@@ -95,6 +96,12 @@ ENABLE_GRIPPER = True
 # alone owns the hold.
 ENABLE_PAD_BOX_CONTACT = False
 
+# On engagement, fit the gripped box's pose to the suction-cup lips (surface_gripper.attach_seal_seated,
+# an on-device Gauss-Newton fit) and anchor the seal to that fitted pose, so the seal seats the box flush
+# on the cups (the lip-SDF standoff becomes a bias the seal pulls closed). Fully kernel-driven, so it
+# graph-captures and runs on CPU and graphed CUDA alike.
+SEAL_SEAT_ON_ENGAGE = False
+
 # Draw a small non-colliding disk at each suction cup (GRIPPER_PADS) so the cup layout is visible in
 # the viewer. Purely visual (has_shape_collision off); does not affect the physics.
 SHOW_CUP_MARKERS = True
@@ -130,6 +137,14 @@ GRIPPER_PADS = (
     (0.2886, -0.0025, 0.2085),
 )
 
+# Each suction cup is a short cylinder of this radius and half-height [m] (also the SHOW_CUP_MARKERS
+# disk). Its lip is the circle of PAD_RADIUS on the cup's bottom face (the face toward the box,
+# +PAD_CUP_HALF_HEIGHT along the suction axis); PAD_LIP_SAMPLES points are sampled around that lip for
+# the on-device seating fit (attach_seal_seated).
+PAD_RADIUS = 0.03
+PAD_CUP_HALF_HEIGHT = 0.004
+PAD_LIP_SAMPLES = 16
+
 
 # Suction grip force (vacuum) [N] per pad. Static hold of the 30 kg panel needs ~74 N/pad, but the
 # recorded palletizer motion drives the normal load to ~384 N/pad, so the vacuum must clear that.
@@ -161,11 +176,11 @@ def update_seal_break_kernel(
 ):
     """
     One thread per gripper.
-    If the gripper is commanded to disengage then 
+    If the gripper is commanded to disengage then
     1) set the per pad seal break count to 0
     2) set the per pad engagement state to False
     3) set the per gripper seal broken state to False
-    If the gripper is commanded to engage and the pad is engaged then 
+    If the gripper is commanded to engage and the pad is engaged then
     1) increment the per pad break count if the break metric is True
     2) if any pad break count exceeds a threshold then break the seal on all pads
     """
@@ -233,6 +248,20 @@ def picked_box_seal_modes(gripper_model, state, model, body_b):
     return modes
 
 
+def box_sdf_mesh(hx, hy, hz, device=None):
+    """A ``wp.Mesh`` of an axis-aligned box (half-extents [m]) for SDF queries only (not collision).
+
+    In general the gripped object would supply its own surface mesh; here the pick boxes are primitives,
+    so tessellate them once (:meth:`newton.Mesh.create_box`) for the seating fit's SDF queries.
+    """
+    m = newton.Mesh.create_box(hx, hy, hz)
+    verts = np.asarray(m.vertices, dtype=np.float32).reshape(-1, 3)
+    idx = np.asarray(m.indices, dtype=np.int32).reshape(-1)
+    return wp.Mesh(
+        points=wp.array(verts, dtype=wp.vec3, device=device), indices=wp.array(idx, dtype=wp.int32, device=device)
+    )
+
+
 class Example:
     def __init__(self, viewer, args):
 
@@ -255,7 +284,9 @@ class Example:
         self.sim_step_count_wp = wp.zeros(1, dtype=wp.int32)
         self.last_lo_wp = wp.zeros(1, dtype=wp.int32)
         self.gripper_command_engaged_wp = wp.zeros(1, dtype=wp.bool)  # [gripper] recorded engagement command
-        self.pad_seal_break_count_wp = wp.zeros(len(GRIPPER_PADS), dtype=wp.int32)  # consecutive over-threshold steps, per pad
+        self.pad_seal_break_count_wp = wp.zeros(
+            len(GRIPPER_PADS), dtype=wp.int32
+        )  # consecutive over-threshold steps, per pad
         self.gripper_seal_broken_wp = wp.zeros(1, dtype=wp.bool)  # [gripper] latched fracture
         self.pad_seal_engaged_wp = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)  # [pads] per-pad seal command
         self.pad_offsets = wp.array([0, len(GRIPPER_PADS)], dtype=wp.int32)
@@ -300,6 +331,7 @@ class Example:
 
         # Add the panel and crates that will be gripped by the gripper.
         box_body_ids, box_shape_ids = [], []
+        self.box_half_extents = {}  # body id -> (hx, hy, hz) half-extents [m]; source for the SDF meshes
         nb_boxes = len(placements.masses)
         for i in range(nb_boxes):
             (hx, hy, hz) = placements.dims[i]
@@ -310,6 +342,7 @@ class Example:
             cfg = builder.default_shape_cfg.copy()
             cfg.density = 0.0  # body mass is authoritative; the shape adds none
             box_body_ids.append(body)
+            self.box_half_extents[body] = (hx, hy, hz)
             box_shape_ids.append(builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg))
 
         # Store the body and shape ids for panel and crates.
@@ -330,8 +363,8 @@ class Example:
                     for cs in crate_shape_ids:
                         builder.add_shape_collision_filter_pair(cs, shape)
 
-        # Cup markers: a thin non-colliding disk at each suction cup so the cup layout is visible in the
-        # viewer (0.03 m visual cup radius; oriented so the disk faces along the suction axis).
+        # Cup markers: a thin non-colliding disk of the cup radius (PAD_RADIUS) at each suction cup so
+        # the cup layout is visible in the viewer (oriented so the disk faces along the suction axis).
         if SHOW_CUP_MARKERS:
             marker_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # disk axis -> flange +x
             marker_cfg = builder.default_shape_cfg.copy()
@@ -341,13 +374,20 @@ class Example:
                 builder.add_shape_cylinder(
                     ee_body,
                     xform=wp.transform(wp.vec3(px, py, pz), marker_down),
-                    radius=0.03,
-                    half_height=0.004,
+                    radius=PAD_RADIUS,
+                    half_height=PAD_CUP_HALF_HEIGHT,
                     cfg=marker_cfg,
                 )
 
         # The newton scene is complete.
         self.model = builder.finalize()
+        # Per-box SDF meshes for the lip-SDF seal check (queries only; the box shape still owns collision).
+        self.sdf_meshes = {b: box_sdf_mesh(*he, device=self.model.device) for b, he in self.box_half_extents.items()}
+        # body id -> SDF mesh id, for the on-device seating fit (attach_seal_seated); 0 where no mesh.
+        body_mesh_id = np.zeros(self.model.body_count, dtype=np.uint64)
+        for b, m in self.sdf_meshes.items():
+            body_mesh_id[b] = m.id
+        self.body_mesh_id = wp.array(body_mesh_id, dtype=wp.uint64, device=self.model.device)
         # use_mujoco_contacts=False: Newton's collide pipeline (model.collide, run each sub-step) owns
         # collision -- the solver consumes those contacts instead of MuJoCo's internal collision.
         self.solver = newton.solvers.SolverMuJoCo(
@@ -460,13 +500,28 @@ class Example:
             )
             # Commit this sub-step's per-pad seal command into the gripper state: set pad_engaged, and on
             # each pad's rising edge cache its seal anchor frame relative to its target body (pad_body_b).
-            attach_seal(
-                self.state_0,
-                self.gripper_model,
-                self.gripper_state,
-                self.pad_seal_engaged_wp,
-                self.pad_body_b,
-            )
+            # SEAL_SEAT_ON_ENGAGE: anchor to the on-device fitted (seated) box pose instead of the actual
+            # one, so the seal seats the box on the cups. Fully kernel-driven, so it graph-captures.
+            if SEAL_SEAT_ON_ENGAGE:
+                attach_seal_seated(
+                    self.state_0,
+                    self.gripper_model,
+                    self.gripper_state,
+                    self.pad_seal_engaged_wp,
+                    self.pad_body_b,
+                    self.body_mesh_id,
+                    PAD_RADIUS,
+                    PAD_CUP_HALF_HEIGHT,
+                    PAD_LIP_SAMPLES,
+                )
+            else:
+                attach_seal(
+                    self.state_0,
+                    self.gripper_model,
+                    self.gripper_state,
+                    self.pad_seal_engaged_wp,
+                    self.pad_body_b,
+                )
             if ENABLE_GRIPPER:
                 evaluate_gripper_force(
                     self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control, self.sim_dt
@@ -475,8 +530,12 @@ class Example:
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             if RECORD_DEBUG and not wp.get_device().is_cuda:
-                self.accel_recorder.record(self.state_0, self.state_1, self.gripper_command_engaged_wp, self.sim_step_count_wp)
-                self.drive_target_recorder.record(self.gripper_command_engaged_wp, self.control.joint_target_q, self.sim_step_count_wp)
+                self.accel_recorder.record(
+                    self.state_0, self.state_1, self.gripper_command_engaged_wp, self.sim_step_count_wp
+                )
+                self.drive_target_recorder.record(
+                    self.gripper_command_engaged_wp, self.control.joint_target_q, self.sim_step_count_wp
+                )
                 self.pad_break_recorder.record(self.gripper_state.pad_break_metric, self.sim_step_count_wp)
                 self.gripper_force_recorder.record(
                     self.gripper_command_engaged_wp, self.gripper_state.pad_dof_force, self.sim_step_count_wp
