@@ -316,8 +316,8 @@ def test_friction_stopping_distance(test, device, solver_fn, rel_tol, rest_speed
 
     state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames)
 
-    final_q = state_0.body_q.numpy()
-    final_qd = state_0.body_qd.numpy()
+    final_q = state_0.body_q.numpy().copy()
+    final_qd = state_0.body_qd.numpy().copy()
 
     # A trailing displacement is insensitive to one-frame normal contact jitter
     # while still detecting residual sliding after the stopping-distance check.
