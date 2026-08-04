@@ -24,9 +24,8 @@ class ControllerBase(ABC, Generic[InputT, OutputT]):
 
     Subclasses are responsible for:
 
-    - :meth:`is_graphable`: predicate the user can query to decide graph
-      capture. Check ``ctrl.state() is not None`` to determine whether
-      double-buffered state setup is needed.
+    - :meth:`is_graphable`: predicate the user can query to decide whether
+      graph capture is possible.
     - :meth:`input`, :meth:`output`: allocate fresh typed input/output structs.
       Baked-in arrays (gains passed as a ``wp.array`` at construction) are
       stored on the controller and do **not** appear on the input struct.
