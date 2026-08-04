@@ -443,6 +443,7 @@ def reserve_contact_capacity(
             _print_world_contact_capacity_warning()
         return wp.vec3i(-1, 0, 0)
 
+    # Handle case where this thread saturated the world and only partial contacts can be written
     max_num_contacts = wp.min(world_max_contacts - wcio, num_contacts)
     if max_num_contacts < num_contacts:
         # Keep the world counter equal to the number of contacts retained.
@@ -460,6 +461,7 @@ def reserve_contact_capacity(
             _print_model_contact_capacity_warning()
         return wp.vec3i(-1, 0, 0)
 
+    # Handle case where this thread saturated the model and only partial contacts can be written
     max_num_contacts_prev = max_num_contacts
     max_num_contacts = wp.min(model_max_contacts - mcio, max_num_contacts_prev)
     if max_num_contacts < max_num_contacts_prev:
