@@ -3961,6 +3961,29 @@ class ModelBuilder:
     ) -> None:
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
+        # Builders allocate MJCF mask-domain IDs independently. Remap every
+        # incoming domain as one unit so its IDs cannot collide with domains
+        # already present in the destination builder.
+        collision_mask_domain_key = "mujoco:collision_mask_domain"
+        collision_mask_domain_remap: dict[int, int] = {}
+        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
+        if source_domain_attr is not None and source_domain_attr.values:
+            source_items = (
+                source_domain_attr.values.items()
+                if isinstance(source_domain_attr.values, dict)
+                else enumerate(source_domain_attr.values)
+            )
+            # Copied shape ranges never overlap, so the first destination shape
+            # in each source domain is already a unique, deterministic ID. This
+            # avoids rescanning the growing destination during replication.
+            shape_offset = entity_offsets["shape"]
+            for shape, value in source_items:
+                if value is None:
+                    continue
+                source_domain = int(value)
+                if source_domain >= 0:
+                    collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
+
         def get_offset(entity_or_key: str | None) -> int:
             if entity_or_key is None:
                 return 0
@@ -3997,7 +4020,10 @@ class ModelBuilder:
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
-            needs_remap = value_offset != 0 or use_current_world or is_equality_target_attr
+            is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
+            needs_remap = (
+                value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
+            )
 
             if needs_remap:
 
@@ -4053,9 +4079,12 @@ class ModelBuilder:
                     entity_idx: int,
                     value: Any,
                     is_equality_target: bool = is_equality_target_attr,
+                    is_collision_mask_domain: bool = is_collision_mask_domain_attr,
                 ) -> Any:
                     if is_equality_target:
                         return transform_equality_target_value(entity_idx, value)
+                    if is_collision_mask_domain:
+                        return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
 
             merged = self.custom_attributes.get(full_key)
@@ -12438,34 +12467,36 @@ class ModelBuilder:
                 self._iter_validated_shape_collision_filter_pairs((*filter_pairs.explicit_pairs, *floating_block_pairs))
             )
 
-        # Builder-side compact blocks are valid only while they describe the
-        # model's filters exactly; otherwise the general path queries the model.
-        use_filter_blocks = bool(world_filter_blocks) and allow_filter_blocks
-        if use_filter_blocks:
+        # Builder-side storage is valid only while it describes the model's
+        # filters exactly; otherwise the general path queries the model.
+        use_world_templates = (
+            allow_filter_blocks and self.world_count > 0 and isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs)
+        )
+        if use_world_templates:
             shape_world_np = np.asarray(self.shape_world, dtype=np.int32)
             starts = self.shape_world_start
             if len(starts) != self.world_count + 2:
-                use_filter_blocks = False
+                use_world_templates = False
             else:
                 segment_worlds = np.full(self.shape_count, -1, dtype=np.int32)
                 for world in range(self.world_count):
                     segment_worlds[starts[world] : starts[world + 1]] = world
-                use_filter_blocks = np.array_equal(segment_worlds, shape_world_np)
+                use_world_templates = np.array_equal(segment_worlds, shape_world_np)
 
-        if use_filter_blocks:
+        if use_world_templates:
             blocks_by_world = {}
             global_filter_pairs = set()
             explicit_filters_by_world = {}
             for block in world_filter_blocks:
                 world = block.world
                 if world < 0 or world >= self.world_count:
-                    use_filter_blocks = False
+                    use_world_templates = False
                     break
 
                 world_start = self.shape_world_start[world]
                 world_end = self.shape_world_start[world + 1]
                 if block.shape_start < world_start or block.shape_start + block.shape_count > world_end:
-                    use_filter_blocks = False
+                    use_world_templates = False
                     break
 
                 # Store block starts as world-local offsets for the template cache
@@ -12474,7 +12505,7 @@ class ModelBuilder:
                     (block.shape_start - world_start, block.shape_count, block.local_pairs)
                 )
 
-            if use_filter_blocks:
+            if use_world_templates:
                 # Residual explicit filters may involve global shapes, so split
                 # them into globally keyed filters and per-world local filters.
                 for shape_a, shape_b in explicit_filter_pairs:
@@ -12498,7 +12529,7 @@ class ModelBuilder:
                         )
                     # Cross-world pairs never collide, so filtering them is a no-op.
 
-            if use_filter_blocks:
+            if use_world_templates:
                 contact_pairs = []
                 shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
                 colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0
