@@ -2437,7 +2437,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         history.penalty_k = self._prev_contact_penalty_k
                         history.normal = self._prev_contact_normal
                         restore_compliant_tangent_warmstart = int(
-                            self.rigid_compliant_alm and contacts._rigid_contact_matching_mode == "latest"
+                            self.rigid_compliant_alm and contacts.contact_matching_mode == "latest"
                         )
 
                         wp.launch(

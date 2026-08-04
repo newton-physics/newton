@@ -2510,6 +2510,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 dtype=wp.int32,
                 device=contacts.device,
             )
+        filtered._contact_matching_mode = contacts.contact_matching_mode
         return filtered
 
     @staticmethod
