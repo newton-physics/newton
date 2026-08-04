@@ -103,6 +103,50 @@ Validate finite positive thickness and stiffness, finite nonnegative damping
 and friction, positive friction epsilon, a nonzero finite normal, matching
 particle counts, and matching devices.
 
+## Adaptive self-collision stabilization
+
+Keep the nominal self-collision thickness at `0.006 m`. For edge-edge
+contacts whose two topological edges are opposite one another in adjacent
+triangles, clamp the active thickness to half their average current edge
+length. This matches Style3D's local guard and prevents a collision shell
+from becoming wider than nearby cloth elements. The broad phase continues to
+query with the nominal thickness; only the narrow-phase acceptance and stored
+penetration depth use the limited thickness.
+
+Support two self-collision stiffness modes without changing existing callers:
+
+- Fixed mode retains the existing `stiffness` and `untangle_stiffness` values.
+- Adaptive mode sets `stiffness=None` and supplies dimensionless
+  `stiffness_factors=(vf, ee, ef)`.
+
+The adaptive mode binds the assembled static diagonal blocks and particle
+masses from `SolverLIMX`. At each contact with unit direction `n`, define the
+per-particle directional scale
+
+```text
+s_i = n^T H_static,ii n + m_i / dt^2.
+```
+
+Average `s_i` over the two opposing features, then use their harmonic
+combination
+
+```text
+k_contact = factor * s_A * s_B / (s_A + s_B).
+```
+
+The split is `1|3` for VF, `2|2` for EE, and `2|3` for EF. Force,
+Hessian-vector multiplication, and diagonal accumulation must all use the
+same frozen `k_contact`. `SolverLIMX` refreshes the static matrix diagonal
+after elastic assembly and before dynamic force accumulation so the adaptive
+operator sees the current Newton linearization. Fixed mode remains bitwise on
+the existing constant-stiffness path.
+
+For the T-shirt scene use factors `(0.5, 0.1, 1.5)`. The softer EE factor
+addresses the observed hundreds of simultaneous EE contacts, while EF remains
+three times VF as required for untangling. Leave table thickness, stiffness,
+damping, and friction unchanged until this self-collision correction is
+measured independently.
+
 ## Initial parameters
 
 - Time step: `0.01 s`, one physics step per rendered frame.
@@ -111,9 +155,9 @@ particle counts, and matching devices.
 - Global velocity damping: `1.0`.
 - Gravity: `(0, 0, -9.81) m/s^2`.
 - Membrane stiffness: `(1e4, 1e4, 1e3)`.
-- Dihedral bending stiffness: `0.01`.
+- Dihedral bending stiffness: `1e-4`.
 - Self-collision thickness: `0.006 m`.
-- VF/EE stiffness: `1e4 N/m`; EF stiffness: `3e4 N/m`.
+- Adaptive self-collision factors: VF `0.5`, EE `0.1`, EF `1.5`.
 - Table-contact thickness: `0.006 m`.
 - Table normal stiffness: `2e4 N/m`.
 - Table normal damping: `0.5 N*s/m`.

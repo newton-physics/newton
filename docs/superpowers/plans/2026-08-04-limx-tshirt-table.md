@@ -668,3 +668,151 @@ git log --oneline --decorate -8
 ```
 
 Expected: `lessons.md` and `solver_convergence.png` remain unstaged user workspace changes; feature code, tests, docs, and screenshot are committed on `vegtsunami/limx-dihedral-bending`.
+
+### Task 5: Adaptive self-collision stabilization
+
+**Files:**
+- Modify: `newton/_src/solvers/limx/constraints/self_collision.py`
+- Modify: `newton/_src/solvers/limx/constraints/dynamic_group.py`
+- Modify: `newton/_src/solvers/limx/solver_newton.py`
+- Modify: `newton/tests/test_solver_limx.py`
+- Modify: `newton/tests/test_example_cloth_limx_tshirt_table.py`
+- Modify: `newton/examples/cloth/example_cloth_limx_tshirt_table.py`
+
+**Interfaces:**
+- Consumes: current static diagonal blocks from `BlockCsrMatrix.diagonal`, positive model particle masses, and the once-per-step `dt` lifecycle.
+- Produces: `ConstraintSelfCollision(..., stiffness: float | None, stiffness_factors: tuple[float, float, float] | None = None)` plus optional `bind_static_system(static_diagonal, masses)` forwarding through `ConstraintGroupDynamic`.
+
+- [ ] **Step 1: Write the failing CUDA test for adaptive contact scaling**
+
+Create one four-particle VF `_ContactBuffer` with split `1|3`, direction
+`(1,0,0)`, depth `0.2`, unit masses, `dt=0.5`, and directional static
+diagonals `(6,16,26,36)`. The feature scales are `s_A=10` and `s_B=30`, so
+factor `0.5` must produce `k_contact=3.75`. Assert the literal force,
+Hessian-vector product, and diagonal blocks from this stiffness. This test
+catches using a global constant, omitting inertia, averaging the wrong feature
+partition, or using inconsistent stiffness across the three matrix-free
+operations.
+
+- [ ] **Step 2: Run the adaptive-buffer test and observe the missing API failure**
+
+Run:
+
+```bash
+uv run --extra dev -m newton.tests -p test_solver_limx.py -k adaptive_contact_uses_directional_feature_stiffness
+```
+
+Expected: FAIL because `_ContactBuffer` has no feature split or adaptive
+operation arguments.
+
+- [ ] **Step 3: Implement adaptive rank-one contact operations**
+
+Add a Warp helper that computes the feature averages of
+`dot(n, H_static,ii * n) + mass_i * inv_dt_squared`, guards a tiny denominator,
+and returns `factor * s_A * s_B / (s_A + s_B)`. Extend the force, HVP, and
+diagonal kernels and `_ContactBuffer` dispatch so fixed mode uses the old
+constant stiffness and adaptive mode uses the same helper. Construct VF, EE,
+and EF buffers with splits `1`, `2`, and `2` respectively.
+
+- [ ] **Step 4: Run fixed and adaptive contact-buffer CUDA tests**
+
+Run:
+
+```bash
+uv run --extra dev -m newton.tests -p test_solver_limx.py -k TestSelfCollisionContactBuffer
+```
+
+Expected: both existing fixed-stiffness tests and the new adaptive test pass.
+
+- [ ] **Step 5: Write the failing CUDA behavior test for the local EE thickness clamp**
+
+Build two triangles whose non-sharing tested edges are opposite vertices of
+the adjacent topology. Put those edges at an interior closest distance larger
+than half their average current edge length but smaller than the nominal
+thickness. Call `prepare()` and assert that this edge pair is absent from the
+stored EE contacts. This test catches removing or misapplying the topology
+guard while leaving ordinary nonadjacent EE detection intact.
+
+- [ ] **Step 6: Run the clamp test and observe the extra EE contact**
+
+Run:
+
+```bash
+uv run --extra dev -m newton.tests -p test_solver_limx.py -k adjacent_opposite_edges_limit_contact_thickness
+```
+
+Expected: FAIL because the current narrow phase compares only with the global
+nominal thickness.
+
+- [ ] **Step 7: Implement the Style3D-compatible EE narrow-phase clamp**
+
+In `_detect_edge_edge_contacts`, use the adjacency entries in edge columns
+zero and one to detect whether either edge endpoint is an opposite vertex of
+the other edge. For those pairs set
+`limited_thickness=min(thickness, 0.5*(length_0+length_1)*0.5)`, reject against
+that value, and store `limited_thickness-distance` as depth. Keep the broad
+phase at nominal thickness.
+
+- [ ] **Step 8: Bind the current static system into adaptive constraints**
+
+Add optional `ConstraintGroupDynamic.bind_static_system(static_diagonal,
+masses)` forwarding. In `SolverLIMX.__init__`, call it after the block-CSR
+matrix has been finalized and bound. In each Newton iteration call
+`static_matrix.update_diagonal()` immediately after all static constraints
+assemble and before dynamic force accumulation. `ConstraintSelfCollision`
+validates and stores the arrays and caches `1/(dt*dt)` in `begin_step`; adaptive
+operations raise a clear runtime error if binding or step preparation is
+missing.
+
+- [ ] **Step 9: Add constructor-mode and solver-binding CUDA tests**
+
+Assert fixed mode retains `stiffness=10` and default
+`untangle_stiffness=30`; adaptive mode accepts only three finite positive
+factors and rejects ambiguous or incomplete mode combinations. Exercise a
+one-step `SolverLIMX` adaptive contact case to prove static diagonal and mass
+binding occur before contact force/Hessian evaluation.
+
+- [ ] **Step 10: Update and test the T-shirt scene parameters**
+
+Construct self-collision with:
+
+```python
+newton.solvers.ConstraintSelfCollision(
+    self.model,
+    thickness=0.006,
+    stiffness=None,
+    stiffness_factors=(0.5, 0.1, 1.5),
+    max_contacts=131072,
+)
+```
+
+Keep table contact parameters unchanged. Extend the graph smoke test to assert
+the three factors and adaptive mode, then run:
+
+```bash
+uv run --extra dev -m newton.tests -p test_example_cloth_limx_tshirt_table.py -k cuda_graph_step_is_finite
+```
+
+- [ ] **Step 11: Run focused CUDA regressions and the 3000-frame diagnostic**
+
+Run:
+
+```bash
+uv run --extra dev -m newton.tests -p test_solver_limx.py -k TestSelfCollisionContactBuffer
+uv run --extra dev -m newton.tests -p test_solver_limx.py -k TestConstraintSelfCollisionDetection
+uv run --extra dev -m newton.tests -p test_example_cloth_limx_tshirt_table.py
+```
+
+Expected: all selected tests pass on `cuda:0`, the minimum table gap remains
+within `-0.008 m`, and final-window mean speed remains below `0.02 m/s`.
+
+- [ ] **Step 12: Launch the interactive CUDA scene**
+
+Run:
+
+```bash
+uv run --extra examples -m newton.examples cloth_limx_tshirt_table --device cuda:0 --num-frames 1000000 --render-fps 100
+```
+
+Expected: the window remains live with play/pause/reset controls for visual
+approval.
