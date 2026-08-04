@@ -181,6 +181,11 @@ def _is_fragment_path(path: PurePosixPath) -> bool:
     return path.parent == FRAGMENT_DIRECTORY and path not in METADATA_FILES
 
 
+def _is_policy_bootstrap(changes: list[Change]) -> bool:
+    """Return whether the diff introduces the changelog policy."""
+    return any(change.status == "A" and change.path == BOOTSTRAP_POLICY_PATH for change in changes)
+
+
 def _fragment_from_change(change: Change, fragment_types: tuple[str, ...]) -> Fragment | None:
     """Describe the current fragment path from a Git change."""
     if not _is_fragment_path(change.path):
@@ -220,7 +225,7 @@ def validate_pr_changes(
         )
 
     errors: list[str] = []
-    is_bootstrap = any(change.status == "A" and change.path == BOOTSTRAP_POLICY_PATH for change in changes)
+    is_bootstrap = _is_policy_bootstrap(changes)
     if not is_bootstrap and any(
         change.path == CHANGELOG_PATH or change.old_path == CHANGELOG_PATH for change in changes
     ):
@@ -339,6 +344,15 @@ def validate_merge_group_changes(
     pending_fragments: set[PurePosixPath],
 ) -> list[str]:
     """Validate the composable changelog rules for a merge-group diff."""
+    if _is_policy_bootstrap(changes):
+        return validate_pr_changes(
+            changes,
+            target_branch="merge-group",
+            labels=set(),
+            fragment_types=fragment_types,
+            pending_fragments=pending_fragments,
+        )
+
     if any(change.path == CHANGELOG_PATH for change in changes):
         return _validate_release_management_changes(
             changes,

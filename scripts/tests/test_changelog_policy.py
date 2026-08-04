@@ -240,6 +240,30 @@ class ChangelogPolicyTest(unittest.TestCase):
             )
         )
 
+    def test_allows_policy_bootstrap_in_merge_group(self):
+        """Allow the one-time bootstrap diff through the merge queue."""
+        fragment_types = changelog_policy.load_towncrier_fragment_types()
+        bootstrap_changes = [
+            changelog_policy.Change("M", PurePosixPath("CHANGELOG.md")),
+            changelog_policy.Change("A", PurePosixPath("scripts/changelog_policy.py")),
+            changelog_policy.Change(
+                "A",
+                PurePosixPath("changelog/+towncrier-workflow-7d9e3a1c.skip"),
+            ),
+            changelog_policy.Change("A", PurePosixPath(".github/workflows/changelog.yml")),
+            changelog_policy.Change("M", PurePosixPath("docs/guide/release.rst")),
+        ]
+
+        self.assertEqual(
+            changelog_policy.validate_merge_group_changes(
+                bootstrap_changes,
+                target_branch="refs/heads/main",
+                fragment_types=fragment_types,
+                pending_fragments={PurePosixPath("changelog/+towncrier-workflow-7d9e3a1c.skip")},
+            ),
+            [],
+        )
+
     def test_checks_staged_changelog_edits(self):
         """Reject direct staged changelog edits while allowing release-shaped changes."""
         fragment_types = changelog_policy.load_towncrier_fragment_types()
