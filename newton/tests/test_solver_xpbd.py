@@ -1573,6 +1573,58 @@ def test_xpbd_parent_f_newton_second_law_zero_g(test, device):
             )
 
 
+def test_xpbd_aligned_box_stack_remains_stable(test, device):
+    """Keep an aligned five-box stack upright through the reported collapse window.
+
+    Exact face alignment accumulates solver-scale quaternion drift. MPR must
+    retain four-point face manifolds as that drift crosses zero, or the stack
+    loses support and collapses.
+    """
+    builder = newton.ModelBuilder(up_axis="Y")
+    builder.add_ground_plane()
+    box_count = 5
+    half_extent = 0.5
+    for box_index in range(box_count):
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, half_extent + box_index, 0.0), wp.quat_identity()))
+        builder.add_shape_box(body=body, hx=half_extent, hy=half_extent, hz=half_extent)
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model, iterations=4)
+    state_in = model.state()
+    state_out = model.state()
+    control = model.control()
+    collision_pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+    contacts = collision_pipeline.contacts()
+
+    frame_dt = 1.0 / 60.0
+    substep_count = 4
+    substep_dt = frame_dt / substep_count
+    for _ in range(180):
+        for _ in range(substep_count):
+            state_in.clear_forces()
+            collision_pipeline.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, substep_dt)
+            state_in, state_out = state_out, state_in
+
+    body_transforms = state_in.body_q.numpy()
+    positions = body_transforms[:, :3]
+    orientations = body_transforms[:, 3:]
+    expected_heights = half_extent + np.arange(box_count)
+
+    test.assertTrue(np.all(np.isfinite(body_transforms)), "Stack state must remain finite")
+    np.testing.assert_allclose(positions[:, 1], expected_heights, atol=2.0e-2)
+    test.assertLess(
+        float(np.max(np.linalg.norm(positions[:, (0, 2)], axis=1))),
+        1.0e-2,
+        "Stack boxes must not slide laterally out of alignment",
+    )
+    test.assertLess(
+        float(np.max(np.linalg.norm(orientations[:, (0, 2)], axis=1))),
+        1.0e-3,
+        "Stack boxes must remain upright",
+    )
+
+
 devices = get_test_devices()
 
 
@@ -1741,6 +1793,14 @@ add_function_test(
     TestSolverXPBD,
     "test_xpbd_parent_f_newton_second_law_zero_g",
     test_xpbd_parent_f_newton_second_law_zero_g,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_aligned_box_stack_remains_stable",
+    test_xpbd_aligned_box_stack_remains_stable,
     devices=devices,
     check_output=False,
 )

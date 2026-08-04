@@ -38,6 +38,8 @@ import warp as wp
 from .support_function import GeoTypeEx, closest_point_on_triangle, unpack_mesh_ptr
 from .types import GeoType
 
+MPR_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
+
 
 @wp.struct
 class Vert:
@@ -301,9 +303,27 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     """
 
     if _support_funcs is not None:
-        _support_map_b, minkowski_support, geometric_center = _support_funcs
+        _support_map_b, _minkowski_support, geometric_center = _support_funcs
     else:
-        _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
+        _support_map_b, _minkowski_support, geometric_center = create_support_map_function(support_func)
+
+    @wp.func
+    def centered_box_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+        result = support_func(geom, direction, data_provider)
+        if geom.shape_type == GeoType.BOX:
+            # A nearly tied box face has infinitely many valid support points. Its center
+            # avoids feeding solver-scale rotation noise into MPR's portal topology.
+            contribution = wp.cw_mul(wp.abs(direction), geom.scale)
+            threshold = MPR_BOX_SUPPORT_TIE_EPSILON * (contribution[0] + contribution[1] + contribution[2])
+            if contribution[0] <= threshold:
+                result[0] = 0.0
+            if contribution[1] <= threshold:
+                result[1] = 0.0
+            if contribution[2] <= threshold:
+                result[2] = 0.0
+        return result
+
+    _, mpr_support, _ = create_support_map_function(centered_box_support)
 
     @wp.func
     def solve_mpr_core(
@@ -387,7 +407,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                 for axis_idx in range(3):
                     probe = wp.vec3(0.0, 0.0, 0.0)
                     probe[axis_idx] = 1.0
-                    sv = minkowski_support(geom_a, geom_b, probe, orientation_b, position_b, extend, data_provider)
+                    sv = mpr_support(geom_a, geom_b, probe, orientation_b, position_b, extend, data_provider)
                     d = wp.dot(sv.BtoA, probe)
                     if d > best_dot:
                         best_dot = d
@@ -397,7 +417,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         normal = -v0.BtoA
 
         # First support point
-        v1 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+        v1 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         point_a = vert_a(v1)
         point_b = v1.B
@@ -417,7 +437,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
             return True, point_a, point_b, normal, penetration
 
         # Second support point
-        v2 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+        v2 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         if wp.dot(v2.BtoA, normal) <= 0.0:
             return False, point_a, point_b, normal, penetration
@@ -452,7 +472,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
             phase1 += 1
 
-            v3 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+            v3 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             if wp.dot(v3.BtoA, normal) <= 0.0:
                 return False, point_a, point_b, normal, penetration
@@ -499,7 +519,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                 # If the origin is inside the wedge, we have a hit
                 hit = d >= 0.0
 
-            v4 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+            v4 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             temp3 = v4.BtoA - v3.BtoA
             delta = wp.dot(temp3, normal)
