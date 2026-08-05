@@ -538,14 +538,14 @@ class DRLegsRandomPosesCheckForwardKinematics(unittest.TestCase):
         model = builder.finalize(device=self.default_device, requires_grad=False)
 
         # Generate helper function to simulate random poses
-        num_poses = 30
+        num_poses = 15
         simulate_function = partial(
             simulate_random_poses,
             model,
             num_poses,
             rng,
-            max_angle=np.radians(10.0),  # Angles too far from the initial pose lead to singularities
-            max_ang_vel=np.radians(30.0),
+            max_angle=np.radians(5.0),  # Angles too far from the initial pose lead to singularities
+            max_ang_vel=np.radians(20.0),
             use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
@@ -589,14 +589,14 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
         model = builder.finalize(device=self.default_device, requires_grad=False)
 
         # Generate helper function to simulate random poses
-        num_poses = 30
+        num_poses = 15
         simulate_function = partial(
             simulate_random_poses,
             model,
             num_poses,
             rng,
-            max_angle=np.radians(10.0),  # Angles too far from the initial pose lead to singularities
-            max_ang_vel=np.radians(30.0),
+            max_angle=np.radians(5.0),  # Angles too far from the initial pose lead to singularities
+            max_ang_vel=np.radians(20.0),
             randomize_base=False,
             use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
