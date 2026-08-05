@@ -562,8 +562,8 @@ class Example:
                 PEEL_Y_MODE,
                 TWIST_MODE,
             )
-            for pad_xform in pad_transforms:
-                gripper.add_pad(pad_xform)
+            for i in range(len(pad_transforms)):
+                gripper.add_pad(pad_transforms[i], self.pad_radii[i], self.pad_half_heights[i])
             gripper_builder.add_gripper(gripper)
         self.gripper_model = gripper_builder.finalize(device=self.model.device)
         self.gripper_state = self.gripper_model.state()
@@ -574,16 +574,6 @@ class Example:
         n_grippers = self.gripper_model.gripper_body_id.shape[0]
         n_pads = self.gripper_model.pad_xform.shape[0]
 
-        # Per-pad lip geometry the seat fit samples, one entry per pad in the gripper model. Every gripper
-        # has the same pads (added in PAD_PRIMS order), so pad i's within-gripper index is i % pads_per_gripper.
-        pads_per_gripper = len(PAD_PRIMS)
-        pad_radius_list = []
-        pad_face_offset_list = []
-        for p in range(n_pads):
-            pad_radius_list.append(self.pad_radii[p % pads_per_gripper])
-            pad_face_offset_list.append(self.pad_half_heights[p % pads_per_gripper])
-        self.pad_radius_wp = wp.array(pad_radius_list, dtype=float, device=self.model.device)
-        self.pad_face_offset_wp = wp.array(pad_face_offset_list, dtype=float, device=self.model.device)
         # gripper_command_engaged_wp is the engagement state of the gripper as read from the recording of the robot arm.
         # gripper_seal_broken_wp is the fracture state of the gripper
         # pad_seal_break_count_wp is the number of continuous steps that each pad has exceeded the maximum force.
@@ -719,8 +709,6 @@ class Example:
                     self.pad_seal_engaged_wp,
                     self.pad_body_b,
                     self.body_mesh_id,
-                    self.pad_radius_wp,
-                    self.pad_face_offset_wp,
                     PAD_LIP_SAMPLES,
                     iters=SEAT_ITERS,
                 )

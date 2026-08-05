@@ -408,6 +408,8 @@ class SurfaceGripper:
         self.xform = xform
         self.world = world  # world (environment) this gripper lives in; -1 for a global gripper
         self.pads: list[wp.transform] = []  # pad poses in the gripper frame
+        self.pad_radii: list[float] = []  # per-pad lip circle radius [m], parallel to self.pads
+        self.pad_half_heights: list[float] = []  # per-pad lip plane offset along the grip axis [m], parallel to self.pads
         # Seal parameters -- zero (no seal force) until set via one of the two setters below.
         self.f_grip_max = 0.0
         self.k_normal = 0.0
@@ -523,9 +525,12 @@ class SurfaceGripper:
             f_torsion_max,
         )
 
-    def add_pad(self, xform: wp.transform) -> int:
-        """Add a pad at ``xform`` (gripper frame). Returns its index within this gripper."""
+    def add_pad(self, xform: wp.transform, radius: float, half_height: float) -> int:
+        """Add a pad at ``xform`` (gripper frame) with lip circle ``radius`` [m] and ``half_height`` [m]
+        (the lip-plane offset along the grip axis). Returns its index within this gripper."""
         self.pads.append(xform)
+        self.pad_radii.append(radius)
+        self.pad_half_heights.append(half_height)
         return len(self.pads) - 1
 
 
@@ -573,6 +578,8 @@ class SurfaceGripperBuilder:
         m.world_count = (max((x.world for x in g), default=-1) + 1) if g else 0
         pad_gripper: list[int] = []
         pad_xform: list[wp.transform] = []
+        pad_radius: list[float] = []
+        pad_face_offset: list[float] = []
         pad_world: list[int] = []
         pad_world_start = [0] * (m.world_count + 2)  # CSR: [per-world starts..., global start, total]
         for w in [*range(m.world_count), -1]:  # each world in order, then global (world -1) pads last
@@ -582,13 +589,17 @@ class SurfaceGripperBuilder:
                 pad_world_start[m.world_count] = len(pad_gripper)  # index -2: start of global pads
             for gi, x in enumerate(g):
                 if x.world == w:
-                    for p in x.pads:
+                    for pi in range(len(x.pads)):
                         pad_gripper.append(gi)
-                        pad_xform.append(p)
+                        pad_xform.append(x.pads[pi])
+                        pad_radius.append(x.pad_radii[pi])
+                        pad_face_offset.append(x.pad_half_heights[pi])
                         pad_world.append(w)
         pad_world_start[m.world_count + 1] = len(pad_gripper)  # index -1: total pad count
         m.pad_gripper = wp.array(pad_gripper, dtype=wp.int32, device=device)
         m.pad_xform = wp.array(pad_xform, dtype=wp.transform, device=device)
+        m.pad_radius = wp.array(pad_radius, dtype=wp.float32, device=device)  # [pads] lip circle radius [m]
+        m.pad_face_offset = wp.array(pad_face_offset, dtype=wp.float32, device=device)  # [pads] lip plane offset [m]
         m.pad_world = wp.array(pad_world, dtype=wp.int32, device=device)
         m.pad_world_start = wp.array(pad_world_start, dtype=wp.int32, device=device)
         return m
@@ -1057,8 +1068,6 @@ def attach_seal_seated(
     pad_seal_engaged: wp.array[wp.bool],
     pad_body_b_id: wp.array[int],
     body_b_mesh_id: wp.array[wp.uint64],
-    pad_radius: wp.array[float],
-    pad_face_offset: wp.array[float],
     n_samples_per_pad: int,
     max_dist: float = 1.0,
     grad_h: float = 1.0e-4,
@@ -1086,9 +1095,8 @@ def attach_seal_seated(
         pad_seal_engaged: This step's fresh per-pad seal decision, shape [n_pads].
         pad_body_b_id: Gripped body each pad seals against this step (< 0 = none), shape [n_pads].
         body_b_mesh_id: Body id -> gripped-object SDF mesh id (a :class:`warp.Mesh` id), shape [n_bodies].
-        pad_radius: Per-pad lip circle radius [m], shape [n_pads].
-        pad_face_offset: Per-pad lip-plane offset along the pad's z axis (pad local +z) [m], shape [n_pads].
-        n_samples_per_pad: Number of lip sample points placed around each pad's lip.
+        n_samples_per_pad: Number of lip sample points placed around each pad's lip. The per-pad lip circle
+            radius and plane offset [m] are taken from ``gripper_model`` (``pad_radius`` / ``pad_face_offset``).
         max_dist: SDF search radius [m].
         grad_h: SDF central-difference step [m].
         damping: A small stabiliser for the fit. When the pads don't fully pin the gripped object down --
@@ -1116,8 +1124,8 @@ def attach_seal_seated(
             body_b_mesh_id,
             gm.pad_world,
             gm.pad_world_start,
-            pad_radius,
-            pad_face_offset,
+            gm.pad_radius,
+            gm.pad_face_offset,
             n_samples_per_pad,
             max_dist,
             grad_h,
