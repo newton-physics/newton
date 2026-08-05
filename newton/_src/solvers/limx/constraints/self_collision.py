@@ -112,6 +112,8 @@ def _update_edge_bounds(
 def _detect_vertex_face_contacts(
     triangle_bvh_id: wp.uint64,
     thickness: float,
+    particle_radii: wp.array[float],
+    use_geometry_radii: int,
     capacity: int,
     positions: wp.array[wp.vec3],
     particle_world: wp.array[int],
@@ -158,6 +160,17 @@ def _detect_vertex_face_contacts(
         if barycentric[0] < 0.0 or barycentric[1] < 0.0 or barycentric[2] < 0.0:
             continue
 
+        effective_thickness = thickness
+        if use_geometry_radii != 0:
+            face_radius = (
+                barycentric[0] * particle_radii[index_0]
+                + barycentric[1] * particle_radii[index_1]
+                + barycentric[2] * particle_radii[index_2]
+            )
+            effective_thickness = particle_radii[vertex] + face_radius
+        if distance >= effective_thickness:
+            continue
+
         contact = wp.atomic_add(contact_count, 0, 1)
         if contact >= capacity:
             wp.atomic_add(overflow_count, 0, 1)
@@ -175,13 +188,15 @@ def _detect_vertex_face_contacts(
         contact_weights[contact, 2] = -barycentric[1]
         contact_weights[contact, 3] = -barycentric[2]
         contact_directions[contact] = direction
-        contact_depths[contact] = thickness - distance
+        contact_depths[contact] = effective_thickness - distance
 
 
 @wp.kernel
 def _detect_edge_edge_contacts(
     edge_bvh_id: wp.uint64,
     thickness: float,
+    particle_radii: wp.array[float],
+    use_geometry_radii: int,
     capacity: int,
     positions: wp.array[wp.vec3],
     particle_world: wp.array[int],
@@ -232,18 +247,26 @@ def _detect_edge_edge_contacts(
         separation = closest_0 - closest_1
         distance = wp.length(separation)
         limited_thickness = thickness
-        if (
-            edge_indices[edge, 0] == index_2
-            or edge_indices[edge, 1] == index_2
-            or edge_indices[edge, 0] == index_3
-            or edge_indices[edge, 1] == index_3
-            or edge_indices[other_edge, 0] == index_0
-            or edge_indices[other_edge, 1] == index_0
-            or edge_indices[other_edge, 0] == index_1
-            or edge_indices[other_edge, 1] == index_1
-        ):
-            average_length = 0.5 * (wp.length(position_1 - position_0) + wp.length(position_3 - position_2))
-            limited_thickness = wp.min(limited_thickness, 0.5 * average_length)
+        if use_geometry_radii != 0:
+            radius_0 = (1.0 - parameter_0) * particle_radii[index_0]
+            radius_0 += parameter_0 * particle_radii[index_1]
+            radius_1 = (1.0 - parameter_1) * particle_radii[index_2]
+            radius_1 += parameter_1 * particle_radii[index_3]
+            limited_thickness = radius_0 + radius_1
+        else:
+            topology_local = (
+                edge_indices[edge, 0] == index_2
+                or edge_indices[edge, 1] == index_2
+                or edge_indices[edge, 0] == index_3
+                or edge_indices[edge, 1] == index_3
+                or edge_indices[other_edge, 0] == index_0
+                or edge_indices[other_edge, 1] == index_0
+                or edge_indices[other_edge, 0] == index_1
+                or edge_indices[other_edge, 1] == index_1
+            )
+            if topology_local:
+                average_length = 0.5 * (wp.length(position_1 - position_0) + wp.length(position_3 - position_2))
+                limited_thickness = wp.min(limited_thickness, 0.5 * average_length)
         if distance <= _MIN_CONTACT_DISTANCE or distance >= limited_thickness:
             continue
 
@@ -1057,6 +1080,8 @@ class ConstraintSelfCollision:
             inputs=[
                 self.triangle_bvh.id,
                 self.thickness,
+                self.particle_radii,
+                self._use_geometry_radii,
                 self.max_contacts,
                 positions,
                 self.particle_world,
@@ -1078,6 +1103,8 @@ class ConstraintSelfCollision:
             inputs=[
                 self.edge_bvh.id,
                 self.thickness,
+                self.particle_radii,
+                self._use_geometry_radii,
                 self.max_contacts,
                 positions,
                 self.particle_world,

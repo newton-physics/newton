@@ -1375,6 +1375,33 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(directions[contact], [0.0, 0.0, 1.0], atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
 
+    def test_geometry_aware_vertex_face_depth_interpolates_face_radii(self):
+        """Compute VF depth from vertex and barycentrically interpolated face radii."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, 0.05],
+            [3.0, 3.0, 3.0],
+            [4.0, 3.0, 3.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=16,
+                geometry_radius_scale=0.25,
+            )
+            collision.particle_radii.assign([0.01, 0.02, 0.03, 0.04, 0.01, 0.01])
+            collision.prepare(model.particle_q)
+            ids, _, _, depths = self._stored_contacts(collision.vertex_face_contacts)
+
+        matches = np.nonzero(np.all(ids == [3, 0, 1, 2], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        self.assertAlmostEqual(float(depths[int(matches[0])]), 0.0075, places=6)
+
     def test_edge_edge_detection_uses_distinct_closest_parameters(self):
         positions = [
             [0.0, 0.0, 0.0],
@@ -1397,6 +1424,35 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(np.sum(weights[contact]), 0.0, atol=1.0e-7)
         np.testing.assert_allclose(directions[contact], [0.0, 0.0, -1.0], atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
+
+    def test_geometry_aware_edge_edge_depth_interpolates_both_edges(self):
+        """Compute EE depth from independent closest-point radius interpolation."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, -2.0, 0.0],
+            [0.25, -0.3, 0.05],
+            [0.25, 0.7, 0.05],
+            [3.0, 0.7, 2.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=32,
+                geometry_radius_scale=0.25,
+            )
+            collision.particle_radii.assign([0.02, 0.04, 0.01, 0.03, 0.05, 0.01])
+            collision.prepare(model.particle_q)
+            ids, weights, _, depths = self._stored_contacts(collision.edge_edge_contacts)
+
+        matches = np.nonzero(np.all(ids == [0, 1, 3, 4], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        contact = int(matches[0])
+        np.testing.assert_allclose(weights[contact], [0.75, 0.25, -0.7, -0.3], atol=1.0e-6)
+        self.assertAlmostEqual(float(depths[contact]), 0.011, places=6)
 
     def test_shared_edge_endpoints_do_not_generate_edge_edge_contacts(self):
         positions = [
@@ -1429,6 +1485,37 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
 
         self.assertFalse(np.any(np.all(ids == [0, 1, 2, 3], axis=1)))
+
+    def test_geometry_aware_local_edge_pair_bypasses_length_clamp_and_separates(self):
+        """Keep a close local EE contact active with a finite separating force."""
+        positions = [
+            [-0.05, 0.0, 0.0],
+            [0.05, 0.0, 0.0],
+            [0.0, -0.05, 0.08],
+            [0.0, 0.05, 0.08],
+            [1.0, 0.05, 0.08],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (2, 3, 4)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=32,
+                geometry_radius_scale=0.25,
+            )
+            collision.particle_radii.assign([0.05] * len(positions))
+            collision.prepare(model.particle_q)
+            ids, _, _, depths = self._stored_contacts(collision.edge_edge_contacts)
+            force = wp.zeros(model.particle_count, dtype=wp.vec3, device=model.device)
+            collision.edge_edge_contacts.accumulate_force(10.0, force)
+            force_np = force.numpy()
+
+        matches = np.nonzero(np.all(ids == [0, 1, 2, 3], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        self.assertAlmostEqual(float(depths[int(matches[0])]), 0.02, places=6)
+        self.assertTrue(np.isfinite(force_np).all())
+        self.assertGreater(float(np.linalg.norm(force_np)), 0.0)
 
     def test_edge_face_crossing_emits_five_particle_untangle_contact(self):
         positions = [
