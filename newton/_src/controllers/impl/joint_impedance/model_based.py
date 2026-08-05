@@ -52,8 +52,9 @@ class ControllerJointImpedance(ControllerBase):
     supported. The PD error term ``q_des - q`` is only valid for scalar
     joint coordinates.
 
-    See also :class:`ControllerJointImpedanceModelFree`, which takes these
-    terms as inputs instead.
+    See also :class:`ControllerJointImpedanceModelFree`, which takes the mass
+    matrix, gravity, and Coriolis terms as inputs instead of computing them
+    from a :class:`newton.Model`.
 
     Impedance law (terms enabled at construction):
 
