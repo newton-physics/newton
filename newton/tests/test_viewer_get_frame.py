@@ -112,6 +112,27 @@ class TestViewerGLGetFrame(unittest.TestCase):
         finally:
             viewer.close()
 
+    def test_headless_capture_main_image_frame(self):
+        """Verify get_frame captures a main image rendered headlessly."""
+        try:
+            viewer = newton.viewer.ViewerGL(width=64, height=48, headless=True)
+        except Exception as exc:
+            self.skipTest(f"ViewerGL not available: {exc}")
+            return
+
+        try:
+            width = viewer.renderer._screen_width
+            height = viewer.renderer._screen_height
+            image = np.full((height, width, 3), (37, 113, 191), dtype=np.uint8)
+
+            viewer.begin_frame(0.0)
+            viewer.log_main_image("color", image)
+            viewer.end_frame()
+
+            np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
+        finally:
+            viewer.close()
+
     def test_cpu_viewer_uses_host_pbo_readback(self):
         pixels = np.array(
             [

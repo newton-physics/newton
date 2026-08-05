@@ -1368,7 +1368,7 @@ class RendererGL:
         spacing_px: float = 2.0,
         clear_color: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
     ):
-        """Draw a texture directly to the window without rendering the 3D scene.
+        """Draw a texture to the frame buffer without rendering the 3D scene.
 
         Args:
             texture_id: OpenGL texture id to draw, or ``None`` to only clear.
@@ -1381,7 +1381,7 @@ class RendererGL:
                 ``texture_height`` for single-image textures.
             atlas_cols: Number of atlas columns used to pack the source tiles.
             spacing_px: Spacing between displayed tiles in pixels.
-            clear_color: Window clear color.
+            clear_color: Frame clear color.
         """
         gl = RendererGL.gl
         self._make_current()
@@ -1389,7 +1389,9 @@ class RendererGL:
         screen_w = max(int(self._screen_width), 1)
         screen_h = max(int(self._screen_height), 1)
 
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        assert self._frame_fbo is not None
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
+        gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
         gl.glClearColor(*clear_color)
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glDepthMask(True)
@@ -1398,61 +1400,70 @@ class RendererGL:
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glDepthMask(False)
 
-        if texture_id is None or texture_id == 0 or texture_width <= 0 or texture_height <= 0:
-            gl.glDepthMask(True)
-            return
+        if texture_id is not None and texture_id != 0 and texture_width > 0 and texture_height > 0:
+            from .image_logger import compute_grid_layout  # noqa: PLC0415
 
-        from .image_logger import compute_grid_layout  # noqa: PLC0415
+            tile_count = max(1, int(tile_count))
+            tile_width = int(tile_width or texture_width)
+            tile_height = int(tile_height or texture_height)
+            atlas_cols = max(1, int(atlas_cols))
+            spacing_px = max(0.0, float(spacing_px if tile_count > 1 else 0.0))
 
-        tile_count = max(1, int(tile_count))
-        tile_width = int(tile_width or texture_width)
-        tile_height = int(tile_height or texture_height)
-        atlas_cols = max(1, int(atlas_cols))
-        spacing_px = max(0.0, float(spacing_px if tile_count > 1 else 0.0))
+            rows, cols, cell_w, cell_h = compute_grid_layout(
+                tile_count,
+                tile_height / float(max(tile_width, 1)),
+                float(screen_w),
+                float(screen_h),
+                spacing_x=spacing_px,
+                spacing_y=spacing_px,
+            )
+            grid_w = cols * cell_w + max(0, cols - 1) * spacing_px
+            grid_h = rows * cell_h + max(0, rows - 1) * spacing_px
+            origin_x = (screen_w - grid_w) * 0.5
+            origin_y = (screen_h - grid_h) * 0.5
 
-        rows, cols, cell_w, cell_h = compute_grid_layout(
-            tile_count,
-            tile_height / float(max(tile_width, 1)),
-            float(screen_w),
-            float(screen_h),
-            spacing_x=spacing_px,
-            spacing_y=spacing_px,
-        )
-        grid_w = cols * cell_w + max(0, cols - 1) * spacing_px
-        grid_h = rows * cell_h + max(0, rows - 1) * spacing_px
-        origin_x = (screen_w - grid_w) * 0.5
-        origin_y = (screen_h - grid_h) * 0.5
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id))
+            with self._frame_shader:
+                for i in range(tile_count):
+                    display_row, display_col = divmod(i, cols)
+                    draw_x = max(0, int(round(origin_x + display_col * (cell_w + spacing_px))))
+                    draw_y = max(
+                        0,
+                        int(round(origin_y + (rows - 1 - display_row) * (cell_h + spacing_px))),
+                    )
+                    draw_w = max(1, int(round(cell_w)))
+                    draw_h = max(1, int(round(cell_h)))
+                    uv_rect = _texture_tile_uv_rect(
+                        i,
+                        tile_width,
+                        tile_height,
+                        texture_width,
+                        texture_height,
+                        atlas_cols,
+                    )
 
-        gl.glActiveTexture(gl.GL_TEXTURE0)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id))
-        with self._frame_shader:
-            for i in range(tile_count):
-                display_row, display_col = divmod(i, cols)
-                draw_x = max(0, int(round(origin_x + display_col * (cell_w + spacing_px))))
-                draw_y = max(
-                    0,
-                    int(round(origin_y + (rows - 1 - display_row) * (cell_h + spacing_px))),
-                )
-                draw_w = max(1, int(round(cell_w)))
-                draw_h = max(1, int(round(cell_h)))
-                uv_rect = _texture_tile_uv_rect(
-                    i,
-                    tile_width,
-                    tile_height,
-                    texture_width,
-                    texture_height,
-                    atlas_cols,
-                )
+                    gl.glViewport(draw_x, draw_y, draw_w, draw_h)
+                    self._frame_shader.update(0, uv_rect)
+                    gl.glBindVertexArray(self._frame_vao)
+                    gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
+                    gl.glBindVertexArray(0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
-                gl.glViewport(draw_x, draw_y, draw_w, draw_h)
-                self._frame_shader.update(0, uv_rect)
+        gl.glDepthMask(True)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glViewport(0, 0, screen_w, screen_h)
+
+        if self._frame_texture is not None:
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._frame_texture)
+            with self._frame_shader:
+                self._frame_shader.update(0)
                 gl.glBindVertexArray(self._frame_vao)
                 gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
                 gl.glBindVertexArray(0)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-
-        gl.glViewport(0, 0, screen_w, screen_h)
-        gl.glDepthMask(True)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
         err = gl.glGetError()
         assert err == gl.GL_NO_ERROR, hex(err)
