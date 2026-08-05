@@ -193,9 +193,13 @@ class SensorTiledCamera:
     ):
         """Render output images for all worlds and cameras.
 
-        Each output array has shape ``(world_count, camera_count, height, width)`` where element
-        ``[world_id, camera_id, y, x]`` corresponds to the ray in ``camera_rays[camera_id, y, x]``. Each output
-        channel is optional -- pass None to skip that channel's rendering entirely.
+        Each output array has shape ``(output_world_count, camera_count,
+        height, width)`` where element ``[world_id, camera_id, y, x]``
+        corresponds to the ray in ``camera_rays[camera_id, y, x]``. The
+        ``output_world_count`` is ``world_count`` unless
+        ``render_config.render_worlds_together`` is ``True``, in which case it
+        is ``1``. Each output channel is optional -- pass None to skip that
+        channel's rendering entirely.
 
         Shape and particle BVHs on :attr:`model` are built for the initial
         state by :meth:`~newton.ModelBuilder.finalize`. Before later frames
@@ -205,7 +209,8 @@ class SensorTiledCamera:
 
         Args:
             state: Simulation state with body and particle transforms.
-            camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
+            camera_transforms: Camera-to-world transforms, shape
+                ``(camera_count, output_world_count)``.
             camera_rays: Camera-space rays from ``SensorTiledCamera.utils`` ray helpers, shape
                 ``(camera_count, height, width, 2)``.
             color_image: Output for packed RGBA color. The bytes are
@@ -220,9 +225,9 @@ class SensorTiledCamera:
             albedo_image: Output for packed unshaded surface color, using the
                 same output color space as ``color_image``. None to skip.
             world_offsets: Per-world display offsets [m], shape
-                ``(world_count,)``. Used when
-                ``render_config.render_worlds_together`` is ``True`` to render
-                all worlds in a single offset view.
+                ``(world_count,)``. This uses the model world count even when
+                ``render_config.render_worlds_together`` is ``True`` and
+                ``output_world_count`` is ``1``.
             clear_data: Values to clear output buffers with. Packed color and
                 albedo clear values are specified as display/sRGB RGBA and
                 converted to linear when linear output is requested. See

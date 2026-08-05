@@ -383,11 +383,24 @@ class Example:
             return None
         if self.viewer.world_offsets is not None:
             return self.viewer.world_offsets
-        offsets = newton.utils.compute_world_offsets(
-            self.world_count_total,
-            (8.0, 8.0, 0.0),
-            up_axis=self.model.up_axis,
+        worlds_per_row = self.worlds_per_row
+        worlds_per_col = self.worlds_per_col
+        spacing = np.array((8.0, 8.0, 0.0), dtype=np.float32)
+        world_indices = np.arange(self.world_count_total, dtype=np.float32)
+        offsets = np.zeros((self.world_count_total, 3), dtype=np.float32)
+        offsets[:, 0] = (world_indices % worlds_per_row) * spacing[0]
+        offsets[:, 1] = (world_indices // worlds_per_row) * spacing[1]
+        correction = np.array(
+            [
+                (worlds_per_row - 1) * spacing[0],
+                (worlds_per_col - 1) * spacing[1],
+                0.0,
+            ],
+            dtype=np.float32,
         )
+        correction *= 0.5
+        correction[newton.Axis.from_any(self.model.up_axis)] = 0.0
+        offsets -= correction
         return wp.array(offsets, dtype=wp.vec3f, device=self.model.device)
 
     def test_final(self):
