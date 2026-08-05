@@ -85,7 +85,9 @@ class Example:
         # Warm-start the simulation
         if not self.use_kamino_contacts:
             self.collision_pipeline.collide(self.state_0, self.contacts)
-        self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+        else:
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
         self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground
