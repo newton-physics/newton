@@ -30,13 +30,18 @@ from .model_free import ControllerJointImpedanceModelFree
 
 
 class ControllerJointImpedance(ControllerBase):
-    """One-step joint-space impedance controller for a batch of robots.
+    """Joint-space impedance controller with internally computed dynamics.
 
-    Has an identical input/output interface to
-    :class:`ControllerJointImpedanceModelFree` — flat 1D sim arrays in,
-    flat 1D torque array out — except that the dynamics terms (mass matrix,
-    gravity force, Coriolis force) are computed internally from the Newton
-    model rather than supplied by the caller.
+    Implements the joint-space impedance control law. This model-based variant
+    computes the mass matrix, gravity, and Coriolis terms itself: it holds a
+    private :class:`~newton.Model` built from ``builder`` and evaluates forward
+    kinematics and the enabled dynamics terms on every :meth:`step`, so the
+    caller supplies only joint positions and velocities.
+
+    ``builder`` is snapshotted at construction — neither consumed nor modified —
+    but the model cannot be rebuilt afterwards. Later changes to ``builder`` or
+    to the simulated model do not propagate, so a mismatched topology computes
+    dynamics for a different robot with no diagnostic.
 
     Supports heterogeneous robot fleets — robots in the batch may have
     different DOF counts. The ``builder`` articulations define the
@@ -47,16 +52,8 @@ class ControllerJointImpedance(ControllerBase):
     supported. The PD error term ``q_des - q`` is only valid for scalar
     joint coordinates.
 
-    Implements the same control law as :class:`ControllerJointImpedanceModelFree`,
-    but computes the dynamics itself. It holds a private :class:`~newton.Model`
-    built from ``builder``, evaluates forward kinematics, the mass matrix,
-    gravity, and Coriolis forces each step, and passes them to an internal
-    model-free instance. The caller supplies only joint positions and velocities.
-
-    ``builder`` is snapshotted at construction — neither consumed nor modified —
-    but the model cannot be rebuilt afterwards. Later changes to ``builder`` or
-    to the simulated model do not propagate, so a mismatched topology computes
-    dynamics for a different robot with no diagnostic.
+    See also :class:`ControllerJointImpedanceModelFree`, which takes these
+    terms as inputs instead.
 
     Impedance law (terms enabled at construction):
 
