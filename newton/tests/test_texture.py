@@ -20,7 +20,7 @@ def _write_png(path: Path, color: tuple[int, int, int]) -> None:
     """Write a small solid-color RGB PNG to *path*."""
     from PIL import Image
 
-    Image.fromarray(np.full((4, 4, 3), color, dtype=np.uint8), "RGB").save(str(path))
+    Image.fromarray(np.full((4, 4, 3), color, dtype=np.uint8)).save(str(path))
 
 
 def _build_usdz_with_texture(tmpdir: str, color: tuple[int, int, int]) -> Path:
