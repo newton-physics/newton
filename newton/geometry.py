@@ -22,6 +22,7 @@ from ._src.geometry import (
 )
 from ._src.geometry.contact_match import MATCH_BROKEN as _MATCH_BROKEN
 from ._src.geometry.contact_match import MATCH_NOT_FOUND as _MATCH_NOT_FOUND
+from ._src.geometry.differentiable_contacts import compute_rigid_contact_kinematics
 from ._src.geometry.inertia import compute_inertia_shape, transform_inertia
 from ._src.geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_mesh, sdf_plane, sdf_sphere
 from ._src.geometry.narrow_phase import NarrowPhase
@@ -48,6 +49,7 @@ __all__ = [
     "collide_sphere_sphere",
     "compute_inertia_shape",
     "compute_offset_mesh",
+    "compute_rigid_contact_kinematics",
     "create_empty_sdf_data",
     "sdf_box",
     "sdf_capsule",
