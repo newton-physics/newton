@@ -60,8 +60,8 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     (e.g. ``gravity_force`` when ``use_gravity_compensation=False``) are
     allocated as ``None`` and must not be written.
 
-    See also :class:`ControllerJointImpedance`, which computes these terms
-    internally from a Newton model.
+    See also :class:`ControllerJointImpedance`, which computes the mass matrix,
+    gravity, and Coriolis terms internally from a Newton model.
 
     Args:
         dofs_per_robot: DOF count for each robot. Its length sets
