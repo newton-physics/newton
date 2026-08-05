@@ -53,6 +53,16 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     (e.g. ``gravity_force`` when ``use_gravity_compensation=False``) are
     allocated as ``None`` and must not be written.
 
+    Implements the joint-space impedance control law. This model-free variant
+    expects the mass matrix, gravity, and Coriolis terms to be computed
+    externally — it is the caller's responsibility to compute the enabled ones
+    correctly and write them into the input struct before every :meth:`step`.
+    Shapes and devices are checked on each call, but staleness is not: a missed
+    update silently yields torques for an old configuration.
+
+    See :class:`ControllerJointImpedance` to have these computed from a Newton
+    model instead.
+
     Args:
         dofs_per_robot: DOF count for each robot. Its length sets
             :attr:`robot_count` and its maximum sets :attr:`max_dofs`, the
@@ -61,11 +71,14 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             ``sum(dofs_per_robot)`` mapping controller DOF slots to positions
             in the flat simulation arrays (robot 0's indices first, then
             robot 1's, etc.).
-        stiffness: Position-error gain Kp [N/m or N·m/rad], shape
-            ``(robot_count, max_dofs)``. Pass a baked array or ``None`` to
-            read from ``inputs.stiffness`` each step.
-        damping: Velocity-error gain Kd [N·s/m or N·m·s/rad]. Same format
-            as ``stiffness``.
+        stiffness: Position-error gain Kp, shape ``(robot_count, max_dofs)``.
+            Units depend on ``use_inertia_decoupling``: [1/s²] when enabled,
+            since the PD term is then an acceleration premultiplied by M(q);
+            otherwise [N/m or N·m/rad]. Pass an array to copy it at
+            construction, or ``None`` to read ``inputs.stiffness`` each step.
+        damping: Velocity-error gain Kd, [1/s] when
+            ``use_inertia_decoupling`` is enabled, otherwise
+            [N·s/m or N·m·s/rad]. Same format as ``stiffness``.
         use_gravity_compensation: Add gravity generalized forces to τ.
         use_coriolis_compensation: Add Coriolis generalized forces to τ.
         use_inertia_decoupling: Premultiply the PD term by M(q).
@@ -106,11 +119,11 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         coriolis_force: wp.array[wp.float32] | None
         """Coriolis generalized forces [N or N·m], flat sim-level array. ``None`` unless ``use_coriolis_compensation=True``."""
         mass_matrix: wp.array3d[wp.float32] | None
-        """Per-robot generalized mass matrices [kg or kg·m²], shape ``(robot_count, max_dofs, max_dofs)``. ``None`` unless ``use_inertia_decoupling=True``."""
+        """Per-robot generalized mass matrices, shape ``(robot_count, max_dofs, max_dofs)``. Entry units depend on the row and column DOF types: [kg] for two translational DOFs, [kg·m] for mixed translational/rotational DOFs, and [kg·m²] for two rotational DOFs. ``None`` unless ``use_inertia_decoupling=True``."""
         stiffness: wp.array2d[wp.float32] | None
-        """Position-error gain Kp [N/m or N·m/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+        """Position-error gain Kp, shape ``(robot_count, max_dofs)``. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
         damping: wp.array2d[wp.float32] | None
-        """Velocity-error gain Kd [N·s/m or N·m·s/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+        """Velocity-error gain Kd, shape ``(robot_count, max_dofs)``. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerJointImpedanceModelFree.output`."""
@@ -194,6 +207,17 @@ class ControllerJointImpedanceModelFree(ControllerBase):
                 "to the same simulation DOF slot."
             )
 
+        # Smallest flat array each port may be bound to, so step() can reject a
+        # short array before the gather/scatter kernels read out of bounds.
+        self._min_len_q = _idx_max(self._q_idx)
+        self._min_len_qd = _idx_max(self._qd_idx)
+        self._min_len_q_des = _idx_max(self._q_des_idx)
+        self._min_len_qd_des = _idx_max(self._qd_des_idx)
+        self._min_len_qdd = _idx_max(self._qdd_idx)
+        self._min_len_gravity = _idx_max(self._gravity_idx)
+        self._min_len_coriolis = _idx_max(self._coriolis_idx)
+        self._min_len_f = _idx_max(self._f_idx)
+
         self._stiffness_baked = self._normalize_gain(stiffness, "stiffness")
         self._damping_baked = self._normalize_gain(damping, "damping")
 
@@ -235,6 +259,13 @@ class ControllerJointImpedanceModelFree(ControllerBase):
             f"Port '{name}': must be wp.array2d[wp.float32] of shape (robot_count, max_dofs) "
             f"or None; got {type(value).__name__}."
         )
+
+    def _validate_flat_port(self, array: wp.array[wp.float32], name: str, min_length: int) -> None:
+        """Check a caller-bound flat array's device and length before any kernel reads it."""
+        if array.device != self._device:
+            raise ValueError(f"{name} is on device {array.device}, expected {self._device}.")
+        if array.size < min_length:
+            raise ValueError(f"{name} has length {array.size}, expected at least {min_length}.")
 
     @property
     def robot_count(self) -> int:
@@ -315,6 +346,30 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         """
         stiffness = self._stiffness_baked if self._stiffness_baked is not None else inputs.stiffness
         damping = self._damping_baked if self._damping_baked is not None else inputs.damping
+
+        self._validate_flat_port(inputs.joint_q, "inputs.joint_q", self._min_len_q)
+        self._validate_flat_port(inputs.joint_qd, "inputs.joint_qd", self._min_len_qd)
+        self._validate_flat_port(inputs.joint_q_des, "inputs.joint_q_des", self._min_len_q_des)
+        self._validate_flat_port(inputs.joint_qd_des, "inputs.joint_qd_des", self._min_len_qd_des)
+        if self._has_qdd:
+            self._validate_flat_port(inputs.joint_qdd, "inputs.joint_qdd", self._min_len_qdd)
+        if self._use_gravity:
+            self._validate_flat_port(inputs.gravity_force, "inputs.gravity_force", self._min_len_gravity)
+        if self._use_coriolis:
+            self._validate_flat_port(inputs.coriolis_force, "inputs.coriolis_force", self._min_len_coriolis)
+        self._validate_flat_port(outputs.joint_f, "outputs.joint_f", self._min_len_f)
+
+        expected_2d = (self._robot_count, self._max_dofs)
+        if tuple(stiffness.shape) != expected_2d:
+            raise ValueError(f"stiffness has shape {tuple(stiffness.shape)}, expected {expected_2d}.")
+        if tuple(damping.shape) != expected_2d:
+            raise ValueError(f"damping has shape {tuple(damping.shape)}, expected {expected_2d}.")
+        if self._use_inertia:
+            expected_3d = (self._robot_count, self._max_dofs, self._max_dofs)
+            if tuple(inputs.mass_matrix.shape) != expected_3d:
+                raise ValueError(
+                    f"inputs.mass_matrix has shape {tuple(inputs.mass_matrix.shape)}, expected {expected_3d}."
+                )
 
         dim2d = (self._robot_count, self._max_dofs)
 

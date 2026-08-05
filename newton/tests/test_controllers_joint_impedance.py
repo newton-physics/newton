@@ -389,6 +389,64 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
                 device=device,
             )
 
+    def test_short_input_array_raises(self):
+        """Verify an input array too short for its indices raises instead of reading out of bounds."""
+        device = wp.get_device()
+        # Indices reach slot 5, so any bound array must hold at least 6 entries.
+        ctrl = ControllerJointImpedanceModelFree(
+            dofs_per_robot=_dofs_arr([2], device),
+            default_dof_indices=wp.array([0, 5], dtype=wp.uint32, device=device),
+            stiffness=_gains(1, 2, 1.0, device),
+            damping=_gains(1, 2, 0.0, device),
+            use_gravity_compensation=False,
+            use_coriolis_compensation=False,
+            use_inertia_decoupling=False,
+            device=device,
+        )
+        ins, outs = ctrl.input(), ctrl.output()
+        self.assertEqual(ins.joint_q.shape, (6,))
+        ins.joint_q = wp.zeros(2, dtype=wp.float32, device=device)
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+    def test_wrong_device_input_raises(self):
+        """Verify an input array on another device raises instead of being dereferenced."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("needs a second device to mismatch against")
+        ctrl = _make_mf(dofs_list=[2], kp=1.0, kd=0.0, device=device)
+        ins, outs = ctrl.input(), ctrl.output()
+        ins.joint_q_des = wp.array([1.0, 1.0], dtype=wp.float32, device="cpu")
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+    def test_wrong_shape_live_gain_raises(self):
+        """Verify a live gain whose shape differs from (robot_count, max_dofs) raises."""
+        device = wp.get_device()
+        ctrl = ControllerJointImpedanceModelFree(
+            dofs_per_robot=_dofs_arr([2, 2], device),
+            default_dof_indices=_iota(4, device),
+            stiffness=None,  # live: read from inputs.stiffness each step
+            damping=_gains(2, 2, 0.0, device),
+            use_gravity_compensation=False,
+            use_coriolis_compensation=False,
+            use_inertia_decoupling=False,
+            device=device,
+        )
+        ins, outs = ctrl.input(), ctrl.output()
+        ins.stiffness = wp.full((1, 1), 7.0, dtype=wp.float32, device=device)
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+    def test_wrong_shape_mass_matrix_raises(self):
+        """Verify a mass matrix whose shape differs from (robot_count, max_dofs, max_dofs) raises."""
+        device = wp.get_device()
+        ctrl = _make_mf(dofs_list=[2, 2], kp=1.0, kd=0.0, device=device, use_inertia=True)
+        ins, outs = ctrl.input(), ctrl.output()
+        ins.mass_matrix = wp.zeros((1, 1, 1), dtype=wp.float32, device=device)
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
     def test_zero_dof_robot_raises(self):
         """Verify a robot declaring zero DOFs raises at construction."""
         device = wp.get_device()
