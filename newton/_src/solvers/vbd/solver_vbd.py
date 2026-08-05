@@ -868,6 +868,10 @@ class SolverVBD(SolverBase, CouplingInterface):
     def coupling_supports_inertial_property_refresh(self) -> bool:
         return True
 
+    @override
+    def coupling_supports_full_surface_soft_contacts(self) -> bool:
+        return True
+
     def coupling_notify_input_state_update(
         self,
         state: State,
@@ -926,19 +930,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts_freshly_detected: bool = False,
     ) -> Contacts | None:
         """Update rigid history cadence for proxy contacts."""
-        # Full-surface (edge/face) rigid-soft contacts are not yet harvested onto proxy particles:
-        # the proxy contact-force kernels consume only per-particle records (particle >= 0), so a soft
-        # edge/face contact's reaction on a proxy-coupled rigid body would be silently dropped. Fail
-        # loud until proxy harvesting consumes the unified records. Standalone SolverVBD (no proxy
-        # coupling) never reaches this hook and does support full-surface via the per-body path.
-        if contacts is not None and getattr(contacts, "_enable_rigid_soft_full_surface_contact", False):
-            raise NotImplementedError(
-                "Full-surface (edge/face) rigid-soft contacts are not yet supported with VBD proxy-particle "
-                "coupling (SolverCoupledProxy): the proxy contact-force harvest consumes only per-particle "
-                "records, so edge/face force feedback to proxy-coupled rigid bodies would be silently dropped. "
-                "Set enable_rigid_soft_full_surface_contact=False for the coupled proxy solve, or drive the "
-                "rigid bodies with standalone SolverVBD (which supports full-surface via the per-body path)."
-            )
         # Do not call super(); we can keep proxy-proxy collisions as we
         # are using a custom force harvesting hook
         self.set_rigid_history_update(bool(contacts_freshly_detected))
@@ -1032,7 +1023,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_particle_contact_material_kd,
                     self.body_particle_contact_material_mu,
                     contacts.soft_contact_count,
-                    contacts.soft_contact_particle,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_barycentric,
                     contacts.soft_contact_shape,
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_body_vel,
@@ -1067,6 +1059,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         out_particle_f.zero_()
         if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0:
             return
+
+        if contacts is not None:
+            contacts._assert_particle_only_soft_contacts("SolverVBD proxy-particle coupling")
 
         if (
             contacts is not None

@@ -2711,6 +2711,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return contacts
 
         filtered = self._ensure_entry_contact_buffer(entry, contacts)
+        keep_full_surface_contacts = filtered._enable_rigid_soft_full_surface_contact
         force_contact_update = int(self._entry_contact_sources.get(entry.name) is not contacts)
         if force_contact_update:
             self._entry_contact_sources[entry.name] = contacts
@@ -2849,6 +2850,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
                     int(ParticleFlags.ACTIVE),
+                    int(keep_full_surface_contacts),
                     filtered.soft_contact_count,
                     filtered.soft_contact_particle,
                     filtered.soft_contact_shape,
@@ -2917,6 +2919,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 device=contacts.device,
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
+        filtered._enable_rigid_soft_full_surface_contact = bool(
+            contacts._enable_rigid_soft_full_surface_contact
+            and entry.solver.coupling_supports_full_surface_soft_contacts()
+        )
         return filtered
 
     @staticmethod
@@ -3674,6 +3680,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
     active_particle_mask: int,
+    keep_full_surface_contacts: int,
     dst_count: wp.array[wp.int32],
     dst_particle: wp.array[int],
     dst_shape: wp.array[int],
@@ -3694,14 +3701,24 @@ def _filter_soft_contacts_global_shape_ids_kernel(
 
     particle = src_particle[contact_id]
     shape = src_shape[contact_id]
-    if particle < 0 or shape < 0:
+    if particle < 0 and keep_full_surface_contacts == 0:
         return
-    if particle >= particle_flags.shape[0] or shape >= shape_flags.shape[0]:
+    if shape < 0 or shape >= shape_flags.shape[0]:
         return
     if (shape_flags[shape] & collide_particles_mask) == 0:
         return
-    if (particle_flags[particle] & active_particle_mask) == 0:
+
+    # Keep records only when the entry owns every referenced corner.
+    corners = src_indices[contact_id]
+    if corners[0] < 0:
         return
+    for i in range(3):
+        corner = corners[i]
+        if corner >= 0:
+            if corner >= particle_flags.shape[0]:
+                return
+            if (particle_flags[corner] & active_particle_mask) == 0:
+                return
 
     dst_id = wp.atomic_add(dst_count, 0, wp.int32(1))
     src_to_dst[contact_id] = dst_id

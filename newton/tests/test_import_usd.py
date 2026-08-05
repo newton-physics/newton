@@ -5257,8 +5257,8 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         self.assertNotIn(gaussian.GetPath().pathString, result_no_visuals["path_shape_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_disabled_static_collider_loads_as_visual(self):
-        """Load disabled static colliders as visual-only shapes."""
+    def test_disabled_static_collider_has_no_collision_flags(self):
+        """Disable shape and particle collisions regardless of visual loading."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -5271,7 +5271,14 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         flags = builder.shape_flags[result["path_shape_map"][collider.GetPath().pathString]]
 
         self.assertFalse(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.COLLIDE_PARTICLES)
         self.assertFalse(flags & ShapeFlags.VISIBLE)
+
+        headless_builder = newton.ModelBuilder()
+        headless_result = headless_builder.add_usd(stage, load_visual_shapes=False)
+        headless_flags = headless_builder.shape_flags[headless_result["path_shape_map"][collider.GetPath().pathString]]
+        self.assertFalse(headless_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(headless_flags & ShapeFlags.COLLIDE_PARTICLES)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_granular_loading_flags(self):

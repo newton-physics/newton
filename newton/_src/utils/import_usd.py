@@ -3928,7 +3928,7 @@ def parse_usd(
 
                 if not collider_is_enabled:
                     no_collision_shapes.add(shape_id)
-                    builder.shape_flags[shape_id] &= ~ShapeFlags.COLLIDE_SHAPES
+                    builder.shape_flags[shape_id] &= ~(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
 
     # Approximate meshes. ``physics:approximation`` belongs to
     # UsdPhysicsMeshCollisionAPI and is scoped to collision: it says which shape to
