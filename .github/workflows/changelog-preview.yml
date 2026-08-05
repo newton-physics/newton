@@ -1,4 +1,5 @@
-name: Changelog
+# Verify that Towncrier can render pending fragments without changing the repository.
+name: Changelog fragment preview
 permissions:
   contents: read
 
