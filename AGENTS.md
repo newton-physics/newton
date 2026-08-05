@@ -51,8 +51,8 @@ uvx --with virtualenv asv run --launch-method spawn main^!
 ## PR Instructions
 
 - If opening a pull request on GitHub, use the template in `.github/PULL_REQUEST_TEMPLATE.md`.
-- Follow `changelog/README.md`: every normal pull request adds one logical fragment set or a one-line `.skip` reason, and never edits `CHANGELOG.md` directly.
-- Run `uv run --no-project python scripts/changelog_policy.py validate` after editing fragments.
+- Follow `changelog/README.md`: add a Towncrier fragment for user-facing changes instead of editing `CHANGELOG.md` directly. A `.skip` reason is optional for changes without user-facing impact.
+- Preview fragments with `uvx --from towncrier==25.8.0 towncrier build --draft --version X.Y.Z --date YYYY-MM-DD`.
 
 ## Examples
 

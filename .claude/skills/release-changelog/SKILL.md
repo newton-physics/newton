@@ -17,9 +17,9 @@ authority.
    exists; otherwise audit the intended main ref.
 2. Protect released history. Diff `CHANGELOG.md` from the latest stable tag and
    require explicit maintainer approval for edits to dated sections.
-3. Validate fragments and render a non-mutating preview:
+3. Render a non-mutating preview, which also validates Towncrier's renderable
+   fragment filenames:
    ```bash
-   uv run --no-project python scripts/changelog_policy.py validate
    uvx --from towncrier==25.8.0 towncrier build --draft \
      --version X.Y.Z --date YYYY-MM-DD
    ```
@@ -103,7 +103,8 @@ path-level deletions are what preserve main-only fragments.
 ## Checks
 
 ```bash
-uv run --no-project python scripts/changelog_policy.py validate
+uvx --from towncrier==25.8.0 towncrier build --draft \
+  --version X.Y.Z --date YYYY-MM-DD
 git diff v<latest-release> -- CHANGELOG.md changelog
 git diff --cached --name-status -- CHANGELOG.md changelog
 rg -ni "removed|deprecated|in favor of|use .* instead|renam|replac|default|breaking" \

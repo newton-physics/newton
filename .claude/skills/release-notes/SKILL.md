@@ -29,7 +29,6 @@ what users should know. Do not reproduce the full changelog; link to it.
    - Before the build, check out the release branch, validate its pending
      fragments, and render a non-mutating preview:
      ```bash
-     uv run --no-project python scripts/changelog_policy.py validate
      uvx --from towncrier==25.8.0 towncrier build --draft \
        --version X.Y.Z --date YYYY-MM-DD
      ```

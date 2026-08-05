@@ -1,7 +1,7 @@
 # Changelog fragments
 
-Normal pull requests add changelog fragments instead of editing
-`CHANGELOG.md`. Towncrier combines the fragments on a release branch.
+Pull requests with user-facing changes add changelog fragments instead of
+editing `CHANGELOG.md`. Towncrier combines the fragments on a release branch.
 
 ## Choose an identifier
 
@@ -22,9 +22,8 @@ suffix:
 +camera-rays-a1b2c3d4.added.md
 ```
 
-The leading `+` tells Towncrier not to create a GitHub link. A pull request to
-`main` must use exactly one logical identifier, but it may add several files
-with that identifier.
+The leading `+` tells Towncrier not to create a GitHub link. Use the same
+logical identifier for related entries when practical.
 
 ## Choose categories and entries
 
@@ -61,18 +60,17 @@ entries in the same category:
 For `changed`, `deprecated`, and `removed`, include migration guidance in the
 entry, such as: “Deprecate `Model.geo_meshes` in favor of `Model.shapes`.”
 
-If a pull request has no user-facing change, add one `.skip` file containing a
-one-line reason:
+If a pull request has no user-facing change, it may add a `.skip` file to record
+a one-line reason:
 
 ```text
 +camera-tests-a1b2c3d4.skip
 ```
 
-A `.skip` file must be the pull request's only fragment when targeting `main`.
-A release backport pull request may carry several fragment sets from the
-original cherry-picked changes.
+Towncrier ignores `.skip` files. They are optional and do not affect the
+rendered changelog.
 
-## Create, validate, and preview
+## Create and preview
 
 Towncrier can create an issue-linked fragment:
 
@@ -84,13 +82,6 @@ uvx --from towncrier==25.8.0 towncrier create 3607.added.md \
 For an orphan, supply the readable random identifier directly. Towncrier's
 shorter `+.added.md` form also works, but generates an opaque random name.
 
-Validate Newton-specific fragment policy, then use Towncrier to validate and
-preview every renderable filename:
-
-```console
-uv run --no-project python scripts/changelog_policy.py validate
-```
-
 Preview the rendered output without modifying `CHANGELOG.md` or deleting
 fragments:
 
@@ -99,7 +90,8 @@ uvx --from towncrier==25.8.0 towncrier build --draft \
   --version X.Y.Z --date YYYY-MM-DD
 ```
 
-`--draft` is the safe command to run during development.
+`--draft` is the safe command to run during development. CI runs the same
+preview to confirm that Towncrier can render the current fragment set.
 
 ## Assemble and maintain a release
 

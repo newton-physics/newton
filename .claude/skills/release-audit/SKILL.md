@@ -3,7 +3,7 @@ name: release-audit
 description: "Use when auditing Newton's pending Towncrier fragments for keep/defer decisions, reviewing an RC for readiness, or calibrating against an already-shipped release."
 disable-model-invocation: true
 argument-hint: "[target-version]"
-allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(git ls-tree *) Bash(uv run --no-project python scripts/changelog_policy.py validate) Bash(uvx --from towncrier==25.8.0 towncrier build --draft *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
+allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(git ls-tree *) Bash(uvx --from towncrier==25.8.0 towncrier build --draft *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(uv run --no-project python ${CLAUDE_SKILL_DIR}/scripts/cleanup_report.py *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
 ---
 
 # Release Audit
@@ -178,7 +178,6 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
      heading.
      If the audited head is the checked-out clean working tree, also run:
      ```bash
-     uv run --no-project python scripts/changelog_policy.py validate
      uvx --from towncrier==25.8.0 towncrier build --draft \
        --version X.Y.Z --date YYYY-MM-DD
      ```

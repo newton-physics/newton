@@ -604,10 +604,10 @@ documentation.
 Changelog
 ---------
 
-Normal pull requests add one logical fragment set under ``changelog/``
-instead of editing ``CHANGELOG.md``. Use a GitHub issue number as the
-identifier when one exists, or a readable identifier beginning with ``+`` for
-work without an issue. For example:
+Pull requests with user-facing changes add fragments under ``changelog/``
+instead of editing ``CHANGELOG.md``. Use a GitHub issue number as the identifier
+when one exists, or a readable identifier beginning with ``+`` for work without
+an issue. For example:
 
 .. code-block:: text
 
@@ -626,9 +626,9 @@ The supported categories are:
 
 Each file contains one entry without a leading bullet. Use imperative present
 tense ("Add X", not "Added X"), end with a period, and keep entries concise.
-Use a one-line ``.skip`` fragment for work with no user-facing impact.
-Multiline entries, multiple categories, same-category counters, creation
-commands, validation, and Towncrier's non-mutating ``--draft`` preview are
+An optional one-line ``.skip`` fragment can record why work has no user-facing
+impact. Multiline entries, multiple categories, same-category counters,
+creation commands, and Towncrier's non-mutating ``--draft`` preview are
 documented in the `changelog fragment guide
 <https://github.com/newton-physics/newton/blob/main/changelog/README.md>`__.
 

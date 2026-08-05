@@ -17,18 +17,15 @@ reviews:
   path_instructions:
     - path: "**"
       instructions: |
-        Follow changelog/README.md. Check that a normal pull request adds one
-        logical Towncrier fragment set, or one .skip fragment for a change with
-        no user-facing impact, and does not edit CHANGELOG.md directly. A
-        numeric fragment identifier must refer to a GitHub issue, not the pull
-        request; an orphan identifier must start with +. Entries use imperative
-        present tense ("Add X", not "Added X"), end with a period, and use the
-        correct category (added, changed, deprecated, removed, or fixed).
-        Changed, deprecated, and removed entries must include migration
-        guidance. A pull request labeled release-management is the exception:
-        it may edit CHANGELOG.md and delete shipped fragments, but it must be
-        changelog-only. On a release branch it must consume every fragment; a
-        synchronization pull request to main may preserve main-only fragments.
+        Follow changelog/README.md. For user-facing changes, suggest a
+        Towncrier fragment instead of a direct CHANGELOG.md edit. Do not require
+        a .skip fragment for changes without user-facing impact. When a fragment
+        is present, check that numeric identifiers refer to GitHub issues and
+        orphan identifiers start with +. Entries use imperative present tense
+        ("Add X", not "Added X"), end with a period, and use the correct
+        category (added, changed, deprecated, removed, or fixed). Changed,
+        deprecated, and removed entries include migration guidance. Release
+        cleanup may edit CHANGELOG.md and delete consumed fragments directly.
     - path: "**/*.py"
       instructions: |
         Flag inline code comments (not docstrings) that are verbose or
