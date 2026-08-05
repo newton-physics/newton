@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+<!-- towncrier release notes start -->
+
 ### Added
 
 - Add opt-in unified compliant ALM for experimental `SolverVBD` rigid contacts, structural joints, drives, and limits with `rigid_compliant_alm=True`. Authored finite stiffness controls physical compliance while `SolverVBD` selects numerical conditioning automatically. Re-tune stiffness values previously used only as legacy penalty ceilings.
@@ -75,6 +77,7 @@
 - Reject invalid `ModelBuilder.ShapeConfig` SDF and density values during shape validation. Use finite nonnegative density and SDF padding, a finite positive target voxel size, a narrow-band range satisfying `inner < 0 < outer`, and a positive maximum resolution below 65536 that is divisible by 8; set either maximum resolution or target voxel size, not both. (#3311)
 - Reject runtime changes that alter `SolverKamino`'s as-built joint constraint counts, passive/actuated partition, or finite-limit structure; recreate the solver after making one of these structural changes. (#3532)
 - Cull positive-distance speculative contacts by default when converting Newton contacts for `SolverKamino` as a temporary workaround for restitution issues. No public compatibility option restores the old behavior; if a scene needs contact forces before geometry surfaces touch, increase `ModelBuilder.ShapeConfig.margin` so margin-shifted surfaces overlap at the desired force onset, and re-test contact behavior. (#3779)
+- Refine contact visualizations (showing contact force and color-coded contact mode) in Newton viewer.
 
 ### Deprecated
 
@@ -101,12 +104,14 @@
 - Make deterministic collision pipelines cover hydroelastic contact generation and reduction, including unique reduced-contact sort keys and overflow-safe fixed-point pressure accumulation. (#3661)
 - Fix `SolverMuJoCo` retaining an invalid external-contact cache when its first step is captured in a CUDA graph. (#3768; fixes #3767)
 - Preserve box-box face contact manifolds under sub-microradian solver drift. (#3776)
+- Fix `SolverMuJoCo` overflowing MuJoCo's signed 32-bit collision masks when graph coloring requires the highest supported color; all 32 mask bits are now used before falling back to default collision masks for additional colors.
 - Convert `newton:mimicCoef0` from degrees to radians when the mimic follower joint is angular. Assets authored against the old behavior need the value rescaled to degrees.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
 - Bound Kamino DVI contact allocation with a per-world geometry heuristic instead of sizing every contact pair simultaneously; set `collision_detector.max_contacts_per_world` to override the inferred capacity.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
 - Fix USD capsule, cylinder, and cone visual and site scaling to follow the authored primitive axis.
 - Fix MJCF contact pairs ignoring properties inherited from pair default classes.
+- Fix disabled USD colliders participating in particle collisions when visual shape loading is disabled.
 - Fix `ArticulationView.is_fixed_base` for roots with zero effective degrees of freedom, including fully locked D6 joints. (#3727)
 - Fix USD plane visual width and length to scale along the axes defined by the `UsdGeomPlane` schema, and orient X- and Y-axis plane visuals along the authored axis.
 - Validate `ArticulationView` mask shapes and devices before launching selection kernels. (#3448)
