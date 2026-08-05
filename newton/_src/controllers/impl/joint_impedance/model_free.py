@@ -54,11 +54,9 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     allocated as ``None`` and must not be written.
 
     Args:
-        robot_count: Number of parallel robots.
-        dofs_per_robot: DOF count for each robot, length ``robot_count``.
-        max_dofs: Padded buffer width — must equal
-            ``int(dofs_per_robot.numpy().max())``. Passed explicitly to avoid
-            a device round-trip.
+        dofs_per_robot: DOF count for each robot. Its length sets
+            :attr:`robot_count` and its maximum sets :attr:`max_dofs`, the
+            padded width of all internal buffers.
         default_dof_indices: Concatenated per-robot index arrays of length
             ``sum(dofs_per_robot)`` mapping controller DOF slots to positions
             in the flat simulation arrays (robot 0's indices first, then
@@ -123,9 +121,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     def __init__(
         self,
         *,
-        robot_count: int,
         dofs_per_robot: wp.array[wp.int32],
-        max_dofs: int,
         default_dof_indices: wp.array[wp.uint32],
         stiffness: wp.array2d[wp.float32] | None,
         damping: wp.array2d[wp.float32] | None,
@@ -144,18 +140,19 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         device: Any = None,
         requires_grad: bool = False,
     ):
-        if robot_count < 1:
-            raise ValueError(f"robot_count must be >= 1, got {robot_count}.")
         if not isinstance(dofs_per_robot, wp.array) or dofs_per_robot.dtype != wp.int32:
             raise TypeError("dofs_per_robot must be wp.array[int32].")
-        if int(dofs_per_robot.size) != robot_count:
-            raise ValueError(f"dofs_per_robot length {dofs_per_robot.size} must equal robot_count={robot_count}.")
-        if max_dofs < 1:
-            raise ValueError(f"max_dofs must be >= 1, got {max_dofs}.")
         if not isinstance(default_dof_indices, wp.array) or default_dof_indices.dtype != wp.uint32:
             raise TypeError("default_dof_indices must be wp.array[uint32].")
 
         dofs_per_robot_np = dofs_per_robot.numpy()
+        robot_count = int(dofs_per_robot_np.size)
+        if robot_count < 1:
+            raise ValueError("dofs_per_robot must not be empty.")
+        if dofs_per_robot_np.min() < 1:
+            raise ValueError(f"every robot must have >= 1 DOF, got dofs_per_robot={dofs_per_robot_np.tolist()}.")
+
+        max_dofs = int(dofs_per_robot_np.max())
         total_dofs = int(dofs_per_robot_np.sum())
         if int(default_dof_indices.size) != total_dofs:
             raise ValueError(
