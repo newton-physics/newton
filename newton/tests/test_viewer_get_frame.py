@@ -15,6 +15,26 @@ from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
 
 
+def _viewer_gl_unavailable_errors() -> tuple[type[BaseException], ...]:
+    try:
+        from pyglet import gl, window
+    except ImportError:
+        return ()
+
+    errors: list[type[BaseException]] = [
+        window.NoSuchConfigException,
+        window.NoSuchDisplayException,
+        gl.ContextException,
+    ]
+    try:
+        from pyglet.display import xlib
+    except ImportError:
+        pass
+    else:
+        errors.append(xlib.NoSuchDisplayException)
+    return tuple(errors)
+
+
 def _make_box_model(device: str | wp.Device):
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
@@ -116,7 +136,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         """Verify get_frame captures a main image rendered headlessly."""
         try:
             viewer = newton.viewer.ViewerGL(width=64, height=48, headless=True)
-        except Exception as exc:
+        except _viewer_gl_unavailable_errors() as exc:
             self.skipTest(f"ViewerGL not available: {exc}")
             return
 
