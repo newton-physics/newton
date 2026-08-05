@@ -23,8 +23,6 @@ from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
-    DEFAULT_LIMIT_KD,
-    DEFAULT_LIMIT_KE,
     DEFAULT_LIMIT_SOLREF,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
@@ -363,6 +361,8 @@ def parse_mjcf(
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
+    default_joint_limit_ke = builder.default_joint_cfg.limit_ke
+    default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_target_ke = builder.default_joint_cfg.target_ke
     default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_damping = builder.default_joint_cfg.damping
@@ -1948,46 +1948,33 @@ def parse_mjcf(
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
 
-                # Parse solreflimit for joint limit stiffness and damping
-                solreflimit = parse_vec(joint_attrib, "solreflimit", DEFAULT_LIMIT_SOLREF)
-                limit_ke, limit_kd = solref_to_stiffness_damping(solreflimit)
-                # MuJoCo's solref domain is ``(timeconst > 0, dampratio > 0)``
-                # for the standard mode or ``(< 0, < 0)`` for direct mode;
-                # mixed signs are rejected by ``solref_to_stiffness_damping``
-                # which returns ``(None, None)``. The ``"0 0"`` sentinel is
-                # also rejected by the conversion but is intentionally used by
-                # MJCF authors as a marker preserved verbatim through the
-                # ``mujoco.solreflimit`` custom attribute (see
-                # ``test_mjcf_authored_zero_solreflimit_is_preserved_as_native_parameter``),
-                # so we keep ``SOLREF_MODE_RAW`` semantics for the runtime
-                # ``jnt_solref`` path. Newton-side ``joint_limit_ke``/``kd``
-                # fall back to the MuJoCo defaults; warn so authors of
-                # genuinely malformed configurations notice the mismatch
-                # between the Newton gains (defaults) and the raw solref
-                # (forwarded verbatim) before they switch the mode to
-                # ``SOLREF_MODE_FORCE_SPACE``.
-                if (
-                    "solreflimit" in joint_attrib
-                    and (limit_ke is None or limit_kd is None)
-                    and not (float(solreflimit[0]) == 0.0 and float(solreflimit[1]) == 0.0)
-                ):
-                    warnings.warn(
-                        f"MJCF joint {joint_attrib.get('name', 'unnamed')!r}: invalid "
-                        f"solreflimit={joint_attrib['solreflimit']!r} (expected two "
-                        "same-sign non-zero components or the '0 0' sentinel); "
-                        f"joint_limit_ke/kd fall back to ({DEFAULT_LIMIT_KE}, "
-                        f"{DEFAULT_LIMIT_KD}) while the raw value is forwarded to "
-                        "MuJoCo via mujoco.solreflimit (SOLREF_MODE_RAW). MuJoCo may "
-                        "silently disable the limit or divide by zero — fix the "
-                        "authored solreflimit or set "
-                        "model.mujoco.solreflimit_mode = SOLREF_MODE_FORCE_SPACE "
-                        "to switch to the Newton force-space scaling.",
-                        stacklevel=2,
-                    )
-                if limit_ke is None:
-                    limit_ke = DEFAULT_LIMIT_KE  # From MuJoCo's default solref.
-                if limit_kd is None:
-                    limit_kd = DEFAULT_LIMIT_KD  # From MuJoCo's default solref.
+                # ``solreflimit`` is a native MuJoCo solver parameter, not a
+                # force-space gain. Preserve it through the custom attribute and
+                # keep Newton's generic joint-limit gains at their configured
+                # defaults instead of assigning an inertia-independent conversion.
+                limit_ke = default_joint_limit_ke
+                limit_kd = default_joint_limit_kd
+                if "solreflimit" in joint_attrib:
+                    solreflimit = parse_vec(joint_attrib, "solreflimit", DEFAULT_LIMIT_SOLREF)
+                    timeconst = float(solreflimit[0])
+                    dampratio = float(solreflimit[1])
+                    both_zero = timeconst == 0.0 and dampratio == 0.0
+                    invalid = (
+                        timeconst == 0.0 or dampratio == 0.0 or np.sign(timeconst) != np.sign(dampratio)
+                    ) and not both_zero
+                    if invalid:
+                        warnings.warn(
+                            f"MJCF joint {joint_attrib.get('name', 'unnamed')!r}: invalid "
+                            f"solreflimit={joint_attrib['solreflimit']!r} (expected two "
+                            "same-sign non-zero components or the '0 0' sentinel); "
+                            f"joint_limit_ke/kd remain at the builder defaults ({limit_ke}, "
+                            f"{limit_kd}) while the raw value is forwarded to MuJoCo via "
+                            "mujoco.solreflimit (SOLREF_MODE_RAW). MuJoCo may silently "
+                            "disable the limit or divide by zero — fix the authored "
+                            "solreflimit or set model.mujoco.solreflimit_mode = "
+                            "SOLREF_MODE_FORCE_SPACE to switch to Newton force-space scaling.",
+                            stacklevel=2,
+                        )
 
                 effort_limit = default_joint_effort_limit
                 if "actuatorfrcrange" in joint_attrib:
@@ -2048,8 +2035,8 @@ def parse_mjcf(
                     # Newton-authored force-space ``joint_limit_ke``/``kd``:
                     # authored solreflimit is raw MuJoCo data, while an
                     # unauthored limit starts from MuJoCo's implicit default
-                    # and only switches to Newton scaling after the gains move
-                    # away from their imported default values.
+                    # and only switches to Newton scaling after the generic
+                    # gains are edited.
                     solreflimit_mode = SOLREF_MODE_RAW if "solreflimit" in joint_attrib else SOLREF_MODE_MJCF_DEFAULT
                     dof_custom_attributes.setdefault(solreflimit_mode_key, {})[current_dof_index] = solreflimit_mode
 

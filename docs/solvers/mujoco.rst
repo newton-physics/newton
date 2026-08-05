@@ -176,11 +176,12 @@ solver restores MuJoCo's default ``solreflimit`` value ``(0.02, 1.0)``.
 
 MJCF- or USD-authored ``solreflimit`` values are already native MuJoCo
 parameters, so they are preserved verbatim through the
-``model.mujoco.solreflimit`` custom attribute and are not rescaled. Imported
-MJCF joints that did not author ``solreflimit`` keep MuJoCo's implicit default
-``(0.02, 1.0)`` until their Newton ``joint_limit_ke`` or ``joint_limit_kd``
-values are changed, at which point the Newton force-space scaling above is
-used.
+``model.mujoco.solreflimit`` custom attribute and are not rescaled. MJCF import
+does not derive generic ``joint_limit_ke`` or ``joint_limit_kd`` values from
+``solreflimit``; those gains retain the configured Newton builder defaults.
+Imported MJCF joints that did not author ``solreflimit`` keep MuJoCo's implicit
+default ``(0.02, 1.0)`` until either generic gain is changed, at which point the
+Newton force-space scaling above is used.
 
 ``model.mujoco.solreflimit_mode`` records how ``solreflimit`` should be
 interpreted: Newton force-space gains, a raw authored MuJoCo value, or an
@@ -783,11 +784,12 @@ custom-attribute system works in general.
 
 **Direct mapping to Newton built-ins.** Some MuJoCo-specific
 attributes are mapped onto Newton's built-in properties during import
-(rather than the ``mujoco`` namespace) — for example, joint-limit
-stiffness and damping derived from ``solreflimit``. The MJCF parser
-handles this inline (:github:`newton/_src/utils/import_mjcf.py`); USD
-goes through :class:`~newton.usd.SchemaResolverMjc`
-(:github:`newton/_src/usd/schemas.py`).
+(rather than the ``mujoco`` namespace). The MJCF parser handles these
+inline (:github:`newton/_src/utils/import_mjcf.py`); USD goes through
+:class:`~newton.usd.SchemaResolverMjc`
+(:github:`newton/_src/usd/schemas.py`). Native MuJoCo solver parameters
+such as MJCF ``solreflimit`` remain in the ``mujoco`` namespace and do
+not overwrite Newton's generic force-space joint-limit gains.
 
 MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
 The old ``model.mujoco.dof_passive_damping`` custom attribute remains

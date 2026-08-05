@@ -13,9 +13,6 @@ from ...core.types import vec5
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
-    DEFAULT_LIMIT_GAIN_RTOL,
-    DEFAULT_LIMIT_KD,
-    DEFAULT_LIMIT_KE,
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
     MJ_MINMU,
@@ -2708,20 +2705,12 @@ def update_jnt_solref_from_invweight0_kernel(
                 jnt_solref[world, mjc_jnt] = raw_solref
                 return
 
-    ke = joint_limit_ke[newton_dof]
-    kd = joint_limit_kd[newton_dof]
-    if (
-        solref_mode == SOLREF_MODE_MJCF_DEFAULT
-        and wp.abs(ke - DEFAULT_LIMIT_KE) <= DEFAULT_LIMIT_GAIN_RTOL * DEFAULT_LIMIT_KE
-        and wp.abs(kd - DEFAULT_LIMIT_KD) <= DEFAULT_LIMIT_GAIN_RTOL * DEFAULT_LIMIT_KD
-    ):
-        # MJCF import converts MuJoCo's implicit default solreflimit to
-        # Newton's default ke/kd. Preserve the native MuJoCo default until the
-        # user edits those Newton gains, then fall through to force-space
-        # scaling below.
+    if solref_mode == SOLREF_MODE_MJCF_DEFAULT:
         jnt_solref[world, mjc_jnt] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
         return
 
+    ke = joint_limit_ke[newton_dof]
+    kd = joint_limit_kd[newton_dof]
     if ke <= 0.0 or kd <= 0.0:
         # Restore MuJoCo's compiled default so runtime ``ke -> 0`` or ``kd -> 0``
         # updates behave the same as a fresh model built without a custom limit

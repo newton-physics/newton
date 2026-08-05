@@ -1788,7 +1788,7 @@ f 4 5 8
             )
 
     def test_solreflimit_parsing(self):
-        """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
+        """Test that joint ``solreflimit`` is preserved without changing Newton limit gains."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="solreflimit_test">
     <worldbody>
@@ -1814,6 +1814,8 @@ f 4 5 8
 """
 
         builder = newton.ModelBuilder()
+        builder.default_joint_cfg.limit_ke = 4321.0
+        builder.default_joint_cfg.limit_kd = 76.0
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1822,28 +1824,22 @@ f 4 5 8
         self.assertEqual(len(model.joint_limit_ke), 3)
         self.assertEqual(len(model.joint_limit_kd), 3)
 
-        # Convert warp arrays to numpy for testing
         joint_limit_ke = model.joint_limit_ke.numpy()
         joint_limit_kd = model.joint_limit_kd.numpy()
+        solreflimit = model.mujoco.solreflimit.numpy()
+        solreflimit_mode = model.mujoco.solreflimit_mode.numpy()
 
-        # Test joint1: standard mode solreflimit="0.03 0.9"
-        # Expected: ke = 1/(0.03^2 * 0.9^2) = 1371.7421..., kd = 2.0/0.03 = 66.(6)
-        expected_ke_1 = 1.0 / (0.03 * 0.03 * 0.9 * 0.9)
-        expected_kd_1 = 2.0 / 0.03
-        self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
-        self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
-
-        # Test joint2: direct mode solreflimit="-100 -1"
-        # Expected: ke = 100, kd = 1
-        self.assertAlmostEqual(joint_limit_ke[1], 100.0, places=2)
-        self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
-
-        # Test joint3: no solreflimit (should use default 0.02, 1.0)
-        # Expected: ke = 1/(0.02^2 * 1.0^2) = 2500.0, kd = 2.0/0.02 = 100.0
-        expected_ke_3 = 1.0 / (0.02 * 0.02 * 1.0 * 1.0)
-        expected_kd_3 = 2.0 / 0.02
-        self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
-        self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+        # Native MuJoCo parameters retain their own provenance while Newton's
+        # generic force-space gains remain at the builder defaults.
+        np.testing.assert_allclose(joint_limit_ke, [4321.0, 4321.0, 4321.0], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(joint_limit_kd, [76.0, 76.0, 76.0], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(solreflimit[0], [0.03, 0.9], rtol=1.0e-6, atol=0.0)
+        np.testing.assert_allclose(solreflimit[1], [-100.0, -1.0], rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(solreflimit[2], [0.0, 0.0], rtol=0.0, atol=0.0)
+        np.testing.assert_array_equal(
+            solreflimit_mode,
+            [SOLREF_MODE_RAW, SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT],
+        )
 
     def test_single_mujoco_fixed_tendon_parsing(self):
         """Test that tendon parameters can be parsed from mjcf"""
