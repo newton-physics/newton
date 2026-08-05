@@ -1,116 +1,67 @@
-# Digital Instron v2
+# Digital Instron
 
-This folder now hosts the experimental v2 restart for shoe Instron material
-identification. The deleted `projects.digital_instron` CLI and old example
-wrapper are intentionally not the contract for this workflow.
+This project identifies one nonlinear, rate-dependent through-thickness material from
+the rearfoot punch and full-foot shoe-last Instron trials.
 
-## v2 Boundary
+The full-foot analysis uses the mirrored left-foot asset
+`Instron Shoe Last Size 9 6drop merged attachment 1 left.STL`; the original
+right-foot STL is retained unchanged as its source.
 
-- Trial setup lives in `manifest_v2.json`.
-- Reusable code lives under `projects/digital_instron_v2`.
-- The first runnable surface is a script/notebook workflow.
+## Model
 
-**macOS/Linux:**
-```bash
-UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step qc
-```
+The repaired midsole mesh is sampled on a 5 mm column grid. Each column uses its
+raycast thickness as its rest length. The punch or last shortens the columns and
+the model integrates pressure over their finite areas.
 
-**Windows (PowerShell):**
-```powershell
-$env:UV_CACHE_DIR="$env:TEMP/uv-cache"; $env:WARP_CACHE_PATH="$env:TEMP/warp-cache"; uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step qc
-```
+The reduced literature-backed foundation has four fitted parameters:
 
-After QC writes frame configs, run the first force-model smoke:
+- instantaneous first-order Hyperfoam shear modulus [Pa]
+- Hyperfoam exponent
+- long-term/instantaneous shear-modulus fraction
+- Pasternak lateral coupling [N/m]
 
-**macOS/Linux:**
-```bash
-UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-smoke
-```
+The effective Poisson ratio is fixed at `0.30` and the Maxwell relaxation time
+at `0.08 s`; the current two single-period fixture tests do not identify these
+independently. Maxwell state is initialized at the exact periodic fixed point of
+the measured cycle because the traces average cycles 90-100.
 
-**Windows (PowerShell):**
-```powershell
-$env:UV_CACHE_DIR="$env:TEMP/uv-cache"; $env:WARP_CACHE_PATH="$env:TEMP/warp-cache"; uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-smoke
-```
+`projects/digital_instron_v2/core.py` is the only constitutive implementation.
+Fitting calls the same `predict()` function used for evaluation. Released columns
+carry no tension.
 
-Run the first autodiff material fit:
+## Command
 
-**macOS/Linux:**
-```bash
-UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-autodiff --autodiff-iterations 25 --autodiff-sample-count 8
-```
-
-**Windows (PowerShell):**
-```powershell
-$env:UV_CACHE_DIR="$env:TEMP/uv-cache"; $env:WARP_CACHE_PATH="$env:TEMP/warp-cache"; uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step fit-autodiff --autodiff-iterations 25 --autodiff-sample-count 8
-```
-
-This writes:
-
-- `processed/v2_cache/digital_instron_v2_autodiff_fit.json`
-- `processed/v2_cache/digital_instron_v2_autodiff_hysteresis.png`
-- `processed/v2_cache/digital_instron_v2_autodiff_hysteresis.csv`
-- `processed/v2_cache/digital_instron_v2_autodiff_hysteresis_trials.csv`
-
-The JSON contains the fitted material, per-iteration loss/gradient history, and
-paths to the measured-vs-predicted hysteresis replay outputs.
-
-To inspect orientation, ray casting, and the current 1D spring response:
-
-**macOS/Linux:**
-```bash
-UV_CACHE_DIR=/tmp/uv-cache WARP_CACHE_PATH=/tmp/warp-cache uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step visualize
-```
-
-**Windows (PowerShell):**
-```powershell
-$env:UV_CACHE_DIR="$env:TEMP/uv-cache"; $env:WARP_CACHE_PATH="$env:TEMP/warp-cache"; uv run --extra dev -m projects.digital_instron_v2.workflow --manifest DigitalInstron/manifest_v2.json --step visualize
-```
-
-That writes:
-
-- `processed/v2_cache/digital_instron_v2_mesh_orientation.png`
-- `processed/v2_cache/digital_instron_v2_raycast_grid.png`
-- `processed/v2_cache/digital_instron_v2_spring_response.png`
-- `processed/v2_cache/digital_instron_v2_spring_snapshot.png`
-- `processed/v2_cache/digital_instron_v2_contact_squish.png`
-- `processed/v2_cache/digital_instron_v2_max_compression_map.png`
-- `processed/v2_cache/digital_instron_v2_impact_<trial>.gif`
-- `processed/v2_cache/digital_instron_v2_spring_grid.csv`
-- `processed/v2_cache/digital_instron_v2_spring_grid.npz`
-- `processed/v2_cache/digital_instron_v2_visualization.summary.json`
-
-To inspect the same calibrated impact replay in the Newton viewer:
+Fit all four parameters to both trials:
 
 ```powershell
-uv run --extra dev -m newton.examples digital_instron_impact --manifest DigitalInstron/manifest_v2.json --trial rearfoot_140ms
+uv run --extra dev -m projects.digital_instron_v2.workflow `
+  --manifest DigitalInstron/manifest_v2.json --evaluations 100
 ```
 
-Use `--trial fullfoot_185ms` to view the full-foot last, or add
-`--viewer usd --output-path DigitalInstron/processed/v2_cache/digital_instron_impact.usd`
-to record the scene as USD.
+The fit writes the authoritative material artifact to:
 
-## Current v2 Choices
+`DigitalInstron/processed/v2_cache/digital_instron_material.json`
 
-- Train on all `include_in_fit` trials declared in the manifest.
-- Repair the midsole mesh with Newton's Poisson remesh path before fitting and
-  cache the repaired OBJ plus QC JSON under `processed/v2_cache`.
-- Fail before fitting when CSV frame columns are missing, frame spans are
-  implausible, or the conditioned midsole thickness is outside the manifest QC
-  bounds.
-- Start with a uniform 5 mm circular punch grid and keep the 3 mm grid as a
-  later convergence check for localized punch trials.
-- Place the rearfoot punch from the mesh footprint bounds with a 45 mm diameter:
-  local rearfoot lateral midpoint and `rearfoot_length_fraction` from the
-  configured `rearfoot_heel_side`.
-- Use a full-footprint raycast grid for the midsole foundation. Each valid
-  ray's top-to-bottom thickness is the slack length of that 1D spring.
-- Fit the vertical differentiable Warp foundation first: locked Ogden-style
-  compression plus compression-weighted viscous damping, with shared material
-  parameters across trials.
-- Keep MuJoCo out of training. The validation adapter applies learned foundation
-  wrenches through Newton `state.body_f`, which `SolverMuJoCo` maps to MuJoCo
-  `xfrc_applied`.
+The optimizer minimizes peak-normalized pointwise force residuals. Peak force,
+loading and unloading RMSE, and hysteresis work are reported separately as
+validation metrics; they do not receive extra fit weight.
 
-Full real-data calibration is deliberately manual/regression output for now:
-plots and JSON summaries should be checked in only when they represent a
-specific calibration run worth preserving.
+With `--plots`, accepted optimizer iterations are written to the material JSON
+and plotted in `processed/v2_cache/digital_instron_convergence.png`. The figure
+shows total and per-fixture pointwise MSE plus every material parameter.
+
+`processed/v2_cache/digital_instron_contact_current.png` separates geometry
+masks: gray points are created midsole columns, black outlines are columns under
+the fixture, and colored points are compressed at peak travel. The current 5 mm
+grid contains 910 midsole columns; the full-foot fixture overlaps 595 and
+compresses 578 at peak. The remaining 17 outlined cells are perimeter or arch
+clearance, not missing columns.
+
+## Source layout
+
+- `manifest_v2.json`: averaged traces, geometry, and initial values
+- `projects/digital_instron_v2/core.py`: material prediction, fitting, and metrics
+- `projects/digital_instron_v2/geometry.py`: material-column geometry
+- `projects/digital_instron_v2/workflow.py`: fitting command
+- `MODEL_FINDINGS.md`: literature review, rejected models, assumptions, and the
+  additional experiments required for a full finite-strain network model

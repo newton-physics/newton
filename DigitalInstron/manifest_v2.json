@@ -1,75 +1,38 @@
 {
   "midsole_mesh": "puma-fast-r-nitro-elite-3-3d-internal-wt-LR.obj",
   "cache_dir": "processed/v2_cache",
-  "qc": {
-    "mesh_source_units": "mm",
-    "min_midsole_thickness_m": 0.005,
-    "max_midsole_thickness_m": 0.08,
-    "min_force_span_n": 50.0,
-    "min_position_span_mm": 1.0
-  },
   "grid": {
     "coarse_spacing_m": 0.005,
-    "refine_spacing_m": 0.003,
-    "cylinder_radius_m": 0.0225,
-    "rearfoot_punch_diameter_m": 0.045,
-    "rearfoot_heel_side": "min",
-    "rearfoot_length_fraction": 0.22,
-    "rearfoot_lateral_fraction": 0.5,
-    "rearfoot_lateral_band_fraction": 0.12
+    "rearfoot_length_fraction": 0.20
   },
   "fit": {
-    "model": "locked_ogden_vertical_foundation_v2",
-    "initial_stiffness_pa": 1500.0,
-    "initial_ogden_alpha": 0.1,
-    "initial_lock_strain": 0.5,
-    "initial_damping_pa_s": 10000.0,
-    "initial_damping_power": 1.0,
-    "initial_prony_stiffness_pa": 1800.0,
-    "initial_prony_damping_pa_s": 720.0,
-    "initial_pasternak_stiffness_n_per_m": 500.0,
-    "initial_ogden2_stiffness_pa": 20000.0,
-    "initial_ogden2_alpha": 1.5,
-    "state_warmup_cycles": 5,
-    "nominal_midsole_thickness_m": 0.069,
-    "low_force_limit_n": 20.0,
-    "phase_weights": {
-      "baseline_pre": 0.25,
-      "loading": 2.0,
-      "peak": 10.0,
-      "unloading": 2.0,
-      "baseline_post": 0.25
-    },
-    "displacement_shape_weight": 0.0,
-    "displacement_shape_bins": 14
+    "initial_instantaneous_shear_modulus_pa": 112000.0,
+    "initial_hyperfoam_exponent": 5.05,
+    "initial_equilibrium_fraction": 0.5,
+    "initial_pasternak_n_per_m": 500.0
   },
   "trials": [
     {
       "name": "rearfoot_140ms",
-      "csv_path": "04-07-2025_FR3_140ms_Rearfoot_100Cycle.steps.tracking.csv",
       "averaged_cycle_path": "processed/rearfoot_avg_cycles_90_100.csv",
       "fixture": "rearfoot_punch",
-      "include_in_fit": true,
-      "frame_config_path": "processed/v2_cache/rearfoot_140ms.frame_config.json",
       "indenter": {
-        "type": "cylinder",
-        "diameter_m": 0.045,
-        "radius_m": 0.0225
+        "radius_m": 0.022
       }
     },
     {
       "name": "fullfoot_185ms",
-      "csv_path": "04-07-2025_FR3_185ms_Fullfoot_100Cycle.steps.tracking.csv",
       "averaged_cycle_path": "processed/fullfoot_avg_cycles_90_100.csv",
       "fixture": "fullfoot_last",
-      "include_in_fit": true,
-      "frame_config_path": "processed/v2_cache/fullfoot_185ms.frame_config.json",
       "indenter": {
-        "type": "stl",
-        "path": "Instron Shoe Last Size 9 6drop merged attachment 1.STL",
-        "rotation_deg": [0.0, 0.0, 0.0],
-        "contact_percentile": 45.0,
-        "height_offset_m": 0.004
+        "path": "Instron Shoe Last Size 9 6drop merged attachment 1 left.STL",
+        "rotation_deg": [90.0, 0.0, 0.0],
+        "crop_height_m": 0.08,
+        "contact_side": "near",
+        "pose_rotation_deg": [-1.00784, -1.81921, 0.0],
+        "pose_translation_m": [0.0, 0.0, 0.0],
+        "contact_percentile": 95.0,
+        "height_offset_m": 0.0
       }
     }
   ]

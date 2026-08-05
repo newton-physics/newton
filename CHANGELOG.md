@@ -3,10 +3,10 @@
 ## [Unreleased]
 
 ### Added
+### Changed
+- Replace the experimental Digital Instron workflow variants with one reduced Hyperfoam-Maxwell-Pasternak model shared by fitting and prediction.
 - Add interactive foot alignment GUI setup to `example_hydro_shoe.py` when using the standard OpenGL/imgui viewer (`ViewerGL`) or Viser viewer, supporting real-time roll, pitch, yaw, and translation offset sliders, configuration loading/saving next to the midsole OBJ file, and CLI arguments for default alignment.
-- Add Digital Instron v2 hydroelastic material helpers for surfacemap thickness sampling and MuJoCo-style foam contact linearization.
-- Add Digital Instron v2 shared foam column contact that couples top and bottom surfaces into one calibrated-material strain and applies equal-and-opposite wrenches.
-- Add Digital Instron v2 graphing suite for visualizing material calibration (stress-strain, rate dependence, coordinate-search history) and contact mechanics (patch linearization, shared column response, measured-vs-simulated hysteresis loops, per-frame contact diagnostics).
+
 - Enable narrowphase foot-midsole collisions and contact rendering in `example_hydro_shoe.py` by disabling parent-child joint filtering.
 
 - Add `newton.use_coord_layout_targets` opt-in flag exposing `Model.joint_target_q` / `Control.joint_target_q` shaped `(joint_coord_count,)` (matching `joint_q`) and `joint_target_qd` shaped `(joint_dof_count,)` (matching `joint_qd`); solvers, the actuator library, and `ModelBuilder.finalize()` honor the flag. Defaults to `False` for backwards compatibility; will flip in a future release.
