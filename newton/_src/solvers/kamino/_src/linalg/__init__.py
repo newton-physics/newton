@@ -18,6 +18,7 @@ from .factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from .linear import (
     ConjugateGradientSolver,
     ConjugateResidualSolver,
+    ConjugateResidualSolverFused,
     DirectSolver,
     IterativeSolver,
     LinearSolver,
@@ -37,7 +38,12 @@ LinearSolverTypeToName[LLTBlockedRCMSolver] = "LLTBRCM"
 # matters because `delassus.py` performs a runtime
 # `issubclass(solver, LinearSolverType)` check and would otherwise reject it.
 LinearSolverType = (
-    LLTSequentialSolver | LLTBlockedSolver | LLTBlockedRCMSolver | ConjugateGradientSolver | ConjugateResidualSolver
+    LLTSequentialSolver
+    | LLTBlockedSolver
+    | LLTBlockedRCMSolver
+    | ConjugateGradientSolver
+    | ConjugateResidualSolver
+    | ConjugateResidualSolverFused
 )
 
 ###
@@ -47,6 +53,7 @@ LinearSolverType = (
 __all__ = [
     "ConjugateGradientSolver",
     "ConjugateResidualSolver",
+    "ConjugateResidualSolverFused",
     "DenseLinearOperatorData",
     "DenseRectangularMultiLinearInfo",
     "DenseSquareMultiLinearInfo",

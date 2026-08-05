@@ -5,12 +5,12 @@
 Defines containers for time-keeping across heterogeneous worlds simulated in parallel.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
-
-from .types import float32, int32
 
 ###
 # Module interface
@@ -27,7 +27,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -41,22 +41,22 @@ class TimeModel:
     A container to hold heterogeneous model time-step.
 
     Attributes:
-        dt (wp.array | None): The discrete time-step size of each world.\n
-            Shape of ``(num_worlds,)`` and type :class:`float`.
-        inv_dt (wp.array | None): The inverse of the discrete time-step size of each world.\n
-            Shape of ``(num_worlds,)`` and type :class:`float`.
+        dt: The discrete time-step size of each world.
+            Shape of ``(num_worlds,)``.
+        inv_dt: The inverse of the discrete time-step size of each world.
+            Shape of ``(num_worlds,)``.
     """
 
-    dt: wp.array | None = None
+    dt: wp.array[wp.float32] | None = None
     """
-    The discrete time-step size of each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`float`.
+    The discrete time-step size of each world.
+    Shape of ``(num_worlds,)``.
     """
 
-    inv_dt: wp.array | None = None
+    inv_dt: wp.array[wp.float32] | None = None
     """
-    The inverse of the discrete time-step size of each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`float`.
+    The inverse of the discrete time-step size of each world.
+    Shape of ``(num_worlds,)``.
     """
 
     def set_uniform_timestep(self, dt: float):
@@ -64,7 +64,7 @@ class TimeModel:
         Sets a uniform discrete time-step for all worlds.
 
         Args:
-            dt (float): The time-step size to set.
+            dt: The time-step size to set.
         """
         # Ensure that the provided time-step is a floating-point value
         if not isinstance(dt, float):
@@ -83,7 +83,7 @@ class TimeModel:
         Sets the discrete time-step of each world explicitly.
 
         Args:
-            dt (list[float] | np.ndarray): An iterable collection of time-steps over all worlds.
+            dt: An iterable collection of time-steps over all worlds.
         """
         # Ensure that the length of the input matches the number of worlds
         if len(dt) != self.dt.size:
@@ -110,22 +110,22 @@ class TimeData:
     A container to hold heterogeneous model time-keeping data.
 
     Attributes:
-        steps (wp.array | None): The current number of simulation steps of each world.\n
-            Shape of ``(num_worlds,)`` and type :class:`int`.
-        time (wp.array | None): The current simulation time of each world.\n
-            Shape of ``(num_worlds,)`` and type :class:`float`.
+        steps: The current number of simulation steps of each world.
+            Shape of ``(num_worlds,)``.
+        time: The current simulation time of each world.
+            Shape of ``(num_worlds,)``.
     """
 
-    steps: wp.array | None = None
+    steps: wp.array[wp.int32] | None = None
     """
-    The current number of simulation steps of each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int`.
+    The current number of simulation steps of each world.
+    Shape of ``(num_worlds,)``.
     """
 
-    time: wp.array | None = None
+    time: wp.array[wp.float32] | None = None
     """
-    The current simulation time of each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`float`.
+    The current simulation time of each world.
+    Shape of ``(num_worlds,)``.
     """
 
     def reset(self):
@@ -144,10 +144,10 @@ class TimeData:
 @wp.kernel
 def _advance_time(
     # Inputs
-    dt: wp.array[float32],
+    dt: wp.array[wp.float32],
     # Outputs
-    steps: wp.array[int32],  # TODO: Make this uint64
-    time: wp.array[float32],
+    steps: wp.array[wp.int32],  # TODO: Make this wp.uint64
+    time: wp.array[wp.float32],
 ):
     """
     Advances the time-keeping state of each world by one time-step.
@@ -178,10 +178,8 @@ def advance_time(model: TimeModel, data: TimeData):
     by the corresponding time increment ``dt[wid]``.
 
     Args:
-        model (TimeModel):
-            The time model containing the time-step information.
-        data (TimeData):
-            The time data containing the current time-keeping state.
+        model: The time model containing the time-step information.
+        data: The time data containing the current time-keeping state.
     """
     # Ensure the model is valid
     if model is None:

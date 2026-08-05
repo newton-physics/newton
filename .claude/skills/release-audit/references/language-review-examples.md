@@ -118,7 +118,7 @@ Before flagging, cross-check against existing sibling symbols in the same module
 
 **Prefer false positives over false negatives**: a flag that turns out to be fine costs a 5-second eyeball. A missed wrong-ref or jargon-leak ships to users.
 
-**Exception for 🚨 policy flags.** The `🚨 Policy: removed without prior deprecation` flag (Phase 4d) is NOT a false-positive-tolerant flag. If Claude raises it, it is because an exhaustive search of prior released sections failed to find a Deprecated entry for the symbol. The release manager needs a clear, non-hedged signal, not a "maybe verify" line. Only raise this flag when the search truly came back empty.
+**Exception for 🚨 policy flags.** The `🚨 Policy: removed without prior deprecation` flag (Phase 4d) is NOT a false-positive-tolerant flag. Only raise it after both an exhaustive search of prior released CHANGELOG sections and a targeted code search at the base ref fail to find deprecation evidence. A matching runtime `DeprecationWarning` satisfies the deprecation-window policy even when the CHANGELOG entry was forgotten; flag that case as `🧾 Deprecation omitted from CHANGELOG` instead.
 
 ## Row format (for the report)
 
@@ -130,5 +130,6 @@ Before flagging, cross-check against existing sibling symbols in the same module
 | "Deprecate `Model.foo`" | 📐 Missing migration guidance | No "in favor of" replacement named |
 | "Add `PDActuator`" | 🏷️ Naming-convention drift | Should be `ActuatorPD` per prefix-first rule |
 | "Add `newton.utils._x`" | 🕵️ Private-only | Named symbol lives only in `newton._src`, not re-exported |
+| "Remove deprecated `Model.foo`" | 🧾 Deprecation omitted from CHANGELOG | Runtime warning exists at the base ref, but no released Deprecated entry records it |
 
 Entry excerpt should be ~60-80 chars so the table stays scannable. Keep the full entry text in the detail sections (never truncate there).

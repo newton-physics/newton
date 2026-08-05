@@ -10,9 +10,9 @@ import newton
 
 
 def _build_model(*, custom_attrs: tuple[str, ...] = ()):
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     inertia = wp.mat33((0.1, 0.0, 0.0), (0.0, 0.1, 0.0), (0.0, 0.0, 0.1))
-    body = builder.add_link(armature=0.0, inertia=inertia, mass=1.0)
+    body = builder.add_link(inertia=inertia, mass=1.0)
     joint = builder.add_joint_revolute(
         parent=-1,
         child=body,
@@ -129,6 +129,25 @@ class TestStateAssignNamespacedAttributes(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             state_0.assign(state_1)
+
+
+class TestStateDeprecatedAttributes(unittest.TestCase):
+    def test_body_q_prev_warns_and_remains_assignable(self):
+        state_0 = newton.State()
+        state_1 = newton.State()
+        previous_q = wp.array([wp.transform_identity()], dtype=wp.transform)
+
+        with self.assertWarnsRegex(DeprecationWarning, "State.body_q_prev"):
+            state_0.body_q_prev = wp.empty_like(previous_q)
+        with self.assertWarnsRegex(DeprecationWarning, "State.body_q_prev"):
+            state_1.body_q_prev = previous_q
+
+        state_0.assign(state_1)
+
+        with self.assertWarnsRegex(DeprecationWarning, "State.body_q_prev"):
+            copied_q = state_0.body_q_prev
+        self.assertIsNot(copied_q, previous_q)
+        np.testing.assert_array_equal(copied_q.numpy(), previous_q.numpy())
 
 
 if __name__ == "__main__":

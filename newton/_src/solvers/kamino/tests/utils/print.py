@@ -91,12 +91,6 @@ def print_model_info(model: ModelKamino):
     print(f"model.info.total_cts_offset: {model.info.total_cts_offset}")
     print(f"model.info.joint_dynamic_cts_group_offset: {model.info.joint_dynamic_cts_group_offset}")
     print(f"model.info.joint_kinematic_cts_group_offset: {model.info.joint_kinematic_cts_group_offset}")
-    # Print the inertial properties
-    print("-------------------------------------------------------------------------------")
-    print(f"model.info.mass_min: {model.info.mass_min}")
-    print(f"model.info.mass_max: {model.info.mass_max}")
-    print(f"model.info.mass_total: {model.info.mass_total}")
-    print(f"model.info.inertia_total: {model.info.inertia_total}")
 
 
 def print_model_constraint_info(model: ModelKamino):
@@ -166,7 +160,8 @@ def print_model_joints(
     print(f"model.joints.bid_F: {model.joints.bid_F}")
     print(f"model.joints.B_r_Bj:\n{model.joints.B_r_Bj}")
     print(f"model.joints.F_r_Fj:\n{model.joints.F_r_Fj}")
-    print(f"model.joints.X_j:\n{model.joints.X_j}")
+    print(f"model.joints.X_Bj:\n{model.joints.X_Bj}")
+    print(f"model.joints.X_Fj:\n{model.joints.X_Fj}")
     print(f"model.joints.q_j_0: {model.joints.q_j_0}")
     print(f"model.joints.dq_j_0: {model.joints.dq_j_0}")
     if dimensions:
@@ -188,7 +183,8 @@ def print_model_joints(
     if parameters:
         print(f"model.joints.B_r_Bj: {model.joints.B_r_Bj}")
         print(f"model.joints.F_r_Fj: {model.joints.F_r_Fj}")
-        print(f"model.joints.X_j: {model.joints.X_j}")
+        print(f"model.joints.X_Bj: {model.joints.X_Bj}")
+        print(f"model.joints.X_Fj: {model.joints.X_Fj}")
     if limits:
         print(f"model.joints.q_j_min: {model.joints.q_j_min}")
         print(f"model.joints.q_j_max: {model.joints.q_j_max}")

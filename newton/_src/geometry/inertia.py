@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import math
 import warnings
+from numbers import Real
 
 import numpy as np
 import warp as wp
@@ -37,6 +39,38 @@ _INERTIA_ABS_ADJUSTMENT = 1.0e-6
 # nearly-symmetric tensor should be treated as unchanged.
 _INERTIA_SYMMETRY_RTOL = 1.0e-5
 _INERTIA_SYMMETRY_ATOL = 1.0e-8
+
+_MESH_INERTIA_TILE_SIZE = 256
+
+
+def _validate_hollow_thickness(
+    shape_name: str,
+    thickness: float,
+    limits: tuple[tuple[str, float], ...],
+) -> float:
+    if isinstance(thickness, bool) or not isinstance(thickness, Real):
+        raise TypeError(f"thickness must be a real scalar for a hollow {shape_name} geom")
+
+    thickness = float(thickness)
+    if not math.isfinite(thickness):
+        raise ValueError(f"thickness must be finite for a hollow {shape_name} geom; got {thickness}")
+    if thickness < 0.0:
+        raise ValueError(f"thickness must be >= 0 for a hollow {shape_name} geom; got {thickness}")
+    if thickness == 0.0:
+        warnings.warn(
+            f"A hollow {shape_name} geom with zero thickness has zero mass and inertia.",
+            stacklevel=2,
+        )
+        return thickness
+
+    for dim_name, dim_value in limits:
+        dim_limit = float(dim_value)
+        if thickness >= dim_limit:
+            raise ValueError(
+                f"thickness ({thickness}) must be smaller than {dim_name} ({dim_limit}) for a hollow {shape_name} geom"
+            )
+
+    return thickness
 
 
 def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec3, wp.mat33]:
@@ -264,98 +298,156 @@ def triangle_inertia(
     return vol, first, second
 
 
-@wp.kernel
+@wp.func
+def store_mesh_inertia_sum(
+    v_sum: float,
+    f_sum: wp.vec3,
+    s_sum: wp.mat33,
+    lane: int,
+    volume: wp.array[float],
+    first: wp.array[wp.vec3],
+    second: wp.array[wp.mat33],
+):
+    v_total = wp.tile_sum(wp.tile(v_sum))[0]
+    fx_total = wp.tile_sum(wp.tile(f_sum[0]))[0]
+    fy_total = wp.tile_sum(wp.tile(f_sum[1]))[0]
+    fz_total = wp.tile_sum(wp.tile(f_sum[2]))[0]
+    s00_total = wp.tile_sum(wp.tile(s_sum[0, 0]))[0]
+    s01_total = wp.tile_sum(wp.tile(s_sum[0, 1]))[0]
+    s02_total = wp.tile_sum(wp.tile(s_sum[0, 2]))[0]
+    s10_total = wp.tile_sum(wp.tile(s_sum[1, 0]))[0]
+    s11_total = wp.tile_sum(wp.tile(s_sum[1, 1]))[0]
+    s12_total = wp.tile_sum(wp.tile(s_sum[1, 2]))[0]
+    s20_total = wp.tile_sum(wp.tile(s_sum[2, 0]))[0]
+    s21_total = wp.tile_sum(wp.tile(s_sum[2, 1]))[0]
+    s22_total = wp.tile_sum(wp.tile(s_sum[2, 2]))[0]
+
+    if lane == 0:
+        volume[0] = v_total
+        first[0] = wp.vec3(fx_total, fy_total, fz_total)
+        second[0] = wp.mat33(
+            s00_total,
+            s01_total,
+            s02_total,
+            s10_total,
+            s11_total,
+            s12_total,
+            s20_total,
+            s21_total,
+            s22_total,
+        )
+
+
+@wp.kernel(enable_backward=False)
 def compute_solid_mesh_inertia(
     indices: wp.array[int],
     vertices: wp.array[wp.vec3],
+    num_tris: int,
     # outputs
     volume: wp.array[float],
     first: wp.array[wp.vec3],
     second: wp.array[wp.mat33],
 ):
-    i = wp.tid()
-    p = vertices[indices[i * 3 + 0]]
-    q = vertices[indices[i * 3 + 1]]
-    r = vertices[indices[i * 3 + 2]]
+    _block_id, lane = wp.tid()
 
-    v, f, s = triangle_inertia(p, q, r)
-    wp.atomic_add(volume, 0, v)
-    wp.atomic_add(first, 0, f)
-    wp.atomic_add(second, 0, s)
+    v_sum = float(0.0)
+    f_sum = wp.vec3(0.0)
+    s_sum = wp.mat33(0.0)
+
+    for tri in range(lane, num_tris, wp.block_dim()):
+        p = vertices[indices[tri * 3 + 0]]
+        q = vertices[indices[tri * 3 + 1]]
+        r = vertices[indices[tri * 3 + 2]]
+
+        v, f, s = triangle_inertia(p, q, r)
+        v_sum += v
+        f_sum += f
+        s_sum += s
+
+    store_mesh_inertia_sum(v_sum, f_sum, s_sum, lane, volume, first, second)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def compute_hollow_mesh_inertia(
     indices: wp.array[int],
     vertices: wp.array[wp.vec3],
     thickness: wp.array[float],
+    num_tris: int,
     # outputs
     volume: wp.array[float],
     first: wp.array[wp.vec3],
     second: wp.array[wp.mat33],
 ):
-    tid = wp.tid()
-    i = indices[tid * 3 + 0]
-    j = indices[tid * 3 + 1]
-    k = indices[tid * 3 + 2]
+    _block_id, lane = wp.tid()
 
-    vi = vertices[i]
-    vj = vertices[j]
-    vk = vertices[k]
+    v_sum = float(0.0)
+    f_sum = wp.vec3(0.0)
+    s_sum = wp.mat33(0.0)
 
-    normal = -wp.normalize(wp.cross(vj - vi, vk - vi))
-    ti = normal * thickness[i]
-    tj = normal * thickness[j]
-    tk = normal * thickness[k]
+    for tid in range(lane, num_tris, wp.block_dim()):
+        i = indices[tid * 3 + 0]
+        j = indices[tid * 3 + 1]
+        k = indices[tid * 3 + 2]
 
-    # wedge vertices
-    vi0 = vi - ti
-    vi1 = vi + ti
-    vj0 = vj - tj
-    vj1 = vj + tj
-    vk0 = vk - tk
-    vk1 = vk + tk
+        vi = vertices[i]
+        vj = vertices[j]
+        vk = vertices[k]
 
-    v_total = 0.0
-    f_total = wp.vec3(0.0)
-    s_total = wp.mat33(0.0)
+        normal = -wp.normalize(wp.cross(vj - vi, vk - vi))
+        ti = normal * thickness[i]
+        tj = normal * thickness[j]
+        tk = normal * thickness[k]
 
-    v, f, s = triangle_inertia(vi0, vj0, vk0)
-    v_total += v
-    f_total += f
-    s_total += s
-    v, f, s = triangle_inertia(vj0, vk1, vk0)
-    v_total += v
-    f_total += f
-    s_total += s
-    v, f, s = triangle_inertia(vj0, vj1, vk1)
-    v_total += v
-    f_total += f
-    s_total += s
-    v, f, s = triangle_inertia(vj0, vi1, vj1)
-    v_total += v
-    f_total += f
-    s_total += s
-    v, f, s = triangle_inertia(vj0, vi0, vi1)
-    v_total += v
-    f_total += f
-    s_total += s
-    v, f, s = triangle_inertia(vj1, vi1, vk1)
-    v_total += v
-    f_total += f
-    s_total += s
-    v, f, s = triangle_inertia(vi1, vi0, vk0)
-    v_total += v
-    f_total += f
-    s_total += s
-    v, f, s = triangle_inertia(vi1, vk0, vk1)
-    v_total += v
-    f_total += f
-    s_total += s
+        # wedge vertices
+        vi0 = vi - ti
+        vi1 = vi + ti
+        vj0 = vj - tj
+        vj1 = vj + tj
+        vk0 = vk - tk
+        vk1 = vk + tk
 
-    wp.atomic_add(volume, 0, v_total)
-    wp.atomic_add(first, 0, f_total)
-    wp.atomic_add(second, 0, s_total)
+        v_total = float(0.0)
+        f_total = wp.vec3(0.0)
+        s_total = wp.mat33(0.0)
+
+        v, f, s = triangle_inertia(vi0, vj0, vk0)
+        v_total += v
+        f_total += f
+        s_total += s
+        v, f, s = triangle_inertia(vj0, vk1, vk0)
+        v_total += v
+        f_total += f
+        s_total += s
+        v, f, s = triangle_inertia(vj0, vj1, vk1)
+        v_total += v
+        f_total += f
+        s_total += s
+        v, f, s = triangle_inertia(vj0, vi1, vj1)
+        v_total += v
+        f_total += f
+        s_total += s
+        v, f, s = triangle_inertia(vj0, vi0, vi1)
+        v_total += v
+        f_total += f
+        s_total += s
+        v, f, s = triangle_inertia(vj1, vi1, vk1)
+        v_total += v
+        f_total += f
+        s_total += s
+        v, f, s = triangle_inertia(vi1, vi0, vk0)
+        v_total += v
+        f_total += f
+        s_total += s
+        v, f, s = triangle_inertia(vi1, vk0, vk1)
+        v_total += v
+        f_total += f
+        s_total += s
+
+        v_sum += v_total
+        f_sum += f_total
+        s_sum += s_total
+
+    store_mesh_inertia_sum(v_sum, f_sum, s_sum, lane, volume, first, second)
 
 
 def compute_inertia_mesh(
@@ -395,35 +487,39 @@ def compute_inertia_mesh(
     wp_indices = wp.array(indices, dtype=int)
 
     if is_solid:
-        wp.launch(
+        wp.launch_tiled(
             kernel=compute_solid_mesh_inertia,
-            dim=num_tris,
+            dim=1,
             inputs=[
                 wp_indices,
                 wp_vertices,
+                num_tris,
             ],
             outputs=[
                 vol_warp,
                 com_warp,
                 I_warp,
             ],
+            block_dim=_MESH_INERTIA_TILE_SIZE,
         )
     else:
         if isinstance(thickness, float):
             thickness = [thickness] * len(vertices)
-        wp.launch(
+        wp.launch_tiled(
             kernel=compute_hollow_mesh_inertia,
-            dim=num_tris,
+            dim=1,
             inputs=[
                 wp_indices,
                 wp_vertices,
                 wp.array(thickness, dtype=float),
+                num_tris,
             ],
             outputs=[
                 vol_warp,
                 com_warp,
                 I_warp,
             ],
+            block_dim=_MESH_INERTIA_TILE_SIZE,
         )
 
     V_tot = float(vol_warp.numpy()[0])  # signed volume
@@ -518,7 +614,9 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow sphere geom"
+            thickness = _validate_hollow_thickness("sphere", thickness, (("radius", scale[0]),))
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_sphere(density, scale[0] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.BOX:
@@ -527,7 +625,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow box geom"
+            thickness = _validate_hollow_thickness(
+                "box", thickness, (("hx", scale[0]), ("hy", scale[1]), ("hz", scale[2]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_box(density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CAPSULE:
@@ -536,7 +638,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow capsule geom"
+            thickness = _validate_hollow_thickness(
+                "capsule", thickness, (("radius", scale[0]), ("half_height", scale[1]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_capsule(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CYLINDER:
@@ -545,7 +651,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow cylinder geom"
+            thickness = _validate_hollow_thickness(
+                "cylinder", thickness, (("radius", scale[0]), ("half_height", scale[1]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_cylinder(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CONE:
@@ -554,15 +664,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
+            thickness = _validate_hollow_thickness("cone", thickness, (("radius", scale[0]), ("half_height", scale[1])))
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_cone(density, scale[0] - thickness, scale[1] - thickness)
             m_shell = solid[0] - hollow[0]
-            if m_shell <= 0.0:
-                raise ValueError(
-                    f"Hollow cone shell has non-positive mass ({m_shell:.6g}). "
-                    f"The thickness ({thickness}) must be smaller than both the "
-                    f"radius ({scale[0]}) and half_height ({scale[1]})."
-                )
             # Cones have non-zero COM so outer and inner cones have different COMs;
             # compute the shell COM as the weighted difference, then shift both
             # inertia tensors to the shell COM before subtracting (parallel-axis theorem).
@@ -584,7 +690,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow ellipsoid geom"
+            thickness = _validate_hollow_thickness(
+                "ellipsoid", thickness, (("rx", scale[0]), ("ry", scale[1]), ("rz", scale[2]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_ellipsoid(
                 density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness
             )
@@ -716,7 +826,7 @@ def verify_and_correct_inertia(
 
     # Compute eigenvalues (principal moments) for validation
     try:
-        eigenvalues = np.linalg.eigvals(corrected_inertia)
+        eigenvalues = np.linalg.eigvalsh(corrected_inertia)
 
         # Check for negative or near-zero eigenvalues (ensure positive-definite).
         # The threshold is relative to the largest eigenvalue so that small but
@@ -731,7 +841,7 @@ def verify_and_correct_inertia(
             # Make positive definite by adjusting eigenvalues
             min_eig = np.min(eigenvalues)
             adjustment = eig_threshold - min_eig + _INERTIA_ABS_ADJUSTMENT
-            corrected_inertia += np.eye(3) * adjustment
+            corrected_inertia += np.eye(3, dtype=corrected_inertia.dtype) * adjustment
             eigenvalues += adjustment
             was_corrected = True
 
@@ -743,7 +853,7 @@ def verify_and_correct_inertia(
                     f"Minimum eigenvalue {min_eig} is below bound {bound_inertia}{body_id}, adjusting", stacklevel=2
                 )
                 adjustment = bound_inertia - min_eig
-                corrected_inertia += np.eye(3) * adjustment
+                corrected_inertia += np.eye(3, dtype=corrected_inertia.dtype) * adjustment
                 eigenvalues += adjustment
                 was_corrected = True
 
@@ -787,7 +897,7 @@ def verify_and_correct_inertia(
                 adjustment = deficit + _INERTIA_ABS_ADJUSTMENT
 
                 # Add scalar*I to shift all eigenvalues equally
-                corrected_inertia = corrected_inertia + np.eye(3) * adjustment
+                corrected_inertia = corrected_inertia + np.eye(3, dtype=corrected_inertia.dtype) * adjustment
                 was_corrected = True
 
                 # Update principal moments
@@ -805,7 +915,7 @@ def verify_and_correct_inertia(
     if has_violations and balance_inertia:
         # Need to recompute after balancing since we modified the matrix
         try:
-            eigenvalues = np.linalg.eigvals(corrected_inertia)
+            eigenvalues = np.linalg.eigvalsh(corrected_inertia)
         except np.linalg.LinAlgError:
             warnings.warn(f"Failed to compute eigenvalues of inertia matrix{body_id}", stacklevel=2)
             eigenvalues = np.array([0.0, 0.0, 0.0])

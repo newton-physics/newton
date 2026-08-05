@@ -9,8 +9,10 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import ModelFlags
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.solver_mujoco import HINGE_CONNECT_AXIS_OFFSET
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton.solvers import SolverMuJoCo
 
 
 class Sim:
@@ -123,10 +125,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_link (body index 0 in Newton's list of bodies), fixed joint to world
@@ -190,7 +192,9 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             all_joints = [root_joint, ball_joint, joint0, connect_joints[0], connect_joints[1]]
             builder.add_articulation(joints=all_joints)
 
-            builder.add_equality_constraint_connect(
+            _add_equality_constraint(
+                builder,
+                constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
                 body1=connect_body_indices[0],
                 body2=connect_body_indices[1],
                 anchor=connect_anchor_leafbody1[w],
@@ -517,10 +521,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     # to the new anchor.
                     ##############
 
-                    sim.model.equality_constraint_anchor.assign(
+                    sim.model.mujoco.equality_constraint_anchor.assign(
                         np.array(flat_changed_connect_anchor_leafbody1, dtype=np.float32)
                     )
-                    sim.solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+                    sim.solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
 
                     # Verify that mjw_model.eq_data was updated with the new anchor.
                     for w in range(num_worlds):
@@ -602,12 +606,12 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     # the connect constraint anchors are recomputed for the new
                     # reference pose.
                     # This test would FAIL without the fix that adds
-                    # SolverNotifyFlags.JOINT_DOF_PROPERTIES to the flags that
+                    # ModelFlags.JOINT_DOF_PROPERTIES to the flags that
                     # trigger recomputation of connect constraint anchors.
                     ##############
 
                     sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
-                    sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+                    sim.solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
                     # Verify that mjw_model.eq_data was updated with anchors computed
                     # from the new reference poses.
@@ -706,7 +710,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     ##############
 
                     sim.model.mujoco.dof_ref.assign(np.array(flat_original_dof_ref, dtype=np.float32))
-                    sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+                    sim.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
 
                     for w in range(num_worlds):
                         original_ref_expected_leafbody2_anchor = self.compute_expected_leafbody2_anchor(
@@ -770,12 +774,16 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
         return True
 
     def _create_solver(self, model):
+        # MuJoCo 3.11 can terminate before its first iteration, so require one
+        # iteration to exercise CONNECT constraint convergence in this test.
         return SolverMuJoCo(
             model,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,
             integrator="euler",
+            iterations=1,
+            tolerance=0.0,
         )
 
 
@@ -832,10 +840,10 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_body (body 0), fixed to world
@@ -1178,7 +1186,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                     flat_changed_dof_ref.append(0.0)  # loop joint DOF (unchanged)
 
                 sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
-                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+                sim.solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
                 # Verify eq_data was updated with new anchors
                 for w in range(num_worlds):
@@ -1214,7 +1222,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                     joint_X_p_np[loop_joint_idx][0] += 0.3 + 0.1 * w
                     joint_X_p_np[loop_joint_idx][1] += 0.2
                 sim.model.joint_X_p.assign(joint_X_p_np)
-                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+                sim.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
 
                 # Re-read after modification
                 joint_X_p_np = sim.model.joint_X_p.numpy()
@@ -1281,9 +1289,9 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
         """Build a model with a revolute loop joint and a FIXED loop joint.
 
         Topology per world:
-            Articulation: world -> fixed -> root_body -> rev_joint -> body_a -> rev_joint2 -> body_b
-            Revolute loop joint: body_b (parent) -> root_body (child), not in articulation
-            Fixed loop joint: body_a (parent) -> root_body (child), not in articulation
+            Articulation: world -> root_body -> body_a -> body_b -> body_c
+            Revolute loop joint: body_c (parent) -> root_body (child), not in articulation
+            Fixed loop joint: body_b (parent) -> root_body (child), not in articulation
 
         The revolute loop joint creates 2 CONNECT constraints.
         The fixed loop joint creates 1 WELD constraint.
@@ -1308,10 +1316,10 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for _w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_body (body 0), fixed to world
@@ -1342,21 +1350,30 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
                 custom_attributes={"mujoco:dof_ref": -0.3},
             )
 
-            builder.add_articulation(joints=[root_joint, joint0, joint1])
+            # body_c (body 3), connected to body_b via revolute joint
+            body_c = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            joint2 = builder.add_joint_revolute(
+                parent=body_b,
+                child=body_c,
+                axis=2,  # Z axis
+                armature=1000000000000.0,
+            )
 
-            # Revolute loop joint: body_b (parent) -> root_body (child)
+            builder.add_articulation(joints=[root_joint, joint0, joint1, joint2])
+
+            # Revolute loop joint: body_c (parent) -> root_body (child)
             # Creates 2 CONNECT constraints
             builder.add_joint_revolute(
-                parent=body_b,
+                parent=body_c,
                 child=root_body,
                 axis=2,  # Z axis
                 armature=0.0,
             )
 
-            # FIXED loop joint: body_a (parent) -> root_body (child)
+            # FIXED loop joint: body_b (parent) -> root_body (child)
             # Creates 1 WELD constraint
             builder.add_joint_fixed(
-                parent=body_a,
+                parent=body_b,
                 child=root_body,
                 parent_xform=wp.transform(wp.vec3(0.0, 0.2, 0.0), wp.quat_identity()),
                 child_xform=wp.transform(wp.vec3(0.0, 0.1, 0.0), wp.quat_identity()),

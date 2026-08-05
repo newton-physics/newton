@@ -109,7 +109,7 @@ class Example:
         self.state_1 = self.model.state()
 
         # Initialize MPM solver
-        self.solver = SolverImplicitMPM(self.model, mpm_options)
+        self.solver = SolverImplicitMPM(self.model, config=mpm_options)
 
         self.viewer.set_model(self.model)
 

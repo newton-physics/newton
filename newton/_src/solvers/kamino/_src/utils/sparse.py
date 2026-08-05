@@ -22,6 +22,19 @@ def sparseplot(
     grid: bool = False,
     path: str | None = None,
 ):
+    """Visualize the sparsity pattern of a matrix.
+
+    Zero entries are shown in red. Non-zero entries are shown in grayscale
+    (black to white).
+
+    Args:
+        matrix: 2D array to visualize.
+        title: Title for the plot.
+        tick_fontsize: Font size for axis tick labels.
+        max_ticks: Maximum number of ticks per axis.
+        grid: Whether to overlay a major grid on the plot.
+        path: If provided, save the image to this path; otherwise display it.
+    """
     # Attempt to import matplotlib
     try:
         import matplotlib.pyplot as plt
@@ -30,17 +43,6 @@ def sparseplot(
     except Exception as exc:  # pragma: no cover - optional dependency
         msg.error(f"`matplotlib` is required to plot profiles: {exc}")
         return
-
-    """
-    Visualize the sparsity pattern of a matrix.
-    Zero entries are shown in red.
-    Non-zero entries are shown in grayscale (black to white).
-
-    Parameters:
-    - matrix: 2D numpy array
-    - title: Title for the plot (used for display or saved image)
-    - save_path: If provided, saves the image to this file path; otherwise, displays it.
-    """
 
     # Check if the input is a 2D NumPy array
     if not isinstance(matrix, np.ndarray):

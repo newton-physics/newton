@@ -62,10 +62,10 @@ class Example:
         self.particle_self_contact_margin = 0.005
 
         self.soft_contact_ke = 2e6
-        self.soft_contact_kd = 1e-7
+        self.soft_contact_kd = 2e-1
         self.self_contact_friction = 0.5
 
-        self.scene = ModelBuilder(gravity=-9.81)
+        self.scene = ModelBuilder(gravity=(0.0, 0.0, -9.81))
 
         self.viewer = viewer
 
@@ -81,7 +81,7 @@ class Example:
         table_pos = wp.vec3(0.0, -0.5, 0.1)
         self.scene.add_shape_box(
             -1,
-            wp.transform(table_pos, wp.quat_identity()),
+            xform=wp.transform(table_pos, wp.quat_identity()),
             hx=table_hx,
             hy=table_hy,
             hz=table_hz,
@@ -91,7 +91,9 @@ class Example:
         duck_path = newton.utils.download_asset("manipulation_objects/rubber_duck")
         usd_stage = Usd.Stage.Open(str(duck_path / "model.usda"))
         prim = usd_stage.GetPrimAtPath("/root/Model/TetMesh")
-        tetmesh = newton.TetMesh.create_from_usd(prim)
+        # The duck authors no physics material; canonical-only reads avoid the
+        # legacy-default deprecation window.
+        tetmesh = newton.TetMesh.create_from_usd(prim, compat_namespaces=())
 
         # Duck USDA is in meters (metersPerUnit=1.0).
         # Table top is at z=0.2m. Duck center offset ~0.03m above table.
@@ -104,7 +106,7 @@ class Example:
             density=100.0,
             k_mu=1.0e6,
             k_lambda=1.0e6,
-            k_damp=1e-6,
+            k_damp=1e0,
             particle_radius=self.particle_radius,
         )
 
@@ -160,8 +162,10 @@ class Example:
         self.viewer.set_camera(wp.vec3(-0.6, 0.6, 1.24), -42.0, -58.0)
 
         # gravity arrays for swapping during simulation
-        self.gravity_zero = wp.zeros(1, dtype=wp.vec3)
-        self.gravity_earth = wp.array(wp.vec3(0.0, 0.0, -9.81), dtype=wp.vec3)
+        self.gravity_zero = wp.zeros(self.model.gravity.shape[0], dtype=wp.vec3, device=self.model.device)
+        self.gravity_earth = wp.full(
+            self.model.gravity.shape[0], wp.vec3(0.0, 0.0, -9.81), dtype=wp.vec3, device=self.model.device
+        )
 
         # evaluate FK for initial state
         eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
@@ -226,12 +230,9 @@ class Example:
         self.ik_iters = 24
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def create_articulation(self, builder):
         asset_path = newton.utils.download_asset("franka_emika_panda")

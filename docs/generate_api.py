@@ -6,7 +6,9 @@
 This helper discovers Newton's top-level public modules from ``newton.__all__``,
 reads each module's ``__all__`` list (and falls back to public attributes if
 ``__all__`` is missing), and writes one reStructuredText file per module with an
-``autosummary`` directive.  When Sphinx later builds the documentation (with
+``autosummary`` directive.  Modules may use ``__deprecated_symbols__`` to keep
+warning-only compatibility names documented without resolving their values.
+When Sphinx later builds the documentation (with
 ``autosummary_generate = True``), individual stub pages will be created
 automatically for every listed symbol.
 
@@ -159,6 +161,22 @@ def solver_submodule_pages() -> list[str]:
 
         public_name = f"newton.solvers.{info.name}"
         modules.append(public_name)
+
+    def add_public_module_tree(mod_name: str, module: ModuleType) -> None:
+        if mod_name not in modules:
+            modules.append(mod_name)
+        for child_name in public_symbols(module):
+            child = getattr(module, child_name)
+            if not inspect.ismodule(child):
+                continue
+            add_public_module_tree(f"{mod_name}.{child_name}", child)
+
+    for name in public_symbols(public_solvers):
+        attr = getattr(public_solvers, name)
+        if not inspect.ismodule(attr):
+            continue
+        add_public_module_tree(f"newton.solvers.{name}", attr)
+
     return modules
 
 
@@ -169,14 +187,26 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
         api_toctree_modules = set(api_modules())
 
     is_solver_submodule = mod_name.startswith("newton.solvers.") and mod_name != "newton.solvers"
+    uses_internal_solver_module = False
     if is_solver_submodule:
         sub_name = mod_name.split(".", 2)[2]
-        module = importlib.import_module(f"newton._src.solvers.{sub_name}")
+        try:
+            module = importlib.import_module(mod_name)
+        except ModuleNotFoundError as exc:
+            if exc.name != mod_name:
+                raise
+            # Some public solver helpers are exposed as attributes on
+            # ``newton.solvers`` even though it is a module, not a package.
+            # Document those from their implementation module while keeping the
+            # public page name stable.
+            module = importlib.import_module(f"newton._src.solvers.{sub_name}")
+            uses_internal_solver_module = True
     else:
         module = importlib.import_module(mod_name)
 
-    symbols = public_symbols(module)
-    if is_solver_submodule:
+    deprecated_messages = dict(getattr(module, "__deprecated_symbols__", {}))
+    symbols = list(dict.fromkeys([*public_symbols(module), *deprecated_messages]))
+    if uses_internal_solver_module:
         # Keep solver classes centralized in newton.solvers.
         symbols = [name for name in symbols if not name.startswith("Solver")]
 
@@ -184,8 +214,13 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     functions: list[str] = []
     constants: list[str] = []
     modules: list[str] = []
+    deprecated: list[str] = []
 
     for name in symbols:
+        if name in deprecated_messages:
+            deprecated.append(name)
+            continue
+
         attr = getattr(module, name)
 
         # ------------------------------------------------------------------
@@ -196,9 +231,9 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
             continue
 
         # ------------------------------------------------------------------
-        # Constants / simple values
+        # Constants / simple values (incl. collection constants such as tuples)
         # ------------------------------------------------------------------
-        if wp.types.type_is_value(type(attr)) or isinstance(attr, str):
+        if wp.types.type_is_value(type(attr)) or isinstance(attr, (str, bytes, tuple, list, frozenset)):
             constants.append(name)
             continue
 
@@ -233,7 +268,7 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     if doc:
         lines.extend([doc, ""])
 
-    if is_solver_submodule:
+    if uses_internal_solver_module:
         lines.extend(
             [
                 ".. note::",
@@ -249,7 +284,9 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     else:
         lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
 
-    if modules and not is_solver_submodule:
+    # Render submodules as direct document links instead of autosummary stubs.
+    # Child module pages still need hidden toctree edges to satisfy Sphinx.
+    if modules:
         modules.sort()
         nested_modules = [sub for sub in modules if f"{mod_name}.{sub}" not in api_toctree_modules]
         if nested_modules:
@@ -276,7 +313,7 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     if classes:
         classes.sort()
         lines.extend([".. rubric:: Classes", ""])
-        if is_solver_submodule:
+        if uses_internal_solver_module or is_solver_submodule:
             for cls in classes:
                 lines.extend([f".. autoclass:: {cls}", ""])
         else:
@@ -294,7 +331,7 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     if functions:
         functions.sort()
         lines.extend([".. rubric:: Functions", ""])
-        if is_solver_submodule:
+        if uses_internal_solver_module or is_solver_submodule:
             for fn in functions:
                 lines.extend([f".. autofunction:: {fn}", ""])
         else:
@@ -307,6 +344,28 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
                 ]
             )
             lines.extend([f"   {fn}" for fn in functions])
+        lines.append("")
+
+    if deprecated:
+        deprecated.sort()
+        lines.extend(
+            [
+                ".. rubric:: Deprecated",
+                "",
+                ".. list-table::",
+                "   :header-rows: 1",
+                "",
+                "   * - Name",
+                "     - Guidance",
+            ]
+        )
+        for name in deprecated:
+            lines.extend(
+                [
+                    f"   * - ``{name}``",
+                    f"     - {deprecated_messages[name]}",
+                ]
+            )
         lines.append("")
 
     if constants:

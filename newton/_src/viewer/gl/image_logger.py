@@ -15,6 +15,7 @@ import ctypes
 import math
 import sys
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -529,6 +530,15 @@ class ImageLogger:
             self._free_entry(entry)
         self._images.clear()
         self._selected = None
+
+    def clear_matching(self, predicate: Callable[[str], bool]) -> None:
+        """Destroy GL resources for images whose names match ``predicate``."""
+        for name, entry in list(self._images.items()):
+            if predicate(name):
+                self._free_entry(entry)
+                self._images.pop(name, None)
+        if self._selected not in self._images:
+            self._selected = None
 
     # --- Internals ---
 

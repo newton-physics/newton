@@ -13,6 +13,7 @@ from ...math import (
     velocity_at_point,
 )
 from ...sim import BodyFlags, JointType
+from ...sim.contacts import contact_surface_point, contact_surface_separation
 
 
 @wp.kernel
@@ -123,6 +124,7 @@ def solve_particle_shape_contacts(
     body_com: wp.array[wp.vec3],
     body_m_inv: wp.array[float],
     body_I_inv: wp.array[wp.mat33],
+    body_flags: wp.array[wp.int32],
     shape_body: wp.array[int],
     shape_material_mu: wp.array[float],
     particle_mu: float,
@@ -150,8 +152,16 @@ def solve_particle_shape_contacts(
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
 
-    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+    particle_flag = particle_flags[particle_index]
+    if (particle_flag & ParticleFlags.ACTIVE) == 0:
         return
+    if (particle_flag & ParticleFlags.PROXY) != 0:
+        if body_index < 0:
+            return
+        if (body_flags[body_index] & int(BodyFlags.PROXY)) != 0:
+            return
+        if body_m_inv[body_index] == 0.0:
+            return
 
     px = particle_x[particle_index]
     pv = particle_v[particle_index]
@@ -250,8 +260,10 @@ def solve_particle_particle_contacts(
     if i == -1:
         # hash grid has not been built yet
         return
-    if (particle_flags[i] & ParticleFlags.ACTIVE) == 0:
+    particle_flag = particle_flags[i]
+    if (particle_flag & ParticleFlags.ACTIVE) == 0:
         return
+    is_proxy = particle_flag & ParticleFlags.PROXY
 
     x = particle_x[i]
     v = particle_v[i]
@@ -265,7 +277,12 @@ def solve_particle_particle_contacts(
     delta = wp.vec3(0.0)
 
     while wp.hash_grid_query_next(query, index):
-        if (particle_flags[index] & ParticleFlags.ACTIVE) != 0 and index != i:
+        neighbor_flag = particle_flags[index]
+        if (
+            (neighbor_flag & ParticleFlags.ACTIVE) != 0
+            and (is_proxy == 0 or ((neighbor_flag & ParticleFlags.PROXY) == 0 and particle_invmass[index] > 0.0))
+            and index != i
+        ):
             # compute distance to point
             n = x - particle_x[index]
             d = wp.length(n)
@@ -275,7 +292,7 @@ def solve_particle_particle_contacts(
             w2 = particle_invmass[index]
             denom = w1 + w2
 
-            if err <= k_cohesion and denom > 0.0:
+            if err <= k_cohesion and denom > 0.0 and d > 0.0:
                 n = n / d
                 vrel = v - particle_v[index]
 
@@ -1728,10 +1745,28 @@ def solve_body_joints(
         axis_limits_lower = wp.spatial_top(axis_limits)
         axis_limits_upper = wp.spatial_bottom(axis_limits)
 
+        # A relative offset can contain both valid joint motion and error. For example,
+        # a prismatic joint may be 0.5 m along its free axis and 1 m off it.
+        # Start from the current offset so unconstrained coordinates keep their extension.
+        projected_rel_p = rel_p
+        for dim in range(3):
+            lower = axis_limits_lower[dim]
+            upper = axis_limits_upper[dim]
+            # Limit violations project to the nearest admissible boundary.
+            if rel_p[dim] < lower:
+                projected_rel_p[dim] = lower
+            elif rel_p[dim] > upper:
+                projected_rel_p[dim] = upper
+            # A position-driven coordinate projects to its target. Locked coordinates
+            # have zero-width limits above and therefore already project to zero.
+            elif axis_stiffness[dim] > 0.0:
+                projected_rel_p[dim] = wp.clamp(axis_target_pos[dim], lower, upper)
+
         frame_p = wp.quat_to_matrix(wp.transform_get_rotation(X_wp))
-        # note that x_c appearing in both is correct
-        r_p = x_c - world_com_p
-        r_c = x_c - wp.transform_point(pose_c, com_c)
+        # Use the admissible point for the parent lever arm: the parent anchor would
+        # discard valid extension, while the child anchor would include separation error.
+        r_p = wp.transform_point(X_wp, projected_rel_p) - world_com_p
+        r_c = x_c - world_com_c
 
         # for loop will be unrolled, so we can modify local variables
         for dim in range(3):
@@ -2181,9 +2216,8 @@ def solve_body_contact_positions(
     bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
 
-    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = contact_normal[tid]
-    d = wp.dot(n, bx_b - bx_a) - thickness
+    d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
 
     if d >= 0.0:
         return
@@ -2264,8 +2298,8 @@ def solve_body_contact_positions(
     if mu > 0.0:
         # add on displacement from surface offsets, this ensures we include any rotational effects due to thickness from feature
         # need to use the current rotation to account for friction due to angular effects (e.g.: slipping contact)
-        bx_a += wp.transform_vector(X_wb_a, offset_a)
-        bx_b += wp.transform_vector(X_wb_b, offset_b)
+        bx_a = contact_surface_point(X_wb_a, contact_point0[tid], offset_a)
+        bx_b = contact_surface_point(X_wb_b, contact_point1[tid], offset_b)
 
         # update delta
         delta = bx_b - bx_a
@@ -2560,8 +2594,6 @@ def apply_rigid_restitution(
     contact_point1: wp.array[wp.vec3],
     contact_offset0: wp.array[wp.vec3],
     contact_offset1: wp.array[wp.vec3],
-    contact_thickness0: wp.array[float],
-    contact_thickness1: wp.array[float],
     contact_inv_weight: wp.array[float],
     gravity: wp.array[wp.vec3],
     dt: float,
@@ -2630,12 +2662,11 @@ def apply_rigid_restitution(
         com_b = body_com[body_b]
 
     # compute body position in world space
-    bx_a = wp.transform_point(X_wb_a_prev, contact_point0[tid] + contact_offset0[tid])
-    bx_b = wp.transform_point(X_wb_b_prev, contact_point1[tid] + contact_offset1[tid])
+    bx_a = contact_surface_point(X_wb_a_prev, contact_point0[tid], contact_offset0[tid])
+    bx_b = contact_surface_point(X_wb_b_prev, contact_point1[tid], contact_offset1[tid])
 
-    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = contact_normal[tid]
-    d = wp.dot(n, bx_b - bx_a) - thickness
+    d = wp.dot(n, bx_b - bx_a)
     if d >= 0.0:
         return
 
@@ -2646,7 +2677,7 @@ def apply_rigid_restitution(
     rxn_b = wp.vec3(0.0)
     if body_a >= 0:
         world_idx_a = body_world[body_a]
-        world_a_g = gravity[wp.max(world_idx_a, 0)]
+        world_a_g = gravity[world_idx_a]
         v_a = velocity_at_point(body_qd_prev[body_a], r_a) + world_a_g * dt
         v_a_new = velocity_at_point(body_qd[body_a], r_a)
         q_a = wp.transform_get_rotation(X_wb_a_prev)
@@ -2656,7 +2687,7 @@ def apply_rigid_restitution(
         inv_mass += inv_mass_a
     if body_b >= 0:
         world_idx_b = body_world[body_b]
-        world_b_g = gravity[wp.max(world_idx_b, 0)]
+        world_b_g = gravity[world_idx_b]
         v_b = velocity_at_point(body_qd_prev[body_b], r_b) + world_b_g * dt
         v_b_new = velocity_at_point(body_qd[body_b], r_b)
         q_b = wp.transform_get_rotation(X_wb_b_prev)

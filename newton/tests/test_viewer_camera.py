@@ -5,8 +5,11 @@ import math
 import unittest
 
 import numpy as np
+import warp as wp
 
+import newton
 from newton._src.viewer.camera import Camera
+from newton.viewer import ViewerGL
 
 
 def _as_np(value):
@@ -116,6 +119,95 @@ class TestViewerCameraOrbit(unittest.TestCase):
         camera.dolly(-0.5)
 
         self.assertGreater(camera.pivot_distance, distance_after_dolly_in)
+
+
+def _build_viewer_model(z: float, up_axis: newton.Axis = newton.Axis.Z) -> newton.Model:
+    builder = newton.ModelBuilder(up_axis=up_axis)
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+    )
+    builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5)
+    return builder.finalize()
+
+
+@unittest.skipUnless(wp.is_cuda_available(), "ViewerGL model-switch test requires CUDA")
+class TestViewerGLSetModelState(unittest.TestCase):
+    def test_set_model_preserves_camera_and_wind_for_same_up_axis(self):
+        model_a = _build_viewer_model(1.0)
+        model_b = _build_viewer_model(2.0)
+
+        try:
+            viewer = ViewerGL(headless=True)
+        except Exception as exc:
+            self.skipTest(f"ViewerGL not available: {exc}")
+            return
+
+        try:
+            viewer.set_model(model_a)
+            viewer.camera.near = 0.123
+            viewer.camera.far = 456.0
+            viewer.camera.fov = 33.0
+            viewer.camera.pos = viewer.camera._as_vec3((3.0, 4.0, 5.0))
+            viewer.camera.yaw = 37.0
+            viewer.camera.pitch = -12.0
+            viewer.camera.set_pivot((1.0, 2.0, 3.0))
+            viewer.wind.time = 2.5
+            viewer.wind.period = 9.0
+            viewer.wind.amplitude = 5.0
+            viewer.wind.frequency = 7.0
+            viewer.wind.direction = (0.0, 1.0, 0.0)
+
+            viewer.set_model(model_b)
+
+            self.assertAlmostEqual(viewer.camera.near, 0.123)
+            self.assertAlmostEqual(viewer.camera.far, 456.0)
+            self.assertAlmostEqual(viewer.camera.fov, 33.0)
+            _assert_vec_close(self, viewer.camera.pos, (3.0, 4.0, 5.0))
+            self.assertAlmostEqual(viewer.camera.yaw, 37.0)
+            self.assertAlmostEqual(viewer.camera.pitch, -12.0)
+            _assert_vec_close(self, viewer.camera.pivot, (1.0, 2.0, 3.0))
+            self.assertAlmostEqual(viewer.wind.time, 2.5)
+            self.assertAlmostEqual(viewer.wind.period, 9.0)
+            self.assertAlmostEqual(viewer.wind.amplitude, 5.0)
+            self.assertAlmostEqual(viewer.wind.frequency, 7.0)
+            _assert_vec_close(self, viewer.wind.direction, (0.0, 1.0, 0.0))
+        finally:
+            viewer.close()
+
+    def test_set_model_resets_camera_for_different_up_axis(self):
+        model_a = _build_viewer_model(1.0, up_axis=newton.Axis.Z)
+        model_b = _build_viewer_model(2.0, up_axis=newton.Axis.Y)
+
+        try:
+            viewer = ViewerGL(headless=True)
+        except Exception as exc:
+            self.skipTest(f"ViewerGL not available: {exc}")
+            return
+
+        try:
+            viewer.set_model(model_a)
+            viewer.camera.near = 0.123
+            viewer.camera.far = 456.0
+            viewer.camera.fov = 33.0
+            viewer.camera.pos = viewer.camera._as_vec3((3.0, 4.0, 5.0))
+            viewer.camera.yaw = 37.0
+            viewer.camera.pitch = -12.0
+            viewer.camera.set_pivot((1.0, 2.0, 3.0))
+            viewer.wind.amplitude = 5.0
+
+            viewer.set_model(model_b)
+
+            self.assertAlmostEqual(viewer.camera.near, 0.01)
+            self.assertAlmostEqual(viewer.camera.far, 1000.0)
+            self.assertAlmostEqual(viewer.camera.fov, 45.0)
+            _assert_vec_close(self, viewer.camera.pos, (0.0, 2.0, 10.0))
+            self.assertAlmostEqual(viewer.camera.yaw, -180.0)
+            self.assertAlmostEqual(viewer.camera.pitch, 0.0)
+            self.assertAlmostEqual(viewer.wind.amplitude, 5.0)
+        finally:
+            viewer.close()
 
 
 if __name__ == "__main__":

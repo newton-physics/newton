@@ -46,3 +46,13 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    has_attribute
    type_to_warp
    value_to_warp
+
+.. rubric:: Constants
+
+.. list-table::
+   :header-rows: 1
+
+   * - Name
+     - Value
+   * - ``DEFORMABLE_LEGACY_NAMESPACES``
+     - ``('omniphysics', 'physxDeformableBody')``

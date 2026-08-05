@@ -3,6 +3,8 @@
 
 """IMU Sensor - measures accelerations and angular velocities at sensor sites."""
 
+import re
+
 import warp as wp
 
 from ..geometry.flags import ShapeFlags
@@ -17,6 +19,7 @@ def compute_sensor_imu_kernel(
     body_world: wp.array[wp.int32],
     body_com: wp.array[wp.vec3],
     shape_body: wp.array[int],
+    shape_world: wp.array[wp.int32],
     shape_transform: wp.array[wp.transform],
     sensor_sites: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -38,12 +41,14 @@ def compute_sensor_imu_kernel(
     site_transform = shape_transform[site_idx]
 
     if body_idx < 0:
-        accelerometer[sensor_idx] = wp.quat_rotate_inv(site_transform.q, -gravity[0])
+        world_idx = shape_world[site_idx]
+        world_g = gravity[world_idx]
+        accelerometer[sensor_idx] = wp.quat_rotate_inv(site_transform.q, -world_g)
         gyroscope[sensor_idx] = wp.vec3(0.0)
         return
 
     world_idx = body_world[body_idx]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     body_acc = body_qdd[body_idx]
 
@@ -114,7 +119,7 @@ class SensorIMU:
     def __init__(
         self,
         model: Model,
-        sites: str | list[str] | list[int],
+        sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
         request_state_attributes: bool = True,
@@ -126,8 +131,9 @@ class SensorIMU:
 
         Args:
             model: The model to use.
-            sites: List of site indices, single pattern to match against site
-                labels, or list of patterns where any one matches.
+            sites: Glob pattern, list of glob patterns, compiled regular-expression
+                pattern to match against site labels, or list of site indices. Regular
+                expressions use full matching.
             verbose: If True, print details. If False, suppress details. If None, print details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.
@@ -188,6 +194,7 @@ class SensorIMU:
                 self.model.body_world,
                 self.model.body_com,
                 self.model.shape_body,
+                self.model.shape_world,
                 self.model.shape_transform,
                 self.sensor_sites_arr,
                 state.body_q,

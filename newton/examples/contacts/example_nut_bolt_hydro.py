@@ -10,6 +10,10 @@
 #
 ###########################################################################
 
+import argparse
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import trimesh
 import warp as wp
@@ -26,18 +30,50 @@ ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 
 SDF_MAX_RESOLUTION = 128
 SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
+# Persist cooked SDFs across runs so the (slow) cook only happens once.
+# Entries are content-addressed, so leftovers from older runs are harmless.
+MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
 
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     margin=0.0,
     mu=0.01,
-    ke=1e7,  # Contact stiffness for MuJoCo solver
-    kd=1e4,  # Contact damping
+    # Hydroelastic supplies the per-contact stiffness for the nut/bolt pair, so
+    # ``ke``/``kd`` reach only the non-hydroelastic contacts. At the 1e10 ``kh``
+    # default the thread contacts resolve over a ~95 ms solref time constant --
+    # roughly 45 substeps -- and the nut sits visibly cocked under MuJoCo. XPBD
+    # projects positions and is insensitive to this either way.
+    kh=1e11,  # Hydroelastic contact stiffness
+    ke=1e7,
+    kd=1e4,
     gap=0.005,
     density=8000.0,
     mu_torsional=0.0,
     mu_rolling=0.0,
     is_hydroelastic=True,
 )
+
+
+# Demonstrate the user-facing pressure-callback API for the hydroelastic
+# solver. The contact patch is defined as the iso-pressure surface
+# ``p_a == p_b``; users supply a Warp ``@wp.func`` that maps a signed depth
+# to a pressure value, plus a ``@wp.struct`` carrying any per-shape state it
+# needs. The callback must be finite for any signed depth (positive or
+# negative) and monotone non-increasing in ``signed_depth`` so the marching-
+# cubes interpolation stays continuous across the patch boundary. Do not clip
+# the non-contact side to zero pressure; with different shape stiffnesses, the
+# iso-pressure surface can pass through that thin outside region.
+#
+# Here we re-implement the default linear law ``pressure = -kh * signed_depth``
+# explicitly so the example exercises the user pathway. Nonlinear laws should
+# similarly extend into ``signed_depth >= 0`` instead of flattening there.
+@wp.struct
+class LinearPressureData:
+    shape_kh: wp.array[wp.float32]
+
+
+@wp.func
+def linear_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: LinearPressureData) -> wp.float32:
+    return -data.shape_kh[shape_idx] * signed_depth
 
 
 def add_mesh_object(
@@ -107,12 +143,14 @@ def load_mesh_with_sdf(
         narrow_band_range=SDF_NARROW_BAND_RANGE,
         margin=shape_cfg.gap if shape_cfg and shape_cfg.gap is not None else 0.005,
         scale=(scale, scale, scale),
+        cache_dir=MESH_SDF_CACHE_DIR,
     )
     return mesh, center_vec
 
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -124,6 +162,8 @@ class Example:
         self.viewer = viewer
         self.solver_type = args.solver
         self.test_mode = args.test
+        self.deterministic = args.deterministic
+        self.deterministic_solver = args.deterministic_solver
 
         # XPBD contact correction (0.0 = no correction, 1.0 = full correction)
         self.xpbd_contact_relaxation = 0.8
@@ -139,9 +179,14 @@ class Example:
         self.grid_x = int(np.ceil(np.sqrt(self.num_per_world)))
         self.grid_y = int(np.ceil(self.num_per_world / self.grid_x))
 
+        # Contact budget per world. MuJoCo's njmax/nconmax are per-world limits
+        # while CollisionPipeline's rigid_contact_max covers every world, so both
+        # derive from this rather than from a fixed whole-scene pool. A threading
+        # assembly peaks near 115 contacts, so this leaves ~9x headroom.
+        self.contacts_per_world = 1024 * self.num_per_world
+
         # Maximum number of rigid contacts to allocate (limits memory usage)
-        # None = auto-calculate (can be very large), or set explicit limit (e.g., 1_000_000)
-        self.rigid_contact_max = 40_000
+        self.rigid_contact_max = self.contacts_per_world * self.world_count
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
         self.broad_phase_mode = "sap"
@@ -163,10 +208,16 @@ class Example:
 
         self.model = main_scene.finalize()
 
-        # Disable the marching-cubes edge clamp — threading dynamics on the
-        # M20 helix are sensitive to the contact-surface vertex bias the clamp
-        # introduces.
+        # Configure the hydroelastic pipeline with our custom (still linear)
+        # pressure callback. ``shape_kh`` reuses the per-shape stiffness already
+        # stored on the model. Disable the marching-cubes edge clamp because
+        # threading dynamics on the M20 helix are sensitive to the contact-
+        # surface vertex bias the clamp introduces.
+        pressure_data = LinearPressureData()
+        pressure_data.shape_kh = self.model.shape_material_kh
         sdf_hydroelastic_config = HydroelasticSDF.Config(
+            pressure_func=linear_pressure,
+            pressure_data=pressure_data,
             mc_edge_clamp_min=0.0,
         )
 
@@ -176,6 +227,7 @@ class Example:
             rigid_contact_max=self.rigid_contact_max,
             broad_phase=self.broad_phase_mode,
             sdf_hydroelastic_config=sdf_hydroelastic_config,
+            deterministic=self.deterministic,
         )
 
         # Create solver based on user choice
@@ -184,20 +236,28 @@ class Example:
                 self.model,
                 iterations=10,
                 rigid_contact_relaxation=self.xpbd_contact_relaxation,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN
+                if self.deterministic_solver
+                else wp.DeterministicMode.NOT_GUARANTEED,
             )
         elif self.solver_type == "mujoco":
-            num_per_world = self.rigid_contact_max // self.world_count
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_contacts=False,
+                # The scene defines no sensors, and MuJoCo's tactile sensor kernel
+                # mixes max/add reductions, which deterministic mode rejects.
+                disable_sensors=True,
                 solver="newton",
                 integrator="implicitfast",
                 cone="elliptic",
-                njmax=num_per_world,
-                nconmax=num_per_world,
+                njmax=self.contacts_per_world,
+                nconmax=self.contacts_per_world,
                 iterations=15,
                 ls_iterations=100,
                 impratio=1.0,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN
+                if self.deterministic_solver
+                else wp.DeterministicMode.NOT_GUARANTEED,
             )
         else:
             raise ValueError(f"Unknown solver '{self.solver_type}'")
@@ -286,12 +346,9 @@ class Example:
         return world_builder
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for sub in range(self.sim_substeps):
@@ -396,8 +453,10 @@ class Example:
                 f"Displacement={displacement:.4f} (max allowed={max_bolt_displacement:.4f})"
             )
 
-        # Check nuts rotated and moved down
-        min_rotation_threshold = 0.1  # At least ~5.7 degrees of rotation
+        # The 45 degree threshold catches stalled thread engagement while
+        # allowing observed solver/contact-count variation.
+        min_rotation_threshold = np.radians(45.0)
+        min_descent = 0.005
         for i in range(len(self.nut_body_indices)):
             # Check rotation occurred
             max_rotation = self.nut_max_rotation_change[i]
@@ -410,8 +469,9 @@ class Example:
             # Check nut moved downward (min_z should be less than initial z)
             initial_z = self.nut_initial_transforms[i][2]
             min_z = self.nut_min_z[i]
-            assert min_z < initial_z, (
-                f"Nut {i}: did not move downward. Initial z={initial_z:.4f}, min z reached={min_z:.4f}"
+            descent = initial_z - min_z
+            assert descent > min_descent, (
+                f"Nut {i}: did not move down enough. Descent={descent:.4f} (expected > {min_descent:.4f})"
             )
 
     @staticmethod
@@ -419,6 +479,26 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=20)
+        parser.add_argument(
+            "--deterministic",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Make contact generation and ordering reproducible across runs on the same GPU. "
+                "Costs a few percent of step time. Needs a world count small enough to keep the "
+                "hydroelastic face-contact buffer under the 2^20 deterministic contact-id limit."
+            ),
+        )
+        parser.add_argument(
+            "--deterministic-solver",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Additionally make the solver bit-exact. Separate from --deterministic because "
+                "it instruments every atomic scatter in the solver and costs ~7x step time, "
+                "while contact ordering is what varies between runs."
+            ),
+        )
         parser.add_argument(
             "--solver",
             type=str,

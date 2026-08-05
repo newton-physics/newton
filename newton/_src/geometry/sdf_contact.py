@@ -15,7 +15,33 @@ from ..geometry.sdf_texture import (
 )
 from ..geometry.types import GeoType
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield, sample_sdf_heightfield
-from .contact_reduction_global import GlobalContactReducerData, export_and_reduce_contact_centered
+from .contact_reduction_global import (
+    GlobalContactReducerData,
+    export_and_reduce_contact_centered_two_spatial_depths,
+)
+from .flags import MeshSignMethod
+from .kernels import mesh_query_point_sign, resolve_mesh_sign_method
+
+# Upper bound (mesh-local units) on the closest-point search for the mesh sign
+# queries below. It is not a physical contact range: culling uses the tight
+# ``_SDF_QUERY_RADIUS_SLACK * threshold`` bounds, and these queries only run at
+# points the narrow phase already placed near the surface, so the bound is
+# never binding. The queries operate in mesh-local coordinates (per-shape scale
+# is divided out), so there is no global unit to tie it to; 1e11 is effectively
+# unbounded for any asset under any unit convention (~8x Earth's diameter in
+# millimeters). Going much larger is unsafe: Warp's mesh queries square
+# ``max_dist`` internally, and the no-hit branches return it as a sentinel that
+# contact math multiplies by per-shape scale (budgeted up to 1e6 for extreme
+# unit conversions): (1e11 * 1e6)^2 = 1e34 clears float32 max (~3.4e38) by
+# four orders of magnitude, where values near sqrt(FLT_MAX) ~ 1.8e19 would
+# overflow. Kept finite (rather than ``wp.inf``) for the same reason.
+_MESH_QUERY_MAX_DIST = 1.0e11
+
+# Search-radius slack over the narrow-band culling threshold for midpoint SDF
+# queries. Slightly exceeding the threshold guarantees points right at the
+# threshold are classified by a real closest-point query instead of falling
+# into the no-hit sentinel branch.
+_SDF_QUERY_RADIUS_SLACK = 1.01
 
 # Launch-side block size for the mesh-SDF narrow-phase kernels. Must match
 # the ``block_dim`` used in ``wp.launch_tiled`` for
@@ -38,19 +64,44 @@ MESH_SDF_BLOCK_DIM = 256
 STACK_CAPACITY = 2 * MESH_SDF_BLOCK_DIM
 
 
-@wp.struct
-class EdgeCullResult:
-    """Packed result from the mesh-SDF midphase edge-culling pass.
+@wp.func
+def mesh_sdf_contact_search_precision(
+    inner_contact_threshold: float,
+    min_sdf_scale: float,
+    voxel_radius: float,
+    use_texture_sdf: bool,
+) -> float:
+    """Return SDF edge-search precision without letting contact gap loosen it."""
+    search_precision = inner_contact_threshold / min_sdf_scale
+    if use_texture_sdf:
+        search_precision = wp.min(search_precision, voxel_radius)
+    return search_precision
 
-    Stores the edge index together with the midpoint SDF value computed
-    during culling, so a single cooperative stack can carry both values
-    atomically. Splitting them across two separate stacks would break
-    the pairing because ``wp.tile_stack_pop`` races for slots
-    independently on each stack.
-    """
 
-    edge_idx: int
-    midpoint_sdf: float
+@wp.func
+def mesh_sdf_contact_passes_inner_cull_consistency(
+    distance_world: float,
+    inner_contact_threshold: float,
+    midpoint_sdf: float,
+    bsphere_center: wp.vec3,
+    bsphere_radius: float,
+    sdf_aabb_lower: wp.vec3,
+    sdf_aabb_upper: wp.vec3,
+    min_sdf_scale: float,
+    use_texture_bounds: bool,
+) -> bool:
+    """Reject gap-found penetrations that fail the inner edge cull."""
+    if distance_world >= inner_contact_threshold:
+        return True
+
+    inner_threshold_unscaled = inner_contact_threshold / min_sdf_scale
+    culling_radius = bsphere_radius + inner_threshold_unscaled
+    if use_texture_bounds:
+        clamped = wp.min(wp.max(bsphere_center, sdf_aabb_lower), sdf_aabb_upper)
+        if wp.length_sq(bsphere_center - clamped) > culling_radius * culling_radius:
+            return False
+
+    return midpoint_sdf <= culling_radius
 
 
 @wp.func
@@ -70,6 +121,21 @@ def safe_sdf_scale_inverse(sdf_scale: wp.vec3) -> tuple[wp.vec3, float]:
     inv = wp.vec3(1.0 / sx, 1.0 / sy, 1.0 / sz)
     min_abs = wp.min(wp.min(wp.abs(sx), wp.abs(sy)), wp.abs(sz))
     return inv, min_abs
+
+
+@wp.struct
+class EdgeCullResult:
+    """Packed result from the mesh-SDF midphase edge-culling pass.
+
+    Stores the edge index together with the midpoint SDF value computed
+    during culling, so a single cooperative stack can carry both values
+    atomically. Splitting them across two separate stacks would break
+    the pairing because ``wp.tile_stack_pop`` races for slots
+    independently on each stack.
+    """
+
+    edge_idx: int
+    midpoint_sdf: float
 
 
 @wp.func
@@ -111,24 +177,26 @@ def scale_sdf_result_to_world(
 def sample_sdf_using_mesh(
     mesh_id: wp.uint64,
     world_pos: wp.vec3,
-    max_dist: float = 1000.0,
+    max_dist: float = _MESH_QUERY_MAX_DIST,
+    sign_method: int = MeshSignMethod.NORMAL,
 ) -> float:
     """
     Sample signed distance to mesh surface using mesh query.
 
-    Uses wp.mesh_query_point_sign_parity to find the closest point on the mesh
-    and compute the signed distance. This is compatible with the return type of
+    Uses a mesh sign query to find the closest point on the mesh and compute
+    the signed distance. This is compatible with the return type of
     sample_sdf_extrapolated.
 
     Args:
         mesh_id: The mesh ID (from wp.Mesh.id)
         world_pos: Query position in mesh local coordinates
         max_dist: Maximum distance to search for closest point
+        sign_method: Method used to determine the mesh query sign.
 
     Returns:
         The signed distance value (negative inside, positive outside)
     """
-    res = wp.mesh_query_point_sign_parity(mesh_id, world_pos, max_dist)
+    res = mesh_query_point_sign(mesh_id, world_pos, max_dist, sign_method)
 
     if res.result:
         closest = wp.mesh_eval_position(mesh_id, res.face, res.u, res.v)
@@ -141,14 +209,15 @@ def sample_sdf_using_mesh(
 def sample_sdf_grad_using_mesh(
     mesh_id: wp.uint64,
     world_pos: wp.vec3,
-    max_dist: float = 1000.0,
+    max_dist: float = _MESH_QUERY_MAX_DIST,
+    sign_method: int = MeshSignMethod.NORMAL,
 ) -> tuple[float, wp.vec3]:
     """
     Sample signed distance and gradient to mesh surface using mesh query.
 
-    Uses wp.mesh_query_point_sign_parity to find the closest point on the mesh
-    and compute both the signed distance and the gradient direction. This is
-    compatible with the return type of sample_sdf_grad_extrapolated.
+    Uses a mesh sign query to find the closest point on the mesh and compute
+    both the signed distance and the gradient direction. This is compatible
+    with the return type of sample_sdf_grad_extrapolated.
 
     The gradient points in the direction of increasing distance (away from the surface
     when outside, toward the surface when inside).
@@ -157,6 +226,7 @@ def sample_sdf_grad_using_mesh(
         mesh_id: The mesh ID (from wp.Mesh.id)
         world_pos: Query position in mesh local coordinates
         max_dist: Maximum distance to search for closest point
+        sign_method: Method used to determine the mesh query sign.
 
     Returns:
         Tuple of (distance, gradient) where:
@@ -165,7 +235,7 @@ def sample_sdf_grad_using_mesh(
     """
     gradient = wp.vec3(0.0, 0.0, 0.0)
 
-    res = wp.mesh_query_point_sign_parity(mesh_id, world_pos, max_dist)
+    res = mesh_query_point_sign(mesh_id, world_pos, max_dist, sign_method)
 
     if res.result:
         closest = wp.mesh_eval_position(mesh_id, res.face, res.u, res.v)
@@ -179,7 +249,6 @@ def sample_sdf_grad_using_mesh(
             gradient = (diff / dist) * res.sign
         else:
             # Point is exactly on surface - use face normal
-            # Get the face normal from the mesh
             mesh = wp.mesh_get(mesh_id)
             i0 = mesh.indices[res.face * 3 + 0]
             i1 = mesh.indices[res.face * 3 + 1]
@@ -519,6 +588,7 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
         edge_dir: wp.vec3,
         tt: float,
         use_bvh_for_sdf: bool,
+        sdf_mesh_query_type: int,
         sdf_is_heightfield: bool,
         hfd_sdf: HeightfieldData,
         elevation_data: wp.array[wp.float32],
@@ -529,12 +599,12 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
             if sdf_is_heightfield:
                 return sample_sdf_heightfield(hfd_sdf, elevation_data, pp)
             elif use_bvh_for_sdf:
-                return sample_sdf_using_mesh(sdf_mesh_id, pp)
+                return sample_sdf_using_mesh(sdf_mesh_id, pp, _MESH_QUERY_MAX_DIST, sdf_mesh_query_type)
             else:
                 return texture_sample_sdf(texture_sdf, pp)
         else:
             if use_bvh_for_sdf:
-                return sample_sdf_using_mesh(sdf_mesh_id, pp)
+                return sample_sdf_using_mesh(sdf_mesh_id, pp, _MESH_QUERY_MAX_DIST, sdf_mesh_query_type)
             else:
                 return texture_sample_sdf(texture_sdf, pp)
 
@@ -546,16 +616,25 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
         v1: wp.vec3,
         midpoint_sdf: float,
         use_bvh_for_sdf: bool,
+        sdf_mesh_query_type: int,
         sdf_is_heightfield: bool,
         hfd_sdf: HeightfieldData,
         elevation_data: wp.array[wp.float32],
+        precision_target: float,
     ) -> tuple[float, wp.vec3]:
         """Find the deepest point on an edge relative to an SDF volume.
 
-        Uses Brent's method (5 iterations) to minimize the SDF value along the
-        edge parameterized as ``p(t) = v0 + t * edge_dir`` for t in [0, 1].
-        The initial midpoint SDF value is provided by the caller (cached from
-        culling) to avoid a redundant evaluation.
+        Uses Brent's method (up to 5 iterations) to minimize the SDF value
+        along the edge parameterized as ``p(t) = v0 + t * edge_dir`` for
+        t in [0, 1]. The initial midpoint SDF value is provided by the
+        caller (cached from culling) to avoid a redundant evaluation.
+
+        ``precision_target`` is the unscaled SDF space precision the caller
+        cares about. Brent's tolerance floor is set
+        to ``precision_target / edge_length / 2`` in parametric space so
+        edges much shorter than the target precision exit Brent in 0
+        iters (the midpoint is already accurate enough). Long edges still
+        run the full 5 iters to converge.
 
         After the interior search, evaluates the more promising endpoint
         (the one closer to the unconverged bracket boundary) so that vertex
@@ -566,6 +645,13 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
         """
         golden = 0.3819660112501051  # (3 - sqrt(5)) / 2
         edge_dir = v1 - v0
+        edge_length = wp.length(edge_dir)
+
+        # Parametric tolerance floor: skip Brent for edges where the
+        # midpoint already meets ``precision_target``. ``+ 1e-12`` keeps
+        # zero-length edges from dividing by zero (they trivially meet
+        # any positive precision).
+        tol_floor = 0.5 * precision_target / (edge_length + 1.0e-12)
 
         # Initialize Brent's method at the midpoint (SDF value from culling)
         a = float(0.0)
@@ -581,7 +667,7 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
 
         for _iter in range(5):
             m = 0.5 * (a + b)
-            tol = 1.0e-2 * wp.abs(x) + 1.0e-8
+            tol = wp.max(1.0e-2 * wp.abs(x) + 1.0e-8, tol_floor)
             tol2 = 2.0 * tol
 
             if wp.abs(x - m) <= tol2 - 0.5 * (b - a):
@@ -636,6 +722,7 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
                 edge_dir,
                 u,
                 use_bvh_for_sdf,
+                sdf_mesh_query_type,
                 sdf_is_heightfield,
                 hfd_sdf,
                 elevation_data,
@@ -667,27 +754,42 @@ def _create_sdf_contact_funcs(enable_heightfields: bool):
                     v_brent = u
                     fv = fu
 
-        # Check the closer endpoint only when Brent converged near a
-        # boundary (x < 0.2 or x > 0.8).  When solidly interior the
-        # bracket has moved both boundaries inward, so the endpoint
-        # cannot beat the interior minimum.
+        # Check endpoints only while Brent's bracket still includes them.
+        # Once a bound has moved inward, Brent has already excluded that
+        # endpoint from containing the minimum.
         best_t = x
         best_f = fx
-        if x < 0.2 or x > 0.8:
-            check_t = 0.0 if x < 0.5 else 1.0
+        if a == 0.0:
             f_end = _sample_sdf_at_t(
                 texture_sdf,
                 sdf_mesh_id,
                 v0,
                 edge_dir,
-                check_t,
+                0.0,
                 use_bvh_for_sdf,
+                sdf_mesh_query_type,
                 sdf_is_heightfield,
                 hfd_sdf,
                 elevation_data,
             )
             if f_end < best_f:
-                best_t = check_t
+                best_t = 0.0
+                best_f = f_end
+        if b == 1.0:
+            f_end = _sample_sdf_at_t(
+                texture_sdf,
+                sdf_mesh_id,
+                v0,
+                edge_dir,
+                1.0,
+                use_bvh_for_sdf,
+                sdf_mesh_query_type,
+                sdf_is_heightfield,
+                hfd_sdf,
+                elevation_data,
+            )
+            if f_end < best_f:
+                best_t = 1.0
                 best_f = f_end
 
         p = v0 + edge_dir * best_t
@@ -849,6 +951,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_source: wp.array[wp.uint64],
         texture_sdf_table: wp.array[TextureSDFData],
         shape_sdf_index: wp.array[wp.int32],
+        shape_mesh_properties: wp.array[wp.int32],
         shape_gap: wp.array[float],
         _shape_collision_aabb_lower: wp.array[wp.vec3],
         _shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -902,10 +1005,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 mesh_id_tri = shape_source[tri_shape]
                 mesh_id_sdf = shape_source[sdf_shape]
 
-                # Skip invalid sources (heightfields use HeightfieldData instead of mesh id)
+                # Edge carriers need a mesh source unless they are heightfields.
                 if not tri_is_hfield and mesh_id_tri == wp.uint64(0):
-                    continue
-                if not sdf_is_hfield and mesh_id_sdf == wp.uint64(0):
                     continue
 
                 hfd_tri = HeightfieldData()
@@ -915,6 +1016,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         hfd_tri = heightfield_data[shape_heightfield_index[tri_shape]]
                     if sdf_is_hfield:
                         hfd_sdf = heightfield_data[shape_heightfield_index[sdf_shape]]
+                sdf_mesh_query_type = resolve_mesh_sign_method(shape_mesh_properties[sdf_shape])
 
                 # SDF availability: heightfields always use on-the-fly evaluation
                 use_bvh_for_sdf = False
@@ -923,6 +1025,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     use_bvh_for_sdf = sdf_idx < 0 or sdf_idx >= texture_sdf_table.shape[0]
                     if not use_bvh_for_sdf:
                         use_bvh_for_sdf = texture_sdf_table[sdf_idx].coarse_texture.width == 0
+                    if use_bvh_for_sdf and mesh_id_sdf == wp.uint64(0):
+                        continue
 
                 scale_data_tri = shape_data[tri_shape]
                 scale_data_sdf = shape_data[sdf_shape]
@@ -955,6 +1059,21 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                 contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
+                use_texture_sdf_for_search = False
+                texture_voxel_radius = float(0.0)
+                if wp.static(enable_heightfields):
+                    if not sdf_is_hfield and not use_bvh_for_sdf:
+                        use_texture_sdf_for_search = True
+                        texture_voxel_radius = texture_sdf.voxel_radius
+                elif not use_bvh_for_sdf:
+                    use_texture_sdf_for_search = True
+                    texture_voxel_radius = texture_sdf.voxel_radius
+                search_precision_unscaled = mesh_sdf_contact_search_precision(
+                    triangle_mesh_margin + sdf_mesh_margin,
+                    min_sdf_scale,
+                    texture_voxel_radius,
+                    use_texture_sdf_for_search,
+                )
 
                 edge_range_tri = shape_edge_range[tri_shape]
                 num_edges = get_edge_count(tri_type, edge_range_tri, hfd_tri)
@@ -1025,7 +1144,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 midpoint_sdf = sample_sdf_heightfield(hfd_sdf, heightfield_elevations, bsphere_center)
                                 add_edge = midpoint_sdf <= threshold
                             elif use_bvh_for_sdf:
-                                midpoint_sdf = sample_sdf_using_mesh(mesh_id_sdf, bsphere_center, 1.01 * threshold)
+                                midpoint_sdf = sample_sdf_using_mesh(
+                                    mesh_id_sdf,
+                                    bsphere_center,
+                                    _SDF_QUERY_RADIUS_SLACK * threshold,
+                                    sdf_mesh_query_type,
+                                )
                                 add_edge = midpoint_sdf <= threshold
                             else:
                                 culling_radius = threshold
@@ -1095,14 +1219,33 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 v1,
                                 cached_sdf_val,
                                 use_bvh_for_sdf,
+                                sdf_mesh_query_type,
                                 sdf_is_hfield,
                                 hfd_sdf,
                                 heightfield_elevations,
+                                search_precision_unscaled,
                             )
 
-                            # Quick threshold check before computing the gradient
+                            # Gap may widen the edge cull enough to find
+                            # SDF minima that the inner contact shell would
+                            # not have considered. Those rows are useful as
+                            # separated detections, but an alleged inner
+                            # contact must still pass the inner cull implied
+                            # by a 1-Lipschitz signed distance field.
                             dist_approx = dist_unscaled * min_sdf_scale
-                            if dist_approx < contact_threshold:
+                            bsphere_center_inner, bsphere_radius_inner = get_edge_bounding_sphere(v0, v1)
+                            inner_cull_consistent = mesh_sdf_contact_passes_inner_cull_consistency(
+                                dist_approx,
+                                triangle_mesh_margin + sdf_mesh_margin,
+                                cached_sdf_val,
+                                bsphere_center_inner,
+                                bsphere_radius_inner,
+                                sdf_aabb_lower,
+                                sdf_aabb_upper,
+                                min_sdf_scale,
+                                use_texture_sdf_for_search,
+                            )
+                            if dist_approx < contact_threshold and inner_cull_consistent:
                                 if wp.static(enable_heightfields):
                                     if sdf_is_hfield:
                                         dist_unscaled, direction_unscaled = sample_sdf_grad_heightfield(
@@ -1110,7 +1253,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         )
                                     elif use_bvh_for_sdf:
                                         dist_unscaled, direction_unscaled = sample_sdf_grad_using_mesh(
-                                            mesh_id_sdf, point_unscaled
+                                            mesh_id_sdf,
+                                            point_unscaled,
+                                            _MESH_QUERY_MAX_DIST,
+                                            sdf_mesh_query_type,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1123,7 +1269,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 else:
                                     if use_bvh_for_sdf:
                                         dist_unscaled, direction_unscaled = sample_sdf_grad_using_mesh(
-                                            mesh_id_sdf, point_unscaled
+                                            mesh_id_sdf,
+                                            point_unscaled,
+                                            _MESH_QUERY_MAX_DIST,
+                                            sdf_mesh_query_type,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1153,6 +1302,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         direction_world = wp.vec3(0.0, 1.0, 0.0)
 
                                 contact_normal = -direction_world if mode == 0 else direction_world
+                                triangle_mesh_margin = shape_data[pair[0]][3]
+                                sdf_mesh_margin = shape_data[pair[1]][3]
 
                                 contact_data = ContactData()
                                 contact_data.contact_point_center = point_world
@@ -1160,8 +1311,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 contact_data.contact_distance = dist
                                 contact_data.radius_eff_a = 0.0
                                 contact_data.radius_eff_b = 0.0
-                                contact_data.margin_a = shape_data[pair[0]][3]
-                                contact_data.margin_b = shape_data[pair[1]][3]
+                                contact_data.margin_a = triangle_mesh_margin
+                                contact_data.margin_b = sdf_mesh_margin
                                 contact_data.shape_a = pair[0]
                                 contact_data.shape_b = pair[1]
                                 contact_data.gap_sum = gap_sum
@@ -1196,6 +1347,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_source: wp.array[wp.uint64],
         texture_sdf_table: wp.array[TextureSDFData],
         shape_sdf_index: wp.array[wp.int32],
+        shape_mesh_properties: wp.array[wp.int32],
         shape_gap: wp.array[float],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -1272,8 +1424,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                 if not tri_is_hfield and mesh_id_tri == wp.uint64(0):
                     continue
-                if not sdf_is_hfield and mesh_id_sdf == wp.uint64(0):
-                    continue
 
                 hfd_tri = HeightfieldData()
                 hfd_sdf = HeightfieldData()
@@ -1282,6 +1432,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         hfd_tri = heightfield_data[shape_heightfield_index[tri_shape]]
                     if sdf_is_hfield:
                         hfd_sdf = heightfield_data[shape_heightfield_index[sdf_shape]]
+                sdf_mesh_query_type = resolve_mesh_sign_method(shape_mesh_properties[sdf_shape])
 
                 use_bvh_for_sdf = False
                 if not sdf_is_hfield:
@@ -1289,6 +1440,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     use_bvh_for_sdf = sdf_idx < 0 or sdf_idx >= texture_sdf_table.shape[0]
                     if not use_bvh_for_sdf:
                         use_bvh_for_sdf = texture_sdf_table[sdf_idx].coarse_texture.width == 0
+                    if use_bvh_for_sdf and mesh_id_sdf == wp.uint64(0):
+                        continue
 
                 scale_data_tri = shape_data[tri_shape]
                 scale_data_sdf = shape_data[sdf_shape]
@@ -1324,6 +1477,21 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                 contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
+                use_texture_sdf_for_search = False
+                texture_voxel_radius = float(0.0)
+                if wp.static(enable_heightfields):
+                    if not sdf_is_hfield and not use_bvh_for_sdf:
+                        use_texture_sdf_for_search = True
+                        texture_voxel_radius = texture_sdf.voxel_radius
+                elif not use_bvh_for_sdf:
+                    use_texture_sdf_for_search = True
+                    texture_voxel_radius = texture_sdf.voxel_radius
+                search_precision_unscaled = mesh_sdf_contact_search_precision(
+                    triangle_mesh_margin + sdf_mesh_margin,
+                    min_sdf_scale,
+                    texture_voxel_radius,
+                    use_texture_sdf_for_search,
+                )
 
                 edge_range_tri = shape_edge_range[tri_shape]
                 num_edges = get_edge_count(tri_type, edge_range_tri, hfd_tri)
@@ -1384,7 +1552,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 midpoint_sdf = sample_sdf_heightfield(hfd_sdf, heightfield_elevations, bsphere_center)
                                 add_edge = midpoint_sdf <= threshold
                             elif use_bvh_for_sdf:
-                                midpoint_sdf = sample_sdf_using_mesh(mesh_id_sdf, bsphere_center, 1.01 * threshold)
+                                midpoint_sdf = sample_sdf_using_mesh(
+                                    mesh_id_sdf,
+                                    bsphere_center,
+                                    _SDF_QUERY_RADIUS_SLACK * threshold,
+                                    sdf_mesh_query_type,
+                                )
                                 add_edge = midpoint_sdf <= threshold
                             else:
                                 culling_radius = threshold
@@ -1451,14 +1624,33 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 v1,
                                 cached_sdf_val,
                                 use_bvh_for_sdf,
+                                sdf_mesh_query_type,
                                 sdf_is_hfield,
                                 hfd_sdf,
                                 heightfield_elevations,
+                                search_precision_unscaled,
                             )
 
-                            # Quick threshold check before computing the gradient
+                            # Gap may widen the edge cull enough to find
+                            # SDF minima that the inner contact shell would
+                            # not have considered. Those rows are useful as
+                            # separated detections, but an alleged inner
+                            # contact must still pass the inner cull implied
+                            # by a 1-Lipschitz signed distance field.
                             dist_approx = dist_unscaled * min_sdf_scale
-                            if dist_approx < contact_threshold:
+                            bsphere_center_inner, bsphere_radius_inner = get_edge_bounding_sphere(v0, v1)
+                            inner_cull_consistent = mesh_sdf_contact_passes_inner_cull_consistency(
+                                dist_approx,
+                                triangle_mesh_margin + sdf_mesh_margin,
+                                cached_sdf_val,
+                                bsphere_center_inner,
+                                bsphere_radius_inner,
+                                sdf_aabb_lower,
+                                sdf_aabb_upper,
+                                min_sdf_scale,
+                                use_texture_sdf_for_search,
+                            )
+                            if dist_approx < contact_threshold and inner_cull_consistent:
                                 if wp.static(enable_heightfields):
                                     if sdf_is_hfield:
                                         dist_unscaled, direction_unscaled = sample_sdf_grad_heightfield(
@@ -1466,7 +1658,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         )
                                     elif use_bvh_for_sdf:
                                         dist_unscaled, direction_unscaled = sample_sdf_grad_using_mesh(
-                                            mesh_id_sdf, point_unscaled
+                                            mesh_id_sdf,
+                                            point_unscaled,
+                                            _MESH_QUERY_MAX_DIST,
+                                            sdf_mesh_query_type,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1479,7 +1674,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 else:
                                     if use_bvh_for_sdf:
                                         dist_unscaled, direction_unscaled = sample_sdf_grad_using_mesh(
-                                            mesh_id_sdf, point_unscaled
+                                            mesh_id_sdf,
+                                            point_unscaled,
+                                            _MESH_QUERY_MAX_DIST,
+                                            sdf_mesh_query_type,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1509,8 +1707,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         direction_world = wp.vec3(0.0, 1.0, 0.0)
 
                                 contact_normal = -direction_world if mode == 0 else direction_world
-
-                                export_and_reduce_contact_centered(
+                                margin_sum = triangle_mesh_margin + sdf_mesh_margin
+                                inner_spatial_depth = margin_sum
+                                if use_texture_sdf_for_search:
+                                    inner_spatial_depth += wp.min(texture_voxel_radius * min_sdf_scale, gap_sum)
+                                export_and_reduce_contact_centered_two_spatial_depths(
                                     pair[0],
                                     pair[1],
                                     point_world,
@@ -1518,6 +1719,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     dist,
                                     (my_edge_idx << 2) | (mode << 1),
                                     point_world - midpoint,
+                                    inner_spatial_depth,
+                                    margin_sum + gap_sum,
                                     X_ws_tri,
                                     aabb_lower_tri,
                                     aabb_upper_tri,

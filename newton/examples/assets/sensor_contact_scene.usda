@@ -19,9 +19,8 @@ def DistantLight "DistantLight" (
     color3f inputs:shaping:focusTint
     asset inputs:shaping:ies:file
     double3 xformOp:rotateXYZ = (45, 0, 90)
-    double3 xformOp:scale = (1, 1, 1)
     double3 xformOp:translate = (0, 0, 0)
-    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
 }
 
 def Xform "env" (
@@ -29,13 +28,11 @@ def Xform "env" (
 {
     def Xform "Anchor"
     (
-        prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysicsRigidBodyAPI"]
     )
     {
-        double3 xformOp:rotateXYZ = (0, 0, 0)
-        double3 xformOp:scale = (1, 1, 1)
         double3 xformOp:translate = (0, 0, 0.01)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+        uniform token[] xformOpOrder = ["xformOp:translate"]
 
     }
 
@@ -43,10 +40,11 @@ def Xform "env" (
         prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
     )
     {
-        double3 xformOp:rotateXYZ = (0, 0, 0)
-        double3 xformOp:scale = (0.4, 0.4, 0.04)
+        double size = 0.8
+        float3[] extent = [(-0.4, -0.4, -0.4), (0.4, 0.4, 0.4)]
+        double3 xformOp:scale = (1, 1, 0.1)
         double3 xformOp:translate = (0, 0, 1.96)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
     }
 
     def PhysicsRevoluteJoint "Hinge" (
@@ -61,8 +59,8 @@ def Xform "env" (
         uniform token physics:axis = "X"
         rel physics:body0 = </env/Anchor>
         rel physics:body1 = </env/Flap>
-        point3f physics:localPos0 = (0, 0.4, 2)
-        point3f physics:localPos1 = (0, 1.0, 1)
+        point3f physics:localPos0 = (0, 0.4, 1.99)
+        point3f physics:localPos1 = (0, 0.4, 0.4)
     }
 
     def PhysicsFixedJoint "AnchorJoint" {
@@ -75,13 +73,12 @@ def Xform "env" (
         prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsCollisionAPI"]
     )
     {
-        double3 xformOp:rotateXYZ = (0, 0, 0)
-        double3 xformOp:scale = (0.1, 0.1, 0.1)
-        #double3 xformOp:scale = (0.1, 0.1, 0.1)
+        double size = 0.2
+        float3[] extent = [(-0.1, -0.1, -0.1), (0.1, 0.1, 0.1)]
         double3 xformOp:translate = (-0.15, 0, 2.1)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+        uniform token[] xformOpOrder = ["xformOp:translate"]
 
-        float physics:density = 1
+        float physics:density = 1000
 
     }
 
@@ -89,21 +86,22 @@ def Xform "env" (
         prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsCollisionAPI"]
     )
     {
-        #double radius = 0.1
-        double3 xformOp:rotateXYZ = (0, 0, 0)
-        double3 xformOp:scale = (0.1, 0.1, 0.1)
+        double radius = 0.1
+        float3[] extent = [(-0.1, -0.1, -0.1), (0.1, 0.1, 0.1)]
         double3 xformOp:translate = (0.15, 0, 2.1)
-        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+        uniform token[] xformOpOrder = ["xformOp:translate"]
 
-        float physics:density = 1
+        float physics:density = 1000
     }
 
     def Cube "Plate1" (
         prepend apiSchemas = ["PhysicsCollisionAPI"]
     )
     {
+        double size = 0.8
+        float3[] extent = [(-0.4, -0.4, -0.4), (0.4, 0.4, 0.4)]
         double3 xformOp:rotateXYZ = (-35, 0, 0)
-        double3 xformOp:scale = (0.4, 0.6, 0.02)
+        double3 xformOp:scale = (1, 1.5, 0.05)
         double3 xformOp:translate = (0, -0.6, 1.2)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
     }
@@ -112,12 +110,13 @@ def Xform "env" (
         prepend apiSchemas = ["PhysicsCollisionAPI"]
     )
     {
+        double size = 0.8
+        float3[] extent = [(-0.4, -0.4, -0.4), (0.4, 0.4, 0.4)]
         double3 xformOp:rotateXYZ = (35, 0, 0)
-        double3 xformOp:scale = (0.4, 0.6, 0.02)
+        double3 xformOp:scale = (1, 1.5, 0.05)
         double3 xformOp:translate = (0, 0.6, 0.5)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
     }
 
 
 }
-

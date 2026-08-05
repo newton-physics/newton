@@ -27,14 +27,21 @@
 - Breaking public API changes require a deprecation first; do not remove or rename public symbols without a prior deprecation release.
 - Prefix-first naming is preferred for autocomplete, e.g. `ActuatorPD` and `add_shape_sphere()`.
 - Prefer nested classes for self-contained helper types/enums.
-- Use PEP 604 unions (`x | None`), not `Optional[x]`.
-- Annotate Warp arrays with bracket syntax: `wp.array[wp.vec3]`, `wp.array2d[float]`, `wp.array[Any]`; use `wp.array[X]` for 1-D arrays, not `wp.array1d[X]` or `wp.array(dtype=...)`.
-- Ruff bans heavy optional dependencies as module-level imports in `newton/_src` and `newton/tests`; import packages such as `mujoco`, `torch`, `pxr`, `trimesh`, `scipy`, `pyglet`, etc. lazily where needed. Examples and docs are exempt from this specific rule.
-- Follow Google-style docstrings with types in annotations. In public API docstrings, use shortest Sphinx cross-refs, prefer public paths, never reference `newton._src`.
-- Include SI units for physical public fields/docstrings: positions `[m]`, joint-dependent values `[m or rad]`, spatial vectors `[N, N·m]`; skip non-physical fields.
-- Code comments: brief, and only for non-obvious code. Explain *why* (intent, constraints, edge cases), not *what* the code already shows. Prefer a cross-reference over re-explaining context.
-- SPDX copyright years use the file's creation year; do not create ranges or update the year just because you edited a file.
-- New GitHub Actions must be pinned by SHA with a version comment, matching existing workflow style: `action@<sha>  # vX.Y.Z`.
+- PEP 604 unions (`x | None`, not `Optional[x]`).
+- Annotate Warp arrays with bracket syntax (`wp.array[wp.vec3]`, `wp.array2d[float]`, `wp.array[Any]`), not the parenthesized form (`wp.array(dtype=...)`). Use `wp.array[X]` for 1-D arrays, not `wp.array1d[X]`.
+- Ruff bans heavy optional dependencies as module-level imports in `newton/_src` and `newton/tests`; import them lazily where needed. Examples and docs are exempt from this rule.
+- Follow Google-style docstrings. Types in annotations, not docstrings. `Args:` use `name: description`.
+  - Sphinx cross-refs (`:class:`, `:meth:`) with shortest possible targets. Prefer public API paths; never use `newton._src`.
+  - SI units for physical quantities in public API docstrings: `"""Particle positions [m], shape [particle_count, 3]."""`. Joint-dependent: `[m or rad]`. Spatial vectors: `[N, N·m]`. Compound arrays: per-component. Skip non-physical fields.
+- Code comments: brief, and only for non-obvious code. Explain *why* (intent, constraints, edge cases), not *what* the code already shows. Prefer a cross-reference (doc, `:class:`/`:meth:`) over re-explaining context.
+- Run `docs/generate_api.py` when adding public API symbols.
+- Before relying on or changing a documented claim, open the relevant internal cross-references and external primary-source links. Verify Newton-specific behavior against the current code; if a linked source is unavailable, state that limitation instead of assuming it supports the claim.
+- Avoid new required dependencies. Strongly prefer not adding optional ones — use Warp, NumPy, or stdlib.
+- Create a feature branch before committing — never commit directly to `main`. Use `<username>/feature-desc`.
+- Imperative mood in commit messages ("Fix X", not "Fixed X"), ~50 char subject, body wraps at 72 chars explaining _what_ and _why_.
+- Verify regression tests fail without the fix before committing.
+- Pin GitHub Actions by SHA: `action@<sha>  # vX.Y.Z`. Check `.github/workflows/` for allowlisted hashes.
+- In SPDX copyright lines, use the year the file was first created. Do not create date ranges or update the year when modifying a file.
 
 ## Tests And Examples
 
@@ -58,6 +65,9 @@
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
 When the user types `/graphify`, invoke the `skill` tool with `skill: "graphify"` before doing anything else.
+
+- Give every test function or method a docstring using triple double quotes (`"""..."""`). Start with a concise one-line summary in imperative mood that states what the test verifies. For a particularly complex test, add a body that elaborates on the tested behavior, separated from the summary by a blank line following Google-style docstring conventions.
+- Never call `wp.synchronize()` or `wp.synchronize_device()` right before `.numpy()` on a Warp array. This is redundant as `.numpy()` performs a synchronous device-to-host copy that completes all outstanding work.
 
 Rules:
 - For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.

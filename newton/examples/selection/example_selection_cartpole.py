@@ -102,7 +102,9 @@ class Example:
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.cartpoles.eval_fk(self.state_0)
 
-        self.viewer.set_model(self.model, max_worlds=max_worlds)
+        self.viewer.set_model(self.model)
+        if max_worlds is not None:
+            self.viewer.set_visible_worlds(range(max_worlds))
         self.viewer.set_world_offsets((1.0, 0.0, 0.0))
 
         # Set camera to view the scene
@@ -124,10 +126,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):

@@ -7,9 +7,9 @@ Provides functions for generating and searching for unique keys for pairs and tr
 TODO: Add more detailed description and documentation.
 """
 
-import warp as wp
+from __future__ import annotations
 
-from ..core.types import int32, int64, uint32, uint64, vec2i
+import warp as wp
 
 ###
 # Module interface
@@ -27,7 +27,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -44,10 +44,10 @@ def make_bitmask(num_bits: int) -> int:
         num_bits=23 -> 0x00000000007FFFFF
 
     Args:
-        num_bits (int): Number of bits to set in the mask.
+        num_bits: Number of bits to set in the mask.
 
     Returns:
-        int: Bitmask with the specified number of lower bits set to `1`.
+        Bitmask with the specified number of lower bits set to `1`.
     """
     # Ensure the number of bits is valid
     if num_bits <= 0 or num_bits > 64:
@@ -63,16 +63,16 @@ def make_bitmask(num_bits: int) -> int:
 def build_pair_key2(index_A: wp.uint32, index_B: wp.uint32) -> wp.uint64:
     """
     Build a 63-bit key from two indices with the following layout:
-    - The highest bit is always `0`, reserved as a sign bit to support conversion to signed int64.
+    - The highest bit is always `0`, reserved as a sign bit to support conversion to signed wp.int64.
     - Upper 31 bits: lower 31 bits of index_A
     - Lower 32 bits: all 32 bits of index_B
 
     Args:
-        index_A (wp.uint32): First index.
-        index_B (wp.uint32): Second index.
+        index_A: First index.
+        index_B: Second index.
 
     Returns:
-        wp.uint64: Combined 64-bit key.
+        Combined 64-bit key.
     """
     key = wp.uint64(index_A & wp.uint32(wp.static(make_bitmask(31))))
     key = key << wp.uint64(32)
@@ -83,7 +83,7 @@ def build_pair_key2(index_A: wp.uint32, index_B: wp.uint32) -> wp.uint64:
 def make_build_pair_key3_func(main_key_bits: int, aux_key_bits: int | None = None):
     """
     Generates a function that builds a 63-bit key from three indices with the following layout:
-    - The highest bit is always `0`, reserved as a sign bit to support conversion to signed int64.
+    - The highest bit is always `0`, reserved as a sign bit to support conversion to signed wp.int64.
     - Upper `main_key_bits` bits: lower `main_key_bits` bits of index_A
     - Middle `main_key_bits` bits: lower `main_key_bits` bits of index_B
     - Lower `aux_key_bits` bits: lower `aux_key_bits` bits of index_C
@@ -92,12 +92,12 @@ def make_build_pair_key3_func(main_key_bits: int, aux_key_bits: int | None = Non
     - The total number of bits used is `2 * main_key_bits + aux_key_bits`, which must be less than or equal to 63.
 
     Args:
-        main_key_bits (int): Number of bits to allocate for index_A and index_B.
-        aux_key_bits (int, optional): Number of bits to allocate for index_C.
+        main_key_bits: Number of bits to allocate for index_A and index_B.
+        aux_key_bits: Number of bits to allocate for index_C.
             If `None`, it will be set to `63 - 2 * main_key_bits`.
 
     Returns:
-        function: A Warp function that takes three `wp.uint32` indices and returns a combined `wp.uint64` key.
+        A Warp function that takes three `wp.uint32` indices and returns a combined `wp.uint64` key.
     """
     # Ensure the number of bits is valid
     if main_key_bits <= 0 or main_key_bits > 32:
@@ -117,7 +117,7 @@ def make_build_pair_key3_func(main_key_bits: int, aux_key_bits: int | None = Non
 
     # Define the function
     @wp.func
-    def _build_pair_key3(index_A: uint32, index_B: uint32, index_C: uint32) -> uint64:
+    def _build_pair_key3(index_A: wp.uint32, index_B: wp.uint32, index_C: wp.uint32) -> wp.uint64:
         key = wp.uint64(index_A & wp.uint32(MAIN_BITMASK))
         key = key << wp.uint64(main_key_bits)
         key = key | wp.uint64(index_B & wp.uint32(MAIN_BITMASK))
@@ -131,10 +131,10 @@ def make_build_pair_key3_func(main_key_bits: int, aux_key_bits: int | None = Non
 
 @wp.func
 def binary_search_find_pair(
-    num_pairs: int32,
-    target: vec2i,
-    pairs: wp.array[vec2i],
-) -> int32:
+    num_pairs: wp.int32,
+    target: wp.vec2i,
+    pairs: wp.array[wp.vec2i],
+) -> wp.int32:
     """
     Performs binary-search over a sorted array of pairs to find the index of a target pair.
 
@@ -142,15 +142,15 @@ def binary_search_find_pair(
     order, i.e. first by the first element, then by the second.
 
     Args:
-        num_pairs (int32): Number of "active" pairs in the array.\n
+        num_pairs: Number of "active" pairs in the array.
             This is required because not all elements may be active.
-        target (vec2i): The target pair to search for.
-        pairs (wp.array[vec2i]): Sorted array of pairs to search within.
+        target: The target pair to search for.
+        pairs: Sorted array of pairs to search within.
 
     Returns:
         Index of the target pair if found, otherwise `-1`.
     """
-    lower = int32(0)
+    lower = wp.int32(0)
     upper = num_pairs
     while lower < upper:
         mid = (lower + upper) >> 1
@@ -169,11 +169,11 @@ def binary_search_find_pair(
 
 @wp.func
 def binary_search_find_range_start(
-    lower: int32,
-    upper: int32,
-    target: uint64,
-    keys: wp.array[uint64],
-) -> int32:
+    lower: wp.int32,
+    upper: wp.int32,
+    target: wp.uint64,
+    keys: wp.array[wp.uint64],
+) -> wp.int32:
     """
     Performs binary-search over a sorted array of integer keys
     to find the start index of the first occurrence of target.
@@ -181,10 +181,10 @@ def binary_search_find_range_start(
     Assumes that keys are sorted in ascending order.
 
     Args:
-        lower (wp.int32): Lower bound index for the search (inclusive).
-        upper (wp.int32): Upper bound index for the search (exclusive).
-        target (wp.uint64): The target key to search for.
-        keys (wp.array[wp.uint64]): Sorted array of keys to search within.
+        lower: Lower bound index for the search (inclusive).
+        upper: Upper bound index for the search (exclusive).
+        target: The target key to search for.
+        keys: Sorted array of keys to search within.
 
     Returns:
         Index of the first occurrence of target if found, otherwise `-1`.
@@ -227,10 +227,10 @@ def _prepare_key_sort(
     Prepares keys and sorting-maps for radix sort.
 
     Args:
-        num_active_keys (wp.array[wp.int32]): Number of active keys to copy
-        keys_source (wp.array[wp.uint64]): Source array of keys
-        keys (wp.array[wp.uint64]): Destination array of keys for sorting
-        sorted_to_unsorted_map (wp.array[wp.int32]): Map from sorted indices to original unsorted indices
+        num_active_keys: Number of active keys to copy.
+        keys_source: Source array of keys.
+        keys: Destination array of keys for sorting.
+        sorted_to_unsorted_map: Map from sorted indices to original unsorted indices.
     """
     # Retrieve the thread index
     tid = wp.tid()
@@ -241,7 +241,7 @@ def _prepare_key_sort(
         sorted_to_unsorted_map[tid] = tid
 
     # Otherwise fill unused slots with the sentinel value
-    # NOTE: This ensures that these entries sort to the end when treated as signed int64
+    # NOTE: This ensures that these entries sort to the end when treated as signed wp.int64
     else:
         # keys[tid] = wp.static(make_bitmask(63))
         keys[tid] = uint64_sentinel_value()
@@ -253,23 +253,19 @@ def _prepare_key_sort(
 
 
 def prepare_key_sort(
-    num_active: wp.array,
-    unsorted: wp.array,
-    sorted: wp.array,
-    sorted_to_unsorted_map: wp.array,
+    num_active: wp.array[wp.int32],
+    unsorted: wp.array[wp.uint64],
+    sorted: wp.array[wp.uint64],
+    sorted_to_unsorted_map: wp.array[wp.int32],
 ):
     """
     Prepares keys and sorting-maps for radix sort.
 
     Args:
-        num_active (wp.array):
-            An array containing the number of active keys to be sorted.
-        unsorted (wp.array):
-            The source array of keys to be sorted.
-        sorted (wp.array):
-            The destination array where sorted keys will be stored.
-        sorted_to_unsorted_map (wp.array):
-            An array of index-mappings from sorted to source key indices
+        num_active: An array containing the number of active keys to be sorted.
+        unsorted: The source array of keys to be sorted.
+        sorted: The destination array where sorted keys will be stored.
+        sorted_to_unsorted_map: An array of index-mappings from sorted to source key indices.
     """
     wp.launch(
         kernel=_prepare_key_sort,
@@ -294,8 +290,8 @@ class KeySorter:
         Creates a KeySorter instance to sort keys using radix sort.
 
         Args:
-            max_num_keys (int): Maximum number of keys to sort.
-            device (wp.DeviceLike, optional): Device to allocate buffers on (None for default).
+            max_num_keys: Maximum number of keys to sort.
+            device: Device to allocate buffers on (None for default).
         """
         # Declare and initialize the maximum number of keys
         # NOTE: This is used set dimensions of all kernel launches
@@ -309,16 +305,16 @@ class KeySorter:
         # NOTE: Allocations are multiplied by a factor of
         # 2 as required by the Warp radix sort algorithm
         with wp.ScopedDevice(device):
-            self._sorted_keys = wp.zeros(2 * self._max_num_keys, dtype=uint64)
-            self._sorted_to_unsorted_map = wp.zeros(2 * self._max_num_keys, dtype=int32)
+            self._sorted_keys = wp.zeros(2 * self._max_num_keys, dtype=wp.uint64)
+            self._sorted_to_unsorted_map = wp.zeros(2 * self._max_num_keys, dtype=wp.int32)
 
-        # Define a view of the sorted keys as int64
+        # Define a view of the sorted keys as wp.int64
         # NOTE: This required in order to use Warp's radix_sort_pairs, which only supports signed integers
         self._sorted_keys_int64 = wp.array(
             ptr=self._sorted_keys.ptr,
             shape=self._sorted_keys.shape,
             device=self._sorted_keys.device,
-            dtype=int64,
+            dtype=wp.int64,
             copy=False,
         )
 
@@ -328,27 +324,27 @@ class KeySorter:
         return self._device
 
     @property
-    def sorted_keys(self) -> wp.array:
+    def sorted_keys(self) -> wp.array[wp.uint64]:
         """Returns the sorted keys array."""
         return self._sorted_keys
 
     @property
-    def sorted_keys_int64(self) -> wp.array:
-        """Returns the sorted keys array as an int64 view."""
+    def sorted_keys_int64(self) -> wp.array[wp.int64]:
+        """Returns the sorted keys array as an wp.int64 view."""
         return self._sorted_keys_int64
 
     @property
-    def sorted_to_unsorted_map(self) -> wp.array:
+    def sorted_to_unsorted_map(self) -> wp.array[wp.int32]:
         """Returns the sorted-to-unsorted index map array."""
         return self._sorted_to_unsorted_map
 
-    def sort(self, num_active_keys: wp.array, keys: wp.array):
+    def sort(self, num_active_keys: wp.array[wp.int32], keys: wp.array[wp.uint64]):
         """
         Sorts the provided keys using radix sort.
 
         Args:
-            num_active_keys (wp.array[int32]): Number of active keys to sort.
-            keys (wp.array[uint64]): The source keys to be sorted.
+            num_active_keys: Number of active keys to sort.
+            keys: The source keys to be sorted.
         """
         # Check compatibility of input sizes
         if num_active_keys.device != self._device:

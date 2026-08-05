@@ -14,6 +14,12 @@ from ..._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacob
 from ..._src.kinematics.limits import LimitsKamino
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Helper functions
 ###
 
@@ -47,7 +53,9 @@ def extract_active_constraint_dims(data: DataKamino) -> list[int]:
     return [int(active_dim_np[i]) for i in range(len(active_dim_np))]
 
 
-def extract_active_constraint_vectors(model: ModelKamino, data: DataKamino, x: wp.array) -> list[np.ndarray]:
+def extract_active_constraint_vectors(
+    model: ModelKamino, data: DataKamino, x: wp.array[wp.float32]
+) -> list[np.ndarray]:
     cts_start_np = model.info.total_cts_offset.numpy()
     num_active_cts_np = extract_active_constraint_dims(data)
     x_np = x.numpy()
@@ -128,7 +136,12 @@ def extract_dofs_jacobians(
     verbose: bool = False,
 ) -> list[np.ndarray]:
     if isinstance(jacobians, SparseSystemJacobians):
-        return jacobians._J_cts.bsm.numpy()
+        j_dofs = jacobians._J_dofs.bsm.numpy()
+        num_joint_dofs = model.info.num_joint_dofs.numpy().astype(int)
+        num_body_dofs = model.info.num_body_dofs.numpy().astype(int)
+        return [
+            j_dofs[world_id][: num_joint_dofs[world_id], : num_body_dofs[world_id]] for world_id in range(len(j_dofs))
+        ]
 
     # Retrieve the number of worlds in the model
     num_worlds = model.info.num_worlds
@@ -238,7 +251,7 @@ def extract_delassus_sparse(
 
     entry_start_np = delassus.bsm.row_start.numpy()
 
-    world_mask = wp.ones((num_worlds,), dtype=wp.int32, device=delassus._device)
+    world_mask = wp.ones((num_worlds,), dtype=wp.bool, device=delassus._device)
 
     for dim in range(max_dim):
         # Query the operator by computing the product with a vector where only entry `dim` is set to 1.

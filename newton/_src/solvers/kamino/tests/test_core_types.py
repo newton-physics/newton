@@ -8,7 +8,7 @@ Tests for the ``to_warp_int32_array`` and ``assign_to_warp_int32_array``
 helpers in :mod:`newton._src.solvers.kamino._src.core.types`.
 
 These helpers exist to catch silent overflow when converting Python or NumPy
-integer data to a Warp ``int32`` array. Direct ``wp.array(np_int64_arr,
+integer data to a Warp ``wp.int32`` array. Direct ``wp.array(np_int64_arr,
 dtype=wp.int32)`` and ``wp_int32_array.assign(np_int64_arr)`` silently
 truncate; the helpers raise :class:`OverflowError` instead.
 """

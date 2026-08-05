@@ -11,9 +11,8 @@ import unittest
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.data import DataKamino
-from newton._src.solvers.kamino._src.core.math import quat_exp, screw, screw_angular, screw_linear
+from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.core.types import float32, int32, mat33f, transformf, vec3f, vec6f
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.models.builders import basics, testing
@@ -25,7 +24,7 @@ from newton._src.solvers.kamino.tests import setup_tests, test_context
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -43,13 +42,14 @@ Q_X_J_MAX = 0.25 * math.pi
 
 @wp.kernel
 def _set_joint_follower_body_state(
-    model_joint_bid_B: wp.array[int32],
-    model_joint_bid_F: wp.array[int32],
-    model_joint_B_r_Bj: wp.array[vec3f],
-    model_joint_F_r_Fj: wp.array[vec3f],
-    model_joint_X_j: wp.array[mat33f],
-    state_body_q_i: wp.array[transformf],
-    state_body_u_i: wp.array[vec6f],
+    model_joint_bid_B: wp.array[wp.int32],
+    model_joint_bid_F: wp.array[wp.int32],
+    model_joint_B_r_Bj: wp.array[wp.vec3f],
+    model_joint_F_r_Fj: wp.array[wp.vec3f],
+    model_joint_X_Bj: wp.array[wp.mat33f],
+    model_joint_X_Fj: wp.array[wp.mat33f],
+    state_body_q_i: wp.array[wp.transformf],
+    state_body_u_i: wp.array[wp.spatial_vectorf],
 ):
     """
     Set the state of the bodies to a certain values in order to check computations of joint states.
@@ -62,7 +62,8 @@ def _set_joint_follower_body_state(
     bid_F = model_joint_bid_F[jid]
     B_r_Bj = model_joint_B_r_Bj[jid]
     F_r_Fj = model_joint_F_r_Fj[jid]
-    X_j = model_joint_X_j[jid]
+    X_Bj = model_joint_X_Bj[jid]
+    X_Fj = model_joint_X_Fj[jid]
 
     # Retrieve the current state of the Base body
     p_B = state_body_q_i[bid_B]
@@ -74,29 +75,27 @@ def _set_joint_follower_body_state(
     R_B = wp.quat_to_matrix(q_B)
 
     # Extract the linear and angular velocity of the Base body
-    v_B = screw_linear(u_B)
-    omega_B = screw_angular(u_B)
+    v_B = wp.spatial_top(u_B)
+    omega_B = wp.spatial_bottom(u_B)
 
     # Define the joint rotation offset
-    # NOTE: X_j projects quantities into the joint frame
-    # NOTE: X_j^T projects quantities into the outer frame (world or body)
     q_x_j = Q_X_J
     theta_y_j = 0.0
     theta_z_j = 0.0
-    j_dR_j = vec3f(q_x_j, theta_y_j, theta_z_j)  # Joint offset as rotation vector
+    j_dR_j = wp.vec3f(q_x_j, theta_y_j, theta_z_j)  # Joint offset as rotation vector
     q_jq = quat_exp(j_dR_j)  # Joint offset as rotation quaternion
     R_jq = wp.quat_to_matrix(q_jq)  # Joint offset as rotation matrix
 
     # Define the joint translation offset
-    j_dr_j = vec3f(0.0)
+    j_dr_j = wp.vec3f(0.0)
 
     # Define the joint twist offset
-    j_dv_j = vec3f(0.0)
-    j_domega_j = vec3f(0.0)
+    j_dv_j = wp.vec3f(0.0)
+    j_domega_j = wp.vec3f(0.0)
 
     # Follower body rotation via the Base and joint frames
-    R_B_X_j = R_B @ X_j
-    R_F_new = R_B_X_j @ R_jq @ wp.transpose(X_j)
+    R_B_X_j = R_B @ X_Bj
+    R_F_new = R_B_X_j @ R_jq @ wp.transpose(X_Fj)
     q_F_new = wp.quat_from_matrix(R_F_new)
 
     # Follower body position via the Base and joint frames
@@ -110,8 +109,8 @@ def _set_joint_follower_body_state(
     v_F_new = R_B_X_j @ j_dv_j + v_B + wp.cross(omega_B, r_Bj) - wp.cross(omega_F_new, r_Fj)
 
     # Offset the bose of the body by a fixed amount
-    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=float32)
-    state_body_u_i[bid_F] = screw(v_F_new, omega_F_new)
+    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=wp.float32)
+    state_body_u_i[bid_F] = wp.spatial_vectorf(*v_F_new, *omega_F_new)
 
 
 ###
@@ -128,7 +127,8 @@ def set_joint_follower_body_state(model: ModelKamino, data: DataKamino):
             model.joints.bid_F,
             model.joints.B_r_Bj,
             model.joints.F_r_Fj,
-            model.joints.X_j,
+            model.joints.X_Bj,
+            model.joints.X_Fj,
             data.bodies.q_i,
             data.bodies.u_i,
         ],
@@ -274,7 +274,7 @@ class TestKinematicsLimits(unittest.TestCase):
         msg.info("[before]: limits.velocity: %s", limits.velocity)
 
         # Check for active joint limits
-        limits.detect(model, data)
+        limits.detect(q_j=data.joints.q_j)
 
         # Optional verbose output
         msg.info("[after]: limits.model_max_limits_host: %s", limits.model_max_limits_host)

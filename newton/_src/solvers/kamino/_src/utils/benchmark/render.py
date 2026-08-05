@@ -328,26 +328,20 @@ def render_solver_configs_table(
     Renders a rich table summarizing the solver configurations.
 
     Args:
-        configs (dict[str, SolverKaminoImpl.Config]):
-            A dictionary mapping configuration names to SolverKaminoImpl.Config objects.
-        path (str, optional):
-            The file path to save the rendered table as a text file. If None, the table is not saved to a file.
-        groups (list[str], optional):
-            A list of groups to include in the table. If None, "sparse", "linear" and "padmm" are used.\n
+        configs: A dictionary mapping configuration names to SolverKaminoImpl.Config objects.
+        path: The file path to save the rendered table as a text file. If None, the table is not saved to a file.
+        groups: A list of groups to include in the table. If None, "sparse", "linear" and "padmm" are used.
             Supported groups include:
             - "cts": Constraint parameters (alpha, beta, gamma, delta, preconditioning)
             - "sparse": Sparse representation settings (sparse, sparse_jacobian)
             - "linear": Linear solver settings (type, kwargs)
             - "padmm": PADMM settings (max_iterations, primal_tol, dual_tol, etc)
             - "warmstart": Warmstarting settings (mode, contact_method)
-        to_console (bool, optional):
-            If True, also prints the table to the console.
+        to_console: If True, also prints the table to the console.
 
     Raises:
-        ValueError:
-            If the configs dictionary is empty or if any of the configuration objects are missing required attributes.
-        IOError:
-            If there is an error writing the table to the specified file path.
+        ValueError: If the configs dictionary is empty or if any of the configuration objects are missing required attributes.
+        IOError: If there is an error writing the table to the specified file path.
     """
     # Attempt to import rich first, and warn user
     # if the necessary package is not installed
@@ -464,18 +458,13 @@ def render_problem_dimensions_table(
     Renders a rich table summarizing the problem dimensions.
 
     Args:
-        configs (dict[str, SolverKaminoImpl.Config]):
-            A dictionary mapping configuration names to problem dimensions.
-        path (str, optional):
-            The file path to save the rendered table as a text file. If None, the table is not saved to a file.
-        to_console (bool, optional):
-            If True, also prints the table to the console.
+        problem_dims: A dictionary mapping configuration names to problem dimensions.
+        path: The file path to save the rendered table as a text file. If None, the table is not saved to a file.
+        to_console: If True, also prints the table to the console.
 
     Raises:
-        ValueError:
-            If the configs dictionary is empty or if any of the configuration objects are missing required attributes.
-        IOError:
-            If there is an error writing the table to the specified file path.
+        ValueError: If the configs dictionary is empty or if any of the configuration objects are missing required attributes.
+        IOError: If there is an error writing the table to the specified file path.
     """
     # Attempt to import rich first, and warn user
     # if the necessary package is not installed

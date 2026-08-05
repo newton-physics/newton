@@ -133,7 +133,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             # shared Mesh — finalize() must not mutate user-owned geometry).
             model = builder.finalize(device=device)
             self.assertGreaterEqual(
-                int(model.shape_sdf_index.numpy()[s1]),
+                int(model._shape_sdf_index.numpy()[s1]),
                 0,
                 "Expected an SDF entry for shape s1 in the finalized model.",
             )
@@ -193,7 +193,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             model = builder.finalize(device=device)
             self.assertGreaterEqual(
-                int(model.shape_sdf_index.numpy()[s1]),
+                int(model._shape_sdf_index.numpy()[s1]),
                 0,
                 "Expected SDF built from default_shape_cfg during finalize.",
             )
@@ -267,7 +267,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             # shared Mesh.
             model = builder.finalize(device=device)
             self.assertGreaterEqual(
-                int(model.shape_sdf_index.numpy()[s1]),
+                int(model._shape_sdf_index.numpy()[s1]),
                 0,
                 "Expected SDF built with sdfPadding during finalize.",
             )
@@ -396,7 +396,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             model = builder.finalize(device=device)
             self.assertGreaterEqual(
-                int(model.shape_sdf_index.numpy()[s1]),
+                int(model._shape_sdf_index.numpy()[s1]),
                 0,
                 "Applied SDF API should land an SDF entry on the finalized model.",
             )
@@ -493,15 +493,15 @@ class TestSDFUSDParsing(unittest.TestCase):
         builder.shape_sdf_max_resolution[s1] = 32
 
         model = builder.finalize(device=device)
-        idx0 = int(model.shape_sdf_index.numpy()[s0])
-        idx1 = int(model.shape_sdf_index.numpy()[s1])
+        idx0 = int(model._shape_sdf_index.numpy()[s0])
+        idx1 = int(model._shape_sdf_index.numpy()[s1])
 
         self.assertGreaterEqual(idx0, 0)
         self.assertGreaterEqual(idx1, 0)
         self.assertNotEqual(idx0, idx1)
 
-    def test_add_shape_convex_hull_rejects_hydroelastic(self):
-        """add_shape_convex_hull must raise when cfg.is_hydroelastic is set, regardless of mesh.sdf."""
+    def test_add_shape_convex_hull_rejects_hydroelastic_without_sdf(self):
+        """add_shape_convex_hull must raise for hydroelastic convex meshes without mesh.sdf."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
         # 4-vertex tetrahedron — minimum valid input for a convex hull
@@ -510,7 +510,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             indices=[0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3],
         )
         cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True)
-        with self.assertRaisesRegex(ValueError, "Hydroelastic is not supported on GeoType.CONVEX_MESH"):
+        with self.assertRaisesRegex(ValueError, "Hydroelastic mesh-backed shapes require mesh.sdf"):
             builder.add_shape_convex_hull(body, mesh=mesh, cfg=cfg)
 
     def test_approximate_meshes_rejects_sdf_state(self):

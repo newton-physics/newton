@@ -47,7 +47,7 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.flap_contact_sensor = SensorContact(self.model, sensing_obj_shapes="*Flap", verbose=True)
+        self.flap_contact_sensor = SensorContact(self.model, sensing_shapes="*Flap", verbose=True)
 
         # String patterns return matches in ascending shape index order.
         # Plate1 has a lower index than Plate2 (added first), so row 0 → Plate1, row 1 → Plate2.
@@ -55,7 +55,7 @@ class Example:
         counterpart_labels = ["*Cube*", "*Sphere*"]
         self.plate_contact_sensor = SensorContact(
             self.model,
-            sensing_obj_shapes=plate_labels,
+            sensing_shapes=plate_labels,
             counterpart_shapes=counterpart_labels,
             measure_total=False,
             verbose=True,
@@ -150,7 +150,7 @@ class Example:
                 continue
             if np.abs(net_force[i, self.counterpart_col[i]]).max() == 0:
                 continue
-            plate_shape = self.plate_contact_sensor.sensing_obj_idx[i]
+            plate_shape = self.plate_contact_sensor.sensing_indices[i]
             counterpart_shape = self.plate_contact_sensor.counterpart_indices[i][self.counterpart_col[i]]
             self.plates_touched[i] = True
             plate_label = self.model.shape_label[plate_shape]
@@ -207,9 +207,9 @@ class Example:
         )
         assert len(find_nonfinite_members(self.flap_contact_sensor)) == 0
         assert len(find_nonfinite_members(self.plate_contact_sensor)) == 0
-        # sensing_obj_idx preserves the input order given to the sensor.
-        assert self.model.shape_label[self.plate_contact_sensor.sensing_obj_idx[0]] == "/env/Plate1"
-        assert self.model.shape_label[self.plate_contact_sensor.sensing_obj_idx[1]] == "/env/Plate2"
+        # sensing_indices preserves the input order given to the sensor.
+        assert self.model.shape_label[self.plate_contact_sensor.sensing_indices[0]] == "/env/Plate1"
+        assert self.model.shape_label[self.plate_contact_sensor.sensing_indices[1]] == "/env/Plate2"
 
 
 if __name__ == "__main__":

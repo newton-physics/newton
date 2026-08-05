@@ -10,7 +10,7 @@
 # apply a continuous rotation to the fixed root joint in the form
 # of the joint parent transform. The MuJoCo solver is updated
 # about this change in the joint parent transform by calling
-# self.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES).
+# self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
 #
 # Command: python -m newton.examples robot_allegro_hand --world-count 16
 #
@@ -22,8 +22,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import JointTargetMode
-from newton.solvers import SolverNotifyFlags
+from newton import JointTargetMode, ModelFlags
 
 
 @wp.kernel
@@ -138,7 +137,9 @@ class Example:
             njmax=200,
             nconmax=max_contacts_per_world,
             impratio=20.0,
-            cone="elliptic",
+            # Preserve the example's solref-inherited grasp friction; its
+            # purpose is articulation control rather than kf mapping.
+            cone="pyramidal",
             iterations=100,
             ls_iterations=50,
             use_mujoco_contacts=False,
@@ -147,7 +148,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -155,13 +157,12 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -183,7 +184,7 @@ class Example:
             )
 
             # # update the solver since we have updated the joint parent transforms
-            self.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+            self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

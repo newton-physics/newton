@@ -222,7 +222,7 @@ class Example:
         target_local_y = target_world_z - cloth_offset_z
 
         # Build model with zero gravity
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
         # Generate cloth mesh with extension going directly to target
         self.cloth_verts, self.cloth_faces, self.spiral_rows, self.ext_rows = rolled_cloth_mesh(
@@ -255,9 +255,9 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=1.0e-5,
+            tri_kd=1.0e0,
             edge_ke=1e2,
-            edge_kd=0.1,
+            edge_kd=1.0e1,
             particle_radius=0.5,
         )
 
@@ -272,7 +272,7 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=1.0e-5,
+            tri_kd=1.0e0,
             edge_ke=1e2,
             edge_kd=0.0,
         )
@@ -288,13 +288,13 @@ class Example:
             density=0.02,
             tri_ke=1.0e5,
             tri_ka=1.0e5,
-            tri_kd=1.0e-5,
+            tri_kd=1.0e0,
             edge_ke=1,
             edge_kd=0.01,
         )
 
         # Add ground plane
-        builder.add_ground_plane(-1.0)
+        builder.add_ground_plane(height=-1.0)
 
         # Color for VBD solver
         builder.color(include_bending=False)
@@ -302,7 +302,7 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
         self.model.soft_contact_ke = 5.0e5
-        self.model.soft_contact_kd = 1.0e-6
+        self.model.soft_contact_kd = 5.0
         self.model.soft_contact_mu = 0.1
 
         # Fix outer edge of cloth to cylinder 2 and set up cylinder rotation
@@ -401,12 +401,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         self.solver.rebuild_bvh(self.state_0)

@@ -8,13 +8,17 @@ This module provides data structures and utilities for managing multiple
 independent linear systems, including rectangular and square systems.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Any, Generic
 
 import numpy as np
 import warp as wp
 
-from ..core.types import FloatType, IntType, VecIntType, float32, int32
+from ..core.types import FloatType, IntType, VecIntType
 from ..utils import logger as msg
+from .types import IndexType, ScalarType
 
 ###
 # Module interface
@@ -34,7 +38,7 @@ __all__ = [
 
 
 @dataclass
-class DenseRectangularMultiLinearInfo:
+class DenseRectangularMultiLinearInfo(Generic[ScalarType, IndexType]):
     """
     A data structure for managing multiple rectangular linear systems of inhomogeneous and mutable shapes, i.e.:
 
@@ -87,45 +91,45 @@ class DenseRectangularMultiLinearInfo:
     This is equal to `sum(maxdim[i][0] for i in range(num_blocks))`.
     """
 
-    dtype: FloatType = float32
+    dtype: type[ScalarType] = wp.float32  # type: ignore[assignment]
     """The data type of the underlying matrix and vector data arrays."""
 
-    itype: IntType = int32
+    itype: type[IndexType] = wp.int32  # type: ignore[assignment]
     """The integer type used for indexing the underlying data arrays."""
 
     device: wp.DeviceLike | None = None
     """The device on which the data arrays are allocated."""
 
-    maxdim: wp.array | None = None
+    maxdim: wp.array[Any] | None = None  # wp.array[vec2<itype>]
     """
     The maximum dimensions of each rectangular matrix block.
     Shape of ``(num_blocks,)`` and type :class:`vec2i`.
     Each entry corresponds to the shape `(max_rows, max_cols)`.
     """
 
-    dim: wp.array | None = None
+    dim: wp.array[Any] | None = None  # wp.array[vec2<itype>]
     """
     The active dimensions of each rectangular matrix block.
     Shape of ``(num_blocks,)`` and type :class:`vec2i`.
     Each entry corresponds to the shape `(rows, cols)`.
     """
 
-    mio: wp.array | None = None
+    mio: wp.array[IndexType] | None = None
     """
     The matrix index offset (mio) of each block in the flat data array.
-    Shape of ``(num_blocks,)`` and type :class:`int | int32 | int64`.
+    Shape of ``(num_blocks,)``.
     """
 
-    rvio: wp.array | None = None
+    rvio: wp.array[IndexType] | None = None
     """
     The rhs vector index offset (vio) of each block in the flat data array.
-    Shape of ``(num_blocks,)`` and type :class:`int | int32 | int64`.
+    Shape of ``(num_blocks,)``.
     """
 
-    ivio: wp.array | None = None
+    ivio: wp.array[IndexType] | None = None
     """
     The input vector index offset (vio) of each block in the flat data array.
-    Shape of ``(num_blocks,)`` and type :class:`int | int32 | int64`.
+    Shape of ``(num_blocks,)``.
     """
 
     @staticmethod
@@ -148,8 +152,8 @@ class DenseRectangularMultiLinearInfo:
     def finalize(
         self,
         dimensions: list[tuple[int, int]],
-        dtype: FloatType = float32,
-        itype: IntType = int32,
+        dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
+        itype: type[IndexType] = wp.int32,  # type: ignore[assignment]
         device: wp.DeviceLike = None,
     ) -> None:
         """
@@ -204,12 +208,12 @@ class DenseRectangularMultiLinearInfo:
 
     def assign(
         self,
-        maxdim: wp.array,
-        dim: wp.array,
-        mio: wp.array,
-        rvio: wp.array,
-        ivio: wp.array,
-        dtype: FloatType = float32,
+        maxdim: wp.array[Any],  # wp.array[vec2<IndexType>]
+        dim: wp.array[Any],  # wp.array[vec2<IndexType>]
+        mio: wp.array[IndexType],
+        rvio: wp.array[IndexType],
+        ivio: wp.array[IndexType],
+        dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike = None,
     ) -> None:
         """
@@ -268,15 +272,15 @@ class DenseRectangularMultiLinearInfo:
         self.rvio = rvio
         self.ivio = ivio
 
-    def is_matrix_compatible(self, A: wp.array) -> bool:
+    def is_matrix_compatible(self, A: wp.array[ScalarType]) -> bool:
         """Checks if the provided matrix data array is compatible with the specified info structure."""
         return A.dtype == self.dtype and A.size >= self.total_mat_size
 
-    def is_rhs_compatible(self, b: wp.array) -> bool:
+    def is_rhs_compatible(self, b: wp.array[ScalarType]) -> bool:
         """Checks if the provided rhs vector data array is compatible with the specified info structure."""
         return b.dtype == self.dtype and b.size >= self.total_rhs_size
 
-    def is_input_compatible(self, x: wp.array) -> bool:
+    def is_input_compatible(self, x: wp.array[ScalarType]) -> bool:
         """Checks if the provided input vector data array is compatible with the specified info structure."""
         return x.dtype == self.dtype and x.size >= self.total_inp_size
 
@@ -297,7 +301,7 @@ class DenseRectangularMultiLinearInfo:
 
 
 @dataclass
-class DenseSquareMultiLinearInfo:
+class DenseSquareMultiLinearInfo(Generic[ScalarType, IndexType]):
     """
     A data structure for managing multiple square linear systems of inhomogeneous and mutable shapes, i.e.:
 
@@ -344,34 +348,34 @@ class DenseSquareMultiLinearInfo:
     This is equal to `sum(maxdim[i][1] for i in range(num_blocks))`.
     """
 
-    dtype: FloatType = float32
+    dtype: type[ScalarType] = wp.float32  # type: ignore[assignment]
     """The data type of the underlying matrix and vector data arrays."""
 
-    itype: IntType = int32
+    itype: type[IndexType] = wp.int32  # type: ignore[assignment]
     """The integer type used for indexing the underlying data arrays."""
 
     device: wp.DeviceLike | None = None
     """The device on which the data arrays are allocated."""
 
-    maxdim: wp.array | None = None
+    maxdim: wp.array[IndexType] | None = None
     """
     The maximum dimensions of each square matrix block.
     Shape of ``(num_blocks,)`` and type :class:`int | int32 | int64`.
     """
 
-    dim: wp.array | None = None
+    dim: wp.array[IndexType] | None = None
     """
     The active dimensions of each square matrix block.
     Shape of ``(num_blocks,)`` and type :class:`int | int32 | int64`.
     """
 
-    mio: wp.array | None = None
+    mio: wp.array[IndexType] | None = None
     """
     The matrix index offset (mio) of each matrix block in the flat data array.
     Shape of ``(num_blocks,)`` and type :class:`int | int32 | int64`.
     """
 
-    vio: wp.array | None = None
+    vio: wp.array[IndexType] | None = None
     """
     The vector index offset (vio) of each vector block in the flat data array.
     Shape of ``(num_blocks,)`` and type :class:`int | int32 | int64`.
@@ -391,7 +395,11 @@ class DenseSquareMultiLinearInfo:
         return dims
 
     def finalize(
-        self, dimensions: list[int], dtype: FloatType = float32, itype: IntType = int32, device: wp.DeviceLike = None
+        self,
+        dimensions: list[int],
+        dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
+        itype: type[IndexType] = wp.int32,  # type: ignore[assignment]
+        device: wp.DeviceLike = None,
     ) -> None:
         """
         Constructs and allocates the data of the square multi-linear system info on the specified device.
@@ -434,11 +442,11 @@ class DenseSquareMultiLinearInfo:
 
     def assign(
         self,
-        maxdim: wp.array,
-        dim: wp.array,
-        mio: wp.array,
-        vio: wp.array,
-        dtype: FloatType = float32,
+        maxdim: wp.array[IndexType],
+        dim: wp.array[IndexType],
+        mio: wp.array[IndexType],
+        vio: wp.array[IndexType],
+        dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike = None,
     ) -> None:
         """
@@ -485,15 +493,15 @@ class DenseSquareMultiLinearInfo:
         self.mio = mio
         self.vio = vio
 
-    def is_matrix_compatible(self, A: wp.array) -> bool:
+    def is_matrix_compatible(self, A: wp.array[ScalarType]) -> bool:
         """Checks if the provided matrix data array is compatible with the specified info structure."""
         return A.dtype == self.dtype and A.size >= self.total_mat_size
 
-    def is_rhs_compatible(self, b: wp.array) -> bool:
+    def is_rhs_compatible(self, b: wp.array[ScalarType]) -> bool:
         """Checks if the provided rhs vector data array is compatible with the specified info structure."""
         return b.dtype == self.dtype and b.size >= self.total_vec_size
 
-    def is_input_compatible(self, x: wp.array) -> bool:
+    def is_input_compatible(self, x: wp.array[ScalarType]) -> bool:
         """Checks if the provided input vector data array is compatible with the specified info structure."""
         return x.dtype == self.dtype and x.size >= self.total_vec_size
 
@@ -513,7 +521,7 @@ class DenseSquareMultiLinearInfo:
 
 
 @dataclass
-class DenseLinearOperatorData:
+class DenseLinearOperatorData(Generic[ScalarType, IndexType]):
     """
     A data structure for encapsulating a multi-linear matrix operator.
 
@@ -526,10 +534,14 @@ class DenseLinearOperatorData:
     from an external source to avoid unnecessary memory reallocations.
     """
 
-    info: DenseRectangularMultiLinearInfo | DenseSquareMultiLinearInfo | None = None
+    info: (
+        DenseRectangularMultiLinearInfo[ScalarType, IndexType]
+        | DenseSquareMultiLinearInfo[ScalarType, IndexType]
+        | None
+    ) = None
     """The multi-linear data structure describing the operator."""
 
-    mat: wp.array | None = None
+    mat: wp.array[ScalarType] | None = None
     """The flat data array containing the matrix blocks."""
 
     def zero(self) -> None:
@@ -541,7 +553,7 @@ class DenseLinearOperatorData:
 ###
 
 
-def make_dtype_tolerance(tol: FloatType | float | None = None, dtype: FloatType = float32) -> FloatType:
+def make_dtype_tolerance(tol: FloatType | float | None = None, dtype: FloatType = wp.float32) -> FloatType:
     # First ensure the specified dtype is a valid warp type
     if not issubclass(dtype, FloatType):
         raise ValueError("data type 'dtype' must be a FloatType, e.g. a `wp.float32` or `wp.float64` value etc.")

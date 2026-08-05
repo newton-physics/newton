@@ -24,6 +24,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry.types import GeoType
+from newton._src.utils import is_graph_capture_allocation_enabled
 
 _cuda_available = wp.is_cuda_available()
 
@@ -108,7 +109,7 @@ def _build_collision_only(mesh, shape_type, shape_pos, shape_scale=None, shape_r
         builder.add_shape_capsule(body, radius=radius, half_height=half_height)
     elif shape_type == GeoType.ELLIPSOID:
         sx, sy, sz = shape_scale if shape_scale else (0.1, 0.15, 0.08)
-        builder.add_shape_ellipsoid(body, a=sx, b=sy, c=sz)
+        builder.add_shape_ellipsoid(body, rx=sx, ry=sy, rz=sz)
     elif shape_type == GeoType.CONVEX_MESH:
         convex = newton.Mesh.create_box(0.1, 0.1, 0.1, compute_inertia=False)
         builder.add_shape_convex_hull(body, mesh=convex)
@@ -125,7 +126,9 @@ def _build_collision_only(mesh, shape_type, shape_pos, shape_scale=None, shape_r
 
 def _collide(model, cp, state):
     """Run collision detection and return contacts."""
-    return model.collide(state, collision_pipeline=cp)
+    contacts = cp.contacts()
+    cp.collide(state, contacts)
+    return contacts
 
 
 def _get_contact_normals(contacts):
@@ -186,16 +189,17 @@ def _build_sim_scene(mesh, shape_type, shape_pos, shape_scale=None, shape_rot=No
 
 def _step_sim(model, cp, solver, s0, s1, ctrl, dt=0.005, substeps=1):
     """Advance one frame."""
+    contacts = cp.contacts()
     for _ in range(substeps):
         s0.clear_forces()
-        contacts = model.collide(s0, collision_pipeline=cp)
+        cp.collide(s0, contacts)
         solver.step(s0, s1, ctrl, contacts, dt)
         s0, s1 = s1, s0
     return s0, s1, contacts
 
 
 class _SimLoop:
-    """Run a simulation loop, using CUDA graph capture when available."""
+    """Run a simulation loop, using graph capture when available."""
 
     def __init__(self, model, cp, solver, s0, s1, ctrl, dt=0.005, substeps=1):
         self.model = model
@@ -206,12 +210,13 @@ class _SimLoop:
         self.ctrl = ctrl
         self.dt = dt
         self.substeps = substeps
-        self.contacts = model.collide(s0, collision_pipeline=cp)
+        self.contacts = cp.contacts()
+        cp.collide(s0, self.contacts)
 
     def _simulate_frame(self):
         for i in range(self.substeps):
             self.s0.clear_forces()
-            self.model.collide(self.s0, self.contacts, collision_pipeline=self.cp)
+            self.cp.collide(self.s0, self.contacts)
             self.solver.step(self.s0, self.s1, self.ctrl, self.contacts, self.dt)
             if self.substeps % 2 == 1 and i == self.substeps - 1:
                 self.s0.assign(self.s1)
@@ -221,7 +226,7 @@ class _SimLoop:
     def run(self, steps):
         """Run *steps* frames, returning the final state pair."""
         device = self.model.device
-        use_graph = device is not None and device.is_cuda and wp.is_mempool_enabled(device)
+        use_graph = is_graph_capture_allocation_enabled(device)
 
         if use_graph:
             # Warmup (allocates internal buffers so graph capture sees a stable set).

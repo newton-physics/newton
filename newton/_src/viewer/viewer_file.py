@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -245,6 +246,10 @@ def _ptr_key_from_numpy(arr: np.ndarray) -> int:
     # Use the underlying buffer address as a stable key within a process
     # for non-aliased arrays. For views, this still points to the base buffer;
     # since user guarantees no aliasing across arrays, we can use the data address.
+    # Empty arrays share a null data buffer, so distinct empties would otherwise
+    # collide on the same key; fall back to object identity for them.
+    if arr.size == 0:
+        return id(arr)
     return int(arr.__array_interface__["data"][0])
 
 
@@ -453,8 +458,9 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
 
         # Iterables (like list, tuple, set)
         if isinstance(obj, Iterable) and not isinstance(obj, str | bytes | bytearray):
+            type_name = "set" if isinstance(obj, set) else type(obj).__name__
             return {
-                "__type__": type(obj).__name__,
+                "__type__": type_name,
                 "items": [
                     serialize(
                         item, callback, _visited, f"{_path}[{i}]" if _path else f"[{i}]", format_type, cache=cache
@@ -530,8 +536,25 @@ def _serialize_warp_dtype(dtype) -> dict:
     return result
 
 
+_MODEL_BVH_RECORDING_DEFAULTS = {
+    "bvh_shapes": None,
+    "bvh_shapes_group_roots": None,
+    "bvh_shape_enabled": None,
+    "bvh_shape_count_enabled": 0,
+    "bvh_shape_bounds": None,
+    "bvh_shape_world_transforms": None,
+    "bvh_particles": None,
+    "bvh_particles_group_roots": None,
+}
+
+
 def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = None):
     def callback(x, path):
+        if path.startswith("model."):
+            model_attr = path.removeprefix("model.").partition(".")[0]
+            if model_attr in _MODEL_BVH_RECORDING_DEFAULTS:
+                return _MODEL_BVH_RECORDING_DEFAULTS[model_attr]
+
         if isinstance(x, wp.array):
             # Skip arrays with struct dtypes - they can't be serialized
             if _is_struct_dtype(x.dtype):
@@ -566,6 +589,9 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
 
         if isinstance(x, wp.HashGrid):
             return {"__type__": "warp.HashGrid", "data": None}
+
+        if isinstance(x, wp.Bvh):
+            return {"__type__": "warp.Bvh", "data": None}
 
         if isinstance(x, wp.Mesh):
             return {"__type__": "warp.Mesh", "data": None}
@@ -633,6 +659,13 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     for attr_name, source_value in source_dict.items():
         if attr_name.startswith("_"):
             continue
+
+        if isinstance(target_obj, Model) and attr_name == "shape_collision_filter_pairs":
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                target_obj.shape_collision_filter_pairs = source_value
+            continue
+
         target_value = getattr(target_obj, attr_name, _MISSING)
 
         # Source carries a reconstructed AttributeNamespace (e.g. ``model.mujoco``).
@@ -741,6 +774,18 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # Custom objects
     if "attributes" in data:
+        if type_name == "AttributeSpec" and data.get("__module__") == Model.AttributeSpec.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            for attr in ("frequency", "references"):
+                if isinstance(attributes.get(attr), int):
+                    attributes[attr] = Model.AttributeFrequency(attributes[attr])
+            if isinstance(attributes.get("assignment"), int):
+                attributes["assignment"] = Model.AttributeAssignment(attributes["assignment"])
+            return Model.AttributeSpec(**attributes)
+
         # Reconstruct AttributeNamespace as a real instance so downstream consumers
         # (notably ``transfer_to_model``) can identify it without resorting to a
         # heuristic on serialized field names.
@@ -973,6 +1018,9 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
             # Return None or create empty HashGrid as appropriate
             return None
 
+        elif x_type == "warp.Bvh":
+            return None
+
         elif x_type == "warp.Mesh":
             # Return None or create empty Mesh as appropriate
             return None
@@ -1097,16 +1145,16 @@ class ViewerFile(ViewerBase):
 
         self._frame_count = 0
         self._model_recorded = False
+        self._running = True
 
     @override
-    def set_model(self, model: Model | None, max_worlds: int | None = None):
+    def set_model(self, model: Model | None):
         """Override set_model to record the model when it is set.
 
         Args:
             model: Model to bind to this viewer.
-            max_worlds: Optional cap on rendered worlds.
         """
-        super().set_model(model, max_worlds=max_worlds)
+        super().set_model(model)
 
         if model is not None and not self._model_recorded:
             self.record_model(model)
@@ -1128,6 +1176,15 @@ class ViewerFile(ViewerBase):
         # Auto-save if enabled
         if self.auto_save and self._frame_count % self.save_interval == 0:
             self._save_recording()
+
+    @override
+    def is_running(self) -> bool:
+        """Report whether the file viewer should continue recording.
+
+        Returns:
+            bool: False after :meth:`close` has been called.
+        """
+        return self._running
 
     def save_recording(self, file_path: str | None = None, verbose: bool = False):
         """Save the recorded data to file.
@@ -1404,6 +1461,7 @@ class ViewerFile(ViewerBase):
         """Save final recording and cleanup."""
         if self._frame_count > 0:
             self._save_recording()
+        self._running = False
         print(f"ViewerFile closed. Total frames recorded: {self._frame_count}")
 
     def load_recording(self, file_path: str | None = None, verbose: bool = False):

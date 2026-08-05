@@ -368,8 +368,8 @@ def load_mesh(filename: str, method: str | None = None):
     Loads a 3D triangular surface mesh from a file.
 
     Args:
-        filename (str): The path to the 3D model file (obj, and other formats supported by the different methods) to load.
-        method (str): The method to use for loading the mesh (default None). Can be either `"trimesh"`, `"meshio"`, `"pcu"`, or `"openmesh"`. If None, every method is tried and the first successful mesh import where the number of vertices is greater than 0 is returned.
+        filename: The path to the 3D model file (obj, and other formats supported by the different methods) to load.
+        method: The method to use for loading the mesh (default None). Can be either `"trimesh"`, `"meshio"`, `"pcu"`, or `"openmesh"`. If None, every method is tried and the first successful mesh import where the number of vertices is greater than 0 is returned.
 
     Returns:
         Tuple of (mesh_points, mesh_indices), where mesh_points is a Nx3 numpy array of vertex positions (float32),

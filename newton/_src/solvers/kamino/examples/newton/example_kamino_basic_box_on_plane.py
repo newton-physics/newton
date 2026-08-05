@@ -86,7 +86,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -104,7 +105,7 @@ class Example:
         for w in range(self.world_count):
             q_base[w, :3] += np.array([0.0, 0.0, 0.2]) * float(w)
         self.base_q.assign(q_base)
-        self.solver.reset(state_out=self.state_0, base_q=self.base_q)
+        self.solver.reset(state=self.state_0, base_q=self.base_q)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
@@ -120,7 +121,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

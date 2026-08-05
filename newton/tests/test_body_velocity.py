@@ -13,10 +13,12 @@ For generalized coordinate solvers (MuJoCo, Featherstone), velocity is set via j
 For maximal coordinate solvers (XPBD, SemiImplicit), velocity is set via body_qd.
 
 Note on tolerances:
-- MuJoCo/Featherstone use body origin velocity internally, which introduces small
-  numerical integration errors when converting back to CoM velocity (~1e-3 after 10 steps).
-- Maximal coordinate solvers (XPBD, SemiImplicit) directly integrate CoM velocity,
-  so they have much tighter numerical precision (~1e-6).
+- MuJoCo converts the public COM-referenced ``joint_qd`` into its own body-origin
+  twist representation internally, which introduces small numerical integration
+  errors when converting back to CoM velocity (~1e-3 after 10 steps).
+- Featherstone and the maximal-coordinate solvers (XPBD, SemiImplicit) stay in
+  the public COM-referenced twist convention end-to-end and can reach tighter
+  precision depending on solver and tolerance settings.
 """
 
 import unittest
@@ -62,7 +64,7 @@ def _joint_type_name(joint_type):
 
 
 def _build_rotated_anchor_descendant_model(device, joint_type, parent_kinematic):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     base = builder.add_link(is_kinematic=parent_kinematic, mass=1.0)
     child = builder.add_link(mass=1.0)
     builder.add_shape_sphere(base, radius=0.1)
@@ -112,7 +114,7 @@ def compute_com_world_position(body_q, body_com, body_world, world_offsets=None,
     wp.launch(
         kernel=compute_com_positions,
         dim=body_q.shape[0],
-        inputs=[body_q, body_com, body_world, world_offsets, None],
+        inputs=[body_q, body_com, body_world, world_offsets, wp.transform_identity(), None],
         outputs=[com_world],
         device=body_q.device,
     )
@@ -143,7 +145,7 @@ def test_angular_velocity_com_stationary(
         angular_velocity: Angular velocity in world frame (wx, wy, wz)
         tolerance: Maximum allowed CoM drift
     """
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     # Create a body with the specified CoM offset
     initial_pos = wp.vec3(1.0, 2.0, 3.0)
@@ -232,7 +234,7 @@ def test_linear_velocity_com_moves(
         linear_velocity: Linear velocity in world frame (vx, vy, vz)
         tolerance: Maximum allowed displacement error
     """
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
     b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
@@ -306,7 +308,7 @@ def test_combined_velocity(
         com_offset: Center of mass offset in body frame (x, y, z)
         tolerance: Maximum allowed displacement error
     """
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
     b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
@@ -379,7 +381,7 @@ def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     (regression for #2704 — the MuJoCo bridge previously wrote both in world
     frame).
     """
-    builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
     parent_xform = wp.transform(wp.vec3(0.5, 0.6, 0.7), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0))
     body = builder.add_link(mass=1.0, inertia=wp.mat33(1, 0, 0, 0, 1, 0, 0, 0, 1))
     joint = builder.add_joint_free(parent=-1, child=body, parent_xform=parent_xform)
@@ -392,7 +394,8 @@ def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
     dt = 1e-2
-    solver.step(state_0, state_1, model.control(), model.contacts(), dt)
+    collision_pipeline = newton.CollisionPipeline(model)
+    solver.step(state_0, state_1, model.control(), collision_pipeline.contacts(), dt)
 
     # World gravity along -Z rotated into the parent frame R(x, 90°) is along -Y.
     np.testing.assert_allclose(state_1.joint_qd.numpy()[0:3], (0.0, -10.0 * dt, 0.0), atol=1e-5)
@@ -402,12 +405,63 @@ def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     np.testing.assert_allclose(state_1.body_qd.numpy()[body, 3:6], (0.0, 0.0, 0.0), atol=1e-5)
 
 
+def test_featherstone_d6_three_angular_body_qd_matches_fk(
+    test: TestBodyVelocity,
+    device,
+):
+    """SolverFeatherstone's reported body_qd should match eval_fk for a D6 joint
+    with three angular DOFs at a non-identity configuration.
+
+    The Featherstone state update and the public eval_fk must agree on the
+    world-frame angular velocity, which is the transported-axis sum rather than
+    the raw joint_qd.
+    """
+    cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+    builder.add_shape_sphere(child, radius=0.1)
+    j = builder.add_joint_d6(
+        parent=-1,
+        child=child,
+        angular_axes=[
+            cfg(axis=newton.Axis.X),
+            cfg(axis=newton.Axis.Y),
+            cfg(axis=newton.Axis.Z),
+        ],
+    )
+    builder.add_articulation([j])
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    state_0 = model.state()
+    state_1 = model.state()
+
+    q = state_0.joint_q.numpy()
+    qd = state_0.joint_qd.numpy()
+    q[:3] = [0.5, -0.4, 0.7]
+    qd[:3] = [0.9, -0.6, 0.3]
+    state_0.joint_q.assign(q)
+    state_0.joint_qd.assign(qd)
+
+    # Reference angular velocity from the (corrected) public FK.
+    reference = model.state()
+    reference.joint_q.assign(q)
+    reference.joint_qd.assign(qd)
+    newton.eval_fk(model, reference.joint_q, reference.joint_qd, reference)
+    expected = reference.body_qd.numpy()[child]
+
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    solver.step(state_0, state_1, model.control(), None, 1.0e-7)
+
+    np.testing.assert_allclose(state_1.body_qd.numpy()[child], expected, atol=1.0e-5, rtol=1.0e-6)
+
+
 def test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent(
     test: TestBodyVelocity,
     device,
 ):
     """Featherstone should preserve descendant FREE joint_qd in parent-frame coordinates."""
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     parent = builder.add_link(mass=1.0)
     child = builder.add_link(mass=1.0)
     builder.body_com[child] = wp.vec3(0.2, 0.0, 0.0)
@@ -563,6 +617,77 @@ def test_featherstone_free_distance_descendant_stays_inertial_under_parent_torqu
         np.linalg.norm(child_joint_qd),
         1.0e-1,
         "Descendant joint state did not pick up the compensating relative motion",
+    )
+
+
+def test_featherstone_root_free_distance_angular_velocity_keeps_body_stationary_with_offset_child_anchor(
+    test: TestBodyVelocity,
+    device,
+    joint_type,
+):
+    """A root FREE/DISTANCE body with non-identity child_xform and zero COM offset must not drift under pure angular velocity.
+
+    This directly exercises the FREE/DISTANCE branch of ``jcalc_integrate``: when
+    ``body_com`` is zero and the body spins in place, the body origin in world
+    space should stay fixed. A bug in the COM-to-anchor conversion shows up here
+    as a per-step translational drift proportional to the child-anchor offset.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    body = builder.add_link(mass=1.0)
+    builder.add_shape_sphere(body, radius=0.1)
+    builder.body_com[body] = wp.vec3(0.0, 0.0, 0.0)
+    child_xform = wp.transform(
+        wp.vec3(0.31, -0.17, 0.42),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -0.2, 0.4)), -0.9),
+    )
+    j0 = _add_free_distance_joint(
+        builder=builder,
+        joint_type=joint_type,
+        parent=-1,
+        child=body,
+        parent_xform=wp.transform_identity(),
+        child_xform=child_xform,
+    )
+    builder.add_articulation([j0])
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    q = model.joint_q.numpy().copy()
+    qd = model.joint_qd.numpy().copy()
+    qd_start = model.joint_qd_start.numpy()
+
+    # Pure angular velocity about the world origin; zero linear COM velocity.
+    qd[qd_start[j0] : qd_start[j0] + 3] = 0.0
+    qd[qd_start[j0] + 3 : qd_start[j0] + 6] = np.array([0.3, -0.2, 0.5], dtype=np.float32)
+
+    state_0.joint_q.assign(q)
+    state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    body_q_initial = state_0.body_q.numpy()[body].copy()
+
+    dt = 0.01
+    for _ in range(10):
+        solver.step(state_0, state_1, control, None, dt)
+        state_0, state_1 = state_1, state_0
+
+    body_q_final = state_0.body_q.numpy()[body]
+    origin_drift = np.linalg.norm(body_q_final[:3] - body_q_initial[:3])
+    test.assertLess(
+        origin_drift,
+        2.0e-4,
+        f"{_joint_type_name(joint_type)} root body origin drifted under pure angular velocity: {origin_drift}",
+    )
+
+    quat_dot = abs(np.dot(body_q_initial[3:7], body_q_final[3:7]))
+    test.assertLess(
+        quat_dot,
+        1.0 - 1.0e-4,
+        f"{_joint_type_name(joint_type)} root body did not rotate under pure angular velocity",
     )
 
 
@@ -820,6 +945,12 @@ for device in devices:
 
     add_function_test(
         TestBodyVelocity,
+        "test_featherstone_d6_three_angular_body_qd_matches_fk",
+        test_featherstone_d6_three_angular_body_qd_matches_fk,
+        devices=[device],
+    )
+    add_function_test(
+        TestBodyVelocity,
         "test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent",
         test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent,
         devices=[device],
@@ -847,6 +978,13 @@ for device in devices:
             TestBodyVelocity,
             f"test_featherstone_{joint_name}_descendant_stays_inertial_under_parent_torque",
             test_featherstone_free_distance_descendant_stays_inertial_under_parent_torque,
+            devices=[device],
+            joint_type=joint_type,
+        )
+        add_function_test(
+            TestBodyVelocity,
+            f"test_featherstone_root_{joint_name}_angular_velocity_keeps_body_stationary_with_offset_child_anchor",
+            test_featherstone_root_free_distance_angular_velocity_keeps_body_stationary_with_offset_child_anchor,
             devices=[device],
             joint_type=joint_type,
         )

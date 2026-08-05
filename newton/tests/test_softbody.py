@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -240,18 +241,22 @@ PYRAMID_PARTICLES = [
 def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets: np.ndarray, device):
     """Use add_soft_mesh (full builder path) to create a soft-body model."""
     builder = ModelBuilder()
-    builder.add_soft_mesh(
-        pos=(0.0, 0.0, 0.0),
-        rot=wp.quat_identity(),
-        scale=1.0,
-        vel=(0.0, 0.0, 0.0),
-        vertices=vertices,
-        indices=tets.flatten().tolist(),
-        density=1.0,
-        k_mu=1.0,
-        k_lambda=1.0,
-        k_damp=0.0,
-    )
+    # Keep the default surface-edge path covered; the pyramid surface is
+    # non-manifold by construction, so tolerate only that advisory.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Detected non-manifold edge")
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            vertices=vertices,
+            indices=tets.flatten().tolist(),
+            density=1.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+        )
     builder.color()
     return builder.finalize(device=device)
 
@@ -273,8 +278,8 @@ def _expected_tet_adjacency(particle_count: int, tet_indices: np.ndarray) -> tup
 
 def _assert_adjacency_matches_tets(test, adjacency, tet_indices: np.ndarray):
     """Check each recorded (tet_id, local_order) really maps back to the vertex being visited."""
-    offsets = adjacency.v_adj_tets_offsets.numpy()
-    flat = adjacency.v_adj_tets.numpy()
+    offsets = adjacency.v_adj_tets_offsets
+    flat = adjacency.v_adj_tets
     particle_count = len(offsets) - 1
     for v in range(particle_count):
         start, end = offsets[v], offsets[v + 1]
@@ -336,8 +341,8 @@ def test_tet_adjacency_single_tet(test, device):
     adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(4, tet_indices)
-    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
-    np.testing.assert_array_equal(adjacency.v_adj_tets.numpy(), exp_flat)
+    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets, exp_offsets)
+    np.testing.assert_array_equal(adjacency.v_adj_tets, exp_flat)
     _assert_adjacency_matches_tets(test, adjacency, tet_indices)
 
 
@@ -349,26 +354,30 @@ def test_tet_adjacency_complex_pyramid(test, device):
     adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(len(PYRAMID_PARTICLES), PYRAMID_TET_INDICES)
-    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
-    np.testing.assert_array_equal(adjacency.v_adj_tets.numpy(), exp_flat)
+    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets, exp_offsets)
+    np.testing.assert_array_equal(adjacency.v_adj_tets, exp_flat)
     _assert_adjacency_matches_tets(test, adjacency, PYRAMID_TET_INDICES)
 
 
 def test_tet_graph_coloring_is_valid(test, device):
     """Color a small tetrahedral mesh and verify the coloring respects graph adjacency."""
     builder = ModelBuilder()
-    builder.add_soft_mesh(
-        pos=(0.0, 0.0, 0.0),
-        rot=wp.quat_identity(),
-        scale=1.0,
-        vel=(0.0, 0.0, 0.0),
-        vertices=PYRAMID_PARTICLES,
-        indices=PYRAMID_TET_INDICES.flatten().tolist(),
-        density=1.0,
-        k_mu=1.0,
-        k_lambda=1.0,
-        k_damp=0.0,
-    )
+    # Keep the default surface-edge path covered; the pyramid surface is
+    # non-manifold by construction, so tolerate only that advisory.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Detected non-manifold edge")
+        builder.add_soft_mesh(
+            pos=(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=(0.0, 0.0, 0.0),
+            vertices=PYRAMID_PARTICLES,
+            indices=PYRAMID_TET_INDICES.flatten().tolist(),
+            density=1.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+        )
     builder.color()
 
     colors = _color_groups_to_array(test, len(PYRAMID_PARTICLES), builder.particle_color_groups)

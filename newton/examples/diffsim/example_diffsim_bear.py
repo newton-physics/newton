@@ -168,6 +168,8 @@ class Example:
         self.collision_pipeline.collide(self.states[0], self.contacts)
 
         # initialize the solver.
+        # Particle-particle contacts do not support correct gradients in SolverSemiImplicit.
+        self.model.particle_grid = None
         self.solver = newton.solvers.SolverSemiImplicit(self.model, enable_tri_contact=False)
 
         # model input
@@ -205,12 +207,17 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.forward_backward()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        self.tape = wp.Tape()
+        with wp.ScopedCapture() as capture:
+            with self.tape:
+                for i in range(self.sim_steps):
+                    self.forward(i)
+        self.forward_graph = capture.graph
+
+        # Avoid oversized graph executables for long training rollouts.
+        with wp.ScopedCapture() as capture:
+            self.tape.backward(self.loss)
+        self.backward_graph = capture.graph
 
     def forward_backward(self):
         self.tape = wp.Tape()
@@ -262,8 +269,9 @@ class Example:
         wp.launch(loss_kernel, dim=1, inputs=[self.coms[frame], self.loss], outputs=[])
 
     def step(self):
-        if self.graph:
-            wp.capture_launch(self.graph)
+        if self.forward_graph and self.backward_graph:
+            wp.capture_launch(self.forward_graph)
+            wp.capture_launch(self.backward_graph)
         else:
             self.forward_backward()
 

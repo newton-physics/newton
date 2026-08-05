@@ -40,6 +40,16 @@ class GaussianRenderMode(enum.IntEnum):
     """Quality Render Mode, collect hits until minimum transmittance is reached"""
 
 
+class TextureProjectionMode(enum.IntEnum):
+    """Projection mode for texture-mapped shapes without authored UVs."""
+
+    CUBIC = 0
+    """Project from the dominant local axis and sample once."""
+
+    TRIPLANAR = 1
+    """Blend samples from all three local axes using normal-based weights."""
+
+
 @dataclass(unsafe_hash=True)
 class RenderConfig:
     """Raytrace render settings shared across all worlds."""
@@ -48,7 +58,10 @@ class RenderConfig:
     """Include shapes that belong to no specific world."""
 
     enable_textures: bool = False
-    """Enable texture-mapped rendering for meshes."""
+    """Enable texture-mapped rendering for shapes."""
+
+    texture_projection_mode: int = TextureProjectionMode.CUBIC
+    """Projection mode for texture-mapped shapes without UVs."""
 
     enable_shadows: bool = False
     """Enable shadow rays for directional lights."""
@@ -57,10 +70,18 @@ class RenderConfig:
     """Enable ambient lighting for the scene."""
 
     enable_particles: bool = True
-    """Enable particle rendering."""
+    """Enable standalone particle rendering.
+
+    Particles referenced by rendered triangle or tetrahedral deformable topology
+    are rendered by the triangle mesh path and are not emitted as particle
+    spheres.
+    """
 
     enable_backface_culling: bool = True
     """Cull back-facing triangles."""
+
+    enable_fast_math: bool = True
+    """Compile render kernels with CUDA fast math."""
 
     output_color_space: ColorSpace = ColorSpace.SRGB
     """Color space for packed color and albedo outputs.

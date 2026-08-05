@@ -5,8 +5,7 @@
 # Example Robot ANYmal C Walk
 #
 # Shows how to simulate ANYmal C using SolverMuJoCo and control it with a
-# policy trained in PhysX, exported to ONNX and run via Newton's
-# Warp-backed :class:`~newton.utils.OnnxRuntime`.
+# PhysX-trained policy exported to ONNX and run with Warp-NN.
 #
 # Command: python -m newton.examples robot_anymal_c_walk
 #
@@ -14,10 +13,12 @@
 
 import numpy as np
 import warp as wp
+from warp_nn.runtime import OnnxRuntime
 
 import newton
 import newton.examples
 import newton.utils
+from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
@@ -25,25 +26,16 @@ mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
 
 @wp.kernel
 def _build_joint_target_q_kernel(
-    act: wp.array2d[float],  # (1, num_dofs) on device
-    joint_pos_initial: wp.array[float],  # (num_dofs,) on device
-    reorder: wp.array[int],  # (num_dofs,) mjc_to_physx mapping
+    act: wp.array2d[float],
+    joint_pos_initial: wp.array[float],
+    reorder: wp.array[int],
     action_scale: float,
     num_prefix_zeros: int,
-    out: wp.array[float],  # (num_prefix_zeros + num_dofs,)
+    out: wp.array[float],
 ):
-    """Reorder, scale, and prepend ``num_prefix_zeros`` zeros into ``out``.
-
-    Avoids the device->host->device round-trip the NumPy version did each
-    policy step and keeps the value on-device for graph capture. The
-    quaternion w-component at coord-index 6 is set to 1 (identity orientation).
-    """
     i = wp.tid()
     if i < num_prefix_zeros:
-        if i == 6:
-            out[i] = 1.0
-        else:
-            out[i] = 0.0
+        out[i] = 1.0 if i == 6 else 0.0
     else:
         j = i - num_prefix_zeros
         idx = reorder[j]
@@ -52,29 +44,15 @@ def _build_joint_target_q_kernel(
 
 @wp.kernel
 def _compute_obs_kernel(
-    joint_q: wp.array[float],  # full joint_q, [px,py,pz, qx,qy,qz,qw, q0..q11]
-    joint_qd: wp.array[float],  # full joint_qd, [vx,vy,vz, wx,wy,wz, qd0..qd11]
-    joint_pos_initial: wp.array[float],  # (12,) reference posture (lab order)
-    lab_to_mujoco_idx: wp.array[int],  # (12,) reordering for joint pos/vel
-    gravity_w: wp.vec3,  # gravity unit vector in world frame
-    command: wp.vec3,  # (fwd, lat, yaw) command
-    prev_act: wp.array2d[float],  # (1, 12) previous policy action
-    obs: wp.array2d[float],  # (1, 48) destination
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_pos_initial: wp.array[float],
+    lab_to_mujoco_idx: wp.array[int],
+    gravity_w: wp.vec3,
+    command: wp.vec3,
+    prev_act: wp.array2d[float],
+    obs: wp.array2d[float],
 ):
-    """Build the 48-element ANYmal observation entirely on-device.
-
-    Layout:
-      [0:3]   body-frame linear velocity
-      [3:6]   body-frame angular velocity
-      [6:9]   body-frame projected gravity
-      [9:12]  command (fwd, lat, yaw)
-      [12:24] joint position error, reordered to mujoco order
-      [24:36] joint velocity, reordered to mujoco order
-      [36:48] previous action
-    """
-    # qx,qy,qz,qw is the XYZW layout used by both the URDF importer and
-    # warp.quat (warp expects XYZW too); reading 4 floats this way matches
-    # the previous NumPy code exactly.
     q = wp.quat(joint_q[3], joint_q[4], joint_q[5], joint_q[6])
 
     lin_w = wp.vec3(joint_qd[0], joint_qd[1], joint_qd[2])
@@ -97,7 +75,6 @@ def _compute_obs_kernel(
     obs[0, 10] = command[1]
     obs[0, 11] = command[2]
 
-    # Reorder joint pos error / vel from lab order into mujoco order.
     for k in range(12):
         idx = lab_to_mujoco_idx[k]
         obs[0, 12 + k] = joint_q[7 + idx] - joint_pos_initial[idx]
@@ -178,7 +155,6 @@ class Example:
             self.model,
             use_mujoco_contacts=use_mujoco_contacts,
             solver="newton",
-            ls_parallel=False,
             ls_iterations=50,
             njmax=50,
             nconmax=100,
@@ -188,7 +164,7 @@ class Example:
 
         self.follow_cam = True
 
-        if hasattr(self.viewer, "register_ui_callback"):
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
 
             def toggle_follow_cam(imgui):
                 changed, follow_cam = imgui.checkbox("Follow Camera", self.follow_cam)
@@ -206,29 +182,29 @@ class Example:
         if use_mujoco_contacts:
             self.contacts = None
         else:
-            self.contacts = self.model.contacts()
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
-        # Load ONNX policy bundled with Newton (Warp-backed runtime, no torch dependency).
         policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.onnx")
-
-        self.policy = newton.utils.OnnxRuntime(policy_path, device=str(self.device))
+        self.policy = OnnxRuntime(policy_path, device=self.device)
         self._policy_input_name = self.policy.input_names[0]
         self._policy_output_name = self.policy.output_names[0]
+        validate_policy_io_shapes(
+            policy_path,
+            self._policy_input_name,
+            self._policy_output_name,
+            obs_width=48,
+            action_width=12,
+            context="example_robot_anymal_c_walk",
+        )
 
-        # Everything the policy step touches is on-device.  The host never
-        # syncs joint state, builds the obs vector, or copies the action back.
-        # Reference posture is sliced on-device to avoid a startup host sync.
         self._joint_pos_initial_wp = wp.clone(self.state_0.joint_q[7:])
         self._lab_to_mujoco_wp = wp.array(np.asarray(lab_to_mujoco, dtype=np.int32), dtype=wp.int32, device=self.device)
         self._mujoco_to_lab_wp = wp.array(np.asarray(mujoco_to_lab, dtype=np.int32), dtype=wp.int32, device=self.device)
         self._gravity_w = wp.vec3(0.0, 0.0, -1.0)
-        # Command is mutable host-side; the kernel reads it as a wp.vec3 value
-        # passed by argument, so it never lives in a device buffer.
         self._command = wp.vec3(1.0, 0.0, 0.0)
 
         self._obs_wp = wp.zeros((1, 48), dtype=wp.float32, device=self.device)
-        # Keeps the previous policy action on device so it can be fed back
-        # into the next obs without a host round-trip.
         self._prev_act_wp = wp.zeros((1, 12), dtype=wp.float32, device=self.device)
         self._action_scale = 0.5
         self._num_prefix_zeros = 7
@@ -238,29 +214,35 @@ class Example:
 
     def capture(self):
         self.graph = None
-        self.use_cuda_graph = False
-        # Mirror the gating used by example_robot_policy: graph capture only
-        # works when both CUDA and the Warp memory pool are available.
-        if self.device.is_cuda and wp.is_mempool_enabled(self.device):
-            self.use_cuda_graph = True
+        self.use_graph = False
+        if self.device.is_cpu or self.device.is_mempool_enabled:
+            self.use_graph = True
             self.control.joint_target_q = wp.zeros(
                 self._num_prefix_zeros + self._num_dofs, dtype=wp.float32, device=self.device
             )
-            # Capture the full step (obs build + policy + joint_target_q +
-            # substeps) so the host issues a single ``wp.capture_launch`` per
-            # frame and the GPU never waits on Python.
+            self._warmup_graph_capture()
             with wp.ScopedCapture() as capture:
                 self._policy_step()
                 self.simulate()
             self.graph = capture.graph
 
+    def _warmup_graph_capture(self):
+        state_0 = self.model.state()
+        state_1 = self.model.state()
+        state_0.assign(self.state_0)
+        state_1.assign(self.state_1)
+        prev_act = wp.clone(self._prev_act_wp)
+
+        # Initialize ONNX and solver lazy buffers before recording the graph.
+        self._policy_step()
+        self.simulate()
+
+        self.state_0.assign(state_0)
+        self.state_1.assign(state_1)
+        wp.copy(self._prev_act_wp, prev_act)
+
     def simulate(self):
-        # When the substep count is odd, swapping the python references at
-        # capture time leaves the captured graph reading from the *wrong*
-        # buffer on every replay.  Mirror the pattern used in
-        # example_robot_policy: copy state_1 into state_0 in-place on the
-        # last odd substep, swap python refs otherwise.
-        need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
+        need_state_copy = self.use_graph and self.sim_substeps % 2 == 1
 
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -268,7 +250,7 @@ class Example:
             self.viewer.apply_forces(self.state_0)
 
             if self.contacts is not None:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
@@ -278,7 +260,6 @@ class Example:
                 self.state_0, self.state_1 = self.state_1, self.state_0
 
     def _policy_step(self):
-        """Build obs -> run policy -> write joint_target_q.  All on-device."""
         wp.launch(
             _compute_obs_kernel,
             dim=1,
@@ -297,8 +278,6 @@ class Example:
         out = self.policy({self._policy_input_name: self._obs_wp})
         act_wp = out[self._policy_output_name]
 
-        # Build joint_target_q directly on device: reorder, scale,
-        # prepend the free-joint coords in a single launch.
         wp.launch(
             _build_joint_target_q_kernel,
             dim=self._num_prefix_zeros + self._num_dofs,
@@ -313,7 +292,6 @@ class Example:
             device=self.device,
         )
 
-        # Stash the action for the *next* obs build, on device (no sync).
         wp.copy(self._prev_act_wp, act_wp)
 
     def step(self):

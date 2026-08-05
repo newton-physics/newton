@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import argparse
 import os
 from dataclasses import dataclass
@@ -12,7 +14,6 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.types import float32, uint32
 from newton._src.solvers.kamino._src.models import get_basics_usd_assets_path
 from newton._src.solvers.kamino._src.models.builders.basics import build_cartpole
 from newton._src.solvers.kamino._src.models.builders.utils import add_ground_box, make_homogeneous_builder
@@ -38,14 +39,20 @@ class CartpoleActions:
 
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Kernels
 ###
 
 
 @wp.kernel
 def _test_control_callback(
-    state_t: wp.array[float32],
-    control_tau_j: wp.array[float32],
+    state_t: wp.array[wp.float32],
+    control_tau_j: wp.array[wp.float32],
 ):
     """
     An example control callback kernel.
@@ -54,15 +61,15 @@ def _test_control_callback(
     wid = wp.tid()
 
     # Define the time window for the active external force profile
-    t_start = float32(1.0)
-    t_end = float32(3.1)
+    t_start = wp.float32(1.0)
+    t_end = wp.float32(3.1)
 
     # Get the current time
     t = state_t[wid]
 
     # Apply a time-dependent external force
     if t >= 0.0 and t < t_start:
-        control_tau_j[wid * 2 + 0] = 1.0 * wp.randf(uint32(wid) + uint32(t), -1.0, 1.0)
+        control_tau_j[wid * 2 + 0] = 1.0 * wp.randf(wp.uint32(wid) + wp.uint32(t), -1.0, 1.0)
         control_tau_j[wid * 2 + 1] = 0.0
     elif t > t_start and t < t_end:
         control_tau_j[wid * 2 + 0] = 10.0
@@ -143,8 +150,9 @@ class Example:
             )
 
         # Set gravity
-        for w in range(self.builder.num_worlds):
-            self.builder.gravity[w].enabled = gravity
+        if not gravity:
+            for w in range(self.builder.num_worlds):
+                self.builder.set_gravity(wp.vec3f(0.0), w)
 
         # Demo of printing builder contents in debug logging mode
         msg.info("self.builder.gravity:\n%s", self.builder.gravity)
@@ -203,18 +211,18 @@ class Example:
         # Declare a PyTorch data interface for the current state and controls data
         self.states: CartpoleStates | None = None
         self.actions: CartpoleActions | None = None
-        self.world_mask_wp: wp.array | None = None
+        self.world_mask_wp: wp.array[wp.float32] | None = None
         self.world_mask_pt: torch.Tensor | None = None
 
         # Set default default reset joint coordinates
         _q_j_ref = [0.0, 0.0]
         q_j_ref = np.tile(_q_j_ref, reps=self.sim.model.size.num_worlds)
-        self.q_j_ref: wp.array = wp.array(q_j_ref, dtype=float32, device=self.device)
+        self.q_j_ref: wp.array[wp.float32] = wp.array(q_j_ref, dtype=wp.float32, device=self.device)
 
         # Set default default reset joint velocities
         _dq_j_ref = [0.0, 0.0]
         dq_j_ref = np.tile(_dq_j_ref, reps=self.sim.model.size.num_worlds)
-        self.dq_j_ref: wp.array = wp.array(dq_j_ref, dtype=float32, device=self.device)
+        self.dq_j_ref: wp.array[wp.float32] = wp.array(dq_j_ref, dtype=wp.float32, device=self.device)
 
         # Initialize RL interfaces
         self.make_rl_interface()
@@ -254,7 +262,7 @@ class Example:
             tau_j=wp.to_torch(self.sim.control.tau_j).reshape(num_worlds, num_joint_dofs),
         )
         # Create a world mask array+tensor for per-world selective resets
-        self.world_mask_wp = wp.ones((num_worlds,), dtype=wp.int32, device=self.device)
+        self.world_mask_wp = wp.ones((num_worlds,), dtype=wp.bool, device=self.device)
         self.world_mask_pt = wp.to_torch(self.world_mask_wp)
 
     def _reset_worlds(self):
@@ -410,7 +418,7 @@ if __name__ == "__main__":
         device = wp.get_preferred_device()
 
     # Determine if CUDA graphs should be used for execution
-    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+    can_use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device) and not wp.config.verify_cuda
     use_cuda_graph = can_use_cuda_graph and args.cuda_graph
     msg.info(f"can_use_cuda_graph: {can_use_cuda_graph}")
     msg.info(f"use_cuda_graph: {use_cuda_graph}")

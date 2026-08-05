@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
+import os
 
 import numpy as np
 import warp as wp
@@ -48,14 +49,18 @@ _SPHERE_SUBDIVISIONS = 4
 # Measuring a batch rather than a single build amortizes GPU boost-clock and
 # thermal transients that otherwise make this benchmark bimodal across AWS CI
 # runs (see #2534).  Counts decrease with resolution so each sample takes
-# roughly the same wall time (~0.5 s); each SDF is released immediately after
+# roughly the same wall time; each SDF is released immediately after
 # construction so peak GPU memory stays bounded to one SDF at a time.
 _BUILDS_PER_SAMPLE = {
     32: 20,
     64: 20,
     128: 10,
-    256: 5,
 }
+
+# The PR benchmark workflow sets this variable to keep its gating comparison
+# focused on the two lowest-cost resolutions.  The default retains resolution
+# 128 for the external nightly ASV collection.
+_BENCHMARK_RESOLUTIONS = [32, 64] if os.environ.get("NEWTON_ASV_PR_GATE") else [32, 64, 128]
 
 # Number of untimed warm-up builds in ``setup`` to push the GPU into a stable
 # boost-clock state before any timed iterations run.
@@ -146,7 +151,7 @@ def _create_icosphere(radius: float, subdivisions: int) -> tuple[np.ndarray, np.
 
 
 class FastBuildSdf:
-    """Time ``Mesh.build_sdf`` across a range of grid resolutions.
+    """Time ``Mesh.build_sdf`` across stable grid resolutions.
 
     Uses an icosphere with ~5120 triangles (subdivision 4), representative of
     typical collision meshes used with Newton's SDF contact path.
@@ -154,12 +159,11 @@ class FastBuildSdf:
     Each timed call builds :data:`_BUILDS_PER_SAMPLE` SDFs in a loop and
     releases each immediately, reporting the total wall time.  The batch size
     is scaled down at higher resolutions so every sample takes roughly the
-    same wall time.  This amortizes GPU boost-clock/thermal transients on AWS
-    CI runners that previously made single-build measurements bimodal across
-    runs (see #2534).
+    same wall time.  This amortizes GPU boost-clock and thermal transients on
+    AWS CI runners (see #2534).
     """
 
-    params = ([32, 64, 128, 256],)
+    params = (_BENCHMARK_RESOLUTIONS,)
     param_names = ["max_resolution"]
 
     rounds = 2
@@ -189,8 +193,7 @@ class FastBuildSdf:
         self._mesh.clear_sdf()
         wp.synchronize_device()
 
-    # Disabled, see #2534.
-    @skip_benchmark_if(True)
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_build_sdf(self, max_resolution):
         for _ in range(_BUILDS_PER_SAMPLE[max_resolution]):
             _build_sdf(self._mesh, max_resolution=max_resolution)

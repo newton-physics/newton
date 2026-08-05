@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -105,19 +104,6 @@ class TestViewerVisibleWorlds(unittest.TestCase):
         for w in [1, 2, 3, 5, 6]:
             assert_np_equal(offsets[w], np.array([0.0, 0.0, 0.0]), tol=1e-5)
 
-    def test_max_worlds_backward_compat(self):
-        """max_worlds param in set_model still works with deprecation warning."""
-        model = _build_multi_world_model(4)
-
-        viewer = ViewerNull(num_frames=1)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            viewer.set_model(model, max_worlds=2)
-            self.assertTrue(any(issubclass(x.category, DeprecationWarning) for x in w))
-
-        total = sum(len(b.scales) for b in viewer._shape_instances.values())
-        self.assertEqual(total, 2)
-
     def test_visible_worlds_mask(self):
         """Internal mask array is correctly built."""
         model = _build_multi_world_model(4)
@@ -177,7 +163,7 @@ def test_visible_worlds_transforms(test: TestViewerVisibleWorlds, device):
 
     viewer.begin_frame(0.0)
     for shapes in viewer._shape_instances.values():
-        shapes.update(state, world_offsets=viewer.world_offsets)
+        shapes.update(state, world_offsets=viewer.world_offsets, layer_xform=viewer.layer.xform)
 
     world_xforms = []
     for shapes in viewer._shape_instances.values():

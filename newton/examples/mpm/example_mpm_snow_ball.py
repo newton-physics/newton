@@ -32,6 +32,7 @@ class Example:
     """Snow ball rolling down a heightfield slope with per-particle snow rheology."""
 
     def __init__(self, viewer, options):
+        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = options.fps
         self.frame_dt = 1.0 / self.fps
@@ -104,7 +105,7 @@ class Example:
         self.init_materials(options, self.model)
 
         # Initialize MPM solver and add supplemental state variables
-        self.solver = SolverImplicitMPM(self.model, mpm_options)
+        self.solver = SolverImplicitMPM(self.model, config=mpm_options)
 
         self.viewer.set_model(self.model)
 

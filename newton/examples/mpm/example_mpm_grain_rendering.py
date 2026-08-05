@@ -35,7 +35,7 @@ class Example:
         mpm_options.voxel_size = args.voxel_size
 
         # Initialize MPM solver
-        self.solver = SolverImplicitMPM(self.model, mpm_options)
+        self.solver = SolverImplicitMPM(self.model, config=mpm_options)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

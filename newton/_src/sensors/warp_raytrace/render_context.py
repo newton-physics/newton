@@ -3,18 +3,17 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
 
-from ...geometry import Gaussian, Mesh
+from ...core import Axis
+from ...geometry import Gaussian, GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
 from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData
-from .utils import Utils
 
 
 class RenderContext:
@@ -26,38 +25,42 @@ class RenderContext:
         """Mutable flags tracking which render outputs are active."""
 
         num_gaussians: int = 0
+        has_particles: bool = False
         render_color: bool = False
         render_depth: bool = False
+        render_forward_depth: bool = False
         render_shape_index: bool = False
         render_normal: bool = False
         render_albedo: bool = False
         render_hdr_color: bool = False
 
     DEFAULT_CLEAR_DATA = ClearData()
+    DEFAULT_RENDER_CONFIG = Config()
 
-    def __init__(self, world_count: int = 1, config: Config | None = None, device: str | None = None):
+    def __init__(self, world_count: int = 1, device: str | None = None):
         """Create a new render context.
 
         Args:
             world_count: Number of simulation worlds to render.
-            config: Render configuration. If ``None``, uses default
-                :class:`Config` settings.
             device: Warp device string (e.g. ``"cuda:0"``). If ``None``,
                 the default Warp device is used.
         """
         self.device: str | None = device
-        self.utils = Utils(self)
-        self.config = config if config else RenderContext.Config()
         self.state = RenderContext.State()
 
         self.kernel_cache: dict[int, wp.Kernel] = {}
 
         self.world_count: int = world_count
+        self.up_axis: Axis = Axis.Z
 
         self.triangle_mesh: wp.Mesh | None = None
+        self.triangle_mesh_group_roots: wp.array[wp.int32] = wp.full(
+            self.world_count + 1, value=-1, dtype=wp.int32, device=self.device
+        )
 
         self.__triangle_points: wp.array[wp.vec3f] | None = None
         self.__triangle_indices: wp.array[wp.int32] | None = None
+        self.__topology_particle_mask: wp.array[wp.bool] | None = None
 
         self.__gaussians_data: wp.array[Gaussian.Data] | None = None
         self.__has_particles: bool = False
@@ -68,9 +71,12 @@ class RenderContext:
         self.shape_source_ptr: wp.array[wp.uint64] | None = None
         self.shape_texture_ids: wp.array[wp.int32] | None = None
         self.shape_mesh_data_ids: wp.array[wp.int32] | None = None
+        self.shape_render_type: wp.array[wp.int32] | None = None
 
         self.mesh_data: wp.array[MeshData] | None = None
         self.texture_data: wp.array[TextureData] | None = None
+
+        self.particle_world: wp.array[wp.int32] | None = None
 
         self.lights_active: wp.array[wp.bool] | None = None
         self.lights_type: wp.array[wp.int32] | None = None
@@ -83,11 +89,10 @@ class RenderContext:
 
         Populates shape, triangle, and texture data from *model*. BVH
         acceleration structures for shapes and particles live on
-        :class:`~newton.Model` and must be built via
-        :func:`~newton.geometry.build_bvh_shape` and
-        :func:`~newton.geometry.build_bvh_particle` before first use, then
-        refit via :func:`~newton.geometry.refit_bvh_shape` and
-        :func:`~newton.geometry.refit_bvh_particle` before later frames that
+        :class:`~newton.Model` and are built for the initial state by
+        :meth:`~newton.ModelBuilder.finalize`; refit them via
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` before later frames that
         change geometry.
 
         Args:
@@ -97,21 +102,54 @@ class RenderContext:
         """
 
         self.world_count = model.world_count
+        self.up_axis = Axis.from_any(model.up_axis)
         self.triangle_mesh = None
+        self.triangle_mesh_group_roots = wp.full(self.world_count + 1, value=-1, dtype=wp.int32, device=self.device)
         self.__triangle_points = None
         self.__triangle_indices = None
+        self.__topology_particle_mask = None
         self.__has_particles = False
+        self.state.has_particles = False
 
         self.shape_count_total = model.shape_count
         self.shape_world_index = model.shape_world
         self.shape_source_ptr = model.shape_source_ptr
 
+        # Heightfields are triangulated meshes (their wp.Mesh lives in
+        # shape_source_ptr), so the renderer treats them as meshes: it reuses
+        # the MESH ray-intersection path, which keeps heightfield handling out
+        # of the render kernels entirely (no extra shape-type branch, so no
+        # register/occupancy cost). The remapped type array is what the render
+        # kernel dispatches on; model.shape_type (HFIELD) is left untouched for
+        # collision and BVH bounds.
+        self.shape_render_type = model.shape_type
+        if model.shape_type is not None:
+            shape_type_np = model.shape_type.numpy()
+            if np.any(shape_type_np == int(GeoType.HFIELD)):
+                shape_type_np = shape_type_np.copy()
+                shape_type_np[shape_type_np == int(GeoType.HFIELD)] = int(GeoType.MESH)
+                self.shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
+
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.__has_particles = True
+            self.state.has_particles = True
+            topology_particle_mask = np.zeros(model.particle_q.shape[0], dtype=bool)
+
+            def mask_topology_particles(indices: wp.array[wp.int32] | None):
+                if indices is not None and indices.shape[0]:
+                    topology_particle_mask[indices.numpy().reshape(-1)] = True
+
             if model.tri_indices is not None and model.tri_indices.shape[0]:
                 self.triangle_points = model.particle_q
                 self.triangle_indices = model.tri_indices.flatten()
-                self.config.enable_particles = False
+                self.particle_world = model.particle_world
+                # Deformable-owned vertices render through the triangle mesh; tet indices catch
+                # interior volume particles that are not referenced by boundary triangles.
+                mask_topology_particles(model.tri_indices)
+                mask_topology_particles(model.tet_indices)
+            self.__topology_particle_mask = wp.array(
+                topology_particle_mask, dtype=wp.bool, device=model.particle_q.device
+            )
 
         self.shape_colors = model.shape_color
         self.gaussians_data = model.gaussians_data
@@ -121,11 +159,9 @@ class RenderContext:
     def update(self, model: Model, state: State):
         """Synchronize triangle-mesh points from the current simulation state.
 
-        Shape and particle BVHs are built and refit separately via
-        :func:`~newton.geometry.build_bvh_shape`,
-        :func:`~newton.geometry.build_bvh_particle`,
-        :func:`~newton.geometry.refit_bvh_shape`, and
-        :func:`~newton.geometry.refit_bvh_particle`.
+        Shape and particle BVHs are built by :meth:`~newton.ModelBuilder.finalize`
+        and refit separately via :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles`.
 
         Args:
             model: Newton simulation model (for shape metadata).
@@ -134,20 +170,24 @@ class RenderContext:
 
         if self.has_triangle_mesh:
             self.triangle_points = state.particle_q
+            self._sync_triangle_mesh()
 
     def render(
         self,
         model: Model,
         state: State,
+        *,
         camera_transforms: wp.array2d[wp.transformf],
         camera_rays: wp.array4d[wp.vec3f],
         color_image: wp.array4d[wp.uint32] | None = None,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         depth_image: wp.array4d[wp.float32] | None = None,
+        forward_depth_image: wp.array4d[wp.float32] | None = None,
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
         clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
-        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
+        config: RenderContext.Config | None = DEFAULT_RENDER_CONFIG,
         kernel_block_dim: int = 64,
     ):
         """Raytrace the scene into the provided output images.
@@ -156,12 +196,11 @@ class RenderContext:
         output arrays must have shape
         ``(world_count, camera_count, height, width)``.
 
-        Shape and particle BVHs on *model* must be built once via
-        :func:`~newton.geometry.build_bvh_shape` and
-        :func:`~newton.geometry.build_bvh_particle` before first use. Before
-        later frames that change geometry, refit them via
-        :func:`~newton.geometry.refit_bvh_shape` and
-        :func:`~newton.geometry.refit_bvh_particle` before calling this
+        Shape and particle BVHs on *model* are built for the initial state by
+        :meth:`~newton.ModelBuilder.finalize`. Before later frames that change
+        geometry, refit them via
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` before calling this
         method.
 
         Args:
@@ -173,38 +212,45 @@ class RenderContext:
                 ``(camera_count, height, width, 2)``.
             color_image: Output RGBA color buffer (packed ``uint32``).
             depth_image: Output depth buffer [m].
+            forward_depth_image: Output forward-depth buffer [m].
             shape_index_image: Output shape-index buffer.
             normal_image: Output world-space surface normals.
             albedo_image: Output albedo buffer (packed ``uint32``).
             clear_data: Values used to clear output images before
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
             hdr_color_image: Output linear HDR color buffer.
+            config: Render settings for this render call. If ``None``, uses
+                default :class:`Config` settings.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
+        if config is None:
+            config = RenderContext.DEFAULT_RENDER_CONFIG
+
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
-            raise RuntimeError("build_bvh_shape() must be called before rendering shapes.")
+            raise RuntimeError(
+                "Shape BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
+                "call model.bvh_build_shapes(state) for manually populated models."
+            )
 
         has_shapes = model.bvh_shape_count_enabled > 0
         if has_shapes and (model.bvh_shapes is None or model.bvh_shapes_group_roots is None):
-            raise RuntimeError("Shape BVH is incomplete; build it with build_bvh_shape().")
+            raise RuntimeError("Shape BVH is incomplete; rebuild it with model.bvh_build_shapes(state).")
 
         has_particles = (
-            self.config.enable_particles
+            config.enable_particles
+            and self.state.has_particles
             and self.__has_particles
             and state.particle_q is not None
             and state.particle_q.shape[0] > 0
         )
         if has_particles and (model.bvh_particles is None or model.bvh_particles_group_roots is None):
-            raise RuntimeError("build_bvh_particle() must be called before rendering particles.")
+            raise RuntimeError(
+                "Particle BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
+                "call model.bvh_build_particles(state) for manually populated models."
+            )
 
         if has_shapes or has_particles or self.has_triangle_mesh or self.has_gaussians:
-            if self.has_triangle_mesh:
-                if self.triangle_mesh is None:
-                    self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices, device=self.device)
-                else:
-                    self.triangle_mesh.refit()
-
             width = camera_rays.shape[2]
             height = camera_rays.shape[1]
             camera_count = camera_rays.shape[0]
@@ -214,6 +260,7 @@ class RenderContext:
 
             self.state.render_color = color_image is not None
             self.state.render_depth = depth_image is not None
+            self.state.render_forward_depth = forward_depth_image is not None
             self.state.render_shape_index = shape_index_image is not None
             self.state.render_normal = normal_image is not None
             self.state.render_albedo = albedo_image is not None
@@ -237,6 +284,11 @@ class RenderContext:
                     f"depth_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
 
+            if forward_depth_image is not None:
+                assert forward_depth_image.shape == (self.world_count, camera_count, height, width), (
+                    f"forward_depth_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                )
+
             if shape_index_image is not None:
                 assert shape_index_image.shape == (self.world_count, camera_count, height, width), (
                     f"shape_index_image size must match {self.world_count} x {camera_count} x {height} x {width}"
@@ -256,15 +308,13 @@ class RenderContext:
                     f"hdr_color_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
 
-            if self.config.render_order == RenderOrder.TILED:
-                assert width % self.config.tile_width == 0, "render width must be a multiple of tile_width"
-                assert height % self.config.tile_height == 0, "render height must be a multiple of tile_height"
-
             # Reshaping output images to one dimension, slightly improves performance in the Kernel.
             if color_image is not None:
                 color_image = color_image.reshape(self.world_count * camera_count * width * height)
             if depth_image is not None:
                 depth_image = depth_image.reshape(self.world_count * camera_count * width * height)
+            if forward_depth_image is not None:
+                forward_depth_image = forward_depth_image.reshape(self.world_count * camera_count * width * height)
             if shape_index_image is not None:
                 shape_index_image = shape_index_image.reshape(self.world_count * camera_count * width * height)
             if normal_image is not None:
@@ -274,17 +324,23 @@ class RenderContext:
             if hdr_color_image is not None:
                 hdr_color_image = hdr_color_image.reshape(self.world_count * camera_count * width * height)
 
-            kernel_cache_key = hash((self.config, self.state, clear_data))
+            kernel_cache_key = hash((config, self.state, clear_data))
             render_kernel = self.kernel_cache.get(kernel_cache_key)
             if render_kernel is None:
-                render_kernel = create_kernel(self.config, self.state, clear_data)
+                render_kernel = create_kernel(config, self.state, clear_data)
                 self.kernel_cache[kernel_cache_key] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
 
+            pixels_per_view = width * height
+            if config.render_order == RenderOrder.TILED:
+                tiles_x = (width + config.tile_width - 1) // config.tile_width
+                tiles_y = (height + config.tile_height - 1) // config.tile_height
+                pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
+
             wp.launch(
                 kernel=render_kernel,
-                dim=(self.world_count * camera_count * width * height),
+                dim=(self.world_count * camera_count * pixels_per_view),
                 inputs=[
                     # Model and config
                     self.world_count,
@@ -301,7 +357,7 @@ class RenderContext:
                     model.bvh_shapes_group_roots,
                     # Shapes
                     model.bvh_shape_enabled,
-                    model.shape_type,
+                    self.shape_render_type,  # HFIELD remapped to MESH; renderer treats heightfields as meshes
                     model.shape_scale,
                     self.shape_colors,
                     model.bvh_shape_world_transforms,
@@ -315,8 +371,10 @@ class RenderContext:
                     # Particles
                     state.particle_q if has_particles else None,
                     model.particle_radius if has_particles else None,
+                    self.__topology_particle_mask if has_particles else None,
                     # Triangle Mesh
                     self.triangle_mesh.id if self.triangle_mesh is not None else 0,
+                    self.triangle_mesh_group_roots,
                     # Meshes
                     self.mesh_data,
                     # Gaussians
@@ -332,6 +390,7 @@ class RenderContext:
                     # Outputs
                     color_image,
                     depth_image,
+                    forward_depth_image,
                     shape_index_image,
                     normal_image,
                     albedo_image,
@@ -340,12 +399,6 @@ class RenderContext:
                 device=self.device,
                 block_dim=kernel_block_dim,
             )
-
-    @property
-    def world_count_total(self) -> int:
-        if self.config.enable_global_world:
-            return self.world_count + 1
-        return self.world_count
 
     @property
     def light_count(self) -> int:
@@ -365,7 +418,7 @@ class RenderContext:
 
     @property
     def has_triangle_mesh(self) -> bool:
-        return self.__triangle_points is not None
+        return self.__triangle_points is not None and self.__triangle_indices is not None
 
     @property
     def has_gaussians(self) -> bool:
@@ -390,6 +443,32 @@ class RenderContext:
         if self.__triangle_indices is None or self.__triangle_indices.ptr != triangle_indices.ptr:
             self.triangle_mesh = None
         self.__triangle_indices = triangle_indices
+
+    def _sync_triangle_mesh(self):
+        if self.triangle_mesh is None:
+            triangle_indices_np = self.triangle_indices.reshape((-1, 3)).numpy()
+            particle_world_np = self.particle_world.numpy()
+            triangle_world_np = particle_world_np[triangle_indices_np[:, 0]]
+            triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(np.int32)
+            triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
+
+            self.triangle_mesh = wp.Mesh(
+                self.triangle_points, self.triangle_indices, groups=triangle_groups, bvh_constructor="sah"
+            )
+
+            wp.launch(
+                kernel=RenderContext._compute_mesh_group_roots,
+                dim=self.world_count + 1,
+                inputs=[self.triangle_mesh.id, self.triangle_mesh_group_roots],
+                device=self.device,
+            )
+        else:
+            self.triangle_mesh.refit()
+
+    @wp.kernel(enable_backward=False)
+    def _compute_mesh_group_roots(mesh_id: wp.uint64, out_group_roots: wp.array[wp.int32]):
+        group = wp.tid()
+        out_group_roots[group] = wp.mesh_get_group_root(mesh_id, group)
 
     @property
     def gaussians_data(self) -> wp.array[Gaussian.Data]:
@@ -479,81 +558,3 @@ class RenderContext:
 
         self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
         self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
-
-    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an output array for color rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_color_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_color_image_output is deprecated, use SensorTiledCamera.utils.create_color_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_color_image_output(width, height, camera_count)
-
-    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.float32]:
-        """Create an output array for depth rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_depth_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_depth_image_output is deprecated, use SensorTiledCamera.utils.create_depth_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_depth_image_output(width, height, camera_count)
-
-    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an output array for shape-index rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_shape_index_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_shape_index_image_output is deprecated, use SensorTiledCamera.utils.create_shape_index_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_shape_index_image_output(width, height, camera_count)
-
-    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
-        """Create an output array for surface-normal rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_normal_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_normal_image_output is deprecated, use SensorTiledCamera.utils.create_normal_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_normal_image_output(width, height, camera_count)
-
-    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an output array for albedo rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_albedo_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_albedo_image_output is deprecated, use SensorTiledCamera.utils.create_albedo_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_albedo_image_output(width, height, camera_count)
-
-    def create_hdr_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
-        """Create an output array for linear HDR color rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_hdr_color_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_hdr_color_image_output is deprecated, use SensorTiledCamera.utils.create_hdr_color_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_hdr_color_image_output(width, height, camera_count)

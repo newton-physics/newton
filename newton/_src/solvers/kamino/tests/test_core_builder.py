@@ -10,19 +10,14 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.core.types import Axis
 from newton._src.solvers.kamino._src.core.bodies import RigidBodyDescriptor
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.geometry import GeometryDescriptor
-from newton._src.solvers.kamino._src.core.gravity import (
-    GRAVITY_ACCEL_DEFAULT,
-    GRAVITY_DIREC_DEFAULT,
-    GRAVITY_NAME_DEFAULT,
-)
 from newton._src.solvers.kamino._src.core.joints import JointActuationType, JointDescriptor, JointDoFType
 from newton._src.solvers.kamino._src.core.materials import MaterialDescriptor
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.shapes import SphereShape
-from newton._src.solvers.kamino._src.core.types import Axis, mat33f, transformf, vec6f
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -188,6 +183,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(len(builder.geoms), 1)
         self.assertEqual(len(builder.geoms[0]), 0)
         self.assertEqual(len(builder.materials), 1)  # Default material is always created
+        np.testing.assert_array_equal(builder.gravity[0].vector, np.array([0.0, 0.0, -9.81], dtype=np.float32))
 
     def test_02_add_world(self):
         builder = ModelBuilderKamino()
@@ -197,9 +193,32 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.worlds[wid].wid, wid)
         self.assertEqual(builder.worlds[wid].name, "test_world")
         self.assertEqual(builder.up_axes[wid], Axis.Y)
-        self.assertEqual(builder.gravity[wid].name, GRAVITY_NAME_DEFAULT)
-        self.assertEqual(builder.gravity[wid].acceleration, GRAVITY_ACCEL_DEFAULT)
-        np.testing.assert_array_equal(builder.gravity[wid].direction, np.array(GRAVITY_DIREC_DEFAULT, dtype=np.float32))
+        np.testing.assert_array_equal(builder.gravity[wid].vector, np.array([0.0, -9.81, 0.0], dtype=np.float32))
+
+    def test_add_world_accepts_arraylike_gravity(self):
+        """Store a list gravity vector when adding a world."""
+        builder = ModelBuilderKamino()
+
+        wid = builder.add_world(gravity=[1.0, -2.0, 3.0])
+
+        np.testing.assert_array_equal(builder.gravity[wid].vector, np.array([1.0, -2.0, 3.0], dtype=np.float32))
+
+    def test_set_gravity_accepts_numpy_vector(self):
+        """Store a NumPy gravity vector after adding a world."""
+        builder = ModelBuilderKamino()
+        builder.add_world()
+
+        builder.set_gravity(np.array([1.0, -2.0, 3.0], dtype=np.float32))
+
+        np.testing.assert_array_equal(builder.gravity[0].vector, np.array([1.0, -2.0, 3.0], dtype=np.float32))
+
+    def test_set_gravity_rejects_invalid_vector_shape(self):
+        """Reject gravity vectors without exactly three components."""
+        builder = ModelBuilderKamino()
+        builder.add_world()
+
+        with self.assertRaisesRegex(ValueError, r"shape \(3,\)"):
+            builder.set_gravity([0.0, -9.81])
 
     def test_03_add_rigid_body(self):
         builder = ModelBuilderKamino()
@@ -208,9 +227,9 @@ class TestModelBuilder(unittest.TestCase):
         bid = builder.add_rigid_body(
             name="test_rigid_body",
             m_i=1.0,
-            i_I_i=mat33f(np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
             world_index=wid,
         )
 
@@ -221,7 +240,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.bodies[wid][bid].wid, wid)
         self.assertEqual(builder.bodies[wid][bid].m_i, 1.0)
         np.testing.assert_array_equal(builder.bodies[wid][bid].i_I_i, np.eye(3, dtype=np.float32).flatten())
-        np.testing.assert_array_equal(builder.bodies[wid][bid].q_i_0, np.array(transformf(), dtype=np.float32))
+        np.testing.assert_array_equal(builder.bodies[wid][bid].q_i_0, np.array(wp.transformf(), dtype=np.float32))
         np.testing.assert_array_equal(builder.bodies[wid][bid].u_i_0, np.zeros(6, dtype=np.float32))
 
     def test_04_add_rigid_body_descriptor(self):
@@ -231,9 +250,9 @@ class TestModelBuilder(unittest.TestCase):
         body = RigidBodyDescriptor(
             name="test_rigid_body",
             m_i=2.0,
-            i_I_i=mat33f(2.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(2.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         bid = builder.add_rigid_body_descriptor(body, world_index=wid)
 
@@ -244,7 +263,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.bodies[wid][bid].wid, wid)
         self.assertEqual(builder.bodies[wid][bid].m_i, 2.0)
         np.testing.assert_array_equal(builder.bodies[wid][bid].i_I_i, 2.0 * np.eye(3, dtype=np.float32).flatten())
-        np.testing.assert_array_equal(builder.bodies[wid][bid].q_i_0, np.array(transformf(), dtype=np.float32))
+        np.testing.assert_array_equal(builder.bodies[wid][bid].q_i_0, np.array(wp.transformf(), dtype=np.float32))
         np.testing.assert_array_equal(builder.bodies[wid][bid].u_i_0, np.zeros(6, dtype=np.float32))
 
     def test_05_add_duplicate_rigid_body(self):
@@ -254,9 +273,9 @@ class TestModelBuilder(unittest.TestCase):
         body_0 = RigidBodyDescriptor(
             name="test_rigid_body",
             m_i=2.0,
-            i_I_i=mat33f(2.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(2.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         builder.add_rigid_body_descriptor(body_0, world_index=wid)
 
@@ -271,16 +290,16 @@ class TestModelBuilder(unittest.TestCase):
         body_0 = RigidBodyDescriptor(
             name="test_rigid_body_0",
             m_i=2.0,
-            i_I_i=mat33f(2.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(2.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         body_1 = RigidBodyDescriptor(
             name="test_rigid_body_1",
             m_i=1.0,
-            i_I_i=mat33f(1.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(1.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         bid_0 = builder.add_rigid_body_descriptor(body_0, world_index=wid)
         bid_1 = builder.add_rigid_body_descriptor(body_1, world_index=wid)
@@ -321,16 +340,16 @@ class TestModelBuilder(unittest.TestCase):
         body_0 = RigidBodyDescriptor(
             name="test_rigid_body_0",
             m_i=2.0,
-            i_I_i=mat33f(2.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(2.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         body_1 = RigidBodyDescriptor(
             name="test_rigid_body_1",
             m_i=1.0,
-            i_I_i=mat33f(1.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(1.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         bid_0 = builder.add_rigid_body_descriptor(body_0, world_index=wid)
         bid_1 = builder.add_rigid_body_descriptor(body_1, world_index=wid)
@@ -401,9 +420,7 @@ class TestModelBuilder(unittest.TestCase):
         wid = builder.add_world(name="test_world", up_axis=Axis.Z)
         self.assertEqual(builder.num_materials, 1)  # Default material exists
 
-        material = MaterialDescriptor(
-            name="test_material", density=500.0, restitution=0.8, static_friction=0.6, dynamic_friction=0.4
-        )
+        material = MaterialDescriptor(name="test_material", restitution=0.8, static_friction=0.6, dynamic_friction=0.4)
 
         mid = builder.add_material(material=material)
         self.assertEqual(builder.num_materials, 2)
@@ -411,7 +428,6 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(mid, builder.materials[mid].mid)
         self.assertEqual(builder.materials[mid].name, "test_material")
         self.assertEqual(builder.materials[mid].wid, wid)
-        self.assertEqual(builder.materials[mid].density, 500.0)
         self.assertEqual(builder.materials[mid].restitution, 0.8)
         self.assertEqual(builder.materials[mid].static_friction, 0.6)
         self.assertEqual(builder.materials[mid].dynamic_friction, 0.4)
@@ -599,7 +615,7 @@ class TestModelBuilder(unittest.TestCase):
         msg.info("world_min_contacts: %s", world_min_contacts)
 
         # Check that the generated meta-data matches expected values for this model
-        expected_contacts_per_world = 2 * len(model_candidate_pairs) * 12  # 12 is the max contacts per pair
+        expected_contacts_per_world = len(model_candidate_pairs) * 8  # Box-box pairs generate up to 8 contacts.
         self.assertEqual(world_num_collidables[0], 5)
         self.assertEqual(model_num_collidables, 5)
         self.assertEqual(len(model_candidate_pairs), 6)
@@ -662,7 +678,7 @@ class TestModelBuilder(unittest.TestCase):
         msg.info("world_min_contacts: %s", world_min_contacts)
 
         # Check that the generated meta-data matches expected values for this model
-        expected_contacts_per_world = 2 * len(model_candidate_pairs) * 12  # 12 is the max contacts per pair
+        expected_contacts_per_world = len(model_candidate_pairs) * 8  # Box-box pairs generate up to 8 contacts.
         self.assertEqual(world_num_collidables[0], 3)
         self.assertEqual(model_num_collidables, 3)
         self.assertEqual(len(model_candidate_pairs), 2)
@@ -758,7 +774,7 @@ class TestModelBuilder(unittest.TestCase):
         msg.info("world_min_contacts: %s", world_min_contacts)
 
         # Check that the generated meta-data matches expected values for this model
-        expected_contacts_per_world = 2 * 6 * 12  # 12 is the max contacts per pair
+        expected_contacts_per_world = 6 * 8  # Six box-box pairs generate up to 8 contacts each.
         self.assertEqual(model_num_collidables, 5 * builder.num_worlds)
         self.assertEqual(world_num_collidables, [5] * builder.num_worlds)
         self.assertEqual(len(model_candidate_pairs), 6 * builder.num_worlds)

@@ -9,6 +9,12 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.contact_reduction_hydroelastic import (
+    FIXED_EXP_NONE,
+    _fixed_mantissa_bits,
+    _from_fixed,
+    _to_fixed,
+)
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -55,6 +61,20 @@ solvers = {
 }
 
 
+@wp.kernel
+def _test_fixed_point_extreme_exponents(
+    values: wp.array[wp.float32],
+    exponents: wp.array[wp.int32],
+    mantissa_bits: int,
+    fixed_values: wp.array[wp.int64],
+    roundtrip_values: wp.array[wp.float32],
+):
+    """Convert sentinel and high finite pressure contributions in fixed point."""
+    tid = wp.tid()
+    fixed_values[tid] = _to_fixed(values[tid], exponents[tid], mantissa_bits)
+    roundtrip_values[tid] = _from_fixed(fixed_values[tid], exponents[tid], mantissa_bits)
+
+
 # --- Helper functions ---
 
 
@@ -74,6 +94,7 @@ def build_stacked_cubes_scene(
     cube_half: float = CUBE_HALF_LARGE,
     reduce_contacts: bool = True,
     sdf_hydroelastic_config: HydroelasticSDF.Config | None = None,
+    deterministic: bool = False,
 ):
     """Build the stacked cubes scene and return all components for simulation."""
     cube_mesh = None
@@ -157,6 +178,7 @@ def build_stacked_cubes_scene(
         rigid_contact_max=rigid_contact_max,
         broad_phase="explicit",
         sdf_hydroelastic_config=sdf_hydroelastic_config,
+        deterministic=deterministic,
     )
 
     return model, solver, state_0, state_1, control, collision_pipeline, initial_positions, cube_half
@@ -324,6 +346,106 @@ def test_buffer_fraction_no_crash(test, device):
         reduced_count,
         f"Full buffers ({full_count}) produced significantly fewer contacts than reduced buffers ({reduced_count})",
     )
+
+
+def test_deterministic_hydroelastic_contacts(test, device, moment_matching=False):
+    """Produce bit-identical hydroelastic contacts across repeated collision calls."""
+    model, _, state, _, _, pipeline, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=lambda model: None,
+        shape_type=ShapeType.PRIMITIVE,
+        deterministic=True,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=True,
+            anchor_contact=True,
+            moment_matching=moment_matching,
+        ),
+    )
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    contacts = pipeline.contacts()
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+    test.assertTrue(hydro.config.reduce_contacts)
+    test.assertTrue(hydro.contact_reduction.deterministic)
+    snapshots = []
+    contact_fields = (
+        "rigid_contact_point_id",
+        "rigid_contact_shape0",
+        "rigid_contact_shape1",
+        "rigid_contact_point0",
+        "rigid_contact_point1",
+        "rigid_contact_offset0",
+        "rigid_contact_offset1",
+        "rigid_contact_normal",
+        "rigid_contact_margin0",
+        "rigid_contact_margin1",
+        "rigid_contact_tids",
+        "rigid_contact_stiffness",
+        "rigid_contact_damping",
+        "rigid_contact_friction",
+    )
+
+    for _ in range(5):
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        face_count = int(hydro.contact_reduction.contact_count.numpy()[0])
+        insert_failures = int(hydro.contact_reduction.reducer.ht_insert_failures.numpy()[0])
+        test.assertLess(face_count, hydro.max_num_face_contacts, "Hydroelastic face-contact buffer saturated")
+        test.assertEqual(insert_failures, 0, "Hydroelastic reduction hashtable insertion failed")
+        test.assertLess(count, contacts.rigid_contact_max, "Rigid-contact buffer saturated")
+
+        sort_keys = pipeline._sort_key_array.numpy()[:count]
+        test.assertEqual(len(np.unique(sort_keys)), count, "Hydroelastic contact sort keys must be unique")
+        snapshots.append((count, tuple(getattr(contacts, name).numpy()[:count].copy() for name in contact_fields)))
+
+    test.assertGreater(snapshots[0][0], 0)
+    for count, fields in snapshots[1:]:
+        test.assertEqual(count, snapshots[0][0])
+        for name, expected, actual in zip(contact_fields, snapshots[0][1], fields, strict=True):
+            np.testing.assert_array_equal(actual, expected, err_msg=name)
+
+
+def test_deterministic_hydroelastic_contacts_moment_matching(test, device):
+    """Keep hydroelastic contacts bit-identical when moment matching is enabled."""
+    test_deterministic_hydroelastic_contacts(test, device, moment_matching=True)
+
+
+def test_deterministic_hydroelastic_contacts_unreduced(test, device):
+    """Produce bit-identical hydroelastic contacts with contact reduction disabled.
+
+    The unreduced path exports straight from the contact buffer, so it has to
+    sort on the geometric fingerprint rather than the atomically assigned buffer
+    slot, which varies between runs.
+    """
+    model, _, state, _, _, pipeline, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=lambda model: None,
+        shape_type=ShapeType.PRIMITIVE,
+        deterministic=True,
+        reduce_contacts=False,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(reduce_contacts=False),
+    )
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    contacts = pipeline.contacts()
+    test.assertFalse(pipeline.hydroelastic_sdf.config.reduce_contacts)
+
+    snapshots = []
+    for _ in range(4):
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        snapshots.append(
+            (
+                count,
+                contacts.rigid_contact_point0.numpy()[:count].copy(),
+                contacts.rigid_contact_normal.numpy()[:count].copy(),
+            )
+        )
+
+    test.assertGreater(snapshots[0][0], 0)
+    for count, point0, normal in snapshots[1:]:
+        test.assertEqual(count, snapshots[0][0])
+        np.testing.assert_array_equal(point0, snapshots[0][1], err_msg="rigid_contact_point0")
+        np.testing.assert_array_equal(normal, snapshots[0][2], err_msg="rigid_contact_normal")
 
 
 def test_iso_scan_scratch_buffers_are_level_sized(test, device):
@@ -513,7 +635,7 @@ def _build_cube_sphere_scene(device, cube_half=0.1, sphere_radius=0.1):
     return model, state, sphere_body, rest_z
 
 
-def _make_pipelines(model, configs, rigid_contact_maxes=None):
+def _make_pipelines(model, configs, rigid_contact_maxes=None, deterministic=False):
     """Create collision pipelines and contacts for a list of HydroelasticSDF.Configs.
 
     Returns list of (pipeline, contacts) tuples.
@@ -522,12 +644,14 @@ def _make_pipelines(model, configs, rigid_contact_maxes=None):
         rigid_contact_maxes = [500] * len(configs)
     result = []
     for cfg, rcm in zip(configs, rigid_contact_maxes, strict=True):
-        pipe = newton.CollisionPipeline(model, rigid_contact_max=rcm, sdf_hydroelastic_config=cfg)
+        pipe = newton.CollisionPipeline(
+            model, rigid_contact_max=rcm, sdf_hydroelastic_config=cfg, deterministic=deterministic
+        )
         result.append((pipe, pipe.contacts()))
     return result
 
 
-def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False):
+def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False, deterministic=False):
     """Reduced and unreduced hydroelastic forces must agree within 1%."""
     model, state, sphere_body, rest_z = _build_cube_sphere_scene(device)
 
@@ -542,7 +666,7 @@ def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False)
         anchor_contact=False,
     )
     (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
-        model, [cfg_reduced, cfg_unreduced], [500, 20000]
+        model, [cfg_reduced, cfg_unreduced], [500, 20000], deterministic=deterministic
     )
 
     anchor_label = "with anchor" if anchor_contact else "without anchor"
@@ -583,7 +707,7 @@ def test_reduced_vs_unreduced_contact_forces_with_anchor_contact(test, device):
     test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=True)
 
 
-def test_reduced_vs_unreduced_contact_moments(test, device):
+def test_reduced_vs_unreduced_contact_moments(test, device, deterministic=False):
     """Reduced and unreduced hydroelastic moments must agree with moment_matching."""
     model, state, sphere_body, rest_z = _build_cube_sphere_scene(device)
 
@@ -599,7 +723,7 @@ def test_reduced_vs_unreduced_contact_moments(test, device):
         anchor_contact=False,
     )
     (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(
-        model, [cfg_reduced, cfg_unreduced], [500, 20000]
+        model, [cfg_reduced, cfg_unreduced], [500, 20000], deterministic=deterministic
     )
 
     # Filter to the cube-sphere shape pair (shape 1=cube, shape 2=sphere).
@@ -634,6 +758,25 @@ def test_reduced_vs_unreduced_contact_moments(test, device):
             )
 
 
+def test_reduced_vs_unreduced_contact_forces_deterministic(test, device):
+    """Reduced hydroelastic forces must still match when determinism is enabled.
+
+    Deterministic mode accumulates the aggregates that drive contact stiffness in
+    int64 fixed point, so this checks that path against the unreduced reference
+    rather than only against itself.
+    """
+    test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=True, deterministic=True)
+
+
+def test_reduced_vs_unreduced_contact_moments_deterministic(test, device):
+    """Reduced hydroelastic moments must still match when determinism is enabled.
+
+    Exercises the fixed-point unreduced/reduced friction-moment accumulators,
+    which deterministic mode computes in separate kernels from the default path.
+    """
+    test_reduced_vs_unreduced_contact_moments(test, device, deterministic=True)
+
+
 def _compute_total_friction_capacity(contacts, model, state, shape_pair=None):
     """Compute total lateral friction capacity: sum(friction_scale * normal_force)."""
     _, _, _, force_mag, friction = _extract_contact_forces(contacts, model, state, shape_pair=shape_pair)
@@ -642,34 +785,48 @@ def _compute_total_friction_capacity(contacts, model, state, shape_pair=None):
     return float((friction * force_mag).sum())
 
 
-def _build_cube_cube_scene(device, cube_half_lower=0.2, cube_half_upper=0.1):
+def _build_cube_cube_scene(device, cube_half_lower=0.2, cube_half_upper=0.1, kh_lower=1e9, kh_upper=1e9):
     """Build a big-cube-on-ground + small-cube-on-top scene for contact comparison tests.
 
     Returns (model, state, upper_body, rest_z).
     """
-    shape_cfg = newton.ModelBuilder.ShapeConfig(
-        sdf_max_resolution=128,
-        is_hydroelastic=True,
-        sdf_narrow_band_range=(-0.01, 0.01),
-        gap=0.01,
-        kh=1e9,
-    )
+
+    def shape_cfg(kh):
+        return newton.ModelBuilder.ShapeConfig(
+            sdf_max_resolution=128,
+            is_hydroelastic=True,
+            sdf_narrow_band_range=(-0.01, 0.01),
+            gap=0.01,
+            kh=kh,
+        )
+
     builder = newton.ModelBuilder()
-    builder.default_shape_cfg = shape_cfg
     builder.add_ground_plane()
 
     lower_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, cube_half_lower), wp.quat_identity()),
         label="lower_cube",
     )
-    builder.add_shape_box(body=lower_body, hx=cube_half_lower, hy=cube_half_lower, hz=cube_half_lower)
+    builder.add_shape_box(
+        body=lower_body,
+        hx=cube_half_lower,
+        hy=cube_half_lower,
+        hz=cube_half_lower,
+        cfg=shape_cfg(kh_lower),
+    )
 
     rest_z = 2 * cube_half_lower + cube_half_upper
     upper_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, rest_z), wp.quat_identity()),
         label="upper_cube",
     )
-    builder.add_shape_box(body=upper_body, hx=cube_half_upper, hy=cube_half_upper, hz=cube_half_upper)
+    builder.add_shape_box(
+        body=upper_body,
+        hx=cube_half_upper,
+        hy=cube_half_upper,
+        hz=cube_half_upper,
+        cfg=shape_cfg(kh_upper),
+    )
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -719,6 +876,369 @@ def test_reduced_vs_unreduced_contact_forces_cube_on_cube(test, device):
                 0.01,
                 f"pen={pen}: {label} diff {abs_diff:.4f} > 1% of |Fz| {abs(f_unr[2]):.4f}",
             )
+
+
+# User-defined pressure-callback equivalent to the built-in linear law
+# ``pressure = -kh * signed_depth``. Defined here (not imported from
+# ``newton._src``) to exercise the public callback API the same way user code
+# would, mirroring ``newton/examples/contacts/example_nut_bolt_hydro.py``.
+@wp.struct
+class _LinearPressureData:
+    shape_kh: wp.array[wp.float32]
+
+
+@wp.func
+def _linear_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: _LinearPressureData) -> wp.float32:
+    return -data.shape_kh[shape_idx] * signed_depth
+
+
+@wp.struct
+class _PowerPressureData:
+    shape_kh: wp.array[wp.float32]
+    depth_ref_m: wp.float32
+    exponent: wp.float32
+
+
+@wp.func
+def _power_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: _PowerPressureData) -> wp.float32:
+    kh = data.shape_kh[shape_idx]
+    if signed_depth >= 0.0:
+        return -kh * signed_depth
+    depth = -signed_depth
+    return kh * data.depth_ref_m * wp.pow(depth / data.depth_ref_m, data.exponent)
+
+
+def test_custom_pressure_func_matches_default_linear(test, device):
+    """User-supplied linear ``pressure_func`` must match the built-in default within 1%."""
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device)
+
+    pressure_data = _LinearPressureData()
+    pressure_data.shape_kh = model.shape_material_kh
+
+    cfg_default = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+    )
+    cfg_callback = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_linear_pressure,
+        pressure_data=pressure_data,
+    )
+    (pipe_default, contacts_default), (pipe_callback, contacts_callback) = _make_pipelines(
+        model, [cfg_default, cfg_callback], [50000, 50000]
+    )
+
+    for pen in [1e-4, 1e-3, 1e-2]:
+        upper_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, upper_z], device=device)
+
+        pipe_default.collide(state, contacts_default)
+        pipe_callback.collide(state, contacts_callback)
+
+        f_default = _compute_net_force(contacts_default, model, state)
+        f_callback = _compute_net_force(contacts_callback, model, state)
+
+        test.assertGreater(abs(f_default[2]), 0.0, f"pen={pen}: default Fz should be nonzero")
+        rel_z = abs(f_callback[2] - f_default[2]) / abs(f_default[2])
+        test.assertLess(
+            rel_z,
+            0.01,
+            f"pen={pen}: Fz mismatch {rel_z * 100:.2f}% (callback={f_callback[2]:.4f}, default={f_default[2]:.4f})",
+        )
+
+        for axis, label in [(0, "Fx"), (1, "Fy")]:
+            abs_diff = abs(f_callback[axis] - f_default[axis])
+            test.assertLess(
+                abs_diff / abs(f_default[2]),
+                0.01,
+                f"pen={pen}: {label} diff {abs_diff:.4f} > 1% of |Fz| {abs(f_default[2]):.4f}",
+            )
+
+
+def test_custom_pressure_func_matches_default_linear_with_stiffness_ratio(test, device):
+    """Exponent-1 power pressure must match the default for unequal stiffnesses."""
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device, kh_lower=1e9, kh_upper=1e10)
+
+    pressure_data = _PowerPressureData()
+    pressure_data.shape_kh = model.shape_material_kh
+    pressure_data.depth_ref_m = 1.0e-3
+    pressure_data.exponent = 1.0
+
+    cfg_default = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+    )
+    cfg_callback = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_power_pressure,
+        pressure_data=pressure_data,
+    )
+    (pipe_default, contacts_default), (pipe_callback, contacts_callback) = _make_pipelines(
+        model, [cfg_default, cfg_callback], [50000, 50000]
+    )
+
+    for pen in [1e-4, 5e-4, 1e-3]:
+        upper_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, upper_z], device=device)
+
+        pipe_default.collide(state, contacts_default)
+        pipe_callback.collide(state, contacts_callback)
+
+        f_default = _compute_net_force(contacts_default, model, state)
+        f_callback = _compute_net_force(contacts_callback, model, state)
+
+        test.assertGreater(abs(f_default[2]), 0.0, f"pen={pen}: default Fz should be nonzero")
+        rel_z = abs(f_callback[2] - f_default[2]) / abs(f_default[2])
+        test.assertLess(
+            rel_z,
+            0.01,
+            f"pen={pen}: unequal-kh Fz mismatch {rel_z * 100:.2f}% "
+            f"(callback={f_callback[2]:.4f}, default={f_default[2]:.4f})",
+        )
+
+        for axis, label in [(0, "Fx"), (1, "Fy")]:
+            abs_diff = abs(f_callback[axis] - f_default[axis])
+            test.assertLess(
+                abs_diff / abs(f_default[2]),
+                0.01,
+                f"pen={pen}: unequal-kh {label} diff {abs_diff:.4f} > 1% of |Fz| {abs(f_default[2]):.4f}",
+            )
+
+
+# Cubic pressure law for non-linear regression tests:
+# ``p = kh * (-d)^3``. Sign-preserving (cube of pen has same sign as pen) and
+# monotone non-increasing in signed_depth, satisfying the iso-surface
+# precondition. Per-face force becomes ``area * kh * (-d)^3``; for the cube-
+# cube scene where contact area is approximately constant in depth, total Fz
+# scales as ``|d|^3``.
+@wp.struct
+class _CubicPressureData:
+    shape_kh: wp.array[wp.float32]
+
+
+@wp.func
+def _cubic_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: _CubicPressureData) -> wp.float32:
+    pen = -signed_depth  # positive when penetrating
+    return data.shape_kh[shape_idx] * pen * pen * pen
+
+
+def test_custom_pressure_func_force_scales_with_pressure_law(test, device):
+    """Cubic pressure law must produce a steeper Fz(depth) curve than linear.
+
+    The contact area in a cube-on-cube scene is itself depth-dependent, so the
+    absolute force-vs-depth exponent is geometry-coupled. To isolate the
+    *pressure-law* contribution, this test compares the ratio ``F(2d)/F(d)``
+    under linear and cubic laws on the same geometry: the area scaling cancels,
+    leaving only the pressure-law factor (2x for linear, 8x for cubic). The
+    ratio-of-ratios should equal 4 regardless of how area scales with depth.
+    """
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device)
+
+    cubic_data = _CubicPressureData()
+    cubic_data.shape_kh = model.shape_material_kh
+    linear_data = _LinearPressureData()
+    linear_data.shape_kh = model.shape_material_kh
+
+    cfg_cubic = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_cubic_pressure,
+        pressure_data=cubic_data,
+    )
+    cfg_linear = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_linear_pressure,
+        pressure_data=linear_data,
+    )
+    (pipe_c, contacts_c), (pipe_l, contacts_l) = _make_pipelines(model, [cfg_cubic, cfg_linear], [50000, 50000])
+
+    def fz_at(pipe, contacts, pen):
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, rest_z - pen], device=device)
+        pipe.collide(state, contacts)
+        return abs(_compute_net_force(contacts, model, state)[2])
+
+    pen_d, pen_2d = 1e-3, 2e-3
+    f_l_d = fz_at(pipe_l, contacts_l, pen_d)
+    f_l_2d = fz_at(pipe_l, contacts_l, pen_2d)
+    f_c_d = fz_at(pipe_c, contacts_c, pen_d)
+    f_c_2d = fz_at(pipe_c, contacts_c, pen_2d)
+
+    test.assertGreater(f_l_d, 0.0)
+    test.assertGreater(f_c_d, 0.0)
+
+    linear_ratio = f_l_2d / f_l_d
+    cubic_ratio = f_c_2d / f_c_d
+
+    # Linear law's F-doubling ratio should be near 2 (force grows roughly with
+    # depth at constant patch area). Cubic pressure must produce a substantially
+    # steeper curve — if pressure_func were ignored downstream we'd see the
+    # same ratio as linear. Bounds are intentionally wide because MC vertex
+    # interpolation under a non-linear law shifts vertex positions along
+    # voxel edges, perturbing patch area in a depth-dependent way.
+    test.assertGreater(linear_ratio, 1.5, f"linear F(2d)/F(d) = {linear_ratio:.2f}")
+    test.assertLess(linear_ratio, 3.0, f"linear F(2d)/F(d) = {linear_ratio:.2f}")
+    test.assertGreater(
+        cubic_ratio,
+        4.0 * linear_ratio,
+        f"cubic ratio {cubic_ratio:.2f} vs linear {linear_ratio:.2f}: "
+        f"pressure_func may not be applied to per-contact force",
+    )
+
+
+def test_custom_pressure_func_reduced_matches_unreduced_cubic(test, device):
+    """Under a cubic pressure law, reduced and unreduced net force must still agree."""
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device)
+
+    pressure_data = _CubicPressureData()
+    pressure_data.shape_kh = model.shape_material_kh
+
+    cfg_red = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=True,
+        anchor_contact=False,
+        pressure_func=_cubic_pressure,
+        pressure_data=pressure_data,
+    )
+    cfg_unr = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_cubic_pressure,
+        pressure_data=pressure_data,
+    )
+    (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(model, [cfg_red, cfg_unr], [500, 50000])
+
+    for pen in [1e-3, 4e-3]:
+        upper_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, upper_z], device=device)
+        pipe_red.collide(state, contacts_red)
+        pipe_unr.collide(state, contacts_unr)
+
+        f_red = _compute_net_force(contacts_red, model, state)
+        f_unr = _compute_net_force(contacts_unr, model, state)
+        test.assertGreater(abs(f_unr[2]), 0.0, f"pen={pen}: unreduced cubic Fz should be nonzero")
+        rel_z = abs(f_red[2] - f_unr[2]) / abs(f_unr[2])
+        test.assertLess(
+            rel_z,
+            0.02,
+            f"pen={pen}: cubic reduced/unreduced Fz mismatch {rel_z * 100:.2f}% "
+            f"(red={f_red[2]:.4f}, unr={f_unr[2]:.4f})",
+        )
+
+
+@wp.struct
+class _DecoupledPressureData:
+    coeff: wp.float32  # Pa/m, fixed — deliberately independent of shape_material_kh
+
+
+@wp.func
+def _decoupled_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: _DecoupledPressureData) -> wp.float32:
+    # Linear in penetration but with a coefficient that does NOT read
+    # shape_material_kh. Models the documented custom-pressure_func case where
+    # the pressure magnitude is decoupled from the per-shape hydroelastic
+    # stiffness. The direction-reliability gate must not assume otherwise.
+    return -data.coeff * signed_depth
+
+
+def _build_offset_cube_sphere_scene(device, kh, cube_half=0.1, sphere_radius=0.1, x_offset=0.05):
+    """Cube-on-ground + sphere-on-cube offset laterally so the contact patch is
+    off-center (non-trivial center of pressure and tilted normals) and the
+    shape ``kh`` is configurable. Returns (model, state, sphere_body, rest_z)."""
+    shape_cfg = newton.ModelBuilder.ShapeConfig(
+        sdf_max_resolution=128,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-0.01, 0.01),
+        gap=0.01,
+        kh=kh,
+    )
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = shape_cfg
+    builder.add_ground_plane()
+
+    cube_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, cube_half), wp.quat_identity()),
+        label="cube",
+    )
+    builder.add_shape_box(body=cube_body, hx=cube_half, hy=cube_half, hz=cube_half)
+
+    rest_z = 2 * cube_half + sphere_radius
+    sphere_body = builder.add_body(
+        xform=wp.transform(wp.vec3(x_offset, 0.0, rest_z), wp.quat_identity()),
+        label="sphere",
+    )
+    builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    return model, state, sphere_body, rest_z
+
+
+def test_reduction_preserves_force_at_high_kh_decoupled_pressure(test, device):
+    """Reduction must preserve net force under a kh-decoupled pressure law at high kh.
+
+    The direction-reliability gate uses a pressure-law-agnostic geometric
+    depth-volume, so reduction must reproduce the unreduced aggregate force at
+    any stiffness and for any pressure law. This guards against a regression to a
+    pressure-scaled gate (e.g. dividing the aggregate force magnitude by
+    ``shape_material_kh`` before the ``EPS_LARGE`` comparison): under a custom
+    ``pressure_func`` whose magnitude does not scale with kh, a large kh would
+    drive that scaled magnitude below ``EPS_LARGE`` and silently disable anchor /
+    normal matching, so the reduced contacts would stop reproducing the unreduced
+    force. The sphere-over-edge geometry spreads the contact normals so the
+    resulting direction error is observable in the net force.
+    """
+    kh = 1.0e10
+    model, state, sphere_body, rest_z = _build_offset_cube_sphere_scene(device, kh=kh, x_offset=0.1)
+    pdata = _DecoupledPressureData()
+    pdata.coeff = 1.0e6
+    common = {"output_contact_surface": True, "pressure_func": _decoupled_pressure, "pressure_data": pdata}
+    cfg_red = HydroelasticSDF.Config(
+        reduce_contacts=True, anchor_contact=True, normal_matching=True, moment_matching=True, **common
+    )
+    cfg_unr = HydroelasticSDF.Config(reduce_contacts=False, anchor_contact=False, **common)
+    (pipe_red, c_red), (pipe_unr, c_unr) = _make_pipelines(model, [cfg_red, cfg_unr], [500, 20000])
+
+    for pen in (2e-3, 5e-3):
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, rest_z - pen], device=device)
+        pipe_red.collide(state, c_red)
+        pipe_unr.collide(state, c_unr)
+
+        f_red = _compute_net_force(c_red, model, state)
+        f_unr = _compute_net_force(c_unr, model, state)
+        fz = abs(f_unr[2])
+        test.assertGreater(fz, 0.0, f"pen={pen}: unreduced Fz should be nonzero")
+        rel = np.linalg.norm(f_red - f_unr) / fz
+        test.assertLess(
+            rel,
+            0.01,
+            f"pen={pen}: reduced net force deviates {rel * 100:.2f}% from unreduced at kh={kh:.0e} "
+            f"(red={f_red}, unr={f_unr})",
+        )
+
+
+def test_custom_pressure_func_requires_pressure_data(test, device):
+    """Setting ``pressure_func`` without ``pressure_data`` must raise."""
+    model, state, _, _ = _build_cube_cube_scene(device)
+    del state
+
+    cfg = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        pressure_func=_linear_pressure,
+        pressure_data=None,
+    )
+    with test.assertRaises(ValueError):
+        newton.CollisionPipeline(model, sdf_hydroelastic_config=cfg)
 
 
 def test_reduced_vs_unreduced_contact_moments_cube_on_cube(test, device):
@@ -881,7 +1401,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     inertia_lower = (1.0 / 6.0) * mass_lower * box_size_lower * box_size_lower
     I_m_lower = wp.mat33(inertia_lower, 0.0, 0.0, 0.0, inertia_lower, 0.0, 0.0, 0.0, inertia_lower)
 
-    builder = newton.ModelBuilder(gravity=-gravity)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
 
     lower_body_indices = []
     upper_body_indices = []
@@ -1060,10 +1580,91 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         )
 
 
+def test_convex_mesh_hydroelastic_contacts(test, device):
+    """SDF-backed convex meshes should be valid hydroelastic shapes."""
+    cube_mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    cube_mesh.build_sdf(max_resolution=32, narrow_band_range=(-0.1, 0.1), margin=0.02, device=device)
+
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True, gap=0.02)
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_convex_hull(body=body_a, mesh=cube_mesh, cfg=cfg)
+    builder.add_shape_convex_hull(body=body_b, mesh=cube_mesh, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    collision_pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="sap",
+        rigid_contact_max=256,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_mult_contact=2),
+    )
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(model.state(), contacts)
+
+    test.assertIsNotNone(collision_pipeline.hydroelastic_sdf)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_fixed_point_extreme_exponents(test, device):
+    """Handle sentinel and high finite pressure contributions without overflow."""
+    mantissa_bits = _fixed_mantissa_bits(1024)
+    high_value = np.finfo(np.float32).max
+    values_np = np.array([0.0, high_value, -high_value], dtype=np.float32)
+    exponents_np = np.array([int(FIXED_EXP_NONE), 127, 127], dtype=np.int32)
+    values = wp.array(values_np, dtype=wp.float32, device=device)
+    exponents = wp.array(exponents_np, dtype=wp.int32, device=device)
+    fixed_values = wp.empty(len(values_np), dtype=wp.int64, device=device)
+    roundtrip_values = wp.empty(len(values_np), dtype=wp.float32, device=device)
+
+    wp.launch(
+        _test_fixed_point_extreme_exponents,
+        dim=len(values_np),
+        inputs=[values, exponents, mantissa_bits, fixed_values, roundtrip_values],
+        device=device,
+    )
+
+    fixed_np = fixed_values.numpy()
+    roundtrip_np = roundtrip_values.numpy()
+    test.assertEqual(fixed_np[0], 0)
+    test.assertEqual(roundtrip_np[0], 0.0)
+    test.assertTrue(np.all(np.abs(fixed_np[1:]) < np.iinfo(np.int64).max))
+    np.testing.assert_array_equal(roundtrip_np[1:], values_np[1:])
+
+
 # --- Test class ---
 
 
 class TestHydroelastic(unittest.TestCase):
+    def test_fixed_point_extreme_exponents(self):
+        """Handle sentinel and high finite pressure contributions without overflow."""
+        test_fixed_point_extreme_exponents(self, wp.get_device("cpu"))
+
+    def test_fixed_point_accumulator_cannot_overflow(self):
+        """``_fixed_mantissa_bits`` keeps deterministic fixed-point sums inside int64.
+
+        A contribution equal to the entry maximum scales to just under
+        ``2**(bits + 1)``, because ``|x| / 2**exponent`` lies in ``[1, 2)``.  The
+        worst case is every term hitting that ceiling in the same entry, so the
+        chosen width must keep ``max_terms * 2**(bits + 1)`` below ``2**63``.
+        This bound is host-side only, so the test runs even on CPU-only CI.
+        """
+        int64_max = 2**63 - 1
+        for max_terms in (1, 2, 64, 7168, 28672, 1 << 20, 1835008, (1 << 24) + 1):
+            bits = _fixed_mantissa_bits(max_terms)
+            worst_case_sum = max_terms * 2 ** (bits + 1)
+            self.assertLessEqual(worst_case_sum, int64_max, msg=f"max_terms={max_terms}, bits={bits}")
+            # Must still beat float32's 24-bit significand by a wide margin.
+            self.assertGreater(bits, 24, msg=f"max_terms={max_terms}")
+
     def test_mc_edge_clamp_min_validation(self):
         """``HydroelasticSDF.Config.mc_edge_clamp_min`` validates its range at construction.
 
@@ -1175,8 +1776,48 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_convex_mesh_hydroelastic_contacts",
+    test_convex_mesh_hydroelastic_contacts,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_buffer_fraction_no_crash",
     test_buffer_fraction_no_crash,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_deterministic_hydroelastic_contacts",
+    test_deterministic_hydroelastic_contacts,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_fixed_point_extreme_exponents_cuda",
+    test_fixed_point_extreme_exponents,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_deterministic_hydroelastic_contacts_moment_matching",
+    test_deterministic_hydroelastic_contacts_moment_matching,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_deterministic_hydroelastic_contacts_unreduced",
+    test_deterministic_hydroelastic_contacts_unreduced,
     devices=cuda_devices,
     check_output=False,
 )
@@ -1220,6 +1861,22 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_forces_deterministic",
+    test_reduced_vs_unreduced_contact_forces_deterministic,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduced_vs_unreduced_contact_moments_deterministic",
+    test_reduced_vs_unreduced_contact_moments_deterministic,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_reduced_vs_unreduced_contact_moments",
     test_reduced_vs_unreduced_contact_moments,
     devices=cuda_devices,
@@ -1251,14 +1908,63 @@ add_function_test(
     check_output=False,
 )
 
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_matches_default_linear",
+    test_custom_pressure_func_matches_default_linear,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_matches_default_linear_with_stiffness_ratio",
+    test_custom_pressure_func_matches_default_linear_with_stiffness_ratio,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_force_scales_with_pressure_law",
+    test_custom_pressure_func_force_scales_with_pressure_law,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_reduced_matches_unreduced_cubic",
+    test_custom_pressure_func_reduced_matches_unreduced_cubic,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduction_preserves_force_at_high_kh_decoupled_pressure",
+    test_reduction_preserves_force_at_high_kh_decoupled_pressure,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_requires_pressure_data",
+    test_custom_pressure_func_requires_pressure_data,
+    devices=cuda_devices,
+)
+
 
 def test_no_degenerate_triangles_deep_penetration(test, device):
-    """Verify marching cubes produces no zero-area triangles and fewer than 2% near-degenerate triangles under deep interpenetration.
+    """Verify deep-penetration contact surfaces have stable face counts and are non-degenerate.
 
     Two hydroelastic boxes with controlled overlap are tested at multiple
     penetration depths and stiffness ratios.  The isosurface should be free
     of degenerate (zero-area) triangles that arise from vertex collapse at
-    SDF ridge boundaries.
+    SDF ridge boundaries. The deepest-penetration case is rebuilt repeatedly
+    to verify primitive SDF construction produces a stable contact-surface
+    face count.
 
     The edge-interpolation clamp
     (:attr:`HydroelasticSDF.Config.mc_edge_clamp_min`) is the mechanism that
@@ -1284,73 +1990,83 @@ def test_no_degenerate_triangles_deep_penetration(test, device):
         )
 
     configs = [
-        # (overlap, kh_a, kh_b, label)
-        (0.05, 1e10, 1e10, "equal stiffness 25% overlap"),
-        (0.10, 1e10, 1e10, "equal stiffness 50% overlap"),
-        (0.15, 1e10, 1e10, "equal stiffness 75% overlap"),
-        (0.19, 1e10, 1e10, "equal stiffness 95% overlap"),
-        (0.10, 1e10, 1e8, "asymmetric stiffness 50% overlap"),
+        # (overlap, kh_a, kh_b, repeats, label)
+        (0.05, 1e10, 1e10, 1, "equal stiffness 25% overlap"),
+        (0.10, 1e10, 1e10, 1, "equal stiffness 50% overlap"),
+        (0.15, 1e10, 1e10, 1, "equal stiffness 75% overlap"),
+        (0.19, 1e10, 1e10, 3, "equal stiffness 95% overlap"),
+        (0.10, 1e10, 1e8, 1, "asymmetric stiffness 50% overlap"),
     ]
 
-    for overlap, kh_a, kh_b, label in configs:
-        builder = newton.ModelBuilder()
-        body_a = builder.add_body(
-            xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()),
-        )
-        builder.add_shape_box(body=body_a, hx=box_half, hy=box_half, hz=box_half, cfg=make_cfg(kh_a))
+    for overlap, kh_a, kh_b, repeats, label in configs:
+        face_counts = []
+        for repeat in range(repeats):
+            run_label = f"{label}, run {repeat + 1}/{repeats}"
+            builder = newton.ModelBuilder()
+            body_a = builder.add_body(
+                xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()),
+            )
+            builder.add_shape_box(body=body_a, hx=box_half, hy=box_half, hz=box_half, cfg=make_cfg(kh_a))
 
-        z_b = box_half + 2.0 * box_half - overlap
-        body_b = builder.add_body(
-            xform=wp.transform(wp.vec3(0.0, 0.0, z_b), wp.quat_identity()),
-        )
-        builder.add_shape_box(body=body_b, hx=box_half, hy=box_half, hz=box_half, cfg=make_cfg(kh_b))
+            z_b = box_half + 2.0 * box_half - overlap
+            body_b = builder.add_body(
+                xform=wp.transform(wp.vec3(0.0, 0.0, z_b), wp.quat_identity()),
+            )
+            builder.add_shape_box(body=body_b, hx=box_half, hy=box_half, hz=box_half, cfg=make_cfg(kh_b))
 
-        model = builder.finalize(device=device)
-        state = model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            model = builder.finalize(device=device)
+            state = model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-        hydro_config = HydroelasticSDF.Config(
-            output_contact_surface=True,
-            reduce_contacts=False,
-            buffer_mult_iso=4,
-            buffer_mult_contact=4,
-            mc_edge_clamp_min=0.02,
-        )
-        collision_pipeline = newton.CollisionPipeline(
-            model,
-            rigid_contact_max=100000,
-            broad_phase="explicit",
-            sdf_hydroelastic_config=hydro_config,
-        )
-        contacts = collision_pipeline.contacts()
-        collision_pipeline.collide(state, contacts)
+            hydro_config = HydroelasticSDF.Config(
+                output_contact_surface=True,
+                reduce_contacts=False,
+                buffer_mult_iso=4,
+                buffer_mult_contact=4,
+                mc_edge_clamp_min=0.02,
+            )
+            collision_pipeline = newton.CollisionPipeline(
+                model,
+                rigid_contact_max=200000,
+                broad_phase="explicit",
+                sdf_hydroelastic_config=hydro_config,
+            )
+            contacts = collision_pipeline.contacts()
+            collision_pipeline.collide(state, contacts)
 
-        cs = collision_pipeline.hydroelastic_sdf.get_contact_surface()
-        test.assertIsNotNone(cs, f"[{label}] Expected contact surface")
+            cs = collision_pipeline.hydroelastic_sdf.get_contact_surface()
+            test.assertIsNotNone(cs, f"[{run_label}] Expected contact surface")
 
-        num_faces = int(cs.face_contact_count.numpy()[0])
-        test.assertGreater(num_faces, 0, f"[{label}] Expected non-zero face count")
+            num_faces = int(cs.face_contact_count.numpy()[0])
+            test.assertGreater(num_faces, 0, f"[{run_label}] Expected non-zero face count")
+            face_counts.append(num_faces)
 
-        vertices = cs.contact_surface_point.numpy()
-        v = vertices[: num_faces * 3].reshape(num_faces, 3, 3)
-        e1 = v[:, 1] - v[:, 0]
-        e2 = v[:, 2] - v[:, 0]
-        areas = 0.5 * np.linalg.norm(np.cross(e1, e2), axis=1)
+            vertices = cs.contact_surface_point.numpy()
+            v = vertices[: num_faces * 3].reshape(num_faces, 3, 3)
+            e1 = v[:, 1] - v[:, 0]
+            e2 = v[:, 2] - v[:, 0]
+            areas = 0.5 * np.linalg.norm(np.cross(e1, e2), axis=1)
 
-        num_zero = int((areas < 1e-20).sum())
+            num_zero = int((areas < 1e-20).sum())
+            test.assertEqual(
+                num_zero,
+                0,
+                (f"[{run_label}] Found {num_zero}/{num_faces} zero-area triangles ({num_zero / num_faces * 100:.1f}%)"),
+            )
+
+            median_area = np.median(areas)
+            num_degen = int((areas < 0.01 * median_area).sum())
+            degen_pct = num_degen / num_faces * 100
+            test.assertLess(
+                degen_pct,
+                2.0,
+                f"[{run_label}] {degen_pct:.1f}% degenerate triangles (< 1% median area); expected < 2%",
+            )
+
         test.assertEqual(
-            num_zero,
-            0,
-            f"[{label}] Found {num_zero}/{num_faces} zero-area triangles ({num_zero / num_faces * 100:.1f}%)",
-        )
-
-        median_area = np.median(areas)
-        num_degen = int((areas < 0.01 * median_area).sum())
-        degen_pct = num_degen / num_faces * 100
-        test.assertLess(
-            degen_pct,
-            2.0,
-            f"[{label}] {degen_pct:.1f}% degenerate triangles (< 1% median area); expected < 2%",
+            len(set(face_counts)),
+            1,
+            f"[{label}] Contact-surface face count changed across SDF rebuilds: {face_counts}",
         )
 
 

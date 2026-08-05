@@ -124,7 +124,7 @@ class TestKinematicLinks(unittest.TestCase):
         sim_dt = 1.0 / 60.0
         applied_wrench = np.array([200.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
-        builder = ModelBuilder(gravity=0.0)
+        builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
@@ -148,7 +148,7 @@ class TestKinematicLinks(unittest.TestCase):
         flags = model.body_flags.numpy()
         flags[body] = int(BodyFlags.DYNAMIC)
         model.body_flags.assign(flags)
-        solver.notify_model_changed(newton.solvers.SolverNotifyFlags.BODY_PROPERTIES)
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
         state_0.clear_forces()
         _set_body_wrench(state_0, body, applied_wrench)
@@ -160,6 +160,60 @@ class TestKinematicLinks(unittest.TestCase):
             1.0e-2,
             "Dynamic body should move on the first step after a kinematic toggle.",
         )
+
+    def test_immovable_contact_pair_filtering(self):
+        for shape_a, shape_b in [
+            ("kinematic", "kinematic"),
+            ("static", "kinematic"),
+            ("kinematic", "static"),
+            ("static", "static"),
+        ]:
+            model = _build_contact_pair(shape_a, shape_b)
+            with self.subTest(shape_a=shape_a, shape_b=shape_b, model_pair_superset=True):
+                self.assertEqual(model.shape_contact_pair_count, 1)
+            for broad_phase in ("explicit", "nxn", "sap"):
+                with self.subTest(
+                    shape_a=shape_a,
+                    shape_b=shape_b,
+                    broad_phase=broad_phase,
+                    include_static_kinematic_pairs=False,
+                ):
+                    count = _rigid_contact_count(
+                        model,
+                        broad_phase=broad_phase,
+                        include_static_kinematic_pairs=False,
+                    )
+                    self.assertEqual(count, 0)
+
+                with self.subTest(
+                    shape_a=shape_a,
+                    shape_b=shape_b,
+                    broad_phase=broad_phase,
+                    include_static_kinematic_pairs=True,
+                ):
+                    count = _rigid_contact_count(
+                        model,
+                        broad_phase=broad_phase,
+                        include_static_kinematic_pairs=True,
+                    )
+                    self.assertGreater(count, 0)
+
+    def test_immovable_filter_does_not_remove_dynamic_pairs(self):
+        for shape_a, shape_b in [
+            ("dynamic", "static"),
+            ("static", "dynamic"),
+            ("dynamic", "kinematic"),
+            ("kinematic", "dynamic"),
+        ]:
+            model = _build_contact_pair(shape_a, shape_b)
+            for broad_phase in ("explicit", "nxn", "sap"):
+                with self.subTest(shape_a=shape_a, shape_b=shape_b, broad_phase=broad_phase):
+                    count = _rigid_contact_count(
+                        model,
+                        broad_phase=broad_phase,
+                        include_static_kinematic_pairs=False,
+                    )
+                    self.assertGreater(count, 0)
 
 
 class TestKinematicLinksCanonical(unittest.TestCase):
@@ -174,7 +228,10 @@ def _uses_maximal_coordinates(solver) -> bool:
 
 
 def _create_contacts(model: newton.Model, solver):
-    return model.contacts() if not isinstance(solver, newton.solvers.SolverMuJoCo) else None
+    if isinstance(solver, newton.solvers.SolverMuJoCo):
+        return None, None
+    collision_pipeline = newton.CollisionPipeline(model)
+    return collision_pipeline, collision_pipeline.contacts()
 
 
 def _find_joint_for_child(model: newton.Model, child: int) -> int:
@@ -202,8 +259,50 @@ def _configure_contact_defaults(builder: ModelBuilder) -> None:
     builder.default_shape_cfg.kf = 0.5
 
 
+def _build_contact_pair(shape_a: str, shape_b: str) -> newton.Model:
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    _configure_contact_defaults(builder)
+
+    def add_sphere(kind: str, x: float) -> None:
+        xform = wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity())
+        if kind == "static":
+            builder.add_shape_sphere(-1, xform=xform, radius=0.5)
+        elif kind == "kinematic":
+            body = builder.add_body(xform=xform, mass=1.0, is_kinematic=True)
+            builder.add_shape_sphere(body, radius=0.5)
+        elif kind == "dynamic":
+            body = builder.add_body(xform=xform, mass=1.0)
+            builder.add_shape_sphere(body, radius=0.5)
+        else:
+            raise ValueError(f"Unsupported shape kind: {kind}")
+
+    add_sphere(shape_a, -0.25)
+    add_sphere(shape_b, 0.25)
+    # Static shapes share the world body and are filtered as a same-body pair
+    # by default. Clear that independent filter so this test isolates the
+    # broad phase's immovable-pair option.
+    builder.shape_collision_filter_pairs.clear()
+    return builder.finalize(requires_grad=False)
+
+
+def _rigid_contact_count(
+    model: newton.Model,
+    *,
+    broad_phase: str = "explicit",
+    include_static_kinematic_pairs: bool = True,
+) -> int:
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase=broad_phase,
+        include_static_kinematic_pairs=include_static_kinematic_pairs,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    return int(contacts.rigid_contact_count.numpy()[0])
+
+
 def _build_free_root_scene(device):
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     kinematic_body = builder.add_body(
@@ -228,7 +327,7 @@ def _build_free_root_scene(device):
 
 
 def _build_revolute_root_pendulum_scene(device):
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     root = builder.add_link(mass=1.0, is_kinematic=True, label="kinematic_root")
@@ -272,7 +371,7 @@ def _build_revolute_root_pendulum_scene(device):
 
 
 def _build_fixed_root_scene(device):
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     static_body = builder.add_link(
@@ -311,7 +410,7 @@ def test_kinematic_free_base_prescribed_motion(
     def run_once(apply_force: bool):
         model, kinematic_body, probe_body, kinematic_joint = _build_free_root_scene(device)
         solver = solver_fn(model)
-        contacts = _create_contacts(model, solver)
+        collision_pipeline, contacts = _create_contacts(model, solver)
         state_0, state_1 = model.state(), model.state()
 
         q_start = int(model.joint_q_start.numpy()[kinematic_joint])
@@ -338,7 +437,7 @@ def test_kinematic_free_base_prescribed_motion(
                 _set_body_wrench(state_0, kinematic_body, KINEMATIC_TEST_WRENCH)
 
             if contacts is not None:
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
 
             solver.step(state_0, state_1, None, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
@@ -395,7 +494,7 @@ def test_kinematic_revolute_root_pendulum_prescribed_motion(
     def run_once(apply_force: bool):
         model, root_body, pendulum_body, probe_body, root_joint = _build_revolute_root_pendulum_scene(device)
         solver = solver_fn(model)
-        contacts = _create_contacts(model, solver)
+        collision_pipeline, contacts = _create_contacts(model, solver)
         state_0, state_1 = model.state(), model.state()
 
         root_q_start = int(model.joint_q_start.numpy()[root_joint])
@@ -433,7 +532,7 @@ def test_kinematic_revolute_root_pendulum_prescribed_motion(
                 _set_body_wrench(state_0, root_body, KINEMATIC_TEST_WRENCH)
 
             if contacts is not None:
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
 
             solver.step(state_0, state_1, None, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
@@ -488,7 +587,7 @@ def test_kinematic_fixed_root_static_force_immune(
     def run_once(apply_force: bool):
         model, static_body, probe_body, probe_joint = _build_fixed_root_scene(device)
         solver = solver_fn(model)
-        contacts = _create_contacts(model, solver)
+        collision_pipeline, contacts = _create_contacts(model, solver)
         state_0, state_1 = model.state(), model.state()
 
         probe_qd_start = int(model.joint_qd_start.numpy()[probe_joint])
@@ -505,7 +604,7 @@ def test_kinematic_fixed_root_static_force_immune(
                 _set_body_wrench(state_0, static_body, KINEMATIC_TEST_WRENCH)
 
             if contacts is not None:
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
 
             solver.step(state_0, state_1, None, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
@@ -548,7 +647,7 @@ def test_kinematic_runtime_toggle(
     sim_dt = 1.0 / 240.0
     phase_steps = 60
 
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         mass=1.0,
@@ -559,7 +658,7 @@ def test_kinematic_runtime_toggle(
     builder.color()
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    contacts = _create_contacts(model, solver)
+    collision_pipeline, contacts = _create_contacts(model, solver)
 
     state_0, state_1 = model.state(), model.state()
     applied_wrench = np.array([10.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -569,7 +668,7 @@ def test_kinematic_runtime_toggle(
         state_0.clear_forces()
         _set_body_wrench(state_0, body, applied_wrench)
         if contacts is not None:
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, None, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
 
@@ -580,14 +679,14 @@ def test_kinematic_runtime_toggle(
     flags = model.body_flags.numpy()
     flags[body] = int(BodyFlags.DYNAMIC)
     model.body_flags.assign(flags)
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.BODY_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
     # Phase 2: body is now dynamic — should move under applied force.
     for _ in range(phase_steps):
         state_0.clear_forces()
         _set_body_wrench(state_0, body, applied_wrench)
         if contacts is not None:
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, None, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
 
@@ -598,7 +697,7 @@ def test_kinematic_runtime_toggle(
     flags = model.body_flags.numpy()
     flags[body] = int(BodyFlags.KINEMATIC)
     model.body_flags.assign(flags)
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.BODY_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
     pos_before_rekinematic = state_0.body_q.numpy()[body, :3].copy()
 
@@ -607,7 +706,7 @@ def test_kinematic_runtime_toggle(
         state_0.clear_forces()
         _set_body_wrench(state_0, body, applied_wrench)
         if contacts is not None:
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, None, contacts, sim_dt)
         state_0, state_1 = state_1, state_0
 

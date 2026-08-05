@@ -27,7 +27,6 @@ from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_orig
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
-from newton._src.solvers.kamino._src.core.types import transformf, vec6f
 from newton._src.solvers.kamino._src.geometry import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino, convert_contacts_newton_to_kamino
@@ -35,6 +34,7 @@ from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino._src.utils.viewer import Color3, ViewerConfig
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.viewer import ViewerGL
 
 
@@ -47,9 +47,10 @@ class SimulatorFromNewton:
     model, state, control, and solver objects.
 
     When *use_newton_collisions* is ``True`` (required for heightfield /
-    mesh terrain), Newton's own :meth:`~newton.Model.collide` pipeline
-    runs each step and the resulting contacts are converted to Kamino
-    format via :func:`convert_contacts_newton_to_kamino`.
+    mesh terrain), Newton's :class:`~newton.CollisionPipeline` runs each
+    step via :meth:`~newton.CollisionPipeline.collide`, and the resulting
+    contacts are converted to Kamino format via
+    :func:`convert_contacts_newton_to_kamino`.
     """
 
     def __init__(
@@ -81,7 +82,8 @@ class SimulatorFromNewton:
         if use_newton_collisions:
             self._newton_model = newton_model
             self._newton_state = newton_model.state()
-            self._newton_contacts = newton_model.contacts()
+            self._newton_collision_pipeline = newton.CollisionPipeline(newton_model)
+            self._newton_contacts = self._newton_collision_pipeline.contacts()
             per_world = max(1024, newton_model.rigid_contact_max // max(newton_model.world_count, 1))
             if config.collision_detector.max_contacts_per_world is not None:
                 per_world = min(per_world, config.collision_detector.max_contacts_per_world)
@@ -90,6 +92,7 @@ class SimulatorFromNewton:
         else:
             self._newton_model = None
             self._newton_state = None
+            self._newton_collision_pipeline = None
             self._newton_contacts = None
             self._collision_detector = CollisionDetector(
                 model=self._model,
@@ -105,7 +108,7 @@ class SimulatorFromNewton:
         )
 
         # Initialize state
-        self._solver.reset(state_out=self._state_n)
+        self._solver.reset(state=self._state_n)
         self._state_p.copy_from(self._state_n)
 
     @property
@@ -145,7 +148,7 @@ class SimulatorFromNewton:
             body_q_com=state_kamino.q_i,
             body_q=self._newton_state.body_q,
         )
-        self._newton_model.collide(self._newton_state, self._newton_contacts)
+        self._newton_collision_pipeline.collide(self._newton_state, self._newton_contacts)
         convert_contacts_newton_to_kamino(
             self._newton_model,
             self._newton_state,
@@ -184,9 +187,9 @@ class SimulatorFromNewton:
         """Reset the simulation state.
 
         Keyword arguments are forwarded to :meth:`SolverKaminoImpl.reset`
-        (e.g. ``world_mask``, ``joint_q``, ``joint_u``, ``base_q``, ``base_u``).
+        (e.g. ``world_mask``, ``config``).
         """
-        self._solver.reset(state_out=self._state_n, **kwargs)
+        self._solver.reset(state=self._state_n, **kwargs)
         self._state_p.copy_from(self._state_n)
 
 
@@ -436,6 +439,11 @@ class RigidBodySim:
         njd = self.sim.model.size.max_of_num_joint_dofs
         nb = self.sim.model.size.max_of_num_bodies
 
+        # Current code below assumes homogenous worlds and coords = dofs
+        # To adapt if these assertions trigger
+        assert self.sim.model.size.sum_of_num_joint_coords == nw * njc
+        assert njc == njd
+
         # State tensors (read-only views into simulator)
         # q_j uses generalized coordinates (njc), dq_j uses DOFs (njd)
         self._q_j = wp.to_torch(self.sim.state.q_j).reshape(nw, njc)
@@ -449,16 +457,18 @@ class RigidBodySim:
         self._tau_j_ref = wp.to_torch(self.sim.control.tau_j_ref).reshape(nw, njd)
 
         # World mask for selective resets
-        self._world_mask_wp = wp.zeros((nw,), dtype=wp.int32, device=self._device)
+        self._world_mask_wp = wp.zeros((nw,), dtype=wp.bool, device=self._device)
         self._world_mask = wp.to_torch(self._world_mask_wp)
 
         # Reset buffers
-        self._reset_base_q_wp = wp.zeros(nw, dtype=transformf, device=self._device)
-        self._reset_base_u_wp = wp.zeros(nw, dtype=vec6f, device=self._device)
-        self._reset_q_j = torch.zeros((nw, njd), device=self._torch_device)
-        self._reset_dq_j = torch.zeros((nw, njd), device=self._torch_device)
+        self._reset_base_q_wp = wp.zeros(nw, dtype=wp.transformf, device=self._device)
+        self._reset_base_u_wp = wp.zeros(nw, dtype=wp.spatial_vectorf, device=self._device)
+        self._reset_q_j_wp = wp.zeros(nw * njc, dtype=wp.float32, device=self._device)
+        self._reset_dq_j_wp = wp.zeros(nw * njd, dtype=wp.float32, device=self._device)
         self._reset_base_q = wp.to_torch(self._reset_base_q_wp).reshape(nw, 7)
         self._reset_base_u = wp.to_torch(self._reset_base_u_wp).reshape(nw, 6)
+        self._reset_q_j = wp.to_torch(self._reset_q_j_wp).reshape(nw, njc)
+        self._reset_dq_j = wp.to_torch(self._reset_dq_j_wp).reshape(nw, njd)
 
         # Reset flags
         self._update_q_j = False
@@ -596,12 +606,18 @@ class RigidBodySim:
 
     def _reset_worlds(self):
         """Reset selected worlds based on world_mask."""
+        reset_config = SolverKamino.ResetConfig.to_default()
+        if self._update_q_j:
+            reset_config.body_poses = SolverKamino.ResetConfig.FromJointQ(self._reset_q_j_wp)
+        if self._update_dq_j:
+            reset_config.body_velocities = SolverKamino.ResetConfig.FromJointU(self._reset_dq_j_wp)
+        if self._update_base_q:
+            reset_config.base_pose = SolverKamino.ResetConfig.FromBaseQ(self._reset_base_q_wp)
+        if self._update_base_u:
+            reset_config.base_velocity = SolverKamino.ResetConfig.FromBaseU(self._reset_base_u_wp)
         self.sim.reset(
             world_mask=self._world_mask_wp,
-            joint_q=wp.from_torch(self._reset_q_j.view(-1)) if self._update_q_j else None,
-            joint_u=wp.from_torch(self._reset_dq_j.view(-1)) if self._update_dq_j else None,
-            base_q=wp.from_torch(self._reset_base_q.view(-1, 7)) if self._update_base_q else None,
-            base_u=wp.from_torch(self._reset_base_u.view(-1, 6)) if self._update_base_u else None,
+            config=reset_config,
         )
 
     def render(self):
@@ -999,7 +1015,7 @@ class RigidBodySim:
 
     @property
     def world_mask(self) -> torch.Tensor:
-        """World mask ``(num_worlds,)`` int32 for selective resets."""
+        """World mask ``(num_worlds,)`` bool for selective resets."""
         return self._world_mask
 
     # ------------------------------------------------------------------

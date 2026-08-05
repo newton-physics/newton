@@ -26,6 +26,7 @@ def joint_force(
     limit_upper: float,
     limit_ke: float,
     limit_kd: float,
+    damping: float,
 ) -> float:
     """Joint force evaluation for a single degree of freedom."""
 
@@ -45,7 +46,9 @@ def joint_force(
         damping_f = -limit_kd * qd
         target_f = 0.0
 
-    return limit_f + damping_f + target_f
+    passive_f = -damping * qd
+
+    return limit_f + damping_f + target_f + passive_f
 
 
 @wp.kernel
@@ -72,6 +75,7 @@ def eval_body_joints(
     joint_limit_upper: wp.array[float],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
+    joint_damping: wp.array[float],
     joint_attach_ke: float,
     joint_attach_kd: float,
     body_f: wp.array[wp.spatial_vector],
@@ -180,6 +184,7 @@ def eval_body_joints(
                 joint_limit_upper[qd_start],
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
+                joint_damping[qd_start],
             )
         )
 
@@ -198,10 +203,7 @@ def eval_body_joints(
         axis_p = wp.transform_vector(X_wp, axis)
         axis_c = wp.transform_vector(X_wc, axis)
 
-        # swing twist decomposition
-        twist = wp.quat_twist(axis, r_err)
-
-        q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
+        q = wp.quat_twist_angle_signed(axis, r_err)
         qd = wp.dot(w_err, axis_p)
 
         t_total = axis_p * (
@@ -217,6 +219,7 @@ def eval_body_joints(
                 joint_limit_upper[qd_start],
                 joint_limit_ke[qd_start],
                 joint_limit_kd[qd_start],
+                joint_damping[qd_start],
             )
         )
 
@@ -233,7 +236,12 @@ def eval_body_joints(
         # TODO expose target_kd or target_ke for ball joints
         # t_total += target_kd * w_err + target_ke * wp.transform_vector(X_wp, ang_err)
         f_total += x_err * joint_attach_ke + v_err * joint_attach_kd
-        t_total += wp.vec3(-joint_f[qd_start], -joint_f[qd_start + 1], -joint_f[qd_start + 2])
+        axis_0 = wp.transform_vector(X_wp, joint_axis[qd_start + 0])
+        axis_1 = wp.transform_vector(X_wp, joint_axis[qd_start + 1])
+        axis_2 = wp.transform_vector(X_wp, joint_axis[qd_start + 2])
+        t_total += axis_0 * (-joint_f[qd_start + 0] + joint_damping[qd_start + 0] * wp.dot(axis_0, w_err))
+        t_total += axis_1 * (-joint_f[qd_start + 1] + joint_damping[qd_start + 1] * wp.dot(axis_1, w_err))
+        t_total += axis_2 * (-joint_f[qd_start + 2] + joint_damping[qd_start + 2] * wp.dot(axis_2, w_err))
 
     if type == JointType.D6:
         pos = wp.vec3(0.0)
@@ -256,6 +264,7 @@ def eval_body_joints(
                     joint_limit_upper[qd_start + 0],
                     joint_limit_ke[qd_start + 0],
                     joint_limit_kd[qd_start + 0],
+                    joint_damping[qd_start + 0],
                 )
             )
 
@@ -280,6 +289,7 @@ def eval_body_joints(
                     joint_limit_upper[qd_start + 1],
                     joint_limit_ke[qd_start + 1],
                     joint_limit_kd[qd_start + 1],
+                    joint_damping[qd_start + 1],
                 )
             )
 
@@ -304,6 +314,7 @@ def eval_body_joints(
                     joint_limit_upper[qd_start + 2],
                     joint_limit_ke[qd_start + 2],
                     joint_limit_kd[qd_start + 2],
+                    joint_damping[qd_start + 2],
                 )
             )
 
@@ -332,10 +343,7 @@ def eval_body_joints(
             axis_p = wp.transform_vector(X_wp, axis)
             axis_c = wp.transform_vector(X_wc, axis)
 
-            # swing twist decomposition
-            twist = wp.quat_twist(axis, r_err)
-
-            q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
+            q = wp.quat_twist_angle_signed(axis, r_err)
             qd = wp.dot(w_err, axis_p)
 
             t_total = axis_p * (
@@ -351,6 +359,7 @@ def eval_body_joints(
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
+                    joint_damping[i_0],
                 )
             )
 
@@ -397,6 +406,7 @@ def eval_body_joints(
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
+                    joint_damping[i_0],
                 )
             )
             t_total += axis_1 * (
@@ -412,6 +422,7 @@ def eval_body_joints(
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
+                    joint_damping[i_1],
                 )
             )
 
@@ -423,6 +434,7 @@ def eval_body_joints(
                 0.0,
                 joint_attach_ke,
                 joint_attach_kd * angular_damping_scale,
+                0.0,
                 0.0,
                 0.0,
                 0.0,
@@ -465,6 +477,7 @@ def eval_body_joints(
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
                     joint_limit_kd[i_0],
+                    joint_damping[i_0],
                 )
             )
             t_total += axis_1 * (
@@ -480,6 +493,7 @@ def eval_body_joints(
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
                     joint_limit_kd[i_1],
+                    joint_damping[i_1],
                 )
             )
             t_total += axis_2 * (
@@ -495,6 +509,7 @@ def eval_body_joints(
                     joint_limit_upper[i_2],
                     joint_limit_ke[i_2],
                     joint_limit_kd[i_2],
+                    joint_damping[i_2],
                 )
             )
 
@@ -535,6 +550,7 @@ def eval_body_joint_forces(
                 model.joint_limit_upper,
                 model.joint_limit_ke,
                 model.joint_limit_kd,
+                model.joint_damping,
                 joint_attach_ke,
                 joint_attach_kd,
             ],

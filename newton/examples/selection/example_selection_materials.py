@@ -21,8 +21,8 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton import ModelFlags
 from newton.selection import ArticulationView
-from newton.solvers import SolverNotifyFlags
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
@@ -54,6 +54,7 @@ def reset_materials_kernel(mu: wp.array3d[float], seed: int, shape_count: int):
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -86,7 +87,12 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         # Contacts only needed for non-MuJoCo solvers
-        self.contacts = self.model.contacts() if not isinstance(self.solver, newton.solvers.SolverMuJoCo) else None
+        if isinstance(self.solver, newton.solvers.SolverMuJoCo):
+            self.collision_pipeline = None
+            self.contacts = None
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self.next_reset = 0.0
         self.reset_count = 0
@@ -152,10 +158,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -166,7 +171,7 @@ class Example:
 
             # explicit collisions needed without MuJoCo solver
             if self.contacts is not None:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -225,7 +230,7 @@ class Example:
         # print(self.model.shape_material_mu)
 
         # !!! Notify solver of material changes !!!
-        self.solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        self.solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
 
         # ================================
         # reset transforms and velocities

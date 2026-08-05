@@ -19,7 +19,6 @@ from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType, JointDoFType
 from newton._src.solvers.kamino._src.core.math import I_3
 from newton._src.solvers.kamino._src.core.shapes import BoxShape, SphereShape
-from newton._src.solvers.kamino._src.core.types import mat33f, transformf, vec3f, vec6f
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.primitive import CollisionPipelinePrimitive
@@ -45,14 +44,14 @@ def _make_sphere_pair_builder(
     bid0 = builder.add_rigid_body(
         name="bottom_sphere",
         m_i=1.0,
-        i_I_i=mat33f(np.eye(3, dtype=np.float32)),
-        q_i_0=transformf(vec3f(0.0, 0.0, -radius - 0.5 * distance), wp.quat_identity()),
+        i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, -radius - 0.5 * distance), wp.quat_identity()),
     )
     bid1 = builder.add_rigid_body(
         name="top_sphere",
         m_i=1.0,
-        i_I_i=mat33f(np.eye(3, dtype=np.float32)),
-        q_i_0=transformf(vec3f(0.0, 0.0, radius + 0.5 * distance), wp.quat_identity()),
+        i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, radius + 0.5 * distance), wp.quat_identity()),
     )
     builder.add_geometry(body=bid0, name="bottom", shape=SphereShape(radius), margin=margin_bottom, gap=gap_bottom)
     builder.add_geometry(body=bid1, name="top", shape=SphereShape(radius), margin=margin_top, gap=gap_top)
@@ -294,8 +293,8 @@ def _build_sphere_on_ground(
         name="sphere",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, sphere_z), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, sphere_z), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
     )
     builder.add_joint(
         name="world_to_sphere",
@@ -303,9 +302,9 @@ def _build_sphere_on_ground(
         act_type=JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid,
-        B_r_Bj=vec3f(0.0, 0.0, sphere_z),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_j=I_3,
+        B_r_Bj=wp.vec3f(0.0, 0.0, sphere_z),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=I_3,
     )
     builder.add_geometry(
         name="sphere",
@@ -318,7 +317,7 @@ def _build_sphere_on_ground(
         body=-1,
         name="ground",
         shape=BoxShape(2.0, 2.0, GROUND_HALF_H),
-        offset=transformf(vec3f(0.0, 0.0, 0.0), wp.quat_identity()),
+        offset=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity()),
         margin=margin,
         gap=gap,
     )
