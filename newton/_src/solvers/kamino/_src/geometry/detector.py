@@ -148,6 +148,86 @@ class BroadPhaseType(IntEnum):
 
 
 ###
+# Contact capacity helpers
+###
+
+# Conservative heuristics for the fallback allocation path when pair-based
+# capacity metadata is unavailable (``model_minimum_contacts == 0``).
+_EXPLICIT_CONTACTS_PER_PAIR = 10
+_DYNAMIC_CONTACTS_PER_COLLIDABLE = 20
+
+
+def _cap_world_contacts_at_total(world_max_contacts: list[int], max_total: int) -> list[int]:
+    """Scale per-world contact budgets down so their sum does not exceed ``max_total``."""
+    total = sum(world_max_contacts)
+    if total <= max_total:
+        return list(world_max_contacts)
+    if max_total <= 0:
+        return [0] * len(world_max_contacts)
+
+    capped = [0] * len(world_max_contacts)
+    remainders: list[tuple[float, int]] = []
+    assigned = 0
+    for i, count in enumerate(world_max_contacts):
+        scaled = count * max_total / total
+        floor = int(scaled)
+        capped[i] = floor
+        assigned += floor
+        remainders.append((scaled - floor, i))
+    for _, i in sorted(remainders, key=lambda item: item[0], reverse=True):
+        if assigned >= max_total:
+            break
+        capped[i] += 1
+        assigned += 1
+    return capped
+
+
+def _estimate_fallback_world_max_contacts(
+    model: ModelKamino,
+    config: CollisionDetectorConfig,
+) -> list[int]:
+    """Estimate per-world contact capacity from geometry when pair metadata is unavailable."""
+    num_worlds = model.size.num_worlds
+    world_max_contacts = [0] * num_worlds
+
+    if config.broadphase == "explicit" and model.geoms.collidable_pairs is not None:
+        pairs = model.geoms.collidable_pairs.numpy()
+        wid = model.geoms.wid.numpy()
+        for pair in pairs:
+            g0, g1 = int(pair[0]), int(pair[1])
+            world_id = int(wid[g0]) if wid[g0] >= 0 else int(wid[g1])
+            if 0 <= world_id < num_worlds:
+                world_max_contacts[world_id] += _EXPLICIT_CONTACTS_PER_PAIR
+    else:
+        wid = model.geoms.wid.numpy()
+        group = model.geoms.group.numpy()
+        for geom_id in range(len(wid)):
+            world_id = int(wid[geom_id])
+            if 0 <= world_id < num_worlds and group[geom_id] > 0:
+                world_max_contacts[world_id] += _DYNAMIC_CONTACTS_PER_COLLIDABLE
+
+    return world_max_contacts
+
+
+def _resolve_contact_capacity(
+    model: ModelKamino,
+    config: CollisionDetectorConfig,
+) -> tuple[int, list[int]]:
+    """Resolve model- and per-world contact budgets from geometry and config caps."""
+    if model.geoms.model_minimum_contacts > 0:
+        world_max_contacts = list(model.geoms.world_minimum_contacts)
+    else:
+        world_max_contacts = _estimate_fallback_world_max_contacts(model, config)
+
+    model_max_contacts = sum(world_max_contacts)
+    if model_max_contacts > config.max_contacts:
+        world_max_contacts = _cap_world_contacts_at_total(world_max_contacts, config.max_contacts)
+        model_max_contacts = sum(world_max_contacts)
+
+    return model_max_contacts, world_max_contacts
+
+
+###
 # Interfaces
 ###
 
@@ -303,41 +383,22 @@ class CollisionDetector:
         # Configure the collision detection pipeline type based on the config
         self._pipeline_type = CollisionPipelineType.from_string(self._config.pipeline)
 
-        # TODO: FIX THIS SO THAT PER-WORLD MAX IS ACTUALLY BASED ON THE NUM OF COLLIDABLE
-        # GOEMS IN EACH WORLD, INSTEAD OF JUST DIVIDING THE MODEL MAX BY THE NUM WORLDS
-        # For collision pipeline, we don't multiply by per-pair factors since broad phase
-        # discovers pairs dynamically. Users can provide rigid_contact_max explicitly,
-        # otherwise it is estimated from shape count and broad phase mode.
-        if self._model.geoms.model_minimum_contacts > 0:
-            self._model_max_contacts = self._model.geoms.model_minimum_contacts
-            self._world_max_contacts = self._model.geoms.world_minimum_contacts
-        else:
-            # Estimate based on broad phase mode and available information
-            if self._config.broadphase == "explicit" and self._model.geoms.collidable_pairs is not None:
-                # For EXPLICIT mode, we know the maximum possible pairs
-                # Estimate ~10 contacts per shape pair (conservative for mesh-mesh contacts)
-                self._model_max_contacts = max(self._config.max_contacts, self._model.geoms.num_collidable_pairs * 10)
-            else:
-                # For NXN/SAP dynamic broad phase, estimate based on shape count
-                # Assume each shape contacts ~20 others on average (conservative estimate)
-                # This scales much better than O(N²) while still being safe
-                self._model_max_contacts = max(self._config.max_contacts, self._model.geoms.num_collidable * 20)
-
-            # Set the world max contacts to be the same for all worlds in the model
-            num_worlds = self._model.size.num_worlds
-            self._world_max_contacts = [self._model_max_contacts // num_worlds] * num_worlds
-
-        # Override per-world max contacts if config specifies it.
+        # Resolve contact capacity.
         if self._config.max_contacts_per_world is not None:
+            # Use the explicit per-world override when available.
             num_worlds = self._model.size.num_worlds
             per_world = self._config.max_contacts_per_world
             self._world_max_contacts = [per_world] * num_worlds
             self._model_max_contacts = per_world * num_worlds
+        else:
+            # Otherwise estimate per world from geometry.
+            # ``max_contacts`` caps the model total.
+            self._model_max_contacts, self._world_max_contacts = _resolve_contact_capacity(self._model, self._config)
 
         # Create the contacts interface which will allocate all contacts data arrays
         # NOTE: If internal allocations happen, then they will contain
         # the contacts generated by the collision detection pipelines
-        self._contacts = ContactsKamino(capacity=self._world_max_contacts, device=self._device)
+        self._contacts = ContactsKamino(capacity=list(self._world_max_contacts), device=self._device)
 
         # Proceed with allocations only if the model admits contacts, which
         # occurs when collision geometries defined in the builder and model

@@ -389,6 +389,30 @@ add_basic_example_test(
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "xpbd"},
+    test_suffix="xpbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "vbd"},
+    test_suffix="vbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "mujoco"},
+    test_suffix="mujoco",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
@@ -737,6 +761,19 @@ add_example_test(
     name="ik.example_ik_cube_stacking",
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
+    use_viewer=True,
+)
+
+
+class TestMuJoCoExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestMuJoCoExamples,
+    name="mujoco.example_mujoco_sleeping",
+    devices=cuda_test_devices,
+    test_options={"stack-count": 2, "num-frames": 300},
     use_viewer=True,
 )
 
@@ -1212,6 +1249,19 @@ add_example_test(
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 500},
+    use_viewer=True,
+)
+
+
+class TestControllersExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestControllersExamples,
+    name="controllers.example_controller_joint_impedance_heterogeneous",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,

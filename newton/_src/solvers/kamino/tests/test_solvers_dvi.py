@@ -372,7 +372,7 @@ class TestDVISolver(unittest.TestCase):
         """Limit DVI contact allocation while honoring explicit overrides."""
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
-        for box_index in range(10):
+        for box_index in range(16):
             body = builder.add_body(xform=wp.transform(wp.vec3(float(box_index), 0.0, 0.5), wp.quat_identity()))
             builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
         model = builder.finalize(device=self.device)
@@ -411,16 +411,6 @@ class TestDVISolver(unittest.TestCase):
                 builder.add_body(is_kinematic=True)
             builder.end_world()
         model = builder.finalize(device=self.device)
-
-        inferred_solver = SolverKamino(
-            model,
-            SolverKamino.Config(
-                dynamics_solver="dvi",
-                sparse_jacobian=False,
-                use_collision_detector=True,
-            ),
-        )
-        self.assertEqual(inferred_solver._collision_detector_kamino._config.max_contacts_per_world, 1000)
 
         config = SolverKamino.Config(
             dynamics_solver="dvi",

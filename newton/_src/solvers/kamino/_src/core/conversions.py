@@ -13,6 +13,7 @@ import warp as wp
 
 from .....geometry import ShapeFlags
 from .....sim.model import Model
+from ....coupled.model_view import ModelView
 from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
@@ -826,8 +827,8 @@ def compute_required_contact_capacity(
         max_contacts_per_pair: Optional maximum number of contacts to allocate per shape pair.
             If `None`, no per-pair limit is applied.
         max_contacts_per_world: Optional maximum number of contacts to allocate per world.
-            If `None`, no per-world limit is applied, otherwise it will
-            override the computed per-world requirements if it is larger.
+            If `None`, no per-world limit is applied, otherwise caps the computed
+            per-world requirements at this value.
 
     Returns:
         (model_required_contacts, world_required_contacts):
@@ -860,7 +861,7 @@ def compute_required_contact_capacity(
     )
     world_max_contacts = world_max_contacts_wp.numpy()
 
-    # Override the per-world maximum contacts if specified in the settings
+    # Cap per-world totals when a per-world maximum is specified
     if max_contacts_per_world is not None:
         world_max_contacts = np.minimum(world_max_contacts, max_contacts_per_world)
 
@@ -1158,7 +1159,7 @@ def convert_model_materials(
 
 
 def convert_rigid_bodies(
-    model: Model,
+    model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
 ) -> RigidBodiesModel:
@@ -1251,7 +1252,7 @@ def convert_rigid_bodies(
 
 
 def convert_joints(
-    model: Model,
+    model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
 ) -> JointsModel:
@@ -1758,7 +1759,7 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
 
 
 def convert_geometries(
-    model: Model,
+    model: Model | ModelView,
     model_size: SizeKamino,
     model_bodies: RigidBodiesModel,
     materials_manager: MaterialManager,
