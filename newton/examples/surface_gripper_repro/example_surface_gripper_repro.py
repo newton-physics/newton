@@ -17,8 +17,8 @@
 # Example Surface Gripper Isaac Sim Repro
 #
 # Reproduction scene for the surface-gripper on a robot arm. Loads the robot arm from a USD stage
-# (Assets/robot_only_newton_flattened.usda) with a fixed base on a ground plane, then plays back a
-# recorded FANUC palletizer cycle (Assets/robot_recording_truncated.jsonl). Playback is time-accurate:
+# (Assets/fanuc_arm.usda) with a fixed base on a ground plane, then plays back a
+# recorded FANUC palletizer cycle (Assets/robot_recording.jsonl). Playback is time-accurate:
 # the six arm joint position targets are interpolated from the recorded timestamps at the current simulation
 # time (J3 coupled to J2, degrees -> radians) and updated before every physics sub-step, so the arm
 # follows the recording at its true speed. The recording's surface-gripper engagement and disengagement
@@ -55,12 +55,12 @@ from newton.examples.surface_gripper_repro.surface_gripper import (
 # Asset paths (global constants). All assets live in the Assets/ directory alongside this example.
 ASSETS = Path(__file__).parent / "Assets"
 # robot arm USD
-ROBOT_USD = ASSETS / "fanuc_arm_flattened_collision.usda"
+ROBOT_USD = ASSETS / "fanuc_arm.usda"
 # Pick scene (2 static pallets + panel + 6 crates as box colliders at their waiting poses), baked from
 # the deterministic FK placements by bake_pick_scene.py. Re-bake only if the arm USD or recording changes.
 PICK_SCENE_USD = ASSETS / "pick_scene.usda"
 # recording of the robot arm motion and surface gripper engagement/disengagement.
-RECORDING_JSONL = ASSETS / "robot_recording_truncated.jsonl"
+RECORDING_JSONL = ASSETS / "robot_recording.jsonl"
 
 # rendered frames per second
 FPS = 60
