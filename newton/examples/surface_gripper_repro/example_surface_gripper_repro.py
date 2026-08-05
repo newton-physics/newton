@@ -225,11 +225,16 @@ def picked_box_seal_modes(gripper_model, state, model, body_b):
     gm = gripper_model
     mass = float(model.body_mass.numpy()[body_b])
     i_box = wp.mat33(*model.body_inertia.numpy()[body_b].flatten().tolist())  # inertia tensor, body frame
-    q_box = wp.quat(*(float(v) for v in state.body_q.numpy()[body_b][3:7]))
+    body_q = state.body_q.numpy()
+    qb = body_q[body_b]  # [px,py,pz, qx,qy,qz,qw]; [3:7] is the quaternion
+    q_box = wp.quat(float(qb[3]), float(qb[4]), float(qb[5]), float(qb[6]))
     a = int(gm.gripper_body_id.numpy()[0])
-    q_a = wp.quat(*(float(v) for v in state.body_q.numpy()[a][3:7]))
-    q_gx = wp.quat(*(float(v) for v in gm.gripper_xform.numpy()[0][3:7]))
-    q_px = wp.quat(*(float(v) for v in gm.pad_xform.numpy()[0][3:7]))
+    qa = body_q[a]
+    q_a = wp.quat(float(qa[3]), float(qa[4]), float(qa[5]), float(qa[6]))
+    gx = gm.gripper_xform.numpy()[0]
+    q_gx = wp.quat(float(gx[3]), float(gx[4]), float(gx[5]), float(gx[6]))
+    px = gm.pad_xform.numpy()[0]
+    q_px = wp.quat(float(px[3]), float(px[4]), float(px[5]), float(px[6]))
     q_seal = q_a * q_gx * q_px  # seal-frame world orientation (rotation of any pad; all share it)
 
     def i_about(axis):  # box inertia about a world seal axis: rotate the axis into the box body frame
@@ -300,7 +305,10 @@ def read_pad_transforms(builder, robot) -> list[wp.transform]:
         One ``wp.transform`` per pad, in the order of :data:`PAD_PRIMS`.
     """
     path_shape_map = robot["path_shape_map"]
-    return [builder.shape_transform[path_shape_map[prim]] for prim in PAD_PRIMS]
+    transforms = []
+    for prim in PAD_PRIMS:
+        transforms.append(builder.shape_transform[path_shape_map[prim]])
+    return transforms
 
 
 def _box_half_extents(pick, body_prim) -> tuple[float, float, float]:
@@ -354,7 +362,8 @@ def filter_pick_boxes_against_arm(builder, pick, ee_body_id) -> None:
     """
     psm = pick["path_shape_map"]  # collision prim path -> env-local shape id
     box_shapes = [psm[PANEL_PRIM + "/collision"]]
-    box_shapes += [psm[prim + "/collision"] for prim in CRATE_PRIMS]
+    for prim in CRATE_PRIMS:
+        box_shapes.append(psm[prim + "/collision"])
     for shape in range(len(builder.shape_body)):
         if 0 <= builder.shape_body[shape] <= ee_body_id:  # any robot-arm link (base..gripper)
             for bs in box_shapes:
@@ -498,7 +507,7 @@ class Example:
         # Main scene: shared global ground plane + NUM_WORLDS overlapping copies of the env, each added
         # as its own world (add_world). No spacing -- the copies overlap at the origin (broad phase never
         # collides across worlds), and only world 0 is rendered.
-        n_env = env.body_count  # bodies per world
+        env_body_count = env.body_count  # bodies per world
         builder = newton.ModelBuilder()
         builder.add_ground_plane()  # global (world -1): adds no body, so per-world bodies stay contiguous
         for _ in range(NUM_WORLDS):
@@ -506,13 +515,13 @@ class Example:
         self.model = builder.finalize(device=device)  # same device the SDF meshes were built on
 
         # add_world appends each env copy contiguously, so env-local body ``local`` in world ``w`` has global
-        # id ``w * n_env + local``. World 0's global ids therefore equal the env-local ids (e.g. ee_body_local).
+        # id ``w * env_body_count + local``. World 0's global ids therefore equal the env-local ids (e.g. ee_body_local).
 
-        # body_mesh_id maps every world's box body (global id w * n_env + lb) to its shared SDF mesh id.
+        # body_mesh_id maps every world's box body (global id w * env_body_count + lb) to its shared SDF mesh id.
         body_mesh_id = np.zeros(self.model.body_count, dtype=np.uint64)
         for w in range(NUM_WORLDS):
             for lb, mesh in self.sdf_meshes.items():
-                body_mesh_id[w * n_env + lb] = mesh.id
+                body_mesh_id[w * env_body_count + lb] = mesh.id
         self.body_mesh_id = wp.array(body_mesh_id, dtype=wp.uint64, device=self.model.device)
 
         # use_mujoco_contacts=False: Newton's collide pipeline (model.collide, run each sub-step) owns
@@ -533,7 +542,7 @@ class Example:
         # reports that in the GUI, but the seal parameters do not change.)
         gripper_builder = SurfaceGripperBuilder()
         for w in range(NUM_WORLDS):
-            gripper = SurfaceGripper(w * n_env + ee_body_local, wp.transform_identity(), world=w)
+            gripper = SurfaceGripper(w * env_body_count + ee_body_local, wp.transform_identity(), world=w)
             gripper.set_natural_frequency_damping_ratio(
                 self.crate_masses[0],
                 self.crate_inertias[0],
@@ -556,32 +565,37 @@ class Example:
         # Per-gripper / per-pad runtime arrays, sized from the gripper model (one gripper per world).
         n_grippers = self.gripper_model.gripper_body_id.shape[0]
         n_pads = self.gripper_model.pad_xform.shape[0]
+        # gripper_command_engaged_wp is the engagement state of the gripper as read from the recording of the robot arm.
+        # gripper_seal_broken_wp is the fracture state of the gripper
+        # pad_seal_break_count_wp is the number of continuous steps that each pad has exceeded the maximum force.
+        # pad_seal_engaged_wp is the per pad engagement state after accounting for gripper_command_engaged_wp and gripper_seal_broken_wp.
         self.gripper_command_engaged_wp = wp.zeros(n_grippers, dtype=wp.bool)  # [grippers] recorded engagement command
         self.pad_seal_break_count_wp = wp.zeros(n_pads, dtype=wp.int32)  # consecutive over-threshold steps, per pad
         self.gripper_seal_broken_wp = wp.zeros(n_grippers, dtype=wp.bool)  # [grippers] latched fracture
         self.pad_seal_engaged_wp = wp.zeros(n_pads, dtype=wp.bool)  # [pads] per-pad seal command
-        self.pad_offsets = wp.array(
-            [g * len(PAD_PRIMS) for g in range(n_grippers + 1)], dtype=wp.int32
-        )  # [grippers+1] CSR: gripper g owns pads [g*npads, (g+1)*npads)
+        # [grippers+1] CSR offsets: gripper g owns pads [g*npads, (g+1)*npads)
+        pad_offsets = []
+        for g in range(n_grippers + 1):
+            pad_offsets.append(g * len(PAD_PRIMS))
+        self.pad_offsets = wp.array(pad_offsets, dtype=wp.int32)
 
         # Each pad starts targeting its own world's panel body (the gripper model groups pads by world).
         pad_world = self.gripper_model.pad_world.numpy()
-        panel_ids = [w * n_env + panel_body_local_id for w in range(NUM_WORLDS)]
-        self.pad_body_b = wp.array(
-            np.array([panel_ids[pad_world[p]] for p in range(n_pads)], dtype=np.int32), dtype=wp.int32
-        )
+        pad_body_b = []
+        for p in range(n_pads):
+            pad_body_b.append(pad_world[p] * env_body_count + panel_body_local_id)  # this pad's world's panel body
+        self.pad_body_b = wp.array(np.array(pad_body_b, dtype=np.int32), dtype=wp.int32)
 
         # One CratePlayback per world (worlds are identical copies, so each moves its own crates on the
         # same disengagement cues). pad_world_start[w] slices the gripper model's pads for world w.
-        self.crate_playbacks = [
-            CratePlayback(
-                self.robot_arm_playback,
-                self.model,
-                [w * n_env + cb for cb in crate_body_local_ids],
-                CRATE_GRIP_POSES,
+        self.crate_playbacks = []
+        for w in range(NUM_WORLDS):
+            crate_bodies = []  # this world's crate body ids
+            for cb in crate_body_local_ids:
+                crate_bodies.append(w * env_body_count + cb)
+            self.crate_playbacks.append(
+                CratePlayback(self.robot_arm_playback, self.model, crate_bodies, CRATE_GRIP_POSES)
             )
-            for w in range(NUM_WORLDS)
-        ]
         self.pad_world_start = self.gripper_model.pad_world_start.numpy()  # CSR: world w's pads
         # Per-world stride into joint_target_q, for broadcasting world 0's recorded arm targets to all worlds.
         self.arm_target_stride = self.control.joint_target_q.shape[0] // NUM_WORLDS
@@ -765,7 +779,10 @@ class Example:
         ui.text("Picked-box seal modes:")
         modes = picked_box_seal_modes(self.gripper_model, self.state_0, self.model, int(self.pad_body_b.numpy()[0]))
         if held == 0:
-            modes = [(name, 0.0, 0.0) for name, _, _ in modes]
+            zeroed_modes = []
+            for name, _, _ in modes:
+                zeroed_modes.append((name, 0.0, 0.0))
+            modes = zeroed_modes
         for name, mu, zeta in modes:
             ui.text(f"  {name:7s} wn={mu:6.1f} rad/s  zeta={zeta:.3f}")
 
