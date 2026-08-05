@@ -23,6 +23,9 @@ def _normalize_indices(
     if (not isinstance(idx, wp.array)) or (idx.dtype != wp.uint32):
         raise TypeError(f"Port '{name}': idx must be wp.array[uint32] or None, got {type(idx).__name__}.")
 
+    if idx.ndim != 1:
+        raise ValueError(f"Port '{name}': idx must be 1-D, got shape {tuple(idx.shape)}.")
+
     if idx.size != default_idx.size:
         raise ValueError(
             f"Port '{name}': indices must be the same size as default_dof_indices: {idx.size} != {default_idx.size}."
