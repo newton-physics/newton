@@ -63,6 +63,7 @@ class Example:
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
         self.config.use_collision_detector = self.use_kamino_contacts
+        self.config.padmm.warmstart_mode = "none"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
