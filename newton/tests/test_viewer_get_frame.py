@@ -27,6 +27,12 @@ def _viewer_gl_unavailable_errors() -> tuple[type[BaseException], ...]:
         gl.ContextException,
     ]
     try:
+        from pyglet.gl import lib
+    except ImportError:
+        pass
+    else:
+        errors.append(lib.MissingFunctionException)
+    try:
         from pyglet.display import xlib
     except ImportError:
         pass
@@ -84,6 +90,16 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    def test_unavailable_errors_include_missing_gl_functions(self):
+        """Verify missing OpenGL entry points make headless GL tests skip."""
+        try:
+            from pyglet.gl import lib
+        except ImportError as exc:
+            self.skipTest(f"pyglet not available: {exc}")
+            return
+
+        self.assertIn(lib.MissingFunctionException, _viewer_gl_unavailable_errors())
+
     def test_headless_frame_capture_across_devices(self):
         cuda_devices = wp.get_cuda_devices()
         if cuda_devices:
