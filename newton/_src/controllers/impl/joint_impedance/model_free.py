@@ -43,6 +43,13 @@ from ._common import (
 class ControllerJointImpedanceModelFree(ControllerBase):
     """Joint-space impedance controller with caller-supplied dynamics.
 
+    Implements the joint-space impedance control law. This model-free variant
+    expects the mass matrix, gravity, and Coriolis terms to be computed
+    externally — it is the caller's responsibility to compute the enabled ones
+    correctly and write them into the input struct before every :meth:`step`.
+    Shapes and devices are checked on each call, but staleness is not: a missed
+    update silently yields torques for an old configuration.
+
     Supports heterogeneous robot fleets — robots in the batch may have
     different DOF counts. Internal buffers are padded to ``max_dofs``; kernels
     skip padding slots via a per-robot guard.
@@ -53,15 +60,8 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     (e.g. ``gravity_force`` when ``use_gravity_compensation=False``) are
     allocated as ``None`` and must not be written.
 
-    Implements the joint-space impedance control law. This model-free variant
-    expects the mass matrix, gravity, and Coriolis terms to be computed
-    externally — it is the caller's responsibility to compute the enabled ones
-    correctly and write them into the input struct before every :meth:`step`.
-    Shapes and devices are checked on each call, but staleness is not: a missed
-    update silently yields torques for an old configuration.
-
-    See :class:`ControllerJointImpedance` to have these computed from a Newton
-    model instead.
+    See also :class:`ControllerJointImpedance`, which computes these terms
+    internally from a Newton model.
 
     Args:
         dofs_per_robot: DOF count for each robot. Its length sets
