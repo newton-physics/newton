@@ -11240,6 +11240,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
     @staticmethod
     def _build_mjcf_implicit_default_model(limit_ke=10000.0, limit_kd=10.0):
+        """Build an MJCF model whose joint uses MuJoCo's implicit limit response."""
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.limit_ke = limit_ke
         builder.default_joint_cfg.limit_kd = limit_kd
@@ -11261,7 +11262,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         return builder.finalize()
 
     def test_mjcf_unauthored_solreflimit_ke_updates_are_not_shadowed(self):
-        """Implicit MJCF defaults preserve custom Newton gains until those gains are edited."""
+        """Verify that implicit MJCF defaults preserve custom Newton gains until an edit."""
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 model = self._build_mjcf_implicit_default_model(limit_ke=4321.0, limit_kd=76.0)
@@ -11296,7 +11297,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                 np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
 
     def test_mjcf_implicit_default_mode_promotes_after_gain_edit(self):
-        """Any imported MJCF default-gain edit permanently promotes force-space mode."""
+        """Verify that an imported MJCF default-gain edit permanently promotes force-space mode."""
         model = self._build_mjcf_implicit_default_model()
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
@@ -11843,28 +11844,59 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         )
 
     def test_mjcf_invalid_solreflimit_emits_import_warning(self):
-        """MJCF importer warns when an authored ``solreflimit`` has invalid signs."""
-        mjcf_source = """
-            <mujoco>
-              <compiler angle="radian"/>
-              <worldbody>
-                <body name="link">
-                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
-                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="-1 1"/>
-                  <geom type="sphere" size="0.05"/>
-                </body>
-              </worldbody>
-            </mujoco>
-            """
-        builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
-        messages = [str(w.message) for w in caught]
-        self.assertTrue(
-            any("invalid solreflimit" in m and "joint" in m.lower() for m in messages),
-            f"Expected MJCF importer warning for invalid solreflimit, got: {messages}",
-        )
+        """Verify that MJCF import warns for invalid authored ``solreflimit`` signs."""
+        for joint_type in ("hinge", "ball"):
+            with self.subTest(joint_type=joint_type):
+                mjcf_source = f"""
+                    <mujoco>
+                      <compiler angle="radian"/>
+                      <worldbody>
+                        <body name="link">
+                          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                          <joint name="joint" type="{joint_type}" solreflimit="-1 1"/>
+                          <geom type="sphere" size="0.05"/>
+                        </body>
+                      </worldbody>
+                    </mujoco>
+                    """
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
+                messages = [str(w.message) for w in caught]
+                self.assertTrue(
+                    any("invalid solreflimit" in m and "joint" in m.lower() for m in messages),
+                    f"Expected MJCF importer warning for invalid solreflimit, got: {messages}",
+                )
+
+    def test_mjcf_valid_solreflimit_does_not_emit_import_warning(self):
+        """Verify that MJCF import accepts native standard, direct, and default solref pairs."""
+        for joint_type, solreflimit in itertools.product(
+            ("hinge", "ball"),
+            ("0.03 0.7", "-100 -1", "0 0"),
+        ):
+            with self.subTest(joint_type=joint_type, solreflimit=solreflimit):
+                mjcf_source = f"""
+                    <mujoco>
+                      <compiler angle="radian"/>
+                      <worldbody>
+                        <body name="link">
+                          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                          <joint name="joint" type="{joint_type}" solreflimit="{solreflimit}"/>
+                          <geom type="sphere" size="0.05"/>
+                        </body>
+                      </worldbody>
+                    </mujoco>
+                    """
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
+                messages = [str(w.message) for w in caught]
+                self.assertFalse(
+                    any("invalid solreflimit" in message for message in messages),
+                    f"Expected no MJCF importer warning for valid solreflimit, got: {messages}",
+                )
 
     def test_parse_vec_unknown_shorthand_warns(self):
         """``parse_vec`` warns when a non-whitelisted multi-component MJCF attribute gets a single value.

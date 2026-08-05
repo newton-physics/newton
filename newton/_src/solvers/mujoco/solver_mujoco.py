@@ -113,6 +113,7 @@ from .kernels import (
     update_tendon_properties_kernel,
     wake_changed_trees_kernel,
 )
+from .utils import solref_invalid_mask
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
@@ -8614,12 +8615,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raw_np = joint_limit_solref.numpy()
             raw_mask = mode_np == SOLREF_MODE_RAW
             if np.any(raw_mask):
-                tc = raw_np[raw_mask, 0]
-                dr = raw_np[raw_mask, 1]
                 # ``(0, 0)`` is the MuJoCo inherit-default sentinel, not a
                 # misconfiguration; flag only a single zero or mixed signs.
-                both_zero = (tc == 0.0) & (dr == 0.0)
-                invalid = ((tc == 0.0) | (dr == 0.0) | (np.sign(tc) != np.sign(dr))) & ~both_zero
+                invalid = solref_invalid_mask(raw_np[raw_mask])
                 if np.any(invalid):
                     bad = np.flatnonzero(raw_mask)[invalid]
                     warnings.warn(

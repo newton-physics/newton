@@ -34,6 +34,7 @@ from ..solvers.mujoco.utils import (
     mjc_add_equality_mimic,
     mjc_parse_polycoef,
     mjc_polycoef_has_higher_order,
+    solref_invalid_mask,
 )
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
@@ -811,6 +812,24 @@ def parse_mjcf(
             return wp.types.vector(len(default), wp.float32)(*([float(out[0])] * len(default)))
 
         return wp.types.vector(length, wp.float32)(out)
+
+    def warn_invalid_joint_solreflimit(joint_attrib: dict[str, Any]) -> None:
+        if "solreflimit" not in joint_attrib:
+            return
+        solreflimit = parse_vec(joint_attrib, "solreflimit", DEFAULT_LIMIT_SOLREF)
+        if not bool(solref_invalid_mask(solreflimit)):
+            return
+        warnings.warn(
+            f"MJCF joint {joint_attrib.get('name', 'unnamed')!r}: invalid "
+            f"solreflimit={joint_attrib['solreflimit']!r} (expected two "
+            "same-sign non-zero components or the '0 0' sentinel); Newton "
+            "joint_limit_ke/kd are not derived from this native value, which "
+            "is forwarded to MuJoCo via mujoco.solreflimit (SOLREF_MODE_RAW). "
+            "MuJoCo may silently disable the limit or divide by zero — fix the "
+            "authored solreflimit or set model.mujoco.solreflimit_mode = "
+            "SOLREF_MODE_FORCE_SPACE to switch to Newton force-space scaling.",
+            stacklevel=3,
+        )
 
     def quat_from_euler_mjcf(e: wp.vec3, seq: str) -> wp.quat:
         """Convert MJCF euler to quaternion respecting per-character ``eulerseq`` case.
@@ -1909,6 +1928,7 @@ def parse_mjcf(
                     break
                 if joint_type_str == "ball":
                     joint_type = JointType.BALL
+                    warn_invalid_joint_solreflimit(joint_attrib)
                     dof_attr = parse_custom_attributes(
                         joint_attrib,
                         builder_custom_attr_dof,
@@ -1954,27 +1974,7 @@ def parse_mjcf(
                 # defaults instead of assigning an inertia-independent conversion.
                 limit_ke = default_joint_limit_ke
                 limit_kd = default_joint_limit_kd
-                if "solreflimit" in joint_attrib:
-                    solreflimit = parse_vec(joint_attrib, "solreflimit", DEFAULT_LIMIT_SOLREF)
-                    timeconst = float(solreflimit[0])
-                    dampratio = float(solreflimit[1])
-                    both_zero = timeconst == 0.0 and dampratio == 0.0
-                    invalid = (
-                        timeconst == 0.0 or dampratio == 0.0 or np.sign(timeconst) != np.sign(dampratio)
-                    ) and not both_zero
-                    if invalid:
-                        warnings.warn(
-                            f"MJCF joint {joint_attrib.get('name', 'unnamed')!r}: invalid "
-                            f"solreflimit={joint_attrib['solreflimit']!r} (expected two "
-                            "same-sign non-zero components or the '0 0' sentinel); "
-                            f"joint_limit_ke/kd remain at the builder defaults ({limit_ke}, "
-                            f"{limit_kd}) while the raw value is forwarded to MuJoCo via "
-                            "mujoco.solreflimit (SOLREF_MODE_RAW). MuJoCo may silently "
-                            "disable the limit or divide by zero — fix the authored "
-                            "solreflimit or set model.mujoco.solreflimit_mode = "
-                            "SOLREF_MODE_FORCE_SPACE to switch to Newton force-space scaling.",
-                            stacklevel=2,
-                        )
+                warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
                 if "actuatorfrcrange" in joint_attrib:
