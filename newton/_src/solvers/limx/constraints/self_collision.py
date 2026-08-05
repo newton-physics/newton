@@ -17,6 +17,7 @@ _MIN_BARYCENTRIC_DENOMINATOR = 1.0e-12
 _MIN_CONTACT_DISTANCE = 1.0e-7
 _MIN_GEOMETRY_NORM = 1.0e-8
 _MIN_STIFFNESS_DENOMINATOR = 1.0e-12
+_EE_MOLLIFIER_THRESHOLD_SCALE = 1.0e-3
 
 
 def _compute_geometry_aware_particle_radii(
@@ -106,6 +107,79 @@ def _update_edge_bounds(
     position_1 = positions[edge_indices[edge, 3]]
     lower_bounds[edge] = wp.min(position_0, position_1)
     upper_bounds[edge] = wp.max(position_0, position_1)
+
+
+@wp.func
+def _is_topology_local_edge_pair(
+    edge: int,
+    other_edge: int,
+    index_0: int,
+    index_1: int,
+    index_2: int,
+    index_3: int,
+    edge_indices: wp.array2d[int],
+):
+    return (
+        edge_indices[edge, 0] == index_2
+        or edge_indices[edge, 1] == index_2
+        or edge_indices[edge, 0] == index_3
+        or edge_indices[edge, 1] == index_3
+        or edge_indices[other_edge, 0] == index_0
+        or edge_indices[other_edge, 1] == index_0
+        or edge_indices[other_edge, 0] == index_1
+        or edge_indices[other_edge, 1] == index_1
+    )
+
+
+@wp.func
+def _edge_edge_mollified_residual_data(
+    edge_0: wp.vec3,
+    edge_1: wp.vec3,
+    threshold: float,
+):
+    cross_product = wp.cross(edge_0, edge_1)
+    root = wp.sqrt(wp.max(2.0 * threshold - wp.dot(cross_product, cross_product), threshold))
+    scale = root / threshold
+    scale_gradient = -0.5 / (threshold * root)
+    return cross_product, scale, scale_gradient
+
+
+@wp.func
+def _edge_edge_mollified_residual_jacobian_multiply(
+    edge_0: wp.vec3,
+    edge_1: wp.vec3,
+    depth: float,
+    threshold: float,
+    edge_delta_0: wp.vec3,
+    edge_delta_1: wp.vec3,
+    depth_delta: float,
+):
+    cross_product, scale, scale_gradient = _edge_edge_mollified_residual_data(edge_0, edge_1, threshold)
+    cross_delta = wp.cross(edge_delta_0, edge_1) + wp.cross(edge_0, edge_delta_1)
+    cross_squared_delta = 2.0 * wp.dot(cross_product, cross_delta)
+    return (
+        depth * scale * cross_delta
+        + (depth * scale_gradient * cross_squared_delta + depth_delta * scale) * cross_product
+    )
+
+
+@wp.func
+def _edge_edge_mollified_residual_jacobian_transpose_multiply(
+    edge_0: wp.vec3,
+    edge_1: wp.vec3,
+    depth: float,
+    threshold: float,
+    residual_vector: wp.vec3,
+):
+    cross_product, scale, scale_gradient = _edge_edge_mollified_residual_data(edge_0, edge_1, threshold)
+    cross_projection = wp.dot(cross_product, residual_vector)
+    cross_squared_product = depth * scale_gradient * cross_projection
+    edge_product_0 = depth * scale * wp.cross(edge_1, residual_vector)
+    edge_product_0 += cross_squared_product * 2.0 * wp.cross(edge_1, cross_product)
+    edge_product_1 = depth * scale * wp.cross(residual_vector, edge_0)
+    edge_product_1 += cross_squared_product * 2.0 * wp.cross(cross_product, edge_0)
+    depth_product = scale * cross_projection
+    return edge_product_0, edge_product_1, depth_product
 
 
 @wp.kernel
@@ -199,12 +273,14 @@ def _detect_edge_edge_contacts(
     use_geometry_radii: int,
     capacity: int,
     positions: wp.array[wp.vec3],
+    rest_positions: wp.array[wp.vec3],
     particle_world: wp.array[int],
     edge_indices: wp.array2d[int],
     contact_ids: wp.array2d[int],
     contact_weights: wp.array2d[float],
     contact_directions: wp.array[wp.vec3],
     contact_depths: wp.array[float],
+    contact_mollifier_thresholds: wp.array[float],
     contact_count: wp.array[int],
     overflow_count: wp.array[int],
 ):
@@ -254,15 +330,14 @@ def _detect_edge_edge_contacts(
             radius_1 += parameter_1 * particle_radii[index_3]
             limited_thickness = radius_0 + radius_1
         else:
-            topology_local = (
-                edge_indices[edge, 0] == index_2
-                or edge_indices[edge, 1] == index_2
-                or edge_indices[edge, 0] == index_3
-                or edge_indices[edge, 1] == index_3
-                or edge_indices[other_edge, 0] == index_0
-                or edge_indices[other_edge, 1] == index_0
-                or edge_indices[other_edge, 0] == index_1
-                or edge_indices[other_edge, 1] == index_1
+            topology_local = _is_topology_local_edge_pair(
+                edge,
+                other_edge,
+                index_0,
+                index_1,
+                index_2,
+                index_3,
+                edge_indices,
             )
             if topology_local:
                 average_length = 0.5 * (wp.length(position_1 - position_0) + wp.length(position_3 - position_2))
@@ -285,6 +360,19 @@ def _detect_edge_edge_contacts(
         contact_weights[contact, 3] = -parameter_1
         contact_directions[contact] = separation / distance
         contact_depths[contact] = limited_thickness - distance
+        rest_edge_0 = rest_positions[index_1] - rest_positions[index_0]
+        rest_edge_1 = rest_positions[index_3] - rest_positions[index_2]
+        contact_mollifier_thresholds[contact] = (
+            _EE_MOLLIFIER_THRESHOLD_SCALE
+            * wp.dot(
+                rest_edge_0,
+                rest_edge_0,
+            )
+            * wp.dot(
+                rest_edge_1,
+                rest_edge_1,
+            )
+        )
 
 
 @wp.func
@@ -668,6 +756,941 @@ def _accumulate_contact_diagonal_adaptive(
         wp.atomic_add(output, particle, weight * weight * rank_one)
 
 
+@wp.func
+def _edge_edge_mollifier_is_active(
+    position_0: wp.vec3,
+    position_1: wp.vec3,
+    position_2: wp.vec3,
+    position_3: wp.vec3,
+    threshold: float,
+):
+    if threshold <= _MIN_GEOMETRY_NORM * _MIN_GEOMETRY_NORM:
+        return False
+    cross_product = wp.cross(position_1 - position_0, position_3 - position_2)
+    return wp.dot(cross_product, cross_product) < threshold
+
+
+@wp.func
+def _edge_edge_friction_load_scale(
+    ids: wp.array2d[int],
+    contact: int,
+    thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    positions: wp.array[wp.vec3],
+):
+    if mollifier_active[contact] == 0:
+        return float(1.0)
+    edge_0 = positions[ids[contact, 1]] - positions[ids[contact, 0]]
+    edge_1 = positions[ids[contact, 3]] - positions[ids[contact, 2]]
+    cross_product = wp.cross(edge_0, edge_1)
+    cross_squared = wp.dot(cross_product, cross_product)
+    threshold = thresholds[contact]
+    if threshold <= _MIN_GEOMETRY_NORM * _MIN_GEOMETRY_NORM:
+        return float(0.0)
+    return wp.clamp(
+        cross_squared * (2.0 * threshold - cross_squared) / (threshold * threshold),
+        0.0,
+        1.0,
+    )
+
+
+@wp.func
+def _contact_relative_displacement(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    contact: int,
+    arity: int,
+    positions: wp.array[wp.vec3],
+    anchor_positions: wp.array[wp.vec3],
+):
+    relative_displacement = wp.vec3(0.0)
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        relative_displacement += weights[contact, local_index] * (positions[particle] - anchor_positions[particle])
+    return relative_displacement
+
+
+@wp.func
+def _regularized_friction_force_hessian(
+    direction: wp.vec3,
+    relative_displacement: wp.vec3,
+    normal_load: float,
+    friction: float,
+    displacement_epsilon: float,
+):
+    tangent_displacement = relative_displacement - direction * wp.dot(direction, relative_displacement)
+    tangent_length = wp.length(tangent_displacement)
+    if tangent_length <= 0.0 or normal_load <= 0.0:
+        return wp.vec3(0.0), wp.mat33(0.0)
+
+    friction_over_length = float(0.0)
+    if tangent_length > displacement_epsilon:
+        friction_over_length = 1.0 / tangent_length
+    else:
+        friction_over_length = (-tangent_length / displacement_epsilon + 2.0) / displacement_epsilon
+    scale = friction * normal_load * friction_over_length
+    tangent_projector = wp.identity(3, float) - wp.outer(direction, direction)
+    return -scale * tangent_displacement, scale * tangent_projector
+
+
+@wp.func
+def _contact_friction_force_hessian(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    contact: int,
+    arity: int,
+    stiffness: float,
+    friction: float,
+    displacement_epsilon: float,
+    positions: wp.array[wp.vec3],
+    anchor_positions: wp.array[wp.vec3],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    use_mollifier: int,
+):
+    load_scale = float(1.0)
+    if use_mollifier != 0:
+        load_scale = _edge_edge_friction_load_scale(
+            ids,
+            contact,
+            mollifier_thresholds,
+            mollifier_active,
+            positions,
+        )
+    relative_displacement = _contact_relative_displacement(
+        ids,
+        weights,
+        contact,
+        arity,
+        positions,
+        anchor_positions,
+    )
+    return _regularized_friction_force_hessian(
+        directions[contact],
+        relative_displacement,
+        stiffness * depths[contact] * load_scale,
+        friction,
+        displacement_epsilon,
+    )
+
+
+@wp.kernel
+def _accumulate_contact_friction_force(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    arity: int,
+    capacity: int,
+    use_mollifier: int,
+    stiffness: float,
+    friction: float,
+    displacement_epsilon: float,
+    positions: wp.array[wp.vec3],
+    anchor_positions: wp.array[wp.vec3],
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    friction_force, _friction_hessian = _contact_friction_force_hessian(
+        ids,
+        weights,
+        directions,
+        depths,
+        contact,
+        arity,
+        stiffness,
+        friction,
+        displacement_epsilon,
+        positions,
+        anchor_positions,
+        mollifier_thresholds,
+        mollifier_active,
+        use_mollifier,
+    )
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        wp.atomic_add(output, particle, weights[contact, local_index] * friction_force)
+
+
+@wp.kernel
+def _contact_friction_hessian_multiply(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    arity: int,
+    capacity: int,
+    use_mollifier: int,
+    stiffness: float,
+    friction: float,
+    displacement_epsilon: float,
+    positions: wp.array[wp.vec3],
+    anchor_positions: wp.array[wp.vec3],
+    vector: wp.array[wp.vec3],
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    _friction_force, friction_hessian = _contact_friction_force_hessian(
+        ids,
+        weights,
+        directions,
+        depths,
+        contact,
+        arity,
+        stiffness,
+        friction,
+        displacement_epsilon,
+        positions,
+        anchor_positions,
+        mollifier_thresholds,
+        mollifier_active,
+        use_mollifier,
+    )
+    relative_vector = wp.vec3(0.0)
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        relative_vector += weights[contact, local_index] * vector[particle]
+    friction_product = friction_hessian * relative_vector
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        wp.atomic_add(output, particle, weights[contact, local_index] * friction_product)
+
+
+@wp.kernel
+def _accumulate_contact_friction_diagonal(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    arity: int,
+    capacity: int,
+    use_mollifier: int,
+    stiffness: float,
+    friction: float,
+    displacement_epsilon: float,
+    positions: wp.array[wp.vec3],
+    anchor_positions: wp.array[wp.vec3],
+    output: wp.array[wp.mat33],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    _friction_force, friction_hessian = _contact_friction_force_hessian(
+        ids,
+        weights,
+        directions,
+        depths,
+        contact,
+        arity,
+        stiffness,
+        friction,
+        displacement_epsilon,
+        positions,
+        anchor_positions,
+        mollifier_thresholds,
+        mollifier_active,
+        use_mollifier,
+    )
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        weight = weights[contact, local_index]
+        wp.atomic_add(output, particle, weight * weight * friction_hessian)
+
+
+@wp.kernel
+def _accumulate_contact_friction_force_adaptive(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    arity: int,
+    feature_split: int,
+    capacity: int,
+    use_mollifier: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+    friction: float,
+    displacement_epsilon: float,
+    positions: wp.array[wp.vec3],
+    anchor_positions: wp.array[wp.vec3],
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+    stiffness = _adaptive_contact_stiffness(
+        ids,
+        directions,
+        contact,
+        arity,
+        feature_split,
+        factor,
+        static_diagonal,
+        masses,
+        inv_dt_squared,
+    )
+    friction_force, _friction_hessian = _contact_friction_force_hessian(
+        ids,
+        weights,
+        directions,
+        depths,
+        contact,
+        arity,
+        stiffness,
+        friction,
+        displacement_epsilon,
+        positions,
+        anchor_positions,
+        mollifier_thresholds,
+        mollifier_active,
+        use_mollifier,
+    )
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        wp.atomic_add(output, particle, weights[contact, local_index] * friction_force)
+
+
+@wp.kernel
+def _contact_friction_hessian_multiply_adaptive(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    arity: int,
+    feature_split: int,
+    capacity: int,
+    use_mollifier: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+    friction: float,
+    displacement_epsilon: float,
+    positions: wp.array[wp.vec3],
+    anchor_positions: wp.array[wp.vec3],
+    vector: wp.array[wp.vec3],
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+    stiffness = _adaptive_contact_stiffness(
+        ids,
+        directions,
+        contact,
+        arity,
+        feature_split,
+        factor,
+        static_diagonal,
+        masses,
+        inv_dt_squared,
+    )
+    _friction_force, friction_hessian = _contact_friction_force_hessian(
+        ids,
+        weights,
+        directions,
+        depths,
+        contact,
+        arity,
+        stiffness,
+        friction,
+        displacement_epsilon,
+        positions,
+        anchor_positions,
+        mollifier_thresholds,
+        mollifier_active,
+        use_mollifier,
+    )
+    relative_vector = wp.vec3(0.0)
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        relative_vector += weights[contact, local_index] * vector[particle]
+    friction_product = friction_hessian * relative_vector
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        wp.atomic_add(output, particle, weights[contact, local_index] * friction_product)
+
+
+@wp.kernel
+def _accumulate_contact_friction_diagonal_adaptive(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    arity: int,
+    feature_split: int,
+    capacity: int,
+    use_mollifier: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+    friction: float,
+    displacement_epsilon: float,
+    positions: wp.array[wp.vec3],
+    anchor_positions: wp.array[wp.vec3],
+    output: wp.array[wp.mat33],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+    stiffness = _adaptive_contact_stiffness(
+        ids,
+        directions,
+        contact,
+        arity,
+        feature_split,
+        factor,
+        static_diagonal,
+        masses,
+        inv_dt_squared,
+    )
+    _friction_force, friction_hessian = _contact_friction_force_hessian(
+        ids,
+        weights,
+        directions,
+        depths,
+        contact,
+        arity,
+        stiffness,
+        friction,
+        displacement_epsilon,
+        positions,
+        anchor_positions,
+        mollifier_thresholds,
+        mollifier_active,
+        use_mollifier,
+    )
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        weight = weights[contact, local_index]
+        wp.atomic_add(output, particle, weight * weight * friction_hessian)
+
+
+@wp.kernel
+def _prepare_edge_edge_mollifier(
+    ids: wp.array2d[int],
+    mollifier_thresholds: wp.array[float],
+    count: wp.array[int],
+    capacity: int,
+    positions: wp.array[wp.vec3],
+    mollifier_active: wp.array[int],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    position_0 = positions[index_0]
+    position_1 = positions[index_1]
+    position_2 = positions[index_2]
+    position_3 = positions[index_3]
+    threshold = mollifier_thresholds[contact]
+    active = _edge_edge_mollifier_is_active(position_0, position_1, position_2, position_3, threshold)
+    mollifier_active[contact] = wp.int32(active)
+
+
+@wp.func
+def _edge_edge_gauss_newton_multiply(
+    edge_0: wp.vec3,
+    edge_1: wp.vec3,
+    weights: wp.vec4,
+    direction: wp.vec3,
+    depth: float,
+    threshold: float,
+    vector_0: wp.vec3,
+    vector_1: wp.vec3,
+    vector_2: wp.vec3,
+    vector_3: wp.vec3,
+):
+    edge_delta_0 = vector_1 - vector_0
+    edge_delta_1 = vector_3 - vector_2
+    depth_delta = -wp.dot(
+        direction,
+        weights[0] * vector_0 + weights[1] * vector_1 + weights[2] * vector_2 + weights[3] * vector_3,
+    )
+    residual_product = _edge_edge_mollified_residual_jacobian_multiply(
+        edge_0,
+        edge_1,
+        depth,
+        threshold,
+        edge_delta_0,
+        edge_delta_1,
+        depth_delta,
+    )
+    edge_product_0, edge_product_1, depth_product = _edge_edge_mollified_residual_jacobian_transpose_multiply(
+        edge_0,
+        edge_1,
+        depth,
+        threshold,
+        residual_product,
+    )
+    return (
+        -edge_product_0 - weights[0] * depth_product * direction,
+        edge_product_0 - weights[1] * depth_product * direction,
+        -edge_product_1 - weights[2] * depth_product * direction,
+        edge_product_1 - weights[3] * depth_product * direction,
+    )
+
+
+@wp.func
+def _edge_edge_gauss_newton_diagonal_block(
+    edge_0: wp.vec3,
+    edge_1: wp.vec3,
+    weight: float,
+    direction: wp.vec3,
+    depth: float,
+    threshold: float,
+    local_index: int,
+):
+    columns = wp.mat33(0.0)
+    for axis in range(3):
+        basis = wp.vec3(0.0)
+        basis[axis] = 1.0
+        edge_delta_0 = wp.vec3(0.0)
+        edge_delta_1 = wp.vec3(0.0)
+        if local_index == 0:
+            edge_delta_0 = -basis
+        elif local_index == 1:
+            edge_delta_0 = basis
+        elif local_index == 2:
+            edge_delta_1 = -basis
+        else:
+            edge_delta_1 = basis
+        residual_product = _edge_edge_mollified_residual_jacobian_multiply(
+            edge_0,
+            edge_1,
+            depth,
+            threshold,
+            edge_delta_0,
+            edge_delta_1,
+            -weight * direction[axis],
+        )
+        edge_product_0, edge_product_1, depth_product = _edge_edge_mollified_residual_jacobian_transpose_multiply(
+            edge_0,
+            edge_1,
+            depth,
+            threshold,
+            residual_product,
+        )
+        if local_index == 0:
+            local_product = -edge_product_0
+        elif local_index == 1:
+            local_product = edge_product_0
+        elif local_index == 2:
+            local_product = -edge_product_1
+        else:
+            local_product = edge_product_1
+        local_product -= weight * depth_product * direction
+        columns[0, axis] = local_product[0]
+        columns[1, axis] = local_product[1]
+        columns[2, axis] = local_product[2]
+    return columns
+
+
+@wp.kernel
+def _accumulate_mollified_edge_edge_force(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    capacity: int,
+    stiffness: float,
+    positions: wp.array[wp.vec3],
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    position_0 = positions[index_0]
+    position_1 = positions[index_1]
+    position_2 = positions[index_2]
+    position_3 = positions[index_3]
+    direction = directions[contact]
+    depth = depths[contact]
+    threshold = mollifier_thresholds[contact]
+    if mollifier_active[contact] != 0:
+        contact_weights = wp.vec4(
+            weights[contact, 0],
+            weights[contact, 1],
+            weights[contact, 2],
+            weights[contact, 3],
+        )
+        edge_0 = position_1 - position_0
+        edge_1 = position_3 - position_2
+        cross_product, residual_scale, _scale_gradient = _edge_edge_mollified_residual_data(
+            edge_0,
+            edge_1,
+            threshold,
+        )
+        edge_product_0, edge_product_1, depth_product = _edge_edge_mollified_residual_jacobian_transpose_multiply(
+            edge_0,
+            edge_1,
+            depth,
+            threshold,
+            depth * residual_scale * cross_product,
+        )
+        gradient_0 = -edge_product_0 - contact_weights[0] * depth_product * direction
+        gradient_1 = edge_product_0 - contact_weights[1] * depth_product * direction
+        gradient_2 = -edge_product_1 - contact_weights[2] * depth_product * direction
+        gradient_3 = edge_product_1 - contact_weights[3] * depth_product * direction
+        wp.atomic_add(output, index_0, -stiffness * gradient_0)
+        wp.atomic_add(output, index_1, -stiffness * gradient_1)
+        wp.atomic_add(output, index_2, -stiffness * gradient_2)
+        wp.atomic_add(output, index_3, -stiffness * gradient_3)
+        return
+
+    scaled_direction = stiffness * depth * direction
+    wp.atomic_add(output, index_0, weights[contact, 0] * scaled_direction)
+    wp.atomic_add(output, index_1, weights[contact, 1] * scaled_direction)
+    wp.atomic_add(output, index_2, weights[contact, 2] * scaled_direction)
+    wp.atomic_add(output, index_3, weights[contact, 3] * scaled_direction)
+
+
+@wp.kernel
+def _mollified_edge_edge_hessian_multiply(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    capacity: int,
+    stiffness: float,
+    positions: wp.array[wp.vec3],
+    vector: wp.array[wp.vec3],
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    position_0 = positions[index_0]
+    position_1 = positions[index_1]
+    position_2 = positions[index_2]
+    position_3 = positions[index_3]
+    direction = directions[contact]
+    if mollifier_active[contact] != 0:
+        contact_weights = wp.vec4(weights[contact, 0], weights[contact, 1], weights[contact, 2], weights[contact, 3])
+        product_0, product_1, product_2, product_3 = _edge_edge_gauss_newton_multiply(
+            position_1 - position_0,
+            position_3 - position_2,
+            contact_weights,
+            direction,
+            depths[contact],
+            mollifier_thresholds[contact],
+            vector[index_0],
+            vector[index_1],
+            vector[index_2],
+            vector[index_3],
+        )
+        wp.atomic_add(output, index_0, stiffness * product_0)
+        wp.atomic_add(output, index_1, stiffness * product_1)
+        wp.atomic_add(output, index_2, stiffness * product_2)
+        wp.atomic_add(output, index_3, stiffness * product_3)
+        return
+
+    projected_sum = (
+        weights[contact, 0] * wp.dot(direction, vector[index_0])
+        + weights[contact, 1] * wp.dot(direction, vector[index_1])
+        + weights[contact, 2] * wp.dot(direction, vector[index_2])
+        + weights[contact, 3] * wp.dot(direction, vector[index_3])
+    )
+    scaled_direction = stiffness * projected_sum * direction
+    wp.atomic_add(output, index_0, weights[contact, 0] * scaled_direction)
+    wp.atomic_add(output, index_1, weights[contact, 1] * scaled_direction)
+    wp.atomic_add(output, index_2, weights[contact, 2] * scaled_direction)
+    wp.atomic_add(output, index_3, weights[contact, 3] * scaled_direction)
+
+
+@wp.kernel
+def _accumulate_mollified_edge_edge_diagonal(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    capacity: int,
+    stiffness: float,
+    positions: wp.array[wp.vec3],
+    output: wp.array[wp.mat33],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    position_0 = positions[index_0]
+    position_1 = positions[index_1]
+    position_2 = positions[index_2]
+    position_3 = positions[index_3]
+    direction = directions[contact]
+    if mollifier_active[contact] != 0:
+        edge_0 = position_1 - position_0
+        edge_1 = position_3 - position_2
+        for local_index in range(4):
+            particle = ids[contact, local_index]
+            block = _edge_edge_gauss_newton_diagonal_block(
+                edge_0,
+                edge_1,
+                weights[contact, local_index],
+                direction,
+                depths[contact],
+                mollifier_thresholds[contact],
+                local_index,
+            )
+            wp.atomic_add(output, particle, stiffness * block)
+        return
+
+    rank_one = stiffness * wp.outer(direction, direction)
+    for local_index in range(4):
+        particle = ids[contact, local_index]
+        weight = weights[contact, local_index]
+        wp.atomic_add(output, particle, weight * weight * rank_one)
+
+
+@wp.kernel
+def _accumulate_mollified_edge_edge_force_adaptive(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    capacity: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+    positions: wp.array[wp.vec3],
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+    stiffness = _adaptive_contact_stiffness(
+        ids, directions, contact, 4, 2, factor, static_diagonal, masses, inv_dt_squared
+    )
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    position_0 = positions[index_0]
+    position_1 = positions[index_1]
+    position_2 = positions[index_2]
+    position_3 = positions[index_3]
+    direction = directions[contact]
+    depth = depths[contact]
+    threshold = mollifier_thresholds[contact]
+    if mollifier_active[contact] != 0:
+        contact_weights = wp.vec4(weights[contact, 0], weights[contact, 1], weights[contact, 2], weights[contact, 3])
+        edge_0 = position_1 - position_0
+        edge_1 = position_3 - position_2
+        cross_product, residual_scale, _scale_gradient = _edge_edge_mollified_residual_data(
+            edge_0,
+            edge_1,
+            threshold,
+        )
+        edge_product_0, edge_product_1, depth_product = _edge_edge_mollified_residual_jacobian_transpose_multiply(
+            edge_0,
+            edge_1,
+            depth,
+            threshold,
+            depth * residual_scale * cross_product,
+        )
+        gradient_0 = -edge_product_0 - contact_weights[0] * depth_product * direction
+        gradient_1 = edge_product_0 - contact_weights[1] * depth_product * direction
+        gradient_2 = -edge_product_1 - contact_weights[2] * depth_product * direction
+        gradient_3 = edge_product_1 - contact_weights[3] * depth_product * direction
+        wp.atomic_add(output, index_0, -stiffness * gradient_0)
+        wp.atomic_add(output, index_1, -stiffness * gradient_1)
+        wp.atomic_add(output, index_2, -stiffness * gradient_2)
+        wp.atomic_add(output, index_3, -stiffness * gradient_3)
+        return
+
+    scaled_direction = stiffness * depth * direction
+    wp.atomic_add(output, index_0, weights[contact, 0] * scaled_direction)
+    wp.atomic_add(output, index_1, weights[contact, 1] * scaled_direction)
+    wp.atomic_add(output, index_2, weights[contact, 2] * scaled_direction)
+    wp.atomic_add(output, index_3, weights[contact, 3] * scaled_direction)
+
+
+@wp.kernel
+def _mollified_edge_edge_hessian_multiply_adaptive(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    capacity: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+    positions: wp.array[wp.vec3],
+    vector: wp.array[wp.vec3],
+    output: wp.array[wp.vec3],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+    stiffness = _adaptive_contact_stiffness(
+        ids, directions, contact, 4, 2, factor, static_diagonal, masses, inv_dt_squared
+    )
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    position_0 = positions[index_0]
+    position_1 = positions[index_1]
+    position_2 = positions[index_2]
+    position_3 = positions[index_3]
+    direction = directions[contact]
+    if mollifier_active[contact] != 0:
+        contact_weights = wp.vec4(weights[contact, 0], weights[contact, 1], weights[contact, 2], weights[contact, 3])
+        product_0, product_1, product_2, product_3 = _edge_edge_gauss_newton_multiply(
+            position_1 - position_0,
+            position_3 - position_2,
+            contact_weights,
+            direction,
+            depths[contact],
+            mollifier_thresholds[contact],
+            vector[index_0],
+            vector[index_1],
+            vector[index_2],
+            vector[index_3],
+        )
+        wp.atomic_add(output, index_0, stiffness * product_0)
+        wp.atomic_add(output, index_1, stiffness * product_1)
+        wp.atomic_add(output, index_2, stiffness * product_2)
+        wp.atomic_add(output, index_3, stiffness * product_3)
+        return
+
+    projected_sum = (
+        weights[contact, 0] * wp.dot(direction, vector[index_0])
+        + weights[contact, 1] * wp.dot(direction, vector[index_1])
+        + weights[contact, 2] * wp.dot(direction, vector[index_2])
+        + weights[contact, 3] * wp.dot(direction, vector[index_3])
+    )
+    scaled_direction = stiffness * projected_sum * direction
+    wp.atomic_add(output, index_0, weights[contact, 0] * scaled_direction)
+    wp.atomic_add(output, index_1, weights[contact, 1] * scaled_direction)
+    wp.atomic_add(output, index_2, weights[contact, 2] * scaled_direction)
+    wp.atomic_add(output, index_3, weights[contact, 3] * scaled_direction)
+
+
+@wp.kernel
+def _accumulate_mollified_edge_edge_diagonal_adaptive(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    capacity: int,
+    factor: float,
+    static_diagonal: wp.array[wp.mat33],
+    masses: wp.array[float],
+    inv_dt_squared: float,
+    positions: wp.array[wp.vec3],
+    output: wp.array[wp.mat33],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+    stiffness = _adaptive_contact_stiffness(
+        ids, directions, contact, 4, 2, factor, static_diagonal, masses, inv_dt_squared
+    )
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    position_0 = positions[index_0]
+    position_1 = positions[index_1]
+    position_2 = positions[index_2]
+    position_3 = positions[index_3]
+    direction = directions[contact]
+    if mollifier_active[contact] != 0:
+        edge_0 = position_1 - position_0
+        edge_1 = position_3 - position_2
+        for local_index in range(4):
+            particle = ids[contact, local_index]
+            block = _edge_edge_gauss_newton_diagonal_block(
+                edge_0,
+                edge_1,
+                weights[contact, local_index],
+                direction,
+                depths[contact],
+                mollifier_thresholds[contact],
+                local_index,
+            )
+            wp.atomic_add(output, particle, stiffness * block)
+        return
+
+    rank_one = stiffness * wp.outer(direction, direction)
+    for local_index in range(4):
+        particle = ids[contact, local_index]
+        weight = weights[contact, local_index]
+        wp.atomic_add(output, particle, weight * weight * rank_one)
+
+
 class _ContactBuffer:
     """Fixed-capacity rank-one contact data and matrix-free operations."""
 
@@ -861,6 +1884,272 @@ class _ContactBuffer:
             device=self.device,
         )
 
+    def accumulate_friction_force(
+        self,
+        stiffness: float,
+        friction: float,
+        displacement_epsilon: float,
+        positions: wp.array[wp.vec3],
+        anchor_positions: wp.array[wp.vec3],
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add regularized Coulomb friction forces."""
+        self._validate_friction_data(positions, anchor_positions, output, wp.vec3)
+        mollifier_thresholds, mollifier_active, use_mollifier = self._friction_mollifier_data()
+        wp.launch(
+            _accumulate_contact_friction_force,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                mollifier_thresholds,
+                mollifier_active,
+                self.count,
+                self.arity,
+                self.capacity,
+                use_mollifier,
+                stiffness,
+                friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def friction_hessian_multiply(
+        self,
+        stiffness: float,
+        friction: float,
+        displacement_epsilon: float,
+        positions: wp.array[wp.vec3],
+        anchor_positions: wp.array[wp.vec3],
+        vector: wp.array[wp.vec3],
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add regularized friction Hessian-vector products."""
+        self._validate_friction_data(positions, anchor_positions, vector, wp.vec3)
+        self._validate_output(output, wp.vec3)
+        if len(output) != len(vector):
+            raise ValueError("vector and output must have the same length")
+        mollifier_thresholds, mollifier_active, use_mollifier = self._friction_mollifier_data()
+        wp.launch(
+            _contact_friction_hessian_multiply,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                mollifier_thresholds,
+                mollifier_active,
+                self.count,
+                self.arity,
+                self.capacity,
+                use_mollifier,
+                stiffness,
+                friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+                vector,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def accumulate_friction_diagonal(
+        self,
+        stiffness: float,
+        friction: float,
+        displacement_epsilon: float,
+        positions: wp.array[wp.vec3],
+        anchor_positions: wp.array[wp.vec3],
+        output: wp.array[wp.mat33],
+    ) -> None:
+        """Add diagonal blocks of the regularized friction Hessian."""
+        self._validate_friction_data(positions, anchor_positions, output, wp.mat33)
+        mollifier_thresholds, mollifier_active, use_mollifier = self._friction_mollifier_data()
+        wp.launch(
+            _accumulate_contact_friction_diagonal,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                mollifier_thresholds,
+                mollifier_active,
+                self.count,
+                self.arity,
+                self.capacity,
+                use_mollifier,
+                stiffness,
+                friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def accumulate_friction_force_adaptive(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+        friction: float,
+        displacement_epsilon: float,
+        positions: wp.array[wp.vec3],
+        anchor_positions: wp.array[wp.vec3],
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add adaptive-stiffness regularized Coulomb friction forces."""
+        self._validate_adaptive_data(factor, static_diagonal, masses, inv_dt_squared)
+        self._validate_friction_data(positions, anchor_positions, output, wp.vec3)
+        mollifier_thresholds, mollifier_active, use_mollifier = self._friction_mollifier_data()
+        wp.launch(
+            _accumulate_contact_friction_force_adaptive,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                mollifier_thresholds,
+                mollifier_active,
+                self.count,
+                self.arity,
+                self.feature_split,
+                self.capacity,
+                use_mollifier,
+                factor,
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def friction_hessian_multiply_adaptive(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+        friction: float,
+        displacement_epsilon: float,
+        positions: wp.array[wp.vec3],
+        anchor_positions: wp.array[wp.vec3],
+        vector: wp.array[wp.vec3],
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add adaptive-stiffness friction Hessian-vector products."""
+        self._validate_adaptive_data(factor, static_diagonal, masses, inv_dt_squared)
+        self._validate_friction_data(positions, anchor_positions, vector, wp.vec3)
+        self._validate_output(output, wp.vec3)
+        if len(output) != len(vector):
+            raise ValueError("vector and output must have the same length")
+        mollifier_thresholds, mollifier_active, use_mollifier = self._friction_mollifier_data()
+        wp.launch(
+            _contact_friction_hessian_multiply_adaptive,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                mollifier_thresholds,
+                mollifier_active,
+                self.count,
+                self.arity,
+                self.feature_split,
+                self.capacity,
+                use_mollifier,
+                factor,
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+                vector,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def accumulate_friction_diagonal_adaptive(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+        friction: float,
+        displacement_epsilon: float,
+        positions: wp.array[wp.vec3],
+        anchor_positions: wp.array[wp.vec3],
+        output: wp.array[wp.mat33],
+    ) -> None:
+        """Add adaptive-stiffness friction diagonal blocks."""
+        self._validate_adaptive_data(factor, static_diagonal, masses, inv_dt_squared)
+        self._validate_friction_data(positions, anchor_positions, output, wp.mat33)
+        mollifier_thresholds, mollifier_active, use_mollifier = self._friction_mollifier_data()
+        wp.launch(
+            _accumulate_contact_friction_diagonal_adaptive,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                mollifier_thresholds,
+                mollifier_active,
+                self.count,
+                self.arity,
+                self.feature_split,
+                self.capacity,
+                use_mollifier,
+                factor,
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def _friction_mollifier_data(self) -> tuple[wp.array[float], wp.array[int], int]:
+        return self.depths, self.count, 0
+
+    def _validate_friction_data(
+        self,
+        positions: wp.array[wp.vec3],
+        anchor_positions: wp.array[wp.vec3],
+        output: wp.array,
+        output_dtype: Any,
+    ) -> None:
+        self._validate_output(positions, wp.vec3)
+        self._validate_output(anchor_positions, wp.vec3)
+        self._validate_output(output, output_dtype)
+        if len(positions) != len(anchor_positions) or len(positions) != len(output):
+            raise ValueError("friction particle arrays must have the same length")
+
     def _validate_adaptive_data(
         self,
         factor: float,
@@ -886,8 +2175,236 @@ class _ContactBuffer:
             raise TypeError(f"array must have dtype {dtype}")
 
 
+class _EdgeEdgeContactBuffer(_ContactBuffer):
+    """Four-particle EE contacts with an IPC near-parallel mollifier."""
+
+    def __init__(self, capacity: int, device: Any):
+        super().__init__(arity=4, capacity=capacity, device=device, feature_split=2)
+        self.mollifier_thresholds = wp.zeros(capacity, dtype=wp.float32, device=self.device)
+        self.mollifier_active = wp.zeros(capacity, dtype=wp.int32, device=self.device)
+
+    def prepare_hessian(self, positions: wp.array[wp.vec3]) -> None:
+        """Mark EE contacts whose IPC mollifier is active."""
+        self._validate_output(positions, wp.vec3)
+        wp.launch(
+            _prepare_edge_edge_mollifier,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.mollifier_thresholds,
+                self.count,
+                self.capacity,
+                positions,
+            ],
+            outputs=[self.mollifier_active],
+            device=self.device,
+        )
+
+    def _friction_mollifier_data(self) -> tuple[wp.array[float], wp.array[int], int]:
+        return self.mollifier_thresholds, self.mollifier_active, 1
+
+    def accumulate_force(
+        self,
+        stiffness: float,
+        positions: wp.array[wp.vec3],
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add exact forces of the IPC-mollified EE penalty energy."""
+        self._validate_particle_vectors(positions, output)
+        wp.launch(
+            _accumulate_mollified_edge_edge_force,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                self.mollifier_thresholds,
+                self.mollifier_active,
+                self.count,
+                self.capacity,
+                stiffness,
+                positions,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def hessian_multiply(
+        self,
+        stiffness: float,
+        positions: wp.array[wp.vec3],
+        vector: wp.array[wp.vec3],
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add Gauss-Newton products of the mollified EE energy."""
+        self._validate_particle_vectors(positions, vector, output)
+        wp.launch(
+            _mollified_edge_edge_hessian_multiply,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                self.mollifier_thresholds,
+                self.mollifier_active,
+                self.count,
+                self.capacity,
+                stiffness,
+                positions,
+                vector,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def accumulate_diagonal(
+        self,
+        stiffness: float,
+        positions: wp.array[wp.vec3],
+        output: wp.array[wp.mat33],
+    ) -> None:
+        """Add exact diagonal blocks of the Gauss-Newton EE operator."""
+        self._validate_output(positions, wp.vec3)
+        self._validate_output(output, wp.mat33)
+        if len(positions) != len(output):
+            raise ValueError("positions and output must have the same length")
+        wp.launch(
+            _accumulate_mollified_edge_edge_diagonal,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                self.mollifier_thresholds,
+                self.mollifier_active,
+                self.count,
+                self.capacity,
+                stiffness,
+                positions,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def accumulate_force_adaptive(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+        positions: wp.array[wp.vec3],
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add mollified EE forces using adaptive directional stiffness."""
+        self._validate_adaptive_data(factor, static_diagonal, masses, inv_dt_squared)
+        self._validate_particle_vectors(positions, output)
+        wp.launch(
+            _accumulate_mollified_edge_edge_force_adaptive,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                self.mollifier_thresholds,
+                self.mollifier_active,
+                self.count,
+                self.capacity,
+                factor,
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                positions,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def hessian_multiply_adaptive(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+        positions: wp.array[wp.vec3],
+        vector: wp.array[wp.vec3],
+        output: wp.array[wp.vec3],
+    ) -> None:
+        """Add adaptive PSD products of the mollified EE energy."""
+        self._validate_adaptive_data(factor, static_diagonal, masses, inv_dt_squared)
+        self._validate_particle_vectors(positions, vector, output)
+        wp.launch(
+            _mollified_edge_edge_hessian_multiply_adaptive,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                self.mollifier_thresholds,
+                self.mollifier_active,
+                self.count,
+                self.capacity,
+                factor,
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                positions,
+                vector,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def accumulate_diagonal_adaptive(
+        self,
+        factor: float,
+        static_diagonal: wp.array[wp.mat33],
+        masses: wp.array[float],
+        inv_dt_squared: float,
+        positions: wp.array[wp.vec3],
+        output: wp.array[wp.mat33],
+    ) -> None:
+        """Add adaptive diagonal blocks of the mollified EE operator."""
+        self._validate_adaptive_data(factor, static_diagonal, masses, inv_dt_squared)
+        self._validate_output(positions, wp.vec3)
+        self._validate_output(output, wp.mat33)
+        if len(positions) != len(output):
+            raise ValueError("positions and output must have the same length")
+        wp.launch(
+            _accumulate_mollified_edge_edge_diagonal_adaptive,
+            dim=self.capacity,
+            inputs=[
+                self.ids,
+                self.weights,
+                self.directions,
+                self.depths,
+                self.mollifier_thresholds,
+                self.mollifier_active,
+                self.count,
+                self.capacity,
+                factor,
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                positions,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def _validate_particle_vectors(self, *arrays: wp.array[wp.vec3]) -> None:
+        for array in arrays:
+            self._validate_output(array, wp.vec3)
+        if any(len(array) != len(arrays[0]) for array in arrays[1:]):
+            raise ValueError("particle vectors must have the same length")
+
+
 class ConstraintSelfCollision:
-    """Frictionless matrix-free cloth self-collision constraints.
+    """Matrix-free cloth self-collision constraints.
 
     Attributes:
         particle_radii: One-sided collision radii [m], shape
@@ -905,6 +2422,8 @@ class ConstraintSelfCollision:
         max_contacts: int = 32768,
         stiffness_factors: tuple[float, float, float] | None = None,
         geometry_radius_scale: float | None = None,
+        friction: float = 0.0,
+        friction_epsilon: float = 1.0e-2,
     ):
         """Create a fixed-capacity GPU cloth self-collision operator.
 
@@ -924,9 +2443,20 @@ class ConstraintSelfCollision:
                 scale. When set, each one-sided particle radius is capped by
                 this value times its minimum incident triangle altitude. The
                 initial recommended value is ``0.25``.
+            friction: Coulomb friction coefficient for vertex-face and
+                edge-edge contacts.
+            friction_epsilon: Relative-velocity regularization threshold [m/s].
         """
         if not np.isfinite(thickness) or thickness <= 0.0:
             raise ValueError("thickness must be finite and positive")
+        if not np.isfinite(friction):
+            raise ValueError("friction must be finite")
+        if friction < 0.0:
+            raise ValueError("friction must be nonnegative")
+        if not np.isfinite(friction_epsilon):
+            raise ValueError("friction_epsilon must be finite")
+        if friction_epsilon <= 0.0:
+            raise ValueError("friction_epsilon must be positive")
         if geometry_radius_scale is not None:
             if not np.isfinite(geometry_radius_scale):
                 raise ValueError("geometry_radius_scale must be finite")
@@ -973,6 +2503,13 @@ class ConstraintSelfCollision:
         self.stiffness_factors = validated_stiffness_factors
         self.max_contacts = int(max_contacts)
         self.particle_world = model.particle_world
+        self.rest_positions = wp.clone(model.particle_q)
+        self.friction = float(friction)
+        self.friction_epsilon = float(friction_epsilon)
+        self._friction_positions: wp.array[wp.vec3] | None = None
+        if self.friction > 0.0:
+            self._friction_positions = wp.empty_like(model.particle_q)
+        self._friction_displacement_epsilon = 0.0
         self._static_diagonal: wp.array[wp.mat33] | None = None
         self._masses: wp.array[float] | None = None
         self._inv_dt_squared = 0.0
@@ -1021,7 +2558,7 @@ class ConstraintSelfCollision:
         self.edge_bvh = wp.Bvh(self.edge_lower_bounds, self.edge_upper_bounds)
 
         self.vertex_face_contacts = _ContactBuffer(4, max_contacts, self.device, feature_split=1)
-        self.edge_edge_contacts = _ContactBuffer(4, max_contacts, self.device, feature_split=2)
+        self.edge_edge_contacts = _EdgeEdgeContactBuffer(max_contacts, self.device)
         self.edge_face_contacts = _ContactBuffer(5, max_contacts, self.device, feature_split=2)
 
     def bind_static_system(
@@ -1051,8 +2588,8 @@ class ConstraintSelfCollision:
         velocities: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Cache the inverse squared time step for adaptive contact."""
-        if self.stiffness_factors is None:
+        """Cache step data for adaptive stiffness and friction."""
+        if self.stiffness_factors is None and self.friction == 0.0:
             return
         self._validate_positions(positions)
         if velocities.device != self.device:
@@ -1061,9 +2598,15 @@ class ConstraintSelfCollision:
             raise ValueError(f"velocities must contain {self.particle_count} wp.vec3 values")
         if not np.isfinite(dt) or dt <= 0.0:
             raise ValueError("dt must be finite and positive")
-        if self._static_diagonal is None or self._masses is None:
-            raise RuntimeError("bind_static_system() must be called before begin_step() in adaptive mode")
-        self._inv_dt_squared = 1.0 / (dt * dt)
+        if self.stiffness_factors is not None:
+            if self._static_diagonal is None or self._masses is None:
+                raise RuntimeError("bind_static_system() must be called before begin_step() in adaptive mode")
+            self._inv_dt_squared = 1.0 / (dt * dt)
+        if self.friction > 0.0:
+            if self._friction_positions is None:
+                raise RuntimeError("friction anchor storage is unavailable")
+            self._friction_positions.assign(positions)
+            self._friction_displacement_epsilon = self.friction_epsilon * dt
 
     def prepare(self, positions: wp.array[wp.vec3]) -> None:
         """Detect and freeze contacts at the current Newton iterate."""
@@ -1107,6 +2650,7 @@ class ConstraintSelfCollision:
                 self._use_geometry_radii,
                 self.max_contacts,
                 positions,
+                self.rest_positions,
                 self.particle_world,
                 self.edge_indices,
             ],
@@ -1115,11 +2659,13 @@ class ConstraintSelfCollision:
                 self.edge_edge_contacts.weights,
                 self.edge_edge_contacts.directions,
                 self.edge_edge_contacts.depths,
+                self.edge_edge_contacts.mollifier_thresholds,
                 self.edge_edge_contacts.count,
                 self.edge_edge_contacts.overflow_count,
             ],
             device=self.device,
         )
+        self.edge_edge_contacts.prepare_hessian(positions)
         wp.launch(
             _detect_edge_face_untangle_contacts,
             dim=self.edge_count,
@@ -1148,8 +2694,26 @@ class ConstraintSelfCollision:
         self._validate_positions(positions)
         if self.stiffness_factors is None:
             self.vertex_face_contacts.accumulate_force(self.stiffness, output)
-            self.edge_edge_contacts.accumulate_force(self.stiffness, output)
+            self.edge_edge_contacts.accumulate_force(self.stiffness, positions, output)
             self.edge_face_contacts.accumulate_force(self.untangle_stiffness, output)
+            if self.friction > 0.0:
+                anchor_positions, displacement_epsilon = self._friction_state()
+                self.vertex_face_contacts.accumulate_friction_force(
+                    self.stiffness,
+                    self.friction,
+                    displacement_epsilon,
+                    positions,
+                    anchor_positions,
+                    output,
+                )
+                self.edge_edge_contacts.accumulate_friction_force(
+                    self.stiffness,
+                    self.friction,
+                    displacement_epsilon,
+                    positions,
+                    anchor_positions,
+                    output,
+                )
             return
 
         static_diagonal, masses, inv_dt_squared = self._adaptive_system()
@@ -1157,11 +2721,35 @@ class ConstraintSelfCollision:
             self.stiffness_factors[0], static_diagonal, masses, inv_dt_squared, output
         )
         self.edge_edge_contacts.accumulate_force_adaptive(
-            self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, output
+            self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, positions, output
         )
         self.edge_face_contacts.accumulate_force_adaptive(
             self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, output
         )
+        if self.friction > 0.0:
+            anchor_positions, displacement_epsilon = self._friction_state()
+            self.vertex_face_contacts.accumulate_friction_force_adaptive(
+                self.stiffness_factors[0],
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                self.friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+                output,
+            )
+            self.edge_edge_contacts.accumulate_friction_force_adaptive(
+                self.stiffness_factors[1],
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                self.friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+                output,
+            )
 
     def hessian_multiply(
         self,
@@ -1173,8 +2761,28 @@ class ConstraintSelfCollision:
         self._validate_positions(positions)
         if self.stiffness_factors is None:
             self.vertex_face_contacts.hessian_multiply(self.stiffness, vector, output)
-            self.edge_edge_contacts.hessian_multiply(self.stiffness, vector, output)
+            self.edge_edge_contacts.hessian_multiply(self.stiffness, positions, vector, output)
             self.edge_face_contacts.hessian_multiply(self.untangle_stiffness, vector, output)
+            if self.friction > 0.0:
+                anchor_positions, displacement_epsilon = self._friction_state()
+                self.vertex_face_contacts.friction_hessian_multiply(
+                    self.stiffness,
+                    self.friction,
+                    displacement_epsilon,
+                    positions,
+                    anchor_positions,
+                    vector,
+                    output,
+                )
+                self.edge_edge_contacts.friction_hessian_multiply(
+                    self.stiffness,
+                    self.friction,
+                    displacement_epsilon,
+                    positions,
+                    anchor_positions,
+                    vector,
+                    output,
+                )
             return
 
         static_diagonal, masses, inv_dt_squared = self._adaptive_system()
@@ -1182,19 +2790,63 @@ class ConstraintSelfCollision:
             self.stiffness_factors[0], static_diagonal, masses, inv_dt_squared, vector, output
         )
         self.edge_edge_contacts.hessian_multiply_adaptive(
-            self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, vector, output
+            self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, positions, vector, output
         )
         self.edge_face_contacts.hessian_multiply_adaptive(
             self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, vector, output
         )
+        if self.friction > 0.0:
+            anchor_positions, displacement_epsilon = self._friction_state()
+            self.vertex_face_contacts.friction_hessian_multiply_adaptive(
+                self.stiffness_factors[0],
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                self.friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+                vector,
+                output,
+            )
+            self.edge_edge_contacts.friction_hessian_multiply_adaptive(
+                self.stiffness_factors[1],
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                self.friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+                vector,
+                output,
+            )
 
     def accumulate_diagonal(self, positions: wp.array[wp.vec3], output: wp.array[wp.mat33]) -> None:
         """Add frozen-contact diagonal Hessian blocks to ``output``."""
         self._validate_positions(positions)
         if self.stiffness_factors is None:
             self.vertex_face_contacts.accumulate_diagonal(self.stiffness, output)
-            self.edge_edge_contacts.accumulate_diagonal(self.stiffness, output)
+            self.edge_edge_contacts.accumulate_diagonal(self.stiffness, positions, output)
             self.edge_face_contacts.accumulate_diagonal(self.untangle_stiffness, output)
+            if self.friction > 0.0:
+                anchor_positions, displacement_epsilon = self._friction_state()
+                self.vertex_face_contacts.accumulate_friction_diagonal(
+                    self.stiffness,
+                    self.friction,
+                    displacement_epsilon,
+                    positions,
+                    anchor_positions,
+                    output,
+                )
+                self.edge_edge_contacts.accumulate_friction_diagonal(
+                    self.stiffness,
+                    self.friction,
+                    displacement_epsilon,
+                    positions,
+                    anchor_positions,
+                    output,
+                )
             return
 
         static_diagonal, masses, inv_dt_squared = self._adaptive_system()
@@ -1202,16 +2854,45 @@ class ConstraintSelfCollision:
             self.stiffness_factors[0], static_diagonal, masses, inv_dt_squared, output
         )
         self.edge_edge_contacts.accumulate_diagonal_adaptive(
-            self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, output
+            self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, positions, output
         )
         self.edge_face_contacts.accumulate_diagonal_adaptive(
             self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, output
         )
+        if self.friction > 0.0:
+            anchor_positions, displacement_epsilon = self._friction_state()
+            self.vertex_face_contacts.accumulate_friction_diagonal_adaptive(
+                self.stiffness_factors[0],
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                self.friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+                output,
+            )
+            self.edge_edge_contacts.accumulate_friction_diagonal_adaptive(
+                self.stiffness_factors[1],
+                static_diagonal,
+                masses,
+                inv_dt_squared,
+                self.friction,
+                displacement_epsilon,
+                positions,
+                anchor_positions,
+                output,
+            )
 
     def _adaptive_system(self) -> tuple[wp.array[wp.mat33], wp.array[float], float]:
         if self._static_diagonal is None or self._masses is None or self._inv_dt_squared <= 0.0:
             raise RuntimeError("bind_static_system() and begin_step() are required before adaptive contact evaluation")
         return self._static_diagonal, self._masses, self._inv_dt_squared
+
+    def _friction_state(self) -> tuple[wp.array[wp.vec3], float]:
+        if self._friction_positions is None or self._friction_displacement_epsilon <= 0.0:
+            raise RuntimeError("begin_step() is required before friction evaluation")
+        return self._friction_positions, self._friction_displacement_epsilon
 
     def _update_bounds(self, positions: wp.array[wp.vec3]) -> None:
         wp.launch(

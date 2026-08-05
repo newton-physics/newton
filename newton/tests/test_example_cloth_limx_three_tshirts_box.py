@@ -3,6 +3,7 @@
 
 import importlib
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -21,6 +22,21 @@ def _load_example_module(test_case: unittest.TestCase):
 
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
 class TestClothLimxThreeTshirtsBox(unittest.TestCase):
+    def test_single_garment_configuration_builds_one_tshirt(self):
+        """Build only the first T-shirt when one garment is requested."""
+        module = _load_example_module(self)
+
+        with wp.ScopedDevice("cuda:0"):
+            example = module.Example(ViewerNull(num_frames=1), SimpleNamespace(garment_count=1))
+
+        self.assertEqual(example.garment_count, 1)
+        self.assertEqual(example.model.particle_count, example.garment_vertex_count)
+        self.assertEqual(example.model.tri_count, example.garment_triangle_count)
+        self.assertEqual(example.self_collision.thickness, 0.003)
+        self.assertIsNone(example.self_collision.geometry_radius_scale)
+        self.assertEqual(example.self_collision.friction, 0.4)
+        self.assertEqual(example.self_collision.friction_epsilon, 1.0e-2)
+
     def test_cuda_graph_step_is_finite_and_configured(self):
         """Build three garments and keep one captured CUDA step finite."""
         module = _load_example_module(self)
@@ -45,6 +61,9 @@ class TestClothLimxThreeTshirtsBox(unittest.TestCase):
         self.assertEqual(example.solver.nonlinear_iterations, 1)
         self.assertEqual(example.solver.linear_iterations, 50)
         self.assertEqual(example.solver.velocity_damping, 1.0)
+        self.assertEqual(example.solver.constraints[1].stiffness, 1.0e-5)
+        np.testing.assert_allclose(example.box_min, (-0.42, -0.34), rtol=0.0, atol=1.0e-7)
+        np.testing.assert_allclose(example.box_max, (0.42, 0.34), rtol=0.0, atol=1.0e-7)
         self.assertTrue(np.isfinite(positions).all())
         self.assertTrue(np.isfinite(velocities).all())
 

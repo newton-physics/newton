@@ -11,7 +11,11 @@ from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.constraints.anchor import ConstraintAnchor
 from newton._src.solvers.limx.constraints.dihedral_bending import ConstraintDihedralBending
 from newton._src.solvers.limx.constraints.distance import ConstraintDistance
-from newton._src.solvers.limx.constraints.self_collision import ConstraintSelfCollision, _ContactBuffer
+from newton._src.solvers.limx.constraints.self_collision import (
+    ConstraintSelfCollision,
+    _ContactBuffer,
+    _EdgeEdgeContactBuffer,
+)
 from newton._src.solvers.limx.constraints.triangle_elastic import ConstraintTriangleElastic
 from newton._src.solvers.limx.linear_solver import PcgSolver
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
@@ -1070,6 +1074,7 @@ class TestPcgSolver(unittest.TestCase):
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
 class TestSelfCollisionContactBuffer(unittest.TestCase):
     def test_adaptive_contact_uses_directional_feature_stiffness(self):
+        """Scale every adaptive contact operator by directional feature stiffness."""
         weights = np.asarray([1.0, -1.0 / 3.0, -1.0 / 3.0, -1.0 / 3.0], dtype=np.float32)
         static_diagonal = np.zeros((4, 3, 3), dtype=np.float32)
         static_diagonal[:, 0, 0] = [6.0, 16.0, 26.0, 36.0]
@@ -1130,6 +1135,173 @@ class TestSelfCollisionContactBuffer(unittest.TestCase):
             depth=0.02,
             stiffness=11.0,
         )
+
+    def test_ipc_mollified_edge_force_and_gauss_newton_operator_match_residual_reference(self):
+        """Match the IPC-mollified EE force and Gauss-Newton operator."""
+        eps_x = 1.0e-3
+        sine = np.sqrt(0.5 * eps_x)
+        cosine = np.sqrt(1.0 - sine * sine)
+        positions = np.asarray(
+            [
+                [-0.5, 0.0, 0.0],
+                [0.5, 0.0, 0.0],
+                [-0.5 * cosine, -0.5 * sine, 0.05],
+                [0.5 * cosine, 0.5 * sine, 0.05],
+            ],
+            dtype=np.float64,
+        )
+        weights = np.asarray([0.5, 0.5, -0.5, -0.5], dtype=np.float64)
+        direction = np.asarray([0.0, 0.0, -1.0], dtype=np.float64)
+        depth = 0.05
+        stiffness = 7.0
+        vector = np.asarray(
+            [[0.2, -0.1, 0.4], [-0.3, 0.7, 0.1], [0.5, 0.2, -0.6], [-0.4, -0.2, 0.3]],
+            dtype=np.float64,
+        )
+
+        def residual(flat_positions):
+            current = flat_positions.reshape(4, 3)
+            displacement = current - positions
+            current_depth = depth - np.sum(weights[:, None] * displacement * direction)
+            edge_0 = current[1] - current[0]
+            edge_1 = current[3] - current[2]
+            cross_product = np.cross(edge_0, edge_1)
+            cross_squared = float(np.dot(cross_product, cross_product))
+            beta = np.sqrt(2.0 * eps_x - cross_squared) / eps_x
+            return current_depth * beta * cross_product
+
+        flat_positions = positions.reshape(-1)
+        residual_value = residual(flat_positions)
+        self.assertAlmostEqual(float(np.dot(residual_value, residual_value) / (depth * depth)), 0.75, places=10)
+        jacobian = np.empty((3, 12), dtype=np.float64)
+        epsilon = 1.0e-6
+        for column in range(12):
+            offset = np.zeros(12, dtype=np.float64)
+            offset[column] = epsilon
+            jacobian[:, column] = (residual(flat_positions + offset) - residual(flat_positions - offset)) / (
+                2.0 * epsilon
+            )
+        expected_force = (-stiffness * jacobian.T @ residual_value).reshape(4, 3)
+        expected_hessian = stiffness * jacobian.T @ jacobian
+        expected_hvp = (expected_hessian @ vector.reshape(-1)).reshape(4, 3)
+        expected_diagonal = np.asarray([expected_hessian[3 * i : 3 * i + 3, 3 * i : 3 * i + 3] for i in range(4)])
+
+        with wp.ScopedDevice("cuda:0"):
+            contacts = _EdgeEdgeContactBuffer(capacity=1, device="cuda:0")
+            contacts.ids.assign(np.asarray([[0, 1, 2, 3]], dtype=np.int32))
+            contacts.weights.assign(weights.astype(np.float32).reshape(1, 4))
+            contacts.directions.assign(direction.astype(np.float32).reshape(1, 3))
+            contacts.depths.assign(np.asarray([depth], dtype=np.float32))
+            contacts.mollifier_thresholds.assign(np.asarray([eps_x], dtype=np.float32))
+            contacts.count.assign(np.asarray([1], dtype=np.int32))
+            positions_wp = wp.array(positions.astype(np.float32), dtype=wp.vec3, device="cuda:0")
+            vector_wp = wp.array(vector.astype(np.float32), dtype=wp.vec3, device="cuda:0")
+            force = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+            hvp = wp.zeros_like(force)
+            diagonal = wp.zeros(4, dtype=wp.mat33, device="cuda:0")
+
+            contacts.prepare_hessian(positions_wp)
+            contacts.accumulate_force(stiffness, positions_wp, force)
+            contacts.hessian_multiply(stiffness, positions_wp, vector_wp, hvp)
+            contacts.accumulate_diagonal(stiffness, positions_wp, diagonal)
+
+            force_np = force.numpy()
+            hvp_np = hvp.numpy()
+            diagonal_np = diagonal.numpy()
+
+        np.testing.assert_allclose(force_np, expected_force, rtol=2.0e-4, atol=2.0e-4)
+        np.testing.assert_allclose(hvp_np, expected_hvp, rtol=3.0e-4, atol=3.0e-4)
+        np.testing.assert_allclose(diagonal_np, expected_diagonal, rtol=3.0e-4, atol=3.0e-4)
+        self.assertGreater(float(vector.reshape(-1) @ expected_hessian @ vector.reshape(-1)), 0.0)
+
+    def test_mollified_edge_edge_friction_uses_reduced_normal_load(self):
+        """Scale EE friction by the active near-parallel mollifier."""
+        threshold = 1.0e-3
+        sine = np.sqrt(0.5 * threshold)
+        cosine = np.sqrt(1.0 - sine * sine)
+        positions = np.asarray(
+            [
+                [-0.5, 0.0, 0.0],
+                [0.5, 0.0, 0.0],
+                [-0.5 * cosine, -0.5 * sine, 0.05],
+                [0.5 * cosine, 0.5 * sine, 0.05],
+            ],
+            dtype=np.float32,
+        )
+        anchor_positions = positions.copy()
+        anchor_positions[2:, 1] -= 0.10
+        stiffness = 10.0
+        depth = 0.05
+        friction = 0.4
+
+        with wp.ScopedDevice("cuda:0"):
+            contacts = _EdgeEdgeContactBuffer(capacity=1, device="cuda:0")
+            contacts.ids.assign(np.asarray([[0, 1, 2, 3]], dtype=np.int32))
+            contacts.weights.assign(np.asarray([[0.5, 0.5, -0.5, -0.5]], dtype=np.float32))
+            contacts.directions.assign(np.asarray([[0.0, 0.0, -1.0]], dtype=np.float32))
+            contacts.depths.assign(np.asarray([depth], dtype=np.float32))
+            contacts.mollifier_thresholds.assign(np.asarray([threshold], dtype=np.float32))
+            contacts.count.assign(np.asarray([1], dtype=np.int32))
+            positions_wp = wp.array(positions, dtype=wp.vec3, device="cuda:0")
+            anchor_positions_wp = wp.array(anchor_positions, dtype=wp.vec3, device="cuda:0")
+            force = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+
+            contacts.prepare_hessian(positions_wp)
+            contacts.accumulate_friction_force(
+                stiffness,
+                friction,
+                1.0e-4,
+                positions_wp,
+                anchor_positions_wp,
+                force,
+            )
+            force_np = force.numpy()
+            mollifier_active = int(contacts.mollifier_active.numpy()[0])
+
+        cross_product = np.cross(positions[1] - positions[0], positions[3] - positions[2])
+        cross_squared = float(np.dot(cross_product, cross_product))
+        load_scale = cross_squared * (2.0 * threshold - cross_squared) / threshold**2
+        first_feature_force = force_np[0] + force_np[1]
+        expected_limit = friction * stiffness * depth * load_scale
+
+        self.assertEqual(mollifier_active, 1)
+        self.assertAlmostEqual(float(np.linalg.norm(first_feature_force)), expected_limit, places=5)
+        np.testing.assert_allclose(force_np.sum(axis=0), np.zeros(3), atol=1.0e-6)
+
+    def test_ipc_mollified_parallel_edge_operator_stays_finite_and_psd(self):
+        """Keep the mollified EE operator finite and supporting at exact parallelism."""
+        positions = np.asarray(
+            [[-0.5, 0.0, 0.0], [0.5, 0.0, 0.0], [-0.5, 0.0, 0.05], [0.5, 0.0, 0.05]],
+            dtype=np.float32,
+        )
+        vector = np.asarray(
+            [[0.0, 0.2, 0.0], [0.0, -0.2, 0.0], [0.0, 0.1, 0.0], [0.0, -0.1, 0.0]],
+            dtype=np.float32,
+        )
+        with wp.ScopedDevice("cuda:0"):
+            contacts = _EdgeEdgeContactBuffer(capacity=1, device="cuda:0")
+            contacts.ids.assign(np.asarray([[0, 1, 2, 3]], dtype=np.int32))
+            contacts.weights.assign(np.asarray([[0.5, 0.5, -0.5, -0.5]], dtype=np.float32))
+            contacts.directions.assign(np.asarray([[0.0, 0.0, -1.0]], dtype=np.float32))
+            contacts.depths.assign(np.asarray([0.05], dtype=np.float32))
+            contacts.mollifier_thresholds.assign(np.asarray([1.0e-3], dtype=np.float32))
+            contacts.count.assign(np.asarray([1], dtype=np.int32))
+            positions_wp = wp.array(positions, dtype=wp.vec3, device="cuda:0")
+            vector_wp = wp.array(vector, dtype=wp.vec3, device="cuda:0")
+            force = wp.zeros(4, dtype=wp.vec3, device="cuda:0")
+            hvp = wp.zeros_like(force)
+
+            contacts.prepare_hessian(positions_wp)
+            contacts.accumulate_force(7.0, positions_wp, force)
+            contacts.hessian_multiply(7.0, positions_wp, vector_wp, hvp)
+
+            force_np = force.numpy()
+            hvp_np = hvp.numpy()
+
+        self.assertTrue(np.isfinite(force_np).all())
+        self.assertTrue(np.isfinite(hvp_np).all())
+        np.testing.assert_allclose(force_np, np.zeros((4, 3)), atol=1.0e-7)
+        self.assertGreater(float(np.sum(vector * hvp_np)), 0.0)
 
     def _assert_contact_matches_dense_reference(self, weights, direction, depth, stiffness):
         particle_count = len(weights)
@@ -1208,6 +1380,38 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             buffer.directions.numpy()[:count],
             buffer.depths.numpy()[:count],
         )
+
+    def test_friction_parameters_validate_and_default_to_disabled(self):
+        """Validate friction parameters and preserve a frictionless default."""
+        positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2)])
+            default_collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0)
+            friction_collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                friction=0.4,
+                friction_epsilon=1.0e-2,
+            )
+            invalid_cases = (
+                ({"friction": -0.1}, "nonnegative"),
+                ({"friction": np.inf}, "finite"),
+                ({"friction": np.nan}, "finite"),
+                ({"friction_epsilon": 0.0}, "positive"),
+                ({"friction_epsilon": -1.0}, "positive"),
+                ({"friction_epsilon": np.inf}, "finite"),
+            )
+            for kwargs, message in invalid_cases:
+                with self.subTest(kwargs=kwargs):
+                    with self.assertRaisesRegex(ValueError, message):
+                        ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0, **kwargs)
+
+        self.assertEqual(default_collision.friction, 0.0)
+        self.assertEqual(default_collision.friction_epsilon, 1.0e-2)
+        self.assertIsNone(default_collision._friction_positions)
+        self.assertEqual(friction_collision.friction, 0.4)
+        self.assertIsNotNone(friction_collision._friction_positions)
 
     def test_geometry_radius_scale_validates_and_uniform_default_stays_available(self):
         """Validate the radius scale and expose uniform legacy radii by default."""
@@ -1375,6 +1579,112 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(directions[contact], [0.0, 0.0, 1.0], atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
 
+    def test_vertex_face_friction_opposes_slip_and_adds_psd_operator(self):
+        """Oppose VF slip with balanced friction and a PSD tangent operator."""
+        current = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.25, 0.25, 0.05],
+                [3.0, 3.0, 3.0],
+                [4.0, 3.0, 3.0],
+            ],
+            dtype=np.float32,
+        )
+        anchor = current.copy()
+        anchor[3, 0] -= 0.10
+        displacement = current - anchor
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(current, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=1.0e3,
+                friction=0.4,
+                friction_epsilon=1.0e-2,
+                max_contacts=32,
+            )
+            current_wp = wp.array(current, dtype=wp.vec3, device="cuda:0")
+            anchor_wp = wp.array(anchor, dtype=wp.vec3, device="cuda:0")
+            velocities = wp.zeros(model.particle_count, dtype=wp.vec3, device="cuda:0")
+            collision.begin_step(anchor_wp, velocities, 0.01)
+            collision.prepare(current_wp)
+            force = wp.zeros(model.particle_count, dtype=wp.vec3, device="cuda:0")
+            collision.accumulate_force(current_wp, force)
+            product = wp.zeros_like(force)
+            displacement_wp = wp.array(displacement, dtype=wp.vec3, device="cuda:0")
+            collision.hessian_multiply(current_wp, displacement_wp, product)
+            diagonal = wp.zeros(model.particle_count, dtype=wp.mat33, device="cuda:0")
+            collision.accumulate_diagonal(current_wp, diagonal)
+            force_np = force.numpy()
+            product_np = product.numpy()
+            diagonal_np = diagonal.numpy()
+
+        self.assertLess(float(np.sum(force_np * displacement)), 0.0)
+        np.testing.assert_allclose(force_np.sum(axis=0), 0.0, atol=1.0e-5)
+        self.assertLessEqual(abs(float(force_np[3, 0])), 0.4 * 1.0e3 * 0.05 + 1.0e-4)
+        self.assertGreaterEqual(float(np.sum(displacement * product_np)), -1.0e-5)
+        for block in diagonal_np:
+            self.assertGreaterEqual(float(np.linalg.eigvalsh(block).min()), -1.0e-4)
+
+    def test_adaptive_vertex_face_friction_remains_finite_and_psd(self):
+        """Keep adaptive VF friction balanced, finite, and positive semidefinite."""
+        current = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.25, 0.25, 0.05],
+                [3.0, 3.0, 3.0],
+                [4.0, 3.0, 3.0],
+            ],
+            dtype=np.float32,
+        )
+        anchor = current.copy()
+        anchor[3, 0] -= 0.10
+        displacement = current - anchor
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(current, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=None,
+                stiffness_factors=(0.5, 0.3, 1.5),
+                friction=0.4,
+                friction_epsilon=1.0e-2,
+                max_contacts=32,
+            )
+            static_diagonal = wp.array(
+                np.broadcast_to(100.0 * np.eye(3, dtype=np.float32), (model.particle_count, 3, 3)).copy(),
+                dtype=wp.mat33,
+                device="cuda:0",
+            )
+            current_wp = wp.array(current, dtype=wp.vec3, device="cuda:0")
+            anchor_wp = wp.array(anchor, dtype=wp.vec3, device="cuda:0")
+            velocities = wp.zeros(model.particle_count, dtype=wp.vec3, device="cuda:0")
+            collision.bind_static_system(static_diagonal, model.particle_mass)
+            collision.begin_step(anchor_wp, velocities, 0.01)
+            collision.prepare(current_wp)
+            force = wp.zeros(model.particle_count, dtype=wp.vec3, device="cuda:0")
+            collision.accumulate_force(current_wp, force)
+            product = wp.zeros_like(force)
+            displacement_wp = wp.array(displacement, dtype=wp.vec3, device="cuda:0")
+            collision.hessian_multiply(current_wp, displacement_wp, product)
+            diagonal = wp.zeros(model.particle_count, dtype=wp.mat33, device="cuda:0")
+            collision.accumulate_diagonal(current_wp, diagonal)
+            force_np = force.numpy()
+            product_np = product.numpy()
+            diagonal_np = diagonal.numpy()
+
+        self.assertTrue(np.isfinite(force_np).all())
+        self.assertLess(float(np.sum(force_np * displacement)), 0.0)
+        np.testing.assert_allclose(force_np.sum(axis=0), 0.0, atol=1.0e-4)
+        self.assertTrue(np.isfinite(product_np).all())
+        self.assertGreaterEqual(float(np.sum(displacement * product_np)), -1.0e-4)
+        for block in diagonal_np:
+            self.assertGreaterEqual(float(np.linalg.eigvalsh(block).min()), -1.0e-3)
+
     def test_geometry_aware_vertex_face_depth_interpolates_face_radii(self):
         """Compute VF depth from vertex and barycentrically interpolated face radii."""
         positions = [
@@ -1425,6 +1735,73 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(directions[contact], [0.0, 0.0, -1.0], atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
 
+    def test_edge_edge_friction_opposes_relative_slip(self):
+        """Oppose EE slip with balanced friction and a PSD tangent operator."""
+        current = np.asarray(
+            [
+                [-1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.5, 0.1, 0.0],
+                [0.0, -1.0, 0.05],
+                [0.0, 1.0, 0.05],
+                [0.1, 0.5, 0.05],
+            ],
+            dtype=np.float32,
+        )
+        anchor = current.copy()
+        anchor[3:, 0] -= 0.10
+        displacement = current - anchor
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(current, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=1.0e3,
+                friction=0.4,
+                friction_epsilon=1.0e-2,
+                max_contacts=32,
+            )
+            current_wp = wp.array(current, dtype=wp.vec3, device="cuda:0")
+            anchor_wp = wp.array(anchor, dtype=wp.vec3, device="cuda:0")
+            velocities = wp.zeros(model.particle_count, dtype=wp.vec3, device="cuda:0")
+            collision.begin_step(anchor_wp, velocities, 0.01)
+            collision.prepare(current_wp)
+            self.assertEqual(int(collision.vertex_face_contacts.count.numpy()[0]), 0)
+            self.assertGreater(int(collision.edge_edge_contacts.count.numpy()[0]), 0)
+            force = wp.zeros(model.particle_count, dtype=wp.vec3, device="cuda:0")
+            collision.accumulate_force(current_wp, force)
+            product = wp.zeros_like(force)
+            displacement_wp = wp.array(displacement, dtype=wp.vec3, device="cuda:0")
+            collision.hessian_multiply(current_wp, displacement_wp, product)
+            diagonal = wp.zeros(model.particle_count, dtype=wp.mat33, device="cuda:0")
+            collision.accumulate_diagonal(current_wp, diagonal)
+            force_np = force.numpy()
+            product_np = product.numpy()
+            diagonal_np = diagonal.numpy()
+
+            baseline = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=1.0e3,
+                max_contacts=32,
+            )
+            baseline.prepare(current_wp)
+            baseline_force = wp.zeros_like(force)
+            baseline.accumulate_force(current_wp, baseline_force)
+            baseline_product = wp.zeros_like(force)
+            baseline.hessian_multiply(current_wp, displacement_wp, baseline_product)
+            baseline_diagonal = wp.zeros_like(diagonal)
+            baseline.accumulate_diagonal(current_wp, baseline_diagonal)
+            friction_force_np = force_np - baseline_force.numpy()
+            friction_product_np = product_np - baseline_product.numpy()
+            friction_diagonal_np = diagonal_np - baseline_diagonal.numpy()
+
+        self.assertLess(float(np.sum(friction_force_np * displacement)), 0.0)
+        np.testing.assert_allclose(friction_force_np.sum(axis=0), 0.0, atol=1.0e-4)
+        self.assertGreaterEqual(float(np.sum(displacement * friction_product_np)), -1.0e-4)
+        for block in friction_diagonal_np:
+            self.assertGreaterEqual(float(np.linalg.eigvalsh(block).min()), -1.0e-3)
+
     def test_geometry_aware_edge_edge_depth_interpolates_both_edges(self):
         """Compute EE depth from independent closest-point radius interpolation."""
         positions = [
@@ -1471,6 +1848,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             self.assertEqual(len(set(contact_ids[:2]).intersection(contact_ids[2:])), 0)
 
     def test_adjacent_opposite_edges_limit_contact_thickness(self):
+        """Limit one-ring EE thickness using the local edge lengths."""
         positions = [
             [-0.05, 0.0, 0.0],
             [0.05, 0.0, 0.0],
@@ -1508,7 +1886,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             collision.prepare(model.particle_q)
             ids, _, _, depths = self._stored_contacts(collision.edge_edge_contacts)
             force = wp.zeros(model.particle_count, dtype=wp.vec3, device=model.device)
-            collision.edge_edge_contacts.accumulate_force(10.0, force)
+            collision.edge_edge_contacts.accumulate_force(10.0, model.particle_q, force)
             force_np = force.numpy()
 
         matches = np.nonzero(np.all(ids == [0, 1, 2, 3], axis=1))[0]
@@ -1516,6 +1894,63 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         self.assertAlmostEqual(float(depths[int(matches[0])]), 0.02, places=6)
         self.assertTrue(np.isfinite(force_np).all())
         self.assertGreater(float(np.linalg.norm(force_np)), 0.0)
+
+    def test_nonlocal_edge_pair_uses_rest_length_mollifier_threshold(self):
+        """Compute a nonlocal EE mollifier threshold from the two rest edge lengths."""
+        sine = 0.2
+        direction = np.asarray([np.sqrt(1.0 - sine * sine), sine, 0.0], dtype=np.float32)
+        center = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
+        rest_positions = np.asarray(
+            [
+                [-0.05, 0.0, 0.0],
+                [0.05, 0.0, 0.0],
+                *(center + offset * 0.04 * direction for offset in (-1.0, 1.0)),
+                [0.0, 1.0, 0.0],
+                [0.0, -1.0, 0.5],
+            ],
+            dtype=np.float32,
+        )
+        current_positions = rest_positions.copy()
+        current_positions[0] = [-0.1, 0.0, 0.0]
+        current_positions[1] = [0.1, 0.0, 0.0]
+        current_positions[2] = center - 0.08 * direction
+        current_positions[3] = center + 0.08 * direction
+
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(rest_positions, [(0, 1, 4), (2, 3, 5)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0, max_contacts=32)
+            current_positions_wp = wp.array(current_positions, dtype=wp.vec3, device="cuda:0")
+            collision.prepare(current_positions_wp)
+            ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
+            thresholds = collision.edge_edge_contacts.mollifier_thresholds.numpy()
+
+        matches = np.nonzero(np.all(ids == [0, 1, 2, 3], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        expected = 1.0e-3 * 0.1**2 * 0.08**2
+        self.assertAlmostEqual(float(thresholds[int(matches[0])]), expected, places=12)
+
+    def test_topology_local_edge_pair_uses_half_length_penalty_and_mollifier(self):
+        """Combine local EE thickness clamping with the rest-length mollifier."""
+        sine = 0.2
+        direction = np.asarray([np.sqrt(1.0 - sine * sine), sine, 0.0], dtype=np.float32)
+        center = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
+        positions = [
+            [-0.05, 0.0, 0.0],
+            [0.05, 0.0, 0.0],
+            *(center + offset * 0.04 * direction for offset in (-1.0, 1.0)),
+            [0.0, 1.0, 0.5],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (2, 3, 4)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0, max_contacts=32)
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
+            thresholds = collision.edge_edge_contacts.mollifier_thresholds.numpy()
+
+        matches = np.nonzero(np.all(ids == [0, 1, 2, 3], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        expected = 1.0e-3 * 0.1**2 * 0.08**2
+        self.assertAlmostEqual(float(thresholds[int(matches[0])]), expected, places=12)
 
     def test_edge_face_crossing_emits_five_particle_untangle_contact(self):
         positions = [

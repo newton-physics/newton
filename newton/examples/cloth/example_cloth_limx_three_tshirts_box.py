@@ -76,9 +76,8 @@ class Example:
         self.sim_dt = self.frame_dt
         self.sim_time = 0.0
 
-        self.garment_count = 3
-        self.box_min = np.array([-0.60, -0.50], dtype=np.float32)
-        self.box_max = np.array([0.60, 0.50], dtype=np.float32)
+        self.box_min = np.array([-0.42, -0.34], dtype=np.float32)
+        self.box_max = np.array([0.42, 0.34], dtype=np.float32)
         self.box_floor = 0.45
         self.box_wall_top = 1.15
 
@@ -106,6 +105,9 @@ class Example:
                 np.array([0.20, 0.25, 0.60], dtype=np.float32),
             ),
         )
+        self.garment_count = getattr(args, "garment_count", 3)
+        if not 1 <= self.garment_count <= len(configurations):
+            raise ValueError(f"garment_count must be between 1 and {len(configurations)}")
 
         positions_per_garment = []
         velocities_per_garment = []
@@ -114,7 +116,9 @@ class Example:
         local_edge_rows = newton.utils.MeshAdjacency(local_triangles).edge_indices
         local_interior_edges = local_edge_rows[local_edge_rows[:, 1] >= 0]
         local_dihedrals = local_interior_edges[:, [2, 3, 0, 1]]
-        for garment, (center, angles, linear_velocity, angular_velocity) in enumerate(configurations):
+        for garment, (center, angles, linear_velocity, angular_velocity) in enumerate(
+            configurations[: self.garment_count]
+        ):
             rotation = _rotation_matrix_xyz(*angles)
             positions = local_positions @ rotation.T + center
             velocities = linear_velocity + np.cross(
@@ -158,17 +162,19 @@ class Example:
             newton.solvers.ConstraintDihedralBending(
                 dihedral_indices=dihedral_indices,
                 rest_positions=rest_positions,
-                stiffness=1.0e-4,
+                stiffness=1.0e-5,
                 particle_count=particle_count,
                 device=self.model.device,
             ),
         ]
         self.self_collision = newton.solvers.ConstraintSelfCollision(
             self.model,
-            thickness=0.006,
+            thickness=0.003,
             stiffness=None,
             max_contacts=393216,
-            stiffness_factors=(0.5, 0.1, 1.5),
+            stiffness_factors=(0.5, 0.3, 1.5),
+            friction=0.4,
+            friction_epsilon=1.0e-2,
         )
         plane_parameters = (
             ((0.0, 0.0, 1.0), self.box_floor),
@@ -212,29 +218,32 @@ class Example:
         wall_center_z = 0.5 * (self.box_floor + self.box_wall_top)
         wall_half_height = 0.5 * (self.box_wall_top - self.box_floor)
         wall_thickness = 0.025
+        box_center = 0.5 * (self.box_min + self.box_max)
+        box_half_size = 0.5 * (self.box_max - self.box_min)
+        outer_half_size = box_half_size + 2.0 * wall_thickness
         box_color = wp.vec3(0.34, 0.22, 0.12)
         builder.add_shape_box(
             -1,
-            xform=wp.transform(wp.vec3(0.0, 0.0, self.box_floor - 0.05), wp.quat_identity()),
-            hx=0.65,
-            hy=0.55,
+            xform=wp.transform(wp.vec3(*box_center, self.box_floor - 0.05), wp.quat_identity()),
+            hx=float(outer_half_size[0]),
+            hy=float(outer_half_size[1]),
             hz=0.05,
             color=box_color,
         )
-        for x_position in (-0.625, 0.625):
+        for x_position in (self.box_min[0] - wall_thickness, self.box_max[0] + wall_thickness):
             builder.add_shape_box(
                 -1,
-                xform=wp.transform(wp.vec3(x_position, 0.0, wall_center_z), wp.quat_identity()),
+                xform=wp.transform(wp.vec3(x_position, box_center[1], wall_center_z), wp.quat_identity()),
                 hx=wall_thickness,
-                hy=0.55,
+                hy=float(outer_half_size[1]),
                 hz=wall_half_height,
                 color=box_color,
             )
-        for y_position in (-0.525, 0.525):
+        for y_position in (self.box_min[1] - wall_thickness, self.box_max[1] + wall_thickness):
             builder.add_shape_box(
                 -1,
-                xform=wp.transform(wp.vec3(0.0, y_position, wall_center_z), wp.quat_identity()),
-                hx=0.65,
+                xform=wp.transform(wp.vec3(box_center[0], y_position, wall_center_z), wp.quat_identity()),
+                hx=float(outer_half_size[0]),
                 hy=wall_thickness,
                 hz=wall_half_height,
                 color=box_color,
@@ -291,6 +300,13 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--garment-count",
+        type=int,
+        choices=(1, 2, 3),
+        default=3,
+        help="Number of T-shirts to throw into the box.",
+    )
     parser.set_defaults(num_frames=800)
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)
