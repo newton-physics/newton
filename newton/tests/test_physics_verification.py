@@ -32,6 +32,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.kamino.config import ConstraintStabilizationConfig, PADMMSolverConfig
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -1543,8 +1544,8 @@ for device in devices:
             lambda model: newton.solvers.SolverKamino(
                 model,
                 config=newton.solvers.SolverKamino.Config(
-                    constraints=newton._src.solvers.kamino.config.ConstraintStabilizationConfig(alpha=0.1),
-                    padmm=newton._src.solvers.kamino.config.PADMMSolverConfig(rho_0=0.01),
+                    constraints=ConstraintStabilizationConfig(alpha=0.1),
+                    padmm=PADMMSolverConfig(rho_0=0.01),
                 ),
             ),
             False,
