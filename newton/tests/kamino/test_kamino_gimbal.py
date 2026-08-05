@@ -22,14 +22,11 @@ from newton._src.solvers.kamino._src.kinematics.joints import (
     select_gimbal_coords,
 )
 from newton.solvers import SolverKamino, SolverMuJoCo
+from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
 
-_DEVICE = "cuda:0"
-_DT = 1.0 / 240.0
 _RH_AXES = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
 _LH_AXES = (newton.Axis.X, newton.Axis.Z, newton.Axis.Y)
-_BASE_INERTIA = wp.mat33(0.8, 0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.0, 1.0)
-_LINK_INERTIA = wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
 
 
 @wp.kernel
@@ -59,7 +56,11 @@ def _evaluate_gimbal_chart(
 
 
 def _build_rotational_d6(
-    axes: tuple[newton.Axis, newton.Axis, newton.Axis], *, target_ke: float = 0.0, armature: float = 0.0
+    axes: tuple[newton.Axis, newton.Axis, newton.Axis],
+    device: wp.DeviceLike,
+    *,
+    target_ke: float = 0.0,
+    armature: float = 0.0,
 ):
     """Build a minimal articulated three-axis D6 fixture."""
     builder = newton.ModelBuilder()
@@ -74,7 +75,7 @@ def _build_rotational_d6(
         ],
     )
     builder.add_articulation([root, d6])
-    return builder.finalize(device="cpu"), d6
+    return builder.finalize(device=device), d6
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ class _Probe:
 def _build_fixture(
     fixed_base: bool,
     axes: tuple[newton.Axis, newton.Axis, newton.Axis],
+    device: wp.DeviceLike,
     *,
     stiffness: float = 0.0,
     drive_damping: float = 0.0,
@@ -111,8 +113,8 @@ def _build_fixture(
 ) -> _Fixture:
     """Build a collision-free articulated rotational D6."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
-    base = builder.add_link(mass=2.0, inertia=_BASE_INERTIA, label="base")
-    link = builder.add_link(mass=1.0, inertia=_LINK_INERTIA, label="link")
+    base = builder.add_link(mass=2.0, inertia=wp.mat33(0.8, 0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.0, 1.0), label="base")
+    link = builder.add_link(mass=1.0, inertia=wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4), label="link")
     root = (
         builder.add_joint_fixed(parent=-1, child=base, label="root")
         if fixed_base
@@ -138,7 +140,7 @@ def _build_fixture(
     ]
     d6 = builder.add_joint_d6(base, link, angular_axes=configs, label="d6")
     builder.add_articulation([root, d6], label="d6")
-    model = builder.finalize(device=_DEVICE)
+    model = builder.finalize(device=device)
     return _Fixture(
         model,
         int(model.joint_q_start.numpy()[d6]),
@@ -174,6 +176,7 @@ def _run(
     backend: str,
     fixed_base: bool,
     axes: tuple[newton.Axis, newton.Axis, newton.Axis],
+    device: wp.DeviceLike,
     *,
     q: np.ndarray | None = None,
     qd: np.ndarray | None = None,
@@ -184,8 +187,9 @@ def _run(
     **fixture_kwargs,
 ) -> _Probe:
     """Run a D6 rollout and retain the raw D6 coordinate trajectory."""
-    fixture = _build_fixture(fixed_base, axes, **fixture_kwargs)
-    state_in, state_out, control = fixture.model.state(), fixture.model.state(), fixture.model.control()
+    fixture = _build_fixture(fixed_base, axes, device, **fixture_kwargs)
+    model = fixture.model
+    state_in, state_out, control = model.state(), model.state(), model.control()
     if q is not None:
         values = state_in.joint_q.numpy()
         values[fixture.q_start : fixture.q_start + 3] = q
@@ -206,14 +210,14 @@ def _run(
         values = control.joint_target_qd.numpy()
         values[fixture.qd_start : fixture.qd_start + 3] = velocity_target
         control.joint_target_qd.assign(values)
-    newton.eval_fk(fixture.model, state_in.joint_q, state_in.joint_qd, state_in)
-    solver = _make_solver(backend, fixture.model)
-    contacts = Contacts(rigid_contact_max=0, soft_contact_max=0, device=_DEVICE) if backend == "mjwarp" else None
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    solver = _make_solver(backend, model)
+    contacts = Contacts(rigid_contact_max=0, soft_contact_max=0, device=model.device) if backend == "mjwarp" else None
     positions = [state_in.joint_q.numpy()[fixture.q_start : fixture.q_start + 3].copy()]
     velocities = [state_in.joint_qd.numpy()[fixture.qd_start : fixture.qd_start + 3].copy()]
     for _ in range(steps):
         state_in.clear_forces()
-        solver.step(state_in, state_out, control, contacts, _DT)
+        solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
         state_in, state_out = state_out, state_in
         positions.append(state_in.joint_q.numpy()[fixture.q_start : fixture.q_start + 3].copy())
         velocities.append(state_in.joint_qd.numpy()[fixture.qd_start : fixture.qd_start + 3].copy())
@@ -221,29 +225,37 @@ def _run(
         np.stack(positions),
         np.stack(velocities),
         control.joint_f.numpy()[fixture.qd_start : fixture.qd_start + 3].copy(),
-        fixture.model.joint_coord_count,
-        fixture.model.joint_dof_count,
+        model.joint_coord_count,
+        model.joint_dof_count,
     )
 
 
 class TestGimbal(unittest.TestCase):
     """Verify the rotational D6 representation."""
 
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
     def test_rotational_d6_converts_to_gimbal(self):
         """Convert a three-angular-axis D6 joint to GIMBAL."""
-        model, d6 = _build_rotational_d6((newton.Axis.X, newton.Axis.Y, newton.Axis.Z))
+        model, d6 = _build_rotational_d6(_RH_AXES, self.default_device)
         solver = SolverKamino(model)
         self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[d6], JointDoFType.GIMBAL)
 
     def test_left_handed_rotational_d6_converts_to_gimbal_left_handed(self):
         """Classify an X-Z-Y D6 joint as left-handed."""
-        model, d6 = _build_rotational_d6((newton.Axis.X, newton.Axis.Z, newton.Axis.Y))
+        model, d6 = _build_rotational_d6(_LH_AXES, self.default_device)
         solver = SolverKamino(model)
         self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[d6], JointDoFType.GIMBAL_LEFT_HANDED)
 
     def test_gimbal_rejects_nonorthogonal_axes(self):
         """Reject a gimbal whose axes are not an orthonormal basis."""
-        model, d6 = _build_rotational_d6((newton.Axis.X, newton.Axis.Y, newton.Axis.Z))
+        model, d6 = _build_rotational_d6(_RH_AXES, self.default_device)
         assert model.joint_qd_start is not None
         assert model.joint_axis is not None
         qd_start = model.joint_qd_start.numpy()[d6]
@@ -269,7 +281,7 @@ class TestGimbal(unittest.TestCase):
             ],
         )
         builder.add_articulation([root, universal])
-        model = builder.finalize(device="cpu")
+        model = builder.finalize(device=self.default_device)
         assert model.joint_qd_start is not None
         assert model.joint_axis is not None
         qd_start = model.joint_qd_start.numpy()[universal]
@@ -349,10 +361,10 @@ class TestGimbal(unittest.TestCase):
         """Map body twists to authored rates through dense and sparse gimbal Jacobians."""
         q_expected = np.array([0.9, -0.7, 0.5], dtype=np.float32)
         qd_expected = np.array([0.4, -0.3, 0.2], dtype=np.float32)
-        for axes in ((newton.Axis.X, newton.Axis.Y, newton.Axis.Z), (newton.Axis.X, newton.Axis.Z, newton.Axis.Y)):
+        for axes in (_RH_AXES, _LH_AXES):
             for sparse_jacobian in (False, True):
                 with self.subTest(axes=axes, sparse_jacobian=sparse_jacobian):
-                    model, d6 = _build_rotational_d6(axes, armature=0.5)
+                    model, d6 = _build_rotational_d6(axes, self.default_device, armature=0.5)
                     solver = SolverKamino(
                         model,
                         SolverKamino.Config(use_collision_detector=False, sparse_jacobian=sparse_jacobian),
@@ -398,7 +410,7 @@ class TestGimbal(unittest.TestCase):
 
     def test_fk_reset_preserves_left_handed_coordinates_and_rates(self):
         """Reset an FK-enabled solver with authored left-handed D6 state."""
-        model, d6 = _build_rotational_d6((newton.Axis.X, newton.Axis.Z, newton.Axis.Y), target_ke=1.0)
+        model, d6 = _build_rotational_d6(_LH_AXES, self.default_device, target_ke=1.0)
         solver = SolverKamino(model, SolverKamino.Config(use_fk_solver=True))
         state = model.state()
         q_start = model.joint_q_start.numpy()[d6]
@@ -434,6 +446,7 @@ class TestGimbal(unittest.TestCase):
                         "kamino",
                         fixed_base,
                         axes,
+                        self.default_device,
                         position_target=target,
                         stiffness=100.0,
                         drive_damping=15.0,
@@ -448,12 +461,17 @@ class TestGimbal(unittest.TestCase):
 class TestGimbalMJWarp(unittest.TestCase):
     """Compare Kamino and MJWarp through the public Newton state layout."""
 
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
     def _assert_pair(
         self, fixed_base: bool, axes, *, scenario: str, rtol: float = 1.0e-2, atol: float = 1.0e-2, **kwargs
     ):
         """Run and compare both solvers for one D6 scenario."""
-        mjwarp = _run("mjwarp", fixed_base, axes, **kwargs)
-        kamino = _run("kamino", fixed_base, axes, **kwargs)
+        mjwarp = _run("mjwarp", fixed_base, axes, self.default_device, **kwargs)
+        kamino = _run("kamino", fixed_base, axes, self.default_device, **kwargs)
         np.testing.assert_allclose(mjwarp.q, kamino.q, rtol=rtol, atol=atol, err_msg=f"{scenario}: q")
         np.testing.assert_allclose(mjwarp.qd, kamino.qd, rtol=rtol, atol=atol, err_msg=f"{scenario}: qd")
         return mjwarp, kamino
@@ -463,8 +481,8 @@ class TestGimbalMJWarp(unittest.TestCase):
         for axes in (_RH_AXES, _LH_AXES):
             for fixed_base in (True, False):
                 with self.subTest(axes=axes, fixed_base=fixed_base, scenario="layout"):
-                    mjwarp = _run("mjwarp", fixed_base, axes, steps=0)
-                    kamino = _run("kamino", fixed_base, axes, steps=0)
+                    mjwarp = _run("mjwarp", fixed_base, axes, self.default_device, steps=0)
+                    kamino = _run("kamino", fixed_base, axes, self.default_device, steps=0)
                     root_coords, root_dofs = (0, 0) if fixed_base else (7, 6)
                     self.assertEqual(mjwarp.coord_count, root_coords + 3)
                     self.assertEqual(mjwarp.dof_count, root_dofs + 3)
@@ -560,8 +578,8 @@ class TestGimbalMJWarp(unittest.TestCase):
                     velocity = np.zeros(3, dtype=np.float32)
                     velocity[axis] = 0.5
                     with self.subTest(axes=axes, fixed_base=fixed_base, axis=axis):
-                        baseline = _run("kamino", fixed_base, axes, qd=velocity)
-                        damped = _run("kamino", fixed_base, axes, qd=velocity, passive_damping=2.0)
+                        baseline = _run("kamino", fixed_base, axes, self.default_device, qd=velocity)
+                        damped = _run("kamino", fixed_base, axes, self.default_device, qd=velocity, passive_damping=2.0)
                         self.assertLess(abs(damped.qd[-1, axis]), abs(baseline.qd[-1, axis]))
                 with self.subTest(axes=axes, fixed_base=fixed_base, scenario="damping-match"):
                     self._assert_pair(
@@ -576,4 +594,5 @@ class TestGimbalMJWarp(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    setup_tests()
     unittest.main()
