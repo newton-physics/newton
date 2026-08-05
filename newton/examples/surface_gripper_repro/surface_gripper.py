@@ -931,8 +931,8 @@ def _seat_body_pose(
     pad_xform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
     mesh_id: wp.uint64,
-    pad_radius: float,
-    pad_face_offset: float,
+    pad_radius: wp.array[float],  # per-pad lip circle radius [m]
+    pad_face_offset: wp.array[float],  # per-pad lip plane offset along the grip axis (pad local z) [m]
     n_samples_per_pad: int,
     max_dist: float,
     grad_h: float,
@@ -962,7 +962,7 @@ def _seat_body_pose(
                     th = d_th * float(s)
                     # this lip point, expressed in the gripped body's frame (where its SDF is defined)
                     sample_point_in_body_b_frame = wp.transform_point(
-                        t_rel, wp.vec3(pad_radius * wp.cos(th), pad_radius * wp.sin(th), pad_face_offset)
+                        t_rel, wp.vec3(pad_radius[p] * wp.cos(th), pad_radius[p] * wp.sin(th), pad_face_offset[p])
                     )
                     sdf = sdf_mesh(mesh_id, sample_point_in_body_b_frame, max_dist)
                     grad = _sdf_grad(mesh_id, sample_point_in_body_b_frame, max_dist, grad_h)
@@ -1001,8 +1001,8 @@ def attach_seal_seated_kernel(
     body_b_mesh_id: wp.array[wp.uint64],  # gripped-body SDF mesh (for the inline seat fit)
     pad_world: wp.array[int],  # world of each pad (see SurfaceGripperModel)
     pad_world_start: wp.array[int],  # CSR: world w's pads are [pad_world_start[w], pad_world_start[w+1])
-    pad_radius: float,  # lip circle radius [m]
-    pad_face_offset: float,  # lip plane offset along the grip axis (pad local z) [m]
+    pad_radius: wp.array[float],  # [pads] per-pad lip circle radius [m]
+    pad_face_offset: wp.array[float],  # [pads] per-pad lip plane offset along the grip axis (pad local z) [m]
     n_samples_per_pad: int,  # lip points per pad
     max_dist: float,  # SDF search radius [m]
     grad_h: float,  # SDF central-difference step [m]
@@ -1057,8 +1057,8 @@ def attach_seal_seated(
     pad_seal_engaged: wp.array[wp.bool],
     pad_body_b_id: wp.array[int],
     body_b_mesh_id: wp.array[wp.uint64],
-    pad_radius: float,
-    pad_face_offset: float,
+    pad_radius: wp.array[float],
+    pad_face_offset: wp.array[float],
     n_samples_per_pad: int,
     max_dist: float = 1.0,
     grad_h: float = 1.0e-4,
@@ -1086,8 +1086,8 @@ def attach_seal_seated(
         pad_seal_engaged: This step's fresh per-pad seal decision, shape [n_pads].
         pad_body_b_id: Gripped body each pad seals against this step (< 0 = none), shape [n_pads].
         body_b_mesh_id: Body id -> gripped-object SDF mesh id (a :class:`warp.Mesh` id), shape [n_bodies].
-        pad_radius: Pad lip circle radius [m].
-        pad_face_offset: Lip-plane offset along the pad's z axis (pad local +z) [m].
+        pad_radius: Per-pad lip circle radius [m], shape [n_pads].
+        pad_face_offset: Per-pad lip-plane offset along the pad's z axis (pad local +z) [m], shape [n_pads].
         n_samples_per_pad: Number of lip sample points placed around each pad's lip.
         max_dist: SDF search radius [m].
         grad_h: SDF central-difference step [m].

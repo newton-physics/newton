@@ -277,22 +277,27 @@ def box_sdf_mesh(hx, hy, hz, device=None):
     )
 
 
-def read_pad_dimensions(builder, robot) -> tuple[float, float]:
-    """Radius and half-height [m] of the surface-gripper pads, read from the loaded arm USD.
+def read_pad_dimensions(builder, robot) -> tuple[list[float], list[float]]:
+    """Per-pad radius and half-height [m], read from the loaded arm USD.
 
-    The pads are four identical visual cylinders under J6_link/GripperPads; a cylinder's ``shape_scale``
-    is ``(radius, half_height, 0)``, so pad_0 gives the shared dimensions instead of hardcoding them.
+    Each pad is a visual cylinder under J6_link/GripperPads; a cylinder's ``shape_scale`` is
+    ``(radius, half_height, 0)``. The pads need not be identical, so each is read separately.
 
     Args:
         builder: the ``ModelBuilder`` the arm USD was loaded into.
         robot: the dict returned by ``add_usd`` for the arm; its ``path_shape_map`` maps prim path -> shape id.
 
     Returns:
-        ``(radius, half_height)`` [m].
+        ``(radii, half_heights)`` -- two parallel lists [m], one entry per pad in :data:`PAD_PRIMS` order.
     """
     path_shape_map = robot["path_shape_map"]
-    radius, half_height, _ = builder.shape_scale[path_shape_map[PAD_PRIMS[0]]]  # all four pads identical
-    return float(radius), float(half_height)
+    radii = []
+    half_heights = []
+    for prim in PAD_PRIMS:
+        radius, half_height, _ = builder.shape_scale[path_shape_map[prim]]
+        radii.append(float(radius))
+        half_heights.append(float(half_height))
+    return radii, half_heights
 
 
 def read_pad_transforms(builder, robot) -> list[wp.transform]:
@@ -370,11 +375,11 @@ def filter_pick_boxes_against_arm(builder, pick, ee_body_id) -> None:
                 builder.add_shape_collision_filter_pair(bs, shape)
 
 
-def add_lip_point_markers(builder, ee_body_id, pad_transforms, pad_radius, pad_half_height) -> None:
+def add_lip_point_markers(builder, ee_body_id, pad_transforms, pad_radii, pad_half_heights) -> None:
     """Add a small non-colliding sphere at each pad-lip sample point, for viewer visibility.
 
-    Places :data:`PAD_LIP_SAMPLES` markers around each pad's lip -- the circle of ``pad_radius`` on the
-    pad's bottom face (+``pad_half_height`` along the grip axis), in the pad frame -- matching the points
+    Places :data:`PAD_LIP_SAMPLES` markers around each pad's lip -- the circle of that pad's radius on the
+    pad's bottom face (+that pad's half-height along the grip axis), in the pad frame -- matching the points
     :func:`attach_seal_seated` samples the gripped object's SDF at. Rigidly fixed to the flange (body
     ``ee_body_id``); purely visual (collision off).
 
@@ -382,13 +387,16 @@ def add_lip_point_markers(builder, ee_body_id, pad_transforms, pad_radius, pad_h
         builder: the ``ModelBuilder`` the arm was loaded into.
         ee_body_id: env-local body id of the flange (the pads' parent).
         pad_transforms: each pad's placement transform in the flange frame (see :func:`read_pad_transforms`).
-        pad_radius: pad radius [m].
-        pad_half_height: pad half-height [m] (also the marker sphere radius).
+        pad_radii: per-pad radius [m], one per pad (parallel to ``pad_transforms``).
+        pad_half_heights: per-pad half-height [m] (also the marker sphere radius), one per pad.
     """
     lip_cfg = builder.default_shape_cfg.copy()
     lip_cfg.density = 0.0
     lip_cfg.has_shape_collision = False
-    for pad_tf in pad_transforms:
+    for i in range(len(pad_transforms)):
+        pad_tf = pad_transforms[i]
+        pad_radius = pad_radii[i]
+        pad_half_height = pad_half_heights[i]
         for s in range(PAD_LIP_SAMPLES):
             th = 2.0 * np.pi * s / PAD_LIP_SAMPLES
             lip_local = wp.vec3(pad_radius * np.cos(th), pad_radius * np.sin(th), pad_half_height)
@@ -459,7 +467,7 @@ class Example:
         # The pad geometry lives in the robot arm USD: four visual cylinders under J6_link/GripperPads (see the
         # asset). Read each pad's placement transform and its radius/half-height.
         pad_transforms = read_pad_transforms(env, robot)
-        self.pad_radius, self.pad_half_height = read_pad_dimensions(env, robot)
+        self.pad_radii, self.pad_half_heights = read_pad_dimensions(env, robot)  # per-pad, in PAD_PRIMS order
 
         # Load the pick scene (pallets + panel + crates at their waiting poses).
         pick = env.add_usd(str(PICK_SCENE_USD))
@@ -502,7 +510,7 @@ class Example:
         # Seat-fit sample points: markers at the pad-lip points attach_seal_seated samples the box SDF at.
         # Only meaningful when the seat fit actually runs (SEAL_SEAT_ON_ENGAGE).
         if SHOW_LIP_POINTS and SEAL_SEAT_ON_ENGAGE:
-            add_lip_point_markers(env, ee_body_local, pad_transforms, self.pad_radius, self.pad_half_height)
+            add_lip_point_markers(env, ee_body_local, pad_transforms, self.pad_radii, self.pad_half_heights)
 
         # Main scene: shared global ground plane + NUM_WORLDS overlapping copies of the env, each added
         # as its own world (add_world). No spacing -- the copies overlap at the origin (broad phase never
@@ -565,6 +573,17 @@ class Example:
         # Per-gripper / per-pad runtime arrays, sized from the gripper model (one gripper per world).
         n_grippers = self.gripper_model.gripper_body_id.shape[0]
         n_pads = self.gripper_model.pad_xform.shape[0]
+
+        # Per-pad lip geometry the seat fit samples, one entry per pad in the gripper model. Every gripper
+        # has the same pads (added in PAD_PRIMS order), so pad i's within-gripper index is i % pads_per_gripper.
+        pads_per_gripper = len(PAD_PRIMS)
+        pad_radius_list = []
+        pad_face_offset_list = []
+        for p in range(n_pads):
+            pad_radius_list.append(self.pad_radii[p % pads_per_gripper])
+            pad_face_offset_list.append(self.pad_half_heights[p % pads_per_gripper])
+        self.pad_radius_wp = wp.array(pad_radius_list, dtype=float, device=self.model.device)
+        self.pad_face_offset_wp = wp.array(pad_face_offset_list, dtype=float, device=self.model.device)
         # gripper_command_engaged_wp is the engagement state of the gripper as read from the recording of the robot arm.
         # gripper_seal_broken_wp is the fracture state of the gripper
         # pad_seal_break_count_wp is the number of continuous steps that each pad has exceeded the maximum force.
@@ -700,8 +719,8 @@ class Example:
                     self.pad_seal_engaged_wp,
                     self.pad_body_b,
                     self.body_mesh_id,
-                    self.pad_radius,
-                    self.pad_half_height,
+                    self.pad_radius_wp,
+                    self.pad_face_offset_wp,
                     PAD_LIP_SAMPLES,
                     iters=SEAT_ITERS,
                 )
