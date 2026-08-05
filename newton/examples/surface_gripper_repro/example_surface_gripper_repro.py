@@ -173,7 +173,7 @@ BREAK_HOLD_TIME = 0.033  # [s]
 
 @wp.kernel
 def update_seal_break_kernel(
-    gripper_command_engaged: wp.array[wp.bool],  # [1] recorded engagement command (ro[0])
+    gripper_command_engaged: wp.array[wp.bool],  # [grippers] recorded engagement command (ro[0]), per gripper
     pad_break_metric: wp.array[float],  # [pads] brittle break envelope from the previous force eval
     pad_engaged: wp.array[wp.bool],  # [pads] whether each pad held last sub-step (from attach_seal)
     break_threshold: float,  # break metric above this counts as over-capacity (1.0 = nominal capacity)
@@ -197,7 +197,7 @@ def update_seal_break_kernel(
     g = wp.tid()  # one thread per gripper -> sole owner of this gripper's latch, counters, and commands
     lo = pad_offsets[g]  # this gripper's pads are [lo, hi)
     hi = pad_offsets[g + 1]
-    cmd = gripper_command_engaged[0]
+    cmd = gripper_command_engaged[g]  # this gripper's own command (broadcast to all worlds before this launch)
     if not cmd:
         gripper_seal_broken[g] = False  # recorded release clears the gripper latch for the next cycle
         for pad in range(lo, hi):
