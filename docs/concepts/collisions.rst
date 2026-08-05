@@ -1606,7 +1606,7 @@ Example usage:
 Differentiable Contacts
 -----------------------
 
-Use :func:`newton.geometry.compute_rigid_contact_kinematics` to reconstruct
+Use :func:`newton.eval_rigid_contact_kinematics` to reconstruct
 selected rigid-contact quantities in caller-provided arrays. When those arrays
 and ``state.body_q`` require gradients, the reconstruction participates in
 :class:`wp.Tape` autodiff and provides first-order gradients with respect to
@@ -1661,7 +1661,7 @@ helper and gradients do not flow through its direction.
 
     with wp.Tape() as tape:
         pipeline.collide(state, contacts)
-        newton.geometry.compute_rigid_contact_kinematics(
+        newton.eval_rigid_contact_kinematics(
             model,
             state,
             contacts,
@@ -1680,7 +1680,7 @@ The ``Contacts.rigid_contact_diff_*`` attributes are deprecated compatibility
 outputs. The distance and point arrays remain allocated and populated when the
 collision pipeline has ``requires_grad=True`` during the deprecation window.
 Allocate only the outputs you need and call
-:func:`newton.geometry.compute_rigid_contact_kinematics` explicitly to prepare
+:func:`newton.eval_rigid_contact_kinematics` explicitly to prepare
 for their removal. The deprecated ``rigid_contact_diff_normal`` attribute is
 already an alias for
 :attr:`~newton.Contacts.rigid_contact_normal` and does not allocate a duplicate

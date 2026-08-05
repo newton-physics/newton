@@ -753,7 +753,7 @@ class CollisionPipeline:
     .. experimental::
 
         Differentiable rigid-contact kinematics computed by
-        :func:`newton.geometry.compute_rigid_contact_kinematics` may change
+        :func:`newton.eval_rigid_contact_kinematics` may change
         without prior notice. The narrow phase stays frozen and gradients are
         a tangent approximation; validate accuracy and usefulness on your
         workflow before relying on them in optimization loops.
@@ -827,7 +827,7 @@ class CollisionPipeline:
             requires_grad: Whether pipeline-generated soft contacts and the
                 deprecated automatic rigid-contact outputs require gradients.
                 If None, uses ``model.requires_grad``. Explicit calls to
-                :func:`newton.geometry.compute_rigid_contact_kinematics` do not
+                :func:`newton.eval_rigid_contact_kinematics` do not
                 depend on this flag.
             broad_phase:
                 Either a broad phase mode string ("explicit", "nxn", "sap") or
@@ -895,7 +895,7 @@ class CollisionPipeline:
         .. experimental::
 
             Rigid-contact autodiff via
-            :func:`newton.geometry.compute_rigid_contact_kinematics` may change
+            :func:`newton.eval_rigid_contact_kinematics` may change
             without prior notice; see :meth:`collide`.
         """
         if contact_matching not in ("disabled", "latest", "sticky"):
@@ -1238,7 +1238,7 @@ class CollisionPipeline:
             If ``requires_grad`` is true, deprecated rigid-contact distance and
             point compatibility arrays are allocated. New code should allocate
             only the outputs it needs and pass them to
-            :func:`newton.geometry.compute_rigid_contact_kinematics`.
+            :func:`newton.eval_rigid_contact_kinematics`.
         """
         contacts = Contacts(
             self.rigid_contact_max,
@@ -1316,7 +1316,7 @@ class CollisionPipeline:
         For backward compatibility, when ``requires_grad=True`` the deprecated
         ``contacts.rigid_contact_diff_*`` arrays are populated by a lightweight
         augmentation kernel. New code should call
-        :func:`newton.geometry.compute_rigid_contact_kinematics` explicitly
+        :func:`newton.eval_rigid_contact_kinematics` explicitly
         after collision detection to reconstruct only the quantities it needs.
 
         .. experimental::

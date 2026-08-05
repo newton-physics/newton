@@ -22,7 +22,7 @@
 - Add full-surface (edge/face) rigid-soft contacts to `SolverVBD` proxy-body coupling under `SolverCoupledProxy` through shared or proxy-local collision pipelines. Proxy-particle coupling rejects full-surface contacts.
 - Add `newton[onnx]` for ONNX policy inference through Warp-NN; `ControllerNeuralMLP`, `ControllerNeuralLSTM`, and RL policy examples can run exported `.onnx` policies without requiring PyTorch for ONNX execution.
 - Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts
-- Add `newton.geometry.compute_rigid_contact_kinematics()` to compute selected rigid-contact distances and world-space points in caller-provided arrays.
+- Add `newton.eval_rigid_contact_kinematics()` to evaluate selected rigid-contact distances and world-space points in caller-provided arrays.
 - Add masked rigid-body reset support to `SolverVBD`. (#3256)
 - Add `Mesh.invalidate_cache()` to drop cached derived data (hash, edges, finalized Warp meshes) after in-place modification of `Mesh.vertices` or `Mesh.indices`; reassigning those properties invalidates automatically.
 - Add `Heightfield.create_from_mesh()` and `newton.utils.rasterize_mesh_to_heightfield()` to build a heightfield collider by ray-casting a `wp.Mesh`, replacing a large static terrain mesh with an equivalent heightfield.
@@ -83,7 +83,7 @@
 ### Deprecated
 
 - Deprecate scalar `ModelBuilder.gravity`; pass a three-component gravity vector instead. (#3324)
-- Deprecate `Contacts.rigid_contact_diff_*` in favor of caller-allocated outputs passed to `newton.geometry.compute_rigid_contact_kinematics()`; use `Contacts.rigid_contact_normal` for the frozen world-space normal.
+- Deprecate `Contacts.rigid_contact_diff_*` in favor of caller-allocated outputs passed to `newton.eval_rigid_contact_kinematics()`; use `Contacts.rigid_contact_normal` for the frozen world-space normal.
 - Deprecate local-only `SolverBase.reset()` world masks in favor of masks with shape `(world_count + 1,)`; append a final entry that selects global entities in world `-1`. (#3726; fixes #3374)
 - Deprecate and ignore `SolverVBD`'s `rigid_contact_stick_motion_eps`, `rigid_contact_stick_freeze_translation_eps`, and `rigid_contact_stick_freeze_angular_eps`; use collision-pipeline sticky matching for persistent geometry. The SolverVBD body deadzone was removed without replacement. (#3652)
 - Deprecate `Model.contacts()` and `Model.collide()` in favor of explicitly creating a `CollisionPipeline`, allocating with `pipeline.contacts()`, and detecting collisions with `pipeline.collide(state, contacts)`. (#3409)

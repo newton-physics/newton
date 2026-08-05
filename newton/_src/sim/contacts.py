@@ -16,14 +16,14 @@ GENERATION_SENTINEL = -1
 
 _RIGID_CONTACT_DIFF_REPLACEMENTS = {
     "rigid_contact_diff_distance": (
-        "allocate an output array and pass it as out_distance to newton.geometry.compute_rigid_contact_kinematics()"
+        "allocate an output array and pass it as out_distance to newton.eval_rigid_contact_kinematics()"
     ),
     "rigid_contact_diff_normal": "use Contacts.rigid_contact_normal",
     "rigid_contact_diff_point0_world": (
-        "allocate an output array and pass it as out_point0_world to newton.geometry.compute_rigid_contact_kinematics()"
+        "allocate an output array and pass it as out_point0_world to newton.eval_rigid_contact_kinematics()"
     ),
     "rigid_contact_diff_point1_world": (
-        "allocate an output array and pass it as out_point1_world to newton.geometry.compute_rigid_contact_kinematics()"
+        "allocate an output array and pass it as out_point1_world to newton.eval_rigid_contact_kinematics()"
     ),
 }
 
@@ -194,7 +194,7 @@ class Contacts:
                 through particle-shape contacts. For compatibility, the deprecated
                 rigid-contact distance and point outputs are also allocated; new code
                 should provide selected outputs to
-                :func:`newton.geometry.compute_rigid_contact_kinematics`.
+                :func:`newton.eval_rigid_contact_kinematics`.
             device: Device to allocate buffers on
             per_contact_shape_properties: Enable per-contact stiffness/damping/friction arrays
             clear_buffers: If True, clear() will zero all contact buffers (slower but conservative).
@@ -216,7 +216,7 @@ class Contacts:
         .. experimental::
 
             Rigid-contact gradients computed by
-            :func:`newton.geometry.compute_rigid_contact_kinematics` are a
+            :func:`newton.eval_rigid_contact_kinematics` are a
             tangent approximation and may change without prior notice.
         """
         if contact_report and not contact_matching:
@@ -493,7 +493,7 @@ class Contacts:
 
         .. deprecated:: 1.5
             Allocate an output array and pass it as ``out_distance`` to
-            :func:`newton.geometry.compute_rigid_contact_kinematics`.
+            :func:`newton.eval_rigid_contact_kinematics`.
         """
         _warn_rigid_contact_diff_deprecated("rigid_contact_diff_distance")
         return self._rigid_contact_diff_distance
@@ -528,7 +528,7 @@ class Contacts:
 
         .. deprecated:: 1.5
             Allocate an output array and pass it as ``out_point0_world`` to
-            :func:`newton.geometry.compute_rigid_contact_kinematics`.
+            :func:`newton.eval_rigid_contact_kinematics`.
         """
         _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point0_world")
         return self._rigid_contact_diff_point0_world
@@ -544,7 +544,7 @@ class Contacts:
 
         .. deprecated:: 1.5
             Allocate an output array and pass it as ``out_point1_world`` to
-            :func:`newton.geometry.compute_rigid_contact_kinematics`.
+            :func:`newton.eval_rigid_contact_kinematics`.
         """
         _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point1_world")
         return self._rigid_contact_diff_point1_world
