@@ -246,6 +246,7 @@ class ViewerGL(ViewerBase):
             sidebar_width_px=self._sidebar_width_fb_px(),
             dpi_scale=self._dpi_scale(),
         )
+        self._main_image_name: str | None = None
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
@@ -280,7 +281,9 @@ class ViewerGL(ViewerBase):
             # Register GL-specific rendering options (sky, shadows, wireframe, colors)
             self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
             # Draw image-logger floating windows outside the sidebar window.
-            self.gui.register_ui_callback(lambda _imgui: self._image_logger.draw(), position="free")
+            self.gui.register_ui_callback(
+                lambda _imgui: self._image_logger.draw(hidden_name=self._main_image_name), position="free"
+            )
             # Top-level Layers panel (visible only when multiple layers exist).
             self.gui.register_ui_callback(self._ui_populate_layers_panel, position="panel")
 
@@ -576,6 +579,8 @@ class ViewerGL(ViewerBase):
 
         if getattr(self, "_image_logger", None) is not None:
             self._image_logger.clear_matching(owns)
+        if owns(getattr(self, "_main_image_name", "") or ""):
+            self._main_image_name = None
 
         # Drop example-registered side/free UI callbacks (panel/stats/rendering persist).
         if getattr(self, "gui", None) is not None:
@@ -1496,6 +1501,25 @@ class ViewerGL(ViewerBase):
         name = self._qualify(name)
         self._image_logger.log(name, image)
 
+    def log_main_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+        """Log an image and display it as the main viewer surface for this frame.
+
+        When a main image is logged for a frame, :class:`ViewerGL` skips the
+        normal 3D scene render and draws the image texture directly to the
+        window. If no main image is logged before a later :meth:`end_frame`,
+        the viewer returns to the normal 3D scene render for that frame.
+
+        Args:
+            name: Stable identifier for the image.
+            image: Image array. See :meth:`log_image` for accepted shapes and
+                dtypes.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("main image name must be a non-empty string")
+        name = self._qualify(name)
+        self._image_logger.log(name, image)
+        self._main_image_name = name
+
     @override
     def log_scalar(
         self,
@@ -1729,17 +1753,36 @@ class ViewerGL(ViewerBase):
         if self.wind is not None:
             self.wind.update(dt)
 
-        # If the window was closed during event processing, skip rendering
-        if self.renderer.has_exit():
-            return
+        try:
+            # If the window was closed during event processing, skip rendering
+            if self.renderer.has_exit():
+                return
 
-        # Render the scene and present it
-        self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
+            # Render either the selected logged image or the 3D scene, then present it.
+            main_image_name = self._main_image_name
+            if main_image_name is not None:
+                texture = self._image_logger.get_texture(main_image_name)
+                if texture is None:
+                    self.renderer.render_texture(None, 0, 0)
+                else:
+                    self.renderer.render_texture(
+                        texture.texture_id,
+                        texture.texture_width,
+                        texture.texture_height,
+                        tile_count=texture.tile_count,
+                        tile_width=texture.tile_width,
+                        tile_height=texture.tile_height,
+                        atlas_cols=texture.atlas_cols,
+                    )
+            else:
+                self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
 
-        if self.gui:
-            self.gui.render_frame(update_fps=True)
+            if self.gui:
+                self.gui.render_frame(update_fps=True)
 
-        self.renderer.present()
+            self.renderer.present()
+        finally:
+            self._main_image_name = None
 
     def get_frame(self, target_image: wp.array | None = None, render_ui: bool = False) -> wp.array:
         """

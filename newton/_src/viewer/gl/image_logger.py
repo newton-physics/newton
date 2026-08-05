@@ -326,6 +326,19 @@ class LoggedImage:
     window_initialized: bool = False
 
 
+@dataclass(frozen=True)
+class LoggedImageTexture:
+    """Texture metadata needed to draw a logged image atlas."""
+
+    texture_id: int
+    texture_width: int
+    texture_height: int
+    tile_count: int
+    tile_width: int
+    tile_height: int
+    atlas_cols: int
+
+
 class ImageLogger:
     """Owns GL resources for images logged via :meth:`~newton.viewer.ViewerBase.log_image`.
 
@@ -408,16 +421,20 @@ class ImageLogger:
         entry.atlas_cols, entry.atlas_rows = atlas_cols, atlas_rows
         entry.tile_aspect = h / w
 
-    def draw(self) -> None:
+    def draw(self, *, hidden_name: str | None = None) -> None:
         """Draw the selected image window (if any).
 
         Called once per frame inside the viewer's ImGui frame block.
         At most one window is visible at a time; selection is driven by
         :meth:`draw_controls`.
+
+        Args:
+            hidden_name: Optional selected image name to suppress, used when
+                that image is already drawn as the main viewer surface.
         """
         from imgui_bundle import imgui
 
-        if self._selected is None:
+        if self._selected is None or self._selected == hidden_name:
             return
         entry = self._images.get(self._selected)
         if entry is None or entry.n == 0 or entry.tex_id == 0:
@@ -523,6 +540,29 @@ class ImageLogger:
         changed, new_idx = imgui.combo("##logged_images", current, items)
         if changed:
             self._selected = None if new_idx == 0 else names[new_idx - 1]
+
+    def get_texture(self, name: str) -> LoggedImageTexture | None:
+        """Return texture metadata for a logged image.
+
+        Args:
+            name: Image name previously passed to :meth:`log`.
+
+        Returns:
+            Texture metadata for the packed image atlas, or ``None`` when the
+            image has not been logged or has no live GL texture yet.
+        """
+        entry = self._images.get(name)
+        if entry is None or entry.tex_id == 0 or entry.tex_w <= 0 or entry.tex_h <= 0:
+            return None
+        return LoggedImageTexture(
+            texture_id=entry.tex_id,
+            texture_width=entry.tex_w,
+            texture_height=entry.tex_h,
+            tile_count=entry.n,
+            tile_width=entry.w,
+            tile_height=entry.h,
+            atlas_cols=entry.atlas_cols,
+        )
 
     def clear(self) -> None:
         """Destroy all GL resources. Idempotent."""

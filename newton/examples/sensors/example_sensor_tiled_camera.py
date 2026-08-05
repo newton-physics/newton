@@ -89,6 +89,7 @@ class Example:
         self.time_delta = 0.005
 
         self.viewer = viewer
+        self.sensor_color_as_main_view = callable(getattr(self.viewer, "log_main_image", None))
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
         bunny_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
@@ -268,13 +269,14 @@ class Example:
         self.time += self.time_delta
 
     def render(self):
-        self.render_sensors()
+        sensor_image_is_main_view = self.render_sensors()
 
         self.viewer.begin_frame(0.0)
-        self.viewer.log_state(self.state)
+        if not sensor_image_is_main_view:
+            self.viewer.log_state(self.state)
         self.viewer.end_frame()
 
-    def render_sensors(self):
+    def render_sensors(self) -> bool:
         self.model.bvh_refit_shapes(self.state)
         self.model.bvh_refit_particles(self.state)
         self.tiled_camera_sensor.update(
@@ -300,12 +302,21 @@ class Example:
             self.tiled_camera_sensor_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
         )
 
-        self.viewer.log_image("color", color_rgba)
+        sensor_image_is_main_view = self._log_color_image(color_rgba)
         self.viewer.log_image("albedo", albedo_rgba)
         self.viewer.log_image("depth", self.depth_rgba)
         self.viewer.log_image("normal", self.normal_rgba)
         self.viewer.log_image("shape_index", self.shape_rgba)
         self.viewer.log_image("semantic", self.semantic_rgba)
+        return sensor_image_is_main_view
+
+    def _log_color_image(self, color_rgba) -> bool:
+        log_main_image = getattr(self.viewer, "log_main_image", None)
+        if self.sensor_color_as_main_view and callable(log_main_image):
+            log_main_image("color", color_rgba)
+            return True
+        self.viewer.log_image("color", color_rgba)
+        return False
 
     def get_camera_transforms(self) -> wp.array[wp.transformf]:
         if isinstance(self.viewer, ViewerGL):
@@ -370,6 +381,11 @@ class Example:
 
     def gui(self, ui):
         show_compile_kernel_info = False
+
+        if callable(getattr(self.viewer, "log_main_image", None)):
+            _changed, self.sensor_color_as_main_view = ui.checkbox(
+                "Sensor Color as Main View", self.sensor_color_as_main_view
+            )
 
         if ui.radio_button(
             "Gaussians: Fast",

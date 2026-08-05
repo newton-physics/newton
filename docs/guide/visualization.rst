@@ -187,6 +187,19 @@ Warp array on the viewer device:
     # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
     frame = viewer.get_frame()
 
+**Main image display:**
+
+:meth:`~newton.viewer.ViewerGL.log_main_image` logs an image and displays it as
+the main viewer surface for the current frame. While a main image is logged,
+:class:`~newton.viewer.ViewerGL` skips the normal 3D scene render and draws that
+image directly to the window, with the UI still available on top. If a later
+frame does not call ``log_main_image()``, the viewer returns to normal 3D scene
+rendering for that frame:
+
+.. code-block:: python
+
+    viewer.log_main_image("sensor", sensor_rgba)
+
 **Custom UI panels:**
 
 :meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.

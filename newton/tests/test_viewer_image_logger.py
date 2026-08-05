@@ -7,6 +7,8 @@ import numpy as np
 import warp as wp
 
 from newton._src.viewer.gl.image_logger import (
+    ImageLogger,
+    LoggedImage,
     _atlas_layout,
     _convert_to_packed_rgba_numpy,
     _pack_rgba_warp,
@@ -91,6 +93,29 @@ class TestComputeGridLayout(unittest.TestCase):
         # Should still return positive (or zero) finite cell sizes, not negative.
         self.assertGreaterEqual(cw, 0.0)
         self.assertGreaterEqual(ch, 0.0)
+
+
+class TestImageLoggerTexture(unittest.TestCase):
+    def test_get_texture_returns_live_texture_metadata(self):
+        """Verify logged texture metadata is returned for main-view drawing."""
+        logger = ImageLogger(device=wp.get_device())
+        logger._images["color"] = LoggedImage(name="color", tex_id=42, tex_w=16, tex_h=8, n=2, w=8, h=8, atlas_cols=2)
+        texture = logger.get_texture("color")
+        self.assertIsNotNone(texture)
+        self.assertEqual(texture.texture_id, 42)
+        self.assertEqual(texture.texture_width, 16)
+        self.assertEqual(texture.texture_height, 8)
+        self.assertEqual(texture.tile_count, 2)
+        self.assertEqual(texture.tile_width, 8)
+        self.assertEqual(texture.tile_height, 8)
+        self.assertEqual(texture.atlas_cols, 2)
+
+    def test_get_texture_returns_none_for_missing_or_uninitialized_image(self):
+        """Verify missing or uninitialized images do not expose textures."""
+        logger = ImageLogger(device=wp.get_device())
+        logger._images["color"] = LoggedImage(name="color", tex_id=0, tex_w=16, tex_h=8)
+        self.assertIsNone(logger.get_texture("missing"))
+        self.assertIsNone(logger.get_texture("color"))
 
 
 class TestValidate(unittest.TestCase):
