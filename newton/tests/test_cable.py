@@ -18,6 +18,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     compute_cable_dahl_parameters,
     compute_geometric_cable_kappa_cached_z,
     evaluate_cable_bend_twist_force_hessian_z,
+    evaluate_cable_stretch_shear_force_hessian,
     update_cable_dahl_state,
 )
 from newton._src.utils import is_graph_capture_allocation_enabled
@@ -4308,8 +4309,73 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
 
 
 # -----------------------------------------------------------------------------
-# Split cable bend/twist verification helpers
+# Split cable verification helpers
 # -----------------------------------------------------------------------------
+
+
+@wp.kernel
+def _eval_cable_stretch_shear_parent_hessian_error(errors: wp.array[wp.vec2]):
+    parent_pose = wp.transform(
+        wp.vec3(-0.31, 0.44, -0.19),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.4, 0.9, 0.2)), 1.1),
+    )
+    parent_com = wp.vec3(0.07, -0.11, 0.23)
+    X_wp = wp.transform(
+        wp.vec3(0.12, -0.05, 0.09),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7),
+    )
+    x_p = wp.transform_get_translation(X_wp)
+    X_wc = wp.transform(x_p + wp.vec3(0.21, -0.13, 0.17), wp.quat_identity())
+    x_c = wp.transform_get_translation(X_wc)
+    # Unequal stretch/shear stiffness, so extracting the maximum rather than the minimum common
+    # coefficient is observable; equal stiffness cannot distinguish them.
+    k_shear = float(7.0)
+    k_stretch = float(11.0)
+    damping = float(3.0)
+    dt = float(0.25)
+
+    X_wc_prev = wp.transform(
+        x_c + wp.vec3(-0.04, 0.06, 0.03),
+        wp.quat_identity(),
+    )
+    _force, _torque, _H_ll, H_al, H_aa = evaluate_cable_stretch_shear_force_hessian(
+        X_wp,
+        X_wc,
+        X_wp,
+        X_wc_prev,
+        parent_pose,
+        wp.transform_identity(),
+        parent_com,
+        wp.vec3(0.0),
+        True,
+        wp.vec3(k_shear, k_shear, k_stretch),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(damping),
+        True,
+        dt,
+    )
+
+    identity = wp.identity(3, float)
+    t = wp.quat_rotate(wp.transform_get_rotation(X_wp), wp.vec3(0.0, 0.0, 1.0))
+    h_s = k_shear + damping / dt
+    h_z = k_stretch + damping / dt
+    K_eff = h_s * identity + (h_z - h_s) * wp.outer(t, t)
+    k_iso = wp.min(k_shear, k_stretch)
+    K_material = K_eff - k_iso * identity
+
+    com_w = wp.transform_point(parent_pose, parent_com)
+    rx_elastic = wp.skew(x_p - com_w)
+    rx_material = wp.skew(x_c - com_w)
+    H_al_ref = k_iso * rx_elastic + rx_material * K_material
+    H_aa_ref = k_iso * wp.transpose(rx_elastic) * rx_elastic
+    H_aa_ref = H_aa_ref + wp.transpose(rx_material) * K_material * rx_material
+    H_al_error = H_al - H_al_ref
+    H_aa_error = H_aa - H_aa_ref
+    errors[0] = wp.vec2(
+        wp.sqrt(wp.ddot(H_al_error, H_al_error)),
+        wp.sqrt(wp.ddot(H_aa_error, H_aa_error)),
+    )
 
 
 @wp.kernel
@@ -5357,6 +5423,18 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
 
 
+def _split_cable_parent_hessian_separates_elastic_and_damping_arms(test, device):
+    """Verify isotropic elasticity and damping use their intended parent lever arms."""
+    errors = wp.zeros(1, dtype=wp.vec2, device=device)
+    wp.launch(
+        _eval_cable_stretch_shear_parent_hessian_error,
+        dim=1,
+        outputs=[errors],
+        device=device,
+    )
+    np.testing.assert_allclose(errors.numpy(), 0.0, atol=1.0e-5)
+
+
 def _split_cable_material_force_law_matches_ei_gj(test, device):
     """Per-joint bend/twist torques should match EI/h and GJ/h stiffness inputs."""
     segment_length = 0.08
@@ -6011,6 +6089,12 @@ add_function_test(
     TestCable,
     "test_split_cable_routes_explicit_shear_to_second_slot",
     _split_cable_routes_explicit_shear_to_second_slot,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_parent_hessian_separates_elastic_and_damping_arms",
+    _split_cable_parent_hessian_separates_elastic_and_damping_arms,
     devices=devices,
 )
 add_function_test(

@@ -126,6 +126,13 @@ class _ControlRecordingSolver(SolverBase, CouplingInterface):
             wp.copy(state_out.joint_qd, state_in.joint_qd)
 
 
+class _FullSurfaceControlRecordingSolver(_ControlRecordingSolver):
+    """Test solver that accepts full-surface soft contacts."""
+
+    def coupling_supports_full_surface_soft_contacts(self) -> bool:
+        return True
+
+
 class _InPlaceRecordingParticleSolver(SolverBase, CouplingInterface):
     """Test solver that records whether it was stepped in-place."""
 
@@ -1244,6 +1251,117 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         self.assertRegex("\n".join(logs.output), r"entry 'child'.*joint.*outside.*full model layout")
         self.assertEqual(coupled.view("child").body_count, model.body_count)
+
+    @staticmethod
+    def _seeded_full_surface_contacts(model, corners, particle=None):
+        """Build contacts with a face record and an optional particle record."""
+        pipeline = newton.CollisionPipeline(
+            model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        )
+        contacts = pipeline.contacts()
+
+        def _set(arr, index, value):
+            a = arr.numpy()
+            a[index] = value
+            arr.assign(a)
+
+        contacts.soft_contact_count.assign([1 + int(particle is not None)])
+        _set(contacts.soft_contact_particle, 0, -1)
+        _set(contacts.soft_contact_indices, 0, list(corners))
+        _set(contacts.soft_contact_barycentric, 0, [0.6, 0.3, 0.1])
+        _set(contacts.soft_contact_shape, 0, 0)
+        _set(contacts.soft_contact_normal, 0, [0.0, 0.0, 1.0])
+        if particle is not None:
+            _set(contacts.soft_contact_particle, 1, particle)
+            _set(contacts.soft_contact_indices, 1, [particle, -1, -1])
+            _set(contacts.soft_contact_barycentric, 1, [1.0, 0.0, 0.0])
+            _set(contacts.soft_contact_shape, 1, 0)
+            _set(contacts.soft_contact_normal, 1, [0.0, 0.0, 1.0])
+        return contacts
+
+    @staticmethod
+    def _build_box_and_triangle():
+        """A free rigid box plus three soft particles forming one triangle."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        particles = [builder.add_particle(wp.vec3(0.0, 0.0, 0.6), wp.vec3(0.0), 0.1, radius=0.0) for _ in range(3)]
+        return builder.finalize(device="cpu"), body, joint, particles
+
+    def test_full_surface_records_survive_the_entry_filter(self):
+        """Keep a full-surface record owned by a capable entry."""
+        model, body, joint, particles = self._build_box_and_triangle()
+        contacts = self._seeded_full_surface_contacts(model, particles)
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=_FullSurfaceControlRecordingSolver,
+                    bodies=[body],
+                    joints=[joint],
+                    particles=particles,
+                )
+            ],
+        )
+
+        coupled.step(model.state(), model.state(), None, contacts, dt=1.0 / 60.0)
+
+        filtered = coupled._entry_contact_buffers["A"]
+        self.assertEqual(int(filtered.soft_contact_count.numpy()[0]), 1, "face record must survive the filter")
+        np.testing.assert_array_equal(filtered.soft_contact_indices.numpy()[0], particles)
+        np.testing.assert_allclose(filtered.soft_contact_barycentric.numpy()[0], [0.6, 0.3, 0.1])
+        self.assertTrue(filtered._enable_rigid_soft_full_surface_contact, "capability marker must be carried over")
+
+    def test_full_surface_records_straddling_entries_are_dropped(self):
+        """Drop a full-surface record spanning two capable entries."""
+        model, body, joint, particles = self._build_box_and_triangle()
+        contacts = self._seeded_full_surface_contacts(model, particles)
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=_FullSurfaceControlRecordingSolver,
+                    bodies=[body],
+                    joints=[joint],
+                    particles=particles[:2],
+                ),
+                SolverCoupled.Entry(name="B", solver=_FullSurfaceControlRecordingSolver, particles=particles[2:]),
+            ],
+        )
+
+        coupled.step(model.state(), model.state(), None, contacts, dt=1.0 / 60.0)
+
+        for name in ("A", "B"):
+            count = int(coupled._entry_contact_buffers[name].soft_contact_count.numpy()[0])
+            self.assertEqual(count, 0, f"entry {name} owns only part of the record and must drop it")
+
+    def test_full_surface_contacts_degrade_per_entry(self):
+        """Keep only particle contacts for an unsupported entry."""
+        model, body, joint, particles = self._build_box_and_triangle()
+        contacts = self._seeded_full_surface_contacts(model, particles, particle=particles[0])
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="particle_only",
+                    solver=_ControlRecordingSolver,
+                    bodies=[body],
+                    joints=[joint],
+                    particles=particles,
+                ),
+            ],
+        )
+
+        coupled.step(model.state(), model.state(), None, contacts, dt=1.0 / 60.0)
+
+        particle_only = coupled._entry_contact_buffers["particle_only"]
+        self.assertEqual(int(particle_only.soft_contact_count.numpy()[0]), 1)
+        self.assertEqual(int(particle_only.soft_contact_particle.numpy()[0]), particles[0])
+        self.assertFalse(particle_only._enable_rigid_soft_full_surface_contact)
 
     def test_entry_control_arrays_are_mapped_to_local_dofs(self):
         """Entry solvers should receive control arrays in their local DOF namespace."""
@@ -3618,6 +3736,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),  # particle_flags
             int(ShapeFlags.COLLIDE_PARTICLES),
             int(ParticleFlags.ACTIVE),
+            0,  # keep_full_surface_contacts
             wp.zeros(1, dtype=wp.int32, device=device),  # dst_count
             wp.full(1, -1, dtype=wp.int32, device=device),  # dst_particle
             wp.full(1, -1, dtype=wp.int32, device=device),  # dst_shape
