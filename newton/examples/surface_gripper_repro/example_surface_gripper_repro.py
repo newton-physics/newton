@@ -18,12 +18,12 @@
 #
 # Reproduction scene for the surface-gripper on a robot arm. Loads the robot arm from a USD stage
 # (Assets/robot_only_newton_flattened.usda) with a fixed base on a ground plane, then plays back a
-# recorded FANUC palletizer cycle (Assets/robot_recording_truncated.jsonl). Playback is time-accurate: 
+# recorded FANUC palletizer cycle (Assets/robot_recording_truncated.jsonl). Playback is time-accurate:
 # the six arm joint position targets are interpolated from the recorded timestamps at the current simulation
 # time (J3 coupled to J2, degrees -> radians) and updated before every physics sub-step, so the arm
-# follows the recording at its true speed. The recording's surface-gripper engagement and disengagement 
-# commands are extracted per frame. Objects are placed in the scene so that they may be gripped 
-# and manipulated by the the surface gripper as required by the motion of the robot arm and the 
+# follows the recording at its true speed. The recording's surface-gripper engagement and disengagement
+# commands are extracted per frame. Objects are placed in the scene so that they may be gripped
+# and manipulated by the the surface gripper as required by the motion of the robot arm and the
 # engagement/disengagement commands.
 
 # Command: python -m newton.examples surface_gripper_repro
@@ -57,9 +57,9 @@ from newton.examples.surface_gripper_repro.surface_gripper import (
 ASSETS = Path(__file__).parent / "Assets"
 
 # rendered frames per second
-FPS = 60  
+FPS = 60
 # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
-SIM_HZ = 120  
+SIM_HZ = 120
 
 # recording of the robot arm motion and surface gripper engagement/disengagement.
 RECORDING_JSONL = ASSETS / "robot_recording_truncated.jsonl"
@@ -72,7 +72,7 @@ SMOOTHING_SIGMA = 0.06
 # robot arm USD
 ROBOT_USD = ASSETS / "fanuc_arm_flattened_collision.usda"
 # J1-J6; recorded joints 6-8 are unused finger DOFs
-NUM_ARM_DOFS = 6  
+NUM_ARM_DOFS = 6
 # Deepest reach of the finger collision geometry along the grip axis, in the J6_link (flange)
 # frame [m] -- the point that would first penetrate the box. The box top is seated here so the fingers
 # rest on the box without sinking in. Resolved from the USD (max +x over the Finger_0x meshes).
@@ -110,7 +110,7 @@ PEEL_Y_MODE = (8.35631, 0.096717)
 TWIST_MODE = (2.79962, 0.0)
 
 # The arm picks two boxes in sequence over the recording's two engage/disengage cycles: a wide shallow
-# panel at the 1st engagement, then a deep crate at the 2nd and subsequent engagements. Each rests 
+# panel at the 1st engagement, then a deep crate at the 2nd and subsequent engagements. Each rests
 # on a static pallet until the surface gripper grips and manipulates it.
 # (half-extents [m],
 # mass [kg]); shape density is 0, so mass/inertia are set on the body.
@@ -140,6 +140,11 @@ SEAL_SEAT_ON_ENGAGE = True
 # curved gripped objects, where each iteration re-samples the SDF at the updated pose to converge.
 SEAT_ITERS = 4
 
+# Number of simulation worlds (environments). The whole scene (arm + boxes + pallets + gripper) is
+# replicated NUM_WORLDS times, all overlapping at the origin -- Newton's broad phase does not collide
+# across worlds, so the copies don't interact, and only world 0 is rendered (see set_visible_worlds).
+NUM_WORLDS = 1
+
 # Draw a small non-colliding disk at each pad (GRIPPER_PADS) so the pad layout is visible in
 # the viewer. Purely visual (has_shape_collision off); does not affect the physics.
 SHOW_PAD_MARKERS = True
@@ -161,6 +166,7 @@ BREAK_THRESHOLD = 5.0
 # brief sub-step spike. Expressed as a time so it is independent of the sim rate; the sub-step count is
 # round(BREAK_HOLD_TIME / sim_dt), floored at 1.
 BREAK_HOLD_TIME = 0.033  # [s]
+
 
 @wp.kernel
 def update_seal_break_kernel(
@@ -263,6 +269,28 @@ def box_sdf_mesh(hx, hy, hz, device=None):
     )
 
 
+@wp.kernel
+def broadcast_arm_targets_kernel(
+    num_arm_dofs: int,
+    world_stride: int,  # per-world length of joint_target_q
+    joint_target_q: wp.array[float],  # in/out: world 0's arm targets [0:num_arm_dofs] copied to every world
+):
+    """Copy world 0's recorded arm drive targets into every other world's arm DOFs (the worlds are
+    identical replicas, so they all follow the same recording). One thread per (world >= 1, arm DOF)."""
+    tid = wp.tid()  # dim = (num_worlds - 1) * num_arm_dofs
+    w = tid // num_arm_dofs + 1  # target worlds 1..num_worlds-1 (world 0 is the source)
+    d = tid % num_arm_dofs
+    joint_target_q[w * world_stride + d] = joint_target_q[d]
+
+
+@wp.kernel
+def broadcast_command_kernel(gripper_command_engaged: wp.array[wp.bool]):
+    """Copy world 0's sampled engagement command to every gripper (one per world)."""
+    g = wp.tid()  # dim = n_grippers
+    if g > 0:
+        gripper_command_engaged[g] = gripper_command_engaged[0]
+
+
 class Example:
     def __init__(self, viewer, args):
 
@@ -284,13 +312,8 @@ class Example:
         # pad_offsets maps each gripper to the range of pads owned by the gripper.
         self.sim_step_count_wp = wp.zeros(1, dtype=wp.int32)
         self.last_lo_wp = wp.zeros(1, dtype=wp.int32)
-        self.gripper_command_engaged_wp = wp.zeros(1, dtype=wp.bool)  # [gripper] recorded engagement command
-        self.pad_seal_break_count_wp = wp.zeros(
-            len(GRIPPER_PADS), dtype=wp.int32
-        )  # consecutive over-threshold steps, per pad
-        self.gripper_seal_broken_wp = wp.zeros(1, dtype=wp.bool)  # [gripper] latched fracture
-        self.pad_seal_engaged_wp = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)  # [pads] per-pad seal command
-        self.pad_offsets = wp.array([0, len(GRIPPER_PADS)], dtype=wp.int32)
+        # The per-gripper / per-pad runtime arrays are sized from the finalized gripper model further down
+        # (one gripper per world, so they scale with NUM_WORLDS).
 
         # RECORDING_JSONL contains time-stamped joint drive target positions and pad engagement
         # states. Load and extract the time-stamps, the joint drive target positions and the
@@ -298,19 +321,14 @@ class Example:
         # Apply gaussian smoothing to the raw drive target after loading.
         self.robot_arm_playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA, NUM_ARM_DOFS)
 
-        # Load the Fanuc robot arm on a ground plane.
-        builder = newton.ModelBuilder()
-        builder.add_usd(str(ROBOT_USD), floating=False, collapse_fixed_joints=True)
-        ee_body = builder.body_count - 1  # last arm link (J6_link) is the end-effector flange
-        builder.add_ground_plane()
+        # Build ONE environment (arm + pick boxes + pallets + pad markers), then replicate it across
+        # NUM_WORLDS worlds. The copies overlap at the origin (Newton's broad phase never collides across
+        # worlds), and the ground plane is added globally (world -1) so a single floor is shared by all.
+        env = newton.ModelBuilder()
+        env.add_usd(str(ROBOT_USD), floating=False, collapse_fixed_joints=True)
+        ee_body_local = env.body_count - 1  # last arm link (J6_link), the flange, within one env
 
-        # Compute poses for every pick box (panel + crates) and every pallet (one for the panel,
-        # one for the crates).
-        # Each crate is initially posed at a waiting pose and then moved one at a time to the
-        # grip pose on the corresponding pallet so that the crate may be gripped by the gripper.
-        # The panel is immediately ready for gripping so its wait pose is equal to its grip pose.
-        # The pick and pallet poses are computed using the pose of the end effector at engagement time.
-        # These poses are computed using the recording of the robot arm motion.
+        # Poses for the pick boxes (panel + crates) and pallets, from the arm's recorded engagement poses.
         placement_config = PlacementConfig(
             num_arm_dofs=NUM_ARM_DOFS,
             finger_hull_deepest_x=FINGER_HULL_DEEPEST_X,
@@ -321,118 +339,142 @@ class Example:
             panel_pallet_half=PANEL_PALLET_HALF,
             crate_pallet_half=CRATE_PALLET_HALF,
         )
-        placements = compute_box_placements(builder, self.robot_arm_playback, ee_body, placement_config)
+        placements = compute_box_placements(env, self.robot_arm_playback, ee_body_local, placement_config)
 
-        # Add each static pallet: one for the panel and one for the crates.
-        nb_pallets = len(placements.pallet_poses)
-        for i in range(nb_pallets):
-            pallet_pose = placements.pallet_poses[i]
+        # Static pallets (one for the panel, one for the crates).
+        for i in range(len(placements.pallet_poses)):
             hx, hy, hz = placements.pallet_dims[i]  # (hx, hy, hz) half-extents [m]
-            builder.add_shape_box(-1, xform=pallet_pose, hx=hx, hy=hy, hz=hz)
+            env.add_shape_box(-1, xform=placements.pallet_poses[i], hx=hx, hy=hy, hz=hz)
 
-        # Add the panel and crates that will be gripped by the gripper.
-        box_body_ids, box_shape_ids = [], []
-        self.box_half_extents = {}  # body id -> (hx, hy, hz) half-extents [m]; source for the SDF meshes
-        nb_boxes = len(placements.masses)
-        for i in range(nb_boxes):
+        # Pick boxes (panel + crates). Record each box's env-local body id and half-extents (for the SDF meshes).
+        box_shape_locals = []
+        env_box_half_extents = {}  # env-local body id -> (hx, hy, hz)
+        for i in range(len(placements.masses)):
             (hx, hy, hz) = placements.dims[i]
             label = "panel" if i == 0 else f"crate_{i - 1}"
-            body = builder.add_body(
+            body = env.add_body(
                 xform=placements.wait_poses[i], mass=placements.masses[i], inertia=placements.inertias[i], label=label
             )
-            cfg = builder.default_shape_cfg.copy()
+            cfg = env.default_shape_cfg.copy()
             cfg.density = 0.0  # body mass is authoritative; the shape adds none
-            box_body_ids.append(body)
-            self.box_half_extents[body] = (hx, hy, hz)
-            box_shape_ids.append(builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg))
-
-        # Store the body and shape ids for panel and crates.
-        # Store the grip poses of the crates so that the crates may be moved to their grip pose
-        # and made ready for gripping.
-        panel_body_id, panel_shape_id = box_body_ids[0], box_shape_ids[0]
-        crate_body_ids, crate_shape_ids = box_body_ids[1:], box_shape_ids[1:]
+            env_box_half_extents[body] = (hx, hy, hz)
+            box_shape_locals.append(env.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg))
+        box_body_locals = list(env_box_half_extents.keys())
+        panel_body_local = box_body_locals[0]
+        crate_body_locals = box_body_locals[1:]
         crate_grip_poses = placements.pick_poses[1:]  # where each crate is moved to be gripped
 
-        # Filter every pick box against the whole robot arm (bodies 0..ee_body): the seal owns the
-        # hold, and the wide panel swings up against the wrist/forearm links during the carry, so
-        # letting them collide would fight the seal (see ENABLE_PAD_BOX_CONTACT).
-        # Boxes still collide with the pallets, the panel, each other (so the crates stack), and the ground.
+        # Filter every pick box against the whole arm (bodies 0..ee_body_local): the seal owns the hold.
         if not ENABLE_PAD_BOX_CONTACT:
-            for shape in range(len(builder.shape_body)):
-                if 0 <= builder.shape_body[shape] <= ee_body:  # any robot-arm link (base..gripper)
-                    builder.add_shape_collision_filter_pair(panel_shape_id, shape)
-                    for cs in crate_shape_ids:
-                        builder.add_shape_collision_filter_pair(cs, shape)
+            for shape in range(len(env.shape_body)):
+                if 0 <= env.shape_body[shape] <= ee_body_local:  # any robot-arm link (base..gripper)
+                    for bs in box_shape_locals:
+                        env.add_shape_collision_filter_pair(bs, shape)
 
-        # Pad markers: a thin non-colliding disk of the pad radius (PAD_RADIUS) at each pad so
-        # the pad layout is visible in the viewer (oriented so the disk faces along the grip axis).
+        # Pad markers: a thin non-colliding disk of the pad radius at each pad, for viewer visibility only.
         if SHOW_PAD_MARKERS:
             marker_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # disk axis -> flange +x
-            marker_cfg = builder.default_shape_cfg.copy()
+            marker_cfg = env.default_shape_cfg.copy()
             marker_cfg.density = 0.0
             marker_cfg.has_shape_collision = False
             for px, py, pz in GRIPPER_PADS:
-                builder.add_shape_cylinder(
-                    ee_body,
+                env.add_shape_cylinder(
+                    ee_body_local,
                     xform=wp.transform(wp.vec3(px, py, pz), marker_down),
                     radius=PAD_RADIUS,
                     half_height=PAD_HALF_HEIGHT,
                     cfg=marker_cfg,
                 )
 
-        # The newton scene is complete.
+        # Main scene: shared global ground plane + NUM_WORLDS overlapping copies of the env.
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()  # global (world -1): one floor collides with every world
+        builder.replicate(env, NUM_WORLDS, spacing=(0.0, 0.0, 0.0))
         self.model = builder.finalize()
-        # Per-box SDF meshes for the lip-SDF seal check (queries only; the box shape still owns collision).
+
+        # Map each env-local body id to its global body id in each world (bodies group contiguously per world).
+        bw = self.model.body_world.numpy()
+        world_bodies = [[b for b in range(self.model.body_count) if bw[b] == w] for w in range(NUM_WORLDS)]
+
+        def gbody(w, local):  # global body id of env-local body ``local`` in world ``w``
+            return world_bodies[w][local]
+
+        self.ee_body = gbody(0, ee_body_local)  # world-0 flange (for the debug EE-accel recorder)
+
+        # Per-box SDF meshes + body id -> mesh id for every world's pick boxes (seat fit / queries only;
+        # the box shape still owns collision).
+        self.box_half_extents = {gbody(w, lb): he for w in range(NUM_WORLDS) for lb, he in env_box_half_extents.items()}
         self.sdf_meshes = {b: box_sdf_mesh(*he, device=self.model.device) for b, he in self.box_half_extents.items()}
-        # body id -> SDF mesh id, for the on-device seating fit (attach_seal_seated); 0 where no mesh.
         body_mesh_id = np.zeros(self.model.body_count, dtype=np.uint64)
         for b, m in self.sdf_meshes.items():
             body_mesh_id[b] = m.id
         self.body_mesh_id = wp.array(body_mesh_id, dtype=wp.uint64, device=self.model.device)
+
         # use_mujoco_contacts=False: Newton's collide pipeline (model.collide, run each sub-step) owns
         # collision -- the solver consumes those contacts instead of MuJoCo's internal collision.
+        # Contact/constraint budgets scale with the world count (each world adds its own contacts).
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, nconmax=256, njmax=2048, iterations=10, use_mujoco_contacts=False
+            self.model, nconmax=256 * NUM_WORLDS, njmax=2048 * NUM_WORLDS, iterations=10, use_mujoco_contacts=False
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
-        # Surface gripper on the end-effector: one SurfaceGripper on the flange with four pads at
-        # the recorded finger offsets, grip axis along the flange +x (pad local +z rotated onto +x).
-        # Driven by the recorded ro[0] command -- all four pads engage/release together, sealing the box.
-        # The seal is tuned per-DOF by natural frequency / damping ratio against the crate.
-        gripper = SurfaceGripper(ee_body, wp.transform_identity())  # gripper frame == flange body frame
-        gripper.set_natural_frequency_damping_ratio(
-            CRATE,
-            F_GRIP_MAX,
-            NORMAL_MODE,
-            SHEAR_X_MODE,
-            SHEAR_Y_MODE,
-            PEEL_X_MODE,
-            PEEL_Y_MODE,
-            TWIST_MODE,
-        )
+        # One surface gripper per world, on that world's flange, tagged world=w. Four pads at the recorded
+        # finger offsets (grip axis along flange +x). Seal tuned per-DOF against the crate.
         gripper_builder = SurfaceGripperBuilder()
         pad_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # pad +z -> flange +x
-        for px, py, pz in GRIPPER_PADS:
-            gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
-        gripper_builder.add_gripper(gripper)
+        for w in range(NUM_WORLDS):
+            gripper = SurfaceGripper(gbody(w, ee_body_local), wp.transform_identity(), world=w)
+            gripper.set_natural_frequency_damping_ratio(
+                CRATE, F_GRIP_MAX, NORMAL_MODE, SHEAR_X_MODE, SHEAR_Y_MODE, PEEL_X_MODE, PEEL_Y_MODE, TWIST_MODE
+            )
+            for px, py, pz in GRIPPER_PADS:
+                gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
+            gripper_builder.add_gripper(gripper)
         self.gripper_model = gripper_builder.finalize(device=self.model.device)
         self.gripper_state = self.gripper_model.state()
         self.gripper_control = self.gripper_model.control()
         self.gripper_control.pad_grip_control.fill_(1.0)  # full grip command
 
-        self.pad_body_b = wp.full(len(GRIPPER_PADS), panel_body_id, dtype=wp.int32)
-        # Moves each parked crate onto the pick pallet on its disengagement cue (see CratePlayback).
-        self.crate_playback = CratePlayback(self.robot_arm_playback, self.model, crate_body_ids, crate_grip_poses)
+        # Per-gripper / per-pad runtime arrays, sized from the gripper model (one gripper per world).
+        n_grippers = self.gripper_model.gripper_body_id.shape[0]
+        n_pads = self.gripper_model.pad_xform.shape[0]
+        self.gripper_command_engaged_wp = wp.zeros(n_grippers, dtype=wp.bool)  # [grippers] recorded engagement command
+        self.pad_seal_break_count_wp = wp.zeros(n_pads, dtype=wp.int32)  # consecutive over-threshold steps, per pad
+        self.gripper_seal_broken_wp = wp.zeros(n_grippers, dtype=wp.bool)  # [grippers] latched fracture
+        self.pad_seal_engaged_wp = wp.zeros(n_pads, dtype=wp.bool)  # [pads] per-pad seal command
+        self.pad_offsets = wp.array(
+            [g * len(GRIPPER_PADS) for g in range(n_grippers + 1)], dtype=wp.int32
+        )  # [grippers+1] CSR: gripper g owns pads [g*npads, (g+1)*npads)
 
-        # Start the arm at the first recorded pose. Set only the arm DOFs; the pick box's free-joint
-        # DOFs keep their built-in rest pose (from add_body), so it starts resting on the static box.
+        # Each pad starts targeting its own world's panel body (the gripper model groups pads by world).
+        pad_world = self.gripper_model.pad_world.numpy()
+        panel_ids = [gbody(w, panel_body_local) for w in range(NUM_WORLDS)]
+        self.pad_body_b = wp.array(
+            np.array([panel_ids[pad_world[p]] for p in range(n_pads)], dtype=np.int32), dtype=wp.int32
+        )
+
+        # One CratePlayback per world (worlds are identical copies, so each moves its own crates on the
+        # same disengagement cues). pad_world_start[w] slices the gripper model's pads for world w.
+        self.crate_playbacks = [
+            CratePlayback(
+                self.robot_arm_playback, self.model, [gbody(w, cb) for cb in crate_body_locals], crate_grip_poses
+            )
+            for w in range(NUM_WORLDS)
+        ]
+        self.pad_world_start = self.gripper_model.pad_world_start.numpy()  # CSR: world w's pads
+        # Per-world stride into joint_target_q, for broadcasting world 0's recorded arm targets to all worlds.
+        self.arm_target_stride = self.control.joint_target_q.shape[0] // NUM_WORLDS
+
+        # Start each world's arm at the first recorded pose (its arm DOFs are the first NUM_ARM_DOFS of its
+        # per-world block). The pick boxes keep their built-in rest pose, resting on their static box.
         initial_arm_q = self.robot_arm_playback.rec_targets_wp.numpy()[0]  # drive target at t=0, the start pose
         joint_q = self.state_0.joint_q.numpy()
-        joint_q[:NUM_ARM_DOFS] = initial_arm_q
+        q_stride = joint_q.shape[0] // NUM_WORLDS
+        for w in range(NUM_WORLDS):
+            joint_q[w * q_stride : w * q_stride + NUM_ARM_DOFS] = initial_arm_q
         self.state_0.joint_q.assign(joint_q)
         self.state_0.joint_qd.zero_()
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
@@ -445,10 +487,12 @@ class Example:
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.viewer.set_model(self.model)
+        # All worlds overlap at the origin; render only world 0 (the others still simulate).
+        self.viewer.set_visible_worlds([0])
 
         # Record the EE acceleration and the smoothed drive targets over the 1st engaged window to CSV
         if RECORD_DEBUG and not wp.get_device().is_cuda:
-            self.accel_recorder = EndEffectorAccelerationRecorder(ee_body, self.sim_dt)
+            self.accel_recorder = EndEffectorAccelerationRecorder(self.ee_body, self.sim_dt)
             self.drive_target_recorder = DriveTargetRecorder(self.sim_dt, NUM_ARM_DOFS)
             self.pad_break_recorder = PadBreakMetricRecorder(
                 self.sim_dt, self.robot_arm_playback.rec_duration, len(GRIPPER_PADS)
@@ -480,6 +524,19 @@ class Example:
                 self.control.joint_target_q,
                 self.gripper_command_engaged_wp,
             )
+            # The playback fills only world 0's arm targets and gripper command; fan them out to the other
+            # identical worlds (in-graph, so the whole thing stays graph-capturable).
+            if NUM_WORLDS > 1:
+                wp.launch(
+                    broadcast_arm_targets_kernel,
+                    dim=(NUM_WORLDS - 1) * NUM_ARM_DOFS,
+                    inputs=[NUM_ARM_DOFS, self.arm_target_stride, self.control.joint_target_q],
+                )
+                wp.launch(
+                    broadcast_command_kernel,
+                    dim=self.gripper_command_engaged_wp.shape[0],
+                    inputs=[self.gripper_command_engaged_wp],
+                )
             self.state_0.clear_forces()  # zero body_f each sub-step (the surface gripper accumulates into it)
 
             # Break the gripper (and per pad) seal based on pad_break_metric and a threshold time for
@@ -551,9 +608,16 @@ class Example:
         # pad_body_b and the crate free-joint DOFs are captured by reference, so the in-place assigns
         # take effect on the next graph launch.
         sim_time = int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt
-        active_crate = self.crate_playback.step(sim_time, self.state_0)
-        if active_crate is not None:
-            self.pad_body_b.assign(np.full(len(GRIPPER_PADS), active_crate, dtype=np.int32))
+        # Advance each world's crates; when a world's crate becomes active, retarget that world's pads to it.
+        pad_body_b = None
+        for w in range(NUM_WORLDS):
+            active_crate = self.crate_playbacks[w].step(sim_time, self.state_0)
+            if active_crate is not None:
+                if pad_body_b is None:
+                    pad_body_b = self.pad_body_b.numpy()
+                pad_body_b[int(self.pad_world_start[w]) : int(self.pad_world_start[w + 1])] = active_crate
+        if pad_body_b is not None:
+            self.pad_body_b.assign(pad_body_b)
         if self.graph:
             wp.capture_launch(self.graph)
         else:
