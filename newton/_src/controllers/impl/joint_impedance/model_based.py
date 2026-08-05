@@ -218,9 +218,7 @@ class ControllerJointImpedance(ControllerBase):
         identity_idx = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self._device)
 
         self._model_free = ControllerJointImpedanceModelFree(
-            robot_count=robot_count,
             dofs_per_robot=dofs_per_robot,
-            max_dofs=max_dofs,
             default_dof_indices=default_dof_indices,
             stiffness=stiffness,
             damping=damping,
