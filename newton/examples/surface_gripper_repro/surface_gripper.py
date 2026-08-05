@@ -473,7 +473,8 @@ class SurfaceGripper:
 
     def set_natural_frequency_damping_ratio(
         self,
-        reference_solid: tuple,
+        mass: float,
+        inertia: wp.mat33,
         f_grip_max: float,
         normal_mode: tuple,
         shear_x_mode: tuple,
@@ -488,13 +489,13 @@ class SurfaceGripper:
     ) -> "SurfaceGripper":
         """Set the seal from per-axis modes ``(angular natural frequency [rad/s], damping ratio)``,
         converted to stiffness/damping (:func:`nat_freq_damping_ratio_to_stiffness_damping`) against a
-        design ``reference_solid`` = ``((hx, hy, hz) half-extents [m], mass [kg])``. Translation DOFs use
-        its mass; peel/twist use its solid-cuboid inertia about that axis. Returns ``self``.
+        design body of ``mass`` [kg] and ``inertia`` [kg.m^2, body frame]. Translation DOFs use the mass;
+        peel/twist use the inertia about that axis (the diagonal terms). Returns ``self``.
         """
-        (hx, hy, hz), m = reference_solid
-        ixx = m / 3.0 * (hy * hy + hz * hz)  # solid-cuboid inertia about x (peel-x)
-        iyy = m / 3.0 * (hx * hx + hz * hz)  # about y (peel-y)
-        izz = m / 3.0 * (hx * hx + hy * hy)  # about z (twist)
+        m = mass
+        ixx = inertia[0, 0]  # inertia about x (peel-x)
+        iyy = inertia[1, 1]  # about y (peel-y)
+        izz = inertia[2, 2]  # about z (twist)
         to = nat_freq_damping_ratio_to_stiffness_damping
         k_normal, d_normal = to(*normal_mode, m)
         k_shear_x, d_shear_x = to(*shear_x_mode, m)

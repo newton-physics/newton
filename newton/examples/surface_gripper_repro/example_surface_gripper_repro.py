@@ -36,7 +36,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.surface_gripper_repro.box_placements import PlacementConfig, compute_box_placements
 from newton.examples.surface_gripper_repro.crate_playback import CratePlayback
 from newton.examples.surface_gripper_repro.debug_recorders import (
     DriveTargetRecorder,
@@ -53,48 +52,72 @@ from newton.examples.surface_gripper_repro.surface_gripper import (
     evaluate_gripper_force,
 )
 
-# assets live alongside this example
+# Asset paths (global constants). All assets live in the Assets/ directory alongside this example.
 ASSETS = Path(__file__).parent / "Assets"
+# robot arm USD
+ROBOT_USD = ASSETS / "fanuc_arm_flattened_collision.usda"
+# Pick scene (2 static pallets + panel + 6 crates as box colliders at their waiting poses), baked from
+# the deterministic FK placements by bake_pick_scene.py. Re-bake only if the arm USD or recording changes.
+PICK_SCENE_USD = ASSETS / "pick_scene.usda"
+# recording of the robot arm motion and surface gripper engagement/disengagement.
+RECORDING_JSONL = ASSETS / "robot_recording_truncated.jsonl"
 
 # rendered frames per second
 FPS = 60
 # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
 SIM_HZ = 120
 
-# recording of the robot arm motion and surface gripper engagement/disengagement.
-RECORDING_JSONL = ASSETS / "robot_recording_truncated.jsonl"
 # Gaussian smoothing of the recorded drive targets [s]. The recording is a coarse waypoint staircase
 # (values held, then stepped ~17 deg), so smoothing recovers a continuous motion. 0 = raw recording;
 # larger = smoother (and further from the exact recorded knots). ~1 waypoint interval (~0.08 s) is a
 # reasonable start.
 SMOOTHING_SIGMA = 0.06
-
-# robot arm USD
-ROBOT_USD = ASSETS / "fanuc_arm_flattened_collision.usda"
+# Each crate's grip pose (pos [m], quat xyzw) -- where it is teleported when its pick cue fires. The panel
+# is authored at its grip pose already, so only the crates need one. Baked by bake_pick_scene.py.
+CRATE_GRIP_POSES = (
+    ((-1.53891122341156, -1.339923620223999, 0.7991625070571899), (0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
+    ((-1.5389012098312378, -1.339895486831665, 0.7957268357276917), (0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
+    (
+        (-1.5389126539230347, -1.3399271965026855, 0.8007364869117737),
+        (0.0, 0.0, 0.7071067690849304, 0.7071067690849304),
+    ),
+    ((-1.538902759552002, -1.3398996591567993, 0.7959489226341248), (0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
+    (
+        (-1.5389012098312378, -1.3398951292037964, 0.7962862849235535),
+        (0.0, 0.0, 0.7071067690849304, 0.7071067690849304),
+    ),
+    ((-1.538907527923584, -1.33991277217865, 0.7989855408668518), (0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
+)
+# USD prim paths of the six crate rigid bodies in pick_scene.usda, in pick order. Each body's box collider
+# is the "/collision" child of these (e.g. CRATE_PRIMS[0] + "/collision"). The panel is the one-off
+# "/pick_scene/PickBoxes/panel". Used to look up each crate's body/shape after add_usd.
+CRATE_PRIMS = (
+    "/pick_scene/PickBoxes/crate_0",
+    "/pick_scene/PickBoxes/crate_1",
+    "/pick_scene/PickBoxes/crate_2",
+    "/pick_scene/PickBoxes/crate_3",
+    "/pick_scene/PickBoxes/crate_4",
+    "/pick_scene/PickBoxes/crate_5",
+)
 # J1-J6; recorded joints 6-8 are unused finger DOFs
 NUM_ARM_DOFS = 6
-# Deepest reach of the finger collision geometry along the grip axis, in the J6_link (flange)
-# frame [m] -- the point that would first penetrate the box. The box top is seated here so the fingers
-# rest on the box without sinking in. Resolved from the USD (max +x over the Finger_0x meshes).
-FINGER_HULL_DEEPEST_X = 0.3109
-# Surface gripper on the end-effector (body EE_BODY / J6_link). Four pads at the vents at the
-# tips of Finger_01..04, resolved into the J6_link (flange) frame from the USD. Each finger is an
-# L-shaped arm whose vent faces the box; the vents are wide-set at the crate edges (a cross ~+/-6 cm on
-# one axis, ~+/-13 cm on the other), giving the tilt leverage a real palletizer needs. x=0.309 is the
-# vent plane. The grip axis is the flange +x (world-down at the pick), so each pad's
-# local +z is rotated onto +x. Positions in the EE body frame [m].
-GRIPPER_PADS = (
-    (0.2880, 0.1286, 0.0035),
-    (0.2885, -0.0024, -0.2022),
-    (0.2880, -0.1323, 0.0035),
-    (0.2886, -0.0025, 0.2085),
+# Surface gripper on the end-effector (body EE_BODY / J6_link). Four pads at the vents at the tips of
+# Finger_01..04. Each finger is an L-shaped arm whose vent faces the box; the vents are wide-set at the
+# crate edges (a cross ~+/-6 cm on one axis, ~+/-13 cm on the other), giving the tilt leverage a real
+# palletizer needs. The grip axis is the flange +x (world-down at the pick). The pads are authored in the
+# arm USD as cylinders under J6_link/GripperPads (axis=+x, at the vent positions in the flange frame); the
+# example reads each pad's full placement transform and its radius/half-height back from the loaded stage
+# (see read_pad_transforms / read_pad_dimensions) instead of hardcoding them.
+# USD prim paths of the four pad cylinders, one per pad. All four are identical, so the first is the
+# source of the shared pad radius/half-height (see read_pad_dimensions).
+PAD_PRIMS = (
+    "/Robot/J6_link/GripperPads/pad_0",
+    "/Robot/J6_link/GripperPads/pad_1",
+    "/Robot/J6_link/GripperPads/pad_2",
+    "/Robot/J6_link/GripperPads/pad_3",
 )
-# Each pad is a short cylinder of this radius and half-height [m] (also the SHOW_PAD_MARKERS
-# disk). Its lip is the circle of PAD_RADIUS on the pad's bottom face (the face toward the box,
-# +PAD_HALF_HEIGHT along the grip axis); PAD_LIP_SAMPLES points are sampled around that lip for
-# the on-device seating fit (attach_seal_seated).
-PAD_RADIUS = 0.03
-PAD_HALF_HEIGHT = 0.004
+# A pad's lip is the circle of the pad radius on its bottom face (toward the box, +half-height along the
+# grip axis); PAD_LIP_SAMPLES points are sampled around that lip for the on-device seating fit (attach_seal_seated).
 PAD_LIP_SAMPLES = 16
 # Grip force (vacuum) [N] per pad. Static hold of the 30 kg panel needs ~74 N/pad, but the
 # recorded palletizer motion drives the normal load to ~384 N/pad, so the vacuum must clear that.
@@ -110,15 +133,9 @@ PEEL_Y_MODE = (8.35631, 0.096717)
 TWIST_MODE = (2.79962, 0.0)
 
 # The arm picks two boxes in sequence over the recording's two engage/disengage cycles: a wide shallow
-# panel at the 1st engagement, then a deep crate at the 2nd and subsequent engagements. Each rests
-# on a static pallet until the surface gripper grips and manipulates it.
-# (half-extents [m],
-# mass [kg]); shape density is 0, so mass/inertia are set on the body.
-PANEL = ((0.5, 0.5, 0.04), 30.0)  # 1st engagement -- wide shallow panel, size [1.0, 1.0, 0.08] m
-CRATE = ((0.242, 0.166, 0.137), 12.0)  # 2nd engagement -- deep crate, size [0.484, 0.332, 0.274] m
-PANEL_PALLET_HALF = (0.54, 0.54, 0.5)
-CRATE_PALLET_HALF = (0.206, 0.282, 0.5)
-NUM_CRATES = 6
+# panel at the 1st engagement, then a deep crate at the 2nd and subsequent engagements. Their geometry and
+# mass are authored into the pick-scene USD (see bake_pick_scene.py) and read back at runtime -- the box
+# specs themselves are bake-time only. The seal is tuned against the crate's mass/inertia (read_box_mass_inertia).
 
 # Set False to disable the surface gripper: the seal wrench is never applied, so the arm plays back the
 # recorded trajectory and the pick box just sits on the pallet (useful for inspecting the bare arm
@@ -145,9 +162,11 @@ SEAT_ITERS = 4
 # across worlds, so the copies don't interact, and only world 0 is rendered (see set_visible_worlds).
 NUM_WORLDS = 1
 
-# Draw a small non-colliding disk at each pad (GRIPPER_PADS) so the pad layout is visible in
-# the viewer. Purely visual (has_shape_collision off); does not affect the physics.
-SHOW_PAD_MARKERS = True
+# Draw a small non-colliding sphere at each pad-lip sample point (the points attach_seal_seated samples
+# the gripped object's SDF at during the seat fit), so the seat-fit probe geometry is visible in the
+# viewer. Purely visual (collision off); does not affect the physics.
+SHOW_LIP_POINTS = True
+LIP_POINT_MARKER_RADIUS = 0.003  # [m] radius of each lip-sample marker sphere
 
 # Set False to disable the debug CSV recording -- the end-effector acceleration and the smoothed
 # runtime drive targets (see EndEffectorAccelerationRecorder / DriveTargetRecorder). Recording is
@@ -269,6 +288,59 @@ def box_sdf_mesh(hx, hy, hz, device=None):
     )
 
 
+def read_pad_dimensions(builder, path_shape_map):
+    """Radius and half-height [m] of the surface-gripper pads, read from the loaded arm USD.
+
+    The pads are four identical visual cylinders under J6_link/GripperPads; a cylinder's ``shape_scale``
+    is ``(radius, half_height, 0)``, so pad_0 gives the shared dimensions instead of hardcoding them.
+
+    Args:
+        builder: the ``ModelBuilder`` the arm USD was loaded into.
+        path_shape_map: the ``path_shape_map`` dict returned by ``add_usd`` (prim path -> shape id).
+
+    Returns:
+        ``(radius, half_height)`` [m].
+    """
+    radius, half_height, _ = builder.shape_scale[path_shape_map[PAD_PRIMS[0]]]  # all four pads identical
+    return float(radius), float(half_height)
+
+
+def read_pad_transforms(builder, path_shape_map):
+    """Placement transform of each surface-gripper pad, in the flange (J6_link) frame, read from the arm USD.
+
+    Each pad is a visual cylinder under J6_link/GripperPads; its ``shape_transform`` carries both the pad
+    position and its orientation (the cylinder ``axis = "X"`` rotates the pad's local +z onto the flange
+    +x grip axis), which is exactly the frame ``SurfaceGripper.add_pad`` expects -- so this replaces both
+    the hardcoded pad positions and the grip-axis rotation.
+
+    Args:
+        builder: the ``ModelBuilder`` the arm USD was loaded into.
+        path_shape_map: the ``path_shape_map`` dict returned by ``add_usd`` (prim path -> shape id).
+
+    Returns:
+        One ``wp.transform`` per pad, in the order of :data:`PAD_PRIMS`.
+    """
+    return [builder.shape_transform[path_shape_map[prim]] for prim in PAD_PRIMS]
+
+
+def read_box_mass_inertia(model, body):
+    """Mass [kg] and inertia tensor [kg.m^2, body frame] of a pick box, read from the finalized model.
+
+    The pick boxes carry an authored mass in the pick-scene USD; Newton fills in each body's inertia from
+    that mass and its box collider at finalize. Reads both back so the example does not hardcode them.
+
+    Args:
+        model: the finalized Newton ``Model``.
+        body: the box's (global) body id.
+
+    Returns:
+        ``(mass, inertia)`` -- mass [kg] and the 3x3 inertia tensor (``wp.mat33``), body frame.
+    """
+    mass = float(model.body_mass.numpy()[body])
+    inertia = wp.mat33(*model.body_inertia.numpy()[body].flatten())
+    return mass, inertia
+
+
 @wp.kernel
 def broadcast_arm_targets_kernel(
     num_arm_dofs: int,
@@ -321,70 +393,67 @@ class Example:
         # Apply gaussian smoothing to the raw drive target after loading.
         self.robot_arm_playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA, NUM_ARM_DOFS)
 
-        # Build ONE environment (arm + pick boxes + pallets + pad markers), then replicate it across
+        # Build ONE environment (arm with pad cylinders + pick boxes + pallets), then replicate it across
         # NUM_WORLDS worlds. The copies overlap at the origin (Newton's broad phase never collides across
         # worlds), and the ground plane is added globally (world -1) so a single floor is shared by all.
         env = newton.ModelBuilder()
-        env.add_usd(str(ROBOT_USD), floating=False, collapse_fixed_joints=True)
+        robot = env.add_usd(str(ROBOT_USD), floating=False, collapse_fixed_joints=True)
         ee_body_local = env.body_count - 1  # last arm link (J6_link), the flange, within one env
 
-        # Poses for the pick boxes (panel + crates) and pallets, from the arm's recorded engagement poses.
-        placement_config = PlacementConfig(
-            num_arm_dofs=NUM_ARM_DOFS,
-            finger_hull_deepest_x=FINGER_HULL_DEEPEST_X,
-            gripper_pads=GRIPPER_PADS,
-            panel=PANEL,
-            crate=CRATE,
-            num_crates=NUM_CRATES,
-            panel_pallet_half=PANEL_PALLET_HALF,
-            crate_pallet_half=CRATE_PALLET_HALF,
-        )
-        placements = compute_box_placements(env, self.robot_arm_playback, ee_body_local, placement_config)
+        # The pad geometry lives in the arm USD: four visual cylinders under J6_link/GripperPads (see the
+        # asset). Read each pad's placement transform and its radius/half-height back from the loaded shapes
+        # instead of hardcoding them.
+        pad_transforms = read_pad_transforms(env, robot["path_shape_map"])
+        self.pad_radius, self.pad_half_height = read_pad_dimensions(env, robot["path_shape_map"])
 
-        # Static pallets (one for the panel, one for the crates).
-        for i in range(len(placements.pallet_poses)):
-            hx, hy, hz = placements.pallet_dims[i]  # (hx, hy, hz) half-extents [m]
-            env.add_shape_box(-1, xform=placements.pallet_poses[i], hx=hx, hy=hy, hz=hz)
+        # Load the baked pick scene (pallets + panel + crates at their waiting poses; see bake_pick_scene.py).
+        # add_usd returns prim-path maps: find each pick box by path, and read its box half-extents back from
+        # the loaded collision shape (shape_scale) -- the source for the SDF seat meshes (box collision is kept).
+        pick = env.add_usd(str(PICK_SCENE_USD))
+        pbm = pick["path_body_map"]  # prim path -> env-local body id
+        pss = pick["path_shape_scale"]  # collision prim path -> box half-extents (wp.vec3)
+        psm = pick["path_shape_map"]  # collision prim path -> env-local shape id
 
-        # Pick boxes (panel + crates). Record each box's env-local body id and half-extents (for the SDF meshes).
-        box_shape_locals = []
-        env_box_half_extents = {}  # env-local body id -> (hx, hy, hz)
-        for i in range(len(placements.masses)):
-            (hx, hy, hz) = placements.dims[i]
-            label = "panel" if i == 0 else f"crate_{i - 1}"
-            body = env.add_body(
-                xform=placements.wait_poses[i], mass=placements.masses[i], inertia=placements.inertias[i], label=label
-            )
-            cfg = env.default_shape_cfg.copy()
-            cfg.density = 0.0  # body mass is authoritative; the shape adds none
-            env_box_half_extents[body] = (hx, hy, hz)
-            box_shape_locals.append(env.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg))
-        box_body_locals = list(env_box_half_extents.keys())
-        panel_body_local = box_body_locals[0]
-        crate_body_locals = box_body_locals[1:]
-        crate_grip_poses = placements.pick_poses[1:]  # where each crate is moved to be gripped
+        def _half(collision_path):  # (hx, hy, hz) half-extents of a pick box's collision shape, by prim path
+            s = pss[collision_path]
+            return (float(s[0]), float(s[1]), float(s[2]))
+
+        # Each pick box's env-local body id, and half-extents keyed by that body id. Panel is a one-off;
+        # the six crates come from the hard-coded CRATE_PRIMS array (collider = body prim + "/collision").
+        panel_body_local = pbm["/pick_scene/PickBoxes/panel"]
+        crate_body_locals = [pbm[prim] for prim in CRATE_PRIMS]
+        env_box_half_extents = {panel_body_local: _half("/pick_scene/PickBoxes/panel/collision")}
+        for prim, body in zip(CRATE_PRIMS, crate_body_locals, strict=True):
+            env_box_half_extents[body] = _half(prim + "/collision")
+        crate_grip_poses = [wp.transform(wp.vec3(*pos), wp.quat(*quat)) for pos, quat in CRATE_GRIP_POSES]
 
         # Filter every pick box against the whole arm (bodies 0..ee_body_local): the seal owns the hold.
         if not ENABLE_PAD_BOX_CONTACT:
+            box_shapes = [psm["/pick_scene/PickBoxes/panel/collision"]]
+            box_shapes += [psm[prim + "/collision"] for prim in CRATE_PRIMS]
             for shape in range(len(env.shape_body)):
                 if 0 <= env.shape_body[shape] <= ee_body_local:  # any robot-arm link (base..gripper)
-                    for bs in box_shape_locals:
+                    for bs in box_shapes:
                         env.add_shape_collision_filter_pair(bs, shape)
 
-        # Pad markers: a thin non-colliding disk of the pad radius at each pad, for viewer visibility only.
-        if SHOW_PAD_MARKERS:
-            marker_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # disk axis -> flange +x
-            marker_cfg = env.default_shape_cfg.copy()
-            marker_cfg.density = 0.0
-            marker_cfg.has_shape_collision = False
-            for px, py, pz in GRIPPER_PADS:
-                env.add_shape_cylinder(
-                    ee_body_local,
-                    xform=wp.transform(wp.vec3(px, py, pz), marker_down),
-                    radius=PAD_RADIUS,
-                    half_height=PAD_HALF_HEIGHT,
-                    cfg=marker_cfg,
-                )
+        # Seat-fit sample points: a small non-colliding sphere at each pad-lip sample point (where
+        # attach_seal_seated samples the gripped object's SDF). Matches _seat_body_pose: PAD_LIP_SAMPLES
+        # points around each pad's lip -- the circle of pad_radius on the pad's bottom face (+half-height
+        # along the grip axis), in the pad frame. Rigidly fixed to the flange, so purely visual.
+        if SHOW_LIP_POINTS:
+            lip_cfg = env.default_shape_cfg.copy()
+            lip_cfg.density = 0.0
+            lip_cfg.has_shape_collision = False
+            for pad_tf in pad_transforms:
+                for s in range(PAD_LIP_SAMPLES):
+                    th = 2.0 * np.pi * s / PAD_LIP_SAMPLES
+                    lip_local = wp.vec3(self.pad_radius * np.cos(th), self.pad_radius * np.sin(th), self.pad_half_height)
+                    env.add_shape_sphere(
+                        ee_body_local,
+                        xform=wp.transform(wp.transform_point(pad_tf, lip_local), wp.quat_identity()),
+                        radius=LIP_POINT_MARKER_RADIUS,
+                        cfg=lip_cfg,
+                    )
 
         # Main scene: shared global ground plane + NUM_WORLDS overlapping copies of the env.
         builder = newton.ModelBuilder()
@@ -400,6 +469,12 @@ class Example:
             return world_bodies[w][local]
 
         self.ee_body = gbody(0, ee_body_local)  # world-0 flange (for the debug EE-accel recorder)
+
+        # Reference mass/inertia of each pick box, read back from the loaded USD (world-0 bodies; all
+        # worlds identical). Both boxes are exposed (the GUI shows each box's mass); the seal is
+        # tuned against the crate's mass/inertia (set_natural_frequency_damping_ratio below).
+        self.panel_mass, self.panel_inertia = read_box_mass_inertia(self.model, gbody(0, panel_body_local))
+        self.crate_mass, self.crate_inertia = read_box_mass_inertia(self.model, gbody(0, crate_body_locals[0]))
 
         # Per-box SDF meshes + body id -> mesh id for every world's pick boxes (seat fit / queries only;
         # the box shape still owns collision).
@@ -421,17 +496,24 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
-        # One surface gripper per world, on that world's flange, tagged world=w. Four pads at the recorded
-        # finger offsets (grip axis along flange +x). Seal tuned per-DOF against the crate.
+        # One surface gripper per world, on that world's flange, tagged world=w. Pads placed at the
+        # transforms read from the arm USD (grip axis along flange +x). Seal tuned per-DOF against the crate.
         gripper_builder = SurfaceGripperBuilder()
-        pad_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # pad +z -> flange +x
         for w in range(NUM_WORLDS):
             gripper = SurfaceGripper(gbody(w, ee_body_local), wp.transform_identity(), world=w)
             gripper.set_natural_frequency_damping_ratio(
-                CRATE, F_GRIP_MAX, NORMAL_MODE, SHEAR_X_MODE, SHEAR_Y_MODE, PEEL_X_MODE, PEEL_Y_MODE, TWIST_MODE
+                self.crate_mass,
+                self.crate_inertia,
+                F_GRIP_MAX,
+                NORMAL_MODE,
+                SHEAR_X_MODE,
+                SHEAR_Y_MODE,
+                PEEL_X_MODE,
+                PEEL_Y_MODE,
+                TWIST_MODE,
             )
-            for px, py, pz in GRIPPER_PADS:
-                gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
+            for pad_xform in pad_transforms:
+                gripper.add_pad(pad_xform)
             gripper_builder.add_gripper(gripper)
         self.gripper_model = gripper_builder.finalize(device=self.model.device)
         self.gripper_state = self.gripper_model.state()
@@ -446,7 +528,7 @@ class Example:
         self.gripper_seal_broken_wp = wp.zeros(n_grippers, dtype=wp.bool)  # [grippers] latched fracture
         self.pad_seal_engaged_wp = wp.zeros(n_pads, dtype=wp.bool)  # [pads] per-pad seal command
         self.pad_offsets = wp.array(
-            [g * len(GRIPPER_PADS) for g in range(n_grippers + 1)], dtype=wp.int32
+            [g * len(PAD_PRIMS) for g in range(n_grippers + 1)], dtype=wp.int32
         )  # [grippers+1] CSR: gripper g owns pads [g*npads, (g+1)*npads)
 
         # Each pad starts targeting its own world's panel body (the gripper model groups pads by world).
@@ -495,10 +577,10 @@ class Example:
             self.accel_recorder = EndEffectorAccelerationRecorder(self.ee_body, self.sim_dt)
             self.drive_target_recorder = DriveTargetRecorder(self.sim_dt, NUM_ARM_DOFS)
             self.pad_break_recorder = PadBreakMetricRecorder(
-                self.sim_dt, self.robot_arm_playback.rec_duration, len(GRIPPER_PADS)
+                self.sim_dt, self.robot_arm_playback.rec_duration, len(PAD_PRIMS)
             )
             # per-pad seal forces over the first lift (simple linear model only; see GripperForceRecorder)
-            self.gripper_force_recorder = GripperForceRecorder(self.sim_dt, len(GRIPPER_PADS))
+            self.gripper_force_recorder = GripperForceRecorder(self.sim_dt, len(PAD_PRIMS))
 
     def capture(self):
         # capturing runs one frame for real, which advances the device sub-step counter and search
@@ -568,8 +650,8 @@ class Example:
                     self.pad_seal_engaged_wp,
                     self.pad_body_b,
                     self.body_mesh_id,
-                    PAD_RADIUS,
-                    PAD_HALF_HEIGHT,
+                    self.pad_radius,
+                    self.pad_half_height,
                     PAD_LIP_SAMPLES,
                     iters=SEAT_ITERS,
                 )
@@ -638,7 +720,9 @@ class Example:
         commanded = bool(self.gripper_command_engaged_wp.numpy()[0])
         held = int(self.pad_seal_engaged_wp.numpy().sum())
         ui.text(f"Grip cmd:  {'On' if commanded else 'Off'}  (recording)")
-        ui.text(f"Seal engaged: {held}/{len(GRIPPER_PADS)} pads  (actual)")
+        ui.text(f"Seal engaged: {held}/{len(PAD_PRIMS)} pads  (actual)")
+        # Reference boxes' mass, read from the USD (read_box_mass_inertia); the seal is tuned against the crate.
+        ui.text(f"Pick boxes: panel {self.panel_mass:.0f} kg, crate {self.crate_mass:.0f} kg")
         # Seal modes for the box currently gripped: same tool k/d, but natural frequency and damping
         # ratio depend on that box's mass/inertia and its pose relative to the seal. Zero when nothing
         # is gripped (no pad engaged).

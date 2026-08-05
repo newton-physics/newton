@@ -15,8 +15,8 @@
 
 """Advancing the crates from their waiting pose to their grip pose for ``example_surface_gripper_repro``.
 
-The crate bodies and their pallet are created up front (see
-:mod:`~newton.examples.surface_gripper_repro.box_placements`); this module owns only the runtime advancing. Newton
+The crate bodies and their pallet are authored up front into ``Assets/pick_scene.usda`` (baked by
+``bake_pick_scene.py``); this module owns only the runtime advancing. Newton
 models are fixed after ``finalize``, so the conveyor is faked: in the idle gap before each pick cycle
 the next crate is teleported from its parked waiting pose onto the shared pick pallet (its grip pose),
 driven each frame from the sim clock.
