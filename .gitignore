@@ -17,6 +17,8 @@ data/
 # Tool cache
 .cache/
 .thumbs/
+/.omo/
+/graphify-out/
 
 # Coverage reports
 .coverage
