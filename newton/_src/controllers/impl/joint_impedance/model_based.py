@@ -47,6 +47,17 @@ class ControllerJointImpedance(ControllerBase):
     supported. The PD error term ``q_des - q`` is only valid for scalar
     joint coordinates.
 
+    Implements the same control law as :class:`ControllerJointImpedanceModelFree`,
+    but computes the dynamics itself. It holds a private :class:`~newton.Model`
+    built from ``builder``, evaluates forward kinematics, the mass matrix,
+    gravity, and Coriolis forces each step, and passes them to an internal
+    model-free instance. The caller supplies only joint positions and velocities.
+
+    ``builder`` is snapshotted at construction — neither consumed nor modified —
+    but the model cannot be rebuilt afterwards. Later changes to ``builder`` or
+    to the simulated model do not propagate, so a mismatched topology computes
+    dynamics for a different robot with no diagnostic.
+
     Impedance law (terms enabled at construction):
 
         τ = [M(q) if use_inertia_decoupling else I] · (q̈_des + Kp·Δq + Kd·Δq̇)
@@ -60,11 +71,14 @@ class ControllerJointImpedance(ControllerBase):
             ``sum(dofs per articulation)`` mapping controller DOF slots to
             positions in the flat simulation arrays (robot 0's indices first,
             then robot 1's, etc.).
-        stiffness: Position-error gain Kp [N/m or N·m/rad], shape
-            ``(N, max_dofs)``. Pass a baked array or ``None`` to read from
-            ``inputs.stiffness`` each step.
-        damping: Velocity-error gain Kd [N·s/m or N·m·s/rad]. Same format
-            as ``stiffness``.
+        stiffness: Position-error gain Kp, shape ``(N, max_dofs)``. Units
+            depend on ``use_inertia_decoupling``: [1/s²] when enabled, since
+            the PD term is then an acceleration premultiplied by M(q);
+            otherwise [N/m or N·m/rad]. Pass an array to copy it at
+            construction, or ``None`` to read ``inputs.stiffness`` each step.
+        damping: Velocity-error gain Kd, [1/s] when
+            ``use_inertia_decoupling`` is enabled, otherwise
+            [N·s/m or N·m·s/rad]. Same format as ``stiffness``.
         use_gravity_compensation: Add gravity generalized forces to τ.
         use_coriolis_compensation: Add Coriolis generalized forces to τ.
         use_inertia_decoupling: Premultiply the PD term by M(q).
@@ -100,9 +114,9 @@ class ControllerJointImpedance(ControllerBase):
         joint_qdd: wp.array[wp.float32] | None
         """Desired acceleration feedforward [m/s² or rad/s²], flat sim-level array. ``None`` unless ``has_qdd_feedforward=True``."""
         stiffness: wp.array2d[wp.float32] | None
-        """Position-error gain Kp [N/m or N·m/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+        """Position-error gain Kp, shape ``(robot_count, max_dofs)``. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
         damping: wp.array2d[wp.float32] | None
-        """Velocity-error gain Kd [N·s/m or N·m·s/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+        """Velocity-error gain Kd, shape ``(robot_count, max_dofs)``. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerJointImpedance.output`."""
