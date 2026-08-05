@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contrast a settled LIMX cloth patch with persistent VF/EE contact churn."""
+"""Compare a settled control with geometry-aware LIMX VF/EE self-collision."""
 
 import numpy as np
 import warp as wp
@@ -491,6 +491,7 @@ class _PatchSimulation:
                 stiffness=None,
                 max_contacts=4096,
                 stiffness_factors=(0.5, 0.1, 1.5),
+                geometry_radius_scale=0.25,
             )
         self.solver = newton.solvers.SolverLIMX(
             self.model,
@@ -599,7 +600,7 @@ class Example:
             backface_culling=False,
         )
         self.viewer.log_mesh(
-            "/vf_ee_collision",
+            "/geometry_aware_vf_ee_collision",
             self.collision_patch.state_0.particle_q,
             self.collision_patch.render_indices,
             color=(0.95, 0.42, 0.16),

@@ -71,6 +71,13 @@ class TestClothLimxEeChatter(unittest.TestCase):
         self.assertIsNone(example.control_patch.self_collision)
         self.assertIsNotNone(example.collision_patch.self_collision)
         self.assertEqual(example.collision_patch.self_collision.max_contacts, 4096)
+        self.assertEqual(example.collision_patch.self_collision.geometry_radius_scale, 0.25)
+        radii = example.collision_patch.self_collision.particle_radii.numpy()
+        self.assertEqual(radii.shape, (74,))
+        self.assertTrue(np.isfinite(radii).all())
+        self.assertTrue(np.all(radii > 0.0))
+        self.assertTrue(np.all(radii <= 0.003))
+        self.assertLess(float(np.min(radii)), 0.003)
         self.assertEqual(example.control_patch.solver.nonlinear_iterations, 1)
         self.assertEqual(example.collision_patch.solver.nonlinear_iterations, 1)
         self.assertEqual(example.control_patch.solver.linear_iterations, 50)
@@ -82,8 +89,8 @@ class TestClothLimxEeChatter(unittest.TestCase):
         self.assertTrue(np.isfinite(collision_positions).all())
         self.assertTrue(np.isfinite(collision_velocities).all())
 
-    def test_reproduces_late_edge_edge_contact_churn(self):
-        """Reproduce persistent EE pair churn while the no-collision control settles."""
+    def test_geometry_aware_collision_settles_without_contact_churn(self):
+        """Settle the irregular patch without persistent EE active-set churn."""
         module = _load_example_module(self)
         frame_count = 1400
         sample_start = 1000
@@ -129,14 +136,14 @@ class TestClothLimxEeChatter(unittest.TestCase):
 
         control_rms_mean = float(np.mean(control_rms_speeds))
         collision_rms_mean = float(np.mean(collision_rms_speeds))
+        total_ee_churn = ee_births + ee_deaths
         summary = (
             f"control_rms={control_rms_mean:.8f}, collision_rms={collision_rms_mean:.8f}, "
             f"EE_births={ee_births}, EE_deaths={ee_deaths}"
         )
         self.assertLess(control_rms_mean, 1.0e-6, summary)
-        self.assertGreater(collision_rms_mean, 1.0e-3, summary)
-        self.assertGreater(ee_births, 100, summary)
-        self.assertGreater(ee_deaths, 100, summary)
+        self.assertLess(collision_rms_mean, 1.0e-5, summary)
+        self.assertLessEqual(total_ee_churn, 10, summary)
         np.testing.assert_array_equal(maximum_overflow, np.zeros(3, dtype=np.int32), err_msg=summary)
 
 
