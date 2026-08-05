@@ -1209,6 +1209,92 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             buffer.depths.numpy()[:count],
         )
 
+    def test_geometry_radius_scale_validates_and_uniform_default_stays_available(self):
+        """Validate the radius scale and expose uniform legacy radii by default."""
+        positions = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0)
+            for scale, message in ((0.0, "positive"), (-0.1, "positive"), (np.inf, "finite"), (np.nan, "finite")):
+                with self.subTest(scale=scale):
+                    with self.assertRaisesRegex(ValueError, message):
+                        ConstraintSelfCollision(
+                            model,
+                            thickness=0.1,
+                            stiffness=10.0,
+                            geometry_radius_scale=scale,
+                        )
+            radii = collision.particle_radii.numpy()
+
+        self.assertIsNone(collision.geometry_radius_scale)
+        np.testing.assert_allclose(radii, np.full(3, 0.05, dtype=np.float32), rtol=0.0, atol=1.0e-7)
+
+    def test_geometry_aware_radii_use_minimum_incident_triangle_altitude(self):
+        """Cap each particle radius using its smallest incident rest altitude."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.25, 0.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (1, 3, 2)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.6,
+                stiffness=10.0,
+                geometry_radius_scale=0.5,
+            )
+            radii = collision.particle_radii.numpy()
+
+        expected_small_radius = 0.25 / np.sqrt(5.0)
+        expected = np.asarray([0.3, expected_small_radius, expected_small_radius, expected_small_radius])
+        self.assertEqual(collision.geometry_radius_scale, 0.5)
+        np.testing.assert_allclose(radii, expected, rtol=1.0e-6, atol=1.0e-7)
+
+    def test_geometry_aware_radii_reject_invalid_rest_geometry(self):
+        """Reject non-finite, degenerate, and unreferenced rest geometry."""
+        valid_positions = np.asarray(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=np.float32,
+        )
+        with wp.ScopedDevice("cuda:0"):
+            nonfinite_model = self._make_model(valid_positions, [(0, 1, 2)])
+            nonfinite_positions = valid_positions.copy()
+            nonfinite_positions[1, 0] = np.nan
+            nonfinite_model.particle_q.assign(nonfinite_positions)
+            with self.assertRaisesRegex(ValueError, "finite"):
+                ConstraintSelfCollision(
+                    nonfinite_model,
+                    thickness=0.1,
+                    stiffness=10.0,
+                    geometry_radius_scale=0.25,
+                )
+
+            degenerate_model = self._make_model(valid_positions, [(0, 1, 2)])
+            degenerate_model.particle_q.assign(
+                np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32)
+            )
+            with self.assertRaisesRegex(ValueError, "degenerate"):
+                ConstraintSelfCollision(
+                    degenerate_model,
+                    thickness=0.1,
+                    stiffness=10.0,
+                    geometry_radius_scale=0.25,
+                )
+
+            unreferenced_model = self._make_model(
+                np.vstack((valid_positions, [[2.0, 2.0, 0.0]])).astype(np.float32),
+                [(0, 1, 2)],
+            )
+            with self.assertRaisesRegex(ValueError, "referenced"):
+                ConstraintSelfCollision(
+                    unreferenced_model,
+                    thickness=0.1,
+                    stiffness=10.0,
+                    geometry_radius_scale=0.25,
+                )
+
     def test_untangle_stiffness_defaults_to_three_times_contact_stiffness(self):
         positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
         with wp.ScopedDevice("cuda:0"):

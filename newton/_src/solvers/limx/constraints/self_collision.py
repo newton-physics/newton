@@ -19,6 +19,42 @@ _MIN_GEOMETRY_NORM = 1.0e-8
 _MIN_STIFFNESS_DENOMINATOR = 1.0e-12
 
 
+def _compute_geometry_aware_particle_radii(
+    rest_positions: np.ndarray,
+    triangle_indices: np.ndarray,
+    nominal_radius: float,
+    geometry_radius_scale: float,
+) -> np.ndarray:
+    if not np.isfinite(rest_positions).all():
+        raise ValueError("geometry-aware collision requires finite rest positions")
+
+    triangle_positions = rest_positions[triangle_indices]
+    edge_01 = triangle_positions[:, 1] - triangle_positions[:, 0]
+    edge_12 = triangle_positions[:, 2] - triangle_positions[:, 1]
+    edge_20 = triangle_positions[:, 0] - triangle_positions[:, 2]
+    maximum_edges = np.maximum.reduce(
+        (
+            np.linalg.norm(edge_01, axis=1),
+            np.linalg.norm(edge_12, axis=1),
+            np.linalg.norm(edge_20, axis=1),
+        )
+    )
+    twice_areas = np.linalg.norm(np.cross(edge_01, -edge_20), axis=1)
+    if np.any(maximum_edges <= _MIN_GEOMETRY_NORM):
+        raise ValueError("geometry-aware collision requires non-degenerate rest triangles")
+    triangle_scales = twice_areas / maximum_edges
+    if np.any(triangle_scales <= _MIN_GEOMETRY_NORM) or not np.isfinite(triangle_scales).all():
+        raise ValueError("geometry-aware collision requires non-degenerate rest triangles")
+
+    local_scales = np.full(len(rest_positions), np.inf, dtype=np.float64)
+    for corner in range(3):
+        np.minimum.at(local_scales, triangle_indices[:, corner], triangle_scales)
+    if not np.isfinite(local_scales).all():
+        raise ValueError("geometry-aware collision requires every particle to be referenced by a triangle")
+
+    return np.minimum(nominal_radius, geometry_radius_scale * local_scales).astype(np.float32)
+
+
 @wp.func
 def _triangle_barycentric(
     position_0: wp.vec3,
@@ -828,7 +864,14 @@ class _ContactBuffer:
 
 
 class ConstraintSelfCollision:
-    """Frictionless matrix-free cloth self-collision constraints."""
+    """Frictionless matrix-free cloth self-collision constraints.
+
+    Attributes:
+        particle_radii: One-sided collision radii [m], shape
+            ``[particle_count]``.
+    """
+
+    particle_radii: wp.array[float]
 
     def __init__(
         self,
@@ -838,12 +881,13 @@ class ConstraintSelfCollision:
         untangle_stiffness: float | None = None,
         max_contacts: int = 32768,
         stiffness_factors: tuple[float, float, float] | None = None,
+        geometry_radius_scale: float | None = None,
     ):
         """Create a fixed-capacity GPU cloth self-collision operator.
 
         Args:
             model: Particle triangle-mesh model whose topology remains fixed.
-            thickness: One-sided collision activation distance [m].
+            thickness: Nominal two-surface collision activation distance [m].
             stiffness: Fixed vertex-face and edge-edge penalty stiffness [N/m].
                 Set to ``None`` to use adaptive feature stiffness.
             untangle_stiffness: Edge-face recovery stiffness [N/m]. Defaults
@@ -853,9 +897,19 @@ class ConstraintSelfCollision:
             stiffness_factors: Adaptive dimensionless ``(VF, EE, EF)``
                 stiffness factors. Must be provided exactly when ``stiffness``
                 is ``None``.
+            geometry_radius_scale: Optional dimensionless rest-geometry radius
+                scale. When set, each one-sided particle radius is capped by
+                this value times its minimum incident triangle altitude. The
+                initial recommended value is ``0.25``.
         """
         if not np.isfinite(thickness) or thickness <= 0.0:
             raise ValueError("thickness must be finite and positive")
+        if geometry_radius_scale is not None:
+            if not np.isfinite(geometry_radius_scale):
+                raise ValueError("geometry_radius_scale must be finite")
+            if geometry_radius_scale <= 0.0:
+                raise ValueError("geometry_radius_scale must be positive")
+            geometry_radius_scale = float(geometry_radius_scale)
         if stiffness_factors is None:
             if stiffness is None:
                 raise ValueError("stiffness_factors must be provided when stiffness is None")
@@ -911,6 +965,21 @@ class ConstraintSelfCollision:
             | (triangle_indices[:, 2] == triangle_indices[:, 0])
         ):
             raise ValueError("model triangles must contain three distinct particle indices")
+
+        nominal_radius = 0.5 * self.thickness
+        if geometry_radius_scale is None:
+            particle_radii = np.full(model.particle_count, nominal_radius, dtype=np.float32)
+        else:
+            rest_positions = np.asarray(model.particle_q.numpy(), dtype=np.float64)
+            particle_radii = _compute_geometry_aware_particle_radii(
+                rest_positions,
+                triangle_indices,
+                nominal_radius,
+                geometry_radius_scale,
+            )
+        self.geometry_radius_scale = geometry_radius_scale
+        self.particle_radii = wp.array(particle_radii, dtype=wp.float32, device=self.device)
+        self._use_geometry_radii = int(geometry_radius_scale is not None)
 
         edge_indices = MeshAdjacency(triangle_indices).edge_indices
         if len(edge_indices) == 0:
