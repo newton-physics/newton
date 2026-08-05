@@ -195,6 +195,8 @@ class SolverVBD(SolverBase, CouplingInterface):
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
           https://doi.org/10.1145/3658179
+        - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block Descent. ACM Trans. Graph. 44, 4, Article 90 (August 2025), 12 pages.
+          https://doi.org/10.1145/3731195
 
     Note:
         `SolverVBD` requires coloring for each system it solves:
