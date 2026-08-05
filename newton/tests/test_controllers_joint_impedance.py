@@ -338,6 +338,72 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
                 device=device,
             )
 
+    def test_2d_dofs_per_robot_raises(self):
+        """Verify a 2-D dofs_per_robot raises instead of silently deriving incorrect robot_count."""
+        device = wp.get_device()
+        # A (2, 3) array has size 6, which would otherwise be read as 6 robots.
+        dofs_2d = wp.full((2, 3), 1, dtype=wp.int32, device=device)
+        with self.assertRaises(ValueError):
+            ControllerJointImpedanceModelFree(
+                dofs_per_robot=dofs_2d,
+                default_dof_indices=_iota(6, device),
+                stiffness=_gains(6, 1, 1.0, device),
+                damping=_gains(6, 1, 0.0, device),
+                use_gravity_compensation=False,
+                use_coriolis_compensation=False,
+                use_inertia_decoupling=False,
+                device=device,
+            )
+
+    def test_2d_default_dof_indices_raises(self):
+        """Verify a 2-D default_dof_indices raises even when its total element count matches."""
+        device = wp.get_device()
+        # Shape (2, 1) has size 2, matching sum(dofs_per_robot) for two 1-DOF robots.
+        indices_2d = wp.array(np.arange(2, dtype=np.uint32).reshape(2, 1), dtype=wp.uint32, device=device)
+        with self.assertRaises(ValueError):
+            ControllerJointImpedanceModelFree(
+                dofs_per_robot=_dofs_arr([1, 1], device),
+                default_dof_indices=indices_2d,
+                stiffness=_gains(2, 1, 1.0, device),
+                damping=_gains(2, 1, 0.0, device),
+                use_gravity_compensation=False,
+                use_coriolis_compensation=False,
+                use_inertia_decoupling=False,
+                device=device,
+            )
+
+    def test_2d_index_override_raises(self):
+        """Verify a 2-D per-port index override raises."""
+        device = wp.get_device()
+        indices_2d = wp.array(np.arange(2, dtype=np.uint32).reshape(2, 1), dtype=wp.uint32, device=device)
+        with self.assertRaises(ValueError):
+            ControllerJointImpedanceModelFree(
+                dofs_per_robot=_dofs_arr([1, 1], device),
+                default_dof_indices=_iota(2, device),
+                stiffness=_gains(2, 1, 1.0, device),
+                damping=_gains(2, 1, 0.0, device),
+                joint_q_idx=indices_2d,
+                use_gravity_compensation=False,
+                use_coriolis_compensation=False,
+                use_inertia_decoupling=False,
+                device=device,
+            )
+
+    def test_zero_dof_robot_raises(self):
+        """Verify a robot declaring zero DOFs raises at construction."""
+        device = wp.get_device()
+        with self.assertRaises(ValueError):
+            ControllerJointImpedanceModelFree(
+                dofs_per_robot=_dofs_arr([2, 0], device),
+                default_dof_indices=_iota(2, device),
+                stiffness=_gains(2, 2, 1.0, device),
+                damping=_gains(2, 2, 0.0, device),
+                use_gravity_compensation=False,
+                use_coriolis_compensation=False,
+                use_inertia_decoupling=False,
+                device=device,
+            )
+
 
 # ---------------------------------------------------------------------------
 # ControllerJointImpedanceModelFree — heterogeneous
@@ -584,6 +650,22 @@ class TestControllerJointImpedance(unittest.TestCase):
             ControllerJointImpedance(
                 builder=builder,
                 default_dof_indices=_iota(5, device),
+                stiffness=_gains(1, 1, 1.0, device),
+                damping=_gains(1, 1, 0.0, device),
+                use_gravity_compensation=False,
+                use_coriolis_compensation=False,
+                device=device,
+            )
+
+    def test_2d_default_dof_indices_raises(self):
+        """Verify a 2-D default_dof_indices raises even when its total element count matches."""
+        device = wp.get_device()
+        builder = _build_single_prismatic()
+        indices_2d = wp.array(np.arange(1, dtype=np.uint32).reshape(1, 1), dtype=wp.uint32, device=device)
+        with self.assertRaises(ValueError):
+            ControllerJointImpedance(
+                builder=builder,
+                default_dof_indices=indices_2d,
                 stiffness=_gains(1, 1, 1.0, device),
                 damping=_gains(1, 1, 0.0, device),
                 use_gravity_compensation=False,

@@ -142,8 +142,12 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     ):
         if not isinstance(dofs_per_robot, wp.array) or dofs_per_robot.dtype != wp.int32:
             raise TypeError("dofs_per_robot must be wp.array[int32].")
+        if dofs_per_robot.ndim != 1:
+            raise ValueError(f"dofs_per_robot must be 1-D, got shape {tuple(dofs_per_robot.shape)}.")
         if not isinstance(default_dof_indices, wp.array) or default_dof_indices.dtype != wp.uint32:
             raise TypeError("default_dof_indices must be wp.array[uint32].")
+        if default_dof_indices.ndim != 1:
+            raise ValueError(f"default_dof_indices must be 1-D, got shape {tuple(default_dof_indices.shape)}.")
 
         dofs_per_robot_np = dofs_per_robot.numpy()
         robot_count = int(dofs_per_robot_np.size)
