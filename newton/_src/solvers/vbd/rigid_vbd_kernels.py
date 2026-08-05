@@ -184,11 +184,7 @@ def _drive_auto_rho(axis_support: float, material_k: float):
 
 @wp.func
 def _limit_auto_rho(axis_support: float, material_k: float):
-    """Return support as limit rho (unfloored), or zero if the row is off.
-
-    A bilateral ``9K`` floor makes a unilateral row's active set oscillate at the
-    bound; limits therefore use support alone.
-    """
+    """Return support as limit rho, or zero if the row is off."""
     if axis_support <= 0.0 or material_k <= 0.0:
         return 0.0
     return axis_support
@@ -199,11 +195,7 @@ def _contact_auto_normal_rho(
     normal_support: float,
     material_k: float,
 ):
-    """Return support as contact-normal rho (unfloored), or zero if the row is off.
-
-    Unilateral, so this shares :func:`_limit_auto_rho`'s reasoning: a bilateral
-    ``9K`` floor makes the active set oscillate as rows engage and release.
-    """
+    """Return support as contact-normal rho, or zero if the row is off."""
     if normal_support <= 0.0 or material_k <= 0.0:
         return 0.0
     return normal_support
@@ -1122,7 +1114,7 @@ def _contact_body_conditioning_scale(
     w_b = _contact_delassus_w(body_id, point_local, n, body_q, body_com, body_inv_mass, body_inv_inertia)
     if w_b <= 0.0:
         return 0.0
-    return inv_dt_sq / w_b + wp.max(body_structural_k[body_id], 0.0)
+    return inv_dt_sq / w_b + body_structural_k[body_id]
 
 
 @wp.func
@@ -1203,39 +1195,32 @@ def _contact_pair_structural_scale(
     # an independent VBD structural endpoint.
     dynamic_0 = body_id_0 >= 0 and body_inv_mass[body_id_0] > 0.0 and (body_flags[body_id_0] & proxy_flag) == 0
     dynamic_1 = body_id_1 >= 0 and body_inv_mass[body_id_1] > 0.0 and (body_flags[body_id_1] & proxy_flag) == 0
-    scale_0 = wp.max(body_structural_k[body_id_0], 0.0) if dynamic_0 else 0.0
-    scale_1 = wp.max(body_structural_k[body_id_1], 0.0) if dynamic_1 else 0.0
+    scale_0 = body_structural_k[body_id_0] if dynamic_0 else 0.0
+    scale_1 = body_structural_k[body_id_1] if dynamic_1 else 0.0
     if dynamic_0 and dynamic_1:
         return _series_scale(scale_0, scale_1)
     return wp.max(scale_0, scale_1)
 
 
 @wp.func
-def _contact_body_tangent_conditioning_scale(
+def _contact_body_tangent_block(
     shape_id: int,
     anchor_local: wp.vec3,
-    n: wp.vec3,
+    tangent_0: wp.vec3,
+    tangent_1: wp.vec3,
     shape_body: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
-    inv_dt_sq: float,
 ):
-    """Conservative scalar stiffness scale for every direction in the tangent plane.
-
-    The largest eigenvalue of the 2x2 tangent Delassus block is the most
-    compliant in-plane direction. Converting it to the inertial scale ``D``
-    bounds the stiffness from below for any tangent direction, including
-    sticking rows that do not yet have a slip direction.
-    """
+    """Return one body's tangent Delassus block as ``(w00, w01, w11)``."""
     if shape_id < 0:
-        return 0.0
+        return wp.vec3(0.0)
     body_id = shape_body[shape_id]
     if body_id < 0 or body_inv_mass[body_id] <= 0.0:
-        return 0.0
+        return wp.vec3(0.0)
 
-    tangent_0, tangent_1 = orthonormal_basis(n)
     rot = wp.transform_get_rotation(body_q[body_id])
     tangent_0_local = wp.quat_rotate_inv(rot, tangent_0)
     tangent_1_local = wp.quat_rotate_inv(rot, tangent_1)
@@ -1247,13 +1232,7 @@ def _contact_body_tangent_conditioning_scale(
     w00 = inv_mass + wp.dot(u0, inv_inertia * u0)
     w11 = inv_mass + wp.dot(u1, inv_inertia * u1)
     w01 = wp.dot(u0, inv_inertia * u1)
-    discriminant = wp.sqrt(wp.max((w00 - w11) * (w00 - w11) + 4.0 * w01 * w01, 0.0))
-    w_max = 0.5 * (w00 + w11 + discriminant)
-    if w_max <= 0.0:
-        return 0.0
-    # Keep direction-agnostic structural support out of this plane metric; it enters
-    # separately through _contact_auto_tangent_rho, capped by the normal rho.
-    return inv_dt_sq / w_max
+    return wp.vec3(w00, w01, w11)
 
 
 @wp.func
@@ -1270,32 +1249,41 @@ def _contact_tangent_conditioning_scale(
     body_inv_inertia: wp.array[wp.mat33],
     inv_dt_sq: float,
 ):
-    """Combine conservative endpoint tangent scales through compliance."""
-    scale_0 = _contact_body_tangent_conditioning_scale(
+    """Return the minimum pair inertial stiffness over all tangent directions.
+
+    Endpoint Delassus blocks add before taking the largest eigenvalue, which is
+    the pair's most compliant tangent direction.
+    """
+    tangent_0, tangent_1 = orthonormal_basis(n)
+    w = _contact_body_tangent_block(
         shape_id_0,
         anchor0_local,
-        n,
+        tangent_0,
+        tangent_1,
         shape_body,
         body_q,
         body_com,
         body_inv_mass,
         body_inv_inertia,
-        inv_dt_sq,
-    )
-    scale_1 = _contact_body_tangent_conditioning_scale(
+    ) + _contact_body_tangent_block(
         shape_id_1,
         anchor1_local,
-        n,
+        tangent_0,
+        tangent_1,
         shape_body,
         body_q,
         body_com,
         body_inv_mass,
         body_inv_inertia,
-        inv_dt_sq,
     )
-    if scale_0 > 0.0 and scale_1 > 0.0:
-        return _series_scale(scale_0, scale_1)
-    return wp.max(scale_0, scale_1)
+    trace = w[0] + w[2]
+    if trace <= 0.0:
+        return 0.0
+    discriminant = wp.sqrt(wp.max((w[0] - w[2]) * (w[0] - w[2]) + 4.0 * w[1] * w[1], 0.0))
+    w_max = 0.5 * (trace + discriminant)
+    # Direction-agnostic structural support enters separately through
+    # _contact_auto_tangent_rho, capped by the normal rho.
+    return inv_dt_sq / w_max
 
 
 @wp.func
@@ -1844,16 +1832,17 @@ def evaluate_rigid_contact_from_collision(
             f_t_vec = rho_t * (tangential_disp + friction_c0) + lam_t
             f_t_len = wp.length(f_t_vec)
             cone_limit = friction_mu * f_n
-            K_t = rho_t * (I3 - n_outer)
-            if contact_compliant_alm == 1 and f_t_len > cone_limit and f_t_len > 0.0:
-                # Exact slide Jacobian has zero stiffness along slip. Add a PSD
-                # IPC-style quasi-Newton term there (Hessian only; force unchanged).
+            if contact_compliant_alm == 1 and f_t_len > cone_limit:
+                # Outside the Coulomb cone, the exact projection Jacobian has zero slip-direction
+                # stiffness. Add a conservative PSD solve metric there; force stays unchanged.
                 t_hat = f_t_vec / f_t_len
                 t_outer = wp.outer(t_hat, t_hat)
                 slip_norm = wp.length(tangential_disp)
                 sliding_solve_metric = cone_limit * _regularized_coulomb_scale(slip_norm, friction_epsilon * dt)
                 K_t = (cone_limit / f_t_len) * rho_t * (I3 - n_outer - t_outer)
                 K_t = K_t + sliding_solve_metric * t_outer
+            else:
+                K_t = rho_t * (I3 - n_outer)
             f_t_vec = _project_coulomb_tangent(f_t_vec, f_t_len, cone_limit)
     else:
         # Soft: IPC regularized Coulomb (force and Hessian).
@@ -2399,10 +2388,11 @@ def _evaluate_limit_axis(
     limit_lambda: float,
     inv_dt: float,
 ):
-    """Compliant ALM unilateral limit force/Hessian, superposed on the drive.
+    """Evaluate a compliant unilateral limit alongside the independent drive row.
 
-    Release is half-line projection of force, not row disable, so a resting bound
-    can hold with nonzero lambda. Legacy never calls this.
+    Keep only forces directed into the selected bound, allowing a resting limit
+    to retain its multiplier while releasing forces directed away. Legacy mode
+    does not call this function.
     """
     bound = _nearest_limit_bound(q, lim_lower, lim_upper, has_limits)
     if bound == _DRIVE_LIMIT_MODE_NONE or limit_k <= 0.0 or axis_support <= 0.0:
@@ -2432,11 +2422,11 @@ def _update_limit_lambda(
     limit_lambda: float,
     inv_dt: float,
 ):
-    """Advance a sign-encoded unilateral limit dual.
+    """Advance the compliant unilateral limit multiplier independently of the drive.
 
-    Lower-bound multipliers are negative and upper-bound multipliers positive.
-    Nearest-bound selection preserves resting reactions; half-line projection
-    releases the row and clears stale state after a bound switch.
+    Nearest-bound selection preserves resting reactions. Sign projection keeps
+    lower multipliers nonpositive and upper multipliers nonnegative, clearing
+    stale state after a bound switch.
     """
     bound = _nearest_limit_bound(q, lim_lower, lim_upper, has_limits)
     if bound == _DRIVE_LIMIT_MODE_NONE or limit_k <= 0.0 or axis_support <= 0.0:
@@ -3783,7 +3773,7 @@ def forward_step_rigid_bodies(
     body_inertia_q: wp.array[wp.transform],
 ):
     """
-    Forward integration step for rigid bodies in the AVBD/VBD solver.
+    Forward integration step for rigid bodies in SolverVBD.
 
     Args:
         dt: Time step [s].
@@ -4530,18 +4520,19 @@ def init_body_body_contacts_alm(
             n_new = rigid_contact_normal[i]
             n_old = history.normal[slot]
             lam_n = wp.dot(lam_hist, n_old)
-            contact_lambda[i] = n_new * lam_n
+            lam_new = n_new * lam_n
             if use_legacy_hard or restore_compliant_tangent_warmstart == 1:
                 lam_t_old = lam_hist - n_old * lam_n
                 lam_t_new = lam_t_old - n_new * wp.dot(lam_t_old, n_new)
                 if contact_compliant_alm == 1:
-                    # ALM only: cone-clip the warm-start; legacy hard stays unclipped.
+                    # Compliant ALM restores only a valid Coulomb-cone warm start.
                     lam_t_new = _project_coulomb_tangent(
                         lam_t_new,
                         wp.length(lam_t_new),
                         avg_mu * wp.max(lam_n, 0.0),
                     )
-                contact_lambda[i] += lam_t_new
+                lam_new += lam_t_new
+            contact_lambda[i] = lam_new
     else:
         contact_penalty_k[i] = k_floor
 

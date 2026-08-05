@@ -23,6 +23,7 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
+    _contact_tangent_conditioning_scale,
     _joint_angular_rho_seed,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
@@ -270,6 +271,23 @@ def _eval_joint_angular_rho_seed_kernel(
     rho_out: wp.array[float],
 ):
     rho_out[0] = _joint_angular_rho_seed(0, 1, body_inv_mass, body_inv_inertia, inv_dt_sq)
+
+
+@wp.kernel
+def _eval_crossed_contact_tangent_pair_support_kernel(
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    support: wp.array[float],
+):
+    normal = wp.vec3(0.0, 0.0, 1.0)
+    anchor_x = wp.vec3(1.0, 0.0, 0.0)
+    anchor_y = wp.vec3(0.0, 1.0, 0.0)
+    support[0] = _contact_tangent_conditioning_scale(
+        0, 1, anchor_x, anchor_y, normal, shape_body, body_q, body_com, body_inv_mass, body_inv_inertia, 1.0
+    )
 
 
 @wp.kernel
@@ -910,6 +928,33 @@ def _rigid_joint_angular_rho_seed_uses_mean_mobility(test, device):
 
         # Mean angular mobility is (1+4+9+2+3+6)/3 = 25/3; rho = inv_dt^2 / mobility = 12.
         np.testing.assert_allclose(rho.numpy(), [12.0], rtol=1.0e-6, atol=1.0e-6)
+
+
+def _rigid_contact_tangent_support_uses_pair_mobility_eigenvalue(test, device):
+    """Verify tangent support preserves endpoint directions until after pair assembly."""
+    del test
+    with wp.ScopedDevice(device):
+        shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
+        body_q = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
+        body_com = wp.zeros(2, dtype=wp.vec3, device=device)
+        body_inv_mass = wp.ones(2, dtype=float, device=device)
+        body_inv_inertia = wp.array(
+            [np.diag([0.0, 0.0, 9.0]), np.diag([0.0, 0.0, 9.0])],
+            dtype=wp.mat33,
+            device=device,
+        )
+        support = wp.empty(1, dtype=float, device=device)
+
+        wp.launch(
+            _eval_crossed_contact_tangent_pair_support_kernel,
+            dim=1,
+            inputs=[shape_body, body_q, body_com, body_inv_mass, body_inv_inertia],
+            outputs=[support],
+            device=device,
+        )
+
+        # diag(1, 10) + diag(10, 1) = 11*I, so reduce after summing.
+        np.testing.assert_allclose(support.numpy(), [1.0 / 11.0], rtol=1.0e-6)
 
 
 def _rigid_compliant_sliding_contact_has_solve_metric(test, device):
@@ -2686,7 +2731,7 @@ def _reset_masked_rigid_and_soft(test, device):
     part_selected = particle_world == 0
     part_global = particle_world < 0
 
-    solver = newton.solvers.SolverVBD(model, iterations=0)
+    solver = newton.solvers.SolverVBD(model, iterations=0, rigid_compliant_alm=True)
     state = model.state()
 
     def perturb():
@@ -3193,28 +3238,28 @@ def _vbd_dahl_detection_requires_positive_values(test, device):
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     test.assertFalse(solver.enable_dahl_friction)
 
     model = _make_vbd_dahl_detection_model(device, dahl_eps_max=0.5)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     test.assertFalse(solver.enable_dahl_friction)
 
     model = _make_vbd_dahl_detection_model(device, dahl_tau=1.0)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     test.assertFalse(solver.enable_dahl_friction)
 
     model = _make_vbd_dahl_detection_model(device, dahl_eps_max=0.5, dahl_tau=1.0)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     test.assertTrue(solver.enable_dahl_friction)
 
 
@@ -3466,7 +3511,7 @@ def _collect_rigid_contact_forces_reports_surface_points(test, device):
     with wp.ScopedDevice(device):
         model = builder.finalize()
         model.set_gravity((0.0, 0.0, 0.0))
-        solver = newton.solvers.SolverVBD(model, iterations=2, rigid_compliant_alm=False)
+        solver = newton.solvers.SolverVBD(model, iterations=2, rigid_compliant_alm=True)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -3676,6 +3721,12 @@ add_function_test(
     TestSolverVBD,
     "test_rigid_joint_angular_rho_seed_uses_mean_mobility",
     _rigid_joint_angular_rho_seed_uses_mean_mobility,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_rigid_contact_tangent_support_uses_pair_mobility_eigenvalue",
+    _rigid_contact_tangent_support_uses_pair_mobility_eigenvalue,
     devices=devices,
 )
 add_function_test(
@@ -3987,7 +4038,7 @@ def test_edge_face_pushes_vertices_out(test, device):
     test.assertEqual(int(np.sum(idx[:, 1] < 0)), 0, "vertices should be outside the legacy particle margin")
     test.assertGreater(total, 0, "edge/face contacts must be detected")
 
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+    solver = newton.solvers.SolverVBD(model)
 
     y0_before = state_in.particle_q.numpy()[:, 1].copy()
     solver.step(state_in, state_out, None, contacts, dt=1.0 / 60.0)
@@ -4054,7 +4105,7 @@ def test_edge_face_reacts_on_rigid_body(test, device):
     test.assertEqual(int(np.sum(idx[:, 1] < 0)), 0, "triangle vertices should be outside the legacy particle margin")
     test.assertGreater(total, 0, "a soft edge/face contact must be detected")
 
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     dt = 1.0 / 60.0
     z_before = float(state_in.body_q.numpy()[body, 2])
 
@@ -4255,7 +4306,7 @@ def test_flag_off_is_inert(test, device):
     test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 0, "flag off => no soft contacts")
 
     q_before = state_in.particle_q.numpy().copy()
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+    solver = newton.solvers.SolverVBD(model)
     solver.step(state_in, state_out, None, contacts, dt=1.0 / 60.0)
     q_after = state_out.particle_q.numpy()
 
@@ -4280,7 +4331,7 @@ def test_full_surface_rejected_by_vbd_proxy_coupling(test, device):
         model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()  # capability marker set True
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
     with test.assertRaises(NotImplementedError):
         solver.coupling_prepare_proxy_contacts(model.state(), contacts)
 

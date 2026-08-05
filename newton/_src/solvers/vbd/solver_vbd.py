@@ -146,7 +146,7 @@ class SolverVBD(SolverBase, CouplingInterface):
       ``k_start`` seeds, where non-cable joint slots default to hard mode (augmented
       Lagrangian with persistent lambda and C0 stabilization) and cable stretch,
       shear, bend, and twist default to soft (penalty-based). Deprecated as of
-      Newton 1.5 and will be removed in a future release; omitting
+      Newton 1.6 and will be removed in a future release; omitting
       ``rigid_compliant_alm`` is deprecated because the default will change to
       ``True``.
 
@@ -195,8 +195,6 @@ class SolverVBD(SolverBase, CouplingInterface):
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
           https://doi.org/10.1145/3658179
-        - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block Descent. ACM Trans. Graph. 44, 4, Article 90 (August 2025), 12 pages.
-          https://doi.org/10.1145/3731195
 
     Note:
         `SolverVBD` requires coloring for each system it solves:
@@ -369,7 +367,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 Defaults to ``None``, which currently selects the legacy path. When
                 ``SolverVBD`` integrates rigid bodies, omitting this argument emits a
                 ``DeprecationWarning`` because the default will change to ``True``
-                (deprecated as of Newton 1.5; the legacy path will be removed in a
+                (deprecated as of Newton 1.6; the legacy path will be removed in a
                 future release). Pass ``True`` to adopt compliant ALM now, or ``False``
                 to keep the legacy path during the migration window. Finite authored
                 coefficients define the material response, while ``SolverVBD`` selects
@@ -479,12 +477,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         """
         integrates_rigid_bodies = model.body_count > 0 and not integrate_with_external_rigid_solver
 
-        # TODO: Complete the Newton 1.5 deprecation by defaulting omitted
+        # TODO: Complete the Newton 1.6 deprecation by defaulting omitted
         # rigid_compliant_alm to True and removing this warning after the migration window.
         if rigid_compliant_alm is None:
             if integrates_rigid_bodies:
                 warnings.warn(
-                    "Omitting rigid_compliant_alm is deprecated as of Newton 1.5 because the default will "
+                    "Omitting rigid_compliant_alm is deprecated as of Newton 1.6 because the default will "
                     "change from the legacy penalty/AVBD path (False) to unified compliant ALM (True), which "
                     "is becoming the standard for rigid VBD. The legacy path is deprecated and will be removed "
                     "in a future release. Pass rigid_compliant_alm=True to adopt compliant ALM now, or "
@@ -901,8 +899,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.joint_lambda_ang = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_C0_lin = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_C0_ang = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-            # The support term is the axis inverse-Delassus stiffness that feeds rho,
-            # shared by the drive and limit rows.
+            # Shared directional support; drive and limit derive separate rho policies.
             self.joint_drive_limit_support = wp.zeros(model.joint_dof_count, dtype=float, device=self.device)
             # Bilateral drive dual, cleared whenever the drive row stops existing.
             self.joint_drive_lambda = wp.zeros(model.joint_dof_count, dtype=float, device=self.device)
@@ -1505,7 +1502,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             jdof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
             jc_start = self._to_numpy(self.joint_constraint_start, dtype=np.int32)
 
-            # TODO: Complete the Newton 1.5 deprecation by removing per-slot
+            # TODO: Complete the Newton 1.6 deprecation by removing per-slot
             # hard/soft attribute compatibility with the legacy non-ALM path.
             # Per-joint hard/soft mode from model attribute (default=1, hard).
             vbd_attrs: Any = getattr(self.model, "vbd", None)
@@ -1519,7 +1516,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 if np.any(j_is_hard == 0):
                     warnings.warn(
                         "model.vbd.joint_is_hard (per-slot joint hard/soft mode) is deprecated as of "
-                        "Newton 1.5 and will be removed with the legacy path. Under compliant ALM it has "
+                        "Newton 1.6 and will be removed with the legacy path. Under compliant ALM it has "
                         "no solver-mode effect; legacy AVBD still honors it during the migration window.",
                         DeprecationWarning,
                         # Reaches the constructor call site through _init_rigid_system.
@@ -1916,12 +1913,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         """
         self._update_rigid_history = update
 
-    # TODO: Complete the Newton 1.5 deprecation by removing this compatibility
+    # TODO: Complete the Newton 1.6 deprecation by removing this compatibility
     # method with the legacy non-ALM path.
     def set_joint_constraint_mode(self, joint_index: int, hard: bool, slot: int | None = None):
         """Set legacy hard/soft mode for a joint's structural slots at runtime.
 
-        .. deprecated:: 1.5
+        .. deprecated:: 1.6
             Per-slot joint hard/soft mode is deprecated. Under compliant ALM (the
             future default) all structural slots use the unified scheme, so this
             has no solver-mode effect; it will be removed with the legacy path.
@@ -1959,7 +1956,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if not self._joint_mode_deprecation_warned:
             warnings.warn(
                 "SolverVBD.set_joint_constraint_mode (per-slot joint hard/soft mode) is deprecated as of "
-                "Newton 1.5 and will be removed with the legacy path. Under compliant ALM it has no "
+                "Newton 1.6 and will be removed with the legacy path. Under compliant ALM it has no "
                 "solver-mode effect; legacy AVBD still honors it during the migration window.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -2017,7 +2014,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         The solver follows a 3-phase structure:
         1. Initialize: Forward integrate particles and rigid bodies, detect collisions, initialize contact state
-        2. Iterate: Interleave particle VBD iterations and rigid body AVBD iterations
+        2. Iterate: Interleave particle and rigid-body VBD iterations
         3. Finalize: Update velocities and persistent state (Dahl friction)
 
         To control rigid body substepping behavior, call set_rigid_history_update().
@@ -3007,48 +3004,6 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
-    def _update_body_body_contact_duals(
-        self,
-        state_in: State,
-        contacts: Contacts | None,
-    ) -> None:
-        """Update rigid-contact multipliers from the current body pose."""
-        model = self.model
-        if contacts is None or not self._integrates_rigid_bodies or contacts.rigid_contact_max == 0:
-            return
-
-        wp.launch(
-            kernel=update_duals_body_body_contacts,
-            dim=contacts.rigid_contact_max,
-            inputs=[
-                contacts.rigid_contact_count,
-                contacts.rigid_contact_shape0,
-                contacts.rigid_contact_shape1,
-                contacts.rigid_contact_point0,
-                contacts.rigid_contact_point1,
-                contacts.rigid_contact_offset0,
-                contacts.rigid_contact_offset1,
-                contacts.rigid_contact_normal,
-                contacts.rigid_contact_margin0,
-                contacts.rigid_contact_margin1,
-                model.shape_body,
-                state_in.body_q,
-                self.body_q_prev,
-                self.body_body_contact_material_mu,
-                self.body_body_contact_C0,
-                self.rigid_contact_alpha,
-                self.rigid_contact_hard,
-                self.rigid_compliant_alm,
-                self.body_body_contact_material_ke,
-                self.body_body_contact_tangent_rho,
-                self.body_body_contact_normal_rho,
-                self.rigid_linear_beta,
-                self.body_body_contact_penalty_k,  # input/output
-                self.body_body_contact_lambda,  # input/output
-            ],
-            device=self.device,
-        )
-
     def _solve_rigid_body_iteration(
         self,
         state_in: State,
@@ -3057,7 +3012,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
     ):
-        """Solve one AVBD iteration for rigid bodies (per-iteration phase).
+        """Solve one rigid-body VBD iteration (per-iteration phase).
 
         Accumulates contact and joint forces/hessians, solves 6x6 rigid body systems per color,
         and updates AVBD penalty parameters (dual update).
@@ -3266,7 +3221,38 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
-        self._update_body_body_contact_duals(state_in, contacts)
+        if contacts is not None and contacts.rigid_contact_max > 0:
+            wp.launch(
+                kernel=update_duals_body_body_contacts,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    model.shape_body,
+                    state_in.body_q,
+                    self.body_q_prev,
+                    self.body_body_contact_material_mu,
+                    self.body_body_contact_C0,
+                    self.rigid_contact_alpha,
+                    self.rigid_contact_hard,
+                    self.rigid_compliant_alm,
+                    self.body_body_contact_material_ke,
+                    self.body_body_contact_tangent_rho,
+                    self.body_body_contact_normal_rho,
+                    self.rigid_linear_beta,
+                    self.body_body_contact_penalty_k,  # input/output
+                    self.body_body_contact_lambda,  # input/output
+                ],
+                device=self.device,
+            )
         if contacts is not None and model.particle_count > 0:
             wp.launch(
                 kernel=update_duals_body_particle_contacts,
@@ -3504,7 +3490,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
 
     def _finalize_rigid_bodies(self, state_in: State, state_out: State, dt: float):
-        """Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).
+        """Finalize rigid body velocities and Dahl friction state after VBD iterations (post-iteration phase).
 
         Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for cable bend/twist.
         Also transfers the final body poses from state_in to state_out.

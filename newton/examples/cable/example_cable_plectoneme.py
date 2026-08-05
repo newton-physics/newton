@@ -171,7 +171,6 @@ class Example:
             self.model,
             iterations=self.sim_iterations,
             rigid_compliant_alm=True,
-            rigid_contact_hard=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=1024,
         )

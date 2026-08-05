@@ -46,8 +46,8 @@ FRANKA_Q = [
 # Cable: 19 capsule segments spaced 0.02 m (20 nodes), radius 0.005 m, per IsaacLab.
 CABLE_CENTER = wp.vec3(0.5, 0.0, 0.256)
 CABLE_LENGTH = 0.38
-CABLE_CONTACT_KE = 1.0e4
-CABLE_CONTACT_KD = 1.0e-5 * CABLE_CONTACT_KE
+CABLE_CONTACT_KE = 1.0e3
+CABLE_CONTACT_KD = 1.0e-1
 
 # Top-down gripper orientation: 180 deg about world x flips the hand z-axis to -z.
 GRIPPER_DOWN = (1.0, 0.0, 0.0, 0.0)  # (qx, qy, qz, qw)
@@ -243,18 +243,18 @@ class Example:
             num_segments=self.payload_segments,
             twist_total=0.0,
         )
-        stretch_stiffness = 2.0e5
-        bend_stiffness = 0.08
+        stretch_stiffness = 1.0e2
+        bend_stiffness = 4.0e-4
         builder.add_rod(
             positions=points,
             quaternions=quats,
             radius=self.payload_radius,
-            body_frame_origin="start",
+            body_frame_origin="com",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
-            stretch_damping=2.0e-2,
+            stretch_damping=1.0e-1,
             bend_stiffness=bend_stiffness,
-            bend_damping=2.0e-2 * bend_stiffness,
+            bend_damping=2.0e-3 * bend_stiffness,
             label="vbd_cable",
         )
         self.payload_bodies = list(range(payload_body_start, builder.body_count))
@@ -314,8 +314,6 @@ class Example:
                         model=v,
                         iterations=int(args.vbd_iterations),
                         rigid_compliant_alm=True,
-                        rigid_avbd_beta=float(args.vbd_rigid_avbd_beta),
-                        rigid_contact_k_start=float(args.vbd_rigid_contact_k_start),
                         rigid_contact_history=False,
                     ),
                     bodies=self.payload_bodies,
@@ -517,12 +515,9 @@ class Example:
         # The cable is grasped at its midpoint and carried to the place target; verify that
         # the grasped segment was placed within 1 cm of the target (x, y) in every world.
         target_xy = np.asarray(self.place_target_xy, dtype=np.float32)
-        body_com = self.model.body_com.numpy()
         for world_idx in range(self.world_count):
             mid_body = self.payload_bodies[world_idx * self.payload_body_count_per_world + self.payload_mid_body_offset]
-            mid_q = body_q[mid_body]
-            segment_center = mid_q[:3] + np.asarray(wp.quat_rotate(wp.quat(*mid_q[3:]), wp.vec3(*body_com[mid_body])))
-            dist = float(np.linalg.norm(segment_center[:2] - target_xy))
+            dist = float(np.linalg.norm(body_q[mid_body, :2] - target_xy))
             assert dist < 0.01, f"World {world_idx} cable placed {dist * 100:.1f} cm from target (expected < 1 cm)"
 
     @staticmethod
@@ -548,18 +543,6 @@ class Example:
         parser.add_argument("--payload-segments", type=int, default=19, help="Number of cable segments.")
         parser.add_argument("--payload-radius", type=float, default=0.005, help="Cable radius [m].")
         parser.add_argument("--vbd-iterations", type=int, default=20, help="VBD iterations per coupled substep.")
-        parser.add_argument(
-            "--vbd-rigid-avbd-beta",
-            type=float,
-            default=1.0e2,
-            help="VBD AVBD penalty ramp rate per iteration (0 disables ramping).",
-        )
-        parser.add_argument(
-            "--vbd-rigid-contact-k-start",
-            type=float,
-            default=1.0e3,
-            help="VBD body-particle contact penalty seed when AVBD ramping is enabled.",
-        )
         parser.add_argument("--mujoco-iterations", type=int, default=100, help="MuJoCo solver iterations.")
         parser.add_argument("--mujoco-ls-iterations", type=int, default=20, help="MuJoCo line-search iterations.")
         parser.add_argument(
@@ -574,7 +557,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = Example.create_parser()
-    parser.set_defaults(num_frames=400)
+    parser.set_defaults(num_frames=330)
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
