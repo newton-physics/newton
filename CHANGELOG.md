@@ -28,7 +28,7 @@
 - Add contact examples for Newton's cradle, a balance bird, and a domino spiral
 - Document geometry-pair contact behavior and clarify that MuJoCo Warp currently produces a single contact for cylinder--box pairs even with MultiCCD enabled.
 - Add `ViewerUSD(points_as_spheres=...)` to render `log_points` particles as a `UsdGeom.PointInstancer` of sphere prototypes; enabled by default (opt out with `points_as_spheres=False` for flat `UsdGeom.Points` splats)
-- Add experimental `newton.controllers` module with `ControllerBase` base class, `ControllerJointImpedance`, and `ControllerJointImpedanceModelFree` for GPU-accelerated, vectorized joint-space impedance control.
+- Add experimental `newton.controllers` module with `ControllerBase` base class, `ControllerJointImpedance`, and `ControllerJointImpedanceModelFree` for GPU-accelerated, vectorized joint-space impedance control. Supports heterogeneous robot fleets whose articulations differ in DOF count, with optional gravity compensation, Coriolis compensation, and inertia decoupling. See the `controller_joint_impedance_heterogeneous` example.
 - Add list-of-pattern and explicit-index selectors to `ArticulationView`.
 - Add full-surface (edge/face) rigid-soft contacts to `SolverVBD` proxy-body coupling under `SolverCoupledProxy` through shared or proxy-local collision pipelines. Proxy-particle coupling rejects full-surface contacts.
 - Add `newton[onnx]` for ONNX policy inference through Warp-NN; `ControllerNeuralMLP`, `ControllerNeuralLSTM`, and RL policy examples can run exported `.onnx` policies without requiring PyTorch for ONNX execution.
