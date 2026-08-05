@@ -170,6 +170,15 @@ class Example:
         builder.replicate(template, world_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
 
+        # Match the gripper side to the cable material without overwriting
+        # unrelated Franka shapes imported from URDF.
+        gripper_bodies = set(self.gripper_bodies)
+        for shape, body in enumerate(builder.shape_body):
+            if body in gripper_bodies:
+                builder.shape_material_ke[shape] = CABLE_CONTACT_KE
+                builder.shape_material_kd[shape] = CABLE_CONTACT_KD
+                builder.shape_material_mu[shape] = 1.0
+
         # Working surface (cable rests on it).
         plane_cfg = newton.ModelBuilder.ShapeConfig(
             ke=CABLE_CONTACT_KE, kd=CABLE_CONTACT_KD, mu=1.0, margin=0.0, gap=0.01
@@ -185,11 +194,6 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         self.device = self.model.device
-
-        # Uniform rigid contact material across all shapes (IsaacLab NewtonModelCfg).
-        self.model.shape_material_ke.fill_(CABLE_CONTACT_KE)
-        self.model.shape_material_kd.fill_(CABLE_CONTACT_KD)
-        self.model.shape_material_mu.fill_(1.0)
 
         # Build keyframe sequence now that the cable pose is known.
         self._build_keyframes()

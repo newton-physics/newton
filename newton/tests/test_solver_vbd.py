@@ -4129,7 +4129,7 @@ def test_edge_face_reacts_through_coupled_proxy(test, device):
             SolverCoupledProxy.Entry(name="body", solver=newton.solvers.SolverSemiImplicit, bodies=[body]),
             SolverCoupledProxy.Entry(
                 name="soft",
-                solver=lambda view: newton.solvers.SolverVBD(view, iterations=1),
+                solver=lambda view: newton.solvers.SolverVBD(view, iterations=1, rigid_compliant_alm=True),
                 particles=list(range(model.particle_count)),
             ),
         ],
