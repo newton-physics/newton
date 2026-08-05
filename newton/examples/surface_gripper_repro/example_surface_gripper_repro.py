@@ -526,9 +526,11 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
-        # One surface gripper per world, on that world's flange, tagged world=w. Pads placed at the
-        # transforms read from the arm USD (grip axis along flange +x). The seal's static k/d design point is
-        # the first crate; the runtime seal adapts to whichever box is actually gripped (picked_box_seal_modes).
+        # One surface gripper per world, attached to the end effector body. Pads placed at the
+        # transforms read from the arm USD. The seal's stiffness/damping are set once, from the first crate's
+        # mass/inertia as the design reference -- the SAME k/d then apply to the panel and every crate. (The
+        # natural frequency/damping ratio those k/d yield vary with the gripped box's mass; picked_box_seal_modes
+        # reports that in the GUI, but the seal parameters do not change.)
         gripper_builder = SurfaceGripperBuilder()
         for w in range(NUM_WORLDS):
             gripper = SurfaceGripper(w * n_env + ee_body_local, wp.transform_identity(), world=w)
