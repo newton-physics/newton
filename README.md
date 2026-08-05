@@ -394,7 +394,7 @@ If you run the examples from a source checkout with uv, use
     </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_limx_ee_chatter.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_limx_ee_chatter.jpg" alt="LIMX EE Contact Chatter">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_limx_ee_chatter.jpg" alt="LIMX Geometry-Aware Self-Collision">
       </a>
     </td>
     <td align="center" width="33%">

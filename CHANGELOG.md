@@ -9,7 +9,7 @@
 - Add dihedral-angle bending to LIMX cloth with exact wrapped-angle forces and Gauss-Newton positive-semidefinite block-CSR Hessians.
 - Add frictionless LIMX cloth self-collision with GPU VF/EE detection, EF untangling, and full matrix-free positive-semidefinite contact Hessians.
 - Add adaptive LIMX self-collision stiffness derived from the current elastic diagonal and inertia, with independent VF, EE, and EF factors.
-- Add a CUDA LIMX example that contrasts a settled cloth patch with persistent VF/EE contact churn.
+- Add a CUDA LIMX example that contrasts a settled control with geometry-aware VF/EE self-collision at a 6 mm nominal thickness.
 - Add a LIMX T-shirt table-contact example with self-collision, contact damping, and friction.
 - Break the viewer's shape count down into visual and collision shapes. The two are listed under `Shapes` in the stats overlay and need not sum to the total, since a shape can be both.
 - Add selection of the shapes included in model shape BVHs through `Model.bvh_build_shapes(shape_flags=...)` and `ModelBuilder.default_bvh_cfg.shape_flags`, e.g. `ShapeFlags.VISIBLE | ShapeFlags.COLLIDE_SHAPES` to also include collision shapes.
@@ -33,6 +33,7 @@
 - Add `ViewerBase.camera_speed` to configure keyboard translation speed for interactive viewers. (#3439)
 - Add a "Show Ground" visualization toggle (`ViewerBase.show_ground`, default on) to hide or show ground-plane shapes in the viewer.
 - Add a CUDA LIMX stress-test example that throws three mutually colliding T-shirts into an open box.
+- Add opt-in rest-geometry-aware per-particle radii to `ConstraintSelfCollision`, capped by the nominal collision thickness and interpolated for VF/EE contacts.
 - Add opt-in DVI forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="dvi")`, with sparse and dense execution, DVI-specific diagnostics, and warm-starting. PADMM remains the default.
 - Add opt-in DVI forward dynamics to `SolverKamino` through `SolverKamino.Config(dynamics_solver="dvi")`, with sparse and dense execution, DVI-specific convergence diagnostics, warm-starting, bounded contact-recovery controls, and RCM-reordered bilateral factorization with reusable ordering and panel-parallel numeric factorization for large systems. PADMM remains the default.
 - Add SDF contact support for convex-hull shapes with mesh-attached SDFs and opt-in SDF contact generation for box shapes.
