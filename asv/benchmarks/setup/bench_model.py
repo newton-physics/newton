@@ -19,8 +19,8 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 sys.path.append(os.path.join(parent_dir, "simulation"))
 
-from benchmark_mujoco import Example
 from bench_sensor_tiled_camera import SCENES as TILED_CAMERA_SCENES
+from benchmark_mujoco import Example
 
 import newton
 from newton.viewer import ViewerGL
