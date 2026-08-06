@@ -19,7 +19,7 @@ from ..utils import (
 from .base import Controller
 
 # Generic linearization helpers shared with the MLP controller: gather per-slot
-# state, pack [c, a, b], and the linear force law tau = c + a*q + b*qd.
+# state, pack [tau0, a, b, q0, qd0], and the linearized force law.
 from .controller_neural_mlp import (
     _assemble_linear_params_kernel,
     _gather_slot_state_kernel,
@@ -125,14 +125,11 @@ class ControllerNeuralLSTM(Controller):
     must have three graph outputs: effort, hidden output, and cell output.
     Metadata properties map those names to controller roles.
 
-    Implicit actuation linearizes the network about the current state each
-    step, holding the incoming hidden/cell state fixed
-    (:meth:`prepare_implicit`), and enters the shared implicit solve as the
-    linear force law ``tau = c + a*q + b*qd`` (like :class:`ControllerNeuralMLP`).
-    Supported on the Warp-NN backend. Depends on a workaround for warp-nn
-    allocating its tensors without ``requires_grad``; until the warp-nn LSTM
-    autodiff path is fixed upstream the state gradients may return zero, in
-    which case the law degrades to a per-step constant.
+    Implicit actuation is **not** currently available: Warp-NN's LSTM op does not
+    propagate gradients to the network input, so the per-step linearization the
+    implicit solve needs comes back with zero slopes. See
+    :attr:`_IMPLICIT_AVAILABLE`. :meth:`Actuator.set_effort_mode_implicit` raises
+    for this controller; use the explicit effort mode.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -311,9 +308,9 @@ class ControllerNeuralLSTM(Controller):
             (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
         )
 
-        # Implicit path: per-step linearization packed as [c, a, b] and the
+        # Implicit path: per-step linearization packed as [tau0, a, b, q0, qd0] and the
         # per-slot scratch it is assembled from (see prepare_implicit).
-        self._lin_params = wp.zeros((num_actuators, 3), dtype=wp.float32, device=device)
+        self._lin_params = wp.zeros((num_actuators, 5), dtype=wp.float32, device=device)
         self._q0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self._qd0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self._tq0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
@@ -332,11 +329,16 @@ class ControllerNeuralLSTM(Controller):
     #: in-kernel law (see :meth:`prepare_implicit`), like any other controller.
     evaluate_force = _mlp_linear_force
 
+    #: Warp-NN's LSTM op drops the input adjoint, so the linearization below returns
+    #: zero slopes and the solve degrades to the explicit impulse. Refusing beats a
+    #: silent no-op; flip this once warp-nn propagates the gradient.
+    _IMPLICIT_AVAILABLE = False
+
     def _implicit_supported(self) -> bool:
-        return not self._is_torch_checkpoint and self._network is not None
+        return self._IMPLICIT_AVAILABLE and not self._is_torch_checkpoint and self._network is not None
 
     def bind_params(self) -> wp.array2d[float] | None:
-        """Linearization pack ``[c, a, b]`` per actuator; ``None`` if implicit unsupported.
+        """Linearization pack ``[tau0, a, b, q0, qd0]``; ``None`` if implicit unsupported.
 
         The pack is allocated in :meth:`finalize` and rewritten in place each
         step by :meth:`prepare_implicit`. ``None`` for the Torch backend.
@@ -365,13 +367,14 @@ class ControllerNeuralLSTM(Controller):
         target_vel_indices,
         ctrl_state,
         dt,
+        inv_mass=None,
         device=None,
     ) -> None:
         """Refresh the linearization of the network about the current state.
 
         One forward + autodiff backward at the current per-slot state, with the
         incoming hidden/cell state held fixed, gives ``tau0, d(tau)/dq,
-        d(tau)/dqd``, packed as ``[c, a, b]`` into :meth:`bind_params`. The
+        d(tau)/dqd``, packed as ``[tau0, a, b, q0, qd0]`` into :meth:`bind_params`. The
         forward also advances hidden/cell for :meth:`update_state`.
         """
         if ctrl_state is None:

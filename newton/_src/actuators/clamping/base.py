@@ -54,6 +54,11 @@ class Clamping:
         evaluate_clamp(value, q, qd, params: wp.array2d[float], i: int, base: int) -> wp.float64
 
     ``params[i, base:]`` holds this clamp's parameters; see :meth:`bind_params`.
+
+    Clamps apply in list order, innermost first. Order is irrelevant while every
+    clamp's feasible interval contains zero (the result is their intersection),
+    but :class:`ClampingDCMotor` can exclude zero above its velocity limit, in
+    which case the intervals may be disjoint and the order decides the outcome.
     """
 
     def param_width(self) -> int:

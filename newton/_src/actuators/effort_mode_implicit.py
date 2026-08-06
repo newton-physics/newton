@@ -27,6 +27,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ..sim import JointType
 from .response_oracle import ResponseOracle
 
 __all__ = ["ActuatorImplicitOptions", "ResponseOracle"]
@@ -231,6 +232,8 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                 piv = jbuf[g, k, k]
                 if wp.abs(piv) < dfloor:
                     piv = wp.where(piv < wp.float64(0.0), -dfloor, dfloor)
+                    # Back-substitution divides by this diagonal, so floor it too.
+                    jbuf[g, k, k] = piv
                 for i in range(k + 1, ng):
                     fac = jbuf[g, i, k] / piv
                     for j in range(k, ng):
@@ -298,8 +301,11 @@ class _EffortModeImplicit:
         options: ActuatorImplicitOptions | None,
         num_actuators: int,
         device: wp.Device,
+        vel_indices: wp.array[wp.uint32] | None = None,
     ):
         self._options = options or ActuatorImplicitOptions()
+        if self._options.warm_start not in ("explicit", "zero"):
+            raise ValueError(f"warm_start must be 'explicit' or 'zero', got {self._options.warm_start!r}")
         self._num_actuators = num_actuators
         self._device = device
         if not isinstance(effective_inv_mass, ResponseOracle):
@@ -311,6 +317,9 @@ class _EffortModeImplicit:
         self._response = effective_inv_mass
         self._controller = controller
         self._init_solver(controller, clamping)
+        # Up front: this reads to host and allocates, both illegal during graph capture.
+        if vel_indices is not None:
+            self._build_groups(vel_indices)
 
     def _resolve_force_law(self, controller):
         """Validate the controller's in-kernel force law and adopt its params.
@@ -318,11 +327,17 @@ class _EffortModeImplicit:
         ``bind_params`` builds the pack and re-points the controller's
         parameter attributes to views into it, so later writes stay live.
         """
-        params = controller.bind_params()
-        if controller.evaluate_force is None or params is None:
+        # Check first: bind_params() re-points the controller's parameter arrays.
+        if controller.evaluate_force is None:
             raise NotImplementedError(
                 f"{type(controller).__name__} does not support implicit actuation "
-                "(Controller.evaluate_force / bind_params() unavailable)"
+                "(Controller.evaluate_force unavailable)"
+            )
+        params = controller.bind_params()
+        if params is None:
+            raise NotImplementedError(
+                f"{type(controller).__name__} does not support implicit actuation "
+                "in this configuration (Controller.bind_params() returned None)"
             )
         self._params = params
 
@@ -376,18 +391,36 @@ class _EffortModeImplicit:
             art_base.append(base)
             art_ndof.append(end - base)
 
-        def find_art(dof):
-            for a in range(model.articulation_count):
-                if art_base[a] <= dof < art_base[a] + art_ndof[a]:
-                    return a
-            return -1
+        # DOF ranges are contiguous per articulation, so one sorted search maps them all.
+        base_arr = np.asarray(art_base, dtype=np.int64)
+        ndof_arr = np.asarray(art_ndof, dtype=np.int64)
+        order = np.argsort(base_arr)
+        found = order[np.clip(np.searchsorted(base_arr[order], dofs, side="right") - 1, 0, None)]
+        in_range = (np.searchsorted(base_arr[order], dofs, side="right") > 0) & (
+            dofs < base_arr[found] + ndof_arr[found]
+        )
+        if not np.all(in_range):
+            bad = int(dofs[~in_range][0])
+            raise ValueError(f"Implicit actuation: DOF {bad} is not in an articulation")
+
+        # q + h*qd only integrates 1-DOF axes; BALL/FREE store quaternion components.
+        joint_type = model.joint_type.numpy()
+        joint_qd_start_all = model.joint_qd_start.numpy()
+        scalar_types = (int(JointType.REVOLUTE), int(JointType.PRISMATIC))
+        dof_ok = np.zeros(int(model.joint_dof_count), dtype=bool)
+        for jt, lo, hi in zip(joint_type, joint_qd_start_all[:-1], joint_qd_start_all[1:], strict=True):
+            if int(jt) in scalar_types:
+                dof_ok[lo:hi] = True
+        bad_dofs = [int(d) for d in dofs if not dof_ok[int(d)]]
+        if bad_dofs:
+            raise ValueError(
+                f"Implicit actuation supports REVOLUTE and PRISMATIC joints only; "
+                f"DOF {bad_dofs[0]} belongs to another joint type"
+            )
 
         groups: dict[int, list[tuple[int, int]]] = {}  # art -> [(slot, local_dof)]
-        for slot, dof in enumerate(dofs):
-            a = find_art(int(dof))
-            if a < 0:
-                raise ValueError(f"Implicit actuation: DOF {int(dof)} is not in an articulation")
-            groups.setdefault(a, []).append((slot, int(dof) - art_base[a]))
+        for slot, (dof, a) in enumerate(zip(dofs, found, strict=True)):
+            groups.setdefault(int(a), []).append((slot, int(dof) - art_base[int(a)]))
 
         arts = sorted(groups)
         num_groups = len(arts)
@@ -443,6 +476,8 @@ class _EffortModeImplicit:
         """
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
+        if dt <= 0.0:
+            raise ValueError(f"Implicit actuation requires dt > 0, got {dt}")
         if applied_forces is None:
             raise RuntimeError("Implicit actuation requires an applied-effort buffer")
         # Update state-dependent controller parameters before solving.
@@ -457,6 +492,7 @@ class _EffortModeImplicit:
             target_vel_indices,
             ctrl_state,
             float(dt),
+            self._inv_mass,
             self._device,
         )
         if not self._groups_built:

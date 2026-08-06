@@ -200,12 +200,16 @@ class ControllerPID(Controller):
     evaluate_force = _pid_evaluate_force
 
     def bind_params(self) -> wp.array2d[float]:
+        # Same pack every time; a new one would also strand prepare_implicit().
+        if self._param_pack is not None:
+            return self._param_pack
         kp = self.kp.numpy()
         kd = self.kd.numpy()
         pack = wp.array(
             np.stack([kp, kd, np.zeros_like(kp)], axis=1).astype(np.float32),
             dtype=float,
             device=self.kp.device,
+            requires_grad=self.kp.requires_grad,
         )
         self.kp = pack[:, 0]
         self.kd = pack[:, 1]
@@ -224,6 +228,7 @@ class ControllerPID(Controller):
         target_vel_indices,
         ctrl_state,
         dt,
+        inv_mass=None,
         device=None,
     ) -> None:
         """Advance the integral (current-step error, anti-windup) and fold

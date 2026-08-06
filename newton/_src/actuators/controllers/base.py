@@ -135,7 +135,7 @@ class Controller:
         2. Re-point the controller's user-facing parameter arrays (e.g.
            ``kp``) to column views of that pack, so later writes stay visible
            to the solve kernel and to the selection API.
-        3. Return the pack; the strategy adopts it as the kernel input.
+        3. Return the pack; the effort mode adopts it as the kernel input.
 
         ``None`` (the default) means the controller does not support implicit
         actuation.
@@ -154,6 +154,7 @@ class Controller:
         target_vel_indices: wp.array[wp.uint32],
         ctrl_state: Controller.State | None,
         dt: float,
+        inv_mass: wp.array[float] | None = None,
         device: wp.Device | None = None,
     ) -> None:
         """Refresh the parameter pack before an implicit solve step.

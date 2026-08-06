@@ -240,6 +240,7 @@ class Actuator:
             options,
             self.num_actuators,
             self.device,
+            self.indices,
         )
 
     def set_effort_mode_explicit(self) -> None:

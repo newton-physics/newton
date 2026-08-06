@@ -28,7 +28,10 @@ def _evaluate_dc_motor_clamp(
     sat = wp.float64(params[i, base])
     vel_lim = wp.float64(params[i, base + 1])
     max_e = wp.float64(params[i, base + 2])
-    corner = wp.float64(params[i, base + 3])
+    # Derived, not stored: a cached corner goes stale when the user retunes.
+    corner = vel_lim
+    if sat > wp.float64(0.0):
+        corner = vel_lim * (wp.float64(1.0) + max_e / sat)
 
     vel = wp.clamp(qd, -corner, corner)
     effort_max = wp.min(sat * (wp.float64(1.0) - vel / vel_lim), max_e)
@@ -108,6 +111,9 @@ class ClampingDCMotor(Clamping):
         max_motor_effort = args.get("max_motor_effort", math.inf)
         if max_motor_effort < 0:
             raise ValueError(f"max_motor_effort must be non-negative, got {max_motor_effort}")
+        if math.isinf(sat) and not math.isinf(vel_lim):
+            # sat*(1 - v/v_lim) is inf*0 = NaN at v == v_lim.
+            raise ValueError("saturation_effort must be finite when velocity_limit is finite")
         return {
             "saturation_effort": sat,
             "velocity_limit": vel_lim,
@@ -154,17 +160,15 @@ class ClampingDCMotor(Clamping):
     evaluate_clamp = _evaluate_dc_motor_clamp
 
     def param_width(self) -> int:
-        return 4
+        return 3
 
     def bind_params(self, block: wp.array2d[float]) -> None:
         block[:, 0].assign(self.saturation_effort)
         block[:, 1].assign(self.velocity_limit)
         block[:, 2].assign(self.max_motor_effort)
-        block[:, 3].assign(self.corner_velocity)
         self.saturation_effort = block[:, 0]
         self.velocity_limit = block[:, 1]
         self.max_motor_effort = block[:, 2]
-        self.corner_velocity = block[:, 3]
 
     def modify_forces(
         self,

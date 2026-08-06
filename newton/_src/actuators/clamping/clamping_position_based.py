@@ -24,12 +24,12 @@ def _interp_1d(
     """Linearly interpolate (x -> y) from sorted samples, holding at the ends.
 
     Generic in the scalar type of *x*, so the explicit kernel (float32) and the
-    implicit solve (float64) share one implementation. ``xs`` and ``ys`` may be
-    the same array read at two offsets, as in the packed clamp-parameter row.
+    implicit solve (float64) share one implementation; the samples are float32
+    and are cast on read, since Warp does not promote across types. ``xs`` and
+    ``ys`` may be the same array at two offsets, as in the packed clamp row.
     """
-    zero = type(x)(0.0)
     if n <= 0:
-        return zero
+        return type(x)(0.0)
     if x <= type(x)(xs[xs_off]):
         return type(x)(ys[ys_off])
     if x >= type(x)(xs[xs_off + n - 1]):
@@ -39,9 +39,10 @@ def _interp_1d(
         if x1 >= x:
             x0 = type(x)(xs[xs_off + k])
             y0 = type(x)(ys[ys_off + k])
-            if x1 - x0 == zero:
+            y1 = type(x)(ys[ys_off + k + 1])
+            if x1 == x0:
                 return y0
-            return y0 + (x - x0) / (x1 - x0) * (type(x)(ys[ys_off + k + 1]) - y0)
+            return y0 + (x - x0) / (x1 - x0) * (y1 - y0)
     return type(x)(ys[ys_off + n - 1])
 
 
@@ -243,8 +244,7 @@ class ClampingPositionBased(Clamping):
         return 1 + 2 * self.lookup_size
 
     def bind_params(self, block: wp.array2d[float]) -> None:
-        # The lookup table is shared by every actuator, so each row is the same:
-        # [size, positions..., efforts...].
+        # Same row per actuator: [size, positions..., efforts...]. Copied, not aliased.
         if self.lookup_positions is None:
             raise RuntimeError("ClampingPositionBased.bind_params() requires finalize() to have run")
         row = np.concatenate(

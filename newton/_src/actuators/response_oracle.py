@@ -4,70 +4,19 @@
 """Effective inverse-mass response for articulated systems.
 
 :class:`ResponseOracle` owns the full inverse joint-space mass block for each
-articulation and its diagonal in :attr:`alpha`. Update the response for each
-state with :meth:`ResponseOracle.refresh` or
-:meth:`ResponseOracle.refresh_from_forward_dynamics`. The former uses
-preallocated buffers and device kernels, so it can be captured in a CUDA graph.
+articulation and its diagonal in :attr:`alpha`. Update it with
+:meth:`ResponseOracle.refresh`, which uses preallocated buffers and device
+kernels and so can be captured in a CUDA graph. Both buffers are writable, so a
+solver-supplied response can be assigned directly instead.
 """
 
 from __future__ import annotations
 
-import numpy as np
 import warp as wp
 
 from ..sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 
 __all__ = ["ResponseOracle"]
-
-
-@wp.kernel(enable_backward=False)
-def _alpha_from_mass_matrix_kernel(
-    H: wp.array3d[float],
-    art_dof_start: wp.array[wp.int32],
-    art_dof_count: wp.array[wp.int32],
-    L: wp.array3d[float],
-    y: wp.array2d[float],
-    alpha: wp.array[float],
-):
-    """Write ``alpha[dof] = (H^{-1})_{dof,dof}`` for one articulation per thread.
-
-    Factorizes the articulation's H block as ``L L^T`` (Cholesky), then uses
-    ``(H^{-1})_{jj} = ||L^{-1} e_j||^2`` via one forward substitution per
-    column. Articulation blocks are small, so a single thread per
-    articulation is enough and needs no cross-thread coordination.
-    """
-    a = wp.tid()
-    n = art_dof_count[a]
-    base = art_dof_start[a]
-
-    # Cholesky H = L L^T (lower triangle). A relative floor on the pivot
-    # keeps near-singular blocks finite instead of branching to a fallback.
-    for j in range(n):
-        s = H[a, j, j]
-        for k in range(j):
-            s -= L[a, j, k] * L[a, j, k]
-        s = wp.max(s, 1.0e-9 * wp.max(H[a, j, j], 1.0e-9))
-        d = wp.sqrt(s)
-        L[a, j, j] = d
-        for i in range(j + 1, n):
-            t = H[a, i, j]
-            for k in range(j):
-                t -= L[a, i, k] * L[a, j, k]
-            L[a, i, j] = t / d
-
-    # Forward substitution L y = e_j; alpha = sum of squares of y.
-    for j in range(n):
-        s = float(0.0)
-        for i in range(j, n):
-            t = float(0.0)
-            if i == j:
-                t = 1.0
-            for k in range(j, i):
-                t -= L[a, i, k] * y[a, k]
-            t = t / L[a, i, i]
-            y[a, i] = t
-            s += t * t
-        alpha[base + j] = s
 
 
 @wp.kernel(enable_backward=False)
@@ -123,6 +72,25 @@ def _inverse_block_from_mass_matrix_kernel(
         alpha[base + j] = inv_block[a, j, j]
 
 
+@wp.kernel(enable_backward=False)
+def _add_armature_kernel(
+    armature: wp.array[float],
+    art_dof_start: wp.array[wp.int32],
+    art_dof_count: wp.array[wp.int32],
+    H: wp.array3d[float],
+):
+    """Add joint armature to the mass-matrix diagonal.
+
+    Solvers carry armature as extra rotor inertia on the diagonal (MuJoCo's
+    ``dof_armature``, Featherstone's ``joint_armature``), but
+    :func:`~newton.eval_mass_matrix` builds ``J^T M J`` without it. Omitting it
+    here would overstate the response and make the solve under-drive the joint.
+    """
+    a, j = wp.tid()
+    if j < art_dof_count[a]:
+        H[a, j, j] = H[a, j, j] + armature[art_dof_start[a] + j]
+
+
 class ResponseOracle:
     """Effective inverse-mass response for each articulation.
 
@@ -132,8 +100,9 @@ class ResponseOracle:
     articulation have a zero response.
 
     :meth:`refresh` computes the response from the current mass matrix using
-    device kernels. :meth:`refresh_from_forward_dynamics` derives the response
-    from unit-impulse probes of a solver's articulated-body dynamics.
+    device kernels. Alternatively, write a solver-supplied response straight
+    into :attr:`alpha` (single-DOF groups) or :attr:`inverse_blocks` (coupled
+    groups) -- for example by inverting the solver's own mass matrix.
     """
 
     def __init__(self, model):
@@ -175,10 +144,8 @@ class ResponseOracle:
         self._L = wp.zeros_like(self._H)
         self._inv_block = wp.zeros_like(self._H)
 
-        # Lazily allocated scratch for refresh_from_forward_dynamics().
-        self._probe_state_in = None
-        self._probe_state_out = None
-        self._probe_control = None
+        # Scratch so refresh() never writes to the caller's state.
+        self._fk_state = None
 
     @property
     def alpha(self) -> wp.array[float]:
@@ -203,13 +170,33 @@ class ResponseOracle:
     def refresh(self, state) -> None:
         """Recompute :attr:`alpha` and :attr:`inverse_blocks` for *state*.
 
+        Reads *state* without modifying it. Includes ``joint_armature`` but not
+        joint damping, contacts, or constraint regularization; the response is
+        therefore an upper bound, which under-drives rather than destabilizes the
+        solve. For a solver-faithful response, invert the solver's own mass
+        matrix into :attr:`inverse_blocks` instead.
+
         Args:
             state: Simulation state providing ``joint_q`` / ``joint_qd``.
         """
         model = self.model
-        eval_fk(model, state.joint_q, state.joint_qd, state)
-        eval_jacobian(model, state, J=self._J, joint_S_s=self._joint_S_s)
-        eval_mass_matrix(model, state, H=self._H, J=self._J, body_I_s=self._body_I_s)
+        # eval_fk overwrites body_q/body_qd, so keep it off the caller's state.
+        if self._fk_state is None:
+            self._fk_state = model.state()
+        fk_state = self._fk_state
+        wp.copy(fk_state.joint_q, state.joint_q)
+        wp.copy(fk_state.joint_qd, state.joint_qd)
+        eval_fk(model, fk_state.joint_q, fk_state.joint_qd, fk_state)
+        eval_jacobian(model, fk_state, J=self._J, joint_S_s=self._joint_S_s)
+        eval_mass_matrix(model, fk_state, H=self._H, J=self._J, body_I_s=self._body_I_s)
+        if model.joint_armature is not None:
+            wp.launch(
+                _add_armature_kernel,
+                dim=(model.articulation_count, self._H.shape[1]),
+                inputs=[model.joint_armature, self._art_dof_start, self._art_dof_count],
+                outputs=[self._H],
+                device=model.device,
+            )
         self._inv_block.zero_()
         wp.launch(
             _inverse_block_from_mass_matrix_kernel,
@@ -218,55 +205,3 @@ class ResponseOracle:
             outputs=[self._alpha],
             device=model.device,
         )
-
-    def refresh_from_forward_dynamics(self, solver, state, probe_dt: float = 1.0e-4) -> None:
-        """Recompute the coupled response by probing *solver*'s forward dynamics.
-
-        Each DOF is probed with a unit generalized force. The complete
-        resulting acceleration vector forms one column of the inverse mass
-        matrix, including solver-specific inertia terms such as armature and
-        regularization. A zero-force baseline is subtracted so gravity and
-        other pose-only forces cancel.
-
-        Costs ``joint_dof_count + 1`` forward evaluations and reads results
-        back to the host, so it is not CUDA-graph capturable. Use
-        :meth:`refresh` inside captured loops.
-
-        Args:
-            solver: A solver exposing ``step(state_in, state_out, control,
-                contacts, dt)``.
-            state: Simulation state providing the pose ``joint_q``.
-            probe_dt: Small timestep for the probe; the response is read as
-                ``q̇ / probe_dt``.
-        """
-        model = self.model
-        n = model.joint_dof_count
-        if self._probe_state_in is None:
-            self._probe_state_in = model.state()
-            self._probe_state_out = model.state()
-            self._probe_control = model.control()
-
-        si, so, control = self._probe_state_in, self._probe_state_out, self._probe_control
-        # Zero velocity so Coriolis vanishes; si stays read-only across probes.
-        wp.copy(si.joint_q, state.joint_q)
-        si.joint_qd.zero_()
-        eval_fk(model, si.joint_q, si.joint_qd, si)
-
-        force = np.zeros(n, dtype=np.float32)
-        control.joint_f.assign(force)
-        solver.step(si, so, control, None, probe_dt)
-        qd_baseline = so.joint_qd.numpy().copy()  # snapshot: CPU .numpy() aliases the live buffer
-
-        response = np.zeros((n, n), dtype=np.float32)
-        for i in range(n):
-            force[i] = 1.0
-            control.joint_f.assign(force)
-            force[i] = 0.0
-            solver.step(si, so, control, None, probe_dt)
-            response[:, i] = (so.joint_qd.numpy() - qd_baseline) / probe_dt
-
-        blocks = np.zeros(self._inv_block.shape, dtype=np.float32)
-        for a, (base, count) in enumerate(zip(self._art_dof_starts_host, self._art_dof_counts_host, strict=True)):
-            blocks[a, :count, :count] = response[base : base + count, base : base + count]
-        self._inv_block.assign(blocks)
-        self._alpha.assign(np.diag(response))

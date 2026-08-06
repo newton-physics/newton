@@ -104,17 +104,27 @@ class ControllerPD(Controller):
         self.kp = kp
         self.kd = kd
         self.const_effort = const_effort
+        self._param_pack: wp.array2d[float] | None = None
 
     evaluate_force = _pd_evaluate_force
 
     def bind_params(self) -> wp.array2d[float]:
+        # Same pack every time: a new one would detach later writes from the solve.
+        if self._param_pack is not None:
+            return self._param_pack
         kp = self.kp.numpy()
         kd = self.kd.numpy()
         const = self.const_effort.numpy() if self.const_effort is not None else np.zeros_like(kp)
-        pack = wp.array(np.stack([kp, kd, const], axis=1).astype(np.float32), dtype=float, device=self.kp.device)
+        pack = wp.array(
+            np.stack([kp, kd, const], axis=1).astype(np.float32),
+            dtype=float,
+            device=self.kp.device,
+            requires_grad=self.kp.requires_grad,
+        )
         self.kp = pack[:, 0]
         self.kd = pack[:, 1]
         self.const_effort = pack[:, 2]
+        self._param_pack = pack
         return pack
 
     def is_stateful(self) -> bool:

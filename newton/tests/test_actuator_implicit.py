@@ -14,6 +14,7 @@ import warp as wp
 import newton
 from newton.actuators import (
     Actuator,
+    ActuatorImplicitOptions,
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
@@ -67,8 +68,8 @@ def _build_single_revolute(device, mass=1.0, com_offset=0.5):
     return builder.finalize(device=device)
 
 
-def _build_two_link(device):
-    """Two-link revolute chain (one articulation, two scalar DOFs)."""
+def _two_link_builder(armature: float = 0.0):
+    """Builder for a two-link revolute chain (one articulation, two scalar DOFs)."""
     builder = newton.ModelBuilder(gravity=0.0)
     base = builder.add_link(mass=1.5)
     tip = builder.add_link(mass=0.8)
@@ -76,15 +77,21 @@ def _build_two_link(device):
     builder.add_shape_box(tip, hx=0.15, hy=0.1, hz=0.1)
     builder.body_com[base] = wp.vec3(0.3, 0.0, 0.0)
     builder.body_com[tip] = wp.vec3(0.25, 0.0, 0.0)
-    j0 = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
+    j0 = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z, armature=armature)
     j1 = builder.add_joint_revolute(
         parent=base,
         child=tip,
         axis=newton.Axis.Z,
         parent_xform=wp.transform(wp.vec3(0.6, 0.0, 0.0), wp.quat_identity()),
+        armature=armature,
     )
     builder.add_articulation([j0, j1])
-    return builder.finalize(device=device)
+    return builder
+
+
+def _build_two_link(device):
+    """Two-link revolute chain (one articulation, two scalar DOFs)."""
+    return _two_link_builder().finalize(device=device)
 
 
 def _alpha_reference(model, state):
@@ -246,35 +253,28 @@ def test_response_from_mujoco_mass_matrix(test, device):
     np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
 
 
-def test_response_from_featherstone_impulse_probe(test, device):
-    """Probe the complete coupled response through Featherstone dynamics.
+def test_prediction_matches_featherstone_step(test, device):
+    """The state the solve predicts is the state the solver actually reaches.
 
-    A unit generalized force at DOF i gives one column of ``M^-1``. Check that
-    all probed columns match the dense response and drive the implicit solve.
+    The whole scheme rests on ``qd(p) = qd + A p`` and ``q(p) = q + h qd(p)``.
+    With no gravity and zero initial velocity that is exactly what semi-implicit
+    Euler produces, so applying the solved effort through Featherstone must land
+    on the predicted velocity and position.
     """
     h = 0.01
     kp = np.array([300.0, 200.0], dtype=np.float32)
     kd = np.array([3.0, 2.0], dtype=np.float32)
-    q0 = np.array([0.3, -0.8], dtype=np.float32)  # non-reference pose: alpha is pose-dependent
+    q0 = np.array([0.3, -0.8], dtype=np.float32)
     target = np.array([0.6, 0.4], dtype=np.float32)
 
     model = _build_two_link(device)
     n = model.joint_dof_count
+    state_in, state_out = model.state(), model.state()
+    state_in.joint_q.assign(q0)
     control = model.control()
     control.joint_target_q.assign(target)
 
-    state = model.state()
-    state.joint_q.assign(q0)
-
-    solver = newton.solvers.SolverFeatherstone(model)
     oracle = ResponseOracle(model)
-    oracle.refresh_from_forward_dynamics(solver, state)
-
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-    H = newton.eval_mass_matrix(model, state).numpy()[0, :n, :n]
-    response = np.linalg.inv(H)
-    np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], response, rtol=1e-4)
-
     actuator = _make_actuator(
         model,
         device,
@@ -282,13 +282,22 @@ def test_response_from_featherstone_impulse_probe(test, device):
         kd=wp.array(kd, dtype=float, device=device),
         effective_inv_mass=oracle,
     )
+    oracle.refresh(state_in)
     control.joint_f.zero_()
-    actuator.step(state, control, dt=h)
+    actuator.step(state_in, control, dt=h)
+    tau = control.joint_f.numpy().copy()
 
-    f0 = kp * (target - q0)
-    jacobian = np.eye(n) + h * np.diag(h * kp + kd) @ response
-    expected = np.linalg.solve(jacobian, h * f0) / h
-    np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
+    # What the solve assumed the step would do.
+    A = oracle.inverse_blocks.numpy()[0, :n, :n]
+    qd_pred = A @ (h * tau)
+    q_pred = q0 + h * qd_pred
+
+    # What the solver actually does with that effort.
+    solver = newton.solvers.SolverFeatherstone(model)
+    solver.step(state_in, state_out, control, None, dt=h)
+
+    np.testing.assert_allclose(state_out.joint_qd.numpy(), qd_pred, rtol=2e-3, atol=1e-5)
+    np.testing.assert_allclose(state_out.joint_q.numpy(), q_pred, rtol=2e-3, atol=1e-6)
 
 
 def test_full_loop_response_from_mujoco_matches_refresh(test, device):
@@ -817,8 +826,9 @@ def test_position_clamp_is_implicit(test, device):
     h = 0.01
     kp_val = 5.0e4
     q0 = 0.2
+    # Steep table, so the predicted-position limit is far from the current one.
     lookup_positions = (0.0, 1.0)
-    lookup_efforts = (20.0, 0.0)  # effort limit falls linearly with position
+    lookup_efforts = (200.0, 0.0)
 
     model = _build_single_revolute(device)
     state = model.state()
@@ -857,7 +867,9 @@ def test_position_clamp_is_implicit(test, device):
     for _ in range(50):
         q_p = q0 + h * (alpha * h * tau_ref)
         tau_ref = limit_at(q_p)
-    test.assertAlmostEqual(tau, tau_ref, delta=abs(tau_ref) * 1e-3)
+    test.assertAlmostEqual(tau, tau_ref, delta=abs(tau_ref) * 1e-4)
+    # Below the current-position limit, which is what a post-hoc clamp would give.
+    test.assertLess(tau, limit_at(q0) * (1.0 - 1e-3))
 
 
 def test_effort_mode_switch_roundtrip(test, device):
@@ -1033,60 +1045,33 @@ def test_neural_mlp_implicit_nonlinear_linearized(test, device):
         test.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected_tau, delta=abs(expected_tau) * 3e-3)
 
 
-def test_neural_lstm_implicit_linearized(test, device):
-    """An LSTM controller enters the solve as a per-step linearization.
+def test_neural_lstm_implicit_rejected(test, device):
+    """LSTM implicit actuation is refused rather than silently degrading.
 
-    The hidden/cell state is held fixed while the network is linearized about
-    the current state, ``tau ~= c + a*q + b*qd``; the implicit solve must match
-    the closed-form solution of that linear system, and the recurrent state
-    must advance. Robust to warp-nn returning zero state gradients (then
-    ``a = b = 0`` and the law is the constant ``c``).
+    Warp-NN's LSTM op drops the input adjoint, so the per-step linearization
+    would come back with zero slopes and the solve would reduce to the explicit
+    impulse while still paying for the Newton loop. Installing implicit mode must
+    raise instead.
     """
     import tempfile  # noqa: PLC0415
 
     from newton.actuators import ControllerNeuralLSTM  # noqa: PLC0415
     from newton.tests.test_actuators import _build_lstm_onnx  # noqa: PLC0415
 
-    h = 0.01
-    q0, qd0, target = 0.2, 0.0, 1.0
-
     model = _build_single_revolute(device)
-    state = model.state()
-    state.joint_q.assign(np.array([q0], dtype=np.float32))
-    state.joint_qd.assign(np.array([qd0], dtype=np.float32))
-    control = model.control()
-    control.joint_target_q.assign(np.array([target], dtype=np.float32))
-
     with tempfile.TemporaryDirectory() as tmp:
         path = f"{tmp}/lstm.onnx"
         _build_lstm_onnx(path, hidden_size=8, metadata={"effort_scale": 10.0})
-
         controller = ControllerNeuralLSTM(model_path=path)
-        oracle = ResponseOracle(model)
         actuator = Actuator(
             indices=wp.array([0], dtype=wp.uint32, device=device),
             controller=controller,
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
-        test.assertTrue(actuator.is_graphable())
-        test.assertIsNotNone(controller.bind_params())
-
-        oracle.refresh(state)
-        sa, sb = actuator.state(), actuator.state()
-        control.joint_f.zero_()
-        actuator.step(state, control, sa, sb, dt=h)
-
-        c, a, b = (float(x) for x in controller._lin_params.numpy()[0])
-        alpha = _alpha_reference(model, state)[0]
-        # Solve p/h from the linear law about (q0, qd0); reduces to c when a=b=0.
-        tau0 = c + a * q0 + b * qd0
-        expected = tau0 / (1.0 - alpha * h * (a * h + b))
-        tau = float(control.joint_f.numpy()[0])
-        test.assertTrue(np.isfinite(tau))
-        test.assertAlmostEqual(tau, expected, delta=abs(expected) * 3e-3 + 1e-6)
-        test.assertTrue(np.any(sb.controller_state.hidden.numpy() != 0.0))
+        test.assertIsNone(controller.bind_params())
+        with test.assertRaises(NotImplementedError):
+            actuator.set_effort_mode_implicit(effective_inv_mass=ResponseOracle(model))
 
 
 def test_unsupported_controller_raises(test, device):
@@ -1279,6 +1264,219 @@ def test_selection_api_updates_implicit_solve(test, device):
     test.assertAlmostEqual(control.joint_f.numpy()[0], expected(kp2), delta=abs(expected(kp2)) * 1e-4)
 
 
+def test_singular_jacobian_stays_finite(test, device):
+    """A degenerate Jacobian must not leak Inf/NaN into the effort.
+
+    ``derivative_floor`` bounds the pivot used by the elimination; the same
+    floored value has to reach the back-substitution divide, otherwise a
+    vanishing diagonal produces a non-finite impulse. Driving kp/kd to zero makes
+    the residual flat in the clamped region, so the solve leans on that floor.
+    """
+    h = 0.01
+    model = _build_single_revolute(device)
+    state = model.state()
+    state.joint_q.assign(np.array([0.2], dtype=np.float32))
+    control = model.control()
+    control.joint_target_q.assign(np.array([1.0], dtype=np.float32))
+
+    oracle = ResponseOracle(model)
+    actuator = _make_actuator(
+        model,
+        device,
+        kp=wp.zeros(model.joint_dof_count, dtype=float, device=device),
+        kd=wp.zeros(model.joint_dof_count, dtype=float, device=device),
+        effective_inv_mass=oracle,
+        options=ActuatorImplicitOptions(derivative_floor=1.0e-8),
+    )
+    control.joint_f.zero_()
+    _step(actuator, state, control, h)
+    test.assertTrue(np.all(np.isfinite(control.joint_f.numpy())))
+
+
+def test_implicit_beats_explicit_at_stiff_gains(test, device):
+    """The reason implicit mode exists: explicit diverges, implicit does not.
+
+    Same model, same stiff gains, same timestep, stepped through a solver.
+    """
+    h = 0.01
+    kp_val, kd_val, target, steps = 5.0e4, 300.0, 1.0, 300
+
+    def run(implicit):
+        model = _build_single_revolute(device)
+        s_in, s_out = model.state(), model.state()
+        control = model.control()
+        control.joint_target_q.assign(np.array([target], dtype=np.float32))
+        oracle = ResponseOracle(model)
+        actuator = Actuator(
+            indices=wp.array(np.arange(model.joint_dof_count, dtype=np.uint32), device=device),
+            controller=ControllerPD(
+                kp=wp.array([kp_val], dtype=float, device=device),
+                kd=wp.array([kd_val], dtype=float, device=device),
+            ),
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        if implicit:
+            actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        solver = newton.solvers.SolverFeatherstone(model)
+        for _ in range(steps):
+            control.joint_f.zero_()
+            oracle.refresh(s_in)
+            actuator.step(s_in, control, dt=h)
+            solver.step(s_in, s_out, control, None, dt=h)
+            s_in, s_out = s_out, s_in
+        return float(s_in.joint_q.numpy()[0])
+
+    explicit_q = run(implicit=False)
+    implicit_q = run(implicit=True)
+    test.assertFalse(np.isfinite(explicit_q) and abs(explicit_q) < 10.0 * target)
+    test.assertTrue(np.isfinite(implicit_q))
+    test.assertAlmostEqual(implicit_q, target, delta=0.05)
+
+
+def test_multi_articulation_indexing(test, device):
+    """Two articulations in one model solve with their own response blocks.
+
+    Every other test uses a single articulation, so ``art_base`` is always 0 and
+    an articulation-local index bug would be invisible. Here the second
+    articulation's DOFs start at a nonzero base and carry different gains.
+    """
+    h = 0.01
+    kp = np.array([300.0, 200.0, 500.0, 400.0], dtype=np.float32)
+    kd = np.array([3.0, 2.0, 5.0, 4.0], dtype=np.float32)
+    q0 = np.array([0.3, -0.8, 0.1, -0.2], dtype=np.float32)
+    target = np.array([0.6, 0.4, -0.3, 0.5], dtype=np.float32)
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    for _ in range(2):
+        builder.add_builder(_two_link_builder())
+    model = builder.finalize(device=device)
+    test.assertEqual(model.articulation_count, 2)
+    n = model.joint_dof_count
+    test.assertEqual(n, 4)
+
+    state = model.state()
+    state.joint_q.assign(q0)
+    control = model.control()
+    control.joint_target_q.assign(target)
+
+    oracle = ResponseOracle(model)
+    actuator = _make_actuator(
+        model,
+        device,
+        kp=wp.array(kp, dtype=float, device=device),
+        kd=wp.array(kd, dtype=float, device=device),
+        effective_inv_mass=oracle,
+    )
+    control.joint_f.zero_()
+    _step(actuator, state, control, h)
+
+    # Each articulation is its own 2x2 coupled solve.
+    blocks = oracle.inverse_blocks.numpy()
+    expected = np.zeros(n, dtype=np.float64)
+    for a in range(2):
+        sl = slice(2 * a, 2 * a + 2)
+        A = blocks[a, :2, :2]
+        f0 = kp[sl] * (target[sl] - q0[sl])
+        J = np.eye(2) + h * np.diag(h * kp[sl] + kd[sl]) @ A
+        expected[sl] = np.linalg.solve(J, h * f0) / h
+    np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
+
+
+def test_refresh_does_not_mutate_state(test, device):
+    """``refresh()`` must not write back into the caller's state.
+
+    It runs forward kinematics internally; doing that on the caller's state would
+    overwrite ``body_q``/``body_qd``, which are authoritative for
+    maximal-coordinate solvers.
+    """
+    model = _build_two_link(device)
+    state = model.state()
+    state.joint_q.assign(np.array([0.3, -0.8], dtype=np.float32))
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    # Move the body pose away from FK of joint_q.
+    body_q = state.body_q.numpy().copy()
+    body_q[:, 0] += 5.0
+    state.body_q.assign(body_q)
+
+    ResponseOracle(model).refresh(state)
+    np.testing.assert_allclose(state.body_q.numpy(), body_q, rtol=0, atol=0)
+
+
+def test_armature_enters_the_response(test, device):
+    """Joint armature is rotor inertia the solver feels, so it must reduce alpha."""
+    q0 = np.array([0.3, -0.8], dtype=np.float32)
+
+    def alpha_for(armature):
+        builder = _two_link_builder(armature=armature)
+        m = builder.finalize(device=device)
+        st = m.state()
+        st.joint_q.assign(q0)
+        o = ResponseOracle(m)
+        o.refresh(st)
+        return o.alpha.numpy().copy()
+
+    bare = alpha_for(0.0)
+    with_armature = alpha_for(0.5)
+    test.assertTrue(np.all(with_armature < bare))
+
+    # alpha must match a dense inverse of (H + diag(armature)).
+    builder = _two_link_builder(armature=0.5)
+    m = builder.finalize(device=device)
+    st = m.state()
+    st.joint_q.assign(q0)
+    newton.eval_fk(m, st.joint_q, st.joint_qd, st)
+    H = newton.eval_mass_matrix(m, st).numpy()[0, :2, :2] + np.diag([0.5, 0.5])
+    np.testing.assert_allclose(with_armature, np.diag(np.linalg.inv(H)), rtol=1e-4)
+
+
+def test_bind_params_is_idempotent(test, device):
+    """Re-binding must not detach the installed solve from later writes."""
+    h = 0.01
+    kp1, kp2, kd_val = 500.0, 2000.0, 5.0
+    q0, target = 0.2, 1.0
+
+    model = _build_single_revolute(device)
+    state = model.state()
+    state.joint_q.assign(np.array([q0], dtype=np.float32))
+    control = model.control()
+    control.joint_target_q.assign(np.array([target], dtype=np.float32))
+
+    actuator = _make_actuator(
+        model,
+        device,
+        kp=wp.array([kp1], dtype=float, device=device),
+        kd=wp.array([kd_val], dtype=float, device=device),
+    )
+
+    def expected(kp):
+        alpha = _alpha_reference(model, state)[0]
+        return kp * (target - q0) / (1.0 + alpha * h * kd_val + alpha * h * h * kp)
+
+    pack = actuator.controller.bind_params()
+    test.assertIs(actuator.controller.bind_params(), pack)
+
+    actuator.controller.kp.assign(np.array([kp2], dtype=np.float32))
+    control.joint_f.zero_()
+    _step(actuator, state, control, h)
+    test.assertAlmostEqual(control.joint_f.numpy()[0], expected(kp2), delta=abs(expected(kp2)) * 1e-4)
+
+
+def test_validation_rejects_bad_options(test, device):
+    """dt and warm_start are validated rather than silently misbehaving."""
+    model = _build_single_revolute(device)
+    kp = wp.array([100.0], dtype=float, device=device)
+    kd = wp.array([1.0], dtype=float, device=device)
+
+    with test.assertRaisesRegex(ValueError, "warm_start"):
+        _make_actuator(model, device, kp=kp, kd=kd, options=ActuatorImplicitOptions(warm_start="Zero"))
+
+    actuator = _make_actuator(model, device, kp=kp, kd=kd)
+    with test.assertRaisesRegex(ValueError, "dt > 0"):
+        actuator.step(model.state(), model.control(), dt=0.0)
+
+
 devices = get_test_devices()
 
 
@@ -1324,8 +1522,8 @@ add_function_test(
 )
 add_function_test(
     TestActuatorImplicit,
-    "test_response_from_featherstone_impulse_probe",
-    test_response_from_featherstone_impulse_probe,
+    "test_prediction_matches_featherstone_step",
+    test_prediction_matches_featherstone_step,
     devices=devices,
 )
 add_function_test(
@@ -1376,8 +1574,8 @@ if _HAS_ONNX and _HAS_WARP_NN:
     )
     add_function_test(
         TestActuatorImplicit,
-        "test_neural_lstm_implicit_linearized",
-        test_neural_lstm_implicit_linearized,
+        "test_neural_lstm_implicit_rejected",
+        test_neural_lstm_implicit_rejected,
         devices=devices,
     )
 add_function_test(
@@ -1394,6 +1592,30 @@ add_function_test(
     "test_selection_api_updates_implicit_solve",
     test_selection_api_updates_implicit_solve,
     devices=devices,
+)
+add_function_test(
+    TestActuatorImplicit, "test_singular_jacobian_stays_finite", test_singular_jacobian_stays_finite, devices=devices
+)
+add_function_test(
+    TestActuatorImplicit,
+    "test_implicit_beats_explicit_at_stiff_gains",
+    test_implicit_beats_explicit_at_stiff_gains,
+    devices=devices,
+)
+add_function_test(
+    TestActuatorImplicit, "test_multi_articulation_indexing", test_multi_articulation_indexing, devices=devices
+)
+add_function_test(
+    TestActuatorImplicit, "test_refresh_does_not_mutate_state", test_refresh_does_not_mutate_state, devices=devices
+)
+add_function_test(
+    TestActuatorImplicit, "test_armature_enters_the_response", test_armature_enters_the_response, devices=devices
+)
+add_function_test(
+    TestActuatorImplicit, "test_bind_params_is_idempotent", test_bind_params_is_idempotent, devices=devices
+)
+add_function_test(
+    TestActuatorImplicit, "test_validation_rejects_bad_options", test_validation_rejects_bad_options, devices=devices
 )
 add_function_test(TestActuatorImplicit, "test_validation_errors", test_validation_errors, devices=devices)
 
