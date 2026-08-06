@@ -10624,12 +10624,12 @@ class ModelBuilder:
                 )
 
         def _topology_array(name: str, values: list, expected_shape: tuple[int, ...]) -> np.ndarray:
-            if len(values) == 0:
-                return np.empty(expected_shape, dtype=np.int64)
             try:
                 array = np.asarray(values, dtype=np.int64)
             except (OverflowError, TypeError, ValueError) as exc:
                 raise ValueError(f"Invalid {name}: expected integer indices with shape {expected_shape}.") from exc
+            if array.size == 0 and expected_shape[0] == 0:
+                return array.reshape(expected_shape)
             if array.shape != expected_shape:
                 raise ValueError(f"Invalid {name} shape: expected {expected_shape}, got {array.shape}.")
             return array

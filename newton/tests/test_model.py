@@ -248,6 +248,48 @@ class TestModelMesh(unittest.TestCase):
             mesh.vertices = vertices[:2]
         np.testing.assert_array_equal(mesh.vertices, vertices)
 
+    def test_mesh_finalize_rejects_in_place_invalid_indices(self):
+        """Reject in-place index corruption before native mesh creation."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        mesh = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False)
+        mesh.indices[2] = len(vertices)
+        mesh.invalidate_cache()
+
+        with self.assertRaisesRegex(ValueError, "exceeds vertex count 3"):
+            mesh.finalize(device="cpu")
+
+    def test_compute_convex_hull_replaces_geometry_atomically(self):
+        """Replace hull vertices and indices as one validated geometry update."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        mesh = newton.Mesh(vertices, [0, 1, 3], compute_inertia=False)
+        hull_vertices = vertices[:3].copy()
+        hull_indices = np.array([0, 1, 2], dtype=np.int32)
+
+        with mock.patch(
+            "newton._src.geometry.utils.remesh_convex_hull",
+            return_value=(hull_vertices, hull_indices),
+        ):
+            result = mesh.compute_convex_hull(replace=True)
+
+        self.assertIs(result, mesh)
+        np.testing.assert_array_equal(mesh.vertices, hull_vertices)
+        np.testing.assert_array_equal(mesh.indices, hull_indices)
+
     def test_empty_numeric_custom_attribute_uses_wp_full_default(self):
         attr = ModelBuilder.CustomAttribute(
             name="default_shape_attr",
@@ -1857,6 +1899,22 @@ class TestModelMesh(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "edge_indices.*opposite vertex"):
             builder.finalize(device="cpu")
+
+    def test_validate_structure_rejects_missing_topology_indices(self):
+        """Reject empty connectivity when its element data is nonempty."""
+        builder = ModelBuilder()
+        builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_spring(0, 1, ke=1.0, kd=0.0, control=0.0)
+        builder.spring_indices.clear()
+
+        def zero_array(shape, dtype):
+            return np.zeros(shape, dtype=dtype)
+
+        # Make the former uninitialized path look valid to ensure shape is checked before bounds.
+        with mock.patch("newton._src.sim.builder.np.empty", side_effect=zero_array):
+            with self.assertRaisesRegex(ValueError, "Invalid spring_indices shape"):
+                builder._validate_structure()
 
 
 class TestShapeConfigValidation(unittest.TestCase):
