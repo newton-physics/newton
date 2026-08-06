@@ -1559,6 +1559,7 @@ def test_pipeline_soft_self_contact(test, device):
     test.assertIsNotNone(contacts_a.soft_self_contact_data)
     test.assertIsNot(contacts_a.soft_self_contact_data, contacts_b.soft_self_contact_data)
 
+    pipeline.refit_soft_self_contact_bvh(state.particle_q)  # BVH upkeep is the caller's job
     for contacts in (contacts_a, contacts_b):
         pipeline.collide(state, contacts, soft_self_contact=True)
         data = contacts.soft_self_contact_data

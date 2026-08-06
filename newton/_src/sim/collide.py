@@ -1344,21 +1344,17 @@ class CollisionPipeline:
         # Any previously built detector was configured with the old settings.
         self._soft_self_contact_detector = None
 
-    def _get_soft_self_contact_detector(self, contacts: Contacts) -> TriMeshCollisionDetector:
-        """Return the shared detector bound to ``contacts.soft_self_contact_data``.
+    def _ensure_soft_self_contact_detector(self, collision_info=None) -> TriMeshCollisionDetector:
+        """Return the shared detector, creating it on first need.
 
-        Created lazily on first use (solver construction or first
-        ``collide(soft_self_contact=True)`` call); afterwards only re-pointed,
-        so one detector (one BVH set) serves any number of Contacts buffers.
+        Creation triggers are all explicit: an owning solver's construction, a
+        BVH refit/rebuild call, or the first ``collide(soft_self_contact=True)``
+        call — never eagerly.
         """
-        data = contacts.soft_self_contact_data
-        if data is None:
-            raise ValueError(
-                "This Contacts buffer has no soft_self_contact_data; allocate it with "
-                "CollisionPipeline.contacts() after init_soft_self_contact()."
-            )
-        cfg = self._soft_self_contact_config
+        if not self._soft_self_contact:
+            raise ValueError("configure the pipeline with init_soft_self_contact() first.")
         if self._soft_self_contact_detector is None:
+            cfg = self._soft_self_contact_config
             self._soft_self_contact_detector = TriMeshCollisionDetector(
                 self.model,
                 record_triangle_contacting_vertices=cfg["record_triangle_contacting_vertices"],
@@ -1368,27 +1364,44 @@ class CollisionPipeline:
                 topological_contact_filter_threshold=cfg["topological_filter_threshold"],
                 external_vertex_triangle_filtering_map=cfg["external_vertex_filter_map"],
                 external_edge_edge_filtering_map=cfg["external_edge_filter_map"],
-                collision_info=data,
+                collision_info=collision_info,
             )
-        elif self._soft_self_contact_detector.collision_info is not data:
-            self._soft_self_contact_detector._bind_external_buffers(data)
         return self._soft_self_contact_detector
 
-    def rebuild_soft_self_contact_bvh(self, state: State) -> None:
-        """Rebuild (rather than refit) the soft self-contact BVHs from ``state.particle_q``.
-
-        Refitting inside :meth:`collide` degrades BVH quality under large
-        deformation; call this periodically (e.g. once per frame) to restore
-        query efficiency. Requires the detector to exist already — run one
-        ``collide(soft_self_contact=True)`` call (or construct the owning
-        solver) first.
-        """
-        if self._soft_self_contact_detector is None:
+    def _get_soft_self_contact_detector(self, contacts: Contacts) -> TriMeshCollisionDetector:
+        """Return the shared detector re-pointed at ``contacts.soft_self_contact_data``."""
+        data = contacts.soft_self_contact_data
+        if data is None:
             raise ValueError(
-                "No soft self-contact detector yet; call collide(soft_self_contact=True) "
-                "once (or construct the owning solver) before rebuilding its BVHs."
+                "This Contacts buffer has no soft_self_contact_data; allocate it with "
+                "CollisionPipeline.contacts() after init_soft_self_contact()."
             )
-        self._soft_self_contact_detector.rebuild(state.particle_q)
+        detector = self._ensure_soft_self_contact_detector(collision_info=data)
+        if detector.collision_info is not data:
+            detector._bind_external_buffers(data)
+        return detector
+
+    def refit_soft_self_contact_bvh(self, new_pos: wp.array[wp.vec3], rebuild: bool = False) -> None:
+        """Refit (or fully rebuild) the soft self-contact BVHs to ``new_pos``.
+
+        Keeping the BVHs up to date is the caller's responsibility:
+        :meth:`collide` never updates them, and self-contact detection reads
+        the positions of the last refit/rebuild. Call this after particle
+        positions change; pass ``rebuild=True`` to rebuild the trees from
+        scratch when repeated refitting has degraded their quality under large
+        deformation. (An owning solver refits internally as part of its own
+        detection procedure.)
+
+        Args:
+            new_pos: Particle positions [m] to fit the BVHs to, e.g.
+                ``state.particle_q``.
+            rebuild: Rebuild the trees instead of refitting them.
+        """
+        detector = self._ensure_soft_self_contact_detector()
+        if rebuild:
+            detector.rebuild(new_pos)
+        else:
+            detector.refit(new_pos)
 
     def reset_contact_matching(self, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Clear all or reset-selected previous-frame contact history.
@@ -1460,7 +1473,9 @@ class CollisionPipeline:
                 :class:`DeprecationWarning` is emitted.
             soft_self_contact: Also run soft (cloth) self-contact detection
                 into ``contacts.soft_self_contact_data``. Requires
-                :meth:`init_soft_self_contact` to have been called.
+                :meth:`init_soft_self_contact` to have been called. The
+                self-contact BVHs are **not** updated by this call — keep them
+                current via :meth:`refit_soft_self_contact_bvh`.
         """
         # Keep the buffer's full-surface capability marker in sync with this pipeline on every call.
         # collide() may be handed a Contacts created elsewhere (or by a flag-off pipeline); the edge/
@@ -1823,6 +1838,8 @@ class CollisionPipeline:
             detector = self._get_soft_self_contact_detector(contacts)
             cfg = self._soft_self_contact_config
             query_radius = cfg["margin"] + cfg["gap"]
-            detector.refit(state.particle_q)
+            # The BVHs (and the positions detection reads) are NOT updated here —
+            # keeping them current via refit_soft_self_contact_bvh() is
+            # the caller's responsibility.
             detector.vertex_triangle_collision_detection(query_radius, min_query_radius=cfg["min_query_radius"])
             detector.edge_edge_collision_detection(query_radius, min_query_radius=cfg["min_query_radius"])
