@@ -1202,12 +1202,14 @@ class CollisionPipeline:
         else:
             self._contact_matcher = None
 
-        # Soft (cloth) self-contact: disabled until init_soft_self_contact() configures
-        # it. That explicit opt-in also creates the shared detector, which is then
-        # re-pointed per Contacts buffer; see _get_soft_self_contact_detector.
-        self._soft_self_contact = False
-        self._soft_self_contact_config: dict | None = None
+        # Soft (cloth) self-contact: disabled until init_soft_self_contact() creates
+        # the shared detector (re-pointed per Contacts buffer; see
+        # _get_soft_self_contact_detector). The margin/gap/min-query values are the
+        # only configuration consumed after creation, at detection time.
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
+        self._soft_self_contact_margin = 0.0
+        self._soft_self_contact_gap = 0.0
+        self._soft_self_contact_min_query_radius = 0.0
 
     @property
     def rigid_contact_max(self) -> int:
@@ -1245,16 +1247,17 @@ class CollisionPipeline:
             notice (see :meth:`collide`).
         """
         soft_self_kwargs = {}
-        if self._soft_self_contact:
-            _cfg = self._soft_self_contact_config
+        detector = self._soft_self_contact_detector
+        if detector is not None:
+            # Buffer sizing mirrors the detector configured by init_soft_self_contact().
             soft_self_kwargs = {
                 "soft_self_contact": True,
                 "particle_count": self.model.particle_count,
                 "tri_count": self.model.tri_count,
                 "edge_count": self.model.edge_count,
-                "soft_self_contact_vertex_buffer_pre_alloc": _cfg["vertex_buffer_pre_alloc"],
-                "soft_self_contact_edge_buffer_pre_alloc": _cfg["edge_buffer_pre_alloc"],
-                "soft_self_contact_record_triangle_vertices": _cfg["record_triangle_contacting_vertices"],
+                "soft_self_contact_vertex_buffer_pre_alloc": detector.vertex_collision_buffer_pre_alloc,
+                "soft_self_contact_edge_buffer_pre_alloc": detector.edge_collision_buffer_pre_alloc,
+                "soft_self_contact_record_triangle_vertices": detector.record_triangle_contacting_vertices,
             }
         contacts = Contacts(
             self.rigid_contact_max,
@@ -1328,19 +1331,9 @@ class CollisionPipeline:
             raise ValueError(f"soft self-contact gap must be >= 0, got {gap}")
         if self.model.tri_count == 0:
             raise ValueError("init_soft_self_contact() requires a model with triangles (cloth/soft mesh).")
-        self._soft_self_contact = True
-        self._soft_self_contact_config = {
-            "margin": margin,
-            "gap": gap,
-            "min_query_radius": min_query_radius,
-            "vertex_buffer_pre_alloc": vertex_buffer_pre_alloc,
-            "edge_buffer_pre_alloc": edge_buffer_pre_alloc,
-            "edge_edge_parallel_epsilon": edge_edge_parallel_epsilon,
-            "record_triangle_contacting_vertices": record_triangle_contacting_vertices,
-            "topological_filter_threshold": topological_filter_threshold,
-            "external_vertex_filter_map": external_vertex_filter_map,
-            "external_edge_filter_map": external_edge_filter_map,
-        }
+        self._soft_self_contact_margin = margin
+        self._soft_self_contact_gap = gap
+        self._soft_self_contact_min_query_radius = min_query_radius
         # The explicit opt-in is what creates the detector (its BVHs are built
         # from model.particle_q); the result struct stays unallocated until the
         # first Contacts buffer is bound. Re-configuring rebuilds the detector.
@@ -1823,16 +1816,14 @@ class CollisionPipeline:
         # Soft (cloth) self-contact detection (opt-in per call; results land in
         # contacts.soft_self_contact_data).
         if soft_self_contact:
-            if not self._soft_self_contact:
-                raise ValueError(
-                    "collide(soft_self_contact=True) requires configuring the pipeline "
-                    "with init_soft_self_contact() first."
-                )
             detector = self._get_soft_self_contact_detector(contacts)
-            cfg = self._soft_self_contact_config
-            query_radius = cfg["margin"] + cfg["gap"]
+            query_radius = self._soft_self_contact_margin + self._soft_self_contact_gap
             # The BVHs (and the positions detection reads) are NOT updated here —
             # keeping them current via refit_soft_self_contact_bvh() is
             # the caller's responsibility.
-            detector.vertex_triangle_collision_detection(query_radius, min_query_radius=cfg["min_query_radius"])
-            detector.edge_edge_collision_detection(query_radius, min_query_radius=cfg["min_query_radius"])
+            detector.vertex_triangle_collision_detection(
+                query_radius, min_query_radius=self._soft_self_contact_min_query_radius
+            )
+            detector.edge_edge_collision_detection(
+                query_radius, min_query_radius=self._soft_self_contact_min_query_radius
+            )
