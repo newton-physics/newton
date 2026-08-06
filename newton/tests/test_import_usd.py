@@ -12730,6 +12730,7 @@ def Sphere "AppendedSchema" (
 class TestPhysicsSceneAccessor(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scenes(self):
+        """Return all physics scene prims in parser order."""
         from pxr import Usd, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -12740,6 +12741,7 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_no_scene(self):
+        """Return an empty list when no physics scenes exist."""
         from pxr import Usd
 
         stage = Usd.Stage.CreateInMemory()
@@ -12749,6 +12751,7 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_range(self):
+        """Restrict physics scene discovery to requested ranges."""
         from pxr import Usd, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -12760,6 +12763,7 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_instance_proxy(self):
+        """Find physics scenes beneath instanceable prims."""
         from pxr import Usd, UsdPhysics
 
         asset = Usd.Stage.CreateInMemory()
