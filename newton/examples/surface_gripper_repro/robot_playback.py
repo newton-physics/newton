@@ -95,6 +95,7 @@ def sample_playback_kernel(
     rec_times: wp.array[float],  # [N] recorded sample times [s], monotonic
     rec_targets: wp.array2d[float],  # [N, num_dofs] coupled arm targets [rad]
     rec_engaged: wp.array[wp.bool],  # [N] suction-cup engagement command (ro[0]) per frame
+    rec_preparing: wp.array[wp.bool],  # [N] preparing-to-engage signal (ro[2]) per frame
     sim_step_count: wp.array[
         int
     ],  # in/out: device sub-step counter (current time = sim_step_count[0] * dt); advanced in place
@@ -103,6 +104,7 @@ def sample_playback_kernel(
     # outputs
     joint_target_q: wp.array[float],  # [num_dofs] interpolated position targets [rad]
     engaged: wp.array[wp.bool],  # [1] engagement command sampled at the current time
+    preparing: wp.array[wp.bool],  # [1] preparing-to-engage signal sampled at the current time
 ):
     """Interpolate the recorded joint position targets and sample the engagement command at the
     current time (one thread per DOF); advance the sub-step counter for the next sub-step.
@@ -111,7 +113,8 @@ def sample_playback_kernel(
     only advances, the bracketing samples are found by a forward search resumed from the cached
     ``last_lo`` (usually 0-1 steps) rather than a fresh binary search, and the new index is cached
     back. Engagement is a step signal, so its value at ``t`` is ``rec_engaged[lo]``. Clamps to the
-    last sample past the end, so the arm holds the final recorded pose.
+    last sample past the end, so the arm holds the final recorded pose. ``preparing`` is sampled the same
+    way from ``rec_preparing`` (a lead-in before each engagement).
     """
     dof = wp.tid()
     n = rec_times.shape[0]
@@ -131,6 +134,7 @@ def sample_playback_kernel(
     if dof == 0:
         last_lo[0] = lo
         engaged[0] = rec_engaged[lo]  # step signal: value of the most recent frame at or before t
+        preparing[0] = rec_preparing[lo]  # step signal, same as engaged
 
     if lo >= n - 1:
         joint_target_q[dof] = rec_targets[n - 1, dof]  # past the end: hold the last recorded pose
@@ -169,17 +173,19 @@ def _arm_targets_rad(frame, num_arm_dofs) -> np.ndarray:
 def _load_playback(path, num_arm_dofs):
     """Load a recording and extract the arrays the sim consumes.
 
-    Returns ``(rec_times, rec_targets, rec_engaged, rec_duration)``:
+    Returns ``(rec_times, rec_targets, rec_engaged, rec_preparing, rec_duration)``:
         - ``rec_times``: sample times [s], shape [N], starting at 0 (:func:`recorded_times`).
         - ``rec_targets``: coupled arm joint targets [rad], shape [N, num_arm_dofs].
         - ``rec_engaged``: suction-cup engagement command (robot output ro[0]) per frame, shape [N] bool.
+        - ``rec_preparing``: preparing-to-engage signal (robot output ro[2], baked in) per frame, shape [N] bool.
         - ``rec_duration``: recording length [s] (``rec_times[-1]``).
     """
     frames = load_recording(path)
     rec_times = np.asarray(recorded_times(frames), dtype=np.float64)
     rec_targets = np.stack([_arm_targets_rad(f, num_arm_dofs) for f in frames]).astype(np.float64)
     rec_engaged = np.array([f.ro[0] for f in frames], dtype=bool)  # [N]
-    return rec_times, rec_targets, rec_engaged, float(rec_times[-1])
+    rec_preparing = np.array([f.ro[2] for f in frames], dtype=bool)  # [N]
+    return rec_times, rec_targets, rec_engaged, rec_preparing, float(rec_times[-1])
 
 
 def _gaussian_smooth(times, values, sigma):
@@ -207,18 +213,19 @@ class RobotPlayback:
     """
 
     def __init__(self, path, smoothing_sigma, num_arm_dofs):
-        rec_times, rec_targets, rec_engaged, self.rec_duration = _load_playback(path, num_arm_dofs)
+        rec_times, rec_targets, rec_engaged, rec_preparing, self.rec_duration = _load_playback(path, num_arm_dofs)
         rec_targets = _gaussian_smooth(rec_times, rec_targets, smoothing_sigma)  # smooth the coarse waypoints
         self.rec_times_wp = wp.array(rec_times, dtype=wp.float32)  # [N] sample times [s]
         self.rec_targets_wp = wp.array(rec_targets, dtype=wp.float32)  # [N, num_arm_dofs] coupled targets [rad]
         self.rec_engaged_wp = wp.array(rec_engaged, dtype=wp.bool)  # [N] engagement command per frame
+        self.rec_preparing_wp = wp.array(rec_preparing, dtype=wp.bool)  # [N] preparing-to-engage signal per frame
         # engage / disengage events: frame indices where the suction command rises (a pick) / falls (a release)
         self.rising = [i for i in range(1, len(rec_engaged)) if rec_engaged[i] and not rec_engaged[i - 1]]
         self.falling = [i for i in range(1, len(rec_engaged)) if not rec_engaged[i] and rec_engaged[i - 1]]
 
-    def step(self, sim_step_count, last_lo, dt, joint_target_q, engaged):
+    def step(self, sim_step_count, last_lo, dt, joint_target_q, engaged, preparing):
         """Launch :func:`sample_playback_kernel`: interpolate the arm drive targets and sample the
-        engagement command at the current sub-step time, advancing the device clock in place.
+        engagement (and preparing-to-engage) commands at the current sub-step time, advancing the clock.
 
         Args:
             sim_step_count: [1] in/out device sub-step counter (current time = ``sim_step_count * dt``).
@@ -226,10 +233,19 @@ class RobotPlayback:
             dt: physics sub-step [s].
             joint_target_q: [num_arm_dofs] out interpolated position targets [rad].
             engaged: [1] out engagement command sampled at the current time.
+            preparing: [1] out preparing-to-engage flag sampled at the current time.
         """
         wp.launch(
             sample_playback_kernel,
             dim=self.rec_targets_wp.shape[1],  # one thread per arm DOF
-            inputs=[self.rec_times_wp, self.rec_targets_wp, self.rec_engaged_wp, sim_step_count, last_lo, float(dt)],
-            outputs=[joint_target_q, engaged],
+            inputs=[
+                self.rec_times_wp,
+                self.rec_targets_wp,
+                self.rec_engaged_wp,
+                self.rec_preparing_wp,
+                sim_step_count,
+                last_lo,
+                float(dt),
+            ],
+            outputs=[joint_target_q, engaged, preparing],
         )
