@@ -1,0 +1,87 @@
+name: Sync Upstream
+
+# Keeps this fork's `main` current with newton-physics/newton so it never
+# drifts far behind. Weekly (and on demand) it merges upstream/main into main:
+#   - clean merge -> pushed straight to main
+#   - conflicts   -> merge aborted and an issue is opened with resolution steps
+# Guarded to run only on the fork, never if this workflow lands upstream.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'  # Mondays 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream into main
+    if: github.repository == 'jkuzmeski/newton'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout main
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote and fetch
+        run: |
+          git remote add upstream https://github.com/newton-physics/newton.git
+          git fetch upstream --tags --prune
+
+      - name: Check how far behind upstream
+        id: behind
+        run: |
+          behind=$(git rev-list --count main..upstream/main)
+          echo "count=$behind" >> "$GITHUB_OUTPUT"
+          echo "main is $behind commit(s) behind upstream/main"
+
+      - name: Attempt merge
+        if: steps.behind.outputs.count != '0'
+        id: merge
+        run: |
+          set +e
+          git merge --no-edit upstream/main
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -ne 0 ]; then
+            echo "Merge conflicts detected; aborting."
+            git merge --abort
+          fi
+          exit 0
+
+      - name: Push clean merge to main
+        if: steps.behind.outputs.count != '0' && steps.merge.outputs.code == '0'
+        run: |
+          git push origin main
+          echo "Merged $(git rev-list --count HEAD ^origin/main || true) commit(s) and pushed to main."
+
+      - name: Open issue on conflict
+        if: steps.behind.outputs.count != '0' && steps.merge.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body=$'The scheduled upstream sync hit merge conflicts and could not merge automatically.\n\nResolve locally:\n\n```bash\ngit fetch upstream\ngit checkout main\ngit merge upstream/main\n# resolve conflicts, then:\ngit commit\ngit push origin main\n```\n\nTriggered by the `Sync Upstream` workflow.'
+          existing=$(gh issue list --state open --search "Upstream sync needs manual merge in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "Upstream sync needs manual merge ($(date +%F))" --body "$body"
+          fi
