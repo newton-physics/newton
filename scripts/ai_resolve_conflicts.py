@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
 """AI-assisted git merge conflict resolver.
 
-Resolves conflicts left by an in-progress ``git merge`` by asking an Anthropic
-model to produce a merged version of each conflicted text file, using full
-three-way context (base / ours / theirs). Resolved files are written back and
-staged. Binary conflicts are never touched. Intended for CI use by the
-``Sync Upstream`` workflow; run it while the merge is still in progress.
+Resolves conflicts left by an in-progress ``git merge`` by asking an LLM to
+produce a merged version of each conflicted text file, using full three-way
+context (base / ours / theirs). Resolved files are written back and staged.
+Binary conflicts are never touched. Intended for CI use by the ``Sync
+Upstream`` workflow; run it while the merge is still in progress.
 
-Environment:
-    ANTHROPIC_API_KEY   Required. Anthropic API key.
-    ANTHROPIC_MODEL     Optional. Model id (default: claude-sonnet-4-5).
-    AI_RESOLVE_MAX_TOKENS  Optional. Max output tokens per file (default 32000).
+Providers (env ``AI_RESOLVE_PROVIDER``):
+    anthropic       Anthropic Messages API (default). Key: ANTHROPIC_API_KEY.
+    github-models   GitHub Models, OpenAI-compatible. Key: GITHUB_TOKEN
+                    (needs ``models: read``) or AI_RESOLVE_API_KEY.
+    openai          Any OpenAI-compatible endpoint. Key: OPENAI_API_KEY
+                    or AI_RESOLVE_API_KEY.
+
+Other env:
+    AI_RESOLVE_MODEL       Model id (falls back to a per-provider default).
+    AI_RESOLVE_BASE_URL    Override the OpenAI-compatible base URL.
+    AI_RESOLVE_MAX_TOKENS  Max output tokens per file (default 32000).
 
 Exit codes:
     0  all conflicts resolved and staged (or nothing to resolve)
     1  one or more files could not be resolved (left for a human)
-    2  misconfiguration (missing API key)
+    2  misconfiguration (missing key / unknown provider)
 """
 
 from __future__ import annotations
@@ -27,11 +34,24 @@ import sys
 import urllib.error
 import urllib.request
 
-API_URL = "https://api.anthropic.com/v1/messages"
-MODEL = os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-4-5"
-API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+PROVIDER = (os.environ.get("AI_RESOLVE_PROVIDER") or "anthropic").lower()
 MAX_TOKENS = int(os.environ.get("AI_RESOLVE_MAX_TOKENS", "32000"))
 MARKERS = ("<<<<<<<", ">>>>>>>")
+
+_DEFAULT_MODEL = {
+    "anthropic": "claude-sonnet-4-5",
+    "github-models": "openai/gpt-4.1",
+    "openai": "gpt-4.1",
+}
+_DEFAULT_BASE_URL = {
+    "github-models": "https://models.github.ai/inference",
+    "openai": "https://api.openai.com/v1",
+}
+MODEL = (
+    os.environ.get("AI_RESOLVE_MODEL")
+    or os.environ.get("ANTHROPIC_MODEL")
+    or _DEFAULT_MODEL.get(PROVIDER, "claude-sonnet-4-5")
+)
 
 
 def sh(*args: str) -> subprocess.CompletedProcess:
@@ -44,12 +64,12 @@ def conflicted_files() -> list[str]:
 
 
 def stage_blob(stage: int, path: str) -> str | None:
-    """Return the text of a merge stage (1=base, 2=ours, 3=theirs), or None."""
+    """Return a merge stage (1=base, 2=ours, 3=theirs) as text, or None if binary."""
     r = subprocess.run(["git", "show", f":{stage}:{path}"], capture_output=True)
     if r.returncode != 0:
         return ""  # side added/removed the file; empty is the right context
     if b"\x00" in r.stdout:
-        return None  # binary
+        return None
     return r.stdout.decode("utf-8", errors="replace")
 
 
@@ -62,25 +82,47 @@ def strip_fences(text: str) -> str:
     return "\n".join(lines)
 
 
-def call_anthropic(prompt: str) -> str:
-    body = {
-        "model": MODEL,
-        "max_tokens": MAX_TOKENS,
-        "messages": [{"role": "user", "content": prompt}],
-    }
+def _post(url: str, headers: dict, body: dict) -> dict:
     req = urllib.request.Request(
-        API_URL,
+        url,
         data=json.dumps(body).encode("utf-8"),
-        headers={
-            "content-type": "application/json",
-            "x-api-key": API_KEY,
-            "anthropic-version": "2023-06-01",
-        },
+        headers={"content-type": "application/json", **headers},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=600) as resp:
-        data = json.loads(resp.read())
-    return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        return json.loads(resp.read())
+
+
+def _resolve_key() -> str | None:
+    if PROVIDER == "anthropic":
+        return os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("AI_RESOLVE_API_KEY")
+    if PROVIDER == "github-models":
+        return os.environ.get("AI_RESOLVE_API_KEY") or os.environ.get("GITHUB_TOKEN")
+    return os.environ.get("OPENAI_API_KEY") or os.environ.get("AI_RESOLVE_API_KEY")
+
+
+def call_llm(prompt: str) -> str:
+    key = _resolve_key()
+    if PROVIDER == "anthropic":
+        data = _post(
+            "https://api.anthropic.com/v1/messages",
+            {"x-api-key": key, "anthropic-version": "2023-06-01"},
+            {"model": MODEL, "max_tokens": MAX_TOKENS, "messages": [{"role": "user", "content": prompt}]},
+        )
+        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+
+    base = (os.environ.get("AI_RESOLVE_BASE_URL") or _DEFAULT_BASE_URL[PROVIDER]).rstrip("/")
+    data = _post(
+        f"{base}/chat/completions",
+        {"authorization": f"Bearer {key}"},
+        {
+            "model": MODEL,
+            "max_tokens": MAX_TOKENS,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+    )
+    return data["choices"][0]["message"]["content"]
 
 
 def build_prompt(path: str, base: str, ours: str, theirs: str, merged: str) -> str:
@@ -112,8 +154,11 @@ code fences, and no conflict markers (<<<<<<<, =======, >>>>>>>).
 
 
 def main() -> int:
-    if not API_KEY:
-        print("ERROR: ANTHROPIC_API_KEY is not set.", file=sys.stderr)
+    if PROVIDER not in ("anthropic", "github-models", "openai"):
+        print(f"ERROR: unknown AI_RESOLVE_PROVIDER '{PROVIDER}'.", file=sys.stderr)
+        return 2
+    if not _resolve_key():
+        print(f"ERROR: no API key/token for provider '{PROVIDER}'.", file=sys.stderr)
         return 2
 
     files = conflicted_files()
@@ -121,7 +166,7 @@ def main() -> int:
         print("No conflicted files to resolve.")
         return 0
 
-    print(f"Resolving {len(files)} conflicted file(s) with model '{MODEL}'.")
+    print(f"Resolving {len(files)} conflicted file(s) via '{PROVIDER}' model '{MODEL}'.")
     failed: list[str] = []
 
     for path in files:
@@ -141,8 +186,8 @@ def main() -> int:
             continue
 
         try:
-            resolved = strip_fences(call_anthropic(build_prompt(path, base, ours, theirs, merged)))
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as exc:
+            resolved = strip_fences(call_llm(build_prompt(path, base, ours, theirs, merged)))
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, KeyError) as exc:
             print(f"  ! {path}: API error ({exc})", file=sys.stderr)
             failed.append(path)
             continue

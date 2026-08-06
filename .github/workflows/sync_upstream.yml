@@ -8,8 +8,11 @@ name: Sync Upstream
 #   - LLM cannot solve -> merge aborted, a tracking issue is opened
 # Guarded to run only on the fork, never if this workflow lands upstream.
 #
-# Requires repo secret ANTHROPIC_API_KEY. Optional repo variable
-# ANTHROPIC_MODEL overrides the default model.
+# LLM provider is selectable via repo variable AI_RESOLVE_PROVIDER:
+#   anthropic      -> requires secret ANTHROPIC_API_KEY
+#   github-models  -> uses the built-in GITHUB_TOKEN (no extra key/billing)
+#   openai         -> requires secret OPENAI_API_KEY
+# Optional repo variable AI_RESOLVE_MODEL overrides the default model.
 
 on:
   schedule:
@@ -20,6 +23,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  models: read  # for the github-models LLM provider
 
 concurrency:
   group: sync-upstream
@@ -78,8 +82,11 @@ jobs:
         if: steps.behind.outputs.count != '0' && steps.merge.outputs.code != '0'
         id: airesolve
         env:
+          AI_RESOLVE_PROVIDER: ${{ vars.AI_RESOLVE_PROVIDER }}
+          AI_RESOLVE_MODEL: ${{ vars.AI_RESOLVE_MODEL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set +e
           python3 scripts/ai_resolve_conflicts.py
