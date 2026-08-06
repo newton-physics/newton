@@ -362,9 +362,9 @@ class TestSensorTiledCamera(unittest.TestCase):
             dtype=wp.vec3f,
             device="cpu",
         )
-        color_image = sensor.utils.create_color_image_output(width, height, world_count=1)
-        depth_image = sensor.utils.create_depth_image_output(width, height, world_count=1)
-        shape_index_image = sensor.utils.create_shape_index_image_output(width, height, world_count=1)
+        color_image = sensor.utils.create_color_image_output(width, height)
+        depth_image = sensor.utils.create_depth_image_output(width, height)
+        shape_index_image = sensor.utils.create_shape_index_image_output(width, height)
 
         sensor.update(
             model.state(),

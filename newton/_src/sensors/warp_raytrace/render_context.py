@@ -61,6 +61,7 @@ class RenderContext:
         self.__triangle_points: wp.array[wp.vec3f] | None = None
         self.__triangle_indices: wp.array[wp.int32] | None = None
         self.__topology_particle_mask: wp.array[wp.bool] | None = None
+        self.__empty_world_offsets: wp.array[wp.vec3f] | None = None
 
         self.__gaussians_data: wp.array[Gaussian.Data] | None = None
         self.__has_particles: bool = False
@@ -264,9 +265,11 @@ class RenderContext:
             if clear_data is None:
                 clear_data = RenderContext.DEFAULT_CLEAR_DATA
 
-            if world_offsets is None:
-                world_offsets = wp.array([], dtype=wp.vec3f, device=self.device)
-            elif world_offsets.shape[0] not in (0, self.world_count):
+            if world_offsets is None and config.render_worlds_together:
+                if self.__empty_world_offsets is None:
+                    self.__empty_world_offsets = wp.array([], dtype=wp.vec3f, device=self.device)
+                world_offsets = self.__empty_world_offsets
+            elif world_offsets is not None and world_offsets.shape[0] not in (0, self.world_count):
                 raise ValueError(
                     f"world_offsets size must match world_count {self.world_count}, got {world_offsets.shape[0]}"
                 )

@@ -223,31 +223,26 @@ class Example:
             self.sensor_tile_width,
             self.sensor_tile_height,
             self.camera_count,
-            world_count=self.world_count_total,
         )
         self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.utils.create_albedo_image_output(
             self.sensor_tile_width,
             self.sensor_tile_height,
             self.camera_count,
-            world_count=self.world_count_total,
         )
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(
             self.sensor_tile_width,
             self.sensor_tile_height,
             self.camera_count,
-            world_count=self.world_count_total,
         )
         self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.utils.create_normal_image_output(
             self.sensor_tile_width,
             self.sensor_tile_height,
             self.camera_count,
-            world_count=self.world_count_total,
         )
         self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.utils.create_shape_index_image_output(
             self.sensor_tile_width,
             self.sensor_tile_height,
             self.camera_count,
-            world_count=self.world_count_total,
         )
 
         # Palette for the "semantic" debug view: looked up by shape index.
@@ -404,6 +399,7 @@ class Example:
         return wp.array(offsets, dtype=wp.vec3f, device=self.model.device)
 
     def test_final(self):
+        """Verify tiled and combined-world sensor outputs."""
         self.render_sensors()
         self.check_sensor_outputs()
 
