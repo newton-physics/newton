@@ -5319,6 +5319,13 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
     def _extract_references(layer_str, parent_url_folder, parent_local_folder):
         """Extract references, queue downloads, and return rewritten layer text."""
         rewritten_layer_str = layer_str
+
+        def _neutralize_rejected_reference(match, raw_ref):
+            """Replace a rejected reference assignment with an empty list."""
+            nonlocal rewritten_layer_str
+            rewritten_layer_str = rewritten_layer_str.replace(match.group(0), "references = []", 1)
+            print(f"Skipping reference that escapes target folder: {raw_ref}")
+
         for match in re.finditer(r"references.=.@(.*?)@", layer_str):
             raw_ref = match.group(1)
             raw_ref_scheme = urlparse(raw_ref).scheme
@@ -5332,13 +5339,13 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
                     _reject_windows_rooted_usd_path(raw_ref)
                     local_path = _normalize_usd_cache_relative_path(posixpath.join(parent_local_folder, raw_ref))
                 except ValueError:
-                    print(f"Skipping reference that escapes target folder: {raw_ref}")
+                    _neutralize_rejected_reference(match, raw_ref)
                     continue
                 ref_url = urljoin(parent_url_folder + "/", raw_ref.replace("\\", "/"))
             try:
                 _resolve_usd_cache_path(target_folder_name, local_path)
             except ValueError:
-                print(f"Skipping reference that escapes target folder: {raw_ref}")
+                _neutralize_rejected_reference(match, raw_ref)
                 continue
             if ref_url not in downloaded_urls:
                 pending.append((ref_url, local_path))

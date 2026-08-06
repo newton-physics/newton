@@ -14573,6 +14573,13 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
         return posixpath.join("_external_usd", digest, basename)
 
+    def _assert_rejected_reference_removed(self, filename: str, raw_ref: str) -> None:
+        """Assert a cached layer neutralizes a rejected reference."""
+        with open(filename) as f:
+            layer_str = f.read()
+        self.assertNotIn(f"@{raw_ref}@", layer_str)
+        self.assertIn("references = []", layer_str)
+
     def _run_resolve(
         self,
         url_to_layer,
@@ -14761,11 +14768,12 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         url_to_layer = {
             "https://example.com/assets/scene.usd": "references = @../secret.usd@",
         }
-        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
         # Escaped reference must not be fetched or written.
         escaped_urls = [u for u in downloaded_urls if "secret.usd" in u]
         self.assertEqual(len(escaped_urls), 0)
         self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
+        self._assert_rejected_reference_removed(result, "../secret.usd")
 
     def test_windows_reference_escapes_are_rejected(self):
         """Reject Windows and mixed-separator references that escape the cache."""
@@ -14782,8 +14790,9 @@ class TestResolveUsdFromUrl(unittest.TestCase):
                     "https://example.com/assets/scene.usd": f"references = @{raw_ref}@",
                     resolved_url: "",
                 }
-                _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+                result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
                 self.assertNotIn(resolved_url, downloaded_urls)
+                self._assert_rejected_reference_removed(result, raw_ref)
 
     def test_nested_windows_reference_escapes_are_rejected(self):
         """Reject rooted Windows references found in nested layers."""
@@ -14795,7 +14804,7 @@ class TestResolveUsdFromUrl(unittest.TestCase):
                     "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
                     "https://example.com/assets/robots/robot.usd": f"references = @{raw_ref}@",
                 }
-                _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+                _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
                 self.assertEqual(
                     downloaded_urls,
                     [
@@ -14803,6 +14812,7 @@ class TestResolveUsdFromUrl(unittest.TestCase):
                         "https://example.com/assets/robots/robot.usd",
                     ],
                 )
+                self._assert_rejected_reference_removed(os.path.join(tmpdir, "robots", "robot.usd"), raw_ref)
 
     @unittest.skipUnless(hasattr(os, "symlink"), "Requires symlink support")
     def test_reference_symlink_escape_is_rejected(self):
@@ -14818,12 +14828,13 @@ class TestResolveUsdFromUrl(unittest.TestCase):
             def prepare_target(cache_dir):
                 os.symlink(outside_dir, os.path.join(cache_dir, "link"))
 
-            _result, _tmpdir, downloaded_urls = self._run_resolve(
+            result, _tmpdir, downloaded_urls = self._run_resolve(
                 url_to_layer,
                 prepare_target=prepare_target,
             )
             self.assertNotIn(child_url, downloaded_urls)
             self.assertFalse(os.path.exists(os.path.join(outside_dir, "escape.usd")))
+            self._assert_rejected_reference_removed(result, "link/escape.usd")
 
     def test_cleartext_top_level_url_rejected(self):
         """Top-level USD downloads must use HTTPS."""
