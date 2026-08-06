@@ -308,7 +308,7 @@ def setup_test_fourbar_model(
 
 
 def sample_base_state_wp(model: ModelKamino, rng: np.random.Generator):
-    base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng, max_pos=0.1)
+    base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng, max_pos=0.05)
     base_q = wp.from_numpy(base_q_np[0], dtype=wp.transformf, device=model.device)
     base_u = wp.from_numpy(base_u_np[0], dtype=wp.spatial_vectorf, device=model.device)
     return base_q, base_u
