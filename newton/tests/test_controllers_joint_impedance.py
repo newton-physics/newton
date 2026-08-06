@@ -700,6 +700,36 @@ class TestControllerJointImpedance(unittest.TestCase):
         )
         self.assertIsNotNone(ctrl)
 
+    def test_builder_reusable_after_construction(self):
+        """Verify construction snapshots the builder rather than consuming or modifying it.
+
+        The controller finalizes ``builder`` into a private model. That must
+        leave the caller's builder untouched and still independently usable, so
+        the same topology can also be built into the simulated model.
+        """
+        device = wp.get_device()
+        builder = _build_single_prismatic()
+        before = (builder.articulation_count, builder.joint_dof_count, list(builder.joint_type))
+
+        ControllerJointImpedance(
+            builder,
+            default_dof_indices=_iota(1, device),
+            stiffness=_gains(1, 1, 10.0, device),
+            damping=_gains(1, 1, 1.0, device),
+            use_gravity_compensation=False,
+            use_coriolis_compensation=False,
+            use_inertia_decoupling=False,
+            device=device,
+        )
+
+        after = (builder.articulation_count, builder.joint_dof_count, list(builder.joint_type))
+        self.assertEqual(before, after, "constructing the controller modified the builder")
+
+        # Snapshotted, not consumed: the builder can still be finalized on its own.
+        model = builder.finalize(device=device)
+        self.assertEqual(model.articulation_count, 1)
+        self.assertEqual(model.joint_dof_count, 1)
+
     def test_wrong_index_length_raises(self):
         """Verify that a mismatched default_dof_indices length raises ValueError."""
         device = wp.get_device()
