@@ -416,20 +416,13 @@ class TriMeshCollisionDetector:
             device=model.device,
         )
 
-        # collision detection results live in a TriMeshCollisionInfo owned outside the
-        # detector (D21/D27): injected by a result-owning container, or self-built here
-        if collision_info is None:
-            collision_info = build_tri_mesh_collision_info(
-                model.particle_count,
-                model.tri_count,
-                model.edge_count,
-                vertex_collision_buffer_pre_alloc=vertex_collision_buffer_pre_alloc,
-                triangle_collision_buffer_pre_alloc=triangle_collision_buffer_pre_alloc,
-                edge_collision_buffer_pre_alloc=edge_collision_buffer_pre_alloc,
-                record_triangle_contacting_vertices=record_triangle_contacting_vertices,
-                device=self.device,
-            )
-        self.collision_info = collision_info
+        # Collision detection results live in a TriMeshCollisionInfo owned outside
+        # the detector: injected by a result-owning container, or self-built lazily
+        # on first access (see the collision_info property). Lazy self-building means
+        # a detector created before its result buffers exist (e.g. by a BVH refit
+        # ahead of the first collide) never allocates arrays that would immediately
+        # be replaced by an injected struct.
+        self._collision_info = collision_info
 
         self.lower_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
         self.upper_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
@@ -470,7 +463,23 @@ class TriMeshCollisionDetector:
         properties below always go through ``self.collision_info``, so one
         detector (one BVH set) can serve any number of result buffers.
         """
-        self.collision_info = collision_info
+        self._collision_info = collision_info
+
+    @property
+    def collision_info(self) -> TriMeshCollisionInfo:
+        """The result struct; self-built on first access when none was injected."""
+        if self._collision_info is None:
+            self._collision_info = build_tri_mesh_collision_info(
+                self.model.particle_count,
+                self.model.tri_count,
+                self.model.edge_count,
+                vertex_collision_buffer_pre_alloc=self.vertex_collision_buffer_pre_alloc,
+                triangle_collision_buffer_pre_alloc=self.triangle_collision_buffer_pre_alloc,
+                edge_collision_buffer_pre_alloc=self.edge_collision_buffer_pre_alloc,
+                record_triangle_contacting_vertices=self.record_triangle_contacting_vertices,
+                device=self.device,
+            )
+        return self._collision_info
 
     # Result-array views into the owned/injected ``collision_info`` (D21: the
     # detector owns no result buffers). Read-only properties preserve the

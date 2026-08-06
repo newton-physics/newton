@@ -1341,31 +1341,24 @@ class CollisionPipeline:
             "external_vertex_filter_map": external_vertex_filter_map,
             "external_edge_filter_map": external_edge_filter_map,
         }
-        # Any previously built detector was configured with the old settings.
-        self._soft_self_contact_detector = None
+        # The explicit opt-in is what creates the detector (its BVHs are built
+        # from model.particle_q); the result struct stays unallocated until the
+        # first Contacts buffer is bound. Re-configuring rebuilds the detector.
+        self._soft_self_contact_detector = TriMeshCollisionDetector(
+            self.model,
+            record_triangle_contacting_vertices=record_triangle_contacting_vertices,
+            vertex_collision_buffer_pre_alloc=vertex_buffer_pre_alloc,
+            edge_collision_buffer_pre_alloc=edge_buffer_pre_alloc,
+            edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
+            topological_contact_filter_threshold=topological_filter_threshold,
+            external_vertex_triangle_filtering_map=external_vertex_filter_map,
+            external_edge_edge_filtering_map=external_edge_filter_map,
+        )
 
-    def _ensure_soft_self_contact_detector(self, collision_info=None) -> TriMeshCollisionDetector:
-        """Return the shared detector, creating it on first need.
-
-        Creation triggers are all explicit: an owning solver's construction, a
-        BVH refit/rebuild call, or the first ``collide(soft_self_contact=True)``
-        call — never eagerly.
-        """
-        if not self._soft_self_contact:
-            raise ValueError("configure the pipeline with init_soft_self_contact() first.")
+    def _ensure_soft_self_contact_detector(self) -> TriMeshCollisionDetector:
+        """Return the shared detector created by :meth:`init_soft_self_contact`."""
         if self._soft_self_contact_detector is None:
-            cfg = self._soft_self_contact_config
-            self._soft_self_contact_detector = TriMeshCollisionDetector(
-                self.model,
-                record_triangle_contacting_vertices=cfg["record_triangle_contacting_vertices"],
-                vertex_collision_buffer_pre_alloc=cfg["vertex_buffer_pre_alloc"],
-                edge_collision_buffer_pre_alloc=cfg["edge_buffer_pre_alloc"],
-                edge_edge_parallel_epsilon=cfg["edge_edge_parallel_epsilon"],
-                topological_contact_filter_threshold=cfg["topological_filter_threshold"],
-                external_vertex_triangle_filtering_map=cfg["external_vertex_filter_map"],
-                external_edge_edge_filtering_map=cfg["external_edge_filter_map"],
-                collision_info=collision_info,
-            )
+            raise ValueError("configure the pipeline with init_soft_self_contact() first.")
         return self._soft_self_contact_detector
 
     def _get_soft_self_contact_detector(self, contacts: Contacts) -> TriMeshCollisionDetector:
@@ -1376,8 +1369,10 @@ class CollisionPipeline:
                 "This Contacts buffer has no soft_self_contact_data; allocate it with "
                 "CollisionPipeline.contacts() after init_soft_self_contact()."
             )
-        detector = self._ensure_soft_self_contact_detector(collision_info=data)
-        if detector.collision_info is not data:
+        detector = self._ensure_soft_self_contact_detector()
+        # Compare the private slot: touching the collision_info property would
+        # lazily self-build the very buffers we are about to replace.
+        if detector._collision_info is not data:
             detector._bind_external_buffers(data)
         return detector
 
