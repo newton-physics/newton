@@ -94,6 +94,37 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.assertIn((-2147483648, 2147483647), actual_masks)
         self.assertIn((1, 1), actual_masks)
 
+    def test_shell_mesh_inertia_is_preserved_in_mujoco(self):
+        """Preserve hollow Newton mesh inertia when exporting to MuJoCo."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(np.eye(3)),
+        )
+        mesh = Mesh.create_box(0.1, 0.1, 0.01, compute_inertia=False)
+        builder.add_shape_mesh(
+            body=body,
+            mesh=mesh,
+            cfg=newton.ModelBuilder.ShapeConfig(density=0.0, is_solid=False),
+            label="shell_mesh",
+        )
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            xml_path = os.path.join(temp_dir, "shell_mesh.xml")
+            SolverMuJoCo(
+                model,
+                use_mujoco_cpu=True,
+                save_to_mjcf=xml_path,
+            )
+            mesh_element = ET.parse(xml_path).find("./asset/mesh")
+
+        self.assertIsNotNone(mesh_element)
+        self.assertEqual(mesh_element.get("inertia"), "shell")
+
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia

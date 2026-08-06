@@ -5541,6 +5541,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_transform = model.shape_transform.numpy()
         shape_type = model.shape_type.numpy()
         shape_size = model.shape_scale.numpy()
+        shape_is_solid = model.shape_is_solid.numpy()
         shape_flags = model.shape_flags.numpy()
         shape_collision_group = model.shape_collision_group.numpy()
         shape_world = model.shape_world.numpy()
@@ -6098,12 +6099,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                             f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
                             "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
                         )
-                    spec.add_mesh(
+                    mesh_spec = spec.add_mesh(
                         name=name,
                         uservert=vertices.flatten(),
                         userface=indices.flatten(),
                         maxhullvert=maxhullvert,
                     )
+                    if not shape_is_solid[shape]:
+                        mesh_spec.inertia = mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL
                     geom_params["meshname"] = name
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
