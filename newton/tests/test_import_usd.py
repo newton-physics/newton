@@ -14791,7 +14791,7 @@ class TestResolveUsdFromUrl(unittest.TestCase):
                     resolved_url: "",
                 }
                 result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
-                self.assertNotIn(resolved_url, downloaded_urls)
+                self.assertEqual(downloaded_urls, ["https://example.com/assets/scene.usd"])
                 self._assert_rejected_reference_removed(result, raw_ref)
 
     def test_nested_windows_reference_escapes_are_rejected(self):
