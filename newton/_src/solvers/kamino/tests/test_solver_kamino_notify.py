@@ -89,6 +89,23 @@ def _build_revolute(
     return builder.finalize()
 
 
+def _build_gimbal() -> tuple[newton.Model, int]:
+    """Build a minimal articulated three-axis D6 model for notify tests."""
+    builder = newton.ModelBuilder()
+    parent = builder.add_link()
+    child = builder.add_link()
+    root = builder.add_joint_fixed(-1, parent)
+    gimbal = builder.add_joint_d6(
+        parent,
+        child,
+        angular_axes=[
+            newton.ModelBuilder.JointDofConfig(axis=axis) for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
+        ],
+    )
+    builder.add_articulation([root, gimbal])
+    return builder.finalize(device="cpu"), gimbal
+
+
 def _build_free_body() -> newton.Model:
     """Build one free body so FK creates a synthetic base joint."""
     builder = newton.ModelBuilder()
@@ -353,7 +370,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
     def test_material_value_update_propagates(self):
         """Two shapes sharing one material can update it together and keep sharing it."""
         model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
-        solver = SolverKamino(model)
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=True))
         materials = solver._model_kamino.materials
         material_pairs = solver._model_kamino.material_pairs
         arrays = (
@@ -381,7 +398,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
     def test_default_material_update_propagates_to_default_pair(self):
         """Updating material zero keeps its explicit self-pair synchronized."""
         model = _build_revolute(shape_materials=((DEFAULT_FRICTION, DEFAULT_RESTITUTION),))
-        solver = SolverKamino(model)
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=True))
         materials = solver._model_kamino.materials
         material_pairs = solver._model_kamino.material_pairs
         np.testing.assert_array_equal(solver._model_kamino.geoms.material.numpy(), [0])
@@ -400,7 +417,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
     def test_material_ids_can_converge_to_same_values(self):
         """Distinct material IDs remain valid when their coefficients become equal."""
         model = _build_revolute(shape_materials=((0.2, 0.1), (0.6, 0.5)))
-        solver = SolverKamino(model)
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=True))
         materials = solver._model_kamino.materials
         geoms = solver._model_kamino.geoms
         material_mapping = geoms.material.numpy().copy()
@@ -417,7 +434,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
     def test_shape_without_material_is_ignored(self):
         """Shapes without a Kamino material mapping do not modify material tables."""
         model = _build_revolute(shape_materials=((0.2, 0.1),), has_shape_collision=False)
-        solver = SolverKamino(model)
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=True))
         materials = solver._model_kamino.materials
         before = (
             materials.restitution.numpy().copy(),
@@ -441,7 +458,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
     def test_material_structural_change_raises(self):
         """Two shapes sharing one material cannot update it to different values."""
         model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
-        solver = SolverKamino(model)
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=True))
         materials = solver._model_kamino.materials
         before = (
             materials.restitution.numpy().copy(),
@@ -453,6 +470,32 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "recreate"):
             solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
+        for actual, expected in zip(
+            (materials.restitution, materials.static_friction, materials.dynamic_friction),
+            before,
+            strict=True,
+        ):
+            np.testing.assert_array_equal(actual.numpy(), expected)
+
+    def test_external_collisions_allow_material_structural_change(self):
+        """Allow per-shape material changes when using external Newton collisions."""
+        model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=False))
+        materials = solver._model_kamino.materials
+        before = (
+            materials.restitution.numpy().copy(),
+            materials.static_friction.numpy().copy(),
+            materials.dynamic_friction.numpy().copy(),
+        )
+        updated_friction = np.array([0.2, 0.4], dtype=np.float32)
+        updated_restitution = np.array([0.1, 0.3], dtype=np.float32)
+        model.shape_material_mu.assign(updated_friction)
+        model.shape_material_restitution.assign(updated_restitution)
+
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        np.testing.assert_array_equal(model.shape_material_mu.numpy(), updated_friction)
+        np.testing.assert_array_equal(model.shape_material_restitution.numpy(), updated_restitution)
         for actual, expected in zip(
             (materials.restitution, materials.static_friction, materials.dynamic_friction),
             before,
@@ -508,6 +551,30 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         model.joint_limit_lower.assign([np.float32(-0.5)])
 
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_nonorthogonal_gimbal_axes_raise(self):
+        """Reject nonorthogonal gimbal axes when DoF properties are updated."""
+        model, gimbal = _build_gimbal()
+        solver = SolverKamino(model)
+        qd_start = model.joint_qd_start.numpy()[gimbal]
+        axes = model.joint_axis.numpy()
+        axes[qd_start + 1] = [1.0, 0.0, 0.0]
+        model.joint_axis.assign(axes)
+
+        with self.assertRaisesRegex(ValueError, "gimbal axes must be unit length and orthogonal"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_gimbal_handedness_change_raises(self):
+        """Reject reflected gimbal axes that flip handedness while staying orthonormal."""
+        model, gimbal = _build_gimbal()
+        solver = SolverKamino(model)
+        qd_start = model.joint_qd_start.numpy()[gimbal]
+        axes = model.joint_axis.numpy()
+        axes[qd_start + 2] = -axes[qd_start + 2]
+        model.joint_axis.assign(axes)
+
+        with self.assertRaisesRegex(ValueError, "gimbal axes must preserve the solver's original handedness"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_actuation_mode_change_raises(self):
         """Actuation type changes between active and passive raise under either relevant model flag."""

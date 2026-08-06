@@ -26,6 +26,7 @@ above ground, matches another simulator's output) belong elsewhere.
 """
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -1228,12 +1229,14 @@ def test_ball_loop_joint(test, device, solver_fn):
 
     # Ball loop joint at origin — must constrain only translation (3 DOFs),
     # leaving all 3 rotational DOFs free.
-    j_loop = builder.add_joint_ball(
-        parent=-1,
-        child=link,
-        parent_xform=wp.transform_identity(),
-        child_xform=wp.transform(wp.vec3(0.0, 0.25, 0.0), wp.quat_identity()),
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*FREE joint parallel.*", category=UserWarning)
+        j_loop = builder.add_joint_ball(
+            parent=-1,
+            child=link,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(wp.vec3(0.0, 0.25, 0.0), wp.quat_identity()),
+        )
     builder.joint_articulation[j_loop] = -1
 
     model = builder.finalize(device=device)
