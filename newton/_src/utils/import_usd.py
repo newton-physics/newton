@@ -452,6 +452,8 @@ def parse_usd(
               - The stage's Meters Per Unit (MPU) definition (1.0 by default)
             * - ``"scene_attributes"``
               - Dictionary of all attributes applied to the PhysicsScene prim
+            * - ``"physics_scene_path"``
+              - Prim path of the PhysicsScene selected during import, or ``None`` if no PhysicsScene was found
             * - ``"collapse_results"``
               - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if ``collapse_fixed_joints`` is True, otherwise None.
             * - ``"physics_dt"``
@@ -582,11 +584,9 @@ def parse_usd(
     native_exclude_paths = list(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )
-    physics_scene_prim, ret_dict = usd._load_physics_scene_prim(
-        stage,
-        root_path=root_path,
-        exclude_paths=native_exclude_paths,
-    )
+    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
+    physics_scene_prims = usd._get_physics_scene_prims(stage, ret_dict)
+    physics_scene_prim = physics_scene_prims[0] if physics_scene_prims else None
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
@@ -5004,6 +5004,7 @@ def parse_usd(
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,
         "scene_attributes": scene_attributes,
+        "physics_scene_path": str(physics_scene_prim.GetPath()) if physics_scene_prim is not None else None,
         "physics_dt": physics_dt,
         "collapse_results": collapse_results,
         "schema_attrs": R.schema_attrs,

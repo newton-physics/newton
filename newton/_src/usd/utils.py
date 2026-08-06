@@ -2295,42 +2295,25 @@ def _get_deformable_point_masses(prim: Usd.Prim, read_attr: Callable[[Usd.Prim, 
     return _validate_mass_array(val, str(prim.GetPath()))
 
 
-def _get_physics_scene_prim_from_results(stage: Usd.Stage, physics_results: dict[Any, Any]) -> Usd.Prim | None:
-    """Get the selected physics scene prim from parsed OpenUSD physics results."""
+def _get_physics_scene_prims(stage: Usd.Stage, physics_results: dict[Any, Any]) -> list[Usd.Prim]:
+    """Get physics scene prims from parsed OpenUSD physics results."""
     scene_results = physics_results.get(UsdPhysics.ObjectType.Scene)
     if scene_results is None:
-        return None
+        return []
 
     scene_paths, _ = scene_results
-    if not scene_paths:
-        return None
-    return stage.GetPrimAtPath(scene_paths[0])
+    return [stage.GetPrimAtPath(path) for path in scene_paths]
 
 
-def _load_physics_scene_prim(
+def get_physics_scene_prims(
     stage: Usd.Stage,
     root_path: str = "/",
     exclude_paths: Sequence[str] | None = None,
-) -> tuple[Usd.Prim | None, dict[Any, Any]]:
-    """Parse a USD range and return its selected scene prim and physics results."""
-    physics_results = UsdPhysics.LoadUsdPhysicsFromRange(
-        stage,
-        [root_path],
-        excludePaths=list(exclude_paths or ()),
-    )
-    return _get_physics_scene_prim_from_results(stage, physics_results), physics_results
-
-
-def get_physics_scene_prim(
-    stage: Usd.Stage,
-    root_path: str = "/",
-    exclude_paths: Sequence[str] | None = None,
-) -> Usd.Prim | None:
-    """Get the physics scene prim selected by Newton from a USD stage.
+) -> list[Usd.Prim]:
+    """Get physics scene prims from a USD stage.
 
     The search uses OpenUSD's physics parser, including its instance-proxy
-    traversal and subtree-pruning behavior. If multiple physics scenes are
-    found, Newton selects the first one reported by that parser.
+    traversal and subtree-pruning behavior.
 
     Args:
         stage: The USD stage to search.
@@ -2338,11 +2321,14 @@ def get_physics_scene_prim(
         exclude_paths: Prim paths whose subtrees should be excluded from the search.
 
     Returns:
-        The first prim with the ``UsdPhysics.Scene`` schema, or ``None`` if
-        the search range contains no physics scene.
+        Prims with the ``UsdPhysics.Scene`` schema in parser order.
     """
-    physics_scene_prim, _ = _load_physics_scene_prim(stage, root_path, exclude_paths)
-    return physics_scene_prim
+    physics_results = UsdPhysics.LoadUsdPhysicsFromRange(
+        stage,
+        [root_path],
+        excludePaths=list(exclude_paths or ()),
+    )
+    return _get_physics_scene_prims(stage, physics_results)
 
 
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:

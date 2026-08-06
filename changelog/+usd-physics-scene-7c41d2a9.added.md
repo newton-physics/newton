@@ -1,1 +1,1 @@
-Add `newton.usd.get_physics_scene_prim()` to retrieve the physics scene selected by `ModelBuilder.add_usd()`.
+Return the selected `physics_scene_path` from `ModelBuilder.add_usd()` and add `newton.usd.get_physics_scene_prims()` to retrieve all physics scene prims.
