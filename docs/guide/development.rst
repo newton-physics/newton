@@ -604,10 +604,18 @@ documentation.
 Changelog
 ---------
 
-Newton maintains a ``CHANGELOG.md`` at the repository root.
+Pull requests with user-facing changes add fragments under ``changelog/``
+instead of editing ``CHANGELOG.md``. Use a GitHub issue number as the identifier
+when one exists, or a readable identifier beginning with ``+`` for work without
+an issue. For example:
 
-When a pull request modifies user-facing behavior, add an entry under the
-``[Unreleased]`` section in the appropriate category:
+.. code-block:: text
+
+   3607.added.md
+   3607.fixed.md
+   +camera-rays-a1b2c3d4.added.md
+
+The supported categories are:
 
 - **Added** — new features
 - **Changed** — changes to existing functionality (include migration guidance)
@@ -616,9 +624,13 @@ When a pull request modifies user-facing behavior, add an entry under the
 - **Removed** — removed features (include migration guidance)
 - **Fixed** — bug fixes
 
-Use imperative present tense ("Add X", not "Added X") and keep entries concise.
-Internal implementation details (refactors, CI tweaks) that do not affect users
-should **not** be listed.
+Each file contains one entry without a leading bullet. Use imperative present
+tense ("Add X", not "Added X"), end with a period, and keep entries concise.
+An optional one-line ``.skip`` fragment can record why work has no user-facing
+impact. Multiline entries, multiple categories, same-category counters,
+creation commands, and Towncrier's non-mutating ``--draft`` preview are
+documented in the `changelog fragment guide
+<https://github.com/newton-physics/newton/blob/main/changelog/README.md>`__.
 
 Style Guide
 -----------
