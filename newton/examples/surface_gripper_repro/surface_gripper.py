@@ -90,8 +90,8 @@ def attach_seal_kernel(
 def attach_seal(
     state,
     gripper_model: "SurfaceGripperModel",
-    gripper_state_input: "SurfaceGripperStateInput",
-    gripper_state_output: "SurfaceGripperStateOutput",
+    gripper_state_input: SurfaceGripperStateInput,
+    gripper_state_output: SurfaceGripperStateOutput,
     pad_engaged_body_b_id_curr,
 ) -> None:
     """Latch ``pad_anchor_b`` for pads that just engaged, then commit the seal state.
@@ -612,7 +612,7 @@ class SurfaceGripperModel:
     :meth:`state_input` / :meth:`state_output` to allocate the matching per-step state objects.
     """
 
-    def state_input(self) -> "SurfaceGripperStateInput":
+    def state_input(self) -> SurfaceGripperStateInput:
         """Allocate a fresh per-pad :class:`SurfaceGripperStateInput` for this model."""
         si = SurfaceGripperStateInput()
         n = self.pad_xform.shape[0]
@@ -620,7 +620,7 @@ class SurfaceGripperModel:
         si.pad_preparing_body_b_id = wp.full(n, -1, dtype=wp.int32, device=self.pad_xform.device)
         return si
 
-    def state_output(self) -> "SurfaceGripperStateOutput":
+    def state_output(self) -> SurfaceGripperStateOutput:
         """Allocate a fresh per-pad :class:`SurfaceGripperStateOutput` for this model. ``pad_lip_sdf0`` shares
         the start-index scheme of ``pad_lip_local`` (one entry per lip sample point across all pads)."""
         so = SurfaceGripperStateOutput()
@@ -790,8 +790,8 @@ def evaluate_gripper_force(
     model,
     state,
     gripper_model: SurfaceGripperModel,
-    gripper_state_input: "SurfaceGripperStateInput",
-    gripper_state_output: "SurfaceGripperStateOutput",
+    gripper_state_input: SurfaceGripperStateInput,
+    gripper_state_output: SurfaceGripperStateOutput,
     gripper_control: SurfaceGripperControl,
     dt: float,
 ) -> None:
@@ -1064,8 +1064,8 @@ def attach_seal_seated_kernel(
 def attach_seal_seated(
     state: newton.State,
     gripper_model: SurfaceGripperModel,
-    gripper_state_input: "SurfaceGripperStateInput",
-    gripper_state_output: "SurfaceGripperStateOutput",
+    gripper_state_input: SurfaceGripperStateInput,
+    gripper_state_output: SurfaceGripperStateOutput,
     pad_engaged_body_b_id_curr: wp.array[int],
     body_b_mesh_id: wp.array[wp.uint64],
     max_dist: float = 1.0,
@@ -1146,8 +1146,8 @@ def detect_pad_engagement_rising_edge_kernel(
 
 
 def detect_pad_engagement_rising_edge(
-    gripper_state_input_prev: "SurfaceGripperStateInput",
-    gripper_state_input_curr: "SurfaceGripperStateInput",
+    gripper_state_input_prev: SurfaceGripperStateInput,
+    gripper_state_input_curr: SurfaceGripperStateInput,
     pad_rising_edge: wp.array[wp.bool],
 ) -> None:
     """Per-pad rising-edge detection for the engaged flag: True where ``pad_engaged`` transitioned
@@ -1251,8 +1251,8 @@ def seal_quality_kernel(
 def evaluate_seal_quality(
     state: newton.State,
     gripper_model: SurfaceGripperModel,
-    gripper_state_input: "SurfaceGripperStateInput",
-    gripper_state_output: "SurfaceGripperStateOutput",
+    gripper_state_input: SurfaceGripperStateInput,
+    gripper_state_output: SurfaceGripperStateOutput,
     body_b_mesh_id: wp.array[wp.uint64],
     pad_rms: wp.array[float],
     max_dist: float = 1.0,
@@ -1274,7 +1274,22 @@ def evaluate_seal_quality(
     error that would immediately occur in the event that the pad state would be set to engaged.
     In preparing and engaged modes, sdf_now(i) is the signed distance of the ith sample point at the
     current pose.
-    In disengaged mode, pad_rms is set to -1."""
+    In disengaged mode, pad_rms is set to -1.
+
+    Args:
+        state: Simulation state; source of ``body_q`` (world body poses).
+        gripper_model: Finalized gripper holding the pad/gripper layout arrays.
+        gripper_state_input: Per-pad input state; ``pad_engaged_body_b_id`` and
+            ``pad_preparing_body_b_id`` select which mode each pad is in.
+        gripper_state_output: Per-pad output state; ``pad_lip_sdf0`` provides the cached
+            seated baseline; ``pad_seal_quality_rms`` receives the result.
+        body_b_mesh_id: Body id -> gripped-object SDF mesh id, shape [n_bodies].
+        pad_rms: Per-pad output array [n_pads]; RMS lip-gap deviation [m], or ``-1`` if idle.
+        max_dist: SDF search radius [m].
+        grad_h: SDF central-difference step [m] for the seat fit in preparing mode.
+        damping: Stabiliser for the seat fit (prevents drift in unconstrained directions).
+        iters: Gauss-Newton iterations for the seat fit in preparing mode.
+    """
 
     gm = gripper_model
     n_pads = gm.pad_xform.shape[0]
