@@ -1490,7 +1490,6 @@ def convert_joints(
                 base_joint_idx_np[wid] = base_joint
 
     # For worlds without articulations, look for a unary free joint, or use the first body
-    has_world_without_base_body = False
     for wid in range(model.world_count):
         if base_body_idx_np[wid] != -1:  # World already has a base body
             continue
@@ -1507,15 +1506,11 @@ def convert_joints(
         # joints were found (else this is not a floating-base model and we assign no base body).
         if base_body_idx_np[wid] == -1 and not has_unary_joint:
             if body_world_start_np[wid] == body_world_start_np[wid + 1]:
-                has_world_without_base_body = True
                 continue
             base_body_idx_np[wid] = body_world_start_np[wid]
 
-    # Record worlds that have no base body, either to having zero bodies or having no articulation
-    # root with a free joint attached to world.
-    has_world_without_base_body = has_world_without_base_body or bool(
-        np.any(world_has_non_floating_root & (base_body_idx_np == -1))
-    )
+    # Record whether there is a world that has no base body.
+    has_world_without_base_body = np.any(base_body_idx_np == -1)
 
     # Update size object
     model_size.sum_of_num_joints = int(num_joints_np.sum())
