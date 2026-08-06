@@ -467,8 +467,19 @@ class TriMeshCollisionDetector:
 
     @property
     def collision_info(self) -> TriMeshCollisionInfo:
-        """The result struct; self-built on first access when none was injected."""
+        """The result struct; self-built on first access when none was injected.
+
+        The self-build performs allocations and a host readback, which are
+        illegal inside CUDA graph capture — run one detection (or read this
+        property once) before capturing.
+        """
         if self._collision_info is None:
+            if self.device.is_capturing:
+                raise RuntimeError(
+                    "TriMeshCollisionDetector has no result buffers yet and cannot allocate "
+                    "them during CUDA graph capture; run one detection (or access "
+                    "collision_info once) before capturing."
+                )
             self._collision_info = build_tri_mesh_collision_info(
                 self.model.particle_count,
                 self.model.tri_count,
