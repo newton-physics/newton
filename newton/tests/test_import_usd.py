@@ -14573,12 +14573,19 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
         return posixpath.join("_external_usd", digest, basename)
 
-    def _run_resolve(self, url_to_layer, base_url="https://example.com/assets/scene.usd"):
+    def _run_resolve(
+        self,
+        url_to_layer,
+        base_url="https://example.com/assets/scene.usd",
+        prepare_target=None,
+    ):
         """Run resolve_usd_from_url with mocked network and USD stage I/O.
 
         Args:
             url_to_layer: mapping from URL to USDA layer string content.
             base_url: the top-level URL passed to resolve_usd_from_url.
+            prepare_target: Optional callback invoked with the cache directory
+                before resolution begins.
 
         Returns:
             Tuple of (result_path, target_dir, downloaded_urls).
@@ -14606,6 +14613,8 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         # Map cache-relative path -> layer string so the mock stage can return it.
         file_to_layer = {}
         tmpdir = tempfile.mkdtemp()
+        if prepare_target is not None:
+            prepare_target(tmpdir)
 
         # Precompute exact local-key -> layer mapping from URLs.
         base_url_dir = base_url.rsplit("/", 1)[0]
@@ -14746,6 +14755,45 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         escaped_urls = [u for u in downloaded_urls if "secret.usd" in u]
         self.assertEqual(len(escaped_urls), 0)
         self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
+
+    def test_windows_reference_escapes_are_rejected(self):
+        """Reject Windows and mixed-separator references that escape the cache."""
+        malicious_references = (
+            (r"..\..\escape.usd", r"https://example.com/assets/..\..\escape.usd"),
+            (r"safe\..\..\escape.usd", r"https://example.com/assets/safe\..\..\escape.usd"),
+            (r"\\server\share\escape.usd", r"https://example.com/assets/\\server\share\escape.usd"),
+            (r"C:\escape.usd", r"C:\escape.usd"),
+        )
+
+        for raw_ref, resolved_url in malicious_references:
+            with self.subTest(raw_ref=raw_ref):
+                url_to_layer = {
+                    "https://example.com/assets/scene.usd": f"references = @{raw_ref}@",
+                    resolved_url: "",
+                }
+                _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+                self.assertNotIn(resolved_url, downloaded_urls)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "Requires symlink support")
+    def test_reference_symlink_escape_is_rejected(self):
+        """Reject a reference whose canonical path leaves the cache through a symlink."""
+        child_url = "https://example.com/assets/link/escape.usd"
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @link/escape.usd@",
+            child_url: "",
+        }
+
+        with tempfile.TemporaryDirectory() as outside_dir:
+
+            def prepare_target(cache_dir):
+                os.symlink(outside_dir, os.path.join(cache_dir, "link"))
+
+            _result, _tmpdir, downloaded_urls = self._run_resolve(
+                url_to_layer,
+                prepare_target=prepare_target,
+            )
+            self.assertNotIn(child_url, downloaded_urls)
+            self.assertFalse(os.path.exists(os.path.join(outside_dir, "escape.usd")))
 
     def test_cleartext_top_level_url_rejected(self):
         """Top-level USD downloads must use HTTPS."""
