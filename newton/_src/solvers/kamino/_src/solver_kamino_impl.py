@@ -512,7 +512,7 @@ class SolverKaminoImpl(SolverBase):
             )
         ) and self._model.info.has_world_without_base_body:
             msg.warning(
-                "Some worlds have no base body assigned, possibly due to a non-free articulation root (fixed-base system). "
+                "Some worlds have no free-floating base body assigned, possibly due to a non-free articulation root (fixed-base system). "
                 "Base pose/velocity resets will have no effect for those worlds."
             )
 
