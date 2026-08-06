@@ -201,6 +201,53 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
 
 
 class TestModelMesh(unittest.TestCase):
+    def test_mesh_rejects_invalid_triangle_indices(self):
+        """Reject malformed and out-of-range mesh triangle indices."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+        for indices, message in (
+            ([0, 1], "multiple of 3"),
+            ([-1, 1, 2], "negative index -1"),
+            ([0, 1, 3], "exceeds vertex count 3"),
+        ):
+            with self.subTest(indices=indices):
+                with self.assertRaisesRegex(ValueError, message):
+                    newton.Mesh(vertices, indices)
+
+    def test_mesh_accepts_empty_triangle_indices(self):
+        """Accept an empty mesh without evaluating index bounds."""
+        mesh = newton.Mesh(np.empty((0, 3), dtype=np.float32), [], compute_inertia=False)
+
+        self.assertEqual(mesh.vertices.shape, (0, 3))
+        self.assertEqual(mesh.indices.shape, (0,))
+
+    def test_mesh_setters_preserve_valid_triangle_indices(self):
+        """Preserve valid mesh connectivity when replacing vertices or indices."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        mesh = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False)
+
+        with self.assertRaisesRegex(ValueError, "negative index -1"):
+            mesh.indices = [0, 1, -1]
+        np.testing.assert_array_equal(mesh.indices, [0, 1, 2])
+
+        with self.assertRaisesRegex(ValueError, "exceeds vertex count 2"):
+            mesh.vertices = vertices[:2]
+        np.testing.assert_array_equal(mesh.vertices, vertices)
+
     def test_empty_numeric_custom_attribute_uses_wp_full_default(self):
         attr = ModelBuilder.CustomAttribute(
             name="default_shape_attr",
@@ -1746,6 +1793,70 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn("shape_body", error_msg)
         self.assertIn("test_shape", error_msg)
         self.assertIn("999", error_msg)
+
+    def test_validate_structure_rejects_invalid_particle_topology(self):
+        """Reject out-of-range particle references in every topology array."""
+
+        def add_particles(builder, count):
+            for i in range(count):
+                builder.add_particle(
+                    wp.vec3(float(i == 1), float(i == 2), float(i == 3)),
+                    wp.vec3(),
+                    mass=1.0,
+                )
+
+        cases = []
+
+        spring_builder = ModelBuilder()
+        add_particles(spring_builder, 2)
+        spring_builder.add_spring(0, 1, ke=1.0, kd=0.0, control=0.0)
+        spring_builder.spring_indices[1] = 2
+        cases.append(("spring_indices", spring_builder))
+
+        tri_builder = ModelBuilder()
+        add_particles(tri_builder, 3)
+        tri_builder.add_triangle(0, 1, 2)
+        tri_builder.tri_indices[0] = (0, 1, 3)
+        cases.append(("tri_indices", tri_builder))
+
+        edge_builder = ModelBuilder()
+        add_particles(edge_builder, 2)
+        edge_builder.add_edge(-1, -1, 0, 1, rest=0.0)
+        edge_builder.edge_indices[0] = (-1, -1, 0, 2)
+        cases.append(("edge_indices", edge_builder))
+
+        tet_builder = ModelBuilder()
+        add_particles(tet_builder, 4)
+        tet_builder.add_tetrahedron(0, 1, 2, 3)
+        tet_builder.tet_indices[0] = (0, 1, 2, 4)
+        cases.append(("tet_indices", tet_builder))
+
+        for name, builder in cases:
+            with self.subTest(topology=name):
+                with self.assertRaisesRegex(ValueError, rf"{name}.*particle count"):
+                    builder.finalize(device="cpu")
+
+    def test_validate_structure_accepts_edge_boundary_sentinels(self):
+        """Accept minus-one boundary sentinels for edge opposite vertices."""
+        builder = ModelBuilder()
+        builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_edge(-1, -1, 0, 1, rest=0.0)
+
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_array_equal(model.edge_indices.numpy(), [[-1, -1, 0, 1]])
+
+    def test_validate_structure_rejects_invalid_edge_sentinel(self):
+        """Reject edge opposite-vertex sentinels less than minus one."""
+        builder = ModelBuilder()
+        builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_edge(-1, -1, 0, 1, rest=0.0)
+        builder.edge_indices[0] = (-2, -1, 0, 1)
+
+        with self.assertRaisesRegex(ValueError, "edge_indices.*opposite vertex"):
+            builder.finalize(device="cpu")
 
 
 class TestShapeConfigValidation(unittest.TestCase):
