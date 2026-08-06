@@ -21,6 +21,7 @@ from .base import Controller
 # Generic linearization helpers shared with the MLP controller: gather per-slot
 # state, pack [tau0, a, b, q0, qd0], and the linearized force law.
 from .controller_neural_mlp import (
+    ControllerNeuralMLP,
     _assemble_linear_params_kernel,
     _gather_slot_state_kernel,
     _mlp_linear_force,
@@ -412,7 +413,16 @@ class ControllerNeuralLSTM(Controller):
         wp.launch(
             _assemble_linear_params_kernel,
             dim=n,
-            inputs=[self._tau0, self._dtau_dq, self._dtau_dqd, self._q0, self._qd0],
+            inputs=[
+                self._tau0,
+                self._dtau_dq,
+                self._dtau_dqd,
+                self._q0,
+                self._qd0,
+                inv_mass,
+                float(dt),
+                ControllerNeuralMLP.IMPLICIT_JACOBIAN_MARGIN,
+            ],
             outputs=[self._lin_params],
             device=device,
         )

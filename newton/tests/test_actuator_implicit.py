@@ -23,7 +23,7 @@ from newton.actuators import (
     ControllerPID,
     ResponseOracle,
 )
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 _HAS_ONNX = importlib.util.find_spec("onnx") is not None
 _HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
@@ -1046,6 +1046,64 @@ def test_neural_mlp_implicit_nonlinear_linearized(test, device):
         test.assertAlmostEqual(float(control.joint_f.numpy()[0]), expected_tau, delta=abs(expected_tau) * 3e-3)
 
 
+def test_neural_lstm_implicit_machinery(test, device):
+    """The LSTM implicit path stays wired up while its flag is off.
+
+    ``_IMPLICIT_AVAILABLE`` gates the path off because warp-nn returns zero state
+    gradients, which makes it unreachable and therefore unable to fail in CI. This
+    force-enables it so signature, pack-layout and buffer-width drift are still
+    caught. Written to hold both now (a = b = 0, so the law is the constant tau0)
+    and once warp-nn propagates real slopes.
+    """
+    import tempfile  # noqa: PLC0415
+
+    from newton.actuators import ControllerNeuralLSTM  # noqa: PLC0415
+    from newton.tests.test_actuators import _build_lstm_onnx  # noqa: PLC0415
+
+    h = 0.01
+    q0, qd0, target = 0.2, 0.0, 1.0
+
+    model = _build_single_revolute(device)
+    state = model.state()
+    state.joint_q.assign(np.array([q0], dtype=np.float32))
+    state.joint_qd.assign(np.array([qd0], dtype=np.float32))
+    control = model.control()
+    control.joint_target_q.assign(np.array([target], dtype=np.float32))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = f"{tmp}/lstm.onnx"
+        _build_lstm_onnx(path, hidden_size=8, metadata={"effort_scale": 10.0})
+        controller = ControllerNeuralLSTM(model_path=path)
+        oracle = ResponseOracle(model)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=device),
+            controller=controller,
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+
+        controller._IMPLICIT_AVAILABLE = True  # instance-level, leaves the class alone
+        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        oracle.refresh(state)
+        sa, sb = actuator.state(), actuator.state()
+        control.joint_f.zero_()
+        actuator.step(state, control, sa, sb, dt=h)
+
+        pack = controller._lin_params.numpy()
+        test.assertEqual(pack.shape[1], 5)  # [tau0, a, b, q0, qd0]
+        tau0, a, b, pq0, pqd0 = (float(v) for v in pack[0])
+        test.assertAlmostEqual(pq0, q0, delta=1e-6)
+        test.assertAlmostEqual(pqd0, qd0, delta=1e-6)
+
+        # The solve must match the closed form of the affine law it was handed.
+        alpha = _alpha_reference(model, state)[0]
+        expected = (tau0 + a * h * pqd0) / (1.0 - alpha * h * (a * h + b))
+        tau = float(control.joint_f.numpy()[0])
+        test.assertTrue(np.isfinite(tau))
+        test.assertAlmostEqual(tau, expected, delta=abs(expected) * 1e-3 + 1e-6)
+        test.assertTrue(np.any(sb.controller_state.hidden.numpy() != 0.0))
+
+
 def test_neural_lstm_implicit_rejected(test, device):
     """LSTM implicit actuation is refused rather than silently degrading.
 
@@ -1478,7 +1536,260 @@ def test_validation_rejects_bad_options(test, device):
         actuator.step(model.state(), model.control(), dt=0.0)
 
 
+# ---------------------------------------------------------------------------
+# CUDA graph capture — implicit step + oracle.refresh must match eager
+# ---------------------------------------------------------------------------
+
+
+def _assert_implicit_graph_matches_eager(
+    test,
+    device,
+    *,
+    model,
+    actuator,
+    oracle,
+    q_init,
+    cycle_targets,
+    dt=0.01,
+    steps_per_cycle=2,
+):
+    """Capture ``refresh + step + solver`` and require graph replay == eager.
+
+    Mirrors :class:`TestDelayGraphCapture`: warm up (lazy alloc / module load),
+    run an eager trajectory over ``cycle_targets``, then replay the same loop
+    from a CUDA graph and compare ``joint_q``.
+    """
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture requires memory pools")
+
+    test.assertTrue(actuator.is_graphable())
+    n = model.joint_dof_count
+    q_init = np.asarray(q_init, dtype=np.float32)
+    stateful = actuator.is_stateful()
+    solver_type = newton.solvers.SolverFeatherstone
+
+    def setup():
+        solver = solver_type(model)
+        s0, s1 = model.state(), model.state()
+        control = model.control()
+        s0.joint_q.assign(q_init)
+        s0.joint_qd.zero_()
+        newton.eval_fk(model, s0.joint_q, s0.joint_qd, s0)
+        oracle.refresh(s0)  # allocate oracle scratch before capture
+        act_a = act_b = None
+        if stateful:
+            act_a, act_b = actuator.state(), actuator.state()
+        return solver, s0, s1, control, act_a, act_b
+
+    def one_step(solver, s0, s1, control, act_a, act_b):
+        control.joint_f.zero_()
+        oracle.refresh(s0)
+        if stateful:
+            actuator.step(s0, control, act_a, act_b, dt=dt)
+            act_a, act_b = act_b, act_a
+        else:
+            actuator.step(s0, control, dt=dt)
+        solver.step(s0, s1, control, None, dt)
+        return s1, s0, act_a, act_b
+
+    def run_cycle(solver, s0, s1, control, act_a, act_b, target, steps):
+        control.joint_target_q.assign(np.asarray(target, dtype=np.float32))
+        for _ in range(steps):
+            s0, s1, act_a, act_b = one_step(solver, s0, s1, control, act_a, act_b)
+        return s0, s1, act_a, act_b
+
+    # --- Eager ---
+    solver, s0, s1, control, act_a, act_b = setup()
+    # Warm-up step so kernel modules are loaded before any later capture.
+    s0, s1, act_a, act_b = run_cycle(solver, s0, s1, control, act_a, act_b, cycle_targets[0], 1)
+    s0.joint_q.assign(q_init)
+    s0.joint_qd.zero_()
+    newton.eval_fk(model, s0.joint_q, s0.joint_qd, s0)
+    oracle.refresh(s0)
+    if stateful:
+        act_a, act_b = actuator.state(), actuator.state()
+
+    eager = []
+    for tgt in cycle_targets:
+        s0, s1, act_a, act_b = run_cycle(solver, s0, s1, control, act_a, act_b, tgt, steps_per_cycle)
+        eager.append(s0.joint_q.numpy().copy())
+
+    # --- Graph ---
+    solver_g, s0_g, s1_g, control_g, act_a_g, act_b_g = setup()
+    s0_g, s1_g, act_a_g, act_b_g = run_cycle(solver_g, s0_g, s1_g, control_g, act_a_g, act_b_g, cycle_targets[0], 1)
+    s0_g.joint_q.assign(q_init)
+    s0_g.joint_qd.zero_()
+    newton.eval_fk(model, s0_g.joint_q, s0_g.joint_qd, s0_g)
+    oracle.refresh(s0_g)
+    if stateful:
+        act_a_g, act_b_g = actuator.state(), actuator.state()
+
+    # Bind the first cycle's target before capture so the graph reads from the
+    # live control buffer; subsequent cycles overwrite the same array.
+    control_g.joint_target_q.assign(np.asarray(cycle_targets[0], dtype=np.float32))
+    with wp.ScopedCapture(device) as capture:
+        for _ in range(steps_per_cycle):
+            control_g.joint_f.zero_()
+            oracle.refresh(s0_g)
+            if stateful:
+                actuator.step(s0_g, control_g, act_a_g, act_b_g, dt=dt)
+                act_a_g, act_b_g = act_b_g, act_a_g
+            else:
+                actuator.step(s0_g, control_g, dt=dt)
+            solver_g.step(s0_g, s1_g, control_g, None, dt)
+            s0_g, s1_g = s1_g, s0_g
+    graph = capture.graph
+
+    # Reset to the same initial pose the eager path used after warm-up.
+    s0_g.joint_q.assign(q_init)
+    s0_g.joint_qd.zero_()
+    newton.eval_fk(model, s0_g.joint_q, s0_g.joint_qd, s0_g)
+    oracle.refresh(s0_g)
+    if stateful:
+        act_a_g.controller_state.integral.zero_()
+        act_b_g.controller_state.integral.zero_()
+
+    graph_results = []
+    for tgt in cycle_targets:
+        control_g.joint_target_q.assign(np.asarray(tgt, dtype=np.float32))
+        wp.capture_launch(graph)
+        graph_results.append(s0_g.joint_q.numpy().copy())
+
+    for ci, (g, e) in enumerate(zip(graph_results, eager, strict=True)):
+        np.testing.assert_allclose(
+            g,
+            e,
+            rtol=1e-4,
+            atol=1e-5,
+            err_msg=f"Cycle {ci}: implicit CUDA graph must match eager (n={n})",
+        )
+
+
+def test_pd_implicit_graph_matches_eager(test, device):
+    """PD implicit ``refresh + step + solver`` graph replay matches eager."""
+    model = _build_single_revolute(device)
+    oracle = ResponseOracle(model)
+    actuator = _make_actuator(
+        model,
+        device,
+        kp=wp.array([800.0], dtype=float, device=device),
+        kd=wp.array([20.0], dtype=float, device=device),
+        effective_inv_mass=oracle,
+    )
+    _assert_implicit_graph_matches_eager(
+        test,
+        device,
+        model=model,
+        actuator=actuator,
+        oracle=oracle,
+        q_init=[0.1],
+        cycle_targets=[[0.8], [-0.4], [1.2], [0.0]],
+    )
+
+
+def test_pd_coupled_implicit_graph_matches_eager(test, device):
+    """Coupled two-DOF PD implicit solve is CUDA-graph safe."""
+    model = _build_two_link(device)
+    oracle = ResponseOracle(model)
+    actuator = _make_actuator(
+        model,
+        device,
+        kp=wp.array([500.0, 400.0], dtype=float, device=device),
+        kd=wp.array([10.0, 8.0], dtype=float, device=device),
+        effective_inv_mass=oracle,
+    )
+    _assert_implicit_graph_matches_eager(
+        test,
+        device,
+        model=model,
+        actuator=actuator,
+        oracle=oracle,
+        q_init=[0.2, -0.3],
+        cycle_targets=[[0.6, 0.4], [-0.2, 0.5], [0.9, -0.6], [0.0, 0.0]],
+    )
+
+
+def test_pid_implicit_graph_matches_eager(test, device):
+    """Stateful PID implicit path (prepare_implicit + integral) matches under capture."""
+    model = _build_single_revolute(device)
+    oracle = ResponseOracle(model)
+    actuator = Actuator(
+        indices=wp.array([0], dtype=wp.uint32, device=device),
+        controller=ControllerPID(
+            kp=wp.array([400.0], dtype=float, device=device),
+            ki=wp.array([50.0], dtype=float, device=device),
+            kd=wp.array([8.0], dtype=float, device=device),
+            integral_max=wp.array([1.0e9], dtype=float, device=device),
+        ),
+        control_target_pos_attr="joint_target_q",
+        control_target_vel_attr="joint_target_qd",
+    )
+    actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+    _assert_implicit_graph_matches_eager(
+        test,
+        device,
+        model=model,
+        actuator=actuator,
+        oracle=oracle,
+        q_init=[0.15],
+        cycle_targets=[[0.7], [-0.3], [1.0], [0.2]],
+    )
+
+
+def test_dc_motor_retune_takes_effect(test, device):
+    """Retuning the envelope must change the clamp, in both effort modes.
+
+    ``corner_velocity`` used to be computed once at construction. After a retune
+    through the live parameter views it described a different motor, which could
+    invert the clamp bounds and let through more effort than ``max_motor_effort``.
+    It is now derived from the live parameters wherever it is needed.
+    """
+    h = 0.01
+    qd0 = 10.0
+    sat, vel_lim = 10.0, 5.0
+
+    def run(max_e, implicit):
+        model = _build_single_revolute(device)
+        state = model.state()
+        state.joint_q.assign(np.array([0.0], dtype=np.float32))
+        state.joint_qd.assign(np.array([qd0], dtype=np.float32))
+        control = model.control()
+        control.joint_target_q.assign(np.array([1.0], dtype=np.float32))
+        clamp = ClampingDCMotor(
+            saturation_effort=wp.array([sat], dtype=float, device=device),
+            velocity_limit=wp.array([vel_lim], dtype=float, device=device),
+            max_motor_effort=wp.array([20.0], dtype=float, device=device),
+        )
+        oracle = ResponseOracle(model)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=device),
+            controller=ControllerPD(
+                kp=wp.array([5.0e4], dtype=float, device=device),
+                kd=wp.zeros(1, dtype=float, device=device),
+            ),
+            clamping=[clamp],
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        if implicit:
+            actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        # Retune through the (possibly view-backed) parameter array.
+        clamp.max_motor_effort.assign(np.array([max_e], dtype=np.float32))
+        oracle.refresh(state)
+        control.joint_f.zero_()
+        actuator.step(state, control, dt=h)
+        return float(control.joint_f.numpy()[0])
+
+    for implicit in (False, True):
+        loose = run(20.0, implicit)
+        tight = run(5.0, implicit)
+        # The retune must be honoured, and never exceed the stated current limit.
+        test.assertLessEqual(abs(tight), 5.0 * (1.0 + 1e-4))
+        test.assertLess(abs(tight), abs(loose))
+
+
 devices = get_test_devices()
+cuda_graph_devices = [d for d in get_cuda_test_devices() if wp.is_mempool_enabled(d)]
 
 
 class TestActuatorImplicit(unittest.TestCase):
@@ -1575,6 +1886,12 @@ if _HAS_ONNX and _HAS_WARP_NN:
     )
     add_function_test(
         TestActuatorImplicit,
+        "test_neural_lstm_implicit_machinery",
+        test_neural_lstm_implicit_machinery,
+        devices=devices,
+    )
+    add_function_test(
+        TestActuatorImplicit,
         "test_neural_lstm_implicit_rejected",
         test_neural_lstm_implicit_rejected,
         devices=devices,
@@ -1618,7 +1935,28 @@ add_function_test(
 add_function_test(
     TestActuatorImplicit, "test_validation_rejects_bad_options", test_validation_rejects_bad_options, devices=devices
 )
+add_function_test(
+    TestActuatorImplicit, "test_dc_motor_retune_takes_effect", test_dc_motor_retune_takes_effect, devices=devices
+)
 add_function_test(TestActuatorImplicit, "test_validation_errors", test_validation_errors, devices=devices)
+add_function_test(
+    TestActuatorImplicit,
+    "test_pd_implicit_graph_matches_eager",
+    test_pd_implicit_graph_matches_eager,
+    devices=cuda_graph_devices,
+)
+add_function_test(
+    TestActuatorImplicit,
+    "test_pd_coupled_implicit_graph_matches_eager",
+    test_pd_coupled_implicit_graph_matches_eager,
+    devices=cuda_graph_devices,
+)
+add_function_test(
+    TestActuatorImplicit,
+    "test_pid_implicit_graph_matches_eager",
+    test_pid_implicit_graph_matches_eager,
+    devices=cuda_graph_devices,
+)
 
 
 if __name__ == "__main__":

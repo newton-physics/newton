@@ -20,7 +20,7 @@ def _evaluate_dc_motor_clamp(
     i: int,
     base: int,
 ) -> wp.float64:
-    """Implicit-solve entry point; params row is ``[saturation, velocity_limit, max_effort, corner_velocity]``.
+    """Implicit-solve entry point; params row is ``[saturation, velocity_limit, max_effort]``.
 
     Inside the implicit solve ``qd`` is the predicted end-of-step velocity,
     so the effort-speed envelope is enforced self-consistently.
@@ -40,31 +40,12 @@ def _evaluate_dc_motor_clamp(
 
 
 @wp.kernel
-def _compute_corner_velocity_kernel(
-    saturation_effort: wp.array[float],
-    velocity_limit: wp.array[float],
-    max_motor_effort: wp.array[float],
-    corner_velocity: wp.array[float],
-):
-    """Find the velocity on the torque-speed curve that intersects max_motor_effort in the second and fourth quadrant."""
-    i = wp.tid()
-    sat = saturation_effort[i]
-    vel_lim = velocity_limit[i]
-    max_e = max_motor_effort[i]
-    if sat > 0.0:
-        corner_velocity[i] = vel_lim * (1.0 + max_e / sat)
-    else:
-        corner_velocity[i] = vel_lim
-
-
-@wp.kernel
 def _clamp_dc_motor_kernel(
     current_vel: wp.array[float],
     state_indices: wp.array[wp.uint32],
     saturation_effort: wp.array[float],
     velocity_limit: wp.array[float],
     max_motor_effort: wp.array[float],
-    corner_velocity: wp.array[float],
     src: wp.array[float],
     dst: wp.array[float],
 ):
@@ -79,7 +60,11 @@ def _clamp_dc_motor_kernel(
     vel_lim = velocity_limit[i]
     max_e = max_motor_effort[i]
 
-    vel = wp.clamp(current_vel[state_idx], -corner_velocity[i], corner_velocity[i])
+    # Derived, not stored: a cached corner goes stale when the user retunes.
+    corner = vel_lim
+    if sat > 0.0:
+        corner = vel_lim * (1.0 + max_e / sat)
+    vel = wp.clamp(current_vel[state_idx], -corner, corner)
 
     effort_max = wp.min(sat * (1.0 - vel / vel_lim), max_e)
     effort_min = wp.max(sat * (-1.0 - vel / vel_lim), -max_e)
@@ -148,14 +133,6 @@ class ClampingDCMotor(Clamping):
         self.saturation_effort = saturation_effort
         self.velocity_limit = velocity_limit
         self.max_motor_effort = max_motor_effort
-        self.corner_velocity = wp.zeros_like(velocity_limit)
-        wp.launch(
-            kernel=_compute_corner_velocity_kernel,
-            dim=len(velocity_limit),
-            inputs=[saturation_effort, velocity_limit, max_motor_effort],
-            outputs=[self.corner_velocity],
-            device=velocity_limit.device,
-        )
 
     evaluate_clamp = _evaluate_dc_motor_clamp
 
@@ -189,7 +166,6 @@ class ClampingDCMotor(Clamping):
                 self.saturation_effort,
                 self.velocity_limit,
                 self.max_motor_effort,
-                self.corner_velocity,
                 src_forces,
             ],
             outputs=[dst_forces],
