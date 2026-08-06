@@ -1168,6 +1168,12 @@ class CollisionPipeline:
             # Flag-aware headroom: one record per world-compatible (soft edge/tri, shape) pair.
             soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
         self.soft_contact_margin = soft_contact_margin
+        # Soft (cloth) self-contact tuning values, populated by
+        # init_soft_self_contact(); consumed at detection time like
+        # soft_contact_margin (detection query radius = margin + gap).
+        self.soft_self_contact_margin = 0.0
+        self.soft_self_contact_gap = 0.0
+        self.soft_self_contact_min_query_radius = 0.0
         self._soft_contact_max = soft_contact_max
 
         self.requires_grad = requires_grad
@@ -1204,12 +1210,8 @@ class CollisionPipeline:
 
         # Soft (cloth) self-contact: disabled until init_soft_self_contact() creates
         # the shared detector (re-pointed per Contacts buffer; see
-        # _get_soft_self_contact_detector). The margin/gap/min-query values are the
-        # only configuration consumed after creation, at detection time.
+        # _get_soft_self_contact_detector).
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
-        self._soft_self_contact_margin = 0.0
-        self._soft_self_contact_gap = 0.0
-        self._soft_self_contact_min_query_radius = 0.0
 
     @property
     def rigid_contact_max(self) -> int:
@@ -1331,9 +1333,9 @@ class CollisionPipeline:
             raise ValueError(f"soft self-contact gap must be >= 0, got {gap}")
         if self.model.tri_count == 0:
             raise ValueError("init_soft_self_contact() requires a model with triangles (cloth/soft mesh).")
-        self._soft_self_contact_margin = margin
-        self._soft_self_contact_gap = gap
-        self._soft_self_contact_min_query_radius = min_query_radius
+        self.soft_self_contact_margin = margin
+        self.soft_self_contact_gap = gap
+        self.soft_self_contact_min_query_radius = min_query_radius
         # The explicit opt-in is what creates the detector (its BVHs are built
         # from model.particle_q); the result struct stays unallocated until the
         # first Contacts buffer is bound. Re-configuring rebuilds the detector.
@@ -1817,13 +1819,13 @@ class CollisionPipeline:
         # contacts.soft_self_contact_data).
         if soft_self_contact:
             detector = self._get_soft_self_contact_detector(contacts)
-            query_radius = self._soft_self_contact_margin + self._soft_self_contact_gap
+            query_radius = self.soft_self_contact_margin + self.soft_self_contact_gap
             # The BVHs (and the positions detection reads) are NOT updated here —
             # keeping them current via refit_soft_self_contact_bvh() is
             # the caller's responsibility.
             detector.vertex_triangle_collision_detection(
-                query_radius, min_query_radius=self._soft_self_contact_min_query_radius
+                query_radius, min_query_radius=self.soft_self_contact_min_query_radius
             )
             detector.edge_edge_collision_detection(
-                query_radius, min_query_radius=self._soft_self_contact_min_query_radius
+                query_radius, min_query_radius=self.soft_self_contact_min_query_radius
             )
