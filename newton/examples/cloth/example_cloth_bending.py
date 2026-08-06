@@ -80,8 +80,8 @@ class Example:
             self.model,
             iterations=self.iterations,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.2,
-            particle_self_contact_margin=0.35,
+            particle_self_contact_margin=0.2,
+            particle_self_contact_gap=0.15,
         )
 
         # Use collision pipeline for particle-shape contacts

@@ -194,8 +194,8 @@ class Example:
             model=self.model,
             iterations=self.iterations,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.001,  # m (0.1 cm)
-            particle_self_contact_margin=0.0015,  # m (0.15 cm)
+            particle_self_contact_margin=0.001,  # m (0.1 cm)
+            particle_self_contact_gap=0.0005,  # m (0.05 cm)
             particle_topological_contact_filter_threshold=2,
             particle_rest_shape_contact_exclusion_radius=0.0,  # m (0.5 cm)
             rigid_body_particle_contact_buffer_size=1024,

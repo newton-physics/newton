@@ -6,6 +6,8 @@
 
 ### Added
 
+- Add solver-owned collision pipelines: `SolverBase` accepts `pipeline=...` with per-slot detection scheduling (`collision_frequency`, `collision_frequency_type`, runtime-changeable via `SolverBase.set_collision_frequency`), a read-only `SolverBase.contacts` buffer, and `SolverVBD` support including soft self-contact results in `Contacts.soft_self_contact_data` via `CollisionPipeline.init_soft_self_contact()` and `collide(soft_self_contact=True)`.
+
 - Import MJCF mesh assets authored with inline vertex, face, normal, and texture-coordinate data.
 - Break the viewer's shape count down into visual and collision shapes. The two are listed under `Shapes` in the stats overlay and need not sum to the total, since a shape can be both.
 - Add selection of the shapes included in model shape BVHs through `Model.bvh_build_shapes(shape_flags=...)` and `ModelBuilder.default_bvh_cfg.shape_flags`, e.g. `ShapeFlags.VISIBLE | ShapeFlags.COLLIDE_SHAPES` to also include collision shapes.
@@ -50,6 +52,8 @@
 
 ### Changed
 
+- Change `SolverVBD`'s `particle_self_contact_margin` to mean the self-contact interaction distance (previously the detection query radius); pair it with the new `particle_self_contact_gap` (detection queries use margin + gap). The legacy meaning still applies while the deprecated `particle_self_contact_radius` is set.
+
 - Decide collider visibility from USD `purpose` and visibility rather than from a bound render material. A collider whose `purpose` resolves to `default` is viewport geometry and is drawn; mark it `guide` to state that it is collision-only. Previously an unrelated visual elsewhere in the scene could make a collider vanish. `force_show_colliders` and `hide_collision_shapes` are unchanged.
 - Filter shared full-surface soft contacts per `SolverCoupled` entry, preserving them for capable solvers and dropping them for particle-only solvers or records spanning entries.
 - Require `warp-lang>=1.16.0`; upgrade Warp to version 1.16.0 or later.
@@ -88,6 +92,8 @@
 - Deprecate scalar `ModelBuilder.gravity`; pass a three-component gravity vector instead.
 - Deprecate local-only `SolverBase.reset()` world masks in favor of masks with shape `(world_count + 1,)`; append a final entry that selects global entities in world `-1`. (#3374)
 - Deprecate the `soft_contact_margin` argument of `CollisionPipeline.collide()` in favor of the `soft_contact_margin` parameter of the `CollisionPipeline` constructor.
+- Deprecate `SolverVBD`'s `particle_self_contact_radius` in favor of `particle_self_contact_margin` (interaction distance) plus `particle_self_contact_gap`.
+- Deprecate `SolverVBD`'s `particle_collision_detection_interval` in favor of the self-contact slot of `collision_frequency` / `collision_frequency_type`.
 - Deprecate and ignore `SolverVBD`'s `rigid_contact_stick_motion_eps`, `rigid_contact_stick_freeze_translation_eps`, and `rigid_contact_stick_freeze_angular_eps`; use collision-pipeline sticky matching for persistent geometry. The SolverVBD body deadzone was removed without replacement.
 - Deprecate per-DOF `newton:{axis}:limitStiffness` and `newton:{axis}:limitDamping` attributes (where `{axis}` is `linear`, `angular`, `rotX`, `rotY`, or `rotZ`). Use the broadcast `newton:limitStiffness` and `newton:limitDamping` attributes from `NewtonJointAPI` instead; the broadcast value applies uniformly to all DOFs on the joint. For joints requiring per-DOF variance, split into separate 1-DOF (revolute / prismatic) joints.
 - Deprecate passing solver constructor options positionally after stable positional inputs such as `model` and explicit solver configs; migrate calls such as `SolverVBD(model, 10)` to `SolverVBD(model, iterations=10)`.

@@ -92,6 +92,8 @@ __all__ = ["SolverVBD"]
 
 
 class SolverVBD(SolverBase, CouplingInterface):
+    supports_collision_pipeline = True
+
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
     .. experimental::
@@ -235,12 +237,13 @@ class SolverVBD(SolverBase, CouplingInterface):
         integrate_with_external_rigid_solver: bool = False,
         # Particle parameters
         particle_enable_self_contact: bool = False,
-        particle_self_contact_radius: float = 0.2,
-        particle_self_contact_margin: float = 0.2,
+        particle_self_contact_radius: float | None = None,
+        particle_self_contact_margin: float | None = None,
+        particle_self_contact_gap: float | None = None,
         particle_conservative_bound_relaxation: float = 0.85,
         particle_vertex_contact_buffer_size: int = 32,
         particle_edge_contact_buffer_size: int = 64,
-        particle_collision_detection_interval: int = 0,
+        particle_collision_detection_interval: int | None = None,
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
         particle_topological_contact_filter_threshold: int = 2,
@@ -272,6 +275,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-cable angular joint constraints
         deterministic: wp.DeterministicMode | None = None,
+        pipeline=None,  # CollisionPipeline | None: solver-owned collision pipeline
+        collision_frequency: list[int] | None = None,
+        collision_frequency_type: list[SolverBase.CollisionFrequencyType] | None = None,
     ):
         """
         Args:
@@ -289,15 +295,23 @@ class SolverVBD(SolverBase, CouplingInterface):
             Particle parameters:
 
             particle_enable_self_contact: Whether to enable self-contact detection for particles.
-            particle_self_contact_radius: The radius used for self-contact detection. This is the distance at which
-                vertex-triangle pairs and edge-edge pairs will start to interact with each other.
-            particle_self_contact_margin: The margin used for self-contact detection. This is the distance at which
-                vertex-triangle pairs and edge-edge will be considered in contact generation. It should be larger than
-                `particle_self_contact_radius` to avoid missing contacts.
+            particle_self_contact_radius: Deprecated; use ``particle_self_contact_margin`` +
+                ``particle_self_contact_gap`` instead. When set, the legacy interpretation applies
+                exactly: radius = interaction distance and ``particle_self_contact_margin`` = detection
+                query radius.
+            particle_self_contact_margin: Self-contact interaction distance [m] — the surface offset at
+                which vertex-triangle and edge-edge pairs start to interact. Defaults to 0.2.
+                (Legacy meaning — the detection query radius — applies only while the deprecated
+                ``particle_self_contact_radius`` is set.)
+            particle_self_contact_gap: Additional detection-only distance [m]; self-contact detection
+                queries use ``margin + gap``, mirroring the ``ShapeConfig.margin`` / ``gap`` convention.
+                Defaults to 0. Give it ~0.5-1x the margin of slack to avoid missing contacts.
             particle_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
             particle_vertex_contact_buffer_size: Preallocation size for each vertex's vertex-triangle collision buffer.
             particle_edge_contact_buffer_size: Preallocation size for edge's edge-edge collision buffer.
-            particle_collision_detection_interval: Controls how frequently particle self-contact detection is applied
+            particle_collision_detection_interval: Deprecated; use the self-contact slot of
+                ``collision_frequency`` / ``collision_frequency_type`` instead.
+                Controls how frequently particle self-contact detection is applied
                 during the simulation. If set to a value < 0, collision detection is only performed once before the
                 initialization step. If set to 0, collision detection is applied twice: once before and once immediately
                 after initialization. If set to a value `n` >= 1, collision detection is applied before every `n` VBD
@@ -390,6 +404,19 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
 
+            Collision pipeline ownership:
+
+            pipeline: Optional :class:`~newton.CollisionPipeline` owned by this solver. When given,
+                the solver allocates its own contacts buffer (:attr:`contacts`), seeds the pipeline's
+                self-contact configuration from the ``particle_self_contact_*`` parameters, and runs
+                rigid collision detection itself per the schedule below; ``step()`` must then receive
+                ``contacts=None``.
+            collision_frequency: ``[rigid, soft_self_contact]`` frequency numbers; only used by
+                ``ITERATIONS`` slots ("every k-th iteration").
+            collision_frequency_type: ``[rigid, soft_self_contact]``
+                :class:`SolverBase.CollisionFrequencyType` entries naming the in-step detection point;
+                runtime-changeable via :meth:`SolverBase.set_collision_frequency`.
+
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
               solvers. If set to True, the rigid states should be integrated externally, with `state_in` passed to `step`
@@ -428,7 +455,80 @@ class SolverVBD(SolverBase, CouplingInterface):
                 stacklevel=3,
             )
 
-        super().__init__(model)
+        # Self-contact geometry: margin/gap scheme (margin = interaction distance,
+        # detection query radius = margin + gap). The legacy radius/margin pair is
+        # deprecated; its presence selects the legacy interpretation exactly.
+        if particle_self_contact_radius is not None:
+            warnings.warn(
+                "particle_self_contact_radius is deprecated; use particle_self_contact_margin "
+                "(interaction distance) and particle_self_contact_gap (extra detection reach, "
+                "query radius = margin + gap) instead. With radius set, "
+                "particle_self_contact_margin keeps its legacy meaning (detection query radius).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if particle_self_contact_gap is not None:
+                raise ValueError(
+                    "particle_self_contact_gap cannot be combined with the deprecated "
+                    "particle_self_contact_radius; migrate to margin + gap."
+                )
+            _sc_margin = particle_self_contact_radius
+            _legacy_query = particle_self_contact_margin if particle_self_contact_margin is not None else 0.2
+            _sc_gap = _legacy_query - _sc_margin
+            if _sc_gap < 0.0:
+                raise ValueError(
+                    "particle_self_contact_margin is smaller than particle_self_contact_radius, this will result in missing contacts and cause instability.\n"
+                    "It is advisable to make particle_self_contact_margin 1.5-2 times larger than particle_self_contact_radius."
+                )
+        else:
+            _sc_margin = particle_self_contact_margin if particle_self_contact_margin is not None else 0.2
+            _sc_gap = particle_self_contact_gap if particle_self_contact_gap is not None else 0.0
+            if _sc_gap < 0.0:
+                raise ValueError(f"particle_self_contact_gap must be >= 0, got {_sc_gap}")
+
+        if particle_collision_detection_interval is not None:
+            warnings.warn(
+                "particle_collision_detection_interval is deprecated; use the self-contact slot of "
+                "collision_frequency / collision_frequency_type instead (PRE_INIT ~ interval < 0, "
+                "PRE_POST_INIT ~ interval == 0, ITERATIONS ~ interval >= 1).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if (
+                collision_frequency_type is not None
+                and SolverBase.CollisionFrequencyType(collision_frequency_type[1])
+                != SolverBase.CollisionFrequencyType.AUTO
+            ):
+                raise ValueError(
+                    "set either the deprecated particle_collision_detection_interval or the "
+                    "self-contact slot of collision_frequency_type, not both"
+                )
+        self._deprecated_particle_interval = particle_collision_detection_interval
+
+        # With an owned pipeline, seed its self-contact configuration from the solver's
+        # parameters before the base class allocates the owned Contacts buffer.
+        if pipeline is not None and particle_enable_self_contact:
+            pipeline.init_soft_self_contact(
+                margin=_sc_margin,
+                gap=_sc_gap,
+                min_query_radius=particle_rest_shape_contact_exclusion_radius,
+                vertex_buffer_pre_alloc=particle_vertex_contact_buffer_size,
+                edge_buffer_pre_alloc=particle_edge_contact_buffer_size,
+                edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
+                topological_filter_threshold=particle_topological_contact_filter_threshold,
+                external_vertex_filter_map=particle_external_vertex_contact_filtering_map,
+                external_edge_filter_map=particle_external_edge_contact_filtering_map,
+            )
+
+        super().__init__(
+            model,
+            pipeline=pipeline,
+            collision_frequency=collision_frequency,
+            collision_frequency_type=collision_frequency_type,
+        )
+        # Per-step schedule cache; refreshed at every step() so runtime
+        # set_collision_frequency() changes take effect at the next step.
+        self._sc_mode_this_step, self._sc_freq_this_step = self._resolve_self_contact_schedule()
 
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         particle_deterministic_max_records = 0
@@ -484,8 +584,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._init_particle_system(
             model,
             particle_enable_self_contact,
-            particle_self_contact_radius,
-            particle_self_contact_margin,
+            _sc_margin,
+            _sc_gap,
             particle_conservative_bound_relaxation,
             particle_vertex_contact_buffer_size,
             particle_edge_contact_buffer_size,
@@ -531,8 +631,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         self,
         model: Model,
         particle_enable_self_contact: bool,
-        particle_self_contact_radius: float,
         particle_self_contact_margin: float,
+        particle_self_contact_gap: float,
         particle_conservative_bound_relaxation: float,
         particle_vertex_contact_buffer_size: int,
         particle_edge_contact_buffer_size: int,
@@ -567,8 +667,10 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Self-contact settings
         self.particle_enable_self_contact = particle_enable_self_contact
-        self.particle_self_contact_radius = particle_self_contact_radius
         self.particle_self_contact_margin = particle_self_contact_margin
+        self.particle_self_contact_gap = particle_self_contact_gap
+        # Detection query radius; margin is the interaction distance (surface offset).
+        self._self_contact_query_radius = particle_self_contact_margin + particle_self_contact_gap
         self.particle_q_rest = model.particle_q
 
         # Tile solve settings
@@ -578,24 +680,23 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda
 
         if particle_enable_self_contact:
-            if particle_self_contact_margin < particle_self_contact_radius:
-                raise ValueError(
-                    "particle_self_contact_margin is smaller than particle_self_contact_radius, this will result in missing contacts and cause instability.\n"
-                    "It is advisable to make particle_self_contact_margin 1.5-2 times larger than particle_self_contact_radius."
-                )
-
             self.particle_conservative_bound_relaxation = particle_conservative_bound_relaxation
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
 
-            self.trimesh_collision_detector = TriMeshCollisionDetector(
-                self.model,
-                vertex_collision_buffer_pre_alloc=particle_vertex_contact_buffer_size,
-                edge_collision_buffer_pre_alloc=particle_edge_contact_buffer_size,
-                edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
-                topological_contact_filter_threshold=particle_topological_contact_filter_threshold,
-                external_vertex_triangle_filtering_map=particle_external_vertex_contact_filtering_map,
-                external_edge_edge_filtering_map=particle_external_edge_contact_filtering_map,
-            )
+            if self.pipeline is not None:
+                # Solver-owned pipeline: use its shared detector bound to the owned
+                # Contacts buffer so self-contact results land in solver.contacts.
+                self.trimesh_collision_detector = self.pipeline._get_soft_self_contact_detector(self._pipeline_contacts)
+            else:
+                self.trimesh_collision_detector = TriMeshCollisionDetector(
+                    self.model,
+                    vertex_collision_buffer_pre_alloc=particle_vertex_contact_buffer_size,
+                    edge_collision_buffer_pre_alloc=particle_edge_contact_buffer_size,
+                    edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
+                    topological_contact_filter_threshold=particle_topological_contact_filter_threshold,
+                    external_vertex_triangle_filtering_map=particle_external_vertex_contact_filtering_map,
+                    external_edge_edge_filtering_map=particle_external_edge_contact_filtering_map,
+                )
 
             self.trimesh_collision_info = wp.array(
                 [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
@@ -1133,7 +1234,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.model.tri_indices,
                     self.model.edge_indices,
                     self.trimesh_collision_info,
-                    self.particle_self_contact_radius,
+                    self.particle_self_contact_margin,
                     self.model.soft_contact_ke,
                     self.model.soft_contact_kd,
                     self.model.soft_contact_mu,
@@ -1814,6 +1915,22 @@ class SolverVBD(SolverBase, CouplingInterface):
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True
 
+        _Frequency = SolverBase.CollisionFrequencyType
+        self._sc_mode_this_step, self._sc_freq_this_step = self._resolve_self_contact_schedule()
+        if self.pipeline is not None:
+            contacts = self._resolve_step_contacts(contacts)
+            rigid_mode = self._resolved_collision_frequency_type(SolverBase._COLLISION_SLOT_RIGID)
+            if rigid_mode == _Frequency.ITERATIONS:
+                raise NotImplementedError(
+                    "rigid ITERATIONS-mode collision is not yet implemented by SolverVBD "
+                    "(planned with the rigid-DAT work); use PRE_INIT or NONE."
+                )
+            if rigid_mode == _Frequency.PRE_INIT:
+                self._run_rigid_collision(state_in)
+                update_rigid = True
+            elif rigid_mode == _Frequency.NONE:
+                update_rigid = False
+
         if control is None:
             control = self.model.control(clone_variables=False)
 
@@ -2101,7 +2218,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.pos_prev_collision_detection,
                     self.particle_displacements,
                     self.truncation_ts,
-                    self.particle_self_contact_margin
+                    self._self_contact_query_radius
                     * self.particle_conservative_bound_relaxation
                     * 0.5,  # max_displacement: degenerate to isotropic truncation
                 ],
@@ -2121,7 +2238,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         # Collision detection before initialization to compute conservative bounds
-        if self.particle_enable_self_contact:
+        if self.particle_enable_self_contact and self._sc_mode_this_step != SolverBase.CollisionFrequencyType.NONE:
             self._collision_detection_penetration_free(state_in)
         else:
             self.pos_prev_collision_detection.assign(state_in.particle_q)
@@ -2589,9 +2706,9 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Update collision detection if needed (penetration-free mode only)
         if self.particle_enable_self_contact:
-            if (self.particle_collision_detection_interval == 0 and iter_num == 0) or (
-                self.particle_collision_detection_interval >= 1
-                and iter_num % self.particle_collision_detection_interval == 0
+            _Frequency = SolverBase.CollisionFrequencyType
+            if (self._sc_mode_this_step == _Frequency.PRE_POST_INIT and iter_num == 0) or (
+                self._sc_mode_this_step == _Frequency.ITERATIONS and iter_num % self._sc_freq_this_step == 0
             ):
                 self._collision_detection_penetration_free(state_in)
 
@@ -2674,7 +2791,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.model.edge_indices,
                         # self-contact
                         self.trimesh_collision_info,
-                        self.particle_self_contact_radius,
+                        self.particle_self_contact_margin,
                         self.model.soft_contact_ke,
                         self.model.soft_contact_kd,
                         self.model.soft_contact_mu,
@@ -3269,6 +3386,26 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
+    def _resolve_self_contact_schedule(self):
+        """Resolve the self-contact slot to a concrete (mode, frequency) pair.
+
+        ``AUTO`` derives from the deprecated ``particle_collision_detection_interval``
+        when that was set (PRE_INIT ~ interval < 0, PRE_POST_INIT ~ interval == 0,
+        ITERATIONS ~ interval >= 1) and defaults to the legacy behavior
+        (``PRE_POST_INIT``) otherwise.
+        """
+        Frequency = SolverBase.CollisionFrequencyType
+        mode = self._collision_frequency_type[SolverBase._COLLISION_SLOT_SOFT_SELF]
+        freq = self._collision_frequency[SolverBase._COLLISION_SLOT_SOFT_SELF]
+        if mode == Frequency.AUTO:
+            interval = self._deprecated_particle_interval
+            if interval is None or interval == 0:
+                return Frequency.PRE_POST_INIT, 1
+            if interval < 0:
+                return Frequency.PRE_INIT, 1
+            return Frequency.ITERATIONS, interval
+        return mode, freq
+
     def _collision_detection_penetration_free(self, current_state: State):
         # particle_displacements is based on pos_prev_collision_detection
         # so reset them every time we do collision detection
@@ -3277,12 +3414,12 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         self.trimesh_collision_detector.refit(current_state.particle_q)
         self.trimesh_collision_detector.vertex_triangle_collision_detection(
-            self.particle_self_contact_margin,
+            self._self_contact_query_radius,
             min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
             min_distance_filtering_ref_pos=self.particle_q_rest,
         )
         self.trimesh_collision_detector.edge_edge_collision_detection(
-            self.particle_self_contact_margin,
+            self._self_contact_query_radius,
             min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
             min_distance_filtering_ref_pos=self.particle_q_rest,
         )

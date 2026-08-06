@@ -7,7 +7,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverBase
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 Frequency = SolverBase.CollisionFrequencyType
 
@@ -110,6 +110,91 @@ def test_frequency_validation_and_ownership(test, device):
         solver.step(model.state(), model.state(), None, pipeline.contacts(), 1e-3)
 
 
+def _build_cloth_model(device):
+    builder = newton.ModelBuilder()
+    builder.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=8,
+        dim_y=8,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+        tri_ke=1e2,
+        tri_ka=1e2,
+        tri_kd=1e-4,
+    )
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def test_vbd_pipeline_parity_and_deprecations(test, device):
+    """Verify SolverVBD's pipeline path matches the legacy path and old params warn.
+
+    Steps one cloth twice — once with the legacy externally-driven setup and
+    once with a solver-owned pipeline under AUTO scheduling — and compares
+    particle positions; also asserts the deprecation and conflict paths of the
+    legacy self-contact parameters.
+    """
+    from newton.solvers import SolverVBD
+
+    kwargs = dict(
+        iterations=2,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.02,
+        particle_self_contact_gap=0.02,
+    )
+
+    model_a = _build_cloth_model(device)
+    solver_a = SolverVBD(model_a, **kwargs)
+
+    model_b = _build_cloth_model(device)
+    pipeline_b = newton.CollisionPipeline(model_b, broad_phase="nxn")
+    solver_b = SolverVBD(model_b, pipeline=pipeline_b, **kwargs)
+    test.assertIsNotNone(solver_b.contacts.soft_self_contact_data)
+
+    def run(model, solver, contacts):
+        s0, s1 = model.state(), model.state()
+        for _ in range(3):
+            solver.step(s0, s1, None, contacts, 1e-3)
+            s0, s1 = s1, s0
+        return s0.particle_q.numpy()
+
+    q_a = run(model_a, solver_a, None)
+    q_b = run(model_b, solver_b, None)
+    assert_np_equal(q_b, q_a, tol=1e-6)
+
+    # Deprecated radius selects the legacy interpretation and warns.
+    with test.assertWarns(DeprecationWarning):
+        SolverVBD(
+            _build_cloth_model(device),
+            iterations=1,
+            particle_enable_self_contact=True,
+            particle_self_contact_radius=0.02,
+            particle_self_contact_margin=0.04,
+        )
+    # Deprecated interval warns; combining it with an explicit slot raises.
+    with test.assertWarns(DeprecationWarning):
+        SolverVBD(_build_cloth_model(device), iterations=1, particle_collision_detection_interval=2)
+    with test.assertRaises(ValueError):
+        SolverVBD(
+            _build_cloth_model(device),
+            iterations=1,
+            particle_collision_detection_interval=2,
+            collision_frequency_type=[Frequency.AUTO, Frequency.ITERATIONS],
+        )
+    # gap cannot be combined with the deprecated radius.
+    with test.assertRaises(ValueError):
+        SolverVBD(
+            _build_cloth_model(device),
+            iterations=1,
+            particle_enable_self_contact=True,
+            particle_self_contact_radius=0.02,
+            particle_self_contact_gap=0.01,
+        )
+
+
 devices = get_test_devices()
 
 
@@ -127,6 +212,12 @@ add_function_test(
     TestSolverCollisionFrequency,
     "test_frequency_validation_and_ownership",
     test_frequency_validation_and_ownership,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_pipeline_parity_and_deprecations",
+    test_vbd_pipeline_parity_and_deprecations,
     devices=devices,
 )
 

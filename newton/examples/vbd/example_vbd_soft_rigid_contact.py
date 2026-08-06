@@ -287,8 +287,9 @@ def setup_sim(builder, info, params):
         iterations=params["solver_iterations"],
         rigid_body_particle_contact_buffer_size=params["rigid_body_particle_contact_buffer_size"],
         particle_enable_self_contact=False,
-        particle_self_contact_radius=pr * params["particle_self_contact_radius_scale"],
-        particle_self_contact_margin=pr * params["particle_self_contact_margin_scale"],
+        particle_self_contact_margin=pr * params["particle_self_contact_radius_scale"],
+        particle_self_contact_gap=pr
+        * (params["particle_self_contact_margin_scale"] - params["particle_self_contact_radius_scale"]),
         particle_topological_contact_filter_threshold=params["particle_topological_contact_filter_threshold"],
     )
 

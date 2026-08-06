@@ -300,8 +300,8 @@ class ClothSim:
         # controls particle-shape contact
         self.soft_contact_margin = 1.0
         # controls self-contact of trimesh
-        self.particle_self_contact_radius = 0.1
         self.particle_self_contact_margin = 0.1
+        self.particle_self_contact_gap = 0.0
         # whether to use collision pipeline for particle-shape contacts
         self.use_collision_pipeline = use_collision_pipeline
 
@@ -777,8 +777,8 @@ class ClothSim:
         self.renderer_scale_factor = 1
         self.fixed_particles = [1]
 
-        self.particle_self_contact_radius = 0.1
         self.particle_self_contact_margin = 0.1
+        self.particle_self_contact_gap = 0.0
 
         self.finalize(particle_enable_self_contact=True, ground=False, use_gravity=True)
 
@@ -854,8 +854,8 @@ class ClothSim:
                 model=self.model,
                 iterations=self.iterations,
                 particle_enable_self_contact=particle_enable_self_contact,
-                particle_self_contact_radius=self.particle_self_contact_radius,
                 particle_self_contact_margin=self.particle_self_contact_margin,
+                particle_self_contact_gap=self.particle_self_contact_gap,
             )
         elif self.solver_name == "xpbd":
             self.solver = newton.solvers.SolverXPBD(

@@ -142,8 +142,8 @@ class Example:
             "iterations": 10,
             "friction_epsilon": 0.01,
             "particle_enable_self_contact": True,
-            "particle_self_contact_radius": 0.01,
             "particle_self_contact_margin": 0.01,
+            "particle_self_contact_gap": 0.0,
         }
 
         if self.use_coupled:

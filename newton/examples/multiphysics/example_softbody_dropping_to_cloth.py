@@ -91,8 +91,8 @@ class Example:
         vbd_kwargs = {
             "iterations": args.vbd_iterations,
             "particle_enable_self_contact": True,
-            "particle_self_contact_radius": 0.01,
-            "particle_self_contact_margin": 0.02,
+            "particle_self_contact_margin": 0.01,
+            "particle_self_contact_gap": 0.01,
             "particle_enable_tile_solve": True,
         }
         if self.solver_type == "vbd":

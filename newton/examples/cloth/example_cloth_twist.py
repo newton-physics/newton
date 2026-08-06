@@ -181,8 +181,8 @@ class Example:
             self.model,
             iterations=self.iterations,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.002,
-            particle_self_contact_margin=0.0035,
+            particle_self_contact_margin=0.002,
+            particle_self_contact_gap=0.0015,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
