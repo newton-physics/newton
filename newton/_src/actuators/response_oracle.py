@@ -4,7 +4,7 @@
 """Effective inverse-mass response for articulated systems.
 
 :class:`ResponseOracle` owns the full inverse joint-space mass block for each
-articulation and its diagonal in :attr:`alpha`. Update it with
+articulation. Update it with
 :meth:`ResponseOracle.refresh`, which uses preallocated buffers and device
 kernels and so can be captured in a CUDA graph. Both buffers are writable, so a
 solver-supplied response can be assigned directly instead.
@@ -22,21 +22,17 @@ __all__ = ["ResponseOracle"]
 @wp.kernel(enable_backward=False)
 def _inverse_block_from_mass_matrix_kernel(
     H: wp.array3d[float],
-    art_dof_start: wp.array[wp.int32],
     art_dof_count: wp.array[wp.int32],
     L: wp.array3d[float],
     inv_block: wp.array3d[float],
-    alpha: wp.array[float],
 ):
     """Write the full inverse block ``inv_block[a] = H_a^{-1}`` per articulation.
 
     Cholesky ``H = L L^T``, then for each column c solve ``H x = e_c`` (forward
-    then backward substitution) and store x as column c of the inverse. Store
-    the diagonal in ``alpha``.
+    then backward substitution) and store x as column c of the inverse.
     """
     a = wp.tid()
     n = art_dof_count[a]
-    base = art_dof_start[a]
 
     for j in range(n):
         s = H[a, j, j]
@@ -68,9 +64,6 @@ def _inverse_block_from_mass_matrix_kernel(
                 t -= L[a, k, i] * inv_block[a, k, c]
             inv_block[a, i, c] = t / L[a, i, i]
 
-    for j in range(n):
-        alpha[base + j] = inv_block[a, j, j]
-
 
 @wp.kernel(enable_backward=False)
 def _add_armature_kernel(
@@ -94,15 +87,14 @@ def _add_armature_kernel(
 class ResponseOracle:
     """Effective inverse-mass response for each articulation.
 
-    :attr:`inverse_blocks` stores the inverse joint-space mass matrix for each
-    articulation. :attr:`alpha` stores the matrix diagonal, with
-    ``alpha[dof] = (H^{-1})_{dof,dof}`` [1/kg or 1/(kg·m²)]. DOFs outside any
-    articulation have a zero response.
+    :attr:`inverse_blocks` holds ``H_a^{-1}`` for each articulation
+    [1/kg or 1/(kg·m²)], indexed by articulation-local DOF. Articulations with
+    no entry have a zero response.
 
-    :meth:`refresh` computes the response from the current mass matrix using
-    device kernels. Alternatively, write a solver-supplied response straight
-    into :attr:`alpha` (single-DOF groups) or :attr:`inverse_blocks` (coupled
-    groups) -- for example by inverting the solver's own mass matrix.
+    :meth:`refresh` computes it from the current mass matrix using device
+    kernels. Alternatively write a solver-supplied response straight into
+    :attr:`inverse_blocks` -- for example by inverting the solver's own mass
+    matrix, which is both faithful and CUDA-graph capturable.
     """
 
     def __init__(self, model):
@@ -119,8 +111,6 @@ class ResponseOracle:
         art_count = model.articulation_count
         max_links = model.max_joints_per_articulation
         max_dofs = model.max_dofs_per_articulation
-
-        self._alpha = wp.zeros(model.joint_dof_count, dtype=float, device=device)
 
         joint_qd_start = model.joint_qd_start.numpy()
         articulation_start = model.articulation_start.numpy()
@@ -148,15 +138,6 @@ class ResponseOracle:
         self._fk_state = None
 
     @property
-    def alpha(self) -> wp.array[float]:
-        """Effective inverse mass per DOF [1/kg or 1/(kg·m²)], shape [joint_dof_count].
-
-        :meth:`refresh` overwrites this persistent buffer in place. Values may
-        also be written directly when only a known per-DOF response is needed.
-        """
-        return self._alpha
-
-    @property
     def inverse_blocks(self) -> wp.array3d[float]:
         """Per-articulation inverse mass blocks, shape [art_count, max_dofs, max_dofs].
 
@@ -168,7 +149,7 @@ class ResponseOracle:
         return self._inv_block
 
     def refresh(self, state) -> None:
-        """Recompute :attr:`alpha` and :attr:`inverse_blocks` for *state*.
+        """Recompute :attr:`inverse_blocks` for *state*.
 
         Reads *state* without modifying it. Includes ``joint_armature`` but not
         joint damping, contacts, or constraint regularization; the response is
@@ -201,7 +182,7 @@ class ResponseOracle:
         wp.launch(
             _inverse_block_from_mass_matrix_kernel,
             dim=model.articulation_count,
-            inputs=[self._H, self._art_dof_start, self._art_dof_count, self._L, self._inv_block],
-            outputs=[self._alpha],
+            inputs=[self._H, self._art_dof_count, self._L],
+            outputs=[self._inv_block],
             device=model.device,
         )

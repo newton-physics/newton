@@ -105,14 +105,15 @@ def _alpha_reference(model, state):
 
 
 def test_provider_matches_inverse_mass(test, device):
-    """The model-backed oracle returns (H^{-1})_{ii} per model DOF."""
+    """The oracle's block diagonal equals (H^{-1})_{ii} per model DOF."""
     model = _build_single_revolute(device)
     state = model.state()
 
     provider = ResponseOracle(model)
     provider.refresh(state)
-    alpha = provider.alpha.numpy()
-    test.assertEqual(alpha.shape, (model.joint_dof_count,))
+    n = model.joint_dof_count
+    alpha = np.diag(provider.inverse_blocks.numpy()[0, :n, :n])
+    test.assertEqual(alpha.shape, (n,))
 
     alpha_ref = _alpha_reference(model, state)
     test.assertAlmostEqual(alpha[0], alpha_ref[0], places=5)
@@ -121,7 +122,7 @@ def test_provider_matches_inverse_mass(test, device):
 def test_inverse_blocks_match_dense_inverse(test, device):
     """refresh() fills the full per-articulation inverse mass block.
 
-    inverse_blocks[a] must equal inv(H_a), and its diagonal must equal alpha.
+    inverse_blocks[a] must equal inv(H_a).
     """
     model = _build_two_link(device)
     n = model.joint_dof_count
@@ -137,14 +138,13 @@ def test_inverse_blocks_match_dense_inverse(test, device):
 
     block = oracle.inverse_blocks.numpy()[0, :n, :n]
     np.testing.assert_allclose(block, Hinv, rtol=1e-4, atol=1e-6)
-    np.testing.assert_allclose(np.diag(block), oracle.alpha.numpy(), rtol=1e-5)
 
 
-def test_alpha_direct_write_from_solver(test, device):
-    """Use a solver-computed inverse mass for a singleton actuator group.
+def test_direct_write_from_solver(test, device):
+    """Use a solver-computed inverse mass written straight into the oracle.
 
-    MuJoCo's ``dof_invweight0`` provides the effective inverse mass written to
-    ``oracle.alpha``. The implicit solve reads this response directly.
+    MuJoCo's ``dof_invweight0`` gives the effective inverse mass per DOF; it is
+    written onto the articulation block diagonal and the solve reads it directly.
     """
     h = 0.01
     kp_val, kd_val = 500.0, 5.0
@@ -170,7 +170,10 @@ def test_alpha_direct_write_from_solver(test, device):
     # through the solver's MuJoCo->Newton DOF tables.
     solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
     alpha_mjc = np.array(solver.mj_model.dof_invweight0, dtype=np.float32)
-    oracle.alpha.assign(alpha_mjc)
+    blocks = np.zeros(oracle.inverse_blocks.shape, dtype=np.float32)
+    for i, v in enumerate(alpha_mjc):
+        blocks[0, i, i] = v
+    oracle.inverse_blocks.assign(blocks)
 
     control.joint_f.zero_()
     actuator.step(state, control, dt=h)  # no refresh(): alpha holds the MuJoCo values
@@ -236,7 +239,6 @@ def test_response_from_mujoco_mass_matrix(test, device):
     blocks = np.zeros(oracle.inverse_blocks.shape, dtype=np.float32)
     blocks[0, :n, :n] = response_newton
     oracle.inverse_blocks.assign(blocks)
-    oracle.alpha.assign(np.diag(response_newton))
     actuator = _make_actuator(
         model,
         device,
@@ -342,7 +344,6 @@ def test_full_loop_response_from_mujoco_matches_refresh(test, device):
             np.testing.assert_array_equal(solver.mjc_dof_to_newton_dof.numpy()[0], np.arange(n))
         # scratch for the Cholesky kernel run on MuJoCo's (padded) qM
         qm_pad = solver.mjw_data.qM.shape[1]
-        art_start = wp.array([0], dtype=wp.int32, device=device)
         art_count = wp.array([nv], dtype=wp.int32, device=device)
         chol_l = wp.zeros((1, qm_pad, qm_pad), dtype=wp.float32, device=device)
 
@@ -353,8 +354,8 @@ def test_full_loop_response_from_mujoco_matches_refresh(test, device):
                 wp.launch(
                     _inverse_block_from_mass_matrix_kernel,
                     dim=1,
-                    inputs=[solver.mjw_data.qM, art_start, art_count, chol_l, oracle.inverse_blocks],
-                    outputs=[oracle.alpha],
+                    inputs=[solver.mjw_data.qM, art_count, chol_l],
+                    outputs=[oracle.inverse_blocks],
                     device=device,
                 )
             else:
@@ -1415,7 +1416,7 @@ def test_armature_enters_the_response(test, device):
         st.joint_q.assign(q0)
         o = ResponseOracle(m)
         o.refresh(st)
-        return o.alpha.numpy().copy()
+        return np.diag(o.inverse_blocks.numpy()[0, :2, :2]).copy()
 
     bare = alpha_for(0.0)
     with_armature = alpha_for(0.5)
@@ -1510,8 +1511,8 @@ add_function_test(
 )
 add_function_test(
     TestActuatorImplicit,
-    "test_alpha_direct_write_from_solver",
-    test_alpha_direct_write_from_solver,
+    "test_direct_write_from_solver",
+    test_direct_write_from_solver,
     devices=devices,
 )
 add_function_test(

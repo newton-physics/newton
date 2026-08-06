@@ -96,6 +96,19 @@ def _chain_clamp(inner: wp.Function, func: wp.Function, base: int) -> wp.Functio
     return chained
 
 
+@wp.kernel(enable_backward=False)
+def _gather_slot_response_kernel(
+    inverse_blocks: wp.array3d[float],
+    slot_art: wp.array[wp.int32],
+    slot_local: wp.array[wp.int32],
+    slot_response: wp.array[float],
+):
+    """Per-slot diagonal response A_ii, for laws that need their own inverse mass."""
+    i = wp.tid()
+    li = slot_local[i]
+    slot_response[i] = inverse_blocks[slot_art[i], li, li]
+
+
 # ---------------------------------------------------------------------------
 # Coupled solve kernel
 # ---------------------------------------------------------------------------
@@ -108,8 +121,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
 
     One thread handles each articulation group. It predicts the group state
     with its inverse-mass response, evaluates the force laws and clamps, forms
-    a finite-difference Jacobian, and applies a dense Newton update. Groups
-    with one actuator use the response stored in :attr:`ResponseOracle.alpha`.
+    a finite-difference Jacobian, and applies a dense Newton update.
 
     Float64 avoids loss of precision when finite differencing stiff residuals.
     """
@@ -123,7 +135,6 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
         group_art: wp.array[wp.int32],
         group_slot: wp.array2d[wp.int32],
         group_local: wp.array2d[wp.int32],
-        inv_mass: wp.array[float],
         inverse_blocks: wp.array3d[float],
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
@@ -181,11 +192,8 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                 si = group_slot[g, i]
                 li = group_local[g, i]
                 qd_i = wp.float64(velocities[vel_indices[si]])
-                if ng == 1:
-                    qd_i += wp.float64(inv_mass[vel_indices[si]]) * pbuf[g, 0]
-                else:
-                    for jj in range(ng):
-                        qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
+                for jj in range(ng):
+                    qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
                 q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
                 tq = wp.float64(target_pos[target_pos_indices[si]])
                 tqd = wp.float64(target_vel[target_vel_indices[si]])
@@ -209,11 +217,8 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                     si = group_slot[g, i]
                     li = group_local[g, i]
                     qd_i = wp.float64(velocities[vel_indices[si]])
-                    if ng == 1:
-                        qd_i += wp.float64(inv_mass[vel_indices[si]]) * pbuf[g, 0]
-                    else:
-                        for jj in range(ng):
-                            qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
+                    for jj in range(ng):
+                        qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
                     q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
                     tq = wp.float64(target_pos[target_pos_indices[si]])
                     tqd = wp.float64(target_vel[target_vel_indices[si]])
@@ -257,11 +262,8 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
             si = group_slot[g, i]
             li = group_local[g, i]
             qd_i = wp.float64(velocities[vel_indices[si]])
-            if ng == 1:
-                qd_i += wp.float64(inv_mass[vel_indices[si]]) * pbuf[g, 0]
-            else:
-                for jj in range(ng):
-                    qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
+            for jj in range(ng):
+                qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
             q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
             tq = wp.float64(target_pos[target_pos_indices[si]])
             tqd = wp.float64(target_vel[target_vel_indices[si]])
@@ -313,7 +315,6 @@ class _EffortModeImplicit:
                 "Implicit actuation requires effective_inv_mass to be a ResponseOracle; "
                 "build one with newton.actuators.ResponseOracle(model)."
             )
-        self._inv_mass = effective_inv_mass.alpha
         self._response = effective_inv_mass
         self._controller = controller
         self._init_solver(controller, clamping)
@@ -445,6 +446,15 @@ class _EffortModeImplicit:
         self._pbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
         self._rbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
         self._jbuf = wp.zeros((num_groups, max_ng, max_ng), dtype=wp.float64, device=device)
+        slot_art = np.zeros(self._num_actuators, dtype=np.int32)
+        slot_local = np.zeros(self._num_actuators, dtype=np.int32)
+        for a in arts:
+            for slot_idx, ld in groups[a]:
+                slot_art[slot_idx] = a
+                slot_local[slot_idx] = ld
+        self._slot_art = wp.array(slot_art, dtype=wp.int32, device=device)
+        self._slot_local = wp.array(slot_local, dtype=wp.int32, device=device)
+        self._slot_response = wp.zeros(self._num_actuators, dtype=float, device=device)
         self._num_groups = num_groups
         self._groups_built = True
 
@@ -481,6 +491,15 @@ class _EffortModeImplicit:
         if applied_forces is None:
             raise RuntimeError("Implicit actuation requires an applied-effort buffer")
         # Update state-dependent controller parameters before solving.
+        if not self._groups_built:
+            self._build_groups(vel_indices)
+        wp.launch(
+            _gather_slot_response_kernel,
+            dim=self._num_actuators,
+            inputs=[self._response.inverse_blocks, self._slot_art, self._slot_local],
+            outputs=[self._slot_response],
+            device=self._device,
+        )
         self._controller.prepare_implicit(
             positions,
             velocities,
@@ -492,11 +511,9 @@ class _EffortModeImplicit:
             target_vel_indices,
             ctrl_state,
             float(dt),
-            self._inv_mass,
+            self._slot_response,
             self._device,
         )
-        if not self._groups_built:
-            self._build_groups(vel_indices)
         inverse_blocks = self._response.inverse_blocks
 
         opts = self._options
@@ -508,7 +525,6 @@ class _EffortModeImplicit:
                 self._group_art,
                 self._group_slot,
                 self._group_local,
-                self._inv_mass,
                 inverse_blocks,
                 pos_indices,
                 vel_indices,

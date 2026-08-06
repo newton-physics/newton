@@ -220,7 +220,6 @@ def _assemble_linear_params_kernel(
     q0: wp.array[float],
     qd0: wp.array[float],
     inv_mass: wp.array[float],
-    vel_indices: wp.array[wp.uint32],
     dt: float,
     margin: float,
     params: wp.array2d[float],
@@ -241,7 +240,7 @@ def _assemble_linear_params_kernel(
     i = wp.tid()
     a = dtau_dq[i]
     b = dtau_dqd[i]
-    alpha = inv_mass[vel_indices[i]]
+    alpha = inv_mass[i]
     slope = a * dt + b
     limit = (1.0 - margin) / (dt * wp.max(alpha, 1.0e-12))
     if slope > limit and slope > 0.0:
@@ -521,7 +520,6 @@ class ControllerNeuralMLP(Controller):
                 self._q0,
                 self._qd0,
                 inv_mass,
-                vel_indices,
                 float(dt),
                 self.IMPLICIT_JACOBIAN_MARGIN,
             ],

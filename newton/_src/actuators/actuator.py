@@ -226,10 +226,9 @@ class Actuator:
                 the coupled effective inverse mass [1/kg or 1/(kg·m²)] the
                 actuator works against. Keep it current by calling
                 ``oracle.refresh(state)`` once per step before :meth:`step`.
-                Values may also be written directly: the solve reads
-                ``oracle.alpha`` for a group driving one DOF of an
-                articulation, and ``oracle.inverse_blocks`` for a group
-                spanning several.
+                Values may also be written directly into
+                ``oracle.inverse_blocks``, e.g. by inverting the solver's own
+                mass matrix.
             options: Solver options; defaults to
                 :class:`ActuatorImplicitOptions`.
         """
