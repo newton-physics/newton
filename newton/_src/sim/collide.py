@@ -1202,9 +1202,9 @@ class CollisionPipeline:
         else:
             self._contact_matcher = None
 
-        # Soft (cloth) self-contact: disabled until init_soft_self_contact() configures it.
-        # The shared detector is created lazily on first use (never eagerly) and re-pointed
-        # per Contacts buffer; see _get_soft_self_contact_detector.
+        # Soft (cloth) self-contact: disabled until init_soft_self_contact() configures
+        # it. That explicit opt-in also creates the shared detector, which is then
+        # re-pointed per Contacts buffer; see _get_soft_self_contact_detector.
         self._soft_self_contact = False
         self._soft_self_contact_config: dict | None = None
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
