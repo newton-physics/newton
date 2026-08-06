@@ -956,7 +956,6 @@ class CollisionPipeline:
         self.device = device
         self.reduce_contacts = reduce_contacts
         self.requires_grad = requires_grad
-        self.soft_contact_margin = soft_contact_margin
         self.include_static_kinematic_pairs = include_static_kinematic_pairs
 
         if using_expert_components:
@@ -1170,10 +1169,11 @@ class CollisionPipeline:
         self.soft_contact_margin = soft_contact_margin
         # Soft (cloth) self-contact tuning values, populated by
         # init_soft_self_contact(); consumed at detection time like
-        # soft_contact_margin (detection query radius = margin + gap).
+        # soft_contact_margin (detection query radius = margin + gap; pairs
+        # closer than the exclusion radius in the rest shape are skipped).
         self.soft_self_contact_margin = 0.0
         self.soft_self_contact_gap = 0.0
-        self.soft_self_contact_min_query_radius = 0.0
+        self.soft_self_contact_rest_shape_exclusion_radius = 0.0
         self._soft_contact_max = soft_contact_max
 
         self.requires_grad = requires_grad
@@ -1291,7 +1291,7 @@ class CollisionPipeline:
         *,
         margin: float = 0.2,
         gap: float = 0.0,
-        min_query_radius: float = 0.0,
+        rest_shape_exclusion_radius: float = 0.0,
         vertex_buffer_pre_alloc: int = 32,
         edge_buffer_pre_alloc: int = 64,
         edge_edge_parallel_epsilon: float = 1e-5,
@@ -1317,8 +1317,10 @@ class CollisionPipeline:
             gap: Additional detection-only distance [m]; detection queries use
                 ``margin + gap``, mirroring the ``ShapeConfig.margin`` /
                 ``ShapeConfig.gap`` convention.
-            min_query_radius: Lower query bound [m] for excluding
-                topologically-close rest-shape pairs.
+            rest_shape_exclusion_radius: Pairs closer than this distance [m]
+                in the rest shape (``model.particle_q``) are excluded from
+                detection — for meshes whose regions are close by design
+                (layered cloth, seams). ``0`` disables the filter.
             vertex_buffer_pre_alloc: Per-vertex collision buffer capacity.
             edge_buffer_pre_alloc: Per-edge collision buffer capacity.
             edge_edge_parallel_epsilon: Near-parallel edge-pair threshold.
@@ -1329,13 +1331,17 @@ class CollisionPipeline:
             external_vertex_filter_map: Extra vertex-triangle exclusions.
             external_edge_filter_map: Extra edge-edge exclusions.
         """
+        if margin < 0.0:
+            raise ValueError(f"soft self-contact margin must be >= 0, got {margin}")
         if gap < 0.0:
             raise ValueError(f"soft self-contact gap must be >= 0, got {gap}")
+        if rest_shape_exclusion_radius < 0.0:
+            raise ValueError(f"rest_shape_exclusion_radius must be >= 0, got {rest_shape_exclusion_radius}")
         if self.model.tri_count == 0:
             raise ValueError("init_soft_self_contact() requires a model with triangles (cloth/soft mesh).")
         self.soft_self_contact_margin = margin
         self.soft_self_contact_gap = gap
-        self.soft_self_contact_min_query_radius = min_query_radius
+        self.soft_self_contact_rest_shape_exclusion_radius = rest_shape_exclusion_radius
         # The explicit opt-in is what creates the detector (its BVHs are built
         # from model.particle_q); the result struct stays unallocated until the
         # first Contacts buffer is bound. Re-configuring rebuilds the detector.
@@ -1349,6 +1355,48 @@ class CollisionPipeline:
             external_vertex_triangle_filtering_map=external_vertex_filter_map,
             external_edge_edge_filtering_map=external_edge_filter_map,
         )
+
+    def set_collision_detection_range(
+        self,
+        *,
+        soft_contact_margin: float | None = None,
+        soft_self_contact_margin: float | None = None,
+        soft_self_contact_gap: float | None = None,
+    ) -> None:
+        """Update the detection ranges consumed by :meth:`collide`.
+
+        Only the values provided are changed; ``None`` keeps the current
+        setting, and changes take effect at the next :meth:`collide` call.
+        Rigid (shape-shape) ranges are per-shape model data
+        (:attr:`Model.shape_margin`, :attr:`Model.shape_gap`) and are not
+        covered here. A solver that owns the pipeline drives self-contact
+        detection from its own parameters, so this setter affects standalone
+        :meth:`collide` use.
+
+        Args:
+            soft_contact_margin: Detection-only distance [m] added to the
+                per-particle radius for particle-shape contact queries.
+            soft_self_contact_margin: Self-contact interaction distance [m];
+                requires :meth:`init_soft_self_contact` to have been called.
+            soft_self_contact_gap: Additional detection-only self-contact
+                distance [m] (queries use ``margin + gap``); requires
+                :meth:`init_soft_self_contact` to have been called.
+        """
+        for name, value in (
+            ("soft_contact_margin", soft_contact_margin),
+            ("soft_self_contact_margin", soft_self_contact_margin),
+            ("soft_self_contact_gap", soft_self_contact_gap),
+        ):
+            if value is not None and value < 0.0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+        if soft_self_contact_margin is not None or soft_self_contact_gap is not None:
+            self._ensure_soft_self_contact_detector()
+        if soft_contact_margin is not None:
+            self.soft_contact_margin = soft_contact_margin
+        if soft_self_contact_margin is not None:
+            self.soft_self_contact_margin = soft_self_contact_margin
+        if soft_self_contact_gap is not None:
+            self.soft_self_contact_gap = soft_self_contact_gap
 
     def _ensure_soft_self_contact_detector(self) -> TriMeshCollisionDetector:
         """Return the shared detector created by :meth:`init_soft_self_contact`."""
@@ -1822,10 +1870,15 @@ class CollisionPipeline:
             query_radius = self.soft_self_contact_margin + self.soft_self_contact_gap
             # The BVHs (and the positions detection reads) are NOT updated here —
             # keeping them current via refit_soft_self_contact_bvh() is
-            # the caller's responsibility.
+            # the caller's responsibility. Rest-shape exclusion measures pair
+            # distances in the model's initial (rest) positions.
             detector.vertex_triangle_collision_detection(
-                query_radius, min_query_radius=self.soft_self_contact_min_query_radius
+                query_radius,
+                min_query_radius=self.soft_self_contact_rest_shape_exclusion_radius,
+                min_distance_filtering_ref_pos=self.model.particle_q,
             )
             detector.edge_edge_collision_detection(
-                query_radius, min_query_radius=self.soft_self_contact_min_query_radius
+                query_radius,
+                min_query_radius=self.soft_self_contact_rest_shape_exclusion_radius,
+                min_distance_filtering_ref_pos=self.model.particle_q,
             )

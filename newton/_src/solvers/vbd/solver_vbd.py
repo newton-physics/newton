@@ -511,7 +511,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             pipeline.init_soft_self_contact(
                 margin=_sc_margin,
                 gap=_sc_gap,
-                min_query_radius=particle_rest_shape_contact_exclusion_radius,
+                rest_shape_exclusion_radius=particle_rest_shape_contact_exclusion_radius,
                 vertex_buffer_pre_alloc=particle_vertex_contact_buffer_size,
                 edge_buffer_pre_alloc=particle_edge_contact_buffer_size,
                 edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,

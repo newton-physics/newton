@@ -1546,7 +1546,9 @@ def test_pipeline_soft_self_contact(test, device):
     Configures a CollisionPipeline via init_soft_self_contact, runs
     collide(soft_self_contact=True) into two independent Contacts buffers, and
     compares counts and minimum distances against a standalone
-    TriMeshCollisionDetector queried at the same radius.
+    TriMeshCollisionDetector queried at the same radius. Also verifies
+    set_collision_detection_range() takes effect at the next collide and that
+    rest-shape exclusion is wired through to detection.
     """
     vertices, faces = get_data()
     model, detector_ref = init_model(vertices, faces, device, record_triangle_contacting_vertices=False)
@@ -1603,12 +1605,43 @@ def test_pipeline_soft_self_contact(test, device):
     with test.assertWarns(DeprecationWarning):
         pipeline.collide(state, contacts_a, soft_contact_margin=0.1)
 
+    # set_collision_detection_range: partial update, applied at the next collide.
+    pipeline.set_collision_detection_range(soft_contact_margin=0.02, soft_self_contact_gap=0.0)
+    test.assertEqual(pipeline.soft_contact_margin, 0.02)
+    test.assertEqual(pipeline.soft_self_contact_margin, 1e-2)  # not provided -> unchanged
+    test.assertEqual(pipeline.soft_self_contact_gap, 0.0)
+    pipeline.collide(state, contacts_b, soft_self_contact=True)
+    # The query radius shrank from 5e-2 to margin + 0; min-dist entries are
+    # initialized to the query radius, so none may exceed it.
+    min_dist = contacts_b.soft_self_contact_data.vertex_colliding_triangles_min_dist.numpy()
+    test.assertLessEqual(min_dist.max(), 1e-2 + 1e-6)
+    with test.assertRaises(ValueError):
+        pipeline.set_collision_detection_range(soft_self_contact_margin=-1.0)
+
+    # Rest-shape exclusion is wired through collide (reference = model.particle_q,
+    # which equals the current state here, so a huge radius excludes every pair).
+    excluding = newton.CollisionPipeline(model, broad_phase="nxn")
+    excluding.init_soft_self_contact(
+        margin=1e-2, gap=query_radius - 1e-2, topological_filter_threshold=0, rest_shape_exclusion_radius=1e3
+    )
+    contacts_e = excluding.contacts()
+    excluding.refit_soft_self_contact_bvh(state.particle_q)
+    excluding.collide(state, contacts_e, soft_self_contact=True)
+    test.assertEqual(int(contacts_e.soft_self_contact_data.vertex_colliding_triangles_count.numpy().sum()), 0)
+    test.assertEqual(int(contacts_e.soft_self_contact_data.edge_colliding_edges_count.numpy().sum()), 0)
+
     # Misuse guards.
     unconfigured = newton.CollisionPipeline(model, broad_phase="nxn")
     with test.assertRaises(ValueError):
         unconfigured.collide(state, unconfigured.contacts(), soft_self_contact=True)
     with test.assertRaises(ValueError):
         unconfigured.refit_soft_self_contact_bvh(state.particle_q)
+    # Self-contact ranges require init_soft_self_contact(); the particle-shape
+    # margin alone does not.
+    with test.assertRaises(ValueError):
+        unconfigured.set_collision_detection_range(soft_self_contact_gap=0.01)
+    unconfigured.set_collision_detection_range(soft_contact_margin=0.05)
+    test.assertEqual(unconfigured.soft_contact_margin, 0.05)
 
 
 devices = get_test_devices()
