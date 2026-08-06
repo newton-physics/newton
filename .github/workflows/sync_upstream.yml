@@ -2,9 +2,14 @@ name: Sync Upstream
 
 # Keeps this fork's `main` current with newton-physics/newton so it never
 # drifts far behind. Weekly (and on demand) it merges upstream/main into main:
-#   - clean merge -> pushed straight to main
-#   - conflicts   -> merge aborted and an issue is opened with resolution steps
+#   - clean merge      -> pushed straight to main
+#   - conflicts        -> an LLM resolves them (full base/ours/theirs context);
+#                         the resolved merge is opened as a PR for review + CI
+#   - LLM cannot solve -> merge aborted, a tracking issue is opened
 # Guarded to run only on the fork, never if this workflow lands upstream.
+#
+# Requires repo secret ANTHROPIC_API_KEY. Optional repo variable
+# ANTHROPIC_MODEL overrides the default model.
 
 on:
   schedule:
@@ -13,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
   issues: write
 
 concurrency:
@@ -59,26 +65,54 @@ jobs:
         run: |
           set +e
           git merge --no-edit upstream/main
-          code=$?
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          if [ "$code" -ne 0 ]; then
-            echo "Merge conflicts detected; aborting."
-            git merge --abort
-          fi
+          echo "code=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Push clean merge to main
         if: steps.behind.outputs.count != '0' && steps.merge.outputs.code == '0'
         run: |
           git push origin main
-          echo "Merged $(git rev-list --count HEAD ^origin/main || true) commit(s) and pushed to main."
+          echo "Clean merge pushed to main."
 
-      - name: Open issue on conflict
+      - name: Resolve conflicts with an LLM
         if: steps.behind.outputs.count != '0' && steps.merge.outputs.code != '0'
+        id: airesolve
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+        run: |
+          set +e
+          python3 scripts/ai_resolve_conflicts.py
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Open PR with LLM-resolved merge
+        if: steps.behind.outputs.count != '0' && steps.merge.outputs.code != '0' && steps.airesolve.outputs.code == '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          body=$'The scheduled upstream sync hit merge conflicts and could not merge automatically.\n\nResolve locally:\n\n```bash\ngit fetch upstream\ngit checkout main\ngit merge upstream/main\n# resolve conflicts, then:\ngit commit\ngit push origin main\n```\n\nTriggered by the `Sync Upstream` workflow.'
+          set -e
+          # sanity: no conflict markers must remain anywhere in the tree
+          if git grep -lE '^(<<<<<<<|>>>>>>>)' -- . >/dev/null 2>&1; then
+            echo "Conflict markers still present after LLM pass; not opening PR."
+            exit 1
+          fi
+          git add -A
+          git commit --no-edit
+          branch="sync/upstream-$(date +%Y%m%d-%H%M)"
+          git push origin "HEAD:refs/heads/${branch}"
+          body=$'This upstream sync had merge conflicts that were resolved automatically by an LLM (`scripts/ai_resolve_conflicts.py`) using full base/ours/theirs context.\n\n**Review the diff carefully and let CI run before merging** — the resolution is a best effort, not a guarantee.\n\nConflicted files were resolved to keep the Digital Instron fork working while adopting upstream changes.'
+          gh pr create --base main --head "${branch}" \
+            --title "Upstream sync (LLM-resolved) $(date +%Y-%m-%d)" \
+            --body "$body"
+
+      - name: Open issue when LLM cannot resolve
+        if: steps.behind.outputs.count != '0' && steps.merge.outputs.code != '0' && steps.airesolve.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git merge --abort || true
+          body=$'The scheduled upstream sync hit merge conflicts and the LLM resolver could not fully resolve them (or `ANTHROPIC_API_KEY` is not configured).\n\nResolve locally:\n\n```bash\ngit fetch upstream\ngit checkout main\ngit merge upstream/main\n# resolve conflicts, then:\ngit commit\ngit push origin main\n```\n\nTriggered by the `Sync Upstream` workflow.'
           existing=$(gh issue list --state open --search "Upstream sync needs manual merge in:title" --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
