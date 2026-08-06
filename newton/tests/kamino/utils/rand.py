@@ -110,7 +110,7 @@ class RandomProblemLLT:
                 A_mat = A[i]
             # Generate a random RHS vector if not provided
             if b is None:
-                b_vec = random_rhs_for_matrix(A_mat)
+                b_vec = random_rhs_for_matrix(A_mat, seed=self.seed)
             else:
                 b_vec = b[i]
             # Compute the Cholesky decomposition using numpy
