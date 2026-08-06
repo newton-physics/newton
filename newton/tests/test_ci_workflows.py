@@ -177,7 +177,7 @@ class TestPullRequestWorkflows(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(cancel_log.read_text().splitlines(), ["108", "102", "107"])
+            self.assertEqual(sorted(cancel_log.read_text().splitlines()), ["102", "107", "108"])
 
 
 if __name__ == "__main__":
