@@ -582,7 +582,11 @@ def parse_usd(
     native_exclude_paths = list(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )
-    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
+    physics_scene_prim, ret_dict = usd._load_physics_scene_prim(
+        stage,
+        root_path=root_path,
+        exclude_paths=native_exclude_paths,
+    )
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
@@ -637,7 +641,6 @@ def parse_usd(
     # cache for TetMesh data loaded from USD prims
     tetmesh_cache: dict[str, TetMesh] = {}
 
-    physics_scene_prim = None
     physics_dt = None
     max_solver_iters = None
 
@@ -2322,24 +2325,23 @@ def parse_usd(
 
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
-    physics_scene_prim = None
     scene_gravity_direction = None
     scene_gravity_magnitude = None
     gravity_enabled = True
-    if UsdPhysics.ObjectType.Scene in ret_dict:
+    if physics_scene_prim is not None:
         paths, scene_descs = ret_dict[UsdPhysics.ObjectType.Scene]
         if len(paths) > 1 and verbose:
             print("Only the first PhysicsScene is considered")
-        path, scene_desc = paths[0], scene_descs[0]
+        scene_path = physics_scene_prim.GetPath()
+        scene_desc = next(desc for path, desc in zip(paths, scene_descs, strict=True) if path == scene_path)
         if verbose:
-            print("Found PhysicsScene:", path)
+            print("Found PhysicsScene:", scene_path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
         scene_gravity_direction = scene_desc.gravityDirection
         scene_gravity_magnitude = scene_desc.gravityMagnitude
 
         # Storing Physics Scene attributes
-        physics_scene_prim = stage.GetPrimAtPath(path)
         for a in physics_scene_prim.GetAttributes():
             scene_attributes[a.GetName()] = a.Get()
 

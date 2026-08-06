@@ -12710,6 +12710,81 @@ def Sphere "AppendedSchema" (
         self.assertTrue(usd.has_applied_api_schema(prim, "MjcSiteAPI"))
 
 
+class TestGetPhysicsScenePrim(unittest.TestCase):
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_physics_scene_prim_returns_first_scene(self):
+        """Return the first physics scene in USD traversal order."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        first = UsdPhysics.Scene.Define(stage, "/World/FirstScene").GetPrim()
+        UsdPhysics.Scene.Define(stage, "/World/SecondScene")
+
+        self.assertEqual(usd.get_physics_scene_prim(stage), first)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_physics_scene_prim_returns_none_without_scene(self):
+        """Return None when a stage has no physics scene."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/World", "Xform")
+
+        self.assertIsNone(usd.get_physics_scene_prim(stage))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_physics_scene_prim_respects_range(self):
+        """Restrict physics scene discovery to the requested import range."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/Excluded/Scene")
+        included = UsdPhysics.Scene.Define(stage, "/Included/Scene").GetPrim()
+
+        self.assertEqual(usd.get_physics_scene_prim(stage, root_path="/Included"), included)
+        self.assertEqual(usd.get_physics_scene_prim(stage, exclude_paths=["/Excluded"]), included)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_physics_scene_prim_traverses_instance_proxies(self):
+        """Find physics scenes beneath instanceable prims."""
+        from pxr import Usd, UsdPhysics
+
+        asset = Usd.Stage.CreateInMemory()
+        asset_root = asset.DefinePrim("/Asset", "Xform")
+        asset.SetDefaultPrim(asset_root)
+        UsdPhysics.Scene.Define(asset, "/Asset/Scene")
+
+        stage = Usd.Stage.CreateInMemory()
+        instance = stage.DefinePrim("/Instance", "Xform")
+        instance.GetReferences().AddReference(asset.GetRootLayer().identifier, "/Asset")
+        instance.SetInstanceable(True)
+
+        scene_prim = usd.get_physics_scene_prim(stage)
+
+        self.assertIsNotNone(scene_prim)
+        self.assertEqual(str(scene_prim.GetPath()), "/Instance/Scene")
+        self.assertTrue(scene_prim.IsInstanceProxy())
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_parses_physics_range_once(self):
+        """Reuse the physics parser result when choosing the imported scene."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/Scene")
+        scene.CreateGravityMagnitudeAttr(2.0)
+
+        load_physics = UsdPhysics.LoadUsdPhysicsFromRange
+        with mock.patch(
+            "newton._src.usd.utils.UsdPhysics.LoadUsdPhysicsFromRange",
+            wraps=load_physics,
+        ) as load_physics_mock:
+            result = newton.ModelBuilder().add_usd(stage)
+
+        load_physics_mock.assert_called_once()
+        self.assertEqual(result["scene_attributes"]["physics:gravityMagnitude"], 2.0)
+
+
 class TestOverrideRootXform(unittest.TestCase):
     """Tests for override_root_xform parameter in the USD importer."""
 
