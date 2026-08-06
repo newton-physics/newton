@@ -597,7 +597,6 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
             rng,
             max_angle=np.radians(5.0),  # Angles too far from the initial pose lead to singularities
             max_ang_vel=np.radians(20.0),
-            randomize_base=False,
             use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
@@ -606,11 +605,15 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
         )
 
         # Simulate random poses with dense solver
-        success = simulate_function(use_sparsity=False)
+        # Expect warning due to specified base on non-floating worlds
+        with self.assertLogs(level="WARNING"):
+            success = simulate_function(use_sparsity=False)
         self.assertTrue(success)
 
         # Simulate random poses with sparse solver
-        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
+        # Expect warning due to specified base on non-floating worlds
+        with self.assertLogs(level="WARNING"):
+            success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
         self.assertTrue(success)
 
 
