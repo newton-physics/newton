@@ -22,7 +22,6 @@
 - Add full-surface (edge/face) rigid-soft contacts to `SolverVBD` proxy-body coupling under `SolverCoupledProxy` through shared or proxy-local collision pipelines. Proxy-particle coupling rejects full-surface contacts.
 - Add `newton[onnx]` for ONNX policy inference through Warp-NN; `ControllerNeuralMLP`, `ControllerNeuralLSTM`, and RL policy examples can run exported `.onnx` policies without requiring PyTorch for ONNX execution.
 - Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts
-- Add `newton.eval_rigid_contact_kinematics()` to evaluate selected rigid-contact distances and world-space points in caller-provided arrays.
 - Add masked rigid-body reset support to `SolverVBD`. (#3256)
 - Add `Mesh.invalidate_cache()` to drop cached derived data (hash, edges, finalized Warp meshes) after in-place modification of `Mesh.vertices` or `Mesh.indices`; reassigning those properties invalidates automatically.
 - Add `Heightfield.create_from_mesh()` and `newton.utils.rasterize_mesh_to_heightfield()` to build a heightfield collider by ray-casting a `wp.Mesh`, replacing a large static terrain mesh with an equivalent heightfield.
@@ -54,7 +53,6 @@
 - Decide collider visibility from USD `purpose` and visibility rather than from a bound render material. A collider whose `purpose` resolves to `default` is viewport geometry and is drawn; mark it `guide` to state that it is collision-only. Previously an unrelated visual elsewhere in the scene could make a collider vanish. `force_show_colliders` and `hide_collision_shapes` are unchanged.
 - Filter shared full-surface soft contacts per `SolverCoupled` entry, preserving them for capable solvers and dropping them for particle-only solvers or records spanning entries.
 - Require `warp-lang>=1.16.0`; upgrade Warp to version 1.16.0 or later.
-- Reuse `Contacts.rigid_contact_normal` for the deprecated `Contacts.rigid_contact_diff_normal` attribute instead of allocating a duplicate buffer.
 - Follow USD viewport `purpose` and visibility for imported visual geometry and colliders rather than inferring visibility from a bound render material. Visual shapes and Gaussian splats are drawn only for `default` and `proxy`; a collider whose `purpose` resolves to `default` is drawn, while `guide` identifies collision-only geometry. `force_show_colliders` and `hide_collision_shapes` are unchanged. (#3404, #3712)
 - Require `warp-lang>=1.16.0`; upgrade Warp to version 1.16.0 or later. (#3780)
 - Disable the implicit positive Dahl-friction defaults in `SolverVBD.register_custom_attributes()` (deprecated in 1.3.0): `vbd:dahl_eps_max` and `vbd:dahl_tau` now default to zero, and Dahl cable friction is enabled only where both are authored positive. Pass `dahl_defaults_enabled=True` to temporarily restore the old defaults; the compatibility mode will be removed in a future release.
@@ -83,7 +81,6 @@
 ### Deprecated
 
 - Deprecate scalar `ModelBuilder.gravity`; pass a three-component gravity vector instead. (#3324)
-- Deprecate `Contacts.rigid_contact_diff_*` in favor of caller-allocated outputs passed to `newton.eval_rigid_contact_kinematics()`; use `Contacts.rigid_contact_normal` for the frozen world-space normal.
 - Deprecate local-only `SolverBase.reset()` world masks in favor of masks with shape `(world_count + 1,)`; append a final entry that selects global entities in world `-1`. (#3726; fixes #3374)
 - Deprecate and ignore `SolverVBD`'s `rigid_contact_stick_motion_eps`, `rigid_contact_stick_freeze_translation_eps`, and `rigid_contact_stick_freeze_angular_eps`; use collision-pipeline sticky matching for persistent geometry. The SolverVBD body deadzone was removed without replacement. (#3652)
 - Deprecate `Model.contacts()` and `Model.collide()` in favor of explicitly creating a `CollisionPipeline`, allocating with `pipeline.contacts()`, and detecting collisions with `pipeline.collide(state, contacts)`. (#3409)
