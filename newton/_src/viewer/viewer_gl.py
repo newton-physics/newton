@@ -605,6 +605,11 @@ class ViewerGL(ViewerBase):
 
         super().set_model(model)
 
+        if self.gui is not None:
+            # Reading shape_flags back from the device belongs here, not in the
+            # per-frame overlay path.
+            self.gui.update_shape_counts(self.model)
+
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the
         # model's device. Rebind the image logger so its GPU path tests against
         # — and registers PBO interop with — the correct CUDA context.
@@ -1590,7 +1595,7 @@ class ViewerGL(ViewerBase):
 
             layer_hidden = self._layer_force_hidden()
             for key, shapes, offset, count in self._packed_groups:
-                visible = self._should_show_shape(shapes.flags, shapes.static) and not layer_hidden
+                visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
                 materials = shapes.materials if self.model_changed else None
 

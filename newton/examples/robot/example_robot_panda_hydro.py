@@ -12,6 +12,7 @@
 #
 ###########################################################################
 
+import argparse
 import copy
 from dataclasses import replace
 from enum import Enum
@@ -56,6 +57,8 @@ class Example:
         newton.use_coord_layout_targets = True
         self.scene = SceneType(args.scene)
         self.test_mode = args.test
+        self.deterministic = args.deterministic
+        self.deterministic_solver = args.deterministic_solver
         self.show_isosurface = False  # Disabled by default for performance
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -281,6 +284,7 @@ class Example:
             reduce_contacts=True,
             broad_phase="explicit",
             sdf_hydroelastic_config=sdf_hydroelastic_config,
+            deterministic=self.deterministic,
         )
         self.contacts = self.collision_pipeline.contacts()
 
@@ -288,6 +292,7 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_contacts=False,
+            disable_sensors=True,
             solver="newton",
             integrator="implicitfast",
             cone="elliptic",
@@ -296,6 +301,9 @@ class Example:
             iterations=15,
             ls_iterations=100,
             impratio=1000.0,
+            deterministic=wp.DeterministicMode.RUN_TO_RUN
+            if self.deterministic_solver
+            else wp.DeterministicMode.NOT_GUARANTEED,
         )
 
         self.viewer.set_model(self.model)
@@ -431,11 +439,12 @@ class Example:
                 f"max lift={max_lift:.3f} (expected > {min_lift_height})"
             )
 
-        # In-cup placement check disabled — see newton-physics/newton#1337.
-        # Hydroelastic contact ordering on GPU still occasionally lets the pen
-        # slip out of the gripper during transport, producing both small drifts
-        # and complete misses. Lift-height check above remains as a coarse
-        # pickup verification.
+        # In-cup placement check remains disabled pending newton-physics/newton#1337.
+        # With --deterministic the placement does succeed (measured 19mm from the
+        # cup center against a 50mm tolerance), but wp.DeterministicMode.RUN_TO_RUN
+        # only guarantees repeatability within one GPU architecture, so that margin
+        # is not established across the CI fleet. Re-enable once determinism is
+        # verified on every target architecture.
         # # Verify that the object ended up in the cup
         # if self.put_in_cup:
         #     body_q = self.state_0.body_q.numpy()
@@ -525,6 +534,25 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(num_frames=720)
         parser.set_defaults(world_count=1)
+        parser.add_argument(
+            "--deterministic",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Make contact generation and ordering reproducible across runs on the same GPU. "
+                "Costs a few percent of step time."
+            ),
+        )
+        parser.add_argument(
+            "--deterministic-solver",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Additionally make the solver bit-exact. Separate from --deterministic because "
+                "it instruments every atomic scatter in the solver and costs ~7x step time, "
+                "while contact ordering is what varies between runs."
+            ),
+        )
         parser.add_argument(
             "--scene",
             type=str,

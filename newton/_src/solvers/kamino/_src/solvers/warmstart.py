@@ -225,6 +225,8 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position(
 
         # Update the current old-key to check in the next iteration
         k += 1
+        if start + k >= num_active_old:
+            break
         old_key = sorted_contact_keys_old[start + k]
 
     # Store the new contact reaction and velocity
@@ -340,6 +342,8 @@ def _warmstart_contacts_from_geom_pair_net_force(
 
         # Update the current old-key to check in the next iteration
         k += 1
+        if start + k >= num_active_old:
+            break
         old_key = sorted_contact_keys_old[start + k]
 
     # TODO: We need to cache this value per geom-pair
@@ -470,6 +474,8 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
 
         # Update the current old-key to check in the next iteration
         k += 1
+        if start + k >= num_active_old:
+            break
         old_key = sorted_contact_keys_old[start + k]
 
     # If no matching contact found by position, fallback to net wrench approach
@@ -519,6 +525,8 @@ def _warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_bac
 
             # Update the current old-key to check in the next iteration
             k += 1
+            if start + k >= num_active_old:
+                break
             old_key = sorted_contact_keys_old[start + k]
 
         # TODO: We need to cache this value per geom-pair

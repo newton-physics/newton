@@ -3,6 +3,7 @@
 
 """Provides mechanisms to import OpenUSD Physics models."""
 
+import math
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
@@ -28,7 +29,6 @@ from ...core.joints import (
     JointDoFType,
 )
 from ...core.materials import (
-    DEFAULT_DENSITY,
     DEFAULT_FRICTION,
     DEFAULT_RESTITUTION,
     MaterialDescriptor,
@@ -457,6 +457,20 @@ class USDImporter:
             return False
         return imageable.ComputeVisibility() != self.UsdGeom.Tokens.invisible
 
+    def _is_viewport_drawn(self, prim) -> bool:
+        """Return whether a prim is drawn under viewport semantics.
+
+        USD viewports draw the ``default`` and ``proxy`` purposes and hide ``guide`` and
+        ``render``. ``force_show_colliders`` is the explicit override for inspecting
+        collision geometry that is not otherwise viewport-drawn.
+        """
+        if not self._is_effectively_visible(prim):
+            return False
+        return self.UsdGeom.Imageable(prim).ComputePurpose() in (
+            self.UsdGeom.Tokens.default_,
+            self.UsdGeom.Tokens.proxy,
+        )
+
     def _parse_material(
         self,
         material_prim,
@@ -501,12 +515,9 @@ class USDImporter:
         ###
 
         # Retrieve the USD material properties
-        density_scale = mass_unit / distance_unit**3
-        density = (density_scale) * self._parse_float(material_prim, "physics:density", default=DEFAULT_DENSITY)
         restitution = self._parse_float(material_prim, "physics:restitution", default=DEFAULT_RESTITUTION)
         static_friction = self._parse_float(material_prim, "physics:staticFriction", default=DEFAULT_FRICTION)
         dynamic_friction = self._parse_float(material_prim, "physics:dynamicFriction", default=DEFAULT_FRICTION)
-        msg.debug(f"density: {density}")
         msg.debug(f"restitution: {restitution}")
         msg.debug(f"static_friction: {static_friction}")
         msg.debug(f"dynamic_friction: {dynamic_friction}")
@@ -518,7 +529,6 @@ class USDImporter:
         return MaterialDescriptor(
             name=name,
             uid=uid,
-            density=density,
             restitution=restitution,
             static_friction=static_friction,
             dynamic_friction=dynamic_friction,
@@ -708,7 +718,13 @@ class USDImporter:
         num_dofs = int(dof_type.num_dofs)
         q_j_min = [JOINT_QMIN] * num_dofs
         q_j_max = [JOINT_QMAX] * num_dofs
-        tau_j_max = [JOINT_TAUMAX] * num_dofs
+        # Mirroring Newton USD importer behavior: Default effort limit on
+        # revolute/prismatic/spherical joints is set to JOINT_TAUMAX. On all
+        # D6-derived joints, the effort limit is set to `math.inf`.
+        if dof_type in (JointDoFType.REVOLUTE, JointDoFType.PRISMATIC, JointDoFType.SPHERICAL):
+            tau_j_max = [JOINT_TAUMAX] * num_dofs
+        else:
+            tau_j_max = [math.inf] * num_dofs
         return q_j_min, q_j_max, tau_j_max
 
     def _make_joint_default_dynamics(
@@ -748,7 +764,8 @@ class USDImporter:
             q_j_max[0] = min(rotation_unit * joint_spec.limit.upper, JOINT_QMAX)
         if joint_spec.drive.enabled:
             if not joint_spec.drive.acceleration:
-                tau_j_max[0] = min(joint_spec.drive.forceLimit, JOINT_TAUMAX)
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                tau_j_max[0] = joint_spec.drive.forceLimit
                 has_pd_gains = joint_spec.drive.stiffness > 0.0 or joint_spec.drive.damping > 0.0
                 if load_drive_dynamics and has_pd_gains:
                     a_j = [0.0] * dof_type.num_dofs
@@ -778,7 +795,8 @@ class USDImporter:
             q_j_max[0] = min(distance_unit * joint_spec.limit.upper, JOINT_QMAX)
         if joint_spec.drive.enabled:
             if not joint_spec.drive.acceleration:
-                tau_j_max[0] = min(joint_spec.drive.forceLimit, JOINT_TAUMAX)
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                tau_j_max[0] = joint_spec.drive.forceLimit
                 has_pd_gains = joint_spec.drive.stiffness > 0.0 or joint_spec.drive.damping > 0.0
                 if load_drive_dynamics and has_pd_gains:
                     a_j = [0.0] * dof_type.num_dofs
@@ -815,7 +833,8 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 if drive.first == joint_dof:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                    tau_j_max[0] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, X_j, q_j_min, q_j_max, tau_j_max
@@ -839,7 +858,8 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 if drive.first == joint_dof:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                    tau_j_max[0] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, X_j, q_j_min, q_j_max, tau_j_max
@@ -867,10 +887,11 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.TransX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -896,10 +917,11 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -934,12 +956,13 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.TransX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -968,12 +991,13 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -1000,14 +1024,14 @@ class USDImporter:
                 q_j_min[2] = max(distance_unit * limit.second.lower, JOINT_QMIN)
                 q_j_max[2] = min(distance_unit * limit.second.upper, JOINT_QMAX)
             elif dof == self.UsdPhysics.JointDOF.RotX:
-                q_j_min[0] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
-                q_j_max[0] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
+                q_j_min[3] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
+                q_j_max[3] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
             elif dof == self.UsdPhysics.JointDOF.RotY:
-                q_j_min[1] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
-                q_j_max[1] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
+                q_j_min[4] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
+                q_j_max[4] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
             elif dof == self.UsdPhysics.JointDOF.RotZ:
-                q_j_min[2] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
-                q_j_max[2] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
+                q_j_min[5] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
+                q_j_max[5] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
 
         num_drives = len(joint_spec.jointDrives)
         if num_drives > 0:
@@ -1019,18 +1043,19 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.TransX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[3] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[4] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[5] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -1490,6 +1515,7 @@ class USDImporter:
         meshes_are_collidable: bool = False,
         force_show_colliders: bool = False,
         hide_collision_shapes: bool = False,
+        bodies_with_visual_shapes: set[int] | None = None,
         prim_path_names: bool = False,
     ) -> GeometryDescriptor | None:
         """
@@ -1682,12 +1708,18 @@ class USDImporter:
                     geom_collides += cgroup
             msg.debug(f"[{name}]: geom_collides: {geom_collides}")
 
-        # Explicit hide_collision_shapes overrides material-based visibility:
+        # Explicit hide_collision_shapes overrides drawability:
         # if the body already has visual shapes, hide its colliders unconditionally.
-        collider_is_visible = force_show_colliders and not hide_collision_shapes
-        collider_is_visible = collider_is_visible and self._is_effectively_visible(geom_prim)
+        visual_bodies = bodies_with_visual_shapes if bodies_with_visual_shapes is not None else set()
+        has_body_visual_shapes = body_index in visual_bodies
+        hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
+        # A collider is drawn when USD says it is drawn, or when force_show_colliders
+        # overrides authored invisibility (e.g. guide/invisible collision geometry).
+        collider_is_visible = (
+            force_show_colliders or self._is_viewport_drawn(geom_prim)
+        ) and not hide_collider_for_body
 
-        # Set the geom to be visible if it is a non-collidable mesh and we are forcing show colliders
+        # Set the geom to be visible when the collider display policy says it should be drawn.
         if collider_is_visible:
             geom_flags = geom_flags | ShapeFlags.VISIBLE
 
@@ -1800,8 +1832,7 @@ class USDImporter:
         # World
         ###
 
-        # Initialize the world properties
-        gravity = GravityDescriptor()
+        stage_up_axis = Axis.from_string(str(self.UsdGeom.GetStageUpAxis(stage)))
 
         # Parse for PhysicsScene prims
         if self.UsdPhysics.ObjectType.Scene in ret_dict:
@@ -1813,16 +1844,25 @@ class USDImporter:
                 msg.error("Multiple PhysicsScene prims found in the USD file. Only the first prim will be considered.")
 
             # Extract the world gravity from the physics scene
-            gravity.acceleration = distance_unit * scene_desc.gravityMagnitude
-            gravity.direction = wp.vec3f(scene_desc.gravityDirection)
+            gravity = GravityDescriptor.from_usd(
+                scene_desc.gravityDirection,
+                scene_desc.gravityMagnitude,
+                stage_up_axis,
+                distance_unit,
+            )
             builder.set_gravity(gravity)
-            msg.debug(f"World gravity: {gravity}")
+            msg.debug(f"World gravity: {gravity.vector}")
 
-            # Set the world up-axis based on the gravity direction
-            up_axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
+            # Set the world up-axis based on the resolved gravity vector.
+            gravity_vector = np.asarray(gravity.vector, dtype=np.float32)
+            up_axis = (
+                stage_up_axis
+                if np.linalg.norm(gravity_vector) == 0.0
+                else Axis.from_any(int(np.argmax(np.abs(gravity_vector))))
+            )
         else:
             # NOTE: Gravity is left with default values
-            up_axis = Axis.from_string(str(self.UsdGeom.GetStageUpAxis(stage)))
+            up_axis = stage_up_axis
 
         # Determine the up-axis transformation
         if apply_up_axis_from_stage:
@@ -2143,6 +2183,7 @@ class USDImporter:
         # Define separate lists to hold geometry descriptors for visual and physics geometry
         visual_geoms: list[GeometryDescriptor] = []
         physics_geoms: list[GeometryDescriptor] = []
+        bodies_with_visual_shapes: set[int] = set()
 
         # Define a function to process each geometry prim and construct geometry descriptors based on whether
         # they are marked for physics simulation or not. The geometry descriptors are then added to the
@@ -2192,6 +2233,7 @@ class USDImporter:
                                 meshes_are_collidable=meshes_are_collidable,
                                 force_show_colliders=force_show_colliders,
                                 hide_collision_shapes=hide_collision_shapes,
+                                bodies_with_visual_shapes=bodies_with_visual_shapes,
                                 prim_path_names=use_prim_path_names,
                             )
                             break  # Stop after the first match
@@ -2227,6 +2269,8 @@ class USDImporter:
                     else:
                         msg.debug("Adding visual geom '%d':\n%s\n", builder.num_geoms, geom_desc)
                         visual_geoms.append(geom_desc)
+                        if geom_desc.body >= 0 and self._is_viewport_drawn(prim):
+                            bodies_with_visual_shapes.add(geom_desc.body)
 
             # Indicate to user that a UsdGeom has potentially not been marked for physics simulation
             else:

@@ -99,8 +99,9 @@ def make_benchmark_problem_fourbar(
             build_fn=basics.build_boxes_fourbar,
             ground=ground,
         )
-        for w in range(num_worlds):
-            builder.gravity[w].enabled = gravity
+        if not gravity:
+            for w in range(num_worlds):
+                builder.set_gravity(wp.vec3f(0.0), w)
         return builder
 
     control = ControlConfig(decimation=20, scale=10.0)
@@ -142,8 +143,9 @@ def make_benchmark_problem_dr_legs(
             for w in range(num_worlds):
                 add_ground_box(builder, world_index=w)
         # Set gravity
-        for w in range(builder.num_worlds):
-            builder.gravity[w].enabled = gravity
+        if not gravity:
+            for w in range(builder.num_worlds):
+                builder.set_gravity(wp.vec3f(0.0), w)
         return builder
 
     # Set control configurations
