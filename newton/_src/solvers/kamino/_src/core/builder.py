@@ -935,8 +935,8 @@ class ModelBuilderKamino:
                 # joints were found (else this is not a floating-base model and we assign no base body).
                 if not world.has_base_body and not has_unary_joint and world.num_bodies > 0:
                     world.set_base_body(0)
-                else:
-                    has_world_without_base_body = True
+
+            has_world_without_base_body = has_world_without_base_body or not world.has_base_body
 
         ###
         # ModelKamino data collection
