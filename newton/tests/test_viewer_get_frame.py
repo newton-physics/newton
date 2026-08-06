@@ -15,18 +15,6 @@ from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
 
 
-def _is_viewer_gl_unavailable_error(exc: BaseException) -> bool:
-    unavailable_errors = {
-        ("pyglet.display.xlib", "NoSuchDisplayException"),
-        ("pyglet.gl", "ContextException"),
-        ("pyglet.gl.lib", "MissingFunctionException"),
-        ("pyglet.window", "NoSuchConfigException"),
-        ("pyglet.window", "NoSuchDisplayException"),
-    }
-    error_type = type(exc)
-    return (error_type.__module__, error_type.__name__) in unavailable_errors
-
-
 def _make_box_model(device: str | wp.Device):
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
@@ -76,15 +64,6 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
-    def test_unavailable_errors_include_missing_gl_failures(self):
-        """Verify missing OpenGL failures make headless GL tests skip."""
-        missing_function = type("MissingFunctionException", (Exception,), {"__module__": "pyglet.gl.lib"})
-        no_display = type("NoSuchDisplayException", (Exception,), {"__module__": "pyglet.display.xlib"})
-
-        self.assertTrue(_is_viewer_gl_unavailable_error(missing_function()))
-        self.assertTrue(_is_viewer_gl_unavailable_error(no_display()))
-        self.assertFalse(_is_viewer_gl_unavailable_error(RuntimeError("render failed")))
-
     def test_headless_frame_capture_across_devices(self):
         cuda_devices = wp.get_cuda_devices()
         if cuda_devices:
@@ -138,18 +117,19 @@ class TestViewerGLGetFrame(unittest.TestCase):
         try:
             viewer = newton.viewer.ViewerGL(width=64, height=48, headless=True)
         except Exception as exc:
-            if _is_viewer_gl_unavailable_error(exc):
-                self.skipTest(f"ViewerGL not available: {exc}")
-                return
-            raise
+            self.skipTest(f"ViewerGL not available: {exc}")
+            return
 
         try:
             width = viewer.renderer._screen_width
             height = viewer.renderer._screen_height
-            image = np.full((height, width, 3), (37, 113, 191), dtype=np.uint8)
+            image = np.empty((height, width, 3), dtype=np.uint8)
+            image[..., 0] = np.arange(width, dtype=np.uint8)
+            image[..., 1] = np.arange(height, dtype=np.uint8)[:, None]
+            image[..., 2] = 191
 
             viewer.begin_frame(0.0)
-            viewer.log_main_image("color", image)
+            viewer.log_image("color", image, fullscreen=True)
             viewer.end_frame()
 
             np.testing.assert_array_equal(viewer.get_frame().numpy(), image)

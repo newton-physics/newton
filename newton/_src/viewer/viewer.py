@@ -1929,7 +1929,7 @@ class ViewerBase(ABC):
         """
         return
 
-    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
         """
         Log an image (or batch of images) for display in the viewer.
 
@@ -1947,9 +1947,12 @@ class ViewerBase(ABC):
                 Accepted dtypes: ``uint8`` (values in ``[0, 255]``) or
                 ``float32`` (values in ``[0, 1]``). Values outside the range
                 are clipped.
+            fullscreen: In :class:`~newton.viewer.ViewerGL`, display the image
+                as the main viewer surface for the current frame instead of
+                rendering the 3D scene. Other backends ignore this option.
 
         The base implementation is a no-op. Backends that render images
-        (currently only :class:`ViewerGL`) override this method.
+        (currently only :class:`~newton.viewer.ViewerGL`) override this method.
         """
         return
 

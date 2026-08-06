@@ -89,7 +89,7 @@ class Example:
         self.time_delta = 0.005
 
         self.viewer = viewer
-        self.sensor_color_as_main_view = callable(getattr(self.viewer, "log_main_image", None))
+        self.sensor_color_as_main_view = isinstance(self.viewer, ViewerGL)
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
         bunny_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
@@ -245,6 +245,9 @@ class Example:
         n = self.world_count_total * self.camera_count
         H = self.sensor_render_height
         W = self.sensor_render_width
+        self.color_main_rgba = wp.empty(
+            (self.worlds_per_col * H, self.worlds_per_row * W, 4), dtype=wp.uint8, device=device
+        )
         self.depth_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.normal_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.shape_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
@@ -302,21 +305,23 @@ class Example:
             self.tiled_camera_sensor_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
         )
 
-        sensor_image_is_main_view = self._log_color_image(color_rgba)
+        sensor_image_is_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        if sensor_image_is_main_view:
+            color_rgba = utils.flatten_color_image_to_rgba(
+                self.tiled_camera_sensor_color_image,
+                out_buffer=self.color_main_rgba,
+                worlds_per_row=self.worlds_per_row,
+            )
+            self.viewer.log_image("color", color_rgba, fullscreen=True)
+        else:
+            self.viewer.log_image("color", color_rgba)
+
         self.viewer.log_image("albedo", albedo_rgba)
         self.viewer.log_image("depth", self.depth_rgba)
         self.viewer.log_image("normal", self.normal_rgba)
         self.viewer.log_image("shape_index", self.shape_rgba)
         self.viewer.log_image("semantic", self.semantic_rgba)
         return sensor_image_is_main_view
-
-    def _log_color_image(self, color_rgba) -> bool:
-        log_main_image = getattr(self.viewer, "log_main_image", None)
-        if self.sensor_color_as_main_view and callable(log_main_image):
-            log_main_image("color", color_rgba)
-            return True
-        self.viewer.log_image("color", color_rgba)
-        return False
 
     def get_camera_transforms(self) -> wp.array[wp.transformf]:
         if isinstance(self.viewer, ViewerGL):
@@ -382,7 +387,7 @@ class Example:
     def gui(self, ui):
         show_compile_kernel_info = False
 
-        if callable(getattr(self.viewer, "log_main_image", None)):
+        if isinstance(self.viewer, ViewerGL):
             _changed, self.sensor_color_as_main_view = ui.checkbox(
                 "Sensor Color as Main View", self.sensor_color_as_main_view
             )

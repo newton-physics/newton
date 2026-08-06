@@ -326,19 +326,6 @@ class LoggedImage:
     window_initialized: bool = False
 
 
-@dataclass(frozen=True)
-class LoggedImageTexture:
-    """Texture metadata needed to draw a logged image atlas."""
-
-    texture_id: int
-    texture_width: int
-    texture_height: int
-    tile_count: int
-    tile_width: int
-    tile_height: int
-    atlas_cols: int
-
-
 class ImageLogger:
     """Owns GL resources for images logged via :meth:`~newton.viewer.ViewerBase.log_image`.
 
@@ -541,28 +528,20 @@ class ImageLogger:
         if changed:
             self._selected = None if new_idx == 0 else names[new_idx - 1]
 
-    def get_texture(self, name: str) -> LoggedImageTexture | None:
-        """Return texture metadata for a logged image.
+    def get_texture(self, name: str) -> tuple[int, int, int] | None:
+        """Return live texture metadata for a logged image.
 
         Args:
             name: Image name previously passed to :meth:`log`.
 
         Returns:
-            Texture metadata for the packed image atlas, or ``None`` when the
-            image has not been logged or has no live GL texture yet.
+            ``(texture_id, texture_width, texture_height)``, or ``None`` when
+            the image has not been logged or has no live GL texture yet.
         """
         entry = self._images.get(name)
         if entry is None or entry.tex_id == 0 or entry.tex_w <= 0 or entry.tex_h <= 0:
             return None
-        return LoggedImageTexture(
-            texture_id=entry.tex_id,
-            texture_width=entry.tex_w,
-            texture_height=entry.tex_h,
-            tile_count=entry.n,
-            tile_width=entry.w,
-            tile_height=entry.h,
-            atlas_cols=entry.atlas_cols,
-        )
+        return entry.tex_id, entry.tex_w, entry.tex_h
 
     def clear(self) -> None:
         """Destroy all GL resources. Idempotent."""

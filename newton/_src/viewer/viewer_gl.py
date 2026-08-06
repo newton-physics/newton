@@ -579,8 +579,6 @@ class ViewerGL(ViewerBase):
 
         if getattr(self, "_image_logger", None) is not None:
             self._image_logger.clear_matching(owns)
-        if owns(getattr(self, "_main_image_name", "") or ""):
-            self._main_image_name = None
 
         # Drop example-registered side/free UI callbacks (panel/stats/rendering persist).
         if getattr(self, "gui", None) is not None:
@@ -1494,31 +1492,14 @@ class ViewerGL(ViewerBase):
         self._array_dirty.add(name)
 
     @override
-    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray, *, fullscreen: bool = False) -> None:
         """See :meth:`~newton.viewer.ViewerBase.log_image`."""
         # Route user-supplied names through the active layer (idempotent)
         # so two layers logging the same image name don't stomp each other.
         name = self._qualify(name)
         self._image_logger.log(name, image)
-
-    def log_main_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
-        """Log an image and display it as the main viewer surface for this frame.
-
-        When a main image is logged for a frame, :class:`ViewerGL` skips the
-        normal 3D scene render and draws the image texture directly to the
-        window. If no main image is logged before a later :meth:`end_frame`,
-        the viewer returns to the normal 3D scene render for that frame.
-
-        Args:
-            name: Stable identifier for the image.
-            image: Image array. See :meth:`log_image` for accepted shapes and
-                dtypes.
-        """
-        if not isinstance(name, str) or not name:
-            raise ValueError("main image name must be a non-empty string")
-        name = self._qualify(name)
-        self._image_logger.log(name, image)
-        self._main_image_name = name
+        if fullscreen:
+            self._main_image_name = name
 
     @override
     def log_scalar(
@@ -1765,15 +1746,7 @@ class ViewerGL(ViewerBase):
                 if texture is None:
                     self.renderer.render_texture(None, 0, 0)
                 else:
-                    self.renderer.render_texture(
-                        texture.texture_id,
-                        texture.texture_width,
-                        texture.texture_height,
-                        tile_count=texture.tile_count,
-                        tile_width=texture.tile_width,
-                        tile_height=texture.tile_height,
-                        atlas_cols=texture.atlas_cols,
-                    )
+                    self.renderer.render_texture(*texture)
             else:
                 self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
 
