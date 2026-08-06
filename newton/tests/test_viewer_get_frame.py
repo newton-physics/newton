@@ -127,11 +127,20 @@ class TestViewerGLGetFrame(unittest.TestCase):
             image[..., 0] = np.arange(width, dtype=np.uint8)
             image[..., 1] = np.arange(height, dtype=np.uint8)[:, None]
             image[..., 2] = 191
+            regular = np.zeros((2, 3, 5, 4), dtype=np.uint8)
 
             viewer.begin_frame(0.0)
+            viewer.log_image("color", regular)
             viewer.log_image("color", image, fullscreen=True)
             viewer.end_frame()
 
+            regular_texture = viewer._image_logger.get_texture("color")
+            fullscreen_texture = viewer._image_logger.get_texture("color", fullscreen=True)
+
+            self.assertIsNotNone(regular_texture)
+            self.assertIsNotNone(fullscreen_texture)
+            self.assertEqual(regular_texture[1:], (10, 3))
+            self.assertEqual(fullscreen_texture[1:], (width, height))
             np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
         finally:
             viewer.close()

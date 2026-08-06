@@ -281,9 +281,7 @@ class ViewerGL(ViewerBase):
             # Register GL-specific rendering options (sky, shadows, wireframe, colors)
             self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
             # Draw image-logger floating windows outside the sidebar window.
-            self.gui.register_ui_callback(
-                lambda _imgui: self._image_logger.draw(hidden_name=self._main_image_name), position="free"
-            )
+            self.gui.register_ui_callback(lambda _imgui: self._image_logger.draw(), position="free")
             # Top-level Layers panel (visible only when multiple layers exist).
             self.gui.register_ui_callback(self._ui_populate_layers_panel, position="panel")
 
@@ -1497,7 +1495,7 @@ class ViewerGL(ViewerBase):
         # Route user-supplied names through the active layer (idempotent)
         # so two layers logging the same image name don't stomp each other.
         name = self._qualify(name)
-        self._image_logger.log(name, image)
+        self._image_logger.log(name, image, fullscreen=fullscreen)
         if fullscreen:
             self._main_image_name = name
 
@@ -1742,7 +1740,7 @@ class ViewerGL(ViewerBase):
             # Render either the selected logged image or the 3D scene, then present it.
             main_image_name = self._main_image_name
             if main_image_name is not None:
-                texture = self._image_logger.get_texture(main_image_name)
+                texture = self._image_logger.get_texture(main_image_name, fullscreen=True)
                 if texture is None:
                     self.renderer.render_texture(None, 0, 0)
                 else:

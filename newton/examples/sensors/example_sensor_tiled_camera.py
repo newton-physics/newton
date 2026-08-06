@@ -306,15 +306,14 @@ class Example:
         )
 
         sensor_image_is_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        self.viewer.log_image("color", color_rgba)
         if sensor_image_is_main_view:
-            color_rgba = utils.flatten_color_image_to_rgba(
+            color_main_rgba = utils.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_color_image,
                 out_buffer=self.color_main_rgba,
                 worlds_per_row=self.worlds_per_row,
             )
-            self.viewer.log_image("color", color_rgba, fullscreen=True)
-        else:
-            self.viewer.log_image("color", color_rgba)
+            self.viewer.log_image("color", color_main_rgba, fullscreen=True)
 
         self.viewer.log_image("albedo", albedo_rgba)
         self.viewer.log_image("depth", self.depth_rgba)
