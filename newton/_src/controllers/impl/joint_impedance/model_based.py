@@ -38,8 +38,7 @@ class ControllerJointImpedance(ControllerBase):
     kinematics and the enabled dynamics terms on every :meth:`step`, so the
     caller supplies only joint positions and velocities.
 
-    ``builder`` is snapshotted at construction — neither consumed nor modified —
-    but the model cannot be rebuilt afterwards. Later changes to ``builder`` or
+    ``builder`` is not modified at construction — and the internal :class:`newton.Model` cannot be rebuilt after construction. Later changes to ``builder`` or
     to the simulated model do not propagate, so a mismatched topology computes
     dynamics for a different robot with no diagnostic.
 
