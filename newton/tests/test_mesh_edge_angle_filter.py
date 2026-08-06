@@ -449,6 +449,8 @@ class TestCollisionEdgesLifecycle(unittest.TestCase):
         replacement_verts = mesh.vertices.copy()
         replacement_verts[0] += np.array([0.1, 0.0, 0.0], dtype=np.float32)
         copy_verts = mesh.copy(vertices=replacement_verts)
+        np.testing.assert_array_equal(copy_verts.vertices, replacement_verts)
+        np.testing.assert_array_equal(copy_verts.indices, mesh.indices)
         self.assertIsNone(copy_verts._collision_edges)
         self.assertIsNone(copy_verts.sdf)
 
