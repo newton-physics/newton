@@ -83,3 +83,10 @@ docs/_static/viser/
 
 # Notebook checkpoints
 **/*.ipynb_checkpoints/
+
+# Scratch experiments and stray run artifacts (root-anchored)
+/scratch/
+/run_debug*.log
+/*.mp4
+/foot_shoe_*
+/solver_convergence.png
