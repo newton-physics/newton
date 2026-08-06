@@ -23,8 +23,18 @@ what users should know. Do not reproduce the full changelog; link to it.
    - RCs: state that this is a release candidate and what needs validation.
      If drafting final-release text from an RC tag or release branch, do not
      mention the RC; use the RC only as the temporary source of truth.
-2. Read the matching `CHANGELOG.md` section from the release tag or release
-   branch. Do not rely on `main` unless the release is actually cut from `main`.
+2. Choose changelog source material from the authoritative release ref:
+   - After the Towncrier build or tagging, read the matching dated
+     `CHANGELOG.md` section from the release tag or release branch.
+   - Before the build, check out the release branch, validate its pending
+     fragments, and render a non-mutating preview:
+     ```bash
+     uvx --from towncrier==25.8.0 towncrier build --draft \
+       --version X.Y.Z --date YYYY-MM-DD
+     ```
+     Draft from the preview and legacy `[Unreleased]` entries during the first
+     Towncrier transition. Do not run a mutating build merely to draft notes.
+   Do not rely on `main` unless the release is actually cut from `main`.
 3. Determine the previous release tag:
    - Patch release `X.Y.Z`, `Z > 0`: use the highest earlier `vX.Y.<Z'>` tag.
    - Feature release `X.Y.0`: use the highest `vX.<Y-1>.*` tag. If `Y == 0`,
