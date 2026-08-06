@@ -607,7 +607,7 @@ class TestSetFloatingBase(unittest.TestCase):
         )
         with self.assertLogs(level="WARNING") as logs:
             solver.reset(state=state, config=reset_config)
-        self.assertTrue(any("no base body assigned" in message for message in logs.output))
+        self.assertTrue(any("no free-floating base body" in message for message in logs.output))
 
 
 class TestJointBodyStateConversions(unittest.TestCase):

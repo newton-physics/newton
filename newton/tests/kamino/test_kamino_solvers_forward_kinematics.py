@@ -946,7 +946,7 @@ class ForwardKinematicsWarnings(unittest.TestCase):
         base_q = wp.array([identity], dtype=wp.transformf, device=self.default_device)
         with self.assertLogs(level="WARNING") as logs:
             solver.solve_fk(actuators_q, bodies_q, base_q=base_q, use_graph=False)
-        self.assertTrue(any("no base body assigned" in message for message in logs.output))
+        self.assertTrue(any("no free-floating base body" in message for message in logs.output))
 
 
 ###
