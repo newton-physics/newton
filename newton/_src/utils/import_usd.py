@@ -155,11 +155,16 @@ def _cache_path_for_absolute_usd_reference(url: str) -> str:
     return posixpath.join("_external_usd", digest, basename)
 
 
-def _normalize_usd_cache_relative_path(path: str) -> str:
-    """Normalize a relative cache path while rejecting POSIX and Windows escapes."""
+def _reject_windows_rooted_usd_path(path: str) -> None:
+    """Reject paths with Windows drive, root, or UNC semantics."""
     windows_path = PureWindowsPath(path)
     if windows_path.drive or windows_path.root:
         raise ValueError(f"USD reference path must be relative: {path}")
+
+
+def _normalize_usd_cache_relative_path(path: str) -> str:
+    """Normalize a relative cache path while rejecting POSIX and Windows escapes."""
+    _reject_windows_rooted_usd_path(path)
 
     normalized = posixpath.normpath(path.replace("\\", "/"))
     if normalized in {"", ".", ".."} or posixpath.isabs(normalized) or normalized.startswith("../"):
@@ -5324,8 +5329,8 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
                 rewritten_layer_str = rewritten_layer_str.replace(f"@{raw_ref}@", f"@{local_path}@")
             else:
                 try:
+                    _reject_windows_rooted_usd_path(raw_ref)
                     local_path = _normalize_usd_cache_relative_path(posixpath.join(parent_local_folder, raw_ref))
-                    _resolve_usd_cache_path(target_folder_name, local_path)
                 except ValueError:
                     print(f"Skipping reference that escapes target folder: {raw_ref}")
                     continue

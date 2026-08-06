@@ -14745,6 +14745,17 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(tmpdir, "robots", "collisions.usd")))
         self.assertFalse(os.path.exists(os.path.join(tmpdir, "collisions.usd")))
 
+    def test_nested_parent_reference_stays_within_cache(self):
+        """Resolve a nested parent reference that remains inside the cache."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
+            "https://example.com/assets/robots/robot.usd": "references = @../common.usd@",
+            "https://example.com/assets/common.usd": "",
+        }
+        _result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertIn("https://example.com/assets/common.usd", downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, "common.usd")))
+
     def test_path_traversal_rejected(self):
         """References with .. that escape the target folder are skipped."""
         url_to_layer = {
@@ -14773,6 +14784,25 @@ class TestResolveUsdFromUrl(unittest.TestCase):
                 }
                 _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
                 self.assertNotIn(resolved_url, downloaded_urls)
+
+    def test_nested_windows_reference_escapes_are_rejected(self):
+        """Reject rooted Windows references found in nested layers."""
+        malicious_references = (r"C:\escape.usd", r"\\server\share\escape.usd")
+
+        for raw_ref in malicious_references:
+            with self.subTest(raw_ref=raw_ref):
+                url_to_layer = {
+                    "https://example.com/assets/scene.usd": "references = @robots/robot.usd@",
+                    "https://example.com/assets/robots/robot.usd": f"references = @{raw_ref}@",
+                }
+                _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+                self.assertEqual(
+                    downloaded_urls,
+                    [
+                        "https://example.com/assets/scene.usd",
+                        "https://example.com/assets/robots/robot.usd",
+                    ],
+                )
 
     @unittest.skipUnless(hasattr(os, "symlink"), "Requires symlink support")
     def test_reference_symlink_escape_is_rejected(self):

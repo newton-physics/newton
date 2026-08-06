@@ -51,8 +51,8 @@ Cooked array layout (``.npz`` contents)
 * ``__created_utc__`` — 0-d ``str``: ISO-8601 UTC timestamp of the
   write.  Diagnostic only.
 
-The ``__kind__``, ``__newton_version__``, and ``__created_utc__``
-fields are not consulted at load time.
+The ``__kind__`` field is validated at load time. The ``__newton_version__`` and
+``__created_utc__`` fields are diagnostic only.
 
 To inspect a cache file from a shell, an ``.npz`` is just a zip of
 ``.npy`` members:
@@ -90,6 +90,7 @@ import json
 import logging
 import os
 import secrets
+import zipfile
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -479,7 +480,7 @@ def try_load_sparse_data(
         return None
 
     try:
-        with np.load(npz_path, allow_pickle=False) as npz:
+        with npz_path.open("rb") as cache_file, np.load(cache_file, allow_pickle=False) as npz:
             embedded = int(_require_array(npz, _VERSION_KEY, np.dtype(np.int32), ()).item())
             if embedded != CACHE_FORMAT_VERSION:
                 logger.info(
@@ -534,7 +535,7 @@ def try_load_sparse_data(
                 )
             _validate_sparse_data(data)
             return data
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
         logger.warning("SDF cache: failed to load %s: %s", npz_path, exc)
         return None
 

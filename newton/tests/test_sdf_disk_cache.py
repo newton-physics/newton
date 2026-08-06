@@ -17,6 +17,7 @@ import tempfile
 import threading
 import unittest
 import uuid
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -272,6 +273,34 @@ class TestSDFDiskCachePure(unittest.TestCase):
                 cache_hash, npz_path = self._save_fake_sparse_data()
                 self._replace_cache_entry(npz_path, **overrides)
                 self.assertIsNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
+
+    def test_corrupt_npz_member_is_miss(self) -> None:
+        """Treat a cache archive with a corrupt member as a miss."""
+        cache_hash, npz_path = self._save_fake_sparse_data()
+        with zipfile.ZipFile(npz_path) as archive:
+            member = archive.getinfo("__cache_format_version__.npy")
+
+        # Change the stored payload without updating its central-directory CRC.
+        with npz_path.open("r+b") as stream:
+            stream.seek(member.header_offset + 26)
+            filename_length = int.from_bytes(stream.read(2), "little")
+            extra_length = int.from_bytes(stream.read(2), "little")
+            data_offset = member.header_offset + 30 + filename_length + extra_length
+            stream.seek(data_offset + member.file_size - 1)
+            original = stream.read(1)
+            stream.seek(-1, os.SEEK_CUR)
+            stream.write(bytes((original[0] ^ 0xFF,)))
+
+        self.assertIsNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
+
+    def test_truncated_npz_archive_is_miss(self) -> None:
+        """Treat a truncated cache archive as a miss."""
+        cache_hash, npz_path = self._save_fake_sparse_data()
+        with npz_path.open("r+b") as stream:
+            stream.seek(-16, os.SEEK_END)
+            stream.truncate()
+
+        self.assertIsNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
 
     def test_invalid_scalar_metadata_is_miss(self) -> None:
         """Treat cache scalar metadata outside its valid range as a miss."""
