@@ -15,30 +15,16 @@ from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
 
 
-def _viewer_gl_unavailable_errors() -> tuple[type[BaseException], ...]:
-    try:
-        from pyglet import gl, window
-    except ImportError:
-        return ()
-
-    errors: list[type[BaseException]] = [
-        window.NoSuchConfigException,
-        window.NoSuchDisplayException,
-        gl.ContextException,
-    ]
-    try:
-        from pyglet.gl import lib
-    except ImportError:
-        pass
-    else:
-        errors.append(lib.MissingFunctionException)
-    try:
-        from pyglet.display import xlib
-    except ImportError:
-        pass
-    else:
-        errors.append(xlib.NoSuchDisplayException)
-    return tuple(errors)
+def _is_viewer_gl_unavailable_error(exc: BaseException) -> bool:
+    unavailable_errors = {
+        ("pyglet.display.xlib", "NoSuchDisplayException"),
+        ("pyglet.gl", "ContextException"),
+        ("pyglet.gl.lib", "MissingFunctionException"),
+        ("pyglet.window", "NoSuchConfigException"),
+        ("pyglet.window", "NoSuchDisplayException"),
+    }
+    error_type = type(exc)
+    return (error_type.__module__, error_type.__name__) in unavailable_errors
 
 
 def _make_box_model(device: str | wp.Device):
@@ -90,15 +76,14 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
-    def test_unavailable_errors_include_missing_gl_functions(self):
-        """Verify missing OpenGL entry points make headless GL tests skip."""
-        try:
-            from pyglet.gl import lib
-        except ImportError as exc:
-            self.skipTest(f"pyglet not available: {exc}")
-            return
+    def test_unavailable_errors_include_missing_gl_failures(self):
+        """Verify missing OpenGL failures make headless GL tests skip."""
+        missing_function = type("MissingFunctionException", (Exception,), {"__module__": "pyglet.gl.lib"})
+        no_display = type("NoSuchDisplayException", (Exception,), {"__module__": "pyglet.display.xlib"})
 
-        self.assertIn(lib.MissingFunctionException, _viewer_gl_unavailable_errors())
+        self.assertTrue(_is_viewer_gl_unavailable_error(missing_function()))
+        self.assertTrue(_is_viewer_gl_unavailable_error(no_display()))
+        self.assertFalse(_is_viewer_gl_unavailable_error(RuntimeError("render failed")))
 
     def test_headless_frame_capture_across_devices(self):
         cuda_devices = wp.get_cuda_devices()
@@ -152,9 +137,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
         """Verify get_frame captures a main image rendered headlessly."""
         try:
             viewer = newton.viewer.ViewerGL(width=64, height=48, headless=True)
-        except _viewer_gl_unavailable_errors() as exc:
-            self.skipTest(f"ViewerGL not available: {exc}")
-            return
+        except Exception as exc:
+            if _is_viewer_gl_unavailable_error(exc):
+                self.skipTest(f"ViewerGL not available: {exc}")
+                return
+            raise
 
         try:
             width = viewer.renderer._screen_width
