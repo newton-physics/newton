@@ -12734,10 +12734,17 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
         from pxr import Usd, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
-        first = UsdPhysics.Scene.Define(stage, "/World/FirstScene").GetPrim()
-        second = UsdPhysics.Scene.Define(stage, "/World/SecondScene").GetPrim()
+        first = UsdPhysics.Scene.Define(stage, "/World/FirstScene")
+        first.CreateGravityMagnitudeAttr(2.0)
+        second = UsdPhysics.Scene.Define(stage, "/World/SecondScene")
 
-        self.assertEqual(usd.get_physics_scene_prims(stage), [first, second])
+        load_physics = UsdPhysics.LoadUsdPhysicsFromRange
+        with mock.patch.object(UsdPhysics, "LoadUsdPhysicsFromRange", wraps=load_physics) as load_physics_mock:
+            scenes = usd.get_physics_scenes(stage)
+
+        load_physics_mock.assert_called_once()
+        self.assertEqual([scene.GetPrim() for scene in scenes], [first.GetPrim(), second.GetPrim()])
+        self.assertEqual(scenes[0].GetGravityMagnitudeAttr().Get(), 2.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_no_scene(self):
@@ -12747,7 +12754,7 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         stage.DefinePrim("/World", "Xform")
 
-        self.assertEqual(usd.get_physics_scene_prims(stage), [])
+        self.assertEqual(usd.get_physics_scenes(stage), [])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_range(self):
@@ -12756,10 +12763,13 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
 
         stage = Usd.Stage.CreateInMemory()
         UsdPhysics.Scene.Define(stage, "/Excluded/Scene")
-        included = UsdPhysics.Scene.Define(stage, "/Included/Scene").GetPrim()
+        included = UsdPhysics.Scene.Define(stage, "/Included/Scene")
 
-        self.assertEqual(usd.get_physics_scene_prims(stage, root_path="/Included"), [included])
-        self.assertEqual(usd.get_physics_scene_prims(stage, exclude_paths=["/Excluded"]), [included])
+        scenes = usd.get_physics_scenes(stage, root_path="/Included")
+        self.assertEqual([scene.GetPrim() for scene in scenes], [included.GetPrim()])
+
+        scenes = usd.get_physics_scenes(stage, exclude_paths=["/Excluded"])
+        self.assertEqual([scene.GetPrim() for scene in scenes], [included.GetPrim()])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_instance_proxy(self):
@@ -12776,10 +12786,10 @@ class TestPhysicsSceneAccessor(unittest.TestCase):
         instance.GetReferences().AddReference(asset.GetRootLayer().identifier, "/Asset")
         instance.SetInstanceable(True)
 
-        scene_prims = usd.get_physics_scene_prims(stage)
+        scenes = usd.get_physics_scenes(stage)
 
-        self.assertEqual(len(scene_prims), 1)
-        scene_prim = scene_prims[0]
+        self.assertEqual(len(scenes), 1)
+        scene_prim = scenes[0].GetPrim()
         self.assertEqual(str(scene_prim.GetPath()), "/Instance/Scene")
         self.assertTrue(scene_prim.IsInstanceProxy())
 

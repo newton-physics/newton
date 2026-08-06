@@ -585,8 +585,8 @@ def parse_usd(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
-    physics_scene_prims = usd._get_physics_scene_prims(stage, ret_dict)
-    physics_scene_prim = physics_scene_prims[0] if physics_scene_prims else None
+    physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
+    physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)

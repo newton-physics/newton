@@ -38,7 +38,7 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    get_float
    get_gprim_axis
    get_mesh
-   get_physics_scene_prims
+   get_physics_scenes
    get_quat
    get_scale
    get_tetmesh
