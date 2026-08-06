@@ -153,7 +153,10 @@ def build_friction_grid(device, mus, angles_deg, contact_kf=0.0):
         box_ids.append(row_box_ids)
 
     builder.color()  # required for VBD
-    return builder.finalize(device=device), box_ids
+    model = builder.finalize(device=device)
+    # Set conservative limit on number of contacts to avoid unnecessary allocations and work
+    model.rigid_contact_max = 8 * len(box_ids)
+    return model, box_ids
 
 
 def simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames):
@@ -267,7 +270,10 @@ def build_stopping_distance_scene(device):
         box_ids.append(box_id)
 
     builder.color()  # required for VBD
-    return builder.finalize(device=device), box_ids
+    model = builder.finalize(device=device)
+    # Set conservative limit on number of contacts to avoid unnecessary allocations and work
+    model.rigid_contact_max = 8 * len(box_ids)
+    return model, box_ids
 
 
 def test_friction_stopping_distance(test, device, solver_fn, rel_tol, rest_speed_max, native_contacts=False):
