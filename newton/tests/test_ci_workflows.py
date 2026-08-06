@@ -52,6 +52,18 @@ class TestPullRequestWorkflows(unittest.TestCase):
         in_progress = {
             "workflow_runs": [
                 {
+                    "id": 108,
+                    "event": "pull_request_target",
+                    "path": ".github/workflows/pr_target_aws_gpu_tests.yml",
+                    **exact_head,
+                },
+                {
+                    "id": 109,
+                    "event": "push",
+                    "path": ".github/workflows/pr.yml",
+                    **exact_head,
+                },
+                {
                     "id": 101,
                     "event": "push",
                     "path": ".github/workflows/push_aws_gpu.yml",
@@ -76,6 +88,13 @@ class TestPullRequestWorkflows(unittest.TestCase):
         }
         queued = {
             "workflow_runs": [
+                {
+                    "id": 110,
+                    "event": "pull_request",
+                    "path": ".github/workflows/pr.yml",
+                    **exact_head,
+                    "head_branch": "other-branch",
+                },
                 {
                     "id": 103,
                     "event": "pull_request_target",
@@ -152,12 +171,13 @@ class TestPullRequestWorkflows(unittest.TestCase):
                 ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", shell],
                 cwd=repo_root,
                 env=env,
+                check=False,
                 capture_output=True,
                 text=True,
             )
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(cancel_log.read_text().splitlines(), ["102", "107"])
+            self.assertEqual(cancel_log.read_text().splitlines(), ["108", "102", "107"])
 
 
 if __name__ == "__main__":
