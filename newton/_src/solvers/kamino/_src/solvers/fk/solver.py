@@ -2258,8 +2258,8 @@ class ForwardKinematicsSolver:
         # Warn if any world does not have an assigned base body when base attributes are provided.
         if (base_q is not None or base_u is not None) and self.model.info.has_world_without_base_body:
             msg.warning(
-                "Some worlds have no base body assigned (empty world or non-free articulation root). "
-                "Base resets and FK base handling will have no effect for those worlds."
+                "Some worlds have no base body assigned, possibly due to a non-free articulation root (fixed-base system). "
+                "Base pose/velocity updates for forward kinematics will have no effect for those worlds."
             )
 
         # Run solve (with or without graph)

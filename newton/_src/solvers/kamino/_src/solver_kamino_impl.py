@@ -500,6 +500,22 @@ class SolverKaminoImpl(SolverBase):
         if isinstance(config.base_velocity, SolverKamino.ResetConfig.FromBaseU):
             _check_length(config.base_velocity.base_u, "config.base_velocity.base_u", self._model.size.num_worlds)
 
+        # Warn if any world does not have an assigned base body when base attributes are provided.
+        if (
+            not (
+                isinstance(config.base_pose, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_pose, SolverKamino.ResetConfig.Preserve)
+            )
+            or not (
+                isinstance(config.base_velocity, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_velocity, SolverKamino.ResetConfig.Preserve)
+            )
+        ) and self._model.info.has_world_without_base_body:
+            msg.warning(
+                "Some worlds have no base body assigned, possibly due to a non-free articulation root (fixed-base system). "
+                "Base pose/velocity resets will have no effect for those worlds."
+            )
+
         # Run the pre-reset callback if it has been set
         self._run_pre_reset_callback(state_out=state)
 
@@ -610,22 +626,6 @@ class SolverKaminoImpl(SolverBase):
         elif isinstance(config.base_velocity, SolverKamino.ResetConfig.FromBaseU):
             # Set base_u to provided value
             base_u = config.base_velocity.base_u
-
-        # Warn if any world does not have an assigned base body when base attributes are provided.
-        if (
-            not (
-                isinstance(config.base_pose, SolverKamino.ResetConfig.ToDefault)
-                or isinstance(config.base_pose, SolverKamino.ResetConfig.Preserve)
-            )
-            or not (
-                isinstance(config.base_velocity, SolverKamino.ResetConfig.ToDefault)
-                or isinstance(config.base_velocity, SolverKamino.ResetConfig.Preserve)
-            )
-        ) and self._model.info.has_world_without_base_body:
-            msg.warning(
-                "Some worlds have no base body assigned (empty world or non-free articulation root). "
-                "Base resets and FK base handling will have no effect for those worlds."
-            )
 
         # Body poses: run FK or reset to default if applicable
         if actuator_q is not None:
