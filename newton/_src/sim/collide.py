@@ -1370,9 +1370,7 @@ class CollisionPipeline:
                 "CollisionPipeline.contacts() after init_soft_self_contact()."
             )
         detector = self._ensure_soft_self_contact_detector()
-        # Compare the private slot: touching the collision_info property would
-        # lazily self-build the very buffers we are about to replace.
-        if detector._collision_info is not data:
+        if detector.collision_info is not data:
             detector._bind_external_buffers(data)
         return detector
 

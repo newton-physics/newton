@@ -338,6 +338,7 @@ class TriMeshCollisionDetector:
         edge_edge_parallel_epsilon=1e-5,
         collision_detection_block_size=16,
         collision_info: TriMeshCollisionInfo | None = None,
+        init_collision_info: bool = False,
     ):
         self.model = model
         self.record_triangle_contacting_vertices = record_triangle_contacting_vertices
@@ -417,12 +418,23 @@ class TriMeshCollisionDetector:
         )
 
         # Collision detection results live in a TriMeshCollisionInfo owned outside
-        # the detector: injected by a result-owning container, or self-built lazily
-        # on first access (see the collision_info property). Lazy self-building means
-        # a detector created before its result buffers exist (e.g. by a BVH refit
-        # ahead of the first collide) never allocates arrays that would immediately
-        # be replaced by an injected struct.
-        self._collision_info = collision_info
+        # the detector. Explicitly one of: injected (collision_info=...), self-built
+        # at construction (init_collision_info=True), or absent until a result
+        # struct is bound via _bind_external_buffers.
+        if collision_info is not None and init_collision_info:
+            raise ValueError("pass either collision_info or init_collision_info=True, not both")
+        if init_collision_info:
+            collision_info = build_tri_mesh_collision_info(
+                model.particle_count,
+                model.tri_count,
+                model.edge_count,
+                vertex_collision_buffer_pre_alloc=vertex_collision_buffer_pre_alloc,
+                triangle_collision_buffer_pre_alloc=triangle_collision_buffer_pre_alloc,
+                edge_collision_buffer_pre_alloc=edge_collision_buffer_pre_alloc,
+                record_triangle_contacting_vertices=record_triangle_contacting_vertices,
+                device=self.device,
+            )
+        self.collision_info = collision_info
 
         self.lower_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
         self.upper_bounds_edges = wp.array(shape=(model.edge_count,), dtype=wp.vec3, device=model.device)
@@ -463,34 +475,15 @@ class TriMeshCollisionDetector:
         properties below always go through ``self.collision_info``, so one
         detector (one BVH set) can serve any number of result buffers.
         """
-        self._collision_info = collision_info
+        self.collision_info = collision_info
 
-    @property
-    def collision_info(self) -> TriMeshCollisionInfo:
-        """The result struct; self-built on first access when none was injected.
-
-        The self-build performs allocations and a host readback, which are
-        illegal inside CUDA graph capture — run one detection (or read this
-        property once) before capturing.
-        """
-        if self._collision_info is None:
-            if self.device.is_capturing:
-                raise RuntimeError(
-                    "TriMeshCollisionDetector has no result buffers yet and cannot allocate "
-                    "them during CUDA graph capture; run one detection (or access "
-                    "collision_info once) before capturing."
-                )
-            self._collision_info = build_tri_mesh_collision_info(
-                self.model.particle_count,
-                self.model.tri_count,
-                self.model.edge_count,
-                vertex_collision_buffer_pre_alloc=self.vertex_collision_buffer_pre_alloc,
-                triangle_collision_buffer_pre_alloc=self.triangle_collision_buffer_pre_alloc,
-                edge_collision_buffer_pre_alloc=self.edge_collision_buffer_pre_alloc,
-                record_triangle_contacting_vertices=self.record_triangle_contacting_vertices,
-                device=self.device,
+    def _require_collision_info(self) -> None:
+        if self.collision_info is None:
+            raise ValueError(
+                "TriMeshCollisionDetector has no result buffers; construct it with "
+                "init_collision_info=True, pass collision_info=..., or bind a result "
+                "struct before detecting."
             )
-        return self._collision_info
 
     # Result-array views into the owned/injected ``collision_info`` (D21: the
     # detector owns no result buffers). Read-only properties preserve the
@@ -748,6 +741,7 @@ class TriMeshCollisionDetector:
     def vertex_triangle_collision_detection(
         self, max_query_radius, min_query_radius=0.0, min_distance_filtering_ref_pos=None
     ):
+        self._require_collision_info()
         self.vertex_colliding_triangles.fill_(-1)
 
         if self.record_triangle_contacting_vertices:
@@ -803,6 +797,7 @@ class TriMeshCollisionDetector:
     def edge_edge_collision_detection(
         self, max_query_radius, min_query_radius=0.0, min_distance_filtering_ref_pos=None
     ):
+        self._require_collision_info()
         self.edge_colliding_edges.fill_(-1)
         wp.launch(
             kernel=edge_colliding_edges_detection_kernel,

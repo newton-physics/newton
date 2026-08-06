@@ -397,7 +397,9 @@ def init_model(vs, fs, device, record_triangle_contacting_vertices=True, color=F
     model = builder.finalize(device=device)
 
     collision_detector = TriMeshCollisionDetector(
-        model=model, record_triangle_contacting_vertices=record_triangle_contacting_vertices
+        model=model,
+        record_triangle_contacting_vertices=record_triangle_contacting_vertices,
+        init_collision_info=True,
     )
 
     return model, collision_detector
@@ -430,6 +432,7 @@ def init_multiworld_model(
     collision_detector = TriMeshCollisionDetector(
         model=model,
         record_triangle_contacting_vertices=record_triangle_contacting_vertices,
+        init_collision_info=True,
         vertex_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
         triangle_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
         edge_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
@@ -477,6 +480,7 @@ def init_global_multiworld_model(
     collision_detector = TriMeshCollisionDetector(
         model=model,
         record_triangle_contacting_vertices=record_triangle_contacting_vertices,
+        init_collision_info=True,
         vertex_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
         triangle_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
         edge_collision_buffer_pre_alloc=collision_buffer_pre_alloc,
@@ -1454,7 +1458,7 @@ def test_collision_detector_requires_adjacency(test, device):
     model = builder.finalize(device=device)
     model.soft_mesh_adjacency = None
     with test.assertRaises(ValueError):
-        TriMeshCollisionDetector(model=model)
+        TriMeshCollisionDetector(model=model, init_collision_info=True)
 
 
 def test_collision_filter_decouple(test, device):
@@ -1475,6 +1479,7 @@ def test_collision_filter_decouple(test, device):
     vt_values, vt_offsets = set_to_csr([set() for _ in range(model.particle_count)])
     detector = TriMeshCollisionDetector(
         model=model,
+        init_collision_info=True,
         vertex_triangle_filtering_list=wp.array(vt_values, dtype=wp.int32, device=device),
         vertex_triangle_filtering_list_offsets=wp.array(vt_offsets, dtype=wp.int32, device=device),
         external_edge_edge_filtering_map={0: {1}},
@@ -1556,7 +1561,7 @@ def test_pipeline_soft_self_contact(test, device):
     # The explicit opt-in creates the detector, with no result buffers yet —
     # the first bound Contacts supplies them.
     test.assertIsNotNone(pipeline._soft_self_contact_detector)
-    test.assertIsNone(pipeline._soft_self_contact_detector._collision_info)
+    test.assertIsNone(pipeline._soft_self_contact_detector.collision_info)
 
     state = model.state()
     contacts_a = pipeline.contacts()
@@ -1565,9 +1570,9 @@ def test_pipeline_soft_self_contact(test, device):
     test.assertIsNot(contacts_a.soft_self_contact_data, contacts_b.soft_self_contact_data)
 
     pipeline.refit_soft_self_contact_bvh(state.particle_q)  # BVH upkeep is the caller's job
-    # Refit-triggered creation must not allocate result buffers that the first
-    # collide would immediately replace with the Contacts-owned struct.
-    test.assertIsNone(pipeline._soft_self_contact_detector._collision_info)
+    # The init-created detector carries no result buffers of its own; the first
+    # collide binds the Contacts-owned struct instead of replacing anything.
+    test.assertIsNone(pipeline._soft_self_contact_detector.collision_info)
     for contacts in (contacts_a, contacts_b):
         pipeline.collide(state, contacts, soft_self_contact=True)
         data = contacts.soft_self_contact_data

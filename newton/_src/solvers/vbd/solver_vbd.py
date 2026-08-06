@@ -690,6 +690,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             else:
                 self.trimesh_collision_detector = TriMeshCollisionDetector(
                     self.model,
+                    init_collision_info=True,
                     vertex_collision_buffer_pre_alloc=particle_vertex_contact_buffer_size,
                     edge_collision_buffer_pre_alloc=particle_edge_contact_buffer_size,
                     edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
