@@ -364,8 +364,10 @@ class Example:
             particle_enable_self_contact=True,
             particle_self_contact_margin=0.3,
             particle_self_contact_gap=0.3,
+            # The 0.6 query radius packs many edge pairs (measured peak demand:
+            # 24 vertex / 146 edge pairs); overflow drops pairs.
             particle_vertex_contact_buffer_size=48,
-            particle_edge_contact_buffer_size=64,
+            particle_edge_contact_buffer_size=160,
             collision_frequency=[1, 5],
             collision_frequency_type=[
                 newton.solvers.SolverBase.CollisionFrequencyType.AUTO,

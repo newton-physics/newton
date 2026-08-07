@@ -1362,8 +1362,10 @@ class CollisionPipeline:
                 in the rest shape (``model.particle_q``) are excluded from
                 detection — for meshes whose regions are close by design
                 (layered cloth, seams). ``0`` disables the filter.
-            vertex_buffer_pre_alloc: Per-vertex collision buffer capacity.
-            edge_buffer_pre_alloc: Per-edge collision buffer capacity.
+            vertex_buffer_pre_alloc: Per-vertex collision buffer capacity;
+                pairs beyond it are silently dropped during detection.
+            edge_buffer_pre_alloc: Per-edge collision buffer capacity;
+                pairs beyond it are silently dropped during detection.
             edge_edge_parallel_epsilon: Near-parallel edge-pair threshold.
             record_triangle_contacting_vertices: Also record per-triangle
                 contacting vertices.

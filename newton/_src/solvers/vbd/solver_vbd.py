@@ -307,8 +307,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 queries use ``margin + gap``, mirroring the ``ShapeConfig.margin`` / ``gap`` convention.
                 Defaults to 0. Give it ~0.5-1x the margin of slack to avoid missing contacts.
             particle_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
-            particle_vertex_contact_buffer_size: Preallocation size for each vertex's vertex-triangle collision buffer.
-            particle_edge_contact_buffer_size: Preallocation size for edge's edge-edge collision buffer.
+            particle_vertex_contact_buffer_size: Preallocation size for each vertex's vertex-triangle collision
+                buffer. Pairs beyond this capacity are silently dropped during detection.
+            particle_edge_contact_buffer_size: Preallocation size for edge's edge-edge collision buffer. Pairs
+                beyond this capacity are silently dropped during detection.
             particle_collision_detection_interval: Deprecated; use the self-contact slot of
                 ``collision_frequency`` / ``collision_frequency_type`` instead.
                 Controls how frequently particle self-contact detection is applied
