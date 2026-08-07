@@ -10,6 +10,9 @@ import warp as wp
 from ...core.math import FLOAT32_EPS
 from ..padmm.math import project_to_coulomb_cone, project_to_coulomb_dual_cone
 from .projections import (
+    contact_friction_normal_load as _contact_friction_normal_load,
+)
+from .projections import (
     project_contact_normal_update as _project_contact_normal_update,
 )
 from .projections import (
@@ -24,6 +27,7 @@ int32 = wp.int32
 vec3f = wp.vec3f
 
 _FUSED_INEQUALITY_BLOCK = -2
+_FUSED_BILATERAL_BLOCK = -3
 
 
 @wp.func
@@ -369,6 +373,120 @@ def _sync_threads(): ...
 
 
 @wp.kernel
+def _solve_bilateral_contact_response(
+    problem_dim: wp.array[int32],
+    problem_mio: wp.array[int32],
+    problem_njc: wp.array[int32],
+    bilateral_mio: wp.array[int32],
+    bilateral_vio: wp.array[int32],
+    bilateral_P: wp.array[float32],
+    projected_mio: wp.array[int32],
+    problem_D: wp.array[float32],
+    bilateral_L: wp.array[float32],
+    bilateral_permutation: wp.array[int32],
+    use_permutation: bool,
+    projected_D: wp.array[float32],
+):
+    wid, unilateral_local = wp.tid()
+    ncts = problem_dim[wid]
+    njc = problem_njc[wid]
+    unilateral = njc + unilateral_local
+    if njc == int32(0) or unilateral >= ncts:
+        return
+
+    source = problem_mio[wid]
+    factor = bilateral_mio[wid]
+    bvio = bilateral_vio[wid]
+    target = projected_mio[wid]
+
+    for row in range(njc):
+        original_row = row
+        if use_permutation:
+            original_row = bilateral_permutation[bvio + row]
+        value = bilateral_P[bvio + original_row] * problem_D[source + ncts * original_row + unilateral]
+        for k in range(row):
+            value -= bilateral_L[factor + njc * row + k] * projected_D[target + ncts * k + unilateral]
+        projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + njc * row + row]
+
+    for reverse_row in range(njc):
+        row = njc - int32(1) - reverse_row
+        value = projected_D[target + ncts * row + unilateral]
+        for k in range(row + int32(1), njc):
+            value -= bilateral_L[factor + njc * k + row] * projected_D[target + ncts * k + unilateral]
+        projected_D[target + ncts * row + unilateral] = value / bilateral_L[factor + njc * row + row]
+
+    for unilateral_row in range(njc, ncts):
+        value = problem_D[source + ncts * unilateral_row + unilateral]
+        for row in range(njc):
+            original_row = row
+            if use_permutation:
+                original_row = bilateral_permutation[bvio + row]
+            response = bilateral_P[bvio + original_row] * projected_D[target + ncts * row + unilateral]
+            value -= problem_D[source + ncts * unilateral_row + original_row] * response
+        projected_D[target + ncts * unilateral_row + unilateral] = value
+
+
+@wp.kernel
+def _solve_bilateral_unilateral_response(
+    problem_dim: wp.array[int32],
+    problem_njc: wp.array[int32],
+    bilateral_mio: wp.array[int32],
+    bilateral_vio: wp.array[int32],
+    bilateral_P: wp.array[float32],
+    bilateral_L: wp.array[float32],
+    bilateral_permutation: wp.array[int32],
+    use_permutation: bool,
+    response_mio: wp.array[int32],
+    response_stride: wp.array[int32],
+    coupling: wp.array[float32],
+    response_factor: wp.array[float32],
+    response: wp.array[float32],
+):
+    tid = wp.tid()
+    threads_per_world = int32(wp.block_dim())
+    lane = tid % threads_per_world
+    wid = tid / threads_per_world
+    njc = problem_njc[wid]
+    nu = problem_dim[wid] - njc
+    factor = bilateral_mio[wid]
+    bvio = bilateral_vio[wid]
+    offset = response_mio[wid]
+    unilateral_stride = response_stride[wid]
+    for unilateral in range(lane, nu, threads_per_world):
+        for row in range(njc):
+            original_row = row
+            if use_permutation:
+                original_row = bilateral_permutation[bvio + row]
+            value = bilateral_P[bvio + original_row] * coupling[offset + original_row * unilateral_stride + unilateral]
+            for k in range(row):
+                value -= (
+                    bilateral_L[factor + njc * row + k] * response_factor[offset + k * unilateral_stride + unilateral]
+                )
+            response_factor[offset + row * unilateral_stride + unilateral] = (
+                value / bilateral_L[factor + njc * row + row]
+            )
+
+        for reverse_row in range(njc):
+            row = njc - int32(1) - reverse_row
+            value = response_factor[offset + row * unilateral_stride + unilateral]
+            for k in range(row + int32(1), njc):
+                value -= (
+                    bilateral_L[factor + njc * k + row] * response_factor[offset + k * unilateral_stride + unilateral]
+                )
+            response_factor[offset + row * unilateral_stride + unilateral] = (
+                value / bilateral_L[factor + njc * row + row]
+            )
+
+        for row in range(njc):
+            original_row = row
+            if use_permutation:
+                original_row = bilateral_permutation[bvio + row]
+            response[offset + original_row * unilateral_stride + unilateral] = (
+                bilateral_P[bvio + original_row] * response_factor[offset + row * unilateral_stride + unilateral]
+            )
+
+
+@wp.kernel
 def _compute_dvi_unilateral_velocities(
     problem_dim: wp.array[int32],
     problem_mio: wp.array[int32],
@@ -409,6 +527,8 @@ def _solve_dvi_inequalities_colored_pgs(
     problem_uio: wp.array[int32],
     problem_mu: wp.array[float32],
     problem_D: wp.array[float32],
+    problem_P: wp.array[float32],
+    problem_v_b: wp.array[float32],
     block_iteration: int32,
     inequality_num_colors: wp.array[int32],
     inequality_ids_by_color: wp.array[int32],
@@ -441,11 +561,14 @@ def _solve_dvi_inequalities_colored_pgs(
     schedule_offset = uio + wid
     contact_end = ccgo + int32(3) * nc
     sweep_count = cfg.inequality_sweeps_per_iteration
+    first_tangent_sweep = int32(0)
     if block_iteration == int32(_FUSED_INEQUALITY_BLOCK):
-        sweep_count *= cfg.max_alternating_iterations
+        tangent_sweep_count = sweep_count * cfg.max_alternating_iterations / int32(2)
+        sweep_count = (sweep_count + int32(1)) * cfg.max_alternating_iterations
+        first_tangent_sweep = sweep_count - tangent_sweep_count
     for _sweep in range(sweep_count):
         phase_count = int32(2)
-        if block_iteration == int32(_FUSED_INEQUALITY_BLOCK) and _sweep < sweep_count / int32(2):
+        if block_iteration == int32(_FUSED_INEQUALITY_BLOCK) and _sweep < first_tangent_sweep:
             # Establish the support load before friction in inequality-only solves.
             phase_count = int32(1)
         for phase in range(phase_count):
@@ -514,7 +637,15 @@ def _solve_dvi_inequalities_colored_pgs(
                                 problem_D[mio + ncts * column + column + int32(1)],
                                 cfg.regularization,
                                 cfg.omega,
-                                problem_mu[cio + cid] * solution_lambdas[vec_idx + int32(2)],
+                                problem_mu[cio + cid]
+                                * _contact_friction_normal_load(
+                                    solution_lambdas[vec_idx + int32(2)],
+                                    problem_v_b[vec_idx + int32(2)],
+                                    problem_P[vec_idx + int32(2)],
+                                    wp.abs(problem_D[mio + ncts * (column + int32(2)) + column + int32(2)]),
+                                    cfg.regularization,
+                                    cfg.omega,
+                                ),
                             )
                             solution_lambdas[vec_idx] = lambda_t_new.x
                             solution_lambdas[vec_idx + int32(1)] = lambda_t_new.y

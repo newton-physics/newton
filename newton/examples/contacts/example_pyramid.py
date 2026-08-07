@@ -8,6 +8,7 @@
 # to stress-test narrow-phase contact generation.
 #
 # Command: python -m newton.examples pyramid
+# Kamino DVI: python -m newton.examples pyramid --solver kamino
 #
 ###########################################################################
 
@@ -37,20 +38,27 @@ XPBD_CONTACT_RELAXATION = 0.8
 class Example:
     def __init__(self, viewer, args):
         newton.use_coord_layout_targets = True
-        self.fps = 100
-        self.frame_dt = 1.0 / self.fps
-        self.sim_time = 0.0
-        self.sim_substeps = 10
-        self.sim_dt = self.frame_dt / self.sim_substeps
-
         self.viewer = viewer
         self.test_mode = args.test
         self.world_count = args.world_count
+        self.solver_type = args.solver
+
+        self.fps = 100
+        self.frame_dt = 1.0 / self.fps
+        self.sim_time = 0.0
+        self.sim_substeps = 1 if self.solver_type == "kamino" else 10
+        self.sim_dt = self.frame_dt / self.sim_substeps
 
         num_pyramids = args.num_pyramids
+        if num_pyramids is None:
+            num_pyramids = 1 if self.solver_type == "kamino" else DEFAULT_NUM_PYRAMIDS
         pyramid_size = args.pyramid_size
+        if pyramid_size is None:
+            pyramid_size = DEFAULT_PYRAMID_SIZE
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
         builder.add_shape_plane(xform=wp.transform_identity(), width=0.0, length=0.0)
 
         box_count = 0
@@ -113,16 +121,34 @@ class Example:
         else:
             self.model = builder.finalize()
 
-        self.collision_pipeline = newton.CollisionPipeline(
-            self.model,
-            broad_phase=args.broad_phase,
-        )
-
-        self.solver = newton.solvers.SolverXPBD(
-            self.model,
-            iterations=XPBD_ITERATIONS,
-            rigid_contact_relaxation=XPBD_CONTACT_RELAXATION,
-        )
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model,
+                dynamics_solver="dvi",
+                sparse_dynamics=True,
+                sparse_jacobian=True,
+            )
+            solver_config.use_collision_detector = True
+            solver_config.integrator = "moreau"
+            solver_config.collision_detector.broadphase = args.broad_phase
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            solver_config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+            self.collision_pipeline = None
+            self.contacts = None
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model,
+                broad_phase=args.broad_phase,
+            )
+            self.solver = newton.solvers.SolverXPBD(
+                self.model,
+                iterations=XPBD_ITERATIONS,
+                rigid_contact_relaxation=XPBD_CONTACT_RELAXATION,
+            )
+            self.contacts = self.collision_pipeline.contacts()
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -131,8 +157,6 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.top_initial_positions = self.state_0.body_q.numpy()[:, :3].copy()
-
-        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -146,17 +170,24 @@ class Example:
         self.capture()
 
     def capture(self):
-        with wp.ScopedCapture() as capture:
-            self.simulate()
-        self.graph = capture.graph
+        if wp.get_device().is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+            if self.collision_pipeline is not None:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         if self.graph:
@@ -169,7 +200,8 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        if self.contacts is not None:
+            self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def test_final(self):
@@ -197,16 +229,22 @@ class Example:
         newton.examples.add_broad_phase_arg(parser)
         parser.set_defaults(broad_phase="sap")
         parser.add_argument(
+            "--solver",
+            choices=["xpbd", "kamino"],
+            default="xpbd",
+            help="Solver backend to use.",
+        )
+        parser.add_argument(
             "--num-pyramids",
             type=int,
-            default=DEFAULT_NUM_PYRAMIDS,
-            help="Number of pyramids to build.",
+            default=None,
+            help=f"Number of pyramids to build (default: 1 for Kamino, {DEFAULT_NUM_PYRAMIDS} otherwise).",
         )
         parser.add_argument(
             "--pyramid-size",
             type=int,
-            default=DEFAULT_PYRAMID_SIZE,
-            help="Number of rows in each pyramid base.",
+            default=None,
+            help=f"Number of rows in each pyramid base (default: {DEFAULT_PYRAMID_SIZE}).",
         )
         return parser
 

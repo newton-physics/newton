@@ -1111,7 +1111,11 @@ class SolverKaminoImpl(SolverBase):
         # If a collision detector is provided, use it to generate
         # update the set of active contacts at the current state
         if detector is not None:
-            detector.collide(data=self._data, state=state_in, contacts=contacts)
+            collision_state = state_in
+            if isinstance(self._solver_fd, DVISolver) and isinstance(self._integrator, IntegratorMoreauJean):
+                # DVI solves at the Moreau midpoint stored in the internal body data.
+                collision_state = StateKamino(q_i=self._data.bodies.q_i)
+            detector.collide(data=self._data, state=collision_state, contacts=contacts)
 
         # If a limits container/detector is provided, run joint-limit
         # detection to generate active joint limits at the current state

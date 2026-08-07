@@ -14,19 +14,24 @@ from ...dynamics.dual import DualProblem
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
+from ...linalg import LLTBlockedRCMSolver
 from .kernels import (
+    _FUSED_BILATERAL_BLOCK,
     _FUSED_INEQUALITY_BLOCK,
     _initialize_dvi_status,
     _scatter_bilateral_solution,
     _set_dvi_direct_status_iterations,
+    _solve_bilateral_unilateral_response,
 )
 from .sparse_kernels import (
+    _assemble_sparse_bilateral_unilateral_coupling,
     _build_sparse_bilateral_block,
     _build_sparse_bilateral_rhs,
-    _color_mapped_dvi_inequalities,
     _compute_dvi_sparse_solution_vectors,
+    _group_mapped_dvi_inequalities,
     _map_active_contacts,
     _map_active_limits,
+    _reset_active_bilateral_delta,
     _set_sparse_bilateral_diagonal,
     _solve_dvi_sparse_inequalities_pgs,
     _sparse_delassus_gemv_rows,
@@ -162,7 +167,7 @@ def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) ->
         )
     state.inequality_body_color_masks.zero_()
     wp.launch(
-        kernel=_color_mapped_dvi_inequalities,
+        kernel=_group_mapped_dvi_inequalities,
         dim=path.size.num_worlds,
         inputs=[
             problem.data.nl,
@@ -174,6 +179,7 @@ def _prepare_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) ->
             state.inequality_num_colors,
             state.inequality_ids_by_color,
             state.inequality_color_starts,
+            state.inequality_group_starts,
         ],
         device=path.device,
     )
@@ -191,6 +197,9 @@ def _launch_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem, blo
         raise RuntimeError("Sparse inequality PGS requires an initialized Delassus operator.")
 
     path.body_space.zero_()
+    bilateral_vio = (
+        path.data.bilateral_operator.info.vio if path.data.bilateral_operator is not None else problem.data.vio
+    )
     delassus.apply_jacobian_transpose(path.data.solution.lambdas, path.body_space, path.all_worlds_mask)
     threads_per_world = 64 if path.device.is_cuda else 1
     wp.launch(
@@ -219,11 +228,21 @@ def _launch_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem, blo
             problem.data.mu,
             problem.data.P,
             problem.data.v_f,
+            problem.data.v_b,
             state.scratch,
             delassus.regularization,
+            problem.data.njc,
+            bilateral_vio,
+            state.bilateral_response_mio,
+            state.bilateral_response_stride,
+            state.bilateral_coupling,
+            state.bilateral_response,
+            state.bilateral_delta,
             state.inequality_num_colors,
             state.inequality_ids_by_color,
             state.inequality_color_starts,
+            state.inequality_group_starts,
+            state.inequality_tangent_cross,
             block_iteration,
             path.data.config,
             path.body_space,
@@ -489,12 +508,80 @@ def _solve_sparse_with_bilateral_direct_block(path: SparseDVIPath, problem: Dual
         raise RuntimeError(_SPARSE_INEQUALITY_TOPOLOGY_ERROR)
     _prepare_sparse_inequality_pgs(path, problem)
 
-    for block_iteration in range(path.max_alternating_iterations):
-        _launch_sparse_inequality_pgs(path, problem, block_iteration)
-
-        if path.should_solve_bilateral_after_block(block_iteration):
+    delassus = _get_sparse_delassus(problem)
+    bsm = delassus.bsm
+    max_joint_rows = path.size.max_of_num_joint_cts
+    max_unilateral_rows = path.size.max_of_max_limits + 3 * path.size.max_of_max_contacts
+    state.bilateral_coupling.zero_()
+    state.bilateral_response_factor.zero_()
+    state.bilateral_response.zero_()
+    state.bilateral_delta.zero_()
+    wp.launch(
+        kernel=_assemble_sparse_bilateral_unilateral_coupling,
+        dim=(path.size.num_worlds, max_joint_rows, max_unilateral_rows),
+        inputs=[
+            bsm.num_nzb,
+            bsm.nzb_start,
+            bsm.nzb_coords,
+            bsm.nzb_values,
+            delassus.constraint_jacobian.nzb_values,
+            problem.data.dim,
+            problem.data.njc,
+            problem.data.vio,
+            problem.data.P,
+            state.bilateral_response_mio,
+            state.bilateral_response_stride,
+            state.bilateral_coupling,
+        ],
+        device=path.device,
+    )
+    use_permutation = isinstance(path.bilateral_solver, LLTBlockedRCMSolver)
+    permutation = path.bilateral_solver.P if use_permutation else state.projected_mio
+    wp.launch(
+        kernel=_solve_bilateral_unilateral_response,
+        dim=path.size.num_worlds * (64 if path.device.is_cuda else 1),
+        inputs=[
+            problem.data.dim,
+            problem.data.njc,
+            path.data.bilateral_operator.info.mio,
+            path.data.bilateral_operator.info.vio,
+            state.bilateral_preconditioner,
+            path.bilateral_solver.L,
+            permutation,
+            use_permutation,
+            state.bilateral_response_mio,
+            state.bilateral_response_stride,
+            state.bilateral_coupling,
+            state.bilateral_response_factor,
+            state.bilateral_response,
+        ],
+        device=path.device,
+        block_dim=64 if path.device.is_cuda else 1,
+    )
+    has_intermediate_bilateral_solve = any(
+        path.should_solve_bilateral_after_block(block_iteration)
+        for block_iteration in range(path.max_alternating_iterations)
+    )
+    if not has_intermediate_bilateral_solve:
+        # A fixed bilateral response lets block-local barriers preserve colored GS across all sweeps.
+        _launch_sparse_inequality_pgs(path, problem, _FUSED_BILATERAL_BLOCK)
+    else:
+        for block_iteration in range(path.max_alternating_iterations):
+            _launch_sparse_inequality_pgs(path, problem, block_iteration)
+            if not path.should_solve_bilateral_after_block(block_iteration):
+                continue
             path.set_bilateral_active_dim(problem, block_iteration)
             _solve_sparse_bilateral_block(path, problem, active_dim=state.bilateral_active_dim)
+            wp.launch(
+                kernel=_reset_active_bilateral_delta,
+                dim=(path.size.num_worlds, path.size.max_of_num_joint_cts),
+                inputs=[
+                    state.bilateral_active_dim,
+                    path.data.bilateral_operator.info.vio,
+                    state.bilateral_delta,
+                ],
+                device=path.device,
+            )
 
     path.set_bilateral_active_dim(problem, -1)
     _solve_sparse_bilateral_block(path, problem, active_dim=state.bilateral_active_dim)

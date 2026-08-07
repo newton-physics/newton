@@ -113,6 +113,8 @@ def _integrate_semi_implicit_euler_inplace(
 
     # Retrieve the model data
     inv_m_i = model_bodies_inv_m[tid]
+    if inv_m_i <= 0.0:
+        return
     I_i = model_bodies_I[tid]
     inv_I_i = model_bodies_inv_I[tid]
 

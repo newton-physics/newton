@@ -104,6 +104,16 @@ class DVIState:
         self.inequality_num_colors: wp.array[int32] | None = None
         self.inequality_ids_by_color: wp.array[int32] | None = None
         self.inequality_color_starts: wp.array[int32] | None = None
+        self.inequality_group_starts: wp.array[int32] | None = None
+        self.inequality_tangent_cross: wp.array[float32] | None = None
+        self.projected_D: wp.array[float32] | None = None
+        self.projected_mio: wp.array[int32] | None = None
+        self.bilateral_coupling: wp.array[float32] | None = None
+        self.bilateral_response_mio: wp.array[int32] | None = None
+        self.bilateral_response_stride: wp.array[int32] | None = None
+        self.bilateral_response_factor: wp.array[float32] | None = None
+        self.bilateral_response: wp.array[float32] | None = None
+        self.bilateral_delta: wp.array[float32] | None = None
         if size is not None:
             self.finalize(size)
 
@@ -125,6 +135,34 @@ class DVIState:
         self.inequality_num_colors = wp.zeros(max(1, size.num_worlds), dtype=int32)
         self.inequality_ids_by_color = wp.full(max(1, size.sum_of_max_unilaterals), -1, dtype=int32)
         self.inequality_color_starts = wp.zeros(max(1, size.sum_of_max_unilaterals + size.num_worlds), dtype=int32)
+        self.inequality_group_starts = wp.zeros(max(1, size.sum_of_max_unilaterals + size.num_worlds), dtype=int32)
+        self.inequality_tangent_cross = wp.zeros(max(1, size.sum_of_max_unilaterals), dtype=float32)
+        projected_stride = size.max_of_max_total_cts * size.max_of_max_total_cts
+        self.projected_mio = wp.array([world * projected_stride for world in range(size.num_worlds)], dtype=int32)
+
+    def allocate_dense_projection(self, size: SizeKamino) -> None:
+        if self.projected_D is None:
+            projected_stride = size.max_of_max_total_cts * size.max_of_max_total_cts
+            self.projected_D = wp.zeros(max(1, size.num_worlds * projected_stride), dtype=float32)
+
+    def allocate_sparse_projection(
+        self,
+        joint_rows: list[int],
+        unilateral_strides: list[int],
+        bilateral_vector_size: int,
+    ) -> None:
+        if self.bilateral_coupling is None:
+            response_offsets = []
+            response_size = 0
+            for num_joint_rows, unilateral_stride in zip(joint_rows, unilateral_strides, strict=True):
+                response_offsets.append(response_size)
+                response_size += num_joint_rows * unilateral_stride
+            self.bilateral_response_mio = wp.array(response_offsets, dtype=int32)
+            self.bilateral_response_stride = wp.array(unilateral_strides, dtype=int32)
+            self.bilateral_coupling = wp.zeros(max(1, response_size), dtype=float32)
+            self.bilateral_response_factor = wp.zeros(max(1, response_size), dtype=float32)
+            self.bilateral_response = wp.zeros(max(1, response_size), dtype=float32)
+            self.bilateral_delta = wp.zeros(max(1, bilateral_vector_size), dtype=float32)
 
     def reset(self):
         """Reset scratch arrays to zero."""
@@ -144,6 +182,15 @@ class DVIState:
         self.inequality_num_colors.zero_()
         self.inequality_ids_by_color.fill_(-1)
         self.inequality_color_starts.zero_()
+        self.inequality_group_starts.zero_()
+        self.inequality_tangent_cross.zero_()
+        if self.projected_D is not None:
+            self.projected_D.zero_()
+        if self.bilateral_coupling is not None:
+            self.bilateral_coupling.zero_()
+            self.bilateral_response_factor.zero_()
+            self.bilateral_response.zero_()
+            self.bilateral_delta.zero_()
 
 
 class DVIData:

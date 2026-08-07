@@ -7,7 +7,9 @@
 # Shows how to use the ModelBuilder API to programmatically create different
 # joint types: BALL, DISTANCE, PRISMATIC, and REVOLUTE.
 #
-# Command: python -m newton.examples basic_joints
+# Command: python -m newton.examples basic_joints --solver xpbd
+#          python -m newton.examples basic_joints --solver vbd
+#          python -m newton.examples basic_joints --solver kamino
 #
 ###########################################################################
 
@@ -32,18 +34,21 @@ def _slider_constrained_motion_has_stopped(q: wp.transform, qd: wp.spatial_vecto
 
 class Example:
     def __init__(self, viewer, args):
+        self.viewer = viewer
+        self.args = args
+        self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
+
         newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 8 if self.solver_type == "kamino" else 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.viewer = viewer
-        self.args = args
-
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
 
         static_cfg = newton.ModelBuilder.ShapeConfig()
         static_cfg.density = 0.0
@@ -182,12 +187,26 @@ class Example:
         # consistent with the joint_q edits above before constructing the solver.
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
 
-        solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
-        if solver_type == "vbd":
+        if self.solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=2,
             )
+        elif self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model,
+                dynamics_solver="dvi",
+                sparse_dynamics=True,
+                sparse_jacobian=True,
+            )
+            solver_config.use_collision_detector = False
+            solver_config.integrator = "moreau"
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            solver_config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
+            solver_config.dvi.max_alternating_iterations = 5
+            solver_config.dvi.bilateral_solve_interval = 5
+            solver_config.dvi.inequality_sweeps_per_iteration = 1
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model)
 
@@ -197,8 +216,12 @@ class Example:
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.collision_pipeline.contacts()
+        if self.solver_type == "kamino":
+            self.collision_pipeline = None
+            self.contacts = None
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -216,7 +239,8 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+            if self.collision_pipeline is not None:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -290,11 +314,33 @@ class Example:
             lambda q, qd: max(abs(qd)) < 3.0,
             indices=[1, 5],
         )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "revolute link responds to gravity",
+            lambda q, qd: wp.length(wp.transform_get_translation(q) - wp.vec3(0.0, -2.25, 2.0)) > 0.1,
+            indices=[self.model.body_label.index("b_rev")],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "prismatic link responds to gravity",
+            lambda q, qd: wp.length(wp.transform_get_translation(q) - wp.vec3(0.0, 0.0, 1.25)) > 0.1,
+            indices=[self.model.body_label.index("b_prismatic")],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "ball-joint link responds to gravity",
+            lambda q, qd: wp.length(wp.transform_get_translation(q) - wp.vec3(-0.515887, 3.0355964, 1.5067748)) > 0.1,
+            indices=[self.model.body_label.index("b_ball")],
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        if self.contacts is not None:
+            self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
 
@@ -304,7 +350,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--solver",
         type=str,
-        choices=["xpbd", "vbd"],
+        choices=["xpbd", "vbd", "kamino"],
         default="xpbd",
         help="Solver backend to use.",
     )

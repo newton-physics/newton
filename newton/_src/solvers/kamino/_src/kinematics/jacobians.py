@@ -534,6 +534,7 @@ def _build_joint_jacobians_dense(
     model_joints_coords_offset: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_num_dynamic_cts: wp.array[wp.int32],
+    model_joints_num_kinematic_cts: wp.array[wp.int32],
     model_joints_dynamic_cts_offset: wp.array[wp.int32],
     model_joints_kinematic_cts_offset: wp.array[wp.int32],
     model_joints_bid_B: wp.array[wp.int32],
@@ -562,6 +563,7 @@ def _build_joint_jacobians_dense(
     bid_F = model_joints_bid_F[jid]
     dofs_offset = model_joints_dofs_offset[jid]
     num_dyn_cts = model_joints_num_dynamic_cts[jid]
+    num_kin_cts = model_joints_num_kinematic_cts[jid]
     dyn_cts_offset = model_joints_dynamic_cts_offset[jid]
     kin_cts_offset = model_joints_kinematic_cts_offset[jid]
 
@@ -605,7 +607,18 @@ def _build_joint_jacobians_dense(
         store_joint_dofs_jacobian_dense(dof_type, J_jdc_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data)
 
     # Store joint kinematic constraint jacobians
-    store_joint_cts_jacobian_dense(dof_type, J_jkc_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_cts_data)
+    if num_kin_cts > 0:
+        store_joint_cts_jacobian_dense(
+            dof_type,
+            J_jkc_row_start,
+            nbd,
+            bio,
+            bid_B,
+            bid_F,
+            JT_B_j,
+            JT_F_j,
+            jac_cts_data,
+        )
 
     # Store the actuation Jacobian block if the joint is actuated
     store_joint_dofs_jacobian_dense(dof_type, J_jdof_row_start, nbd, bio, bid_B, bid_F, JT_B_j, JT_F_j, jac_dofs_data)
@@ -632,6 +645,7 @@ def _build_joint_jacobians_sparse(
     model_joints_coords_offset: wp.array[wp.int32],
     model_joints_num_dofs: wp.array[wp.int32],
     model_joints_num_dynamic_cts: wp.array[wp.int32],
+    model_joints_num_kinematic_cts: wp.array[wp.int32],
     model_joints_bid_B: wp.array[wp.int32],
     model_joints_bid_F: wp.array[wp.int32],
     model_joints_X_Bj: wp.array[wp.mat33f],
@@ -656,6 +670,7 @@ def _build_joint_jacobians_sparse(
     dof_type = model_joints_dof_type[jid]
     num_dofs = model_joints_num_dofs[jid]
     num_dyn_cts = model_joints_num_dynamic_cts[jid]
+    num_kin_cts = model_joints_num_kinematic_cts[jid]
     bid_B = model_joints_bid_B[jid]
     bid_F = model_joints_bid_F[jid]
 
@@ -687,14 +702,15 @@ def _build_joint_jacobians_sparse(
 
     # Store the constraint Jacobian block
     kinematic_nzb_offset = 0 if num_dyn_cts == 0 else (2 * num_dofs if bid_B > -1 else num_dofs)
-    store_joint_cts_jacobian_sparse(
-        dof_type,
-        bid_B > -1,
-        JT_B_j,
-        JT_F_j,
-        jacobian_cts_nzb_offsets[jid] + kinematic_nzb_offset,
-        jacobian_cts_nzb_values,
-    )
+    if num_kin_cts > 0:
+        store_joint_cts_jacobian_sparse(
+            dof_type,
+            bid_B > -1,
+            JT_B_j,
+            JT_F_j,
+            jacobian_cts_nzb_offsets[jid] + kinematic_nzb_offset,
+            jacobian_cts_nzb_values,
+        )
 
     # Store the actuation Jacobian block if the joint is actuated
     store_joint_dofs_jacobian_sparse(
@@ -1473,6 +1489,7 @@ class DenseSystemJacobians:
                     model.joints.coords_offset,
                     model.joints.dofs_offset,
                     model.joints.num_dynamic_cts,
+                    model.joints.num_kinematic_cts,
                     model.joints.dynamic_cts_offset,
                     model.joints.kinematic_cts_offset,
                     model.joints.bid_B,
@@ -1862,6 +1879,7 @@ class SparseSystemJacobians:
                     model.joints.coords_offset,
                     model.joints.num_dofs,
                     model.joints.num_dynamic_cts,
+                    model.joints.num_kinematic_cts,
                     model.joints.bid_B,
                     model.joints.bid_F,
                     model.joints.X_Bj,

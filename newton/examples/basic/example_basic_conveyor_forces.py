@@ -368,7 +368,7 @@ class ConveyorForceModel:
 
     def __init__(self, model: newton.Model, solver_type: str = "xpbd"):
         """Initialize a conveyor driver for a model and solver type."""
-        if solver_type not in {"xpbd", "vbd", "mujoco"}:
+        if solver_type not in {"xpbd", "vbd", "mujoco", "kamino"}:
             raise ValueError(f"Unsupported solver type: {solver_type!r}")
 
         self.model = model
@@ -548,7 +548,10 @@ class ConveyorForceModel:
             solver.collect_rigid_contact_forces(state_post.body_q, self.body_q_prev, contacts, dt)
             wp.copy(self.contact_force_vec, contacts.rigid_contact_force)
         else:
-            solver.update_contacts(contacts)
+            if self.solver_type == "kamino":
+                solver.update_contacts(contacts, state_post)
+            else:
+                solver.update_contacts(contacts)
             wp.launch(
                 extract_linear,
                 dim=contacts.rigid_contact_max,
@@ -615,7 +618,7 @@ class ConveyorForceModel:
 # ---------------------------------------------------------------------------
 # A small positive collision margin smooths the belt-to-belt seam transitions. VBD's
 # rigid-contact handling needs a larger margin than XPBD to keep bodies on the belts.
-SOLVER_MARGIN = {"xpbd": 0.015, "vbd": 0.05, "mujoco": 0.015}
+SOLVER_MARGIN = {"xpbd": 0.015, "vbd": 0.05, "mujoco": 0.015, "kamino": 0.015}
 XPBD_ITERATIONS = 4
 VBD_ITERATIONS = 15
 # A frictional-to-normal impedance ratio below 1 softens the friction
@@ -771,6 +774,9 @@ class Example:
         builder.add_ground_plane()
         straight_belts, turn_belts, self.tracked_bodies = self._build_scene(builder)
 
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
+
         transported = set(self.tracked_bodies)
         if self.solver_type == "mujoco":
             # The conveyor supplies tangential contact forces explicitly, so native
@@ -782,8 +788,8 @@ class Example:
                     builder.shape_material_mu[shape] = MUJOCO_MIN_FRICTION
                     builder.shape_material_mu_torsional[shape] = 0.0
                     builder.shape_material_mu_rolling[shape] = 0.0
-        elif self.solver_type == "xpbd":
-            # XPBD averages the two shape coefficients, so both sides of a belt
+        elif self.solver_type in {"xpbd", "kamino"}:
+            # These solvers mix both shape coefficients, so both sides of a belt
             # contact must be frictionless to leave tangential drive to the conveyor.
             for shape, body in enumerate(builder.shape_body):
                 if body in transported:
@@ -817,6 +823,15 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model, iterations=VBD_ITERATIONS, rigid_body_contact_buffer_size=2048
             )
+        elif self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.use_collision_detector = False
+            solver_config.integrator = "moreau"
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=XPBD_ITERATIONS)
 
@@ -1035,7 +1050,11 @@ def _look_at(eye, target):
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--solver", type=str, choices=["xpbd", "vbd", "mujoco"], default="xpbd", help="Solver backend to use."
+        "--solver",
+        type=str,
+        choices=["xpbd", "vbd", "mujoco", "kamino"],
+        default="xpbd",
+        help="Solver backend to use.",
     )
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

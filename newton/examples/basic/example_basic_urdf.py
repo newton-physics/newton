@@ -11,6 +11,7 @@
 # Users can pick bodies by right-clicking and dragging with the mouse.
 #
 # Command: python -m newton.examples basic_urdf
+# Kamino DVI: python -m newton.examples basic_urdf --solver kamino
 #
 ###########################################################################
 
@@ -28,15 +29,17 @@ class Example:
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.solver_type = args.solver if hasattr(args, "solver") and args.solver else "xpbd"
+        self.sim_substeps = 5 if self.solver_type == "kamino" else 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
-        self.solver_type = args.solver if hasattr(args, "solver") and args.solver else "xpbd"
 
         self.viewer = viewer
 
         quadruped = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(quadruped)
 
         # set default parameters for the quadruped
         quadruped.default_joint_cfg.armature = 0.01
@@ -92,6 +95,21 @@ class Example:
                 self.model,
                 iterations=2,
             )
+        elif self.solver_type == "kamino":
+            self.update_step_interval = 1
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model,
+                dynamics_solver="dvi",
+                sparse_dynamics=True,
+                sparse_jacobian=True,
+            )
+            solver_config.use_collision_detector = True
+            solver_config.integrator = "moreau"
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            solver_config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.update_step_interval = 1
             self.solver = newton.solvers.SolverXPBD(self.model)
@@ -100,8 +118,12 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.collision_pipeline.contacts()
+        if self.solver_type == "kamino":
+            self.collision_pipeline = None
+            self.contacts = None
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -109,9 +131,12 @@ class Example:
         self.capture()
 
     def capture(self):
-        with wp.ScopedCapture() as capture:
-            self.simulate()
-        self.graph = capture.graph
+        if wp.get_device().is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
 
     def simulate(self):
         for substep in range(self.sim_substeps):
@@ -122,7 +147,7 @@ class Example:
 
             # Collision detection and contact refresh cadence.
             refresh_contacts = (substep % self.update_step_interval) == 0
-            if refresh_contacts:
+            if refresh_contacts and self.collision_pipeline is not None:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
 
             if self.solver_type == "vbd":
@@ -130,8 +155,10 @@ class Example:
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
-            # swap states
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            if self.sim_substeps % 2 == 1 and substep == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         if self.graph:
@@ -162,7 +189,8 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        if self.contacts is not None:
+            self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     @staticmethod
@@ -174,8 +202,8 @@ class Example:
             "--solver",
             type=str,
             default="xpbd",
-            choices=["vbd", "xpbd"],
-            help="Solver type: xpbd (default) or vbd",
+            choices=["vbd", "xpbd", "kamino"],
+            help="Solver type: xpbd (default), vbd, or kamino",
         )
         return parser
 

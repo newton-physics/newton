@@ -1,0 +1,1 @@
+Improve Kamino DVI stability and performance, add Kamino support to more examples, and keep the ANYmal D and H1 floating bases passive; select `bilateral_solver_type="LLTBRCM"` with `bilateral_solver_kwargs={"parallel_factorization": True}` to accelerate large sparse articulated systems.
