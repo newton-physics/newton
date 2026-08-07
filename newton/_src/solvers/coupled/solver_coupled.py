@@ -425,7 +425,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 spec.compaction_policy,
             )
             for name, spec in model._iter_attribute_specs()
-            if spec.compaction_policy in {"generic", "end"} and not self._is_deprecated_namespace_alias(name)
+            if spec.compaction_policy in {"generic", "end"}
         )
 
     def _build_joint_constraint_starts(self) -> np.ndarray:
@@ -459,8 +459,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         for full_name, spec in self.model._iter_attribute_specs():
             flag = _CORE_RESET_STATE_FLAGS.get(full_name)
             if flag is None and spec.assignment != Model.AttributeAssignment.STATE:
-                continue
-            if self._is_deprecated_namespace_alias(full_name):
                 continue
             if flag is None and spec.frequency not in _RESET_RECONCILABLE_FREQUENCIES:
                 unsupported.append((full_name, spec.frequency))
@@ -524,16 +522,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             host = self._row_worlds_from_starts(starts, count, model.world_count)
             result[item_frequency] = wp.array(host, dtype=wp.int32, device=model.device)
         return result
-
-    def _is_deprecated_namespace_alias(self, full_name: str) -> bool:
-        """Return whether metadata names a warning-producing namespace alias."""
-        if ":" not in full_name:
-            return False
-        namespace_name, attribute_name = full_name.split(":", 1)
-        namespace = getattr(self.model, namespace_name, None)
-        if not isinstance(namespace, self.model.AttributeNamespace):
-            return False
-        return attribute_name in namespace._deprecated_aliases
 
     def _validate_entry_names(self) -> None:
         names: set[str] = set()
