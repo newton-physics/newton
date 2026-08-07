@@ -1,0 +1,6 @@
+﻿newton.eval\_mass\_matrix
+=========================
+
+.. currentmodule:: newton
+
+.. autofunction:: eval_mass_matrix

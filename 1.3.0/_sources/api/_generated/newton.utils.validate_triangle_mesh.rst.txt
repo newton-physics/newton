@@ -1,0 +1,6 @@
+﻿newton.utils.validate\_triangle\_mesh
+=====================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: validate_triangle_mesh

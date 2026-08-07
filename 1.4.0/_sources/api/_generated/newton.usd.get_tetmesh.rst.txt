@@ -1,0 +1,6 @@
+﻿newton.usd.get\_tetmesh
+=======================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: get_tetmesh

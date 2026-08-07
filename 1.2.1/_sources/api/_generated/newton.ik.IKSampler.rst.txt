@@ -1,0 +1,8 @@
+﻿newton.ik.IKSampler
+===================
+
+.. autoclass:: newton.ik.IKSampler
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

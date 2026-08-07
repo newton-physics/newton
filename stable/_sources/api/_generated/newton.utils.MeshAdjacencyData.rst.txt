@@ -1,0 +1,6 @@
+﻿newton.utils.MeshAdjacencyData
+==============================
+
+.. currentmodule:: newton.utils
+
+.. autodata:: MeshAdjacencyData

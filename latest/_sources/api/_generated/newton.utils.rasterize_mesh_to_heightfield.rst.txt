@@ -1,0 +1,6 @@
+﻿newton.utils.rasterize\_mesh\_to\_heightfield
+=============================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: rasterize_mesh_to_heightfield

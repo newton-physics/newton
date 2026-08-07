@@ -1,0 +1,6 @@
+﻿newton.usd.find\_tetmesh\_prims
+===============================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: find_tetmesh_prims

@@ -1,0 +1,6 @@
+﻿newton.usd.get\_gprim\_axis
+===========================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: get_gprim_axis
