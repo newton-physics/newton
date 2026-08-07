@@ -31,7 +31,7 @@ try:
 
     _DEFERRED_WORKLOAD_MODULES_AFTER_METRIC_IMPORT = {name: name in sys.modules for name in _DEFERRED_WORKLOAD_MODULES}
 
-    from benchmark_kamino import DRLegsBenchmarkWorkload
+    from benchmark_kamino import DRLegsBenchmarkWorkload, _configure_kamino_solver_settings
     from benchmark_mujoco import Example as MuJoCoExample
 finally:
     for _name, _value in _WARP_CONFIG_BEFORE_BENCHMARK_IMPORTS.items():
@@ -183,6 +183,57 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Give the DR Legs cache longer than ASV's default timeout."""
         config = json.loads((BENCHMARK_DIR.parents[1] / "asv.conf.json").read_text(encoding="utf-8"))
         self.assertGreater(bench_kamino.KpiDRLegs.setup_cache.timeout, config["default_benchmark_timeout"])
+
+    def test_kamino_capture_warms_up_solver_eagerly(self):
+        """Warm up lazy Kamino allocations before CUDA graph capture."""
+        workload = DRLegsBenchmarkWorkload.__new__(DRLegsBenchmarkWorkload)
+        workload.state_0 = object()
+        workload.solver = Mock()
+        workload.graph = None
+        workload.reset_graph = None
+        workload._capturing_graph = False
+
+        capture_active = False
+        simulate_capture_states = []
+
+        class FakeCapture:
+            def __init__(self):
+                self.graph = object()
+
+            def __enter__(self):
+                nonlocal capture_active
+                capture_active = True
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                nonlocal capture_active
+                capture_active = False
+
+        workload.simulate_tick = Mock(side_effect=lambda: simulate_capture_states.append(capture_active))
+        workload._reset_tick = Mock()
+
+        with patch("benchmark_kamino.wp.ScopedCapture", FakeCapture):
+            workload._capture_cuda_graphs()
+
+        self.assertEqual(simulate_capture_states, [False, True])
+        self.assertEqual(workload.solver.reset.call_count, 2)
+        self.assertIsNotNone(workload.reset_graph)
+        self.assertIsNotNone(workload.graph)
+        self.assertFalse(workload._capturing_graph)
+
+    def test_kamino_contact_capacity_scales_with_world_count(self):
+        """Scale the model-wide Kamino contact cap across replicated worlds."""
+        settings = SimpleNamespace(
+            collision_detector=SimpleNamespace(max_contacts=1000),
+            solver=SimpleNamespace(collision_detector=None, dynamics=SimpleNamespace(linear_solver_type=None)),
+        )
+
+        solver_settings = _configure_kamino_solver_settings(settings, world_count=4096)
+
+        self.assertIs(solver_settings, settings.solver)
+        self.assertEqual(settings.collision_detector.max_contacts, 4_096_000)
+        self.assertIs(settings.solver.collision_detector, settings.collision_detector)
+        self.assertEqual(settings.solver.dynamics.linear_solver_type, "LLTBRCM")
 
     def test_aws_benchmark_comparison_gates_only_runtime_metrics(self):
         """Gate PR comparisons on runtime while retaining dashboard metrics."""
