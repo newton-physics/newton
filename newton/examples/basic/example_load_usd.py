@@ -34,6 +34,7 @@ _UP_AXIS_INDEX = {"X": 0, "Y": 1, "Z": 2}
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.args = args
         self.viewer = viewer
         self.device = wp.get_device()
