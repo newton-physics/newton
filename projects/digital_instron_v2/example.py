@@ -40,6 +40,7 @@ from .dynamics import (
     FoundationConfig,
     MidsoleFoundation,
     build_foundation_geometry,
+    column_colors,
     column_world_positions,
     cyclic_displacement,
     load_fitted_material,
@@ -108,6 +109,10 @@ class Example:
         self._anchor_local = wp.array(np.ascontiguousarray(anchor_local, np.float32), dtype=wp.vec3, device=self.device)
         self._z_free = wp.array(np.ascontiguousarray(z_free, np.float32), dtype=wp.float32, device=self.device)
         self._points = wp.zeros(self.column_count, dtype=wp.vec3, device=self.device)
+        self._colors = wp.zeros(self.column_count, dtype=wp.vec3, device=self.device)
+        foam_base = np.column_stack([self.geo.uv_m[:, 0], self.geo.uv_m[:, 1], self.geo.z_bottom_m])
+        self._foam_base = wp.array(np.ascontiguousarray(foam_base, np.float32), dtype=wp.vec3, device=self.device)
+        self._color_ref = 0.008  # compression that saturates the contact colour [m]
 
         # Diagnostics recorded once per frame.
         self.history: list[dict] = []
@@ -160,7 +165,6 @@ class Example:
             self._measured_disp = disp_m
             self._depth, self._period = cyclic_displacement(time_s, disp_m)
             self._add_last_visual(builder, manifest, at_com=False)
-            self._add_midsole_visual(builder)
             self._driven = True
 
         return anchor_local, z_free, cfg
@@ -188,20 +192,6 @@ class Example:
             cfg=newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False),
             color=(0.7, 0.72, 0.75),
             label="shoe_last",
-        )
-
-    def _add_midsole_visual(self, builder):
-        """Attach the static midsole mesh to the world for context."""
-        midsole = load_mesh(self.geo.midsole_mesh_path, 0.001)
-        verts = np.asarray(midsole.vertices, np.float32).copy()
-        verts[:, 2] -= self.geo.z_shift_m
-        mesh = newton.Mesh(verts, np.asarray(midsole.faces, np.int32).flatten())
-        builder.add_shape_mesh(
-            -1,
-            mesh=mesh,
-            cfg=newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False),
-            color=(0.20, 0.35, 0.55),
-            label="midsole",
         )
 
     def _add_plate_visual(self, builder):
@@ -281,7 +271,17 @@ class Example:
             inputs=[self.carrier, self.state_0.body_q, self._anchor_local, self._z_free, self._points],
             device=self.device,
         )
-        self.viewer.log_points("midsole_columns", self._points, radii=0.0022, colors=self.foundation.compression)
+        wp.launch(
+            column_colors,
+            dim=self.column_count,
+            inputs=[self.foundation.compression, self._color_ref, self._colors],
+            device=self.device,
+        )
+        if self.mode == "instron":
+            # Vertical foam "springs" from the ground platen to the current (compressed)
+            # foam top make the depressing contact patch legible.
+            self.viewer.log_lines("midsole_springs", self._foam_base, self._points, self._colors, width=0.0035)
+        self.viewer.log_points("midsole_columns", self._points, radii=0.0028, colors=self._colors)
         self.viewer.end_frame()
 
     # -- validation --------------------------------------------------------

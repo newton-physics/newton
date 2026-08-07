@@ -500,3 +500,23 @@ def column_world_positions(
     if world[2] < top:
         top = world[2]
     out_points[i] = wp.vec3(world[0], world[1], top)
+
+
+@wp.kernel
+def column_colors(
+    compression: wp.array[wp.float32],
+    ref: wp.float32,
+    out_colors: wp.array[wp.vec3],
+):
+    """Map per-column compression to a cool-to-hot contact colour for rendering."""
+    i = wp.tid()
+    t = wp.clamp(compression[i] / ref, 0.0, 1.0)
+    cool = wp.vec3(0.13, 0.32, 0.92)  # uncompressed foam
+    warm = wp.vec3(0.28, 0.86, 0.24)  # light contact
+    hot = wp.vec3(0.96, 0.20, 0.10)  # firm contact
+    if t < 0.5:
+        s = t * 2.0
+        out_colors[i] = cool * (1.0 - s) + warm * s
+    else:
+        s = (t - 0.5) * 2.0
+        out_colors[i] = warm * (1.0 - s) + hot * s
