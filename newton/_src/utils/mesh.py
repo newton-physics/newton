@@ -96,6 +96,8 @@ def compute_vertex_normals(
         if isinstance(indices, np.ndarray):
             indices_np = np.asarray(indices, dtype=np.int32)
             if indices_np.ndim == 2:
+                if indices_np.shape[1] != 3:
+                    raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
                 indices_np = indices_np.reshape(-1)
             elif indices_np.ndim != 1:
                 raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
@@ -129,6 +131,8 @@ def compute_vertex_normals(
     points_np = np.asarray(points, dtype=np.float32).reshape(-1, 3)
     indices_np = np.asarray(indices, dtype=np.int32)
     if indices_np.ndim == 2:
+        if indices_np.shape[1] != 3:
+            raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
         indices_np = indices_np.reshape(-1)
     elif indices_np.ndim != 1:
         raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
