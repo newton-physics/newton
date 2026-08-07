@@ -82,7 +82,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="nxn",
-            soft_contact_margin=0.1,
+            soft_contact_gap=0.1,
         )
 
         self.solver = newton.solvers.SolverVBD(

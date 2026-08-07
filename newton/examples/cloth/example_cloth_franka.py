@@ -229,7 +229,7 @@ class Example:
         # Explicit collision pipeline for cloth-body contacts with custom margin
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            soft_contact_margin=self.cloth_body_contact_margin,
+            soft_contact_gap=self.cloth_body_contact_margin,
         )
         self.contacts = self.collision_pipeline.contacts()
 

@@ -1605,9 +1605,21 @@ def test_pipeline_soft_self_contact(test, device):
     with test.assertWarns(DeprecationWarning):
         pipeline.collide(state, contacts_a, soft_contact_margin=0.1)
 
+    # The constructor parameter and attribute are deprecated aliases of soft_contact_gap.
+    with test.assertWarns(DeprecationWarning):
+        legacy = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.07)
+    test.assertEqual(legacy.soft_contact_gap, 0.07)
+    with test.assertWarns(DeprecationWarning):
+        test.assertEqual(legacy.soft_contact_margin, 0.07)
+    with test.assertWarns(DeprecationWarning):
+        legacy.soft_contact_margin = 0.08
+    test.assertEqual(legacy.soft_contact_gap, 0.08)
+    with test.assertRaises(ValueError):
+        newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.01, soft_contact_margin=0.02)
+
     # set_collision_detection_range: partial update, applied at the next collide.
-    pipeline.set_collision_detection_range(soft_contact_margin=0.02, soft_self_contact_gap=0.0)
-    test.assertEqual(pipeline.soft_contact_margin, 0.02)
+    pipeline.set_collision_detection_range(soft_contact_gap=0.02, soft_self_contact_gap=0.0)
+    test.assertEqual(pipeline.soft_contact_gap, 0.02)
     test.assertEqual(pipeline.soft_self_contact_margin, 1e-2)  # not provided -> unchanged
     test.assertEqual(pipeline.soft_self_contact_gap, 0.0)
     pipeline.collide(state, contacts_b, soft_self_contact=True)
@@ -1637,11 +1649,11 @@ def test_pipeline_soft_self_contact(test, device):
     with test.assertRaises(ValueError):
         unconfigured.refit_soft_self_contact_bvh(state.particle_q)
     # Self-contact ranges require init_soft_self_contact(); the particle-shape
-    # margin alone does not.
+    # gap alone does not.
     with test.assertRaises(ValueError):
         unconfigured.set_collision_detection_range(soft_self_contact_gap=0.01)
-    unconfigured.set_collision_detection_range(soft_contact_margin=0.05)
-    test.assertEqual(unconfigured.soft_contact_margin, 0.05)
+    unconfigured.set_collision_detection_range(soft_contact_gap=0.05)
+    test.assertEqual(unconfigured.soft_contact_gap, 0.05)
 
 
 devices = get_test_devices()

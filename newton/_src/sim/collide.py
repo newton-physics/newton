@@ -770,7 +770,8 @@ class CollisionPipeline:
         shape_pairs_filtered: wp.array[wp.vec2i] | None = None,
         include_static_kinematic_pairs: bool = True,
         soft_contact_max: int | None = None,
-        soft_contact_margin: float = 0.01,
+        soft_contact_gap: float | None = None,
+        soft_contact_margin: float | None = None,
         enable_rigid_soft_full_surface_contact: bool = False,
         requires_grad: bool | None = None,
         broad_phase: Literal["nxn", "sap", "explicit"]
@@ -814,7 +815,12 @@ class CollisionPipeline:
                 of precomputed soft-rigid (particle-shape) pairs launched for soft
                 contact generation, plus the full-surface edge/face headroom when
                 ``enable_rigid_soft_full_surface_contact`` is set.
-            soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
+            soft_contact_gap: Detection-only distance [m] added to the
+                per-particle radius for particle-shape (soft) contact queries.
+                Defaults to 0.01.
+            soft_contact_margin: Deprecated alias of ``soft_contact_gap`` (the
+                value is detection-only slack on top of the particle radius,
+                i.e. a gap under the margin/gap convention).
             enable_rigid_soft_full_surface_contact: Generate soft contacts over the full soft-mesh
                 surface -- the edges and triangle interiors -- against rigid SDFs, in addition to the
                 per-vertex (particle) contacts. Catches rigid features that pass between soft vertices
@@ -937,6 +943,19 @@ class CollisionPipeline:
             else:
                 rigid_contact_max = _estimate_rigid_contact_max(model)
         self._rigid_contact_max = rigid_contact_max
+        if soft_contact_margin is not None:
+            if soft_contact_gap is not None:
+                raise ValueError("soft_contact_margin is a deprecated alias of soft_contact_gap; pass only one")
+            warnings.warn(
+                "The soft_contact_margin parameter of CollisionPipeline is deprecated; "
+                "use soft_contact_gap (same value: detection-only distance added to the particle radius).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            soft_contact_gap = soft_contact_margin
+        elif soft_contact_gap is None:
+            soft_contact_gap = 0.01
+
         if max_triangle_pairs <= 0:
             raise ValueError("max_triangle_pairs must be > 0")
         # Keep model-level default in sync with the resolved pipeline capacity.
@@ -1166,10 +1185,10 @@ class CollisionPipeline:
             soft_contact_max = self.soft_rigid_contact_pair_count
             # Flag-aware headroom: one record per world-compatible (soft edge/tri, shape) pair.
             soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
-        self.soft_contact_margin = soft_contact_margin
+        self.soft_contact_gap = soft_contact_gap
         # Soft (cloth) self-contact tuning values, populated by
         # init_soft_self_contact(); consumed at detection time like
-        # soft_contact_margin (detection query radius = margin + gap; pairs
+        # soft_contact_gap (detection query radius = margin + gap; pairs
         # closer than the exclusion radius in the rest shape are skipped).
         self.soft_self_contact_margin = 0.0
         self.soft_self_contact_gap = 0.0
@@ -1222,6 +1241,25 @@ class CollisionPipeline:
     def soft_contact_max(self) -> int:
         """Maximum soft contact buffer capacity used by this pipeline."""
         return self._soft_contact_max
+
+    @property
+    def soft_contact_margin(self) -> float:
+        """Deprecated alias of :attr:`soft_contact_gap`."""
+        warnings.warn(
+            "CollisionPipeline.soft_contact_margin is deprecated; use soft_contact_gap.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.soft_contact_gap
+
+    @soft_contact_margin.setter
+    def soft_contact_margin(self, value: float) -> None:
+        warnings.warn(
+            "CollisionPipeline.soft_contact_margin is deprecated; use soft_contact_gap.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.soft_contact_gap = value
 
     @property
     def soft_rigid_contact_pair_count(self) -> int:
@@ -1359,7 +1397,7 @@ class CollisionPipeline:
     def set_collision_detection_range(
         self,
         *,
-        soft_contact_margin: float | None = None,
+        soft_contact_gap: float | None = None,
         soft_self_contact_margin: float | None = None,
         soft_self_contact_gap: float | None = None,
     ) -> None:
@@ -1374,7 +1412,7 @@ class CollisionPipeline:
         :meth:`collide` use.
 
         Args:
-            soft_contact_margin: Detection-only distance [m] added to the
+            soft_contact_gap: Detection-only distance [m] added to the
                 per-particle radius for particle-shape contact queries.
             soft_self_contact_margin: Self-contact interaction distance [m];
                 requires :meth:`init_soft_self_contact` to have been called.
@@ -1383,7 +1421,7 @@ class CollisionPipeline:
                 :meth:`init_soft_self_contact` to have been called.
         """
         for name, value in (
-            ("soft_contact_margin", soft_contact_margin),
+            ("soft_contact_gap", soft_contact_gap),
             ("soft_self_contact_margin", soft_self_contact_margin),
             ("soft_self_contact_gap", soft_self_contact_gap),
         ):
@@ -1391,8 +1429,8 @@ class CollisionPipeline:
                 raise ValueError(f"{name} must be >= 0, got {value}")
         if soft_self_contact_margin is not None or soft_self_contact_gap is not None:
             self._ensure_soft_self_contact_detector()
-        if soft_contact_margin is not None:
-            self.soft_contact_margin = soft_contact_margin
+        if soft_contact_gap is not None:
+            self.soft_contact_gap = soft_contact_gap
         if soft_self_contact_margin is not None:
             self.soft_self_contact_margin = soft_self_contact_margin
         if soft_self_contact_gap is not None:
@@ -1503,7 +1541,7 @@ class CollisionPipeline:
         Args:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
-            soft_contact_margin: Deprecated; set ``soft_contact_margin`` on the
+            soft_contact_margin: Deprecated; set ``soft_contact_gap`` on the
                 :class:`CollisionPipeline` constructor instead. When not
                 ``None``, the value is still honored for this call and a
                 :class:`DeprecationWarning` is emitted.
@@ -1532,12 +1570,13 @@ class CollisionPipeline:
         if soft_contact_margin is not None:
             warnings.warn(
                 "The soft_contact_margin argument of CollisionPipeline.collide() is deprecated; "
-                "set soft_contact_margin on the CollisionPipeline constructor instead.",
+                "set soft_contact_gap on the CollisionPipeline constructor instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
+            soft_contact_gap = soft_contact_margin
         else:
-            soft_contact_margin = self.soft_contact_margin
+            soft_contact_gap = self.soft_contact_gap
 
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
@@ -1822,7 +1861,7 @@ class CollisionPipeline:
                     model.shape_source_ptr,
                     model._shape_mesh_properties,
                     model.shape_world,
-                    soft_contact_margin,
+                    soft_contact_gap,
                     model.shape_margin,
                     self.soft_contact_max,
                     model.shape_flags,
@@ -1853,7 +1892,7 @@ class CollisionPipeline:
                 model=model,
                 state=state,
                 contacts=contacts,
-                margin=soft_contact_margin,
+                margin=soft_contact_gap,
                 device=self.device,
                 edge_pairs=self.soft_edge_rigid_pairs,
                 face_pairs=self.soft_face_rigid_pairs,

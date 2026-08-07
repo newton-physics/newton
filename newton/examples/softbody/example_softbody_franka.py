@@ -133,7 +133,7 @@ class Example:
         # collision pipeline for soft body - robot contacts
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            soft_contact_margin=self.soft_body_contact_margin,
+            soft_contact_gap=self.soft_body_contact_margin,
         )
         self.contacts = self.collision_pipeline.contacts()
 

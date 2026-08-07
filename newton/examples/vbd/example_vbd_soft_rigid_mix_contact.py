@@ -325,7 +325,7 @@ def setup_sim(builder, info, params):
     )
 
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=params["soft_contact_creation_margin"]
+        model, broad_phase="nxn", soft_contact_gap=params["soft_contact_creation_margin"]
     )
 
     return model, solver, pipeline, pinned_indices, pinned_original

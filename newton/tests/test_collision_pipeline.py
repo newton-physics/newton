@@ -284,7 +284,7 @@ class TestCollisionPipeline(unittest.TestCase):
         model = builder.finalize(device="cpu")
         state = model.state()
 
-        enabled_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1)
+        enabled_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1)
         enabled_contacts = enabled_pipeline.contacts()
         enabled_pipeline.collide(state, enabled_contacts)
         self.assertGreater(int(enabled_contacts.soft_contact_count.numpy()[0]), 0)
@@ -293,7 +293,7 @@ class TestCollisionPipeline(unittest.TestCase):
             model,
             broad_phase="nxn",
             soft_contact_max=0,
-            soft_contact_margin=0.1,
+            soft_contact_gap=0.1,
         )
         disabled_contacts = disabled_pipeline.contacts()
         disabled_pipeline.collide(state, disabled_contacts)
@@ -2176,7 +2176,7 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
         # Add cloth grid (particles) slightly above the shape
         # Position them within the soft contact margin
         particle_z = 0.05  # Just above ground plane at z=0
-        soft_contact_margin = 0.1
+        soft_contact_gap = 0.1
         builder.add_cloth_grid(
             pos=wp.vec3(-0.5, -0.5, particle_z),
             rot=wp.quat_identity(),
@@ -2194,7 +2194,7 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
         collision_pipeline = newton.CollisionPipeline(
             model,
             broad_phase="nxn",
-            soft_contact_margin=soft_contact_margin,
+            soft_contact_gap=soft_contact_gap,
         )
 
         state = model.state()
@@ -3007,7 +3007,7 @@ def _build_cloth_over_plane(device, particle_z: float = 0.05):
 def test_soft_contact_schema(test, device):
     """soft_contact_count is a 1-element total; unified soft_contact_indices + barycentric added."""
     model = _build_cloth_over_plane(device)
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1)
     contacts = pipeline.contacts()
 
     # Single total soft counter (bit-identical in shape to a build without the feature).
@@ -3268,7 +3268,7 @@ def test_edge_face_passes_box(test, device):
     )
     model = builder.finalize(device=device)
     # Large fixed buffer to isolate the kernels; the flag-aware default sizing is covered separately.
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1, soft_contact_max=4096)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1, soft_contact_max=4096)
     contacts = pipeline.contacts()
     state = model.state()
     contacts.soft_contact_count.zero_()
@@ -3317,7 +3317,7 @@ def test_edge_face_passes_box(test, device):
 
 def test_edge_face_respect_shape_margin(test, device):
     """EDGE/FACE culls must include the per-shape margin (#2994) like the legacy particle pass:
-    a sheet beyond ``soft_contact_margin`` but within ``soft_contact_margin + shape margin``
+    a sheet beyond ``soft_contact_gap`` but within ``soft_contact_gap + shape margin``
     must still emit every edge/face record."""
     margin = 0.05
     shape_margin = 0.2
@@ -3344,7 +3344,7 @@ def test_edge_face_respect_shape_margin(test, device):
         mass=0.1,
     )
     model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=margin, soft_contact_max=4096)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=margin, soft_contact_max=4096)
     contacts = pipeline.contacts()
     state = model.state()
     contacts.soft_contact_count.zero_()
@@ -3415,7 +3415,7 @@ def test_backward_compat_bit_for_bit(test, device):
 
     # The flag is fixed at construction, so off vs on are two separately-sized pipelines.
     pipeline_off = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=False
     )
     contacts_off = pipeline_off.contacts()
     pipeline_off.collide(state, contacts_off)
@@ -3426,7 +3426,7 @@ def test_backward_compat_bit_for_bit(test, device):
     prim_off, shape_off, pos_off, nrm_off = _sorted_particle_records(contacts_off, c0)
 
     pipeline_on = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts_on = pipeline_on.contacts()
     pipeline_on.collide(state, contacts_on)
@@ -3468,7 +3468,7 @@ def test_full_surface_catches_what_particles_miss(test, device):
 
     # Per-particle path alone (flag off at construction): every corner is outside margin -> no contact.
     pipeline_off = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=False
     )
     contacts_off = pipeline_off.contacts()
     pipeline_off.collide(state, contacts_off)
@@ -3476,7 +3476,7 @@ def test_full_surface_catches_what_particles_miss(test, device):
 
     # Full-surface path (flag on): the edge/face passes detect the crossing the particles miss.
     pipeline_on = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts_on = pipeline_on.contacts()
     pipeline_on.collide(state, contacts_on)
@@ -3525,7 +3525,7 @@ def test_mesh_sdf_provisioned_and_emits(test, device):
     test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[mesh_shape]), 0)
 
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state = model.state()
@@ -3753,7 +3753,7 @@ def test_collide_syncs_full_surface_marker(test, device):
     model = builder.finalize(device=device)
 
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     # Simulate a buffer whose marker was left False (e.g. constructed by a flag-off pipeline).
@@ -3839,7 +3839,7 @@ def test_full_surface_nonuniform_mesh_accurate_distance(test, device):
     # 0.08 m gap, 0.06 m margin -> outside -> no contact. min_scale would under-report 0.04 < 0.06.
     model_out = _nonuniform_box_mesh_gap_model(device, tri_x=1.08)
     pipe_out = newton.CollisionPipeline(
-        model_out, broad_phase="nxn", soft_contact_margin=0.06, enable_rigid_soft_full_surface_contact=True
+        model_out, broad_phase="nxn", soft_contact_gap=0.06, enable_rigid_soft_full_surface_contact=True
     )
     contacts_out = pipe_out.contacts()
     pipe_out.collide(model_out.state(), contacts_out)
@@ -3850,7 +3850,7 @@ def test_full_surface_nonuniform_mesh_accurate_distance(test, device):
     # 0.03 m gap -> inside the margin -> contact, projected onto the true +x surface at x = 1.0.
     model_in = _nonuniform_box_mesh_gap_model(device, tri_x=1.03)
     pipe_in = newton.CollisionPipeline(
-        model_in, broad_phase="nxn", soft_contact_margin=0.06, enable_rigid_soft_full_surface_contact=True
+        model_in, broad_phase="nxn", soft_contact_gap=0.06, enable_rigid_soft_full_surface_contact=True
     )
     contacts_in = pipe_in.contacts()
     pipe_in.collide(model_in.state(), contacts_in)
@@ -3907,7 +3907,7 @@ def test_unprovisioned_mesh_raises(test, device):
     model = builder.finalize(device=device)
     with test.assertRaises(ValueError):
         newton.CollisionPipeline(
-            model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+            model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
         )
 
 
@@ -4117,7 +4117,7 @@ def test_end_to_end_no_false_pos_neg(test, device):
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        soft_contact_margin=margin,
+        soft_contact_gap=margin,
         soft_contact_max=n_shapes * (n_tris + n_edges) + 16,
         enable_rigid_soft_full_surface_contact=True,
     )
@@ -4250,7 +4250,7 @@ def test_graph_capture_stable(test, device):
     )
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state = model.state()
@@ -4300,7 +4300,7 @@ def test_face_cull_uses_max_vertex_reach(test, device):
     configure_sdf_for_collision_shapes(builder)
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.01, enable_rigid_soft_full_surface_contact=True
+        model, broad_phase="nxn", soft_contact_gap=0.01, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state = model.state()

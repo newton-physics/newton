@@ -39,7 +39,7 @@ before reaching for solver-specific keyword arguments:
   ``default_shape_cfg.mu``, ``ShapeConfig`` material arguments,
   ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``, contact
   ``margin`` and ``gap``, and collision pipeline options such as
-  ``broad_phase``, ``soft_contact_margin``, ``reduce_contacts``, and
+  ``broad_phase``, ``soft_contact_gap``, ``reduce_contacts``, and
   ``contact_matching``.
 - Drives and articulated models: ``joint_target_ke``, ``joint_target_kd``,
   ``joint_armature``, and ``joint_effort_limit`` where the active solver
