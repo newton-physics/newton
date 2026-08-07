@@ -237,7 +237,7 @@ class SolverBase:
 
         if pipeline is not None and not self.supports_collision_pipeline:
             raise ValueError(
-                f"{type(self).__name__} does not own a collision pipeline; "
+                f"{type(self).__name__} cannot own a collision pipeline; "
                 "drive detection externally via model.collide()."
             )
         self.pipeline = pipeline
