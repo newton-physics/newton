@@ -97,56 +97,64 @@ jobs:
               issue_number: context.issue.number,
             };
 
-            if (needsReview) {
-              await github.rest.issues.addLabels({
-                ...issue,
-                labels: ['api-changes'],
-              });
-            } else {
-              try {
-                await github.rest.issues.removeLabel({
+            try {
+              if (needsReview) {
+                await github.rest.issues.addLabels({
                   ...issue,
-                  name: 'api-changes',
+                  labels: ['api-changes'],
                 });
-              } catch (error) {
-                // The current state is already correct when the label is absent.
-                if (error.status !== 404) throw error;
+              } else {
+                try {
+                  await github.rest.issues.removeLabel({
+                    ...issue,
+                    name: 'api-changes',
+                  });
+                } catch (error) {
+                  // The current state is already correct when the label is absent.
+                  if (error.status !== 404) throw error;
+                }
               }
-            }
 
-            const marker = '<!-- newton-api-changes -->';
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              ...issue,
-              per_page: 100,
-            });
-            const existing = comments.find((comment) =>
-              comment.user?.login === 'github-actions[bot]' &&
-              comment.user?.type === 'Bot' &&
-              comment.body?.startsWith(marker)
-            );
+              const marker = '<!-- newton-api-changes -->';
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...issue,
+                per_page: 100,
+              });
+              const existing = comments.find((comment) =>
+                comment.user?.login === 'github-actions[bot]' &&
+                comment.user?.type === 'Bot' &&
+                comment.body?.startsWith(marker)
+              );
 
-            if (!needsReview) {
+              if (!needsReview) {
+                if (existing) {
+                  await github.rest.issues.deleteComment({
+                    ...repo,
+                    comment_id: existing.id,
+                  });
+                }
+                return;
+              }
+
+              const body = fs.readFileSync(process.env.API_COMMENT_PATH, 'utf8').trim();
+              if (!body) return;
+              const fullBody = `${marker}\n${body}`;
               if (existing) {
-                await github.rest.issues.deleteComment({
+                await github.rest.issues.updateComment({
                   ...repo,
                   comment_id: existing.id,
+                  body: fullBody,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  ...issue,
+                  body: fullBody,
                 });
               }
-              return;
-            }
-
-            const body = fs.readFileSync(process.env.API_COMMENT_PATH, 'utf8').trim();
-            if (!body) return;
-            const fullBody = `${marker}\n${body}`;
-            if (existing) {
-              await github.rest.issues.updateComment({
-                ...repo,
-                comment_id: existing.id,
-                body: fullBody,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                ...issue,
-                body: fullBody,
-              });
+            } catch (error) {
+              if (error.status === 403) {
+                core.warning(`Skipping API review metadata sync: ${error.message}`);
+                return;
+              }
+              throw error;
             }

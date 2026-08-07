@@ -63,6 +63,15 @@ class TestPrApiChangesWorkflow(unittest.TestCase):
         self.assertIn("github.rest.issues.updateComment", block)
         self.assertIn("github.rest.issues.createComment", block)
 
+    def test_api_review_metadata_permissions_are_non_blocking(self):
+        """Keep advisory detection successful when metadata writes are forbidden."""
+        block = self._step_block("Sync API review")
+
+        self.assertIn("if (error.status === 403)", block)
+        self.assertIn("core.warning", block)
+        self.assertIn("Skipping API review metadata sync", block)
+        self.assertIn("throw error", block)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
