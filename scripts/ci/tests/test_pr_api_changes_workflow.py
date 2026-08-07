@@ -70,7 +70,8 @@ class TestPrApiChangesWorkflow(unittest.TestCase):
         self.assertIn("if (error.status === 403)", block)
         self.assertIn("core.warning", block)
         self.assertIn("Skipping API review metadata sync", block)
-        self.assertIn("throw error", block)
+        permission_handler = block[block.index("if (error.status === 403)") :]
+        self.assertIn("throw error", permission_handler)
 
 
 if __name__ == "__main__":
