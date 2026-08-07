@@ -613,11 +613,10 @@ class ConveyorForceModel:
 # ---------------------------------------------------------------------------
 # Example scene configuration
 # ---------------------------------------------------------------------------
-# A small positive collision margin smooths the belt-to-belt seam transitions. VBD's
-# rigid-contact handling needs a larger margin than XPBD to keep bodies on the belts.
-SOLVER_MARGIN = {"xpbd": 0.015, "vbd": 0.05, "mujoco": 0.015}
+# A small positive collision margin smooths the belt-to-belt seam transitions.
+COLLISION_MARGIN = 0.015
 XPBD_ITERATIONS = 4
-VBD_ITERATIONS = 15
+VBD_ITERATIONS = 4
 # A frictional-to-normal impedance ratio below 1 softens the friction
 # constraints so boxes slip through the tight 180 degree turn instead of
 # wedging against the guide walls.
@@ -646,6 +645,8 @@ BELT_DRIVE_FRICTION = 0.5
 
 BOX_FRICTION = 0.5
 GUARD_FRICTION = 0.2
+VBD_RIGID_CONTACT_KE = 1.0e3
+VBD_RIGID_CONTACT_KD = 1.0e0
 
 BELT_COLOR = (0.09, 0.09, 0.09)  # dark rubber
 GUARD_COLOR = (0.66, 0.69, 0.74)  # brushed metal
@@ -790,13 +791,16 @@ class Example:
                     builder.shape_material_mu[shape] = 0.0
                     builder.shape_material_mu_torsional[shape] = 0.0
                     builder.shape_material_mu_rolling[shape] = 0.0
+        elif self.solver_type == "vbd":
+            for shape in range(len(builder.shape_material_ke)):
+                builder.shape_material_ke[shape] = VBD_RIGID_CONTACT_KE
+                builder.shape_material_kd[shape] = VBD_RIGID_CONTACT_KD
 
-        margin = SOLVER_MARGIN[self.solver_type]
         mesh_types = (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
         shape_type = builder.shape_type
         for i in range(len(builder.shape_margin)):
             if shape_type[i] not in mesh_types:
-                builder.shape_margin[i] = max(builder.shape_margin[i], margin)
+                builder.shape_margin[i] = max(builder.shape_margin[i], COLLISION_MARGIN)
 
         builder.color()
         self.model = builder.finalize()
@@ -815,7 +819,12 @@ class Example:
             )
         elif self.solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(
-                self.model, iterations=VBD_ITERATIONS, rigid_body_contact_buffer_size=2048
+                self.model,
+                iterations=VBD_ITERATIONS,
+                rigid_compliant_alm=True,
+                rigid_joint_linear_ke=1.0e2,
+                rigid_joint_angular_ke=1.0e2,
+                rigid_body_contact_buffer_size=64,
             )
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=XPBD_ITERATIONS)

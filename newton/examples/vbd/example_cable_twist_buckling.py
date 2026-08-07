@@ -192,7 +192,6 @@ class Example:
 
         builder.color()
         self.model = builder.finalize()
-        hard_contact = self.contact_mode in ("hard", "hard-history")
         contact_history = self.contact_mode == "hard-history"
         contact_matching = "latest" if contact_history else "disabled"
         self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching=contact_matching)
@@ -200,7 +199,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_contact_hard=hard_contact,
+            rigid_compliant_alm=True,
             rigid_contact_history=contact_history,
             rigid_body_contact_buffer_size=256,
         )

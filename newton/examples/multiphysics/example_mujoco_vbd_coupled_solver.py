@@ -140,6 +140,7 @@ class Example:
 
         vbd_kwargs = {
             "iterations": 10,
+            "rigid_compliant_alm": True,
             "friction_epsilon": 0.01,
             "particle_enable_self_contact": True,
             "particle_self_contact_radius": 0.01,

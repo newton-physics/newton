@@ -359,7 +359,7 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     state_in = model.state()
     state_out = model.state()
     control = model.control()
-    solver = newton.solvers.SolverVBD(model, iterations=5)
+    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
     picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
 
     picking.pick(state_in, wp.vec3(0.025, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0))

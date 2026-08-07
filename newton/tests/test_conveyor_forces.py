@@ -30,7 +30,9 @@ BELT_FRICTION = 0.5
 def _make_solver(solver_name, model):
     """Build the solver named by ``solver_name`` with settings suited to belt contacts."""
     if solver_name == "vbd":
-        return newton.solvers.SolverVBD(model, iterations=5, rigid_body_contact_buffer_size=512)
+        return newton.solvers.SolverVBD(
+            model, iterations=5, rigid_compliant_alm=True, rigid_body_contact_buffer_size=512
+        )
     if solver_name == "mujoco":
         # MuJoCo configuration for Newton-generated contacts.
         return newton.solvers.SolverMuJoCo(model, cone="elliptic", use_mujoco_contacts=False, njmax=200, nconmax=100)

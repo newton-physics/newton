@@ -42,10 +42,10 @@ class Example:
         quadruped.default_joint_cfg.armature = 0.01
 
         if self.solver_type == "vbd":
-            quadruped.default_joint_cfg.target_ke = 1.0e4
-            quadruped.default_joint_cfg.target_kd = 0.0
-            quadruped.default_shape_cfg.ke = 5.0e5
-            quadruped.default_shape_cfg.kd = 0.0
+            quadruped.default_joint_cfg.target_ke = 2.0e3
+            quadruped.default_joint_cfg.target_kd = 1.0e1
+            quadruped.default_shape_cfg.ke = 1.0e5
+            quadruped.default_shape_cfg.kd = 1.0e4
             quadruped.default_shape_cfg.mu = 1.0
         else:
             quadruped.default_joint_cfg.target_ke = 2000.0
@@ -91,6 +91,7 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=2,
+                rigid_compliant_alm=True,
             )
         else:
             self.update_step_interval = 1

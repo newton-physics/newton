@@ -786,7 +786,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -844,7 +844,7 @@ def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     model, state0, state1, control, _rod_bodies = _build_cable_chain(device, num_links=6, segment_length=segment_length)
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
     sim_dt = frame_dt / sim_substeps
@@ -932,7 +932,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     # Disable gravity to isolate twist response
     model.set_gravity((0.0, 0.0, 0.0))
@@ -1142,7 +1142,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, friction_epsilon=0.1)
+    solver = newton.solvers.SolverVBD(model, iterations=10, friction_epsilon=0.1, rigid_compliant_alm=True)
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
     sim_dt = frame_dt / sim_substeps
@@ -1296,6 +1296,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     solver = newton.solvers.SolverVBD(
         model,
         iterations=10,
+        rigid_compliant_alm=True,
     )
 
     # Smoothly move the anchor with substeps (mirrors cable example pattern).
@@ -1474,6 +1475,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     solver = newton.solvers.SolverVBD(
         model,
         iterations=10,
+        rigid_compliant_alm=True,
     )
 
     frame_dt = 1.0 / 60.0
@@ -1673,6 +1675,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     solver = newton.solvers.SolverVBD(
         model,
         iterations=10,
+        rigid_compliant_alm=True,
     )
 
     frame_dt = 1.0 / 60.0
@@ -1861,7 +1864,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     tp[dof_idx] = target_angle
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -1990,7 +1993,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     tp[dof_idx] = target_angle
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -2113,6 +2116,7 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
     solver = newton.solvers.SolverVBD(
         model,
         iterations=10,
+        rigid_compliant_alm=True,
     )
 
     frame_dt = 1.0 / 60.0
@@ -2267,7 +2271,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     tp[dof_idx] = target_displacement
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -2396,7 +2400,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     tp[dof_idx] = target_displacement
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -2522,7 +2526,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -2675,7 +2679,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -2809,7 +2813,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -2991,7 +2995,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     tp[ang_dof_idx] = target_angle
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -3148,7 +3152,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     tp[qd_s + 1] = target_angle
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -3299,6 +3303,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
     solver = newton.solvers.SolverVBD(
         model,
         iterations=5,
+        rigid_compliant_alm=True,
     )
 
     # Drive arrays
@@ -3473,7 +3478,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
 
     state0, state1 = model.state(), model.state()
     control = model.control()
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     q_init = state0.body_q.numpy()
     z_init_min = float(np.min(q_init[rod_bodies, 2]))
@@ -3614,7 +3619,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
     # Drop the ring onto the ground and ensure stable simulation.
     state0, state1 = model.state(), model.state()
     control = model.control()
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 6
@@ -3868,7 +3873,7 @@ def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
     control = model.control()
-    solver = newton.solvers.SolverVBD(model, iterations=2)
+    solver = newton.solvers.SolverVBD(model, iterations=2, rigid_compliant_alm=True)
 
     dt = 1.0 / 60.0
 
@@ -4011,7 +4016,7 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         collision_pipeline = newton.CollisionPipeline(model)
         contacts = collision_pipeline.contacts()
 
-        solver = newton.solvers.SolverVBD(model, iterations=10)
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
         def simulate(
             _solver=solver,
@@ -4156,7 +4161,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
 
     sim_dt = 1.0 / 60.0 / 4
 
@@ -4197,7 +4202,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
 def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, device):
     """Cable VBD: fixed joint tracks a translating-and-rotating kinematic body.
 
-    A short cable is attached via a hard FIXED joint to a kinematic body that
+    A short cable is attached via a FIXED joint to a kinematic body that
     translates along +X and rotates about Z.  Verifies that both positional and
     angular joint errors stay bounded every substep, exercising the linear and
     angular C0 snapshot paths against a moving kinematic parent.
@@ -4252,7 +4257,7 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=20)
+    solver = newton.solvers.SolverVBD(model, iterations=20, rigid_compliant_alm=True)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -5089,7 +5094,7 @@ def _split_cable_curvature_binormal_grows_then_caps(test, device):
 
 def _split_cable_angular_slot_layout(test, device):
     """Twist stiffness/damping is routed or defaulted into the split angular slots, and negative stiffness is rejected."""
-    # (extra add_joint_cable kwargs, expected penalty_k_max, expected penalty_kd) for the four-slot layout.
+    # (extra add_joint_cable kwargs, expected material_k, expected penalty_kd) for the four-slot layout.
     cases = [
         # Explicit twist stiffness + damping is routed straight to the twist slot.
         ({"twist_stiffness": 3.0, "twist_damping": 0.25}, [100.0, 100.0, 10.0, 3.0], [0.0, 0.0, 0.0, 0.25]),
@@ -5106,12 +5111,12 @@ def _split_cable_angular_slot_layout(test, device):
             builder.add_articulation([joint])
             builder.color()
             model = builder.finalize(device=device)
-            solver = newton.solvers.SolverVBD(model)
+            solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
 
             np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [2, 2])
             test.assertEqual(int(solver.joint_constraint_dim.numpy()[joint]), 4)
             start = int(solver.joint_constraint_start.numpy()[joint])
-            np.testing.assert_allclose(solver.joint_penalty_k_max.numpy()[start : start + 4], expected_k)
+            np.testing.assert_allclose(solver.joint_material_k.numpy()[start : start + 4], expected_k)
             np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], expected_kd)
 
     # Negative stiffness must be rejected before reaching the solver.
@@ -5212,7 +5217,9 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
                 joint_x,
                 joint_constraint_start,
                 joint_penalty_k,
+                joint_penalty_k,
                 joint_is_hard,
+                0,
                 joint_cable_rest_kb_local,
                 joint_cable_rest_twist,
                 body_q,
@@ -5306,7 +5313,9 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
             joint_x,
             joint_constraint_start,
             joint_penalty_k,
+            joint_penalty_k,
             joint_is_hard,
+            0,
             joint_cable_rest_kb_local,
             joint_cable_rest_twist,
             body_q,
@@ -5326,7 +5335,9 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
                 joint_x,
                 joint_constraint_start,
                 joint_penalty_k,
+                joint_penalty_k,
                 joint_is_hard,
+                0,
                 joint_cable_rest_kb_local,
                 joint_cable_rest_twist,
                 body_q,
@@ -5414,12 +5425,12 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     builder.add_articulation([joint])
     builder.color()
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverVBD(model)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
 
     np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [2, 2])
     test.assertEqual(int(solver.joint_constraint_dim.numpy()[joint]), 4)
     start = int(solver.joint_constraint_start.numpy()[joint])
-    np.testing.assert_allclose(solver.joint_penalty_k_max.numpy()[start : start + 4], [100.0, 40.0, 10.0, 3.0])
+    np.testing.assert_allclose(solver.joint_material_k.numpy()[start : start + 4], [100.0, 40.0, 10.0, 3.0])
     np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
 
 
@@ -5605,7 +5616,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
 
     builder.color()
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverVBD(model, iterations=30)
+    solver = newton.solvers.SolverVBD(model, iterations=30, rigid_compliant_alm=True)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -5834,7 +5845,7 @@ def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
     model.vbd.dahl_eps_max.fill_(0.2)
     model.vbd.dahl_tau.fill_(0.2)
 
-    solver = newton.solvers.SolverVBD(model, iterations=1)
+    solver = newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()

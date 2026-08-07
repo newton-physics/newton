@@ -285,6 +285,7 @@ def setup_sim(builder, info, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
+        rigid_compliant_alm=True,
         rigid_body_particle_contact_buffer_size=params["rigid_body_particle_contact_buffer_size"],
         particle_enable_self_contact=False,
         particle_self_contact_radius=pr * params["particle_self_contact_radius_scale"],

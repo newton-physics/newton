@@ -44,6 +44,7 @@ JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
 MOUSE_PICK_STIFFNESS = 0.01
 MOUSE_PICK_DAMPING = 0.001
+CONTACT_KE = 1.0e6
 
 
 @wp.kernel
@@ -205,8 +206,8 @@ def add_pulley(
     groove_half_width = 1.55 * cable_radius
     flange_half_thickness = 0.6 * cable_radius
     flange_radius = radius + 3.2 * cable_radius
-    sheave_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e5, kd=0.0, mu=sheave_mu)
-    flange_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e5, kd=0.0, mu=0.0)
+    sheave_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=CONTACT_KE, kd=0.0, mu=sheave_mu)
+    flange_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=CONTACT_KE, kd=0.0, mu=0.0)
     flange_color = _dim_color(color, 0.68)
 
     for suffix, z, shape_radius, half_height, cfg, shape_color in (
@@ -461,7 +462,7 @@ class Example:
         # so the cable remains guided by the pulley grooves.
         builder = newton.ModelBuilder()
         builder.rigid_gap = 5.0 * cable_radius
-        builder.default_shape_cfg.ke = 1.0e5
+        builder.default_shape_cfg.ke = CONTACT_KE
         builder.default_shape_cfg.kd = 0.0
         builder.default_shape_cfg.mu = 1.0
 
@@ -763,12 +764,14 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, 0.0))
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        # Preserve cable-pulley friction state and preallocate it before CUDA graph capture.
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
+            rigid_compliant_alm=True,
+            rigid_contact_history=True,
             rigid_body_contact_buffer_size=256,
-            rigid_contact_hard=False,
         )
 
         self.state_0 = self.model.state()

@@ -140,7 +140,11 @@ class Example:
         if self.solver_name == "xpbd":
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10, enable_restitution=False)
         elif self.solver_name == "vbd":
-            self.solver = newton.solvers.SolverVBD(self.model, iterations=10, rigid_contact_hard=False)
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=10,
+                rigid_compliant_alm=True,
+            )
         elif self.solver_name == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=2048, nconmax=1024, cone="elliptic")
         elif self.solver_name == "featherstone":

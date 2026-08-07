@@ -68,7 +68,7 @@ def _make_kamino_config() -> SolverKamino.Config:
 def _rigid_solver_entry_args(rigid_solver: str):
     rigid_solver = _normalized_rigid_solver_name(rigid_solver)
     if rigid_solver == "vbd":
-        return "avbd", SolverVBD, {"iterations": 10}
+        return "rigid_vbd", SolverVBD, {"iterations": 10, "rigid_compliant_alm": True}
     if rigid_solver == "kamino":
         return "kamino", SolverKamino, {"config": _make_kamino_config()}
     if rigid_solver == "mjc":
@@ -89,7 +89,7 @@ def _soft_solver_entry_args(soft_solver: str, args):
                 "iterations": args.vbd_iterations,
                 "particle_enable_self_contact": False,
                 "particle_enable_tile_solve": False,
-                "rigid_contact_hard": False,
+                "rigid_compliant_alm": True,
                 "rigid_body_particle_contact_buffer_size": 512,
             },
         )
@@ -209,7 +209,7 @@ class Example:
                 iterations=10,
                 particle_enable_self_contact=False,
                 particle_enable_tile_solve=False,
-                rigid_contact_hard=False,
+                rigid_compliant_alm=True,
                 rigid_body_particle_contact_buffer_size=512,
             )
         elif self.solver_type == "coupled":

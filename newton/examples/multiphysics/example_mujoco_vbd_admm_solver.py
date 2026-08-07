@@ -214,7 +214,7 @@ class Example:
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=8),
+                    solver=lambda v: SolverVBD(model=v, iterations=8, rigid_compliant_alm=True),
                     bodies=[self.payload_body],
                     joints=[self.payload_free_joint],
                     particles=list(range(self.model.particle_count)),
