@@ -151,6 +151,33 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.get_dof_velocities(state).shape, (1, 1, 0))
         self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
 
+    def test_root_base_classification_uses_dof_count(self):
+        """Classify zero-DOF roots as fixed while preserving floating roots."""
+        cases = (
+            ("fixed", True, False),
+            ("locked_d6", True, False),
+            ("free", False, True),
+        )
+
+        for root_kind, expected_fixed, expected_floating in cases:
+            with self.subTest(root_kind=root_kind):
+                builder = newton.ModelBuilder()
+                root = builder.add_link(label="root")
+
+                if root_kind == "fixed":
+                    root_joint = builder.add_joint_fixed(parent=-1, child=root)
+                elif root_kind == "locked_d6":
+                    root_joint = builder.add_joint_d6(parent=-1, child=root)
+                else:
+                    root_joint = builder.add_joint_free(parent=-1, child=root)
+
+                builder.add_articulation([root_joint], label=root_kind)
+                model = builder.finalize(device="cpu")
+                view = ArticulationView(model, root_kind)
+
+                self.assertEqual(view.is_fixed_base, expected_fixed)
+                self.assertEqual(view.is_floating_base, expected_floating)
+
     def test_labels_preserve_full_paths(self):
         """Two-finger gripper whose distal bodies, finger joints, and tip
         shapes each share a colliding leaf name. ``*_names`` attributes
@@ -204,7 +231,8 @@ class TestSelection(unittest.TestCase):
 
         j_root = builder.add_joint_free(parent=-1, child=root, label="root_joint")
         j_tip = builder.add_joint_revolute(parent=root, child=tip, axis=wp.vec3(0.0, 0.0, 1.0), label="tip_joint")
-        j_tip_duplicate = builder.add_joint_fixed(parent=root, child=tip, label="tip_duplicate_joint")
+        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+            j_tip_duplicate = builder.add_joint_fixed(parent=root, child=tip, label="tip_duplicate_joint")
         builder.add_articulation([j_root, j_tip, j_tip_duplicate], label="robot")
         model = builder.finalize()
 
@@ -1390,21 +1418,23 @@ class TestSelection(unittest.TestCase):
         """ArticulationView excludes loop-closing joints unless requested."""
         builder = newton.ModelBuilder()
         root = builder.add_link(label="root")
+        middle = builder.add_link(label="middle")
         tip = builder.add_link(label="tip")
         j_root = builder.add_joint_revolute(-1, root, label="root_joint")
-        j_tip = builder.add_joint_revolute(root, tip, label="tip_joint")
-        builder.add_articulation([j_root, j_tip], label="robot")
+        j_middle = builder.add_joint_revolute(root, middle, label="middle_joint")
+        j_tip = builder.add_joint_revolute(middle, tip, label="tip_joint")
+        builder.add_articulation([j_root, j_middle, j_tip], label="robot")
         builder.add_joint_ball(tip, root, label="loop_joint")
 
         model = builder.finalize()
-        np.testing.assert_array_equal(model.articulation_start.numpy(), np.array([0, 3], dtype=np.int32))
-        np.testing.assert_array_equal(model.articulation_end.numpy(), np.array([2], dtype=np.int32))
+        np.testing.assert_array_equal(model.articulation_start.numpy(), np.array([0, 4], dtype=np.int32))
+        np.testing.assert_array_equal(model.articulation_end.numpy(), np.array([3], dtype=np.int32))
 
         view = ArticulationView(model, "robot")
-        self.assertEqual(view.joint_names, ["root_joint", "tip_joint"])
+        self.assertEqual(view.joint_names, ["root_joint", "middle_joint", "tip_joint"])
 
         view_with_loop = ArticulationView(model, "robot", include_loop_closing_joints=True)
-        self.assertEqual(view_with_loop.joint_names, ["root_joint", "tip_joint", "loop_joint"])
+        self.assertEqual(view_with_loop.joint_names, ["root_joint", "middle_joint", "tip_joint", "loop_joint"])
 
 
 class TestSelectionFixedTendons(unittest.TestCase):

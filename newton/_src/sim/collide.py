@@ -9,6 +9,7 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from ..core.reset import normalize_reset_world_mask
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
@@ -290,6 +291,14 @@ def compute_shape_aabbs(
     geom_xform[shape_id] = X_ws
 
 
+# Primitive pairs (GJK/MPR) produce up to 5 manifold contacts.
+# Mesh-involved pairs (SDF + contact reduction) typically retain about 40.
+_RIGID_CONTACTS_PER_PRIMITIVE_PAIR = 5
+_RIGID_CONTACTS_PER_MESH_PAIR = 40
+_RIGID_CONTACT_MAX_NEIGHBORS_PER_SHAPE = 20
+_RIGID_CONTACT_MIN_CAPACITY = 1000
+
+
 def _estimate_rigid_contact_max(model: Model) -> int:
     """
     Estimate the maximum number of rigid contacts for the collision pipeline.
@@ -316,12 +325,6 @@ def _estimate_rigid_contact_max(model: Model) -> int:
     shape_types = model.shape_type.numpy()
     colliding_mask = _shape_collide_mask(model, len(shape_types))
 
-    # Primitive pairs (GJK/MPR) produce up to 5 manifold contacts.
-    # Mesh-involved pairs (SDF + contact reduction) typically retain ~40.
-    PRIMITIVE_CPP = 5
-    MESH_CPP = 40
-    MAX_NEIGHBORS_PER_SHAPE = 20
-
     mesh_mask = colliding_mask & ((shape_types == int(GeoType.MESH)) | (shape_types == int(GeoType.HFIELD)))
     plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
     non_plane_mask = colliding_mask & ~plane_mask
@@ -334,12 +337,16 @@ def _estimate_rigid_contact_max(model: Model) -> int:
     # Each shape's neighbor pairs are weighted by its type's contacts-per-pair.
     # Divide by 2 to avoid double-counting pairs.
     non_plane_contacts = (
-        num_primitives * MAX_NEIGHBORS_PER_SHAPE * PRIMITIVE_CPP + num_meshes * MAX_NEIGHBORS_PER_SHAPE * MESH_CPP
+        num_primitives * _RIGID_CONTACT_MAX_NEIGHBORS_PER_SHAPE * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR
+        + num_meshes * _RIGID_CONTACT_MAX_NEIGHBORS_PER_SHAPE * _RIGID_CONTACTS_PER_MESH_PAIR
     ) // 2
 
     # Weighted average contacts-per-pair based on the scene's shape mix.
     avg_cpp = (
-        (num_primitives * PRIMITIVE_CPP + num_meshes * MESH_CPP) // max(num_non_planes, 1) if num_non_planes > 0 else 0
+        (num_primitives * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR + num_meshes * _RIGID_CONTACTS_PER_MESH_PAIR)
+        // max(num_non_planes, 1)
+        if num_non_planes > 0
+        else 0
     )
 
     # Plane contacts: each plane contacts all non-plane shapes *in its world*.
@@ -378,18 +385,20 @@ def _estimate_rigid_contact_max(model: Model) -> int:
             plane_contacts = plane_pair_count * avg_cpp
         else:
             # Fallback: exact type-weighted sum (correct for single-world models).
-            plane_contacts = num_planes * (num_primitives * PRIMITIVE_CPP + num_meshes * MESH_CPP)
+            plane_contacts = num_planes * (
+                num_primitives * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR + num_meshes * _RIGID_CONTACTS_PER_MESH_PAIR
+            )
 
     total_contacts = non_plane_contacts + plane_contacts
 
     # When precomputed contact pairs are available, use as a tighter bound.
     if hasattr(model, "shape_contact_pair_count") and model.shape_contact_pair_count > 0:
-        weighted_cpp = max(avg_cpp, PRIMITIVE_CPP)
+        weighted_cpp = max(avg_cpp, _RIGID_CONTACTS_PER_PRIMITIVE_PAIR)
         pair_contacts = int(model.shape_contact_pair_count) * weighted_cpp
         total_contacts = min(total_contacts, pair_contacts)
 
     # Ensure minimum allocation
-    return max(1000, total_contacts)
+    return max(_RIGID_CONTACT_MIN_CAPACITY, total_contacts)
 
 
 def _compute_per_world_shape_pairs_max(model: Model) -> int:
@@ -1181,6 +1190,8 @@ class CollisionPipeline:
             self._contact_matcher = ContactMatcher(
                 rigid_contact_max,
                 sorter=self._contact_sorter,
+                shape_world=model.shape_world,
+                world_count=model.world_count,
                 pos_threshold=contact_matching_pos_threshold,
                 normal_dot_threshold=contact_matching_normal_dot_threshold,
                 contact_report=contact_report,
@@ -1240,6 +1251,7 @@ class CollisionPipeline:
             contact_matching=self._matching_enabled,
             contact_report=self.contact_report,
         )
+        contacts._contact_matching_mode = self.contact_matching
         # Flag the buffer so solvers that only consume particle contacts can refuse it (see
         # Contacts._enable_rigid_soft_full_surface_contact); edge/face records appear only when this is set.
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
@@ -1247,6 +1259,28 @@ class CollisionPipeline:
         # attach custom attributes with assignment==CONTACT
         self.model._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=self.requires_grad)
         return contacts
+
+    def reset_contact_matching(self, world_mask: wp.array[wp.bool] | None = None) -> None:
+        """Clear all or reset-selected previous-frame contact history.
+
+        Masked selections accumulate until the next :meth:`collide` call
+        consumes them.
+
+        .. experimental::
+
+        Args:
+            world_mask: Optional one-dimensional Warp boolean mask on the
+                model device with shape ``(model.world_count + 1,)``. The final
+                entry selects global entities whose world index is ``-1``. If
+                ``None``, clear all previous-frame contact history immediately.
+        """
+        world_mask = normalize_reset_world_mask(
+            world_mask,
+            world_count=int(self.model.world_count),
+            device=self.model.device,
+        )
+        if self._contact_matcher is not None:
+            self._contact_matcher.reset(world_mask)
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:
@@ -1632,3 +1666,6 @@ class CollisionPipeline:
                 face_pairs=self.soft_face_rigid_pairs,
                 n_particle_pairs=self.soft_rigid_contact_pair_count,
             )
+
+        # Preserve the previous provenance if validation or collision setup fails.
+        contacts._contact_matching_mode = self.contact_matching

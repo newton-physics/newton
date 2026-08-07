@@ -12,6 +12,7 @@ from warp.types import type_size
 
 import newton
 
+from ...core.reset import reset_world_selected
 from .implicit_mpm_model import MaterialParameters
 from .rheology_solver_kernels import YieldParamVec, project_stress
 
@@ -153,7 +154,7 @@ def integrate_velocity(
 
     vel_adv = velocities[s.qp_index]
     world_idx = particle_world[s.qp_index]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     rho = particle_density[s.qp_index]
     vel_adv = wp.where(
@@ -909,21 +910,11 @@ def record_volume_rebuild_status(status: wp.array[wp.uint32], accumulated_status
         wp.printf("Warning: Implicit MPM sparse grid rebuild failed with status %u.\n", rebuild_status)
 
 
-@wp.func
-def reset_mpm_world_is_selected(world: int, world_mask: wp.array[wp.bool]):
-    selected = bool(False)
-    global_world_index = world_mask.shape[0] - 1
-    if world >= 0 and world < global_world_index:
-        selected = world_mask[world]
-    elif world == -1:
-        selected = world_mask[global_world_index]
-    return selected
-
-
 @wp.kernel
 def reset_mpm_particle_history(
     particle_world: wp.array[wp.int32],
     world_mask: wp.array[wp.bool],
+    world_count: int,
     particle_elastic_strain: wp.array[wp.mat33],
     particle_transform: wp.array[wp.mat33],
     particle_qd_grad: wp.array[wp.mat33],
@@ -933,7 +924,7 @@ def reset_mpm_particle_history(
     """Reset implicit MPM history for selected local or shared particles."""
     particle_index = wp.tid()
     world = particle_world[particle_index]
-    if reset_mpm_world_is_selected(world, world_mask):
+    if reset_world_selected(world, world_mask, world_count):
         identity = wp.identity(n=3, dtype=float)
         particle_elastic_strain[particle_index] = identity
         particle_transform[particle_index] = identity
@@ -946,13 +937,14 @@ def reset_mpm_particle_history(
 def reset_mpm_collider_history(
     body_world: wp.array[wp.int32],
     world_mask: wp.array[wp.bool],
+    world_count: int,
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
 ):
     """Refresh previous collider poses for selected local or shared bodies."""
     body_index = wp.tid()
     world = body_world[body_index]
-    if reset_mpm_world_is_selected(world, world_mask):
+    if reset_world_selected(world, world_mask, world_count):
         body_q_prev[body_index] = body_q[body_index]
 
 
@@ -960,12 +952,13 @@ def reset_mpm_collider_history(
 def reset_mpm_point_warmstart(
     particle_world: wp.array[wp.int32],
     world_mask: wp.array[wp.bool],
+    world_count: int,
     values: wp.array[Any],
 ):
     """Clear particle-backed warm starts for selected local or shared particles."""
     particle_index = wp.tid()
     world = particle_world[particle_index]
-    if reset_mpm_world_is_selected(world, world_mask):
+    if reset_world_selected(world, world_mask, world_count):
         values[particle_index] = values.dtype(0.0)
 
 
@@ -976,18 +969,18 @@ wp.overload(reset_mpm_point_warmstart, {"values": wp.array[vec6]})
 @wp.kernel(module="unique")
 def reset_mpm_grid_warmstart(
     world_mask: wp.array[wp.bool],
+    world_count: int,
     environment_offsets: wp.array[int],
     environment_node_indices: wp.array[int],
     values: wp.array[Any],
 ):
     """Clear whole-space warm-start values for selected environments."""
     partition_index = wp.tid()
-    environment_count = world_mask.shape[0] - 1
-    if partition_index >= environment_offsets[environment_count]:
+    if partition_index >= environment_offsets[world_count]:
         return
 
     environment = wp.lower_bound(environment_offsets, partition_index + 1) - 1
-    if environment >= 0 and environment < environment_count and world_mask[environment]:
+    if environment >= 0 and environment < world_count and world_mask[environment]:
         space_node_index = environment_node_indices[partition_index]
         if space_node_index >= 0 and space_node_index < values.shape[0]:
             values[space_node_index] = values.dtype(0.0)
