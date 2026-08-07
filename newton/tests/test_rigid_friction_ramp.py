@@ -155,7 +155,8 @@ def build_friction_grid(device, mus, angles_deg, contact_kf=0.0):
     builder.color()  # required for VBD
     model = builder.finalize(device=device)
     # Set conservative limit on number of contacts to avoid unnecessary allocations and work
-    model.rigid_contact_max = 8 * len(box_ids)
+    total_boxes = sum(len(row) for row in box_ids)
+    model.rigid_contact_max = 8 * total_boxes
     return model, box_ids
 
 
