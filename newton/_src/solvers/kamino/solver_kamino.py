@@ -1264,11 +1264,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             unsupported_features.append(
                 "bodies with singular inertial properties that are attached to movable bodies:\n"
                 + "\n".join(f"      - {desc}" for desc in singular_bodies)
-                + "\n    Kamino solves the constrained dynamics in the dual (Delassus) form, so a body with"
-                "\n    zero inverse mass or zero inverse inertia cannot be accelerated by any constraint"
-                "\n    reaction or applied wrench. Its velocity stays frozen and propagates through its"
-                "\n    joints, freezing every body attached to it, including bodies that do have mass."
-                "\n    Import with `collapse_fixed_joints=True` to merge these bodies into their neighbors,"
+                + "\n    Import with `collapse_fixed_joints=True` to merge these bodies into their neighbors,"
                 "\n    or give them a non-zero mass and inertia."
             )
 
@@ -1288,7 +1284,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         wrenches can alter its velocity. Such a body is only safe in two situations:
 
         - It is welded to the world, so a permanently frozen velocity is the correct answer.
-        - It is only has a free joint to the world, and is not attached to any other bodies.
+        - It only has a free joint to the world, and is not attached to any other bodies.
           It then stays at its initial velocity and behaves as immovable static geometry.
 
         Otherwise its frozen velocity propagates through its joints and freezes every body
