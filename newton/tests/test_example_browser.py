@@ -172,7 +172,7 @@ def main():
                 print(f"    {line}")
 
     if not switch_fail and not reset_fail:
-        print("\nAll examples passed!")
+        print("\nAll runnable examples passed!" if skipped else "\nAll examples passed!")
 
     return 1 if (switch_fail or reset_fail) else 0
 
