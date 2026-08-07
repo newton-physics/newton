@@ -884,7 +884,14 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
 
         # Generate random poses
         num_poses = 30
-        bodies_q_np = sample_body_poses(model.size.sum_of_num_bodies, rng, num_poses, unit_quaternions=False)
+        bodies_q_np = sample_body_poses(
+            model.size.sum_of_num_bodies,
+            rng,
+            num_poses,
+            max_pos=0.05,
+            max_angle=np.radians(20.0),
+            unit_quaternions=False,
+        )
         base_q_np, _ = sample_base_state(model.size.num_worlds, rng, num_poses)
         actuators_q_np = sample_actuator_coords(model, rng, num_poses)
 
@@ -909,7 +916,7 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
             for wd_id in range(model.size.num_worlds):
                 rows, cols = int(dims[wd_id][0]), int(dims[wd_id][1])
                 residual = jac_dense_np[wd_id, :rows, :cols] - jac_sparse_np[wd_id]
-                self.assertTrue(np.max(np.abs(residual)) < 1e-6)
+                self.assertLess(np.max(np.abs(residual)), 1e-6)
 
 
 class ForwardKinematicsWarnings(unittest.TestCase):

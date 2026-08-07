@@ -308,14 +308,14 @@ def setup_test_fourbar_model(
 
 
 def sample_base_state_wp(model: ModelKamino, rng: np.random.Generator):
-    base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng, max_pos=0.03)
+    base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng, max_pos=0.03, max_angle=np.radians(10.0))
     base_q = wp.from_numpy(base_q_np[0], dtype=wp.transformf, device=model.device)
     base_u = wp.from_numpy(base_u_np[0], dtype=wp.spatial_vectorf, device=model.device)
     return base_q, base_u
 
 
 def sample_actuator_state_wp(model: ModelKamino, rng: np.random.Generator):
-    actuator_q_np = sample_actuator_coords(model, rng, max_pos=0.03, max_angle=np.radians(5.0))[0]
+    actuator_q_np = sample_actuator_coords(model, rng, max_pos=0.03, max_angle=np.radians(10.0))[0]
     actuator_u_np = sample_actuator_velocities(model, rng)[0]
     actuator_q = wp.from_numpy(actuator_q_np, dtype=wp.float32, device=model.device)
     actuator_u = wp.from_numpy(actuator_u_np, dtype=wp.float32, device=model.device)
