@@ -21,6 +21,7 @@ from newton._src.solvers.kamino._src.core.shapes import (
     MeshShape,
     PlaneShape,
     SphereShape,
+    _max_contacts_for_shape_pair_impl,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
@@ -28,6 +29,21 @@ from newton._src.solvers.kamino.tests import setup_tests, test_context
 ###
 # Tests
 ###
+
+
+class TestMaxContactsForShapePair(unittest.TestCase):
+    def test_catch_canonicalization_order_errors(self):
+        """Verify the canonical implementation rejects every reversed shape pair.
+
+        This catches accidentally declaring the shape pair in the wrong order.
+        """
+        for type_a in GeoType:
+            for type_b in GeoType:
+                if type_a <= type_b:
+                    continue
+
+                with self.subTest(type_a=type_a, type_b=type_b):
+                    self.assertEqual(_max_contacts_for_shape_pair_impl(int(type_a), int(type_b)), (0, 0))
 
 
 class TestShapeDescriptors(unittest.TestCase):

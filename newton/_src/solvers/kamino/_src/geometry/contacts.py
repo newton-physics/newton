@@ -112,6 +112,12 @@ threshold.
 Set to `1e-5`.
 """
 
+DEFAULT_CULL_SPECULATIVE_CONTACTS: bool = True
+"""
+The global default for culling speculative contacts (with positive
+margin-shifted distance) during Newton->Kamino conversion.
+"""
+
 
 ###
 # Types
@@ -856,6 +862,7 @@ class ContactsKamino:
 def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
+    cull_speculative: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
 ):
     """
     Generates a kernel to convert Newton contacts to the Kamino format.
@@ -863,6 +870,8 @@ def make_convert_contacts_newton_to_kamino(
     Args:
         friction_mix_mode: The mixing mode to use for friction.
         restitution_mix_mode: The mixing mode to use for restitution.
+        cull_speculative: If ``True``, skip speculative contacts, i.e., contacts
+            with positive margin-shifted distance.
 
     Returns:
         A kernel function that converts Newton contacts to the Kamino format.
@@ -950,6 +959,8 @@ def make_convert_contacts_newton_to_kamino(
         wid = wid_0
         if wid_0 < 0:
             wid = wid_1
+        if wid < 0 and num_worlds == 1:
+            wid = 0
         if wid < 0 or wid >= num_worlds:
             return
 
@@ -983,6 +994,12 @@ def make_convert_contacts_newton_to_kamino(
         # d = dot((p1 - p0), n_a_to_b) - (margin0 + margin1), with n_newton = n_a_to_b
         # and the per-shape surface thicknesses stored in rigid_contact_margin*.
         distance = contact_surface_separation(p0_world, p1_world, normal, margin_0, margin_1)
+
+        # Cull speculative contacts whose margin-shifted surfaces have not yet
+        # made contact (positive gap distance).
+        if wp.static(cull_speculative):
+            if distance > 0.0:
+                return
 
         # Ensure static body is always Kamino A, dynamic body is Kamino B
         if bid_1 < 0:
@@ -1287,6 +1304,7 @@ def convert_contacts_newton_to_kamino(
     convert_forces: bool = False,
     friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
     restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min",
+    cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1328,6 +1346,9 @@ def convert_contacts_newton_to_kamino(
             The mixing mode to use for contact friction. Defaults to `"average"`.
         restitution_mix_mode:
             The mixing mode to use for contact restitution. Defaults to `"min"`.
+        cull_speculative_contacts:
+            If ``True`` (the default), drop speculative contacts (contacts with
+            positive margin-shifted distance).
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1352,7 +1373,7 @@ def convert_contacts_newton_to_kamino(
     # convert exceeds the capacity of the output contacts.
     if contacts_in.rigid_contact_max > contacts_out.model_max_contacts_host:
         msg.warning(
-            "Newton `rigid_contact_max` (%d) exceeds Kamino `model_max_contacts_host` (%d); contacts will be truncated.",
+            "Newton `rigid_contact_max` (%d) exceeds Kamino `model_max_contacts_host` (%d); active contacts may be truncated.",
             contacts_in.rigid_contact_max,
             contacts_out.model_max_contacts_host,
         )
@@ -1360,9 +1381,10 @@ def convert_contacts_newton_to_kamino(
     # Skip conversion of contact forces if not requested
     contacts_in_force = contacts_in.force if convert_forces else None
 
-    # Set the maximum number of contacts to convert to the smallest of the
-    # number of contacts detected and the maximum capacity of the output contacts.
-    max_converted_contacts = min(contacts_in.rigid_contact_max, contacts_out.model_max_contacts_host)
+    # Scan every Newton contact slot so saturated worlds cannot prevent later
+    # worlds from filling their own capacity. The kernel skips inactive slots
+    # and enforces per-world and model limits.
+    max_converted_contacts = contacts_in.rigid_contact_max
 
     # Clear the output contacts to reset the active contact
     # counts and reset contact data to sentinel values.
@@ -1372,11 +1394,10 @@ def convert_contacts_newton_to_kamino(
     _convert_contacts_newton_to_kamino = make_convert_contacts_newton_to_kamino(
         friction_mix_mode=MaterialMixMode.from_string(friction_mix_mode),
         restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
+        cull_speculative=cull_speculative_contacts,
     )
 
-    # Launch the conversion kernel to convert Newton contacts to Kamino's format
-    # NOTE: To reduce overhead, the total thread count is set to the smallest of
-    # the number of contacts detected and the maximum capacity of the output contacts.
+    # Launch the conversion kernel to convert Newton contacts to Kamino's format.
     wp.launch(
         kernel=_convert_contacts_newton_to_kamino,
         dim=max_converted_contacts,
@@ -1494,11 +1515,10 @@ def convert_contacts_kamino_to_newton(
             f"contacts_out.device={contacts_out.device}"
         )
 
-    # Issue warning to the user if the number of contacts to
-    # convert exceeds the capacity of the output contacts.
-    if contacts_in.model_max_contacts_host > contacts_out.rigid_contact_max:
+    # Only Kamino-generated contacts can be truncated during export.
+    if clear_output and contacts_in.model_max_contacts_host > contacts_out.rigid_contact_max:
         msg.warning(
-            "Kamino `model_max_contacts_host` (%d) exceeds Newton `rigid_contact_max` (%d); contacts will be truncated.",
+            "Kamino `model_max_contacts_host` (%d) exceeds Newton `rigid_contact_max` (%d); active contacts may be truncated.",
             contacts_in.model_max_contacts_host,
             contacts_out.rigid_contact_max,
         )
@@ -1570,6 +1590,12 @@ def convert_contacts_kamino_to_newton(
                 "`ContactsKamino.remap` is required when `clear_output=False`; "
                 "construct `ContactsKamino` with `remappable=True`."
             )
+
+        # Speculative-contact culling (and capacity truncation) can leave active
+        # Newton contacts without a matching Kamino contact, so the kernel below
+        # never writes their wrench. Zero the rigid force region first so those
+        # slots report zero instead of stale prior-frame data.
+        contacts_out_force[: contacts_out.rigid_contact_max].zero_()
 
         # Launch the kernel to fill in solver-specific
         # contact attributes for already populated contacts.

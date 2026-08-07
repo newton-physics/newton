@@ -219,6 +219,11 @@ class Mesh:
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
+        # Finalized wp.Mesh cache keyed by (device, requires_grad, bvh_constructor).
+        # Geometry objects may be shared across builders (e.g. via
+        # :meth:`ModelBuilder.replicate`), so re-finalizing must not release
+        # wp.Mesh objects whose ids earlier models still reference.
+        self._finalized_meshes: dict = {}
         if maxhullvert is None:
             maxhullvert = Mesh.MAX_HULL_VERTICES
         self.maxhullvert = maxhullvert
@@ -1043,6 +1048,25 @@ class Mesh:
         self.sdf = None
         self._collision_edges = None
 
+    def invalidate_cache(self) -> None:
+        """Invalidate all cached data derived from the mesh geometry.
+
+        Drops the cached mesh hash, edge data, watertightness flag, and the
+        finalized Warp meshes returned by :meth:`finalize`, so they are
+        recomputed from the current :attr:`vertices` and :attr:`indices` on
+        next access.
+
+        Assigning new arrays to :attr:`vertices` or :attr:`indices` calls this
+        method automatically. Call it explicitly after modifying those arrays
+        in place (e.g. ``mesh.vertices[0] = ...``), which bypasses the
+        property setters and would otherwise leave stale cached data.
+        """
+        self._cached_hash = None
+        self._edges = None
+        self._collision_edges = None
+        self._is_watertight = None
+        self._finalized_meshes = {}
+
     @property
     def vertices(self):
         return self._vertices
@@ -1050,10 +1074,7 @@ class Mesh:
     @vertices.setter
     def vertices(self, value):
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
-        self._cached_hash = None
-        self._edges = None
-        self._collision_edges = None
-        self._is_watertight = None
+        self.invalidate_cache()
 
     @property
     def indices(self):
@@ -1062,10 +1083,7 @@ class Mesh:
     @indices.setter
     def indices(self, value):
         self._indices = np.array(value, dtype=np.int32).flatten()
-        self._cached_hash = None
-        self._edges = None
-        self._collision_edges = None
-        self._is_watertight = None
+        self.invalidate_cache()
 
     def _canonical_vertex_ids(self) -> np.ndarray:
         """Per-vertex canonical IDs that fold geometrically coincident vertices
@@ -1454,6 +1472,14 @@ class Mesh:
         """
         Construct a simulation-ready Warp Mesh object from the mesh data and return its ID.
 
+        The Warp Mesh is cached per device, so repeated calls (e.g. when the same
+        geometry object is shared by several builders through
+        :meth:`ModelBuilder.replicate` or :meth:`ModelBuilder.add_builder`) return
+        the same Warp Mesh instead of releasing the one referenced by previously
+        finalized models. The cache is invalidated when ``vertices`` or
+        ``indices`` are reassigned; after modifying those arrays in place, call
+        :meth:`invalidate_cache` to avoid finalizing stale geometry.
+
         Args:
             device: Device on which to allocate mesh buffers.
             requires_grad: If True, mesh points and velocities are allocated with gradient tracking.
@@ -1462,13 +1488,20 @@ class Mesh:
         Returns:
             The ID of the simulation-ready Warp Mesh.
         """
-        with wp.ScopedDevice(device):
-            pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
-            vel = wp.zeros_like(pos)
-            indices = wp.array(self.indices, dtype=wp.int32)
+        device = wp.get_device(device)
+        # wp.Device is not hashable, key on its alias instead
+        cache_key = (device.alias, requires_grad, bvh_constructor)
+        mesh = self._finalized_meshes.get(cache_key)
+        if mesh is None:
+            with wp.ScopedDevice(device):
+                pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
+                vel = wp.zeros_like(pos)
+                indices = wp.array(self.indices, dtype=wp.int32)
+                mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor=bvh_constructor)
+            self._finalized_meshes[cache_key] = mesh
 
-            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor=bvh_constructor)
-            return self.mesh.id
+        self.mesh = mesh
+        return mesh.id
 
     def compute_convex_hull(self, replace: bool = False) -> "Mesh":
         """
