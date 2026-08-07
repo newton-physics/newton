@@ -146,6 +146,7 @@ def test_shapes_on_plane(test, device, solver_fn):
     builder.add_ground_plane()
 
     model = builder.finalize(device=device)
+    model.rigid_contact_max = 150
 
     # Create solver with stability parameters for Featherstone and SemiImplicit
     # For other solvers, use the default solver_fn
@@ -849,6 +850,7 @@ solvers = {
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
+    "kamino": newton.solvers.SolverKamino,
 }
 
 

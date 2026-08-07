@@ -15,7 +15,6 @@ import warp as wp
 
 from .....core.types import Axis
 from .....geometry import ShapeFlags
-from ..utils import logger as msg
 from .bodies import RigidBodiesModel, RigidBodyDescriptor
 from .geometry import GeometriesModel, GeometryDescriptor
 from .gravity import GravityDescriptor, GravityModel
@@ -908,6 +907,7 @@ class ModelBuilderKamino:
         self._compute_world_offsets()
 
         # Validate base body/joint data for each world, and fill in missing data if possible
+        has_world_without_base_body = False
         for w, world in enumerate(self._worlds):
             if world.has_base_joint:
                 base_joint = self._joints[w][world.base_joint_idx]
@@ -933,11 +933,10 @@ class ModelBuilderKamino:
                             break
                 # As a last fallback, set body 0 in that world as base body (no base joint), if no unary
                 # joints were found (else this is not a floating-base model and we assign no base body).
-                if not world.has_base_body and not has_unary_joint:
-                    if world.num_bodies == 0:
-                        msg.warning(f"Zero bodies in world {w}, no base body assigned.")
-                        continue
+                if not world.has_base_body and not has_unary_joint and world.num_bodies > 0:
                     world.set_base_body(0)
+
+            has_world_without_base_body = has_world_without_base_body or not world.has_base_body
 
         ###
         # ModelKamino data collection
@@ -1350,6 +1349,7 @@ class ModelBuilderKamino:
                 joint_kinematic_cts_offset=to_warp_int32_array(info_jkcio),
                 base_body_index=to_warp_int32_array(info_base_bid),
                 base_joint_index=to_warp_int32_array(info_base_jid),
+                has_world_without_base_body=has_world_without_base_body,
             )
 
             # Create the model time data

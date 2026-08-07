@@ -14,7 +14,6 @@ import warp as wp
 from .....geometry import ShapeFlags
 from .....sim.model import Model
 from ....coupled.model_view import ModelView
-from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
@@ -1507,16 +1506,11 @@ def convert_joints(
         # joints were found (else this is not a floating-base model and we assign no base body).
         if base_body_idx_np[wid] == -1 and not has_unary_joint:
             if body_world_start_np[wid] == body_world_start_np[wid + 1]:
-                msg.warning(f"Zero bodies in world {wid}, no base body assigned.")
                 continue
             base_body_idx_np[wid] = body_world_start_np[wid]
 
-    # Warn user if an articulation root couldn't be used as base because it is not a free joint
-    if np.any(world_has_non_floating_root & (base_body_idx_np == -1)):
-        msg.warning(
-            "Model has articulations whose root is not a free joint attached to the world, "
-            "disabling floating base resets for those worlds."
-        )
+    # Record whether there is a world that has no base body.
+    has_world_without_base_body = np.any(base_body_idx_np == -1)
 
     # Update size object
     model_size.sum_of_num_joints = int(num_joints_np.sum())
@@ -1565,6 +1559,7 @@ def convert_joints(
     model_info.num_joint_cts = num_joint_cts
     model_info.num_joint_dynamic_cts = num_joint_dynamic_cts
     model_info.num_joint_kinematic_cts = num_joint_kinematic_cts
+    model_info.has_world_without_base_body = has_world_without_base_body
     with wp.ScopedDevice(model.device):
         model_info.num_joints = to_warp_int32_array(num_joints_np)
         model_info.joints_offset = to_warp_int32_array(world_joint_offset_np)
