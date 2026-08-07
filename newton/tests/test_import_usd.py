@@ -14619,7 +14619,9 @@ class TestResolveUsdFromUrl(unittest.TestCase):
 
         # Map cache-relative path -> layer string so the mock stage can return it.
         file_to_layer = {}
-        tmpdir = tempfile.mkdtemp()
+        # The resolver canonicalizes the cache directory. Mirror that here so
+        # mocked file lookups remain stable across symlinked temporary roots.
+        tmpdir = os.path.realpath(tempfile.mkdtemp())
         if prepare_target is not None:
             prepare_target(tmpdir)
 
