@@ -1,0 +1,320 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Gradient tests for the differentiable elastic-foundation midsole."""
+
+import unittest
+
+import numpy as np
+import warp as wp
+
+import newton
+from projects.digital_instron_v2 import dynamics, inverse_id
+from projects.digital_instron_v2.dynamics import FoundationConfig
+from projects.digital_instron_v2.dynamics_diff import DifferentiableMidsoleFoundation
+
+MANIFEST = "DigitalInstron/manifest_v2.json"
+
+
+@wp.kernel
+def _final_height(body_q: wp.array[wp.transform], out: wp.array[wp.float32]):
+    out[0] = wp.transform_get_translation(body_q[0])[2]
+
+
+@wp.kernel
+def _tangential_x(body_f: wp.array[wp.spatial_vector], out: wp.array[wp.float32]):
+    out[0] = wp.spatial_top(body_f[0])[0]
+
+
+class _Drop:
+    """Differentiable drop of a unit carrier body onto the calibrated foam bed.
+
+    Wraps the whole ``num_substeps`` substep loop in a single :class:`warp.Tape`
+    so an objective on the final state can be differentiated w.r.t. the initial
+    pose and the foam ``material_params``. The body starts already compressed
+    (``z0 < 0``) so the rollout stays on the continuous branch of the contact,
+    where the analytic gradient matches a finite difference; a drop from above
+    the foam would cross the touchdown make/break event where the (correct)
+    gradient is a subgradient that a finite difference will not match.
+    """
+
+    def __init__(self, device, num_substeps=60, config=None):
+        geo = dynamics.build_foundation_geometry(MANIFEST)
+        material = dynamics.load_fitted_material(MANIFEST)
+        self.device = device
+        self.nsub = num_substeps
+        self.dt = 1.0 / 60.0 / 32.0
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_ground_plane()
+        self.carrier = builder.add_body(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        self.model = builder.finalize(requires_grad=True, device=device)
+        self.solver = newton.solvers.SolverSemiImplicit(self.model, enable_tri_contact=False)
+        self.states = [self.model.state() for _ in range(num_substeps + 1)]
+
+        anchor = np.column_stack([geo.uv_m[:, 0], geo.uv_m[:, 1], geo.slack_m])
+        self.foundation = DifferentiableMidsoleFoundation(
+            anchor_local=anchor,
+            z_free=geo.slack_m,
+            rest_len=geo.slack_m,
+            area=np.full(len(geo.slack_m), geo.area_m2),
+            neighbors=geo.neighbors,
+            spacing_m=geo.spacing_m,
+            material=material,
+            carrier_body=self.carrier,
+            body_com=self.model.body_com,
+            num_substeps=num_substeps,
+            config=config or FoundationConfig(normal_damping=5.0),
+            device=device,
+        )
+        self.loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+
+    def set_initial(self, z0, vx=0.0):
+        q = np.zeros((1, 7), np.float32)
+        q[0, 2] = z0
+        q[0, 6] = 1.0
+        self.states[0].body_q.assign(q)
+        qd = np.zeros((1, 6), np.float32)
+        qd[0, 0] = vx  # spatial_top (linear) x-velocity
+        self.states[0].body_qd.assign(qd)
+
+    def forward(self):
+        for t in range(self.nsub):
+            self.states[t].body_f.zero_()
+            self.foundation.apply(self.states[t], t, self.dt)
+            self.solver.step(self.states[t], self.states[t + 1], None, None, self.dt)
+        wp.launch(_final_height, dim=1, inputs=[self.states[self.nsub].body_q, self.loss], device=self.device)
+        return self.loss
+
+
+class TestDifferentiableFoundationGradients(unittest.TestCase):
+    def test_initial_height_gradient_matches_finite_difference(self):
+        """Differentiate the final drop height w.r.t. the initial height and match a central difference."""
+        device = wp.get_preferred_device()
+        drop = _Drop(device, num_substeps=60)
+        z0 = -0.003
+
+        drop.set_initial(z0)
+        tape = wp.Tape()
+        with tape:
+            loss = drop.forward()
+        tape.backward(loss)
+        analytic = float(drop.states[0].body_q.grad.numpy()[0][2])
+
+        tape.zero()
+        drop.foundation.zero_grad()
+        eps = 2.0e-5
+        drop.set_initial(z0 + eps)
+        plus = float(drop.forward().numpy()[0])
+        drop.set_initial(z0 - eps)
+        minus = float(drop.forward().numpy()[0])
+        numeric = (plus - minus) / (2.0 * eps)
+
+        self.assertLess(abs(analytic - numeric) / (abs(numeric) + 1.0e-9), 1.0e-2)
+
+    def test_material_parameter_gradients_match_finite_difference(self):
+        """Differentiate the final drop height w.r.t. each foam material parameter and match central differences.
+
+        Covers the full differentiable constitutive vector -- equilibrium shear
+        modulus, Hyperfoam exponent, Maxwell overstress ratio, and Pasternak
+        coupling -- with the viscoelastic overstress branch active.
+        """
+        device = wp.get_preferred_device()
+        drop = _Drop(device, num_substeps=60)
+        z0 = -0.003
+
+        drop.set_initial(z0)
+        tape = wp.Tape()
+        with tape:
+            loss = drop.forward()
+        tape.backward(loss)
+        analytic = drop.foundation.material_params.grad.numpy().copy()
+
+        tape.zero()
+        drop.foundation.zero_grad()
+        base = drop.foundation.material_params.numpy().copy()
+        numeric = np.empty_like(base)
+        for k in range(len(base)):
+            h = max(abs(base[k]) * 1.0e-3, 1.0e-6)
+            perturbed = base.copy()
+            perturbed[k] += h
+            drop.foundation.material_params.assign(perturbed)
+            drop.set_initial(z0)
+            plus = float(drop.forward().numpy()[0])
+            perturbed = base.copy()
+            perturbed[k] -= h
+            drop.foundation.material_params.assign(perturbed)
+            drop.set_initial(z0)
+            minus = float(drop.forward().numpy()[0])
+            numeric[k] = (plus - minus) / (2.0 * h)
+            drop.foundation.material_params.assign(base)
+
+        # Vector-norm relative error: robust when one component's gradient is much
+        # smaller than the others (the Hyperfoam exponent here), whose per-component
+        # finite difference sits near the deterministic floor of the short rollout.
+        rel = np.linalg.norm(analytic - numeric) / (np.linalg.norm(numeric) + 1.0e-30)
+        self.assertLess(rel, 1.0e-2)
+
+    def test_smooth_friction_respects_cone_and_is_differentiable(self):
+        """Verify the smooth Coulomb friction stays inside the cone and has a finite-difference-matching gradient.
+
+        A single substep with a planted, laterally sliding contact patch must
+        produce a tangential force that opposes motion, is bounded by ``mu * fn``,
+        and whose sensitivity to the slip velocity matches a central difference.
+        """
+        device = wp.get_preferred_device()
+        config = FoundationConfig(normal_damping=5.0, mu=0.6)
+        drop = _Drop(device, num_substeps=1, config=config)
+
+        out = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+        vx0 = 0.03
+
+        def tangential(vx):
+            drop.set_initial(-0.004, vx=vx)
+            drop.states[0].body_f.zero_()
+            drop.foundation.apply(drop.states[0], 0, drop.dt)
+            wp.launch(_tangential_x, dim=1, inputs=[drop.states[0].body_f, out], device=device)
+            return float(out.numpy()[0])
+
+        drop.set_initial(-0.004, vx=vx0)
+        drop.states[0].body_f.zero_()
+        tape = wp.Tape()
+        with tape:
+            drop.foundation.apply(drop.states[0], 0, drop.dt)
+            wp.launch(_tangential_x, dim=1, inputs=[drop.states[0].body_f, out], device=device)
+        tape.backward(out)
+        analytic = float(drop.states[0].body_qd.grad.numpy()[0][0])
+
+        ft_x = tangential(vx0)
+        fn = drop.foundation.diagnostics()["normal_force_n"]
+        self.assertGreater(fn, 0.0)
+        self.assertLess(ft_x, 0.0)  # friction opposes +x motion
+        self.assertLessEqual(abs(ft_x), config.mu * fn)  # inside the cone
+
+        eps = 1.0e-3
+        numeric = (tangential(vx0 + eps) - tangential(vx0 - eps)) / (2.0 * eps)
+        self.assertLess(abs(analytic - numeric) / (abs(numeric) + 1.0e-9), 5.0e-2)
+
+    def test_inverse_identification_recovers_stiffness(self):
+        """Recover a perturbed foam stiffness from a target drop height using the analytic gradient.
+
+        Gauss-Newton on the residual final_height(s) - target, stepping with the
+        exact tape gradient d(final_height)/ds, must recover the true stiffness
+        scale from a 30% error in a few iterations -- the differentiable-contact
+        inverse-identification payoff.
+        """
+        device = wp.get_preferred_device()
+        drop = _Drop(device, num_substeps=60)
+        z0 = -0.003
+        base = drop.foundation.material_params.numpy().copy()
+        g_eq_ref = float(base[0])
+
+        drop.set_initial(z0)
+        target = float(drop.forward().numpy()[0])
+
+        base[0] = 0.7 * g_eq_ref  # 30% stiffness error
+        drop.foundation.material_params.assign(base)
+        for _ in range(6):
+            drop.set_initial(z0)
+            tape = wp.Tape()
+            with tape:
+                z = drop.forward()
+            tape.backward(z)
+            drds = float(drop.foundation.material_params.grad.numpy()[0])
+            residual = float(z.numpy()[0]) - target
+            tape.zero()
+            drop.foundation.zero_grad()
+            if abs(residual) < 1.0e-7 or abs(drds) < 1.0e-15:
+                break
+            cur = drop.foundation.material_params.numpy().copy()
+            cur[0] -= residual / drds
+            drop.foundation.material_params.assign(cur)
+
+        recovered = float(drop.foundation.material_params.numpy()[0])
+        self.assertLess(abs(recovered - g_eq_ref) / g_eq_ref, 1.0e-2)
+
+
+@wp.kernel
+def _sum_force(force: wp.array[wp.float32], out: wp.array[wp.float32]):
+    wp.atomic_add(out, 0, force[wp.tid()])
+
+
+class TestForceMatchingInverseIdentification(unittest.TestCase):
+    def _replay(self, device, samples=48):
+        geometry = dynamics.build_foundation_geometry(MANIFEST)
+        material = dynamics.load_fitted_material(MANIFEST)
+        displacement = inverse_id._triangular_cycle(peak_m=0.006, samples=samples)
+        replay = inverse_id.InstronReplay(displacement, 1.0 / 200.0, material, geometry, device=device)
+        return replay, displacement, material, geometry
+
+    def test_instron_force_gradient_matches_finite_difference(self):
+        """Differentiate the total Instron reaction impulse w.r.t. the foam material and match central differences.
+
+        Exercises the prescribed-displacement force readout
+        (:func:`~projects.digital_instron_v2.inverse_id._accumulate_normal_force`)
+        with the Maxwell recurrence active.
+        """
+        device = wp.get_preferred_device()
+        replay, _, _, _ = self._replay(device)
+        out = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+
+        replay.zero_grad()
+        out.zero_()
+        tape = wp.Tape()
+        with tape:
+            force = replay.forward()
+            wp.launch(_sum_force, dim=replay.nsteps, inputs=[force, out], device=device)
+        tape.backward(out)
+        analytic = replay.material_params.grad.numpy().copy()
+
+        tape.zero()
+        replay.zero_grad()
+        base = replay.material_params.numpy().copy()
+        numeric = np.empty_like(base)
+        for k in range(len(base)):
+            h = max(abs(base[k]) * 1.0e-3, 1.0e-6)
+            perturbed = base.copy()
+            perturbed[k] += h
+            replay.set_material(perturbed)
+            plus = float(replay.forward().numpy().sum())
+            perturbed = base.copy()
+            perturbed[k] -= h
+            replay.set_material(perturbed)
+            minus = float(replay.forward().numpy().sum())
+            numeric[k] = (plus - minus) / (2.0 * h)
+            replay.set_material(base)
+
+        rel = np.linalg.norm(analytic - numeric) / (np.linalg.norm(numeric) + 1.0e-30)
+        self.assertLess(rel, 1.0e-2)
+
+    def test_force_matching_recovers_elastic_material(self):
+        """Recover perturbed elastic foam parameters from a synthetic force curve with the overstress pinned.
+
+        A single-rate load/unload cycle constrains stiffness and Maxwell overstress
+        along a strongly correlated direction, so the overstress ratio (obtained
+        separately from a relaxation test) is held fixed while the equilibrium
+        modulus, Hyperfoam exponent, and Pasternak coupling are fit to the curve.
+        """
+        device = wp.get_preferred_device()
+        replay, displacement, material, geometry = self._replay(device)
+        target = replay.forward().numpy().copy()
+
+        result = inverse_id.fit_material_to_force_curve(
+            target,
+            displacement,
+            1.0 / 200.0,
+            material,
+            geometry,
+            scale0=np.array([1.3, 0.85, 1.0, 0.7], np.float32),
+            fit_mask=np.array([1.0, 1.0, 0.0, 1.0], np.float32),
+            iterations=400,
+            device=device,
+        )
+        self.assertLess(abs(result.scale[0] - 1.0), 2.0e-2)  # g_eq
+        self.assertLess(abs(result.scale[3] - 1.0), 2.0e-2)  # pasternak
+        residual = float(np.sqrt(np.mean((result.force - target) ** 2)))
+        self.assertLess(residual / target.max(), 1.0e-3)
+
+
+if __name__ == "__main__":
+    unittest.main()
