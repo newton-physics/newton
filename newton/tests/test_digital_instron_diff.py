@@ -3,15 +3,18 @@
 
 """Gradient tests for the differentiable elastic-foundation midsole."""
 
+import json
 import unittest
+from pathlib import Path
 
 import numpy as np
 import warp as wp
 
 import newton
-from projects.digital_instron_v2 import dynamics, inverse_id
+from projects.digital_instron_v2 import core, dynamics, inverse_id, workflow
 from projects.digital_instron_v2.dynamics import FoundationConfig
 from projects.digital_instron_v2.dynamics_diff import DifferentiableMidsoleFoundation
+from projects.digital_instron_v2.geometry import build_column_grid, load_mesh
 
 MANIFEST = "DigitalInstron/manifest_v2.json"
 
@@ -314,6 +317,131 @@ class TestForceMatchingInverseIdentification(unittest.TestCase):
         self.assertLess(abs(result.scale[3] - 1.0), 2.0e-2)  # pasternak
         residual = float(np.sqrt(np.mean((result.force - target) ** 2)))
         self.assertLess(residual / target.max(), 1.0e-3)
+
+
+def _synthetic_trial(frames: int = 80, columns: int = 24, seed: int = 0):
+    """Build a core.Trial with a shaped (per-column) triangular compression cycle."""
+    rng = np.random.default_rng(seed)
+    slack = np.full(columns, 0.03, np.float32)  # 30 mm foam columns
+    peak_compression = (0.004 + 0.006 * rng.random(columns)).astype(np.float32)  # 4-10 mm, varies per column
+    half = frames // 2
+    ramp = np.concatenate([np.linspace(0.0, 1.0, half, endpoint=False), np.linspace(1.0, 0.0, frames - half)]).astype(
+        np.float32
+    )
+    compression = ramp[:, None] * peak_compression[None, :]
+    lengths = slack[None, :] - compression
+    dt = np.full(frames, 1.0 / 200.0, np.float64)
+    # A smooth, both-signed Pasternak Laplacian field so the coupling and pressure floor are exercised.
+    laplacian = (200.0 * (compression - compression.mean(axis=1, keepdims=True))).astype(np.float32)
+    displacement = (ramp * float(peak_compression.max())).astype(np.float32)
+    force = np.zeros(frames, np.float32)
+    return core.Trial(
+        "synthetic", slack, float(np.pi * 0.011**2 / columns), lengths, dt, force, displacement, laplacian
+    )
+
+
+class TestMeasuredTrialForceMatching(unittest.TestCase):
+    @staticmethod
+    def _load_measured_trials():
+        base = Path("DigitalInstron")
+        config = json.loads((base / "manifest_v2.json").read_text())
+        midsole = load_mesh(str(base / config["midsole_mesh"]), 0.001)
+        grid = build_column_grid(midsole, config["grid"]["coarse_spacing_m"])
+        trials, _, _ = workflow.prepare_trials(base, config, grid, midsole)
+        material = dynamics.load_fitted_material(MANIFEST)
+        return trials, material
+
+    def test_predictor_reproduces_core_predict(self):
+        """Match the quasi-static core.predict force curve on a shaped-indenter trial to machine precision.
+
+        The differentiable predictor evaluates the periodic generalized-Maxwell
+        overstress fixed point with an explicit transient-then-cycle pass, so it
+        must reproduce the closed-form periodic branch of core.predict.
+        """
+        device = wp.get_preferred_device()
+        material = dynamics.load_fitted_material(MANIFEST)
+        trial = _synthetic_trial()
+        predicted = inverse_id.DifferentiableTrial(trial, material, device=device).forward().numpy()
+        reference = core.predict(trial, material)
+        peak = max(float(np.max(np.abs(reference))), 1.0e-9)
+        self.assertLess(float(np.max(np.abs(predicted - reference))) / peak, 1.0e-3)
+
+    def test_material_gradient_matches_finite_difference(self):
+        """Differentiate a shaped-indenter reaction impulse w.r.t. the foam material and match central differences.
+
+        Covers the full ``[g_eq, alpha, overstress, pasternak]`` vector through the
+        two-pass periodic recurrence with the viscoelastic branch active.
+        """
+        device = wp.get_preferred_device()
+        material = dynamics.load_fitted_material(MANIFEST)
+        trial = _synthetic_trial()
+        predictor = inverse_id.DifferentiableTrial(trial, material, device=device)
+        target = wp.zeros(predictor.frame_count, dtype=wp.float32, device=device)  # loss = sum(force^2)
+        loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+
+        predictor.zero_grad()
+        loss.zero_()
+        tape = wp.Tape()
+        with tape:
+            force = predictor.forward()
+            wp.launch(
+                inverse_id._weighted_force_mse,
+                dim=predictor.frame_count,
+                inputs=[force, target, 1.0, loss],
+                device=device,
+            )
+        tape.backward(loss)
+        analytic = predictor.material_params.grad.numpy().copy()
+
+        tape.zero()
+        predictor.zero_grad()
+        base = predictor.material_params.numpy().copy()
+        numeric = np.empty_like(base)
+        for k in range(len(base)):
+            h = max(abs(base[k]) * 1.0e-3, 1.0e-6)
+            perturbed = base.copy()
+            perturbed[k] += h
+            predictor.set_material(perturbed)
+            plus = float(np.sum(predictor.forward().numpy().astype(np.float64) ** 2))
+            perturbed = base.copy()
+            perturbed[k] -= h
+            predictor.set_material(perturbed)
+            minus = float(np.sum(predictor.forward().numpy().astype(np.float64) ** 2))
+            numeric[k] = (plus - minus) / (2.0 * h)
+            predictor.set_material(base)
+
+        rel = np.linalg.norm(analytic - numeric) / (np.linalg.norm(numeric) + 1.0e-30)
+        self.assertLess(rel, 1.0e-2)
+
+    @unittest.skipUnless(Path(MANIFEST).exists(), "requires the DigitalInstron dataset")
+    def test_reproduces_core_predict_on_measured_trials(self):
+        """Reproduce core.predict on both measured fixtures (spherical punch and shoe last)."""
+        device = wp.get_preferred_device()
+        trials, material = self._load_measured_trials()
+        for trial in trials:
+            predicted = inverse_id.DifferentiableTrial(trial, material, device=device).forward().numpy()
+            reference = core.predict(trial, material)
+            peak = max(float(np.max(np.abs(reference))), 1.0e-9)
+            self.assertLess(float(np.max(np.abs(predicted - reference))) / peak, 1.0e-3)
+
+    @unittest.skipUnless(Path(MANIFEST).exists(), "requires the DigitalInstron dataset")
+    def test_joint_fit_reproduces_shipped_calibration(self):
+        """Recover the shipped calibration by peak-normalized joint fitting to the measured trials.
+
+        Starting from the shipped material (scale = 1), the differentiable joint
+        fit must stay at that optimum: the fitted scale barely moves and the final
+        per-trial force RMS reproduces core.metrics for the shipped material,
+        cross-validating the exact gradients against the production scipy fit.
+        """
+        device = wp.get_preferred_device()
+        trials, material = self._load_measured_trials()
+        result = inverse_id.fit_material_to_trials(trials, material, iterations=250, learning_rate=0.01, device=device)
+        self.assertTrue(np.all(np.abs(result.scale - 1.0) < 0.05))
+        for trial in trials:
+            expected = core.metrics(trial.force_n, core.predict(trial, material), trial.displacement_m)[
+                "force_rmse_relative"
+            ]
+            self.assertAlmostEqual(result.rms_relative[trial.name], expected, delta=2.0e-3)
 
 
 if __name__ == "__main__":
