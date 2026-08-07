@@ -3053,6 +3053,46 @@ class TestImportUsdPhysics(unittest.TestCase):
             self.assertEqual(captured["threshold"], 0.5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_disabled_mesh_collider_skips_approximation(self):
+        """A disabled collider keeps its authored mesh without collision remeshing."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        box = newton.Mesh.create_box(
+            1.0,
+            1.0,
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/Mesh")
+        mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in box.vertices.tolist()])
+        mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+        mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+        collision = UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        collision.GetCollisionEnabledAttr().Set(False)
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).GetApproximationAttr().Set(
+            UsdPhysics.Tokens.convexDecomposition
+        )
+
+        builder = newton.ModelBuilder()
+        with mock.patch.object(builder, "approximate_meshes") as approximate_meshes:
+            shape = builder.add_usd(stage, load_visual_shapes=False)["path_shape_map"]["/Body/Mesh"]
+
+        approximate_meshes.assert_not_called()
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(builder.shape_type[shape], newton.GeoType.MESH)
+        self.assertFalse(builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(builder.shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):
         builder = newton.ModelBuilder()
         builder.add_usd(newton.examples.get_asset("humanoid.usda"))
