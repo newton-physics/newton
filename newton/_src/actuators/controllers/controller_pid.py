@@ -7,7 +7,6 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 import warp as wp
 
 from .base import Controller, _masked_zero_1d
@@ -203,14 +202,14 @@ class ControllerPID(Controller):
         # Same pack every time; a new one would also strand prepare_implicit().
         if self._param_pack is not None:
             return self._param_pack
-        kp = self.kp.numpy()
-        kd = self.kd.numpy()
-        pack = wp.array(
-            np.stack([kp, kd, np.zeros_like(kp)], axis=1).astype(np.float32),
+        pack = wp.zeros(
+            (len(self.kp), 3),
             dtype=float,
             device=self.kp.device,
             requires_grad=self.kp.requires_grad,
         )
+        pack[:, 0].assign(self.kp)
+        pack[:, 1].assign(self.kd)
         self.kp = pack[:, 0]
         self.kd = pack[:, 1]
         self._param_pack = pack

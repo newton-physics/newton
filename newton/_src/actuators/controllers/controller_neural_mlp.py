@@ -717,8 +717,8 @@ class ControllerNeuralMLP(Controller):
         import torch
 
         if self._torch_input_indices is None:
-            self._torch_input_indices = torch.tensor(pos_indices.numpy(), dtype=torch.long, device=self._torch_device)
-            self._torch_vel_indices = torch.tensor(vel_indices.numpy(), dtype=torch.long, device=self._torch_device)
+            self._torch_input_indices = wp.to_torch(pos_indices).to(dtype=torch.long)
+            self._torch_vel_indices = wp.to_torch(vel_indices).to(dtype=torch.long)
 
         current_pos = wp.to_torch(positions)
         current_vel = wp.to_torch(velocities)

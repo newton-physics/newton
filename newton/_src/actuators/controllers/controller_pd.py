@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import warp as wp
 
 from .base import Controller
@@ -112,15 +111,16 @@ class ControllerPD(Controller):
         # Same pack every time: a new one would detach later writes from the solve.
         if self._param_pack is not None:
             return self._param_pack
-        kp = self.kp.numpy()
-        kd = self.kd.numpy()
-        const = self.const_effort.numpy() if self.const_effort is not None else np.zeros_like(kp)
-        pack = wp.array(
-            np.stack([kp, kd, const], axis=1).astype(np.float32),
+        pack = wp.zeros(
+            (len(self.kp), 3),
             dtype=float,
             device=self.kp.device,
             requires_grad=self.kp.requires_grad,
         )
+        pack[:, 0].assign(self.kp)
+        pack[:, 1].assign(self.kd)
+        if self.const_effort is not None:
+            pack[:, 2].assign(self.const_effort)
         self.kp = pack[:, 0]
         self.kd = pack[:, 1]
         self.const_effort = pack[:, 2]
