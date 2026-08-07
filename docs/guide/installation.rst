@@ -29,7 +29,7 @@ Minimum Requirements
      - 3.11+ recommended
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-     - macOS has no GPU acceleration; see the ARM64 requirements below
+     - macOS has no GPU acceleration
    * - NVIDIA GPU
      - Compute capability 5.0+ (Maxwell)
      - Any GeForce GTX 9xx or newer
