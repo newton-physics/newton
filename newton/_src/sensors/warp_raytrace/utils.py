@@ -1478,7 +1478,7 @@ class Utils:
         camera_count: int,
         out_buffer: wp.array | None = None,
         worlds_per_row: int | None = None,
-    ) -> wp.array():
+    ) -> tuple[wp.array[Any], int]:
         world_and_camera_count = world_count * camera_count
         if worlds_per_row is None:
             worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
