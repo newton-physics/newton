@@ -531,6 +531,19 @@ class SolverVBD(SolverBase, CouplingInterface):
             collision_frequency=collision_frequency,
             collision_frequency_type=collision_frequency_type,
         )
+        # The solver's warm-start setting is authoritative for an owned pipeline:
+        # lambda/penalty restores ride the pipeline's matched contact indices, so
+        # history without matching silently cold-starts every refresh (k times per
+        # step under rigid ITERATIONS). Matching is fixed at pipeline construction,
+        # so surface the mismatch instead of repairing it.
+        if pipeline is not None and rigid_contact_history and not pipeline._matching_enabled:
+            warnings.warn(
+                "SolverVBD(rigid_contact_history=True) with an owned pipeline requires contact "
+                "matching for the warm-start restore; construct the pipeline with "
+                "contact_matching='latest' (or 'sticky' for persistent friction anchors). "
+                "Restores will cold-start until then.",
+                stacklevel=2,
+            )
         # Per-step schedule cache; refreshed at every step() so runtime
         # set_collision_frequency() changes take effect at the next step.
         self._sc_mode_this_step, self._sc_freq_this_step = self._resolve_self_contact_schedule()
