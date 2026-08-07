@@ -505,6 +505,9 @@ class TestPADMMSolver(unittest.TestCase):
         # Second solve with warm-starting from previous solution
         test.build()
         solver.warmstart(test.problem, test.model, test.data)
+        expected_forces = solver.data.solution.lambdas.numpy() * config.warmstart_scale
+        np.testing.assert_allclose(solver.data.state.x_p.numpy(), expected_forces)
+        np.testing.assert_allclose(solver.data.state.y_p.numpy(), expected_forces)
         solver.solve(problem=test.problem)
         check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
 
