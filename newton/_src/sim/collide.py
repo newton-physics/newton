@@ -752,11 +752,11 @@ class CollisionPipeline:
 
     .. experimental::
 
-        Differentiable rigid contacts (the ``rigid_contact_diff_*`` arrays when
-        ``requires_grad`` is enabled) may change without prior notice. The
-        narrow phase stays frozen and gradients are a tangent approximation;
-        validate accuracy and usefulness on your workflow before relying on
-        them in optimization loops.
+        Differentiable rigid-contact kinematics computed by
+        :func:`newton.eval_rigid_contact_kinematics` may change
+        without prior notice. The narrow phase stays frozen and gradients are
+        a tangent approximation; validate accuracy and usefulness on your
+        workflow before relying on them in optimization loops.
     """
 
     def __init__(
@@ -824,7 +824,11 @@ class CollisionPipeline:
                 :class:`~newton.solvers.SolverVBD`; other solvers raise on such contacts. Records are
                 emitted into :attr:`Contacts.soft_contact_indices`. Defaults to False. Fixed at
                 construction because it sizes the soft-contact buffer headroom.
-            requires_grad: Whether to enable gradient computation. If None, uses model.requires_grad.
+            requires_grad: Whether pipeline-generated soft contacts and the
+                deprecated automatic rigid-contact outputs require gradients.
+                If None, uses ``model.requires_grad``. Explicit calls to
+                :func:`newton.eval_rigid_contact_kinematics` do not
+                depend on this flag.
             broad_phase:
                 Either a broad phase mode string ("explicit", "nxn", "sap") or
                 a prebuilt broad phase instance for expert usage.
@@ -890,10 +894,9 @@ class CollisionPipeline:
 
         .. experimental::
 
-            When ``requires_grad`` is true (explicitly or via
-            ``model.requires_grad``), rigid-contact autodiff via
-            ``rigid_contact_diff_*`` may change without prior notice; see
-            :meth:`collide`.
+            Rigid-contact autodiff via
+            :func:`newton.eval_rigid_contact_kinematics` may change
+            without prior notice; see :meth:`collide`.
         """
         if contact_matching not in ("disabled", "latest", "sticky"):
             raise ValueError(
@@ -1232,9 +1235,10 @@ class CollisionPipeline:
 
         .. experimental::
 
-            If ``requires_grad`` is true, ``rigid_contact_diff_*`` arrays may be
-            allocated; rigid-contact differentiability may change without prior
-            notice (see :meth:`collide`).
+            If ``requires_grad`` is true, deprecated rigid-contact distance and
+            point compatibility arrays are allocated. New code should allocate
+            only the outputs it needs and pass them to
+            :func:`newton.eval_rigid_contact_kinematics`.
         """
         contacts = Contacts(
             self.rigid_contact_max,
@@ -1309,10 +1313,11 @@ class CollisionPipeline:
         the tape so that gradients flow through ``state.body_q`` and
         ``state.particle_q``.
 
-        When ``requires_grad=True``, the differentiable rigid-contact arrays
-        (``contacts.rigid_contact_diff_*``) are populated by a lightweight
-        augmentation kernel that reconstructs world-space contact points from
-        the frozen narrow-phase output through the body transforms.
+        For backward compatibility, when ``requires_grad=True`` the deprecated
+        ``contacts.rigid_contact_diff_*`` arrays are populated by a lightweight
+        augmentation kernel. New code should call
+        :func:`newton.eval_rigid_contact_kinematics` explicitly
+        after collision detection to reconstruct only the quantities it needs.
 
         .. experimental::
 
@@ -1602,7 +1607,7 @@ class CollisionPipeline:
 
         # Differentiable contact augmentation: reconstruct world-space contact
         # quantities through body_q so that gradients flow via wp.Tape.
-        if self.requires_grad and contacts.rigid_contact_diff_distance is not None:
+        if self.requires_grad and contacts._rigid_contact_diff_distance is not None:
             launch_differentiable_contact_augment(
                 contacts=contacts,
                 body_q=state.body_q,

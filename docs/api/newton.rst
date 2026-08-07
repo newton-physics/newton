@@ -62,6 +62,7 @@ newton
    eval_inverse_dynamics_passive
    eval_jacobian
    eval_mass_matrix
+   eval_rigid_contact_kinematics
    intersect_ray
 
 .. rubric:: Constants
