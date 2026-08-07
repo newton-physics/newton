@@ -7,7 +7,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverBase
+from newton.solvers import SolverBase, SolverVBD
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 Frequency = SolverBase.CollisionFrequencyType
@@ -119,7 +119,6 @@ def test_vbd_rigid_iterations_mode(test, device):
     k = 1 the mid-solve re-detection path runs every iteration and must stay
     finite.
     """
-    from newton.solvers import SolverVBD  # noqa: PLC0415
 
     def run(mode, freq):
         builder = newton.ModelBuilder()
@@ -176,8 +175,6 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
     particle positions; also asserts the deprecation and conflict paths of the
     legacy self-contact parameters.
     """
-    from newton.solvers import SolverVBD
-
     kwargs = dict(
         iterations=2,
         particle_enable_self_contact=True,
