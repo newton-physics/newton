@@ -172,6 +172,7 @@
 - Fix `SolverKamino` contact warm-starting reading past the active contact buffer when a geometry-pair run reaches the end of the prior contact set. (#3641)
 - Fix `SolverKamino` contact-buffer undersizing for plane pairs, heterogeneous multi-world scenes, external collision pipelines, and saturated earlier worlds. `max_contacts` remains a model-wide cap on inferred geometry budgets; set `collision_detector.max_contacts_per_world` for an explicit per-world capacity. (#3732)
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
+- Fix MJCF fixed tendons ignoring properties inherited from tendon default classes.
 - Fix `SolverKamino` CG/CR solves silently under-iterating on CPU graph capture; the capture-safe loop path now runs on any capturing device, not only CUDA, so CPU captures no longer record a stale host-readback convergence decision at record time.
 - Reject incompatible custom attribute and frequency definitions before composing `ModelBuilder` instances.
 - Fix `cloth_franka` example rendering particles at simulation scale (cm) instead of viewer scale (m)
