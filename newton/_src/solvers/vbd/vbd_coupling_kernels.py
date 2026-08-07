@@ -7,14 +7,15 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...geometry.tri_mesh_collision import TriMeshCollisionInfo
 from ...math import quat_velocity
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     evaluate_edge_edge_contact_2_vertices,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
+from ...geometry.tri_mesh_collision import TriMeshCollisionInfo
 from .rigid_vbd_kernels import _eval_body_particle_contact, _eval_soft_ef_contact
-from .tri_mesh_collision import TriMeshCollisionInfo
 
 wp.set_module_options({"enable_backward": False})
 

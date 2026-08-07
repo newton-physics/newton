@@ -427,7 +427,7 @@ def test_multistep_gradient_flow(test, device):
         pipeline = newton.CollisionPipeline(
             model,
             broad_phase="explicit",
-            soft_contact_margin=10.0,
+            soft_contact_gap=10.0,
             requires_grad=True,
         )
 
@@ -476,7 +476,7 @@ def test_multistep_gradient_flow(test, device):
             pipeline_fd = newton.CollisionPipeline(
                 model_fd,
                 broad_phase="explicit",
-                soft_contact_margin=10.0,
+                soft_contact_gap=10.0,
                 requires_grad=False,
             )
             # Override initial body_q with perturbed value
@@ -619,7 +619,7 @@ def _assert_soft_contact_gap_differentiable(test, device, builder, full_surface)
     pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
-        soft_contact_margin=0.25,
+        soft_contact_gap=0.25,
         enable_rigid_soft_full_surface_contact=full_surface,
         requires_grad=True,
     )
@@ -748,7 +748,7 @@ def test_soft_contact_detection_differentiable_through_collide(test, device):
     builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
     builder.add_particle(wp.vec3(0.6, 0.1, 0.05), wp.vec3(0.0), 1.0, radius=0.0)
     model = builder.finalize(device=device, requires_grad=True)
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.25, requires_grad=True)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.25, requires_grad=True)
     q0 = model.state().particle_q.numpy()
 
     def _loss(qnp, on_tape):
