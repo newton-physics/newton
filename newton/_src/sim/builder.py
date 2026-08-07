@@ -3559,6 +3559,8 @@ class ModelBuilder:
                   - The stage's Meters Per Unit (MPU) definition (1.0 by default)
                 * - ``"scene_attributes"``
                   - Dictionary of all attributes applied to the PhysicsScene prim
+                * - ``"physics_scene_path"``
+                  - Prim path of the PhysicsScene selected during import, or ``None`` if no PhysicsScene was found
                 * - ``"collapse_results"``
                   - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if ``collapse_fixed_joints`` is True, otherwise None.
                 * - ``"physics_dt"``
