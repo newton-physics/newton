@@ -30,11 +30,12 @@ if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
 
 try:
-    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 except ImportError:
     Usd = None
     Gf = None
     UsdGeom = None
+    UsdPhysics = None
     Sdf = None
     UsdShade = None
 
@@ -2292,6 +2293,42 @@ def _get_deformable_point_masses(prim: Usd.Prim, read_attr: Callable[[Usd.Prim, 
     if val is None:
         return None
     return _validate_mass_array(val, str(prim.GetPath()))
+
+
+def _get_physics_scenes_from_results(stage: Usd.Stage, physics_results: dict[Any, Any]) -> list[UsdPhysics.Scene]:
+    """Get physics scenes from parsed OpenUSD physics results."""
+    scene_results = physics_results.get(UsdPhysics.ObjectType.Scene)
+    if scene_results is None:
+        return []
+
+    scene_paths, _ = scene_results
+    return [UsdPhysics.Scene.Get(stage, path) for path in scene_paths]
+
+
+def get_physics_scenes(
+    stage: Usd.Stage,
+    root_path: str = "/",
+    exclude_paths: Sequence[str] | None = None,
+) -> list[UsdPhysics.Scene]:
+    """Get physics scenes from a USD stage.
+
+    The search uses OpenUSD's physics parser, including its instance-proxy
+    traversal and subtree-pruning behavior.
+
+    Args:
+        stage: The USD stage to search.
+        root_path: The root of the subtree to search.
+        exclude_paths: Prim paths whose subtrees should be excluded from the search.
+
+    Returns:
+        Physics scenes in parser order.
+    """
+    physics_results = UsdPhysics.LoadUsdPhysicsFromRange(
+        stage,
+        [root_path],
+        excludePaths=list(exclude_paths or ()),
+    )
+    return _get_physics_scenes_from_results(stage, physics_results)
 
 
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
