@@ -309,7 +309,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             particle_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
             particle_vertex_contact_buffer_size: Preallocation size for each vertex's vertex-triangle collision
                 buffer. Pairs beyond this capacity are silently dropped during detection.
-            particle_edge_contact_buffer_size: Preallocation size for edge's edge-edge collision buffer. Pairs
+            particle_edge_contact_buffer_size: Preallocation size for each edge's edge-edge collision buffer. Pairs
                 beyond this capacity are silently dropped during detection.
             particle_collision_detection_interval: Deprecated; use the self-contact slot of
                 ``collision_frequency`` / ``collision_frequency_type`` instead.
