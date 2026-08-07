@@ -159,6 +159,30 @@ def foundation_apply(
         wp.atomic_add(active_count, 0, 1)
 
 
+@wp.kernel
+def foundation_reset(
+    carrier: wp.int32,
+    clear_body_force: wp.int32,
+    body_f: wp.array[wp.spatial_vector],
+    normal_force: wp.array[wp.float32],
+    cop_moment: wp.array[wp.vec3],
+    active_count: wp.array[wp.int32],
+):
+    """Zero the per-substep foundation accumulators (and optionally the carrier wrench).
+
+    Folds the reduction resets into a single one-thread kernel launch. Each of the
+    accumulator memsets is a graph node that dwarfs the actual 611-column physics, so
+    collapsing them to one node is the dominant cost saving for the captured attached
+    loop. ``clear_body_force`` also zeros the carrier wrench so the attached loop needs
+    no separate :meth:`newton.State.clear_forces` launch.
+    """
+    normal_force[0] = 0.0
+    cop_moment[0] = wp.vec3(0.0, 0.0, 0.0)
+    active_count[0] = 0
+    if clear_body_force != 0:
+        body_f[carrier] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
 # ---------------------------------------------------------------------------
 # Foundation driver
 # ---------------------------------------------------------------------------
@@ -250,11 +274,30 @@ class MidsoleFoundation:
         self.q_state.zero_()
         self.peq_prev.zero_()
 
-    def apply(self, state, dt: float) -> None:
-        """Accumulate the foundation wrench into ``state.body_f`` for one substep."""
-        self.normal_force.zero_()
-        self.cop_moment.zero_()
-        self.active.zero_()
+    def apply(self, state, dt: float, clear_body_force: bool = False) -> None:
+        """Accumulate the foundation wrench into ``state.body_f`` for one substep.
+
+        Args:
+            state: Simulation state supplying the carrier pose/velocity and receiving the wrench.
+            dt: Substep duration [s].
+            clear_body_force: Also zero the carrier's ``body_f`` in the fused reset launch, so a
+                caller that only loads the foundation wrench can skip a separate
+                :meth:`newton.State.clear_forces`. Leave False when other forces are staged into
+                ``body_f`` before this call (e.g. an external probe load).
+        """
+        wp.launch(
+            foundation_reset,
+            dim=1,
+            inputs=[
+                self.carrier,
+                int(clear_body_force),
+                state.body_f,
+                self.normal_force,
+                self.cop_moment,
+                self.active,
+            ],
+            device=self.device,
+        )
         wp.launch(
             foundation_pressure,
             dim=self.column_count,

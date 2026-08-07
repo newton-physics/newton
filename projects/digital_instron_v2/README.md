@@ -56,11 +56,15 @@ recorded response, or `--viewer gl` for the interactive viewer (the midsole
 renders as a live bed of compression-coloured foam columns/springs that sink and
 redden under load).
 
-The `attached` mode is launch-overhead-bound (hundreds of tiny per-substep kernel
-launches, not compute), so its whole 128-substep frame is captured into a single
-CUDA graph and replayed once per frame — about a 7x speedup, making it faster than
-real time. The foot trajectory is precomputed once into device arrays so the loop
-stays fully on the GPU. Pass `--eager` to disable graph capture for debugging.
+The `attached` mode is launch-overhead-bound (dozens of tiny per-substep kernel
+launches for only ~600 columns, not compute), so it is optimised two ways. The foot
+trajectory is precomputed once into device arrays and the per-substep force resets
+are fused into a single kernel launch (each 1-element memset was otherwise a graph
+node costing far more than the actual physics), leaving the whole 128-substep frame
+fully on the GPU; that frame is then captured into a single CUDA graph and replayed
+once per frame. Together these run the mode about 17x faster than eager launches
+(~5 ms/frame on an A6000, several times faster than real time). Pass `--eager` to
+disable graph capture for debugging.
 
 ## Tests
 

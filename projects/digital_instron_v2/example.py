@@ -320,8 +320,8 @@ class Example:
     def _attached_substeps(self):
         """Advance the attached dynamic shoe by one frame using only device-side work."""
         for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
-            self.foundation.apply(self.state_0, self.sim_dt)
+            # The fused reset zeros the carrier wrench too, so no separate clear_forces launch.
+            self.foundation.apply(self.state_0, self.sim_dt, clear_body_force=True)
             wp.launch(
                 attach_coupling,
                 dim=1,
