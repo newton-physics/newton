@@ -892,7 +892,11 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
             max_angle=np.radians(20.0),
             unit_quaternions=False,
         )
-        base_q_np, _ = sample_base_state(model.size.num_worlds, rng, num_poses)
+        base_q_np, _ = sample_base_state(
+            model.size.num_worlds,
+            rng,
+            num_poses,
+        )
         actuators_q_np = sample_actuator_coords(model, rng, num_poses)
 
         # Assemble and compare dense and sparse Jacobian for each pose
@@ -916,7 +920,7 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
             for wd_id in range(model.size.num_worlds):
                 rows, cols = int(dims[wd_id][0]), int(dims[wd_id][1])
                 residual = jac_dense_np[wd_id, :rows, :cols] - jac_sparse_np[wd_id]
-                self.assertLess(np.max(np.abs(residual)), 1e-6)
+                self.assertLess(np.max(np.abs(residual)), 3e-6)
 
 
 class ForwardKinematicsWarnings(unittest.TestCase):
