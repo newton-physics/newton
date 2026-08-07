@@ -1286,23 +1286,26 @@ class CollisionPipeline:
             allocated; rigid-contact differentiability may change without prior
             notice (see :meth:`collide`).
         """
-        soft_self_kwargs = {}
         detector = self._soft_self_contact_detector
-        if detector is not None:
-            # Buffer sizing mirrors the detector configured by init_soft_self_contact().
-            soft_self_kwargs = {
-                "soft_self_contact": True,
-                "particle_count": self.model.particle_count,
-                "tri_count": self.model.tri_count,
-                "edge_count": self.model.edge_count,
-                "soft_self_contact_vertex_buffer_pre_alloc": detector.vertex_collision_buffer_pre_alloc,
-                "soft_self_contact_edge_buffer_pre_alloc": detector.edge_collision_buffer_pre_alloc,
-                "soft_self_contact_record_triangle_vertices": detector.record_triangle_contacting_vertices,
-            }
+        soft_self_contact = detector is not None
         contacts = Contacts(
             self.rigid_contact_max,
             self.soft_contact_max,
-            **soft_self_kwargs,
+            # Self-contact buffer sizing mirrors the detector configured by
+            # init_soft_self_contact(); Contacts ignores it when the flag is False.
+            soft_self_contact=soft_self_contact,
+            particle_count=self.model.particle_count,
+            tri_count=self.model.tri_count,
+            edge_count=self.model.edge_count,
+            soft_self_contact_vertex_buffer_pre_alloc=(
+                detector.vertex_collision_buffer_pre_alloc if soft_self_contact else 0
+            ),
+            soft_self_contact_edge_buffer_pre_alloc=(
+                detector.edge_collision_buffer_pre_alloc if soft_self_contact else 0
+            ),
+            soft_self_contact_record_triangle_vertices=(
+                detector.record_triangle_contacting_vertices if soft_self_contact else False
+            ),
             # The per-thread replay array must span every soft candidate-pair thread (particle + edge +
             # face), independent of soft_contact_max (which the caller may set smaller). See E2 fix.
             soft_contact_tids_size=(
