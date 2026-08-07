@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
+      pull-requests: write
     if: github.repository == 'newton-physics/newton'
     steps:
       - name: Harden Runner
