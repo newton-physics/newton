@@ -3054,7 +3054,7 @@ class TestImportUsdPhysics(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_mesh_collider_skips_approximation(self):
-        """A disabled collider keeps its authored mesh without collision remeshing."""
+        """Preserve the authored mesh for a disabled collider."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -3089,6 +3089,8 @@ class TestImportUsdPhysics(unittest.TestCase):
         approximate_meshes.assert_not_called()
         self.assertEqual(builder.shape_count, 1)
         self.assertEqual(builder.shape_type[shape], newton.GeoType.MESH)
+        assert_np_equal(builder.shape_source[shape].vertices, box.vertices)
+        assert_np_equal(builder.shape_source[shape].indices, box.indices)
         self.assertFalse(builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(builder.shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES)
 
