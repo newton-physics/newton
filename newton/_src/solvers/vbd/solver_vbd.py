@@ -506,6 +506,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                     "self-contact slot of collision_frequency_type, not both"
                 )
         self._deprecated_particle_interval = particle_collision_detection_interval
+        # Set before super().__init__: _default_collision_frequency_type (AUTO
+        # resolution) reads it as soon as the base class is constructed.
+        self.particle_enable_self_contact = particle_enable_self_contact
 
         # With an owned pipeline, seed its self-contact configuration from the solver's
         # parameters before the base class allocates the owned Contacts buffer.
@@ -667,8 +670,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             raise ValueError("model.soft_mesh_adjacency_device is missing; finalize the model with ModelBuilder.")
         self.particle_adjacency = self.model.soft_mesh_adjacency_device
 
-        # Self-contact settings
-        self.particle_enable_self_contact = particle_enable_self_contact
+        # Self-contact settings (particle_enable_self_contact is set pre-super)
         self.particle_self_contact_margin = particle_self_contact_margin
         self.particle_self_contact_gap = particle_self_contact_gap
         # Detection query radius; margin is the interaction distance (surface offset).
@@ -3389,24 +3391,40 @@ class SolverVBD(SolverBase, CouplingInterface):
                 device=self.device,
             )
 
+    def _default_collision_frequency_type(self, slot: int) -> SolverBase.CollisionFrequencyType:
+        """Resolve ``AUTO``: the self-contact slot follows the legacy VBD behavior.
+
+        With self-contact enabled, ``AUTO`` derives from the deprecated
+        ``particle_collision_detection_interval`` when that was set
+        (PRE_INIT ~ interval < 0, PRE_POST_INIT ~ interval == 0,
+        ITERATIONS ~ interval >= 1) and defaults to the legacy behavior
+        (``PRE_POST_INIT``) otherwise. The rigid slot uses the base default
+        (PRE_INIT with an owned pipeline).
+        """
+        Frequency = SolverBase.CollisionFrequencyType
+        if slot == SolverBase._COLLISION_SLOT_SOFT_SELF and self.particle_enable_self_contact:
+            interval = self._deprecated_particle_interval
+            if interval is None or interval == 0:
+                return Frequency.PRE_POST_INIT
+            if interval < 0:
+                return Frequency.PRE_INIT
+            return Frequency.ITERATIONS
+        return super()._default_collision_frequency_type(slot)
+
     def _resolve_self_contact_schedule(self):
         """Resolve the self-contact slot to a concrete (mode, frequency) pair.
 
-        ``AUTO`` derives from the deprecated ``particle_collision_detection_interval``
-        when that was set (PRE_INIT ~ interval < 0, PRE_POST_INIT ~ interval == 0,
-        ITERATIONS ~ interval >= 1) and defaults to the legacy behavior
-        (``PRE_POST_INIT``) otherwise.
+        ``AUTO`` resolution lives in :meth:`_default_collision_frequency_type`,
+        so base-level queries agree with the schedule used here; the deprecated
+        interval also supplies the ITERATIONS frequency.
         """
         Frequency = SolverBase.CollisionFrequencyType
-        mode = self._collision_frequency_type[SolverBase._COLLISION_SLOT_SOFT_SELF]
-        freq = self._collision_frequency[SolverBase._COLLISION_SLOT_SOFT_SELF]
-        if mode == Frequency.AUTO:
-            interval = self._deprecated_particle_interval
-            if interval is None or interval == 0:
-                return Frequency.PRE_POST_INIT, 1
-            if interval < 0:
-                return Frequency.PRE_INIT, 1
-            return Frequency.ITERATIONS, interval
+        slot = SolverBase._COLLISION_SLOT_SOFT_SELF
+        mode = self._resolved_collision_frequency_type(slot)
+        freq = self._collision_frequency[slot]
+        interval = self._deprecated_particle_interval
+        if self._collision_frequency_type[slot] == Frequency.AUTO and interval is not None and interval >= 1:
+            freq = interval
         return mode, freq
 
     def _collision_detection_penetration_free(self, current_state: State):
