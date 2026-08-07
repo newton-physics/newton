@@ -368,7 +368,6 @@ def simulate_random_poses(
     rng: np.random.Generator,
     max_pos: float = 0.1,
     max_angle: float = np.radians(20.0),
-    max_quat: float = 0.5,
     max_lin_vel: float = 0.5,
     max_ang_vel: float = np.radians(90.0),
     randomize_base: bool = True,
@@ -379,7 +378,7 @@ def simulate_random_poses(
     # Generate random inputs
     base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng, num_poses)
     actuators_q_np = sample_actuator_coords(
-        model, rng, num_poses, max_pos=max_pos, max_angle=max_angle, max_quat=max_quat, use_fk_actuators=True
+        model, rng, num_poses, max_pos=max_pos, max_angle=max_angle, use_fk_actuators=True
     )
     actuators_u_np = sample_actuator_velocities(
         model, rng, num_poses, max_lin_vel=max_lin_vel, max_ang_vel=max_ang_vel, use_fk_actuators=True

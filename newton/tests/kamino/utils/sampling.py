@@ -58,12 +58,23 @@ def sample_world_mask(
     return mask
 
 
+def _sample_bounded_unit_quaternions(rng: np.random.Generator, max_angle: float, size: int) -> np.ndarray:
+    """Samples unit quaternions representing rotations of angle at most `max_angle`."""
+    axes = rng.normal(size=(size, 3))
+    axes /= np.linalg.norm(axes, axis=1, keepdims=True)
+    half_angles = rng.uniform(-max_angle, max_angle, size) / 2.0
+    quats = np.empty((size, 4))
+    quats[:, :3] = axes * np.sin(half_angles)[:, None]
+    quats[:, 3] = np.cos(half_angles)
+    return quats
+
+
 def sample_base_state(
     num_worlds: int,
     rng: np.random.Generator,
     num_samples: int = 1,
     max_pos: float = 1.0,
-    max_quat: float = 1.0,
+    max_angle: float = np.pi,
     max_lin_vel: float = 0.5,
     max_ang_vel: float = np.radians(90.0),
     unit_quaternions: bool = True,
@@ -76,7 +87,7 @@ def sample_base_state(
         rng: Random number generator.
         num_samples: number of sample base states to generate.
         max_pos: maximal absolute sample value, for positions.
-        max_quat: maximal absolute sample value, for unit quaternion coefficients.
+        max_angle: maximal absolute rotation angle represented by sampled quaternions.
         max_lin_vel: maximal absolute sample value, for linear velocities.
         max_ang_vel: maximal absolute sample value, for angular velocities.
         unit_quaternions: whether to normalize sampled quaternions.
@@ -89,13 +100,19 @@ def sample_base_state(
     base_q = np.empty((num_samples, num_worlds, 7))
     base_u = np.empty((num_samples, num_worlds, 6))
     base_q[:, :, :3].flat = rng.uniform(-max_pos, max_pos, num_samples * num_worlds * 3)
-    base_q[:, :, 3:].flat = rng.uniform(-max_quat, max_quat, num_samples * num_worlds * 4)
+    if unit_quaternions:
+        base_q[:, :, 3:] = _sample_bounded_unit_quaternions(rng, max_angle, num_samples * num_worlds).reshape(
+            num_samples, num_worlds, 4
+        )
+    else:
+        base_q[:, :, 3:6].flat = rng.uniform(
+            -np.abs(np.sin(max_angle)), np.abs(np.sin(max_angle)), num_samples * num_worlds * 3
+        )
+        base_q[:, :, 6].flat = rng.uniform(
+            -np.abs(np.cos(max_angle)), np.abs(np.cos(max_angle)), num_samples * num_worlds
+        )
     base_u[:, :, :3].flat = rng.uniform(-max_lin_vel, max_lin_vel, num_samples * num_worlds * 3)
     base_u[:, :, 3:].flat = rng.uniform(-max_ang_vel, max_ang_vel, num_samples * num_worlds * 3)
-
-    # Normalize quaternions
-    if unit_quaternions:
-        base_q[:, :, 3:] /= np.linalg.norm(base_q[:, :, 3:], axis=2)[:, :, None]
 
     return base_q, base_u
 
@@ -106,7 +123,6 @@ def sample_actuator_coords(
     num_samples: int = 1,
     max_pos: float = 0.1,
     max_angle: float = np.radians(20.0),
-    max_quat: float = 1.0,
     unit_quaternions: bool = True,
     use_fk_actuators: bool = False,
 ) -> np.ndarray:
@@ -117,28 +133,29 @@ def sample_actuator_coords(
         model: Kamino model.
         rng: Random number generator.
         num_samples: number of sample coord vectors to generate.
-        max_pos: maximal absolute sample value, for coordinates that are positions.
-        max_angle: maximal absolute sample value, for coordinates that are angles.
-        max_quat: maximal absolute sample value, for coordinates that are unit quaternion coefficients.
+        max_pos: maximal absolute position sample value.
+        max_angle: maximal absolute angle sample value.
         unit_quaternions: whether to normalize sampled quaternions.
         use_fk_actuators: whether to consider FK actuation types rather than regular actuation types.
 
     Returns:
         actuator_q: sampled coordinates, with shape (num_samples, num_actuator_coords)
     """
+    quat_ids = get_actuators_q_quaternion_first_ids(model, use_fk_actuators)
+
     # Generate sampling bounds
-    max_coords = actuator_coords_from_units(model, max_pos, max_angle, max_quat, use_fk_actuators)
+    max_coords = actuator_coords_from_units(model, max_pos, max_angle, np.sin(max_angle), use_fk_actuators)
+    max_coords[np.asanyarray(quat_ids, dtype=np.int32) + 3] = np.cos(max_angle)
 
     # Sample coordinates
     actuator_q = np.zeros((num_samples, max_coords.shape[0]), dtype=np.float32)
     for i in range(actuator_q.shape[1]):
         actuator_q[:, i] = rng.uniform(-max_coords[i], max_coords[i], size=num_samples)
 
-    # Normalize quaternions
+    # Sample unit quaternion coordinates
     if unit_quaternions:
-        quat_ids = get_actuators_q_quaternion_first_ids(model, use_fk_actuators)
         for i in quat_ids:
-            actuator_q[:, i : i + 4] /= np.linalg.norm(actuator_q[:, i : i + 4], axis=1)[:, None]
+            actuator_q[:, i : i + 4] = _sample_bounded_unit_quaternions(rng, max_angle, num_samples)
 
     return actuator_q
 
@@ -180,7 +197,7 @@ def sample_body_poses(
     rng: np.random.Generator,
     num_samples: int = 1,
     max_pos: float = 0.1,
-    max_quat: float = 1.0,
+    max_angle: float = 0.99 * np.pi,
     unit_quaternions=True,
 ) -> np.ndarray:
     """
@@ -191,7 +208,7 @@ def sample_body_poses(
         rng: Random number generator.
         num_samples: number of sample body poses vectors to generate.
         max_pos: maximal absolute sample value, for positions.
-        max_quat: maximal absolute sample value, for unit quaternion coefficients.
+        max_angle: maximal absolute rotation angle represented by sampled quaternions.
         unit_quaternions: whether to normalize sampled quaternions.
 
     Returns:
@@ -200,10 +217,16 @@ def sample_body_poses(
     # Sample body poses
     body_q = np.empty((num_samples, num_bodies, 7))
     body_q[:, :, :3].flat = rng.uniform(-max_pos, max_pos, num_samples * num_bodies * 3)
-    body_q[:, :, 3:].flat = rng.uniform(-max_quat, max_quat, num_samples * num_bodies * 4)
-
-    # Normalize quaternions
     if unit_quaternions:
-        body_q[:, :, 3:] /= np.linalg.norm(body_q[:, :, 3:], axis=2)[:, :, None]
+        body_q[:, :, 3:] = _sample_bounded_unit_quaternions(rng, max_angle, num_samples * num_bodies).reshape(
+            num_samples, num_bodies, 4
+        )
+    else:
+        body_q[:, :, 3:6].flat = rng.uniform(
+            -np.abs(np.sin(max_angle)), np.abs(np.sin(max_angle)), num_samples * num_bodies * 3
+        )
+        body_q[:, :, 6].flat = rng.uniform(
+            -np.abs(np.cos(max_angle)), np.abs(np.cos(max_angle)), num_samples * num_bodies
+        )
 
     return body_q
