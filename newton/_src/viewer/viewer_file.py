@@ -747,10 +747,22 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
     if type_name.startswith("numpy."):
         if type_name == "numpy.ndarray":
             return deserialize_ndarray(data, format_type, cache)
-        else:
-            # NumPy scalar types
-            numpy_type = getattr(np, type_name.split(".")[-1])
-            return numpy_type(data["value"])
+
+        scalar_name = type_name.removeprefix("numpy.")
+        numpy_type = getattr(np, scalar_name, None)
+        try:
+            is_number_type = (
+                isinstance(numpy_type, type)
+                and issubclass(numpy_type, np.number)
+                and np.dtype(numpy_type).type is numpy_type
+                and numpy_type.__name__ == scalar_name
+            )
+        except TypeError:
+            is_number_type = False
+        if not is_number_type:
+            raise ValueError(f"Unsupported NumPy scalar type: {type_name}")
+        assert isinstance(numpy_type, type)
+        return numpy_type(data["value"])
 
     # Mappings (like dict)
     if type_name == "dict":
