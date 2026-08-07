@@ -173,6 +173,9 @@ class Example:
         last = load_mesh(path.parent / src["path"], 0.001, src["rotation_deg"], src["crop_height_m"])
         transform_mesh(last, src.get("pose_rotation_deg", [0, 0, 0]), src.get("pose_translation_m", [0, 0, 0]))
         verts = np.asarray(last.vertices, np.float32).copy()
+        # Match the contact-surface offset that build_foundation_geometry applied to the
+        # physics so the rendered last rests on the foam top instead of inside the midsole.
+        verts[:, self.geo.thickness_axis] += self.geo.indenter_shift_m
         verts[:, 2] -= self.geo.z_shift_m
         if at_com:
             verts[:, 0] -= self._cx

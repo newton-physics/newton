@@ -326,6 +326,8 @@ class FoundationGeometry:
     neighbors: np.ndarray  # Pasternak 4-neighbour indices [column_count, 4]
     midsole_mesh_path: str
     z_shift_m: float  # ground offset applied to the raw mesh frame
+    indenter_shift_m: float  # shift applied to the posed indenter so its contact face meets the foam top
+    thickness_axis: int  # mesh axis along which columns compress (rendering/offset axis)
 
 
 def build_foundation_geometry(manifest_path: str | Path, fixture: str = "fullfoot_last") -> FoundationGeometry:
@@ -353,7 +355,8 @@ def build_foundation_geometry(manifest_path: str | Path, fixture: str = "fullfoo
     surface = raycast_surface(last, grid.uv_m, grid.thickness_axis, indenter["contact_side"])
     active = np.isfinite(surface)
     offset = np.percentile(grid.top_m[active] - surface[active], indenter["contact_percentile"])
-    surface = surface + offset + indenter["height_offset_m"]
+    indenter_shift = float(offset + indenter["height_offset_m"])
+    surface = surface + indenter_shift
     surface[active] = np.maximum(surface[active], grid.top_m[active])
 
     uv = grid.uv_m[active]
@@ -374,6 +377,8 @@ def build_foundation_geometry(manifest_path: str | Path, fixture: str = "fullfoo
         neighbors=_neighbor_indices(uv, grid.uv_m, grid.spacing_m),
         midsole_mesh_path=str(base / config["midsole_mesh"]),
         z_shift_m=z_shift,
+        indenter_shift_m=indenter_shift,
+        thickness_axis=int(grid.thickness_axis),
     )
 
 
