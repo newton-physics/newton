@@ -1959,7 +1959,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 # cold restart when history/matching are disabled).
                 self._snapshot_rigid_contact_history(contacts)
                 self._run_rigid_collision(self._rigid_iterate_view(state_in, state_out))
-                self._initialize_rigid_bodies(state_in, control, contacts, dt, refresh=True, contact_state_only=True)
+                self._refresh_rigid_contact_state(contacts, refresh=True)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
@@ -2289,6 +2289,154 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         self._penetration_free_truncation(state_in.particle_q)
 
+    def _refresh_rigid_contact_state(self, contacts: Contacts | None, refresh: bool) -> bool:
+        """Rebuild rigid contact lists and AVBD contact state from ``contacts``.
+
+        The once-per-step prologue calls this from
+        :meth:`_initialize_rigid_bodies`; rigid ``ITERATIONS`` mode also
+        calls it mid-solve after re-detection (matched warm-start restores
+        the in-flight contact state). ``refresh`` may be promoted when the
+        state is unallocated or undersized; the effective value is
+        returned. No-op without internally integrated rigid bodies."""
+        model = self.model
+        internal_rigid = model.body_count > 0 and not self.integrate_with_external_rigid_solver
+        if not internal_rigid:
+            return refresh
+        # Force refresh when contact state is not yet allocated or undersized.
+        if (
+            not refresh
+            and contacts is not None
+            and contacts.rigid_contact_max > 0
+            and self.body_body_contact_penalty_k.shape[0] < contacts.rigid_contact_max
+        ):
+            refresh = True
+
+        # Contact C0 + history restore BEFORE integration: body_q is the collide frame
+        # for all bodies (dynamic and kinematic) at this point.
+        if refresh:
+            if contacts is None:
+                self.body_body_contact_counts.zero_()
+            else:
+                contact_launch_dim = contacts.rigid_contact_max
+
+                if self.body_body_contact_penalty_k.shape[0] < contact_launch_dim:
+                    self._raise_if_capturing_resize(
+                        "body-body contact state",
+                        self.body_body_contact_penalty_k.shape[0],
+                        contact_launch_dim,
+                    )
+                    self._init_body_body_contact_state(contact_launch_dim)
+
+                # Build body-body contact lists
+                self.body_body_contact_counts.zero_()
+                self.body_body_contact_overflow_max.zero_()
+                wp.launch(
+                    kernel=build_body_body_contact_lists,
+                    dim=contact_launch_dim,
+                    inputs=[
+                        contacts.rigid_contact_count,
+                        contacts.rigid_contact_shape0,
+                        contacts.rigid_contact_shape1,
+                        model.shape_body,
+                        self.body_inv_mass_effective,
+                        self.body_body_contact_buffer_pre_alloc,
+                    ],
+                    outputs=[
+                        self.body_body_contact_counts,
+                        self.body_body_contact_indices,
+                        self.body_body_contact_overflow_max,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    kernel=check_contact_overflow,
+                    dim=1,
+                    inputs=[self.body_body_contact_overflow_max, self.body_body_contact_buffer_pre_alloc, 0],
+                    device=self.device,
+                )
+
+                # Restore AVBD body-body contact state from history and pre-compute material properties
+                if self.rigid_contact_history and contact_launch_dim > 0:
+                    if contacts.rigid_contact_match_index is None:
+                        raise RuntimeError(
+                            "SolverVBD(rigid_contact_history=True) requires Contacts with "
+                            "rigid_contact_match_index populated. Use "
+                            'CollisionPipeline(contact_matching="latest") or '
+                            'CollisionPipeline(contact_matching="sticky"), or set rigid_contact_history=False.'
+                        )
+
+                    history_required = contact_launch_dim
+                    if self._prev_contact_lambda is None or self._prev_contact_lambda.shape[0] < history_required:
+                        history_cap = 0 if self._prev_contact_lambda is None else self._prev_contact_lambda.shape[0]
+                        self._raise_if_capturing_resize("rigid contact history", history_cap, history_required)
+                        self._init_rigid_contact_warmstart(history_required)
+
+                    history = RigidContactHistory()
+                    history.lambda_ = self._prev_contact_lambda
+                    history.penalty_k = self._prev_contact_penalty_k
+                    history.normal = self._prev_contact_normal
+
+                    wp.launch(
+                        kernel=init_body_body_contacts_avbd,
+                        dim=contact_launch_dim,
+                        inputs=[
+                            contacts.rigid_contact_count,
+                            contacts.rigid_contact_shape0,
+                            contacts.rigid_contact_shape1,
+                            contacts.rigid_contact_normal,
+                            model.shape_material_ke,
+                            model.shape_material_kd,
+                            model.shape_material_mu,
+                            self.rigid_contact_hard,
+                            contacts.rigid_contact_match_index,
+                            history,
+                            self._contact_history_reset_pending,
+                            self._contact_history_reset_mask,
+                            model.shape_world,
+                            model.shape_body,
+                            model.body_world,
+                            self.rigid_contact_k_start_value,
+                        ],
+                        outputs=[
+                            self.body_body_contact_penalty_k,
+                            self.body_body_contact_lambda,
+                            self.body_body_contact_material_kd,
+                            self.body_body_contact_material_mu,
+                            self.body_body_contact_material_ke,
+                        ],
+                        device=self.device,
+                    )
+                elif not self.rigid_contact_history:
+                    wp.launch(
+                        kernel=init_body_body_contact_materials,
+                        inputs=[
+                            contacts.rigid_contact_count,
+                            contacts.rigid_contact_shape0,
+                            contacts.rigid_contact_shape1,
+                            model.shape_material_ke,
+                            model.shape_material_kd,
+                            model.shape_material_mu,
+                            self.rigid_contact_k_start_value,
+                        ],
+                        outputs=[
+                            self.body_body_contact_penalty_k,
+                            self.body_body_contact_material_kd,
+                            self.body_body_contact_material_mu,
+                            self.body_body_contact_material_ke,
+                        ],
+                        dim=contact_launch_dim,
+                        device=self.device,
+                    )
+                    self.body_body_contact_lambda.zero_()
+
+                # A fresh refresh supersedes the prior contact rows, so consume the
+                # pending reset (contact-reset state exists only with history on).
+                if self.rigid_contact_history and contact_launch_dim > 0:
+                    self._contact_history_reset_mask.zero_()
+                    self._contact_history_reset_pending.zero_()
+
+        return refresh
+
     def _initialize_rigid_bodies(
         self,
         state_in: State,
@@ -2296,7 +2444,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
         refresh: bool,
-        contact_state_only: bool = False,
     ) -> None:
         """Initialize rigid body states for AVBD solver (pre-iteration phase).
 
@@ -2339,141 +2486,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Rigid-only initialization
         # ---------------------------
         if internal_rigid:
-            # Force refresh when contact state is not yet allocated or undersized.
-            if (
-                not refresh
-                and contacts is not None
-                and contacts.rigid_contact_max > 0
-                and self.body_body_contact_penalty_k.shape[0] < contacts.rigid_contact_max
-            ):
-                refresh = True
-
-            # Contact C0 + history restore BEFORE integration: body_q is the collide frame
-            # for all bodies (dynamic and kinematic) at this point.
-            if refresh:
-                if contacts is None:
-                    self.body_body_contact_counts.zero_()
-                else:
-                    contact_launch_dim = contacts.rigid_contact_max
-
-                    if self.body_body_contact_penalty_k.shape[0] < contact_launch_dim:
-                        self._raise_if_capturing_resize(
-                            "body-body contact state",
-                            self.body_body_contact_penalty_k.shape[0],
-                            contact_launch_dim,
-                        )
-                        self._init_body_body_contact_state(contact_launch_dim)
-
-                    # Build body-body contact lists
-                    self.body_body_contact_counts.zero_()
-                    self.body_body_contact_overflow_max.zero_()
-                    wp.launch(
-                        kernel=build_body_body_contact_lists,
-                        dim=contact_launch_dim,
-                        inputs=[
-                            contacts.rigid_contact_count,
-                            contacts.rigid_contact_shape0,
-                            contacts.rigid_contact_shape1,
-                            model.shape_body,
-                            self.body_inv_mass_effective,
-                            self.body_body_contact_buffer_pre_alloc,
-                        ],
-                        outputs=[
-                            self.body_body_contact_counts,
-                            self.body_body_contact_indices,
-                            self.body_body_contact_overflow_max,
-                        ],
-                        device=self.device,
-                    )
-                    wp.launch(
-                        kernel=check_contact_overflow,
-                        dim=1,
-                        inputs=[self.body_body_contact_overflow_max, self.body_body_contact_buffer_pre_alloc, 0],
-                        device=self.device,
-                    )
-
-                    # Restore AVBD body-body contact state from history and pre-compute material properties
-                    if self.rigid_contact_history and contact_launch_dim > 0:
-                        if contacts.rigid_contact_match_index is None:
-                            raise RuntimeError(
-                                "SolverVBD(rigid_contact_history=True) requires Contacts with "
-                                "rigid_contact_match_index populated. Use "
-                                'CollisionPipeline(contact_matching="latest") or '
-                                'CollisionPipeline(contact_matching="sticky"), or set rigid_contact_history=False.'
-                            )
-
-                        history_required = contact_launch_dim
-                        if self._prev_contact_lambda is None or self._prev_contact_lambda.shape[0] < history_required:
-                            history_cap = 0 if self._prev_contact_lambda is None else self._prev_contact_lambda.shape[0]
-                            self._raise_if_capturing_resize("rigid contact history", history_cap, history_required)
-                            self._init_rigid_contact_warmstart(history_required)
-
-                        history = RigidContactHistory()
-                        history.lambda_ = self._prev_contact_lambda
-                        history.penalty_k = self._prev_contact_penalty_k
-                        history.normal = self._prev_contact_normal
-
-                        wp.launch(
-                            kernel=init_body_body_contacts_avbd,
-                            dim=contact_launch_dim,
-                            inputs=[
-                                contacts.rigid_contact_count,
-                                contacts.rigid_contact_shape0,
-                                contacts.rigid_contact_shape1,
-                                contacts.rigid_contact_normal,
-                                model.shape_material_ke,
-                                model.shape_material_kd,
-                                model.shape_material_mu,
-                                self.rigid_contact_hard,
-                                contacts.rigid_contact_match_index,
-                                history,
-                                self._contact_history_reset_pending,
-                                self._contact_history_reset_mask,
-                                model.shape_world,
-                                model.shape_body,
-                                model.body_world,
-                                self.rigid_contact_k_start_value,
-                            ],
-                            outputs=[
-                                self.body_body_contact_penalty_k,
-                                self.body_body_contact_lambda,
-                                self.body_body_contact_material_kd,
-                                self.body_body_contact_material_mu,
-                                self.body_body_contact_material_ke,
-                            ],
-                            device=self.device,
-                        )
-                    elif not self.rigid_contact_history:
-                        wp.launch(
-                            kernel=init_body_body_contact_materials,
-                            inputs=[
-                                contacts.rigid_contact_count,
-                                contacts.rigid_contact_shape0,
-                                contacts.rigid_contact_shape1,
-                                model.shape_material_ke,
-                                model.shape_material_kd,
-                                model.shape_material_mu,
-                                self.rigid_contact_k_start_value,
-                            ],
-                            outputs=[
-                                self.body_body_contact_penalty_k,
-                                self.body_body_contact_material_kd,
-                                self.body_body_contact_material_mu,
-                                self.body_body_contact_material_ke,
-                            ],
-                            dim=contact_launch_dim,
-                            device=self.device,
-                        )
-                        self.body_body_contact_lambda.zero_()
-
-                    # A fresh refresh supersedes the prior contact rows, so consume the
-                    # pending reset (contact-reset state exists only with history on).
-                    if self.rigid_contact_history and contact_launch_dim > 0:
-                        self._contact_history_reset_mask.zero_()
-                        self._contact_history_reset_pending.zero_()
-
-            if contact_state_only:
-                return
+            refresh = self._refresh_rigid_contact_state(contacts, refresh)
 
             # Per-step k decay + lambda decay + C0 (body_q is still collide frame here).
             if contacts is not None and contacts.rigid_contact_max > 0:
