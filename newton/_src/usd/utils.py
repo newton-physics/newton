@@ -2302,7 +2302,7 @@ def _get_physics_scenes_from_results(stage: Usd.Stage, physics_results: dict[Any
         return []
 
     scene_paths, _ = scene_results
-    return [UsdPhysics.Scene(stage.GetPrimAtPath(path)) for path in scene_paths]
+    return [UsdPhysics.Scene.Get(stage, path) for path in scene_paths]
 
 
 def get_physics_scenes(

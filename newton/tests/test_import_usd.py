@@ -12730,7 +12730,7 @@ def Sphere "AppendedSchema" (
 class TestPhysicsSceneAccessor(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scenes(self):
-        """Return all physics scene prims in parser order."""
+        """Return all physics scenes in parser order."""
         from pxr import Usd, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
