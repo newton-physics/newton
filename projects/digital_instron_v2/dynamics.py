@@ -520,3 +520,76 @@ def column_colors(
     else:
         s = (t - 0.5) * 2.0
         out_colors[i] = warm * (1.0 - s) + hot * s
+
+
+@wp.kernel
+def attach_coupling(
+    body: wp.int32,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    target: wp.transform,
+    target_vel: wp.spatial_vector,
+    kp_lin: wp.float32,
+    kd_lin: wp.float32,
+    kp_ang: wp.float32,
+    kd_ang: wp.float32,
+    max_force: wp.float32,
+    body_f: wp.array[wp.spatial_vector],
+    out_force: wp.array[wp.float32],
+):
+    """Damped PD "shoe upper" holding one body to a moving target pose.
+
+    Models the compliant but bilateral connection between the foot and the shoe:
+    slack (tiny force) whenever the shoe can freely follow the foot in flight,
+    and stiff (large force) when the ground blocks the shoe in stance. The COM
+    is assumed to sit at the body origin (``body_com == 0``).
+    """
+    pos = wp.transform_get_translation(body_q[body])
+    rot = wp.transform_get_rotation(body_q[body])
+    target_pos = wp.transform_get_translation(target)
+    target_rot = wp.transform_get_rotation(target)
+
+    e_p = target_pos - pos
+    q_err = target_rot * wp.quat_inverse(rot)
+    if q_err[3] < 0.0:
+        q_err = wp.quat(-q_err[0], -q_err[1], -q_err[2], -q_err[3])
+    e_r = 2.0 * wp.vec3(q_err[0], q_err[1], q_err[2])
+
+    v = wp.spatial_top(body_qd[body])
+    w = wp.spatial_bottom(body_qd[body])
+    tv = wp.spatial_top(target_vel)
+    tw = wp.spatial_bottom(target_vel)
+
+    force = kp_lin * e_p + kd_lin * (tv - v)
+    moment = kp_ang * e_r + kd_ang * (tw - w)
+
+    mag = wp.length(force)
+    if mag > max_force and mag > 1.0e-9:
+        force = force * (max_force / mag)
+
+    wp.atomic_add(body_f, body, wp.spatial_vector(force, moment))
+    out_force[0] = wp.length(force)
+
+
+@wp.kernel
+def attached_columns(
+    carrier: wp.int32,
+    body_q: wp.array[wp.transform],
+    anchor_bottom: wp.array[wp.vec3],
+    rest_len: wp.array[wp.float32],
+    bottom_out: wp.array[wp.vec3],
+    top_out: wp.array[wp.vec3],
+):
+    """World foam-column endpoints for the attached shoe.
+
+    ``bottom_out`` is the outsole contact point clamped to the ground plane and
+    ``top_out`` is the sole-mounted foam top that rides rigidly with the shoe, so the
+    bed lifts with the shoe in flight and the bars shorten as the foam penetrates the
+    ground in stance.
+    """
+    i = wp.tid()
+    q = body_q[carrier]
+    b = wp.transform_point(q, anchor_bottom[i])
+    t = wp.transform_point(q, anchor_bottom[i] + wp.vec3(0.0, 0.0, rest_len[i]))
+    bottom_out[i] = wp.vec3(b[0], b[1], wp.max(b[2], 0.0))
+    top_out[i] = t

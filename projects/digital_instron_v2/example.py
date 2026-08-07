@@ -20,6 +20,11 @@
 #   --mode stride   A synthetic running stride rolls a foot heel-to-toe over the
 #                   foundation, producing a ground-reaction force profile and a
 #                   migrating center of pressure.
+#   --mode attached A fully dynamic, foot-mounted shoe with mass and inertia. A
+#                   damped bilateral "upper" keeps the midsole coupled to the foot
+#                   for the whole stride, so the shoe presses the foam into the
+#                   ground in stance and the whole bed lifts clear with the foot in
+#                   flight, with the stance/flight ground reaction recorded.
 #
 # Command: uv run -m projects.digital_instron_v2.example --mode instron
 #
@@ -39,6 +44,8 @@ import newton.examples
 from .dynamics import (
     FoundationConfig,
     MidsoleFoundation,
+    attach_coupling,
+    attached_columns,
     build_foundation_geometry,
     column_colors,
     column_world_positions,
@@ -54,6 +61,8 @@ INSTRON_CYCLES = 6  # warm-up cycles before the reported hysteresis loop
 SETTLE_PUSH_N = 4.0  # lateral load used to probe foam-shear friction [N]
 SETTLE_MASS_KG = 0.8  # midsole + representative attachment mass [kg]
 STRIDE_PERIOD_S = 0.6  # synthetic running-stride period [s]
+ATTACHED_MASS_KG = 0.5  # dynamic shoe mass: midsole + effective foot/attachment [kg]
+ATTACHED_PERIOD_S = 0.7  # attached running-stride period [s]
 
 
 def _loop_area(x: np.ndarray, y: np.ndarray) -> float:
@@ -92,6 +101,12 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        if self._attached:
+            q0 = self._target_pose(0.0)
+            self.state_0.body_q.assign(q0.reshape(1, 7))
+            self.state_1.body_q.assign(q0.reshape(1, 7))
+            self._target_prev = q0
+            self._coupling_force = wp.zeros(1, dtype=wp.float32, device=self.device)
 
         self.foundation = MidsoleFoundation(
             anchor_local,
@@ -112,7 +127,11 @@ class Example:
         self._colors = wp.zeros(self.column_count, dtype=wp.vec3, device=self.device)
         foam_base = np.column_stack([self.geo.uv_m[:, 0], self.geo.uv_m[:, 1], self.geo.z_bottom_m])
         self._foam_base = wp.array(np.ascontiguousarray(foam_base, np.float32), dtype=wp.vec3, device=self.device)
-        self._color_ref = 0.008  # compression that saturates the contact colour [m]
+        self._foam_top = wp.zeros(self.column_count, dtype=wp.vec3, device=self.device)
+        self._slack = wp.array(np.ascontiguousarray(self.geo.slack_m, np.float32), dtype=wp.float32, device=self.device)
+        # Compression that saturates the contact colour [m]; the attached stride penetrates
+        # deeper than the bench Instron, so it needs a coarser scale.
+        self._color_ref = 0.012 if self.mode == "attached" else 0.008
 
         # Diagnostics recorded once per frame.
         self.history: list[dict] = []
@@ -127,6 +146,7 @@ class Example:
     def _build_mode(self, builder, manifest):
         """Configure the carrier body, foundation anchors, and driver for the active mode."""
         geo = self.geo
+        self._attached = False
         self._cx = float(geo.uv_m[:, 0].mean())
         self._cy = float(geo.uv_m[:, 1].mean())
         self._cz = float(geo.surface_m.mean())
@@ -154,6 +174,45 @@ class Example:
             self._stride = synthetic_stride(0.014, 5.0, 0.12 * span, STRIDE_PERIOD_S)
             self._add_last_visual(builder, manifest, at_com=True)
             self._driven = True
+
+        elif self.mode == "attached":
+            # Dynamic, foot-mounted shoe. The shoe body carries the foam against the
+            # ground (settle physics: ground reaction in stance, zero in flight), and a
+            # damped PD "upper" holds it to the prescribed foot stride so the two never
+            # separate. The COM sits at the footprint centroid so the shoe pitches
+            # realistically heel-to-toe.
+            self._com_z = float(geo.z_free_m.mean())
+            self._cz = self._com_z
+            # The foam is the shoe's sole, so anchor the columns at the outsole (bottom) in the
+            # body frame: the whole foam bed then lifts with the shoe in flight and compresses
+            # only by penetrating the ground plane (z_free = 0) in stance.
+            anchor_local = np.column_stack(
+                [geo.uv_m[:, 0] - self._cx, geo.uv_m[:, 1] - self._cy, geo.z_bottom_m - self._com_z]
+            )
+            z_free = np.zeros(self.column_count, dtype=np.float32)
+            span_x = float(np.ptp(geo.uv_m[:, 0]))
+            # Effective rotational inertia of the foot + shank that drives the pitch. A bare
+            # thin-slab shoe inertia is far too small for the stiff, spatially distributed
+            # foam and makes the explicit pitch mode diverge.
+            self.carrier = builder.add_body(
+                mass=ATTACHED_MASS_KG,
+                com=wp.vec3(0.0, 0.0, 0.0),
+                inertia=wp.mat33(0.05, 0.0, 0.0, 0.0, 0.08, 0.0, 0.0, 0.0, 0.08),
+            )
+            cfg = FoundationConfig(stretch_floor=0.05, normal_damping=8.0, friction=1000.0, mu=1.0)
+            # The stiff foam + light shoe is numerically stiff, so integrate the attached
+            # stride with finer substeps than the driven/settle scenarios (converged at 128).
+            self.sim_substeps = 128
+            self.sim_dt = self.frame_dt / self.sim_substeps
+            self._stride = synthetic_stride(0.024, 7.0, 0.08 * span_x, ATTACHED_PERIOD_S)
+            # Compliant, bilateral shoe upper: near-silent in flight, stiff and damped in
+            # stance so the foot presses the midsole down without separating.
+            self._kp_lin, self._kd_lin = 1.0e5, 450.0
+            self._kp_ang, self._kd_ang = 300.0, 40.0
+            self._max_force = 20000.0
+            self._add_last_visual(builder, manifest, at_com=True)
+            self._driven = False
+            self._attached = True
 
         else:  # instron
             self.mode = "instron"
@@ -221,10 +280,61 @@ class Example:
         depth = self._depth(t)
         return np.array([0.0, 0.0, -depth, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
+    def _target_pose(self, t):
+        """Return the prescribed foot/shoe target transform (7-vector) for the attached mode."""
+        pos, rot = self._stride(t)
+        return np.array(
+            [self._cx + pos[0], self._cy + pos[1], self._com_z + pos[2], rot[0], rot[1], rot[2], rot[3]],
+            dtype=np.float32,
+        )
+
+    def _pose_velocity(self, prev, cur, dt):
+        """Return the (linear, angular) velocity carrying the target from ``prev`` to ``cur``."""
+        v = (cur[:3] - prev[:3]) / dt
+        q_rel = _quat_mul(cur[3:7], _quat_inv(prev[3:7]))
+        if q_rel[3] < 0.0:
+            q_rel = -q_rel
+        w = 2.0 * q_rel[:3] / dt
+        return v, w
+
     def simulate(self):
         """Advance the foundation and, for the free-body mode, the rigid-body solver by one frame."""
         for _ in range(self.sim_substeps):
-            if self._driven:
+            if self._attached:
+                cur = self._target_pose(self.sim_time)
+                v, w = self._pose_velocity(self._target_prev, cur, self.sim_dt)
+                self._target_prev = cur
+                target = wp.transform(
+                    wp.vec3(float(cur[0]), float(cur[1]), float(cur[2])),
+                    wp.quat(float(cur[3]), float(cur[4]), float(cur[5]), float(cur[6])),
+                )
+                target_vel = wp.spatial_vector(
+                    float(v[0]), float(v[1]), float(v[2]), float(w[0]), float(w[1]), float(w[2])
+                )
+                self.state_0.clear_forces()
+                self.foundation.apply(self.state_0, self.sim_dt)
+                wp.launch(
+                    attach_coupling,
+                    dim=1,
+                    inputs=[
+                        self.carrier,
+                        self.state_0.body_q,
+                        self.state_0.body_qd,
+                        target,
+                        target_vel,
+                        self._kp_lin,
+                        self._kd_lin,
+                        self._kp_ang,
+                        self._kd_ang,
+                        self._max_force,
+                        self.state_0.body_f,
+                        self._coupling_force,
+                    ],
+                    device=self.device,
+                )
+                self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+                self.state_0, self.state_1 = self.state_1, self.state_0
+            elif self._driven:
                 self.state_0.body_q.assign(self._carrier_pose(self.sim_time).reshape(1, 7))
                 self.state_0.body_qd.zero_()
                 self.state_0.clear_forces()
@@ -255,6 +365,12 @@ class Example:
         elif self.mode == "stride":
             body_q = self.state_0.body_q.numpy()[self.carrier]
             entry["foot_x"] = float(body_q[0])
+        elif self.mode == "attached":
+            body_q = self.state_0.body_q.numpy()[self.carrier]
+            entry["com_z"] = float(body_q[2])
+            entry["com_x"] = float(body_q[0])
+            entry["coupling_n"] = float(self._coupling_force.numpy()[0])
+            entry["target_z"] = float(self._target_pose(self.sim_time)[2])
         else:
             body_q = self.state_0.body_q.numpy()[self.carrier]
             entry["com_z"] = float(body_q[2])
@@ -266,21 +382,40 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         wp.launch(
-            column_world_positions,
-            dim=self.column_count,
-            inputs=[self.carrier, self.state_0.body_q, self._anchor_local, self._z_free, self._points],
-            device=self.device,
-        )
-        wp.launch(
             column_colors,
             dim=self.column_count,
             inputs=[self.foundation.compression, self._color_ref, self._colors],
             device=self.device,
         )
-        if self.mode == "instron":
-            # Vertical foam "springs" from the ground platen to the current (compressed)
-            # foam top make the depressing contact patch legible.
-            self.viewer.log_lines("midsole_springs", self._foam_base, self._points, self._colors, width=0.0035)
+        if self.mode == "attached":
+            # The foam is the shoe's sole: draw each column from its ground contact up to the
+            # sole-mounted top so the whole bed lifts with the shoe in flight and the springs
+            # compress under the foot in stance.
+            wp.launch(
+                attached_columns,
+                dim=self.column_count,
+                inputs=[
+                    self.carrier,
+                    self.state_0.body_q,
+                    self._anchor_local,
+                    self._slack,
+                    self._points,
+                    self._foam_top,
+                ],
+                device=self.device,
+            )
+            self.viewer.log_lines("midsole_springs", self._points, self._foam_top, self._colors, width=0.0035)
+        else:
+            wp.launch(
+                column_world_positions,
+                dim=self.column_count,
+                inputs=[self.carrier, self.state_0.body_q, self._anchor_local, self._z_free, self._points],
+                device=self.device,
+            )
+            if self.mode == "instron":
+                # Vertical foam "springs" from the ground platen to the current (compressed)
+                # foam top make the depressing contact patch legible.
+                self.viewer.log_lines("midsole_springs", self._foam_base, self._points, self._colors, width=0.0035)
         self.viewer.log_points("midsole_columns", self._points, radii=0.0028, colors=self._colors)
         self.viewer.end_frame()
 
@@ -355,6 +490,54 @@ class Example:
             f"center of pressure rolled {rel[0] * 1000:.0f} -> {rel[-1] * 1000:.0f} mm heel-to-toe"
         )
 
+    def _test_attached(self, forces):
+        """Verify a dynamic foot-mounted shoe: stance ground reaction, no flight blow-up, stays attached."""
+        times = np.array([h["t"] for h in self.history])
+        coupling = np.array([h["coupling_n"] for h in self.history])
+        com_z = np.array([h["com_z"] for h in self.history])
+        target_z = np.array([h["target_z"] for h in self.history])
+        assert np.all(np.isfinite(coupling)), "non-finite shoe-upper force"
+        assert np.all(np.isfinite(com_z)), "non-finite shoe pose"
+        warm = times > ATTACHED_PERIOD_S  # skip the first stride's settling transient
+        f, c = forces[warm], coupling[warm]
+        stance = target_z[warm] < self._com_z - 0.001  # foot pressing the midsole below rest
+        flight = target_z[warm] > self._com_z + 0.02  # foot lifted clear of the ground
+        assert stance.any() and flight.any(), "stride never separated stance from flight"
+        grf_stance, grf_flight = float(f[stance].max()), float(f[flight].max())
+        assert grf_stance > 300.0, f"stance ground reaction too small: {grf_stance:.0f} N"
+        # The foam is off the ground during swing, so no spurious flight contact should appear.
+        assert grf_flight < 0.05 * grf_stance, f"spurious flight ground reaction: {grf_flight:.0f} N"
+        c_stance, c_flight = float(c[stance].max()), float(c[flight].max())
+        assert c_stance > 0.5 * grf_stance, "shoe upper did not transmit the stance load"
+        assert c_flight < 0.2 * c_stance, f"shoe upper not unloaded in flight: {c_flight:.0f} N"
+        # The bilateral upper keeps the shoe tracking the foot within a bounded lag all stride.
+        lag = float(np.abs(com_z[warm] - target_z[warm]).max())
+        assert lag < 0.03, f"shoe separated from foot by {lag * 1000:.1f} mm"
+        print(
+            f"[attached] {ATTACHED_MASS_KG:.1f} kg shoe: stance GRF {grf_stance:.0f} N, flight GRF {grf_flight:.1f} N; "
+            f"shoe-upper force {c_flight:.0f} N (flight) -> {c_stance:.0f} N (stance); tracked foot within {lag * 1000:.1f} mm"
+        )
+
+
+def _quat_mul(a, b):
+    """Multiply two (x, y, z, w) quaternions."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return np.array(
+        [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ],
+        dtype=np.float32,
+    )
+
+
+def _quat_inv(a):
+    """Return the inverse (conjugate) of a unit (x, y, z, w) quaternion."""
+    return np.array([-a[0], -a[1], -a[2], a[3]], dtype=np.float32)
+
 
 def _look_at(eye, target):
     """Return (pos, pitch_deg, yaw_deg) for a Z-up camera at ``eye`` looking at ``target``."""
@@ -370,9 +553,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["instron", "settle", "stride"],
+        choices=["instron", "settle", "stride", "attached"],
         default="instron",
-        help="Simulation scenario to run.",
+        help="Simulation scenario to run (instron | settle | stride | attached).",
     )
     parser.add_argument("--manifest", type=str, default=MANIFEST, help="Digital Instron manifest path.")
     viewer, args = newton.examples.init(parser)

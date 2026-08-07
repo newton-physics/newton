@@ -28,7 +28,7 @@ the dynamic example below.
 substep every column reads its carrier-body pose, computes its through-thickness
 compression, evaluates the Hyperfoam equilibrium pressure with a real-time
 generalized-Maxwell overstress branch and Pasternak lateral coupling, and
-accumulates the resulting wrench into `newton.State.body_f`. Three scenarios
+accumulates the resulting wrench into `newton.State.body_f`. Four scenarios
 share the same foundation:
 
 ```bash
@@ -43,11 +43,18 @@ uv run -m projects.digital_instron_v2.example --mode settle
 # Synthetic running stride that rolls a foot heel-to-toe over the foundation,
 # producing a ground-reaction force profile and a migrating center of pressure.
 uv run -m projects.digital_instron_v2.example --mode stride
+
+# Fully dynamic, foot-mounted shoe with mass and inertia. A damped bilateral
+# "upper" keeps the midsole coupled to the foot for the whole stride, so the
+# shoe presses the foam into the ground in stance and the entire bed lifts clear
+# with the foot in flight; the stance/flight ground reaction is recorded.
+uv run -m projects.digital_instron_v2.example --mode attached
 ```
 
 Add `--viewer null --num-frames N --test` to run headlessly and audit the
 recorded response, or `--viewer gl` for the interactive viewer (the midsole
-columns render as a point bed coloured by compression).
+renders as a live bed of compression-coloured foam columns/springs that sink and
+redden under load).
 
 ## Tests
 

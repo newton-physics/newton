@@ -144,6 +144,16 @@ class TestMidsoleExample(unittest.TestCase):
         example = _run_mode("stride", 40)
         example.test_final()
 
+    def test_attached_dynamic_stride(self):
+        """Run the attached, foot-mounted dynamic shoe and audit its stance/flight ground reaction.
+
+        The dynamic shoe carries mass and inertia and stays coupled to the foot the whole
+        stride, so the run must remain finite (no flight blow-up), develop a real stance
+        ground reaction, and unload to near zero in flight without the shoe separating.
+        """
+        example = _run_mode("attached", 95)
+        example.test_final()
+
 
 if __name__ == "__main__":
     unittest.main()
