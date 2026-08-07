@@ -1051,5 +1051,7 @@ class _DeformableImportContext:
     path_soft_attrs: dict
     path_attachment_map: dict
     path_attachment_attrs: dict
+    # Default for self-collision when an articulation authors no newton:selfCollisionEnabled.
+    enable_self_collisions: bool
     # Filled by _scout_deformable_prims so the passes iterate buckets instead of the stage.
     prims: _DeformablePrimBuckets = field(default_factory=_DeformablePrimBuckets)
