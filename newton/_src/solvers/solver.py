@@ -216,7 +216,11 @@ class SolverBase:
         """Solver-specific default."""
 
     supports_collision_pipeline: bool = False
-    """Whether this solver can own a :class:`~newton.CollisionPipeline` and drive detection itself."""
+    """Whether this solver can own a :class:`~newton.CollisionPipeline` and drive detection itself.
+
+    Currently only :class:`~newton.solvers.SolverVBD` opts in; passing ``pipeline``
+    to any other solver raises ``ValueError`` (drive detection externally instead).
+    """
 
     _COLLISION_SLOT_RIGID = 0
     _COLLISION_SLOT_SOFT_SELF = 1
