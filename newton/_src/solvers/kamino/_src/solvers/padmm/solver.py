@@ -34,6 +34,7 @@ from .kernels import (
     _make_project_dual_convergence_accel_kernel,
     _project_to_feasible_cone,
     _reset_solver_data,
+    _scale_warmstart_forces,
     _update_delassus_proximal_regularization,
     _update_delassus_proximal_regularization_sparse,
     _warmstart_contact_constraints,
@@ -355,6 +356,27 @@ class PADMMSolver:
                 self._warmstart_from_containers(problem, model, data, limits, contacts)
             case _:
                 raise ValueError(f"Invalid warmstart mode: {self._warmstart}")
+
+        self._scale_warmstart_forces(problem)
+
+    def _scale_warmstart_forces(self, problem: DualProblem):
+        """Scales the warm-started primal and slack force iterates."""
+        x_0 = self._data.state.x_p
+        y_0 = self._data.state.y_hat if self._use_acceleration else self._data.state.y_p
+        wp.launch(
+            kernel=_scale_warmstart_forces,
+            dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
+            inputs=[
+                # Inputs:
+                problem.data.dim,
+                problem.data.vio,
+                self._data.config,
+                # Outputs:
+                x_0,
+                y_0,
+            ],
+            device=self.device,
+        )
 
     def solve(self, problem: DualProblem):
         """
