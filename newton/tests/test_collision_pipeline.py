@@ -1737,7 +1737,10 @@ class TestParticleShapeContacts(unittest.TestCase):
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
 
         # Two worlds, each one active particle x one particle-colliding shape; no cross-world pairs.
-        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
+        self.assertEqual(pipeline.soft_contact_pair_count, 2)
+        # The pre-rename property name survives as a deprecated alias.
+        with self.assertWarns(DeprecationWarning):
+            self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
         self._assert_pairs_valid(model, pipeline)
 
     def test_soft_contacts_respect_active_and_collide_flags(self):
@@ -1754,7 +1757,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         contacts = pipeline.contacts()
 
         # 2 particles x 2 shapes, all in the global world -> 4 candidate pairs regardless of flags.
-        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 4)
+        self.assertEqual(pipeline.soft_contact_pair_count, 4)
         self._assert_pairs_valid(model, pipeline)
 
         pipeline.collide(model.state(), contacts)
@@ -1772,7 +1775,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         contacts = pipeline.contacts()
 
         # The candidate pair is cached even though the particle is inactive at construction.
-        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 1)
+        self.assertEqual(pipeline.soft_contact_pair_count, 1)
         pipeline.collide(model.state(), contacts)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
 
@@ -1801,8 +1804,8 @@ class TestParticleShapeContacts(unittest.TestCase):
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
         contacts = pipeline.contacts()
 
-        self.assertEqual(pipeline.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
-        self.assertEqual(contacts.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
+        self.assertEqual(pipeline.soft_contact_max, pipeline.soft_contact_pair_count)
+        self.assertEqual(contacts.soft_contact_max, pipeline.soft_contact_pair_count)
 
     def test_soft_contact_explicit_capacity_is_respected(self):
         builder = newton.ModelBuilder()
@@ -1812,7 +1815,7 @@ class TestParticleShapeContacts(unittest.TestCase):
 
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_max=1)
 
-        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 1)
+        self.assertEqual(pipeline.soft_contact_pair_count, 1)
         self.assertEqual(pipeline.soft_contact_max, 1)
 
     def test_soft_contact_explicit_capacity_overflow_still_counts_candidates(self):
@@ -1826,7 +1829,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         contacts = pipeline.contacts()
         pipeline.collide(model.state(), contacts)
 
-        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
+        self.assertEqual(pipeline.soft_contact_pair_count, 2)
         self.assertEqual(contacts.soft_contact_max, 1)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
 
@@ -1846,7 +1849,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         contacts = pipeline.contacts()
         pipeline.collide(model.state(), contacts)
 
-        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 0)
+        self.assertEqual(pipeline.soft_contact_pair_count, 0)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
 
     def test_global_shape_contacts_particles_in_all_worlds(self):
@@ -1863,7 +1866,7 @@ class TestParticleShapeContacts(unittest.TestCase):
         contacts = pipeline.contacts()
         pipeline.collide(model.state(), contacts)
 
-        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
+        self.assertEqual(pipeline.soft_contact_pair_count, 2)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
 
     def test_particle_shape_pair_count_matches_built_pairs(self):
@@ -3735,9 +3738,7 @@ def test_full_surface_replay_spans_candidate_space(test, device):
     )
     contacts = pipeline.contacts()
     candidate = (
-        pipeline.soft_rigid_contact_pair_count
-        + len(pipeline.soft_edge_rigid_pairs)
-        + len(pipeline.soft_face_rigid_pairs)
+        pipeline.soft_contact_pair_count + len(pipeline.soft_edge_rigid_pairs) + len(pipeline.soft_face_rigid_pairs)
     )
     test.assertGreater(candidate, 1, "test needs a candidate space larger than the capacity override")
     test.assertEqual(contacts.soft_contact_max, 1, "explicit soft_contact_max capacity must be honored")

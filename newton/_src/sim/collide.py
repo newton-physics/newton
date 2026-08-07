@@ -811,7 +811,7 @@ class CollisionPipeline:
                 reduction hashtable. Increase this if hashtable fill/failure
                 warnings appear. Defaults to ``0.25`` for memory compatibility.
             soft_contact_max: Maximum number of soft contacts to allocate.
-                If None, defaults to ``soft_rigid_contact_pair_count``, the number
+                If None, defaults to ``soft_contact_pair_count``, the number
                 of precomputed soft-rigid (particle-shape) pairs launched for soft
                 contact generation, plus the full-surface edge/face headroom when
                 ``enable_rigid_soft_full_surface_contact`` is set.
@@ -1161,7 +1161,7 @@ class CollisionPipeline:
         # Built here (not in finalize) so models/tasks that never collide don't pay for it.
         # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
         self.soft_rigid_contact_pairs = _build_soft_particle_rigid_contact_pairs(model)
-        self._soft_rigid_contact_pair_count = len(self.soft_rigid_contact_pairs)
+        self._soft_contact_pair_count = len(self.soft_rigid_contact_pairs)
         self.enable_rigid_soft_full_surface_contact = enable_rigid_soft_full_surface_contact
         # Full-surface edge/face candidate pairs (world-compatible, like the particle pairs above);
         # empty when the flag is off so the flag-off default stays bit-for-bit.
@@ -1182,7 +1182,7 @@ class CollisionPipeline:
             _empty_pairs = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
             self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _empty_pairs, _empty_pairs
         if soft_contact_max is None:
-            soft_contact_max = self.soft_rigid_contact_pair_count
+            soft_contact_max = self.soft_contact_pair_count
             # Flag-aware headroom: one record per world-compatible (soft edge/tri, shape) pair.
             soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
         self.soft_contact_gap = soft_contact_gap
@@ -1262,13 +1262,23 @@ class CollisionPipeline:
         self.soft_contact_gap = value
 
     @property
-    def soft_rigid_contact_pair_count(self) -> int:
-        """Number of precomputed soft-rigid (particle-shape) pairs launched for soft contacts.
+    def soft_contact_pair_count(self) -> int:
+        """Number of precomputed (particle, shape) pairs launched for soft contacts.
 
         This is the base of the default ``soft_contact_max``, which additionally reserves
         edge/face headroom when ``enable_rigid_soft_full_surface_contact`` is set.
         """
-        return self._soft_rigid_contact_pair_count
+        return self._soft_contact_pair_count
+
+    @property
+    def soft_rigid_contact_pair_count(self) -> int:
+        """Deprecated alias of :attr:`soft_contact_pair_count`."""
+        warnings.warn(
+            "CollisionPipeline.soft_rigid_contact_pair_count is deprecated; use soft_contact_pair_count.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.soft_contact_pair_count
 
     def contacts(self) -> Contacts:
         """
@@ -1309,7 +1319,7 @@ class CollisionPipeline:
             # The per-thread replay array must span every soft candidate-pair thread (particle + edge +
             # face), independent of soft_contact_max (which the caller may set smaller). See E2 fix.
             soft_contact_tids_size=(
-                self._soft_rigid_contact_pair_count + len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
+                self._soft_contact_pair_count + len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
             ),
             requires_grad=self.requires_grad,
             device=self.model.device,
@@ -1848,10 +1858,10 @@ class CollisionPipeline:
             )
 
         # Generate soft contacts for particles and shapes
-        if state.particle_q and self.soft_contact_max > 0 and self.soft_rigid_contact_pair_count > 0:
+        if state.particle_q and self.soft_contact_max > 0 and self.soft_contact_pair_count > 0:
             wp.launch(
                 kernel=create_soft_contacts,
-                dim=self.soft_rigid_contact_pair_count,
+                dim=self.soft_contact_pair_count,
                 inputs=[
                     self.soft_rigid_contact_pairs,
                     state.particle_q,
@@ -1901,7 +1911,7 @@ class CollisionPipeline:
                 device=self.device,
                 edge_pairs=self.soft_edge_rigid_pairs,
                 face_pairs=self.soft_face_rigid_pairs,
-                n_particle_pairs=self.soft_rigid_contact_pair_count,
+                n_particle_pairs=self.soft_contact_pair_count,
             )
 
         # Preserve the previous provenance if validation or collision setup fails.

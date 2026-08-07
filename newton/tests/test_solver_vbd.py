@@ -3023,7 +3023,7 @@ def _soft_contact_presize_is_world_aware(test, device):
             sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
             test.assertEqual(
                 sizes[world_count],
-                newton.CollisionPipeline(model, broad_phase="nxn").soft_rigid_contact_pair_count,
+                newton.CollisionPipeline(model, broad_phase="nxn").soft_contact_pair_count,
                 f"{globals_kind=} {world_count=}",
             )
         test.assertEqual(sizes[4], 4 * sizes[1], f"{globals_kind=}")
