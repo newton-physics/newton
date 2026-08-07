@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.utils.mesh import compute_vertex_normals
+from newton.tests.unittest_utils import get_test_devices
 
 
 class TestComputeVertexNormals(unittest.TestCase):
@@ -20,23 +21,21 @@ class TestComputeVertexNormals(unittest.TestCase):
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             dtype=np.float32,
         )
-        points_wp = wp.array(
-            points_np,
-            dtype=wp.vec3,
-            device="cpu",
-        )
         expected = np.array([[0.0, 0.0, 1.0]] * 3, dtype=np.float32)
-        warp_index_cases = {
-            "flat Warp": wp.array([0, 1, 2], dtype=wp.int32, device="cpu"),
-            "triangle-shaped Warp": wp.array([[0, 1, 2]], dtype=wp.int32, device="cpu"),
-            "flat NumPy": np.array([0, 1, 2], dtype=np.int32),
-            "triangle-shaped NumPy": np.array([[0, 1, 2]], dtype=np.int32),
-        }
 
-        for name, indices in warp_index_cases.items():
-            with self.subTest(points="Warp", indices=name):
-                normals = compute_vertex_normals(points_wp, indices)
-                np.testing.assert_allclose(normals.numpy(), expected)
+        for device in get_test_devices(mode="basic"):
+            points_wp = wp.array(points_np, dtype=wp.vec3, device=device)
+            warp_index_cases = {
+                "flat Warp": wp.array([0, 1, 2], dtype=wp.int32, device=device),
+                "triangle-shaped Warp": wp.array([[0, 1, 2]], dtype=wp.int32, device=device),
+                "flat NumPy": np.array([0, 1, 2], dtype=np.int32),
+                "triangle-shaped NumPy": np.array([[0, 1, 2]], dtype=np.int32),
+            }
+
+            for name, indices in warp_index_cases.items():
+                with self.subTest(points="Warp", indices=name, device=device):
+                    normals = compute_vertex_normals(points_wp, indices)
+                    np.testing.assert_allclose(normals.numpy(), expected)
 
         for name, indices in {
             "flat NumPy": np.array([0, 1, 2], dtype=np.int32),
@@ -68,12 +67,16 @@ class TestComputeVertexNormals(unittest.TestCase):
             dtype=np.float32,
         )
         points_wp = wp.array(points_np, dtype=wp.vec3, device="cpu")
-        indices = np.array([[0, 1, 2, 0]], dtype=np.int32)
+        invalid_indices = {
+            "invalid column count": np.array([[0, 1, 2, 0]], dtype=np.int32),
+            "invalid dimensions": np.array([[[0, 1, 2]]], dtype=np.int32),
+        }
 
-        for name, points in (("Warp", points_wp), ("NumPy", points_np)):
-            with self.subTest(points=name):
-                with self.assertRaisesRegex(ValueError, "indices must be flat or \\(N, 3\\) for NumPy inputs"):
-                    compute_vertex_normals(points, indices)
+        for layout, indices in invalid_indices.items():
+            for name, points in (("Warp", points_wp), ("NumPy", points_np)):
+                with self.subTest(layout=layout, points=name):
+                    with self.assertRaisesRegex(ValueError, "indices must be flat or \\(N, 3\\) for NumPy inputs"):
+                        compute_vertex_normals(points, indices)
 
 
 if __name__ == "__main__":
