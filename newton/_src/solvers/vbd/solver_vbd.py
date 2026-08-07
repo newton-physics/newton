@@ -1922,15 +1922,16 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         _Frequency = SolverBase.CollisionFrequencyType
         self._sc_mode_this_step, self._sc_freq_this_step = self._resolve_self_contact_schedule()
+        self._rigid_mode_this_step = _Frequency.NONE
+        self._rigid_freq_this_step = 1
         if self.pipeline is not None:
             contacts = self._resolve_step_contacts(contacts)
             rigid_mode = self._resolved_collision_frequency_type(SolverBase._COLLISION_SLOT_RIGID)
-            if rigid_mode == _Frequency.ITERATIONS:
-                raise NotImplementedError(
-                    "rigid ITERATIONS-mode collision is not yet implemented by SolverVBD "
-                    "(planned with the rigid-DAT work); use PRE_INIT or NONE."
-                )
-            if rigid_mode == _Frequency.PRE_INIT:
+            self._rigid_mode_this_step = rigid_mode
+            self._rigid_freq_this_step = self._collision_frequency[SolverBase._COLLISION_SLOT_RIGID]
+            if rigid_mode in (_Frequency.PRE_INIT, _Frequency.ITERATIONS):
+                # ITERATIONS' baseline includes the pre-init pass; in-loop
+                # re-detections start at the first k-th iteration.
                 self._run_rigid_collision(state_in)
                 update_rigid = True
             elif rigid_mode == _Frequency.NONE:
@@ -1943,6 +1944,22 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._initialize_particles(state_in, state_out, dt)
 
         for iter_num in range(self.iterations):
+            if (
+                self._rigid_mode_this_step == _Frequency.ITERATIONS
+                and iter_num > 0
+                and iter_num % self._rigid_freq_this_step == 0
+                and self.model.body_count > 0
+                and not self.integrate_with_external_rigid_solver
+            ):
+                # Mid-solve rigid re-detection at the current iterate poses:
+                # rigid iterations update state_in.body_q in place and particle
+                # iterations update state_out.particle_q. In-flight contact
+                # lambdas are snapshotted first so the matched warm-start
+                # restore carries them onto the re-detected contact set (a
+                # cold restart when history/matching are disabled).
+                self._snapshot_rigid_contact_history(contacts)
+                self._run_rigid_collision(self._rigid_iterate_view(state_in, state_out))
+                self._initialize_rigid_bodies(state_in, control, contacts, dt, refresh=True, contact_state_only=True)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
@@ -2279,6 +2296,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
         refresh: bool,
+        contact_state_only: bool = False,
     ) -> None:
         """Initialize rigid body states for AVBD solver (pre-iteration phase).
 
@@ -2293,6 +2311,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         The ``refresh`` input controls whether rigid contact lists and contact
         state are rebuilt. It may be promoted locally when contact state needs
         first-time allocation or resizing.
+
+        With ``contact_state_only=True`` (the mid-solve re-detection path of
+        rigid ``ITERATIONS`` mode) only that rebuild runs: per-step decay,
+        joint forces, and forward integration belong to the once-per-step
+        prologue and are skipped.
         """
         model = self.model
         internal_rigid = model.body_count > 0 and not self.integrate_with_external_rigid_solver
@@ -2448,6 +2471,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                     if self.rigid_contact_history and contact_launch_dim > 0:
                         self._contact_history_reset_mask.zero_()
                         self._contact_history_reset_pending.zero_()
+
+            if contact_state_only:
+                return
 
             # Per-step k decay + lambda decay + C0 (body_q is still collide frame here).
             if contacts is not None and contacts.rigid_contact_max > 0:
@@ -3410,6 +3436,19 @@ class SolverVBD(SolverBase, CouplingInterface):
                 return Frequency.PRE_INIT
             return Frequency.ITERATIONS
         return super()._default_collision_frequency_type(slot)
+
+    def _rigid_iterate_view(self, state_in: State, state_out: State) -> State:
+        """A State aliasing the mid-solve iterate arrays for collision detection.
+
+        No arrays are copied: rigid iterations update ``state_in.body_q`` in
+        place, and particle iterations update ``state_out.particle_q``.
+        """
+        view = State()
+        view.body_q = state_in.body_q
+        view.body_qd = state_in.body_qd
+        view.particle_q = state_out.particle_q if state_out.particle_q is not None else state_in.particle_q
+        view.particle_qd = state_in.particle_qd
+        return view
 
     def _resolve_self_contact_schedule(self):
         """Resolve the self-contact slot to a concrete (mode, frequency) pair.

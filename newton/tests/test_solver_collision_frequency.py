@@ -3,6 +3,7 @@
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -110,6 +111,44 @@ def test_frequency_validation_and_ownership(test, device):
         solver.step(model.state(), model.state(), None, pipeline.contacts(), 1e-3)
 
 
+def test_vbd_rigid_iterations_mode(test, device):
+    """Verify rigid ITERATIONS: k > iterations matches PRE_INIT; k = 1 re-detects mid-solve.
+
+    With k larger than the iteration count only the pre-init baseline pass
+    fires, so results must match PRE_INIT up to contact-ordering noise; with
+    k = 1 the mid-solve re-detection path runs every iteration and must stay
+    finite.
+    """
+    from newton.solvers import SolverVBD  # noqa: PLC0415
+
+    def run(mode, freq):
+        builder = newton.ModelBuilder()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.45), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+        builder.add_ground_plane()
+        builder.color()
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        solver = SolverVBD(
+            model,
+            iterations=3,
+            pipeline=pipeline,
+            collision_frequency=[freq, 1],
+            collision_frequency_type=[mode, Frequency.NONE],
+        )
+        s0, s1 = model.state(), model.state()
+        for _ in range(3):
+            solver.step(s0, s1, None, None, 1e-3)
+            s0, s1 = s1, s0
+        return s0.body_q.numpy()
+
+    q_pre = run(Frequency.PRE_INIT, 1)
+    q_hi = run(Frequency.ITERATIONS, 10)
+    assert_np_equal(q_hi, q_pre, tol=1e-6)
+    q_k1 = run(Frequency.ITERATIONS, 1)
+    test.assertTrue(np.isfinite(q_k1).all())
+
+
 def _build_cloth_model(device):
     builder = newton.ModelBuilder()
     builder.add_cloth_grid(
@@ -212,6 +251,12 @@ add_function_test(
     TestSolverCollisionFrequency,
     "test_frequency_validation_and_ownership",
     test_frequency_validation_and_ownership,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_rigid_iterations_mode",
+    test_vbd_rigid_iterations_mode,
     devices=devices,
 )
 add_function_test(
