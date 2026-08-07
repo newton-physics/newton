@@ -339,6 +339,75 @@ class TestInertia(unittest.TestCase):
         vol_cone = np.pi * radius**2 * (2 * half_height) / 3
         self.assertAlmostEqual(vol_mesh, vol_cone, delta=vol_cone * 0.001)
 
+    def test_barrel_cylinder_inertia_matches_mesh(self):
+        """Verify barrel-cylinder mass properties against a fine triangle mesh."""
+        density = 1000.0
+        radius = 0.5
+        half_height = 1.0
+        barrel_radius = 2.0
+        mesh = newton.Mesh.create_cylinder(
+            radius,
+            half_height,
+            up_axis=newton.Axis.Z,
+            segments=128,
+            barrel_radius=barrel_radius,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+
+        mass_mesh, com_mesh, inertia_mesh, _ = compute_inertia_mesh(
+            density=density,
+            vertices=mesh.vertices,
+            indices=mesh.indices,
+            is_solid=True,
+        )
+        mass, com, inertia = compute_inertia_cylinder(density, radius, half_height, barrel_radius)
+
+        self.assertAlmostEqual(mass, mass_mesh, delta=mass * 1.0e-3)
+        assert_np_equal(np.array(com), np.array(com_mesh), tol=1.0e-5)
+        assert_np_equal(np.array(inertia), np.array(inertia_mesh), tol=float(inertia[0, 0]) * 2.0e-3)
+
+    def test_barrel_cylinder_inertia_dispatcher(self):
+        """Verify cylinder dispatch includes the barrel profile."""
+        density = 1000.0
+        scale = wp.vec3(0.5, 1.0, 2.0)
+        mass, com, inertia = compute_inertia_shape(GeoType.CYLINDER, scale, None, density)
+        mass_ref, com_ref, inertia_ref = compute_inertia_cylinder(density, scale[0], scale[1], scale[2])
+        straight_mass, _, _ = compute_inertia_cylinder(density, scale[0], scale[1])
+
+        self.assertGreater(mass, straight_mass)
+        self.assertAlmostEqual(mass, mass_ref, delta=1.0e-6)
+        assert_np_equal(np.array(com), np.array(com_ref), tol=1.0e-6)
+        assert_np_equal(np.array(inertia), np.array(inertia_ref), tol=1.0e-6)
+
+    def test_hollow_barrel_cylinder_inertia(self):
+        """Verify hollow barrels subtract the parameter-shrunk inner profile."""
+        density = 1000.0
+        radius = 0.5
+        half_height = 1.0
+        barrel_radius = 2.0
+        thickness = 0.1
+        mass, com, inertia = compute_inertia_shape(
+            GeoType.CYLINDER,
+            wp.vec3(radius, half_height, barrel_radius),
+            None,
+            density,
+            is_solid=False,
+            thickness=thickness,
+        )
+        outer = compute_inertia_cylinder(density, radius, half_height, barrel_radius)
+        inner = compute_inertia_cylinder(
+            density,
+            radius - thickness,
+            half_height - thickness,
+            barrel_radius - thickness,
+        )
+
+        self.assertAlmostEqual(mass, outer[0] - inner[0], delta=1.0e-6)
+        assert_np_equal(np.array(com), np.zeros(3), tol=1.0e-6)
+        assert_np_equal(np.array(inertia), np.array(outer[2] - inner[2]), tol=1.0e-5)
+
     def test_compute_inertia_shape_dispatcher(self):
         """Test compute_inertia_shape for primitive shapes against analytical formulas.
 

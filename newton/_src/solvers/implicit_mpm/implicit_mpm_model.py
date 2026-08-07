@@ -130,10 +130,12 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
 
     elif geo_type == newton.GeoType.CYLINDER:
         radius, half_height = geo_scale[:2]
+        barrel_radius = geo_scale[2] if len(geo_scale) > 2 else 0.0
         mesh = newton.Mesh.create_cylinder(
             radius,
             half_height,
             up_axis=newton.Axis.Z,
+            barrel_radius=barrel_radius,
             compute_normals=False,
             compute_uvs=False,
             compute_inertia=False,

@@ -120,6 +120,8 @@ Special cases:
 - **Hollow shapes** (``ShapeConfig.is_solid=False``) compute shell inertia
   by subtracting the inner volume's contribution from the outer, using
   :attr:`ShapeConfig.margin <newton.ModelBuilder.ShapeConfig.margin>` as shell thickness.
+- Cylinder mass properties include the circular side profile selected by
+  ``barrel_radius``.
 
 
 .. _Mass resolution during file import:

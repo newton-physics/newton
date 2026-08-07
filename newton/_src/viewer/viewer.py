@@ -1460,7 +1460,8 @@ class ViewerBase(ABC):
             geo_type: Geometry type value from :class:`newton.GeoType`.
             geo_scale: Geometry scale parameters:
                 - Sphere: float radius
-                - Capsule/Cylinder/Cone: (radius, height)
+                - Capsule/Cone: (radius, half-height)
+                - Cylinder: (end radius, half-height, barrel radius)
                 - Plane: (width, length) or float for both
                 - Box: (x_extent, y_extent, z_extent) or float for all
             xforms: wp.array[wp.transform] of instance transforms
@@ -1651,7 +1652,14 @@ class ViewerBase(ABC):
 
         elif geo_type == newton.GeoType.CYLINDER:
             radius, half_height = geo_scale[:2]
-            mesh = newton.Mesh.create_cylinder(radius, half_height, up_axis=newton.Axis.Z, compute_inertia=False)
+            barrel_radius = geo_scale[2] if len(geo_scale) > 2 else 0.0
+            mesh = newton.Mesh.create_cylinder(
+                radius,
+                half_height,
+                up_axis=newton.Axis.Z,
+                barrel_radius=barrel_radius,
+                compute_inertia=False,
+            )
 
         elif geo_type == newton.GeoType.CONE:
             radius, half_height = geo_scale[:2]

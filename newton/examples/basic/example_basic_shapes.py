@@ -75,7 +75,7 @@ class Example:
         body_cylinder = builder.add_body(
             xform=wp.transform(p=self.cylinder_pos, q=wp.quat_identity()), label="cylinder"
         )
-        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
+        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6, barrel_radius=0.8)
 
         # BOX
         self.box_pos = wp.vec3(0.0, 2.0, drop_z)

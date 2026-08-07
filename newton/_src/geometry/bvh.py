@@ -96,7 +96,13 @@ def compute_capsule_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp
 def compute_cylinder_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     radius = size[0]
     half_length = size[1]
-    extent = wp.vec3f(radius, radius, half_length)
+    barrel_radius = size[2]
+    radial_extent = radius
+    if barrel_radius > 0.0:
+        radial_extent += (half_length * half_length) / (
+            barrel_radius + wp.sqrt(barrel_radius * barrel_radius - half_length * half_length)
+        )
+    extent = wp.vec3f(radial_extent, radial_extent, half_length)
     return compute_box_bounds(transform, extent)
 
 

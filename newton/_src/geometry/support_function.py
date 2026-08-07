@@ -91,7 +91,7 @@ class GenericShapeData:
       - SPHERE: radius in x
       - CAPSULE: radius in x, half-height in y (axis +Z)
       - ELLIPSOID: semi-axes (x, y, z)
-      - CYLINDER: radius in x, half-height in y (axis +Z)
+      - CYLINDER: end radius in x, half-height in y, barrel radius in z (axis +Z)
       - CONE: radius in x, half-height in y (axis +Z, apex at +Z)
       - PLANE: half-width in x, half-length in y (lies in XY plane at z=0, normal along +Z)
       - TRIANGLE: vertex B-A stored in scale, vertex C-A stored in auxiliary
@@ -113,7 +113,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
     - SPHERE: radius in x component
     - CAPSULE: radius in x, half-height in y (axis along +Z)
     - ELLIPSOID: semi-axes in x/y/z
-    - CYLINDER: radius in x, half-height in y (axis along +Z)
+    - CYLINDER: end radius in x, half-height in y, barrel radius in z (axis along +Z)
     - CONE: radius in x, half-height in y (axis along +Z, apex at +Z)
     - PLANE: half-width in x, half-length in y (lies in XY plane at z=0, normal along +Z)
     - CONVEX_MESH: scale contains mesh scale, auxiliary contains packed mesh pointer
@@ -240,24 +240,48 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
     elif geom.shape_type == GeoType.CYLINDER:
         radius = geom.scale[0]
         half_height = geom.scale[1]
+        barrel_radius = geom.scale[2]
 
-        # Cylinder support: project direction to XY plane for lateral surface
         dir_xy = wp.vec3(direction[0], direction[1], 0.0)
         dir_xy_len_sq = wp.length_sq(dir_xy)
 
-        if dir_xy_len_sq > eps:
-            n_xy = wp.normalize(dir_xy)
-            lateral_point = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, 0.0)
-        else:
-            lateral_point = wp.vec3(radius, 0.0, 0.0)
+        if barrel_radius == 0.0:
+            # Keep the regular-cylinder path unchanged.
+            if dir_xy_len_sq > eps:
+                n_xy = wp.normalize(dir_xy)
+                lateral_point = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, 0.0)
+            else:
+                lateral_point = wp.vec3(radius, 0.0, 0.0)
 
-        # Choose between top cap, bottom cap, or lateral surface
-        if direction[2] > 0.0:
-            result = wp.vec3(lateral_point[0], lateral_point[1], half_height)
-        elif direction[2] < 0.0:
-            result = wp.vec3(lateral_point[0], lateral_point[1], -half_height)
+            if direction[2] > 0.0:
+                result = wp.vec3(lateral_point[0], lateral_point[1], half_height)
+            elif direction[2] < 0.0:
+                result = wp.vec3(lateral_point[0], lateral_point[1], -half_height)
+            else:
+                result = lateral_point
         else:
-            result = lateral_point
+            if dir_xy_len_sq > eps:
+                dir_xy_len = wp.sqrt(dir_xy_len_sq)
+                n_xy = dir_xy / dir_xy_len
+            else:
+                dir_xy_len = 0.0
+                n_xy = wp.vec3(1.0, 0.0, 0.0)
+
+            direction_len = wp.sqrt(dir_xy_len_sq + direction[2] * direction[2])
+            support_z = 0.0
+            if direction_len > eps:
+                support_z = wp.clamp(barrel_radius * direction[2] / direction_len, -half_height, half_height)
+
+            barrel_radius_sq = barrel_radius * barrel_radius
+            half_height_sq = half_height * half_height
+            support_z_sq = support_z * support_z
+            end_offset = wp.sqrt(barrel_radius_sq - half_height_sq)
+            support_offset = wp.sqrt(wp.max(barrel_radius_sq - support_z_sq, 0.0))
+            offset_sum = support_offset + end_offset
+            support_radius = radius
+            if offset_sum > eps:
+                support_radius += (half_height_sq - support_z_sq) / offset_sum
+            result = wp.vec3(n_xy[0] * support_radius, n_xy[1] * support_radius, support_z)
 
     elif geom.shape_type == GeoType.CONE:
         radius = geom.scale[0]
