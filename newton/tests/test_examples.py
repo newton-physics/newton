@@ -54,6 +54,14 @@ _NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
     r"\(ref: [0-9a-f]{40}\)\.\.\.\n"
     r"Successfully downloaded folder to: [^\n]+\n?"
 )
+_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE = (
+    r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
+    r"\(ref: main\)\.\.\.\n"
+    r"Successfully downloaded folder to: [^\n]+\n?"
+)
+_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE = r"Downloading nut/bolt assets\.\.\.\n?"
+_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE = r"Assets downloaded to: [^\n]+\n?"
+_PYRAMID_BUILD_OUTPUT_RE = r"Built 3 pyramids x 5 rows = 45 boxes\n?"
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
 _DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
@@ -987,8 +995,20 @@ add_basic_example_test(
 )
 
 
-class TestContactsExamples(unittest.TestCase):
+class TestContactsExamples(NewtonTestCase):
     pass
+
+
+_CONTACT_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
+    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
+]
+
+
+def add_contact_example_test(**kwargs: Any) -> None:
+    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
+    allow_output_regexes = [*_CONTACT_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
+    add_example_test(TestContactsExamples, allow_output_regexes=allow_output_regexes, **kwargs)
 
 
 for example_name in (
@@ -997,8 +1017,7 @@ for example_name in (
     "contacts.example_newton_cradle",
 ):
     for solver in ("xpbd", "vbd"):
-        add_example_test(
-            TestContactsExamples,
+        add_contact_example_test(
             name=example_name,
             devices=cuda_test_devices,
             test_options={"num-frames": 60, "solver": solver},
@@ -1007,33 +1026,41 @@ for example_name in (
         )
 
 
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     use_viewer=True,
+    expect_output_regexes=[
+        (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
+        (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
+    ],
+    allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     use_viewer=True,
+    expect_output_regexes=[
+        (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
+        (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
+    ],
+    allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_brick_stacking",
     devices=cuda_test_devices,
     test_options={"num-frames": 1200},
     use_viewer=True,
+    allow_output_regexes=[(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_pyramid",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5},
     use_viewer=True,
+    expect_output_regexes=[(_PYRAMID_BUILD_OUTPUT_RE, "stdout")],
 )
 
 
