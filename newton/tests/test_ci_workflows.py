@@ -4,11 +4,27 @@
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 from os import environ, pathsep
 from pathlib import Path
+
+
+def find_bash() -> str | None:
+    """Find a Bash executable without selecting WSL on Windows."""
+    if sys.platform != "win32":
+        return shutil.which("bash")
+
+    git = shutil.which("git")
+    if git is None:
+        return None
+    git_dir = Path(git).resolve().parent
+    for candidate in (git_dir / "bash.exe", git_dir.parent / "bin" / "bash.exe"):
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def extract_run_script(workflow: str) -> str:
@@ -33,6 +49,9 @@ def extract_run_script(workflow: str) -> str:
 class TestPullRequestWorkflows(unittest.TestCase):
     def test_closed_pr_cancels_only_exact_head_runs(self):
         """Cancel only exact-head runs for the closed pull request."""
+        bash = find_bash()
+        if bash is None:
+            self.skipTest("Bash is required to exercise the workflow filter")
         if shutil.which("jq") is None:
             self.skipTest("jq is required to exercise the workflow filter")
 
@@ -168,7 +187,7 @@ class TestPullRequestWorkflows(unittest.TestCase):
                 }
             )
             result = subprocess.run(
-                ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", shell],
+                [bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", shell],
                 cwd=repo_root,
                 env=env,
                 check=False,
