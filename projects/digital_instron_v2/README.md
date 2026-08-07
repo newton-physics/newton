@@ -56,6 +56,12 @@ recorded response, or `--viewer gl` for the interactive viewer (the midsole
 renders as a live bed of compression-coloured foam columns/springs that sink and
 redden under load).
 
+The `attached` mode is launch-overhead-bound (hundreds of tiny per-substep kernel
+launches, not compute), so its whole 128-substep frame is captured into a single
+CUDA graph and replayed once per frame — about a 7x speedup, making it faster than
+real time. The foot trajectory is precomputed once into device arrays so the loop
+stays fully on the GPU. Pass `--eager` to disable graph capture for debugging.
+
 ## Tests
 
 ```bash

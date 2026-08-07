@@ -101,11 +101,12 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        self._graph = None
+        self._use_graph = self._attached and self.device.is_cuda and not getattr(args, "eager", False)
         if self._attached:
             q0 = self._target_pose(0.0)
             self.state_0.body_q.assign(q0.reshape(1, 7))
             self.state_1.body_q.assign(q0.reshape(1, 7))
-            self._target_prev = q0
             self._coupling_force = wp.zeros(1, dtype=wp.float32, device=self.device)
 
         self.foundation = MidsoleFoundation(
@@ -211,6 +212,7 @@ class Example:
             self._kp_ang, self._kd_ang = 300.0, 40.0
             self._max_force = 20000.0
             self._add_last_visual(builder, manifest, at_com=True)
+            self._build_target_trajectory()
             self._driven = False
             self._attached = True
 
@@ -297,44 +299,72 @@ class Example:
         w = 2.0 * q_rel[:3] / dt
         return v, w
 
-    def simulate(self):
-        """Advance the foundation and, for the free-body mode, the rigid-body solver by one frame."""
+    def _build_target_trajectory(self):
+        """Precompute one stride period of per-substep target poses/velocities on the GPU.
+
+        The prescribed foot stride is periodic, so evaluating it once into device arrays lets
+        the attached substep loop run with no per-substep host work, which in turn lets the
+        whole frame be captured into a single CUDA graph.
+        """
+        period = int(round(ATTACHED_PERIOD_S / self.sim_dt))
+        poses = np.stack([self._target_pose(j * self.sim_dt) for j in range(period)]).astype(np.float32)
+        vels = np.zeros((period, 6), dtype=np.float32)
+        for j in range(period):
+            v, w = self._pose_velocity(poses[(j - 1) % period], poses[j], self.sim_dt)
+            vels[j] = np.concatenate([v, w])
+        self._period_substeps = period
+        self._target_traj = wp.array(np.ascontiguousarray(poses), dtype=wp.transform, device=self.device)
+        self._target_vel_traj = wp.array(np.ascontiguousarray(vels), dtype=wp.spatial_vector, device=self.device)
+        self._substep_counter = wp.zeros(1, dtype=wp.int32, device=self.device)
+
+    def _attached_substeps(self):
+        """Advance the attached dynamic shoe by one frame using only device-side work."""
         for _ in range(self.sim_substeps):
-            if self._attached:
-                cur = self._target_pose(self.sim_time)
-                v, w = self._pose_velocity(self._target_prev, cur, self.sim_dt)
-                self._target_prev = cur
-                target = wp.transform(
-                    wp.vec3(float(cur[0]), float(cur[1]), float(cur[2])),
-                    wp.quat(float(cur[3]), float(cur[4]), float(cur[5]), float(cur[6])),
-                )
-                target_vel = wp.spatial_vector(
-                    float(v[0]), float(v[1]), float(v[2]), float(w[0]), float(w[1]), float(w[2])
-                )
-                self.state_0.clear_forces()
-                self.foundation.apply(self.state_0, self.sim_dt)
-                wp.launch(
-                    attach_coupling,
-                    dim=1,
-                    inputs=[
-                        self.carrier,
-                        self.state_0.body_q,
-                        self.state_0.body_qd,
-                        target,
-                        target_vel,
-                        self._kp_lin,
-                        self._kd_lin,
-                        self._kp_ang,
-                        self._kd_ang,
-                        self._max_force,
-                        self.state_0.body_f,
-                        self._coupling_force,
-                    ],
-                    device=self.device,
-                )
-                self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-                self.state_0, self.state_1 = self.state_1, self.state_0
-            elif self._driven:
+            self.state_0.clear_forces()
+            self.foundation.apply(self.state_0, self.sim_dt)
+            wp.launch(
+                attach_coupling,
+                dim=1,
+                inputs=[
+                    self.carrier,
+                    self.state_0.body_q,
+                    self.state_0.body_qd,
+                    self._target_traj,
+                    self._target_vel_traj,
+                    self._substep_counter,
+                    self._period_substeps,
+                    self._kp_lin,
+                    self._kd_lin,
+                    self._kp_ang,
+                    self._kd_ang,
+                    self._max_force,
+                    self.state_0.body_f,
+                    self._coupling_force,
+                ],
+                device=self.device,
+            )
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.state_0, self.state_1 = self.state_1, self.state_0
+
+    def simulate(self):
+        """Advance the foundation and, for the free-body modes, the rigid-body solver by one frame."""
+        if self._attached:
+            # The attached loop is fully device-side, so capture the whole frame into a CUDA
+            # graph once and replay it -- this removes the per-substep kernel-launch overhead
+            # that dominates the cost of this launch-bound scenario.
+            if self._use_graph:
+                if self._graph is None:
+                    with wp.ScopedCapture(device=self.device) as capture:
+                        self._attached_substeps()
+                    self._graph = capture.graph
+                wp.capture_launch(self._graph)
+            else:
+                self._attached_substeps()
+            self.sim_time += self.frame_dt
+            return
+
+        for _ in range(self.sim_substeps):
+            if self._driven:
                 self.state_0.body_q.assign(self._carrier_pose(self.sim_time).reshape(1, 7))
                 self.state_0.body_qd.zero_()
                 self.state_0.clear_forces()
@@ -558,5 +588,10 @@ if __name__ == "__main__":
         help="Simulation scenario to run (instron | settle | stride | attached).",
     )
     parser.add_argument("--manifest", type=str, default=MANIFEST, help="Digital Instron manifest path.")
+    parser.add_argument(
+        "--eager",
+        action="store_true",
+        help="Disable CUDA-graph capture in the attached mode (slower; for debugging).",
+    )
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

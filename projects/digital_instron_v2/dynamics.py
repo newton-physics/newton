@@ -527,8 +527,10 @@ def attach_coupling(
     body: wp.int32,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
-    target: wp.transform,
-    target_vel: wp.spatial_vector,
+    target_traj: wp.array[wp.transform],
+    target_vel_traj: wp.array[wp.spatial_vector],
+    counter: wp.array[wp.int32],
+    period: wp.int32,
     kp_lin: wp.float32,
     kd_lin: wp.float32,
     kp_ang: wp.float32,
@@ -543,7 +545,15 @@ def attach_coupling(
     slack (tiny force) whenever the shoe can freely follow the foot in flight,
     and stiff (large force) when the ground blocks the shoe in stance. The COM
     is assumed to sit at the body origin (``body_com == 0``).
+
+    The target pose/velocity for the current substep are read from a precomputed,
+    periodic device trajectory indexed by ``counter[0] % period``; the counter is
+    advanced on device so the whole substep loop stays host-free and CUDA-graph
+    capturable.
     """
+    idx = counter[0] % period
+    target = target_traj[idx]
+    target_vel = target_vel_traj[idx]
     pos = wp.transform_get_translation(body_q[body])
     rot = wp.transform_get_rotation(body_q[body])
     target_pos = wp.transform_get_translation(target)
@@ -569,6 +579,7 @@ def attach_coupling(
 
     wp.atomic_add(body_f, body, wp.spatial_vector(force, moment))
     out_force[0] = wp.length(force)
+    counter[0] = (idx + 1) % period
 
 
 @wp.kernel
