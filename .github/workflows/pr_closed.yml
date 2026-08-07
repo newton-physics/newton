@@ -61,7 +61,8 @@ jobs:
                       )
                     | .id
                   ' \
-              | while read -r run_id; do
+              | while IFS= read -r run_id; do
+                  run_id=${run_id%$'\r'}
                   if [ "$run_id" != "$CURRENT_RUN" ]; then
                     echo "Cancelling run $run_id"
                     if ! gh run cancel "$run_id"; then
