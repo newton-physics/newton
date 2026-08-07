@@ -127,6 +127,64 @@ class TestMidsoleFoundation(unittest.TestCase):
         self.assertLess(np.sqrt(np.mean((collected - predicted) ** 2)) / peak, 5.0e-3)
         self.assertLess(abs(collected.max() - peak) / peak, 2.0e-2)
 
+    def test_bristle_friction_sticks_below_cone_and_slips_above(self):
+        """Verify anchored stick-slip friction: a planted patch resists a static offset, saturating at the cone.
+
+        A purely viscous friction law produces zero tangential force at zero slip velocity,
+        so the static-offset probes below would all read zero and fail without the anchored
+        bristle model.
+        """
+        geo = dynamics.build_foundation_geometry(MANIFEST)
+        material = dynamics.load_fitted_material(MANIFEST)
+        device = wp.get_preferred_device()
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        anchor = np.column_stack([geo.uv_m[:, 0], geo.uv_m[:, 1], geo.surface_m])
+        kt, mu, depth = 2.0e4, 1.0, 0.006
+        foundation = dynamics.MidsoleFoundation(
+            anchor,
+            geo.z_free_m,
+            geo.slack_m,
+            np.full(len(geo.slack_m), geo.area_m2),
+            geo.neighbors,
+            geo.spacing_m,
+            material,
+            body,
+            model.body_com,
+            dynamics.FoundationConfig(stretch_floor=1.0e-3, friction_stiffness=kt, friction=0.0, mu=mu),
+            device,
+        )
+
+        def probe(dx: float) -> tuple[float, float]:
+            # Hold the bed a fixed depth into the ground and offset it by ``dx`` tangentially with
+            # zero velocity, returning the tangential reaction opposing the offset and the normal load.
+            state.body_q.assign(np.array([[dx, 0.0, -depth, 0.0, 0.0, 0.0, 1.0]], np.float32))
+            state.body_qd.zero_()
+            state.clear_forces()
+            foundation.apply(state, 1.0e-3)
+            return -float(state.body_f.numpy()[0][0]), foundation.diagnostics()["normal_force_n"]
+
+        seat_force, normal_force = probe(0.0)  # fresh contact seats the bristles with no pre-stretch
+        cone = mu * normal_force
+        self.assertGreater(normal_force, 100.0)
+        self.assertLess(abs(seat_force), 1.0e-3 * cone)
+
+        near_force, _ = probe(2.0e-5)  # 0.02 mm static offset -> static shear with zero slip velocity
+        far_force, _ = probe(4.0e-5)  # 0.04 mm static offset -> larger elastic build-up, still stuck
+        self.assertGreater(near_force, 0.05 * cone)
+        self.assertLess(far_force, cone)
+        self.assertGreater(far_force, near_force)
+
+        foundation.reset()  # release the bristles, then re-seat before driving well past the cone
+        probe(0.0)
+        slip_force, slip_normal = probe(0.02)  # 20 mm offset saturates the whole patch at mu * fn
+        self.assertAlmostEqual(slip_force, mu * slip_normal, delta=0.03 * mu * slip_normal)
+
 
 class TestMidsoleExample(unittest.TestCase):
     def test_instron_hysteresis(self):

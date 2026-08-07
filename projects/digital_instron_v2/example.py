@@ -160,7 +160,9 @@ class Example:
                 com=wp.vec3(0.0, 0.0, 0.0),
                 inertia=wp.mat33(0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01),
             )
-            cfg = FoundationConfig(stretch_floor=0.05, normal_damping=8.0, friction=3000.0, mu=1.0)
+            cfg = FoundationConfig(
+                stretch_floor=0.05, normal_damping=8.0, friction_stiffness=2.0e4, friction=10.0, mu=1.0
+            )
             self._add_plate_visual(builder)
             self._driven = False
 
@@ -200,7 +202,9 @@ class Example:
                 com=wp.vec3(0.0, 0.0, 0.0),
                 inertia=wp.mat33(0.05, 0.0, 0.0, 0.0, 0.08, 0.0, 0.0, 0.0, 0.08),
             )
-            cfg = FoundationConfig(stretch_floor=0.05, normal_damping=8.0, friction=1000.0, mu=1.0)
+            cfg = FoundationConfig(
+                stretch_floor=0.05, normal_damping=8.0, friction_stiffness=2.0e4, friction=10.0, mu=1.0
+            )
             # The stiff foam + light shoe is numerically stiff, so integrate the attached
             # stride with finer substeps than the driven/settle scenarios (converged at 128).
             self.sim_substeps = 128

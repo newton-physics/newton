@@ -27,9 +27,12 @@ the dynamic example below.
 `dynamics.py` turns the calibrated column bed into a live Warp force model: each
 substep every column reads its carrier-body pose, computes its through-thickness
 compression, evaluates the Hyperfoam equilibrium pressure with a real-time
-generalized-Maxwell overstress branch and Pasternak lateral coupling, and
-accumulates the resulting wrench into `newton.State.body_f`. Four scenarios
-share the same foundation:
+generalized-Maxwell overstress branch and Pasternak lateral coupling, adds an
+anchored bristle (elastoplastic) Coulomb friction that holds a planted contact
+patch and saturates at `mu * fn`, and accumulates the full six-component
+ground-reaction wrench (normal, tangential shear, and the resultant moment that
+carries the center of pressure) into `newton.State.body_f`. Four scenarios share
+the same foundation:
 
 ```bash
 # Displacement-controlled digital Instron: squish the midsole between a
@@ -37,7 +40,7 @@ share the same foundation:
 uv run -m projects.digital_instron_v2.example --mode instron
 
 # Free, massive midsole resting in stable equilibrium on the foundation;
-# a lateral load is resisted by Coulomb foam-shear friction.
+# a sub-cone lateral load is held by the anchored stick-slip foam friction.
 uv run -m projects.digital_instron_v2.example --mode settle
 
 # Synthetic running stride that rolls a foot heel-to-toe over the foundation,

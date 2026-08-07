@@ -53,7 +53,8 @@ class FoundationParams:
     inv_h2: wp.float32  # 1 / spacing^2 [1/m^2]
     stretch_floor: wp.float32  # minimum stretch (foam densification limit)
     normal_damping: wp.float32  # per-column Kelvin-Voigt normal damping [N.s/m]
-    friction_kv: wp.float32  # tangential viscous coefficient [N.s/m per column]
+    friction_kt: wp.float32  # bristle tangential stiffness [N/m per column]
+    friction_kv: wp.float32  # bristle tangential damping [N.s/m per column]
     mu: wp.float32  # Coulomb friction coefficient
 
 
@@ -109,6 +110,8 @@ def foundation_apply(
     neighbors: wp.array2d[wp.int32],
     compression: wp.array[wp.float32],
     base_pressure: wp.array[wp.float32],
+    tangent_anchor: wp.array[wp.vec2],
+    tangent_stuck: wp.array[wp.int32],
     params: FoundationParams,
     body_f: wp.array[wp.spatial_vector],
     normal_force: wp.array[wp.float32],
@@ -144,12 +147,27 @@ def foundation_apply(
     if fn < 0.0:
         fn = 0.0
 
-    v_tan = wp.vec3(point_vel[0], point_vel[1], 0.0)
-    f_tan = -params.friction_kv * v_tan
+    # Anchored bristle (elastoplastic) Coulomb friction: a per-column tangential
+    # spring pulls the contact patch back toward a world stick point, so a planted
+    # patch holds (static regime, zero drift) and carries braking/propulsion shear
+    # without needing a slip velocity. When the spring force would exceed the cone
+    # mu*fn it saturates and the anchor slides forward onto the cone (kinetic regime).
+    p_t = wp.vec2(world[0], world[1])
     f_max = params.mu * fn
-    mag = wp.length(f_tan)
-    if mag > f_max and mag > 1.0e-9:
-        f_tan = f_tan * (f_max / mag)
+    f_tan = wp.vec2(0.0, 0.0)
+    if fn <= 0.0 or params.friction_kt <= 0.0:
+        tangent_anchor[i] = p_t
+        tangent_stuck[i] = 0
+    else:
+        if tangent_stuck[i] == 0:
+            tangent_anchor[i] = p_t  # fresh contact: seat with no pre-stretch
+            tangent_stuck[i] = 1
+        v_tan = wp.vec2(point_vel[0], point_vel[1])
+        f_tan = -params.friction_kt * (p_t - tangent_anchor[i]) - params.friction_kv * v_tan
+        mag = wp.length(f_tan)
+        if mag > f_max and mag > 1.0e-9:
+            f_tan = f_tan * (f_max / mag)
+            tangent_anchor[i] = p_t + f_tan / params.friction_kt  # slide the anchor onto the cone
 
     force = wp.vec3(f_tan[0], f_tan[1], fn)
     wp.atomic_add(body_f, carrier, wp.spatial_vector(force, wp.cross(r, force)))
@@ -190,15 +208,19 @@ def foundation_reset(
 class FoundationConfig:
     """Tunable dynamic parameters layered on the calibrated constitutive law.
 
-    The Instron replay leaves ``normal_damping`` and ``friction`` at zero and
-    keeps ``stretch_floor`` below the calibration's peak strain so the collected
-    loop reproduces the fitted force-displacement response exactly. The massive
-    and stride scenarios add foam damping and Coulomb friction for stable
-    rigid-body coupling.
+    The Instron replay leaves ``normal_damping``, ``friction_stiffness`` and
+    ``friction`` at zero and keeps ``stretch_floor`` below the calibration's peak
+    strain so the collected loop reproduces the fitted force-displacement response
+    exactly. The free-body scenarios add foam damping and an anchored bristle
+    (elastoplastic) Coulomb friction: ``friction_stiffness`` is the per-column
+    tangential spring that holds a planted contact patch (true stick), ``friction``
+    is its stabilising damping, and ``mu`` bounds the tangential force at the cone
+    ``mu * fn`` (slip).
     """
 
     stretch_floor: float = 0.05
     normal_damping: float = 0.0
+    friction_stiffness: float = 0.0
     friction: float = 0.0
     mu: float = 0.0
 
@@ -251,6 +273,7 @@ class MidsoleFoundation:
         params.inv_h2 = 1.0 / spacing_m**2
         params.stretch_floor = config.stretch_floor
         params.normal_damping = config.normal_damping
+        params.friction_kt = config.friction_stiffness
         params.friction_kv = config.friction
         params.mu = config.mu
         self.params = params
@@ -265,14 +288,17 @@ class MidsoleFoundation:
         self.peq_prev = wp.zeros(m, dtype=wp.float32, device=device)
         self.compression = wp.zeros(m, dtype=wp.float32, device=device)
         self.base_pressure = wp.zeros(m, dtype=wp.float32, device=device)
+        self.tangent_anchor = wp.zeros(m, dtype=wp.vec2, device=device)  # world XY stick point
+        self.tangent_stuck = wp.zeros(m, dtype=wp.int32, device=device)  # 1 while the bristle grips
         self.normal_force = wp.zeros(1, dtype=wp.float32, device=device)
         self.cop_moment = wp.zeros(1, dtype=wp.vec3, device=device)
         self.active = wp.zeros(1, dtype=wp.int32, device=device)
 
     def reset(self) -> None:
-        """Clear the viscoelastic overstress history."""
+        """Clear the viscoelastic overstress history and release the friction bristles."""
         self.q_state.zero_()
         self.peq_prev.zero_()
+        self.tangent_stuck.zero_()
 
     def apply(self, state, dt: float, clear_body_force: bool = False) -> None:
         """Accumulate the foundation wrench into ``state.body_f`` for one substep.
@@ -329,6 +355,8 @@ class MidsoleFoundation:
                 self.neighbors,
                 self.compression,
                 self.base_pressure,
+                self.tangent_anchor,
+                self.tangent_stuck,
                 self.params,
                 state.body_f,
                 self.normal_force,
