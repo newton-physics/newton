@@ -1420,7 +1420,8 @@ do not control collision detection performed inside a solver. For example,
 :class:`~solvers.SolverMuJoCo` generates contacts internally when
 ``use_mujoco_contacts=True`` (see :ref:`mujoco-collision-pipeline`), while
 :class:`~solvers.SolverVBD` handles particle self-contact internally according
-to ``particle_collision_detection_interval``.
+to the self-contact slot of ``collision_frequency`` /
+``collision_frequency_type``.
 
 Start by calling ``collide`` every substep when debugging contact behavior.
 This keeps contacts current as bodies move. Once the behavior is acceptable,
