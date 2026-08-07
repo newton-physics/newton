@@ -175,12 +175,12 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
     particle positions; also asserts the deprecation and conflict paths of the
     legacy self-contact parameters.
     """
-    kwargs = dict(
-        iterations=2,
-        particle_enable_self_contact=True,
-        particle_self_contact_margin=0.02,
-        particle_self_contact_gap=0.02,
-    )
+    kwargs = {
+        "iterations": 2,
+        "particle_enable_self_contact": True,
+        "particle_self_contact_margin": 0.02,
+        "particle_self_contact_gap": 0.02,
+    }
 
     model_a = _build_cloth_model(device)
     solver_a = SolverVBD(model_a, **kwargs)
