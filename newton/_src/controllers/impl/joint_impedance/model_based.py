@@ -30,13 +30,17 @@ from .model_free import ControllerJointImpedanceModelFree
 
 
 class ControllerJointImpedance(ControllerBase):
-    """One-step joint-space impedance controller for a batch of robots.
+    """Joint-space impedance controller with internally computed dynamics.
 
-    Has an identical input/output interface to
-    :class:`ControllerJointImpedanceModelFree` — flat 1D sim arrays in,
-    flat 1D torque array out — except that the dynamics terms (mass matrix,
-    gravity force, Coriolis force) are computed internally from the Newton
-    model rather than supplied by the caller.
+    Implements the joint-space impedance control law. This model-based variant
+    computes the mass matrix, gravity, and Coriolis terms itself: it holds a
+    private :class:`~newton.Model` built from ``builder`` and evaluates forward
+    kinematics and the enabled dynamics terms on every :meth:`step`, so the
+    caller supplies only joint positions and velocities.
+
+    ``builder`` is not modified at construction — and the internal :class:`newton.Model` cannot be rebuilt after construction. Later changes to ``builder`` or
+    to the simulated model do not propagate, so a mismatched topology computes
+    dynamics for a different robot with no diagnostic.
 
     Supports heterogeneous robot fleets — robots in the batch may have
     different DOF counts. The ``builder`` articulations define the
@@ -46,6 +50,10 @@ class ControllerJointImpedance(ControllerBase):
     Only 1-DOF joints (Revolute, Prismatic) and zero-DOF Fixed joints are
     supported. The PD error term ``q_des - q`` is only valid for scalar
     joint coordinates.
+
+    See also :class:`ControllerJointImpedanceModelFree`, which takes the mass
+    matrix, gravity, and Coriolis terms as inputs instead of computing them
+    from a :class:`newton.Model`.
 
     Impedance law (terms enabled at construction):
 
@@ -60,11 +68,14 @@ class ControllerJointImpedance(ControllerBase):
             ``sum(dofs per articulation)`` mapping controller DOF slots to
             positions in the flat simulation arrays (robot 0's indices first,
             then robot 1's, etc.).
-        stiffness: Position-error gain Kp [N/m or N·m/rad], shape
-            ``(N, max_dofs)``. Pass a baked array or ``None`` to read from
-            ``inputs.stiffness`` each step.
-        damping: Velocity-error gain Kd [N·s/m or N·m·s/rad]. Same format
-            as ``stiffness``.
+        stiffness: Position-error gain Kp, shape ``(N, max_dofs)``. Units
+            depend on ``use_inertia_decoupling``: [1/s²] when enabled, since
+            the PD term is then an acceleration premultiplied by M(q);
+            otherwise [N/m or N·m/rad]. Pass an array to copy it at
+            construction, or ``None`` to read ``inputs.stiffness`` each step.
+        damping: Velocity-error gain Kd, [1/s] when
+            ``use_inertia_decoupling`` is enabled, otherwise
+            [N·s/m or N·m·s/rad]. Same format as ``stiffness``.
         use_gravity_compensation: Add gravity generalized forces to τ.
         use_coriolis_compensation: Add Coriolis generalized forces to τ.
         use_inertia_decoupling: Premultiply the PD term by M(q).
@@ -100,9 +111,9 @@ class ControllerJointImpedance(ControllerBase):
         joint_qdd: wp.array[wp.float32] | None
         """Desired acceleration feedforward [m/s² or rad/s²], flat sim-level array. ``None`` unless ``has_qdd_feedforward=True``."""
         stiffness: wp.array2d[wp.float32] | None
-        """Position-error gain Kp [N/m or N·m/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+        """Position-error gain Kp, shape ``(robot_count, max_dofs)``. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
         damping: wp.array2d[wp.float32] | None
-        """Velocity-error gain Kd [N·s/m or N·m·s/rad], shape ``(robot_count, max_dofs)``. ``None`` when gains are baked at construction."""
+        """Velocity-error gain Kd, shape ``(robot_count, max_dofs)``. [1/s] when ``use_inertia_decoupling`` is enabled, otherwise [N·s/m or N·m·s/rad]. ``None`` when gains are baked at construction."""
 
     class Outputs:
         """Output struct returned by :meth:`~ControllerJointImpedance.output`."""
@@ -218,9 +229,7 @@ class ControllerJointImpedance(ControllerBase):
         identity_idx = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self._device)
 
         self._model_free = ControllerJointImpedanceModelFree(
-            robot_count=robot_count,
             dofs_per_robot=dofs_per_robot,
-            max_dofs=max_dofs,
             default_dof_indices=default_dof_indices,
             stiffness=stiffness,
             damping=damping,
