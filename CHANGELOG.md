@@ -4,7 +4,7 @@
 
 ### Added
 
-- Add experimental implicit effort mode to `newton.actuators.Actuator` (`actuator.set_effort_mode_implicit(...)`, tuned via `newton.actuators.ActuatorImplicitOptions`, with `newton.actuators.ResponseOracle` providing articulation impulse responses): it solves actuator impulses jointly for each articulation before the solver step to support stable, stiff controllers.
+- Add experimental implicit effort mode to `newton.actuators.Actuator` (`actuator.set_effort_mode_implicit(...)`, tuned via `newton.actuators.ActuatorImplicitOptions`, with `newton.actuators.ResponseOracle` providing articulation impulse responses): it solves actuator impulses jointly for each articulation before the solver step to support stable, stiff controllers. Use `ResponseOracle.refresh(state)` for a response assembled from the model, or `ResponseOracle.refresh_from_mass_matrix(mass_matrix, dof_map=...)` to invert a solver's own joint-space inertia, such as `SolverMuJoCo`'s `mjw_data.qM`.
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
 - Add `newton[onnx]` for ONNX policy inference through Warp-NN; `ControllerNeuralMLP`, `ControllerNeuralLSTM`, and RL policy examples can run exported `.onnx` policies without requiring PyTorch for ONNX execution.
 - Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts

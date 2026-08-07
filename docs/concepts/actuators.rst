@@ -220,7 +220,21 @@ current pose:
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
 
 The solve couples the DOFs of each articulation, so the response is the full
-per-articulation inverse mass rather than a per-DOF scalar. Call
+per-articulation inverse mass rather than a per-DOF scalar.
+
+:meth:`~newton.actuators.ResponseOracle.refresh` assembles its own mass matrix,
+which omits joint damping, contacts and constraint regularization and so
+over-estimates the response. When the solver exposes the joint-space inertia it
+already builds, invert that instead for a response consistent with the dynamics
+the effort is applied to:
+
+.. code-block:: python
+
+   # Simulation loop, in place of oracle.refresh(state)
+   oracle.refresh_from_mass_matrix(solver.mjw_data.qM, dof_map=solver.mjc_dof_to_newton_dof)
+
+Both refresh paths are kernel-only, so the whole loop — actuator, solver step and
+response update — can be captured in a single CUDA graph. Call
 :meth:`~newton.actuators.Actuator.set_effort_mode_explicit` to switch back;
 tuning lives in :class:`~newton.actuators.ActuatorImplicitOptions`. Every
 controller except the Torch-backed neural checkpoints supports the implicit

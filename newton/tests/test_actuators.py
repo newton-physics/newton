@@ -2168,14 +2168,85 @@ class TestResponseOracle(unittest.TestCase):
         expected_tau = kp_val * e_q / (1.0 + a * h * kd_val + a * h * h * kp_val)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
 
+    def test_refresh_from_mass_matrix_in_newton_dof_order(self):
+        """Invert a mass matrix supplied in Newton DOF order (``dof_map=None``).
+
+        Feeds back the matrix behind the oracle's own response, so recovering that
+        response exercises the scatter and the block inverse without depending on
+        any solver's DOF layout.
+        """
+        device = wp.get_device()
+        model = _build_two_link(device)
+        n = model.joint_dof_count
+        state = model.state()
+        state.joint_q.assign(np.array([0.3, -0.8], dtype=np.float32))
+
+        reference = ResponseOracle(model)
+        reference.refresh(state)
+        expected = reference.inverse_blocks.numpy()[0, :n, :n]
+
+        mass_matrix = np.zeros((model.world_count, n, n), dtype=np.float32)
+        mass_matrix[0] = np.linalg.inv(expected)
+
+        oracle = ResponseOracle(model)
+        oracle.refresh_from_mass_matrix(wp.array(mass_matrix, dtype=float, device=device))
+        np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], expected, rtol=1e-4)
+
+    def test_refresh_from_mass_matrix_remaps_dof_order(self):
+        """Translate solver DOF indices through ``dof_map`` before inverting.
+
+        The two-link model compiles to identical MuJoCo and Newton DOF order, so
+        the mapping is exercised here with a permuted matrix and the inverse
+        permutation instead: both must cancel and reproduce the plain response.
+        """
+        device = wp.get_device()
+        model = _build_two_link(device)
+        n = model.joint_dof_count
+        state = model.state()
+        state.joint_q.assign(np.array([0.3, -0.8], dtype=np.float32))
+
+        reference = ResponseOracle(model)
+        reference.refresh(state)
+        expected = reference.inverse_blocks.numpy()[0, :n, :n]
+
+        permutation = np.arange(n - 1, -1, -1)
+        mass_matrix = np.zeros((model.world_count, n, n), dtype=np.float32)
+        mass_matrix[0] = np.linalg.inv(expected)[np.ix_(permutation, permutation)]
+
+        oracle = ResponseOracle(model)
+        oracle.refresh_from_mass_matrix(
+            wp.array(mass_matrix, dtype=float, device=device),
+            dof_map=wp.array(permutation[None, :], dtype=wp.int32, device=device),
+        )
+        np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], expected, rtol=1e-4)
+
+    def test_refresh_from_mass_matrix_rejects_non_dense(self):
+        """Reject mass matrices that are not dense per-world ``[world, dof, dof]``.
+
+        MuJoCo stores ``qM`` as ``[world, 1, nM]`` once a model compiles to a
+        sparse Jacobian, which must fail loudly instead of being read as a dense
+        block of the wrong extent.
+        """
+        device = wp.get_device()
+        model = _build_two_link(device)
+        n = model.joint_dof_count
+        oracle = ResponseOracle(model)
+
+        with self.assertRaises(ValueError):
+            oracle.refresh_from_mass_matrix(wp.zeros((n, n), dtype=float, device=device))
+        with self.assertRaises(ValueError):
+            sparse = wp.zeros((model.world_count, 1, n * (n + 1) // 2), dtype=float, device=device)
+            oracle.refresh_from_mass_matrix(sparse)
+
     def test_response_from_mujoco_mass_matrix(self):
         """Fill the oracle response from MuJoCo's per-step mass matrix.
 
         MuJoCo rebuilds ``qM`` at the step-start pose every step, so — unlike the
         compile-time ``dof_invweight0`` — its complete inverse tracks inertial
-        coupling at the current configuration. This test remaps that inverse to
-        Newton DOF order, checks it against the built-in oracle, and drives the
-        coupled implicit solve with it.
+        coupling at the current configuration. Checks
+        :meth:`ResponseOracle.refresh_from_mass_matrix` against a host-side
+        inverse-and-remap of that matrix, against the built-in oracle, and by
+        driving the coupled implicit solve with it.
         """
         device = wp.get_device()
         h = 0.01
@@ -2226,9 +2297,9 @@ class TestResponseOracle(unittest.TestCase):
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
         )
-        blocks = np.zeros(oracle.inverse_blocks.shape, dtype=np.float32)
-        blocks[0, :n, :n] = response_newton
-        oracle.inverse_blocks.assign(blocks)
+        oracle.refresh_from_mass_matrix(solver.mjw_data.qM, dof_map=solver.mjc_dof_to_newton_dof)
+        # The device-side invert-and-remap must reproduce the host computation.
+        np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
         control.joint_f.zero_()
         actuator.step(state, control, dt=h)
 
@@ -2241,15 +2312,14 @@ class TestResponseOracle(unittest.TestCase):
         """Closed-loop run with the coupled response from MuJoCo's qM.
 
         Runs the same simulation twice, updating the oracle response every step
-        either from the solver's own mass matrix (``mjw_data.qM``, device-side
-        Cholesky kernel — the "solver-owned oracle" path) or with the built-in
+        either from the solver's own mass matrix (``refresh_from_mass_matrix`` on
+        ``mjw_data.qM`` — the "solver-owned oracle" path) or with the built-in
         ``oracle.refresh()``. The refresh is scheduled at the same one-step-stale
         phase as the qM data, so the trajectories must coincide. On CUDA the
-        whole step (actuator + solver + response update) is graph-captured.
+        whole step (actuator + solver + response update) is graph-captured, which
+        is what requires both update paths to be kernel-only.
         """
         device = wp.get_device()
-        from newton._src.actuators.response_oracle import _inverse_block_from_mass_matrix_kernel  # noqa: PLC0415
-
         h = 0.005
         outer_iters = 30
         kp = np.array([300.0, 200.0], dtype=np.float32)
@@ -2272,26 +2342,13 @@ class TestResponseOracle(unittest.TestCase):
                 kd=wp.array(kd, dtype=float, device=device),
             )
 
-            nv = solver.mj_model.nv
-            self.assertEqual(nv, n)
-            if solver.mjc_dof_to_newton_dof is not None:
-                np.testing.assert_array_equal(solver.mjc_dof_to_newton_dof.numpy()[0], np.arange(n))
-            # scratch for the Cholesky kernel run on MuJoCo's (padded) qM
-            qm_pad = solver.mjw_data.qM.shape[1]
-            art_count = wp.array([nv], dtype=wp.int32, device=device)
-            chol_l = wp.zeros((1, qm_pad, qm_pad), dtype=wp.float32, device=device)
+            self.assertEqual(solver.mj_model.nv, n)
 
             def update_response(state_prev):
                 if use_qm:
                     # Full inverse response from the solver's matrix at the pose
                     # of the step that just ran — same staleness as refresh(state_prev).
-                    wp.launch(
-                        _inverse_block_from_mass_matrix_kernel,
-                        dim=1,
-                        inputs=[solver.mjw_data.qM, art_count, chol_l],
-                        outputs=[oracle.inverse_blocks],
-                        device=device,
-                    )
+                    oracle.refresh_from_mass_matrix(solver.mjw_data.qM, dof_map=solver.mjc_dof_to_newton_dof)
                 else:
                     oracle.refresh(state_prev)
 
