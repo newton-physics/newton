@@ -92,22 +92,19 @@ def apply_picking_force_kernel(
     offset = pick_pos_world - com_world
     pick_vel = velocity_at_point(body_qd[pick_body], offset)
 
-    # Adjust force to mass for more adaptive manipulation of picked bodies.
-    force_multiplier = 10.0 + body_mass[pick_body]
-
-    pick_force = force_multiplier * (
-        pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (pick_state[0].pick_damping * pick_vel)
+    # Command an acceleration of the pick point so gains are mass-independent,
+    # then scale by the body's effective mass.
+    pick_accel = pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (
+        pick_state[0].pick_damping * pick_vel
     )
 
-    # Clamp force magnitude to prevent runaway divergence on light objects (#2361).
-    # Uses the effective mass (total articulation mass for linked bodies,
-    # own mass for free bodies) so picking a light robot link still allows
-    # enough force to move the whole chain.
+    # Clamp acceleration magnitude to prevent runaway divergence on light objects (#2361).
     max_acceleration = pick_state[0].pick_max_acceleration * 9.81
-    max_force = max_acceleration * pick_effective_mass[pick_body]
-    force_mag = wp.length(pick_force)
-    if force_mag > max_force:
-        pick_force = pick_force * (max_force / force_mag)
+    accel_mag = wp.length(pick_accel)
+    if accel_mag > max_acceleration:
+        pick_accel = pick_accel * (max_acceleration / accel_mag)
+
+    pick_force = pick_accel * pick_effective_mass[pick_body]
 
     pick_torque = wp.cross(offset, pick_force)
 
