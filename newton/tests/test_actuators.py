@@ -30,9 +30,11 @@ from newton.actuators import (
     ControllerPD,
     ControllerPID,
     Delay,
+    ResponseOracle,
     parse_actuator_prim,
 )
 from newton.selection import ArticulationView
+from newton.tests.unittest_utils import get_test_devices
 
 try:
     from pxr import Usd
@@ -861,9 +863,472 @@ class TestClampingPositionBased(unittest.TestCase):
 # 4. Actuator pipeline — full step() integration
 # ---------------------------------------------------------------------------
 
+_MAX_EFFORT = 10.0
+_DC_SATURATION, _DC_VELOCITY_LIMIT, _DC_MAX_EFFORT = 200.0, 2.0, 1.0e6
+_POSITION_LOOKUP_POSITIONS = (0.0, 1.0)
+_POSITION_LOOKUP_EFFORTS = (200.0, 0.0)
+
+
+def _build_pendulum(device):
+    """Single revolute joint with an offset COM and no gravity — one scalar DOF."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    body = builder.add_link(mass=1.0)
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.body_com[body] = wp.vec3(0.5, 0.0, 0.0)
+    joint = builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+    builder.add_articulation([joint])
+    return builder.finalize(device=device)
+
+
+def _alpha_at(model, q, qd):
+    """Effective inverse mass (H^-1)_00 at pose *q*, evaluated on a scratch state."""
+    scratch = model.state()
+    scratch.joint_q.assign(np.array([q], dtype=np.float32))
+    scratch.joint_qd.assign(np.array([qd], dtype=np.float32))
+    newton.eval_fk(model, scratch.joint_q, scratch.joint_qd, scratch)
+    mass_matrix = newton.eval_mass_matrix(model, scratch).numpy()
+    return float(1.0 / mass_matrix[0, 0, 0])
+
+
+def _pipeline_clamping(clamp, device):
+    """Return the clamping list for *clamp* and its NumPy ``(q, qd) -> (lo, hi)`` law."""
+    if clamp is None:
+        return None, lambda q, qd: (-np.inf, np.inf)
+
+    if clamp == "max_effort":
+        clamping = [ClampingMaxEffort(max_effort=wp.array([_MAX_EFFORT], dtype=float, device=device))]
+        return clamping, lambda q, qd: (-_MAX_EFFORT, _MAX_EFFORT)
+
+    if clamp == "dc_motor":
+        clamping = [
+            ClampingDCMotor(
+                saturation_effort=wp.array([_DC_SATURATION], dtype=float, device=device),
+                velocity_limit=wp.array([_DC_VELOCITY_LIMIT], dtype=float, device=device),
+                max_motor_effort=wp.array([_DC_MAX_EFFORT], dtype=float, device=device),
+            )
+        ]
+
+        def limit(q, qd):
+            envelope = _DC_SATURATION * (1.0 - qd / _DC_VELOCITY_LIMIT)
+            reverse = _DC_SATURATION * (-1.0 - qd / _DC_VELOCITY_LIMIT)
+            return max(reverse, -_DC_MAX_EFFORT), min(envelope, _DC_MAX_EFFORT)
+
+        return clamping, limit
+
+    if clamp == "position":
+        clamping = [
+            ClampingPositionBased(
+                lookup_positions=_POSITION_LOOKUP_POSITIONS,
+                lookup_efforts=_POSITION_LOOKUP_EFFORTS,
+            )
+        ]
+
+        def limit(q, qd):
+            effort = float(np.interp(q, _POSITION_LOOKUP_POSITIONS, _POSITION_LOOKUP_EFFORTS))
+            return -effort, effort
+
+        return clamping, limit
+
+    raise ValueError(f"unknown clamp kind: {clamp}")
+
+
+def _solve_implicit_effort(residual, bound=1.0e12, iterations=200):
+    """Bisect ``residual(tau) = clamped_force(tau) - tau``, which decreases in tau.
+
+    Fixed-point iteration diverges at stiff gains (the map's slope is
+    ``-alpha*dt^2*kp``), so the reference bisects instead. Monotonicity holds
+    because both the control law and the clamp bounds fall as tau rises.
+    """
+    lo, hi = -bound, bound
+    for _ in range(iterations):
+        mid = 0.5 * (lo + hi)
+        if residual(mid) > 0.0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
 
 class TestActuatorStep(unittest.TestCase):
-    """Integration test: full Actuator.step() with delay + PD + DC-motor clamping."""
+    """Actuator.step() integration: solver step, response refresh, actuator step."""
+
+    def run_test_actuator_pipeline(self, **config):
+        """Run one pipeline configuration on every test device.
+
+        Args:
+            **config: Keywords accepted by :meth:`_run_actuator_pipeline`, plus
+                an optional ``device`` to pin the run to a single device.
+        """
+        device = config.pop("device", None)
+        for test_device in [device] if device is not None else get_test_devices():
+            with self.subTest(device=str(test_device)):
+                self._run_actuator_pipeline(test_device, **config)
+
+    def _run_actuator_pipeline(
+        self,
+        device,
+        *,
+        controller="pd",
+        clamp=None,
+        implicit=True,
+        kp=500.0,
+        kd=5.0,
+        ki=50.0,
+        integral_max=1.0e9,
+        q0=0.2,
+        qd0=0.0,
+        target=1.0,
+        dt=0.01,
+        steps=1,
+        retune=False,
+        capture=False,
+        expect=None,
+        check_forces=True,
+    ):
+        """Run the actuator pipeline for one controller / clamp / effort-mode combination.
+
+        Each step follows the order a simulation uses: zero the forces, refresh
+        the response oracle at the step-start pose, step the actuator, then step
+        the solver. Every effort is compared against a NumPy reference that
+        solves the same scalar residual as the kernel — with the clamp evaluated
+        at the predicted end-of-step state in implicit mode and at the current
+        state in explicit mode.
+
+        Args:
+            device: Device to build the model and actuator on.
+            controller: ``"pd"`` or ``"pid"``.
+            clamp: ``None``, ``"max_effort"``, ``"dc_motor"`` or ``"position"``.
+            implicit: Solve the control law against the predicted end-of-step state.
+            kp: Proportional gain [N·m/rad].
+            kd: Derivative gain [N·m·s/rad].
+            ki: Integral gain [N·m/(rad·s)], PID only.
+            integral_max: Anti-windup bound on the PID integral [rad·s].
+            q0: Initial joint position [rad].
+            qd0: Initial joint velocity [rad/s].
+            target: Position target [rad].
+            dt: Step size [s].
+            steps: Number of pipeline steps to run.
+            retune: Rewrite the gains (and a max-effort limit) mid-run and
+                verify the next solve picks them up.
+            capture: Additionally require CUDA graph replay to match eager.
+            expect: ``"converge"`` to require the final pose near ``target``,
+                ``"diverge"`` to require it to blow up (explicit stiff gains).
+            check_forces: Compare each step's effort against the reference.
+        """
+        if capture and not (device.is_cuda and wp.is_mempool_enabled(device)):
+            self.skipTest("CUDA graph capture requires a CUDA device with memory pools")
+
+        model = _build_pendulum(device)
+        clamping, limit = _pipeline_clamping(clamp, device)
+
+        def _arr(value):
+            return wp.array([value], dtype=float, device=device)
+
+        if controller == "pd":
+            control_law = ControllerPD(kp=_arr(kp), kd=_arr(kd))
+        elif controller == "pid":
+            control_law = ControllerPID(kp=_arr(kp), ki=_arr(ki), kd=_arr(kd), integral_max=_arr(integral_max))
+        else:
+            raise ValueError(f"unknown controller kind: {controller}")
+
+        oracle = ResponseOracle(model)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=device),
+            controller=control_law,
+            clamping=clamping,
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        if implicit:
+            actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        self.assertTrue(actuator.is_graphable())
+
+        def reference(q, qd, integral, kp_now, kd_now):
+            """The effort the actuator should produce from state (q, qd)."""
+
+            def law(q_pred, qd_pred):
+                effort = kp_now * (target - q_pred) - kd_now * qd_pred
+                return effort + ki * integral if controller == "pid" else effort
+
+            if not implicit:
+                lo, hi = limit(q, qd)
+                return float(np.clip(law(q, qd), lo, hi))
+
+            alpha = _alpha_at(model, q, qd)
+
+            def residual(tau):
+                qd_pred = qd + alpha * dt * tau
+                q_pred = q + dt * qd_pred
+                lo, hi = limit(q_pred, qd_pred)
+                return float(np.clip(law(q_pred, qd_pred), lo, hi)) - tau
+
+            return _solve_implicit_effort(residual)
+
+        state_in, state_out = model.state(), model.state()
+        state_in.joint_q.assign(np.array([q0], dtype=np.float32))
+        state_in.joint_qd.assign(np.array([qd0], dtype=np.float32))
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        control = model.control()
+        control.joint_target_q.assign(np.array([target], dtype=np.float32))
+        solver = newton.solvers.SolverFeatherstone(model)
+        act_a, act_b = actuator.state(), actuator.state()
+
+        integral = 0.0
+        kp_now, kd_now = kp, kd
+        for step_i in range(steps):
+            q = float(state_in.joint_q.numpy()[0])
+            qd = float(state_in.joint_qd.numpy()[0])
+            if controller == "pid":
+                integral = float(np.clip(integral + (target - q) * dt, -integral_max, integral_max))
+
+            control.joint_f.zero_()
+            oracle.refresh(state_in)
+            actuator.step(state_in, control, act_a, act_b, dt=dt)
+            effort = float(control.joint_f.numpy()[0])
+
+            if check_forces:
+                expected = reference(q, qd, integral, kp_now, kd_now)
+                self.assertTrue(np.isfinite(effort), msg=f"step {step_i}: effort must stay finite")
+                self.assertAlmostEqual(
+                    effort,
+                    expected,
+                    delta=max(abs(expected) * 2.0e-3, 1.0e-4),
+                    msg=f"step {step_i}: q={q} qd={qd} integral={integral}",
+                )
+
+            if check_forces and steps == 1 and act_a is None:
+                # Efforts accumulate into joint_f, exactly like the explicit pipeline.
+                actuator.step(state_in, control, act_a, act_b, dt=dt)
+                self.assertAlmostEqual(
+                    float(control.joint_f.numpy()[0]),
+                    2.0 * effort,
+                    delta=max(abs(effort) * 1.0e-4, 1.0e-5),
+                )
+                control.joint_f.assign(np.array([effort], dtype=np.float32))
+
+            if act_a is not None:
+                act_a, act_b = act_b, act_a
+            solver.step(state_in, state_out, control, None, dt=dt)
+            state_in, state_out = state_out, state_in
+
+        if retune:
+            kp_now, kd_now = 4.0 * kp, 4.0 * kd
+            actuator.controller.kp.assign(np.array([kp_now], dtype=np.float32))
+            actuator.controller.kd.assign(np.array([kd_now], dtype=np.float32))
+            np.testing.assert_allclose(actuator.controller.kp.numpy(), [kp_now], rtol=1e-6)
+
+            q = float(state_in.joint_q.numpy()[0])
+            qd = float(state_in.joint_qd.numpy()[0])
+            if controller == "pid":
+                integral = float(np.clip(integral + (target - q) * dt, -integral_max, integral_max))
+            control.joint_f.zero_()
+            oracle.refresh(state_in)
+            actuator.step(state_in, control, act_a, act_b, dt=dt)
+            retuned = float(control.joint_f.numpy()[0])
+            expected = reference(q, qd, integral, kp_now, kd_now)
+            self.assertAlmostEqual(retuned, expected, delta=max(abs(expected) * 2.0e-3, 1.0e-4))
+
+            if clamp == "max_effort":
+                # Tightening the limit below the solved effort must bind on the next solve.
+                tight = 0.25 * abs(retuned)
+                actuator.clamping[0].max_effort.assign(np.array([tight], dtype=np.float32))
+                control.joint_f.zero_()
+                oracle.refresh(state_in)
+                actuator.step(state_in, control, act_a, act_b, dt=dt)
+                self.assertAlmostEqual(abs(float(control.joint_f.numpy()[0])), tight, delta=max(tight * 1.0e-4, 1.0e-5))
+
+        q_final = float(state_in.joint_q.numpy()[0])
+        if expect == "converge":
+            self.assertTrue(np.isfinite(q_final))
+            self.assertAlmostEqual(q_final, target, delta=0.05)
+        elif expect == "diverge":
+            self.assertFalse(
+                np.isfinite(q_final) and abs(q_final) < 10.0 * abs(target),
+                msg=f"explicit mode should not stay bounded at these gains, got q={q_final}",
+            )
+        elif expect is not None:
+            raise ValueError(f"unknown expectation: {expect}")
+
+        if capture:
+            self._assert_pipeline_graph_matches_eager(
+                model,
+                actuator,
+                oracle,
+                dt=dt,
+                q_init=q0,
+                qd_init=qd0,
+                steps_per_cycle=2,
+                cycle_targets=[0.8, -0.4, 1.2, 0.0],
+            )
+
+    def _assert_pipeline_graph_matches_eager(
+        self,
+        model,
+        actuator,
+        oracle,
+        *,
+        dt,
+        q_init,
+        qd_init,
+        steps_per_cycle,
+        cycle_targets,
+    ):
+        """Require CUDA graph replay of refresh + step + solver to match eager execution.
+
+        Mirrors :class:`TestDelayGraphCapture`: warm up so lazy allocation and
+        module loading happen outside the capture, run an eager trajectory over
+        ``cycle_targets``, then replay the same loop from a graph.
+        """
+        device = model.device
+        stateful = actuator.is_stateful()
+
+        def setup():
+            solver = newton.solvers.SolverFeatherstone(model)
+            s0, s1 = model.state(), model.state()
+            control = model.control()
+            act_a, act_b = actuator.state(), actuator.state()
+            return solver, s0, s1, control, act_a, act_b
+
+        def reset(s0, act_a, act_b):
+            s0.joint_q.assign(np.array([q_init], dtype=np.float32))
+            s0.joint_qd.assign(np.array([qd_init], dtype=np.float32))
+            newton.eval_fk(model, s0.joint_q, s0.joint_qd, s0)
+            oracle.refresh(s0)  # allocate oracle scratch before any capture
+            if stateful:
+                act_a.controller_state.integral.zero_()
+                act_b.controller_state.integral.zero_()
+
+        def run_cycle(solver, s0, s1, control, act_a, act_b, target, steps):
+            control.joint_target_q.assign(np.array([target], dtype=np.float32))
+            for _ in range(steps):
+                control.joint_f.zero_()
+                oracle.refresh(s0)
+                actuator.step(s0, control, act_a, act_b, dt=dt)
+                if stateful:
+                    act_a, act_b = act_b, act_a
+                solver.step(s0, s1, control, None, dt)
+                s0, s1 = s1, s0
+            return s0, s1, act_a, act_b
+
+        solver, s0, s1, control, act_a, act_b = setup()
+        reset(s0, act_a, act_b)
+        s0, s1, act_a, act_b = run_cycle(solver, s0, s1, control, act_a, act_b, cycle_targets[0], 1)
+        reset(s0, act_a, act_b)
+        eager = []
+        for target in cycle_targets:
+            s0, s1, act_a, act_b = run_cycle(solver, s0, s1, control, act_a, act_b, target, steps_per_cycle)
+            eager.append(float(s0.joint_q.numpy()[0]))
+
+        solver_g, s0_g, s1_g, control_g, act_a_g, act_b_g = setup()
+        reset(s0_g, act_a_g, act_b_g)
+        s0_g, s1_g, act_a_g, act_b_g = run_cycle(solver_g, s0_g, s1_g, control_g, act_a_g, act_b_g, cycle_targets[0], 1)
+        reset(s0_g, act_a_g, act_b_g)
+
+        # Bind the first target before capture so the graph reads the live
+        # control buffer; later cycles overwrite that same array.
+        control_g.joint_target_q.assign(np.array([cycle_targets[0]], dtype=np.float32))
+        with wp.ScopedCapture(device) as capture:
+            for _ in range(steps_per_cycle):
+                control_g.joint_f.zero_()
+                oracle.refresh(s0_g)
+                actuator.step(s0_g, control_g, act_a_g, act_b_g, dt=dt)
+                if stateful:
+                    act_a_g, act_b_g = act_b_g, act_a_g
+                solver_g.step(s0_g, s1_g, control_g, None, dt)
+                s0_g, s1_g = s1_g, s0_g
+        graph = capture.graph
+
+        reset(s0_g, act_a_g, act_b_g)
+        for cycle_i, target in enumerate(cycle_targets):
+            control_g.joint_target_q.assign(np.array([target], dtype=np.float32))
+            wp.capture_launch(graph)
+            self.assertAlmostEqual(
+                float(s0_g.joint_q.numpy()[0]),
+                eager[cycle_i],
+                delta=max(abs(eager[cycle_i]) * 1e-4, 1e-5),
+                msg=f"cycle {cycle_i}: graph replay must match eager",
+            )
+
+    def test_pipeline_pd_implicit(self):
+        """Verify the implicit PD solve against the Stable-PD reference."""
+        self.run_test_actuator_pipeline(controller="pd")
+
+    def test_pipeline_pd_explicit(self):
+        """Verify plain PD in explicit mode through the same pipeline."""
+        self.run_test_actuator_pipeline(controller="pd", implicit=False)
+
+    def test_pipeline_pd_max_effort_implicit(self):
+        """Verify a max-effort clamp bounds the implicit effort exactly."""
+        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort")
+
+    def test_pipeline_pd_max_effort_explicit(self):
+        """Verify the same max-effort clamp in explicit mode."""
+        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort", implicit=False)
+
+    def test_pipeline_pd_dc_motor_implicit(self):
+        """Verify the DC-motor envelope binds at the predicted end-of-step velocity."""
+        self.run_test_actuator_pipeline(controller="pd", clamp="dc_motor", kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0)
+
+    def test_pipeline_pd_dc_motor_explicit(self):
+        """Verify the DC-motor envelope binds at the current velocity in explicit mode."""
+        self.run_test_actuator_pipeline(
+            controller="pd", clamp="dc_motor", implicit=False, kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0
+        )
+
+    def test_pipeline_pd_position_implicit(self):
+        """Verify the position-based limit is read at the predicted end-of-step position."""
+        self.run_test_actuator_pipeline(controller="pd", clamp="position", kp=5.0e4, kd=0.0, q0=0.2, target=2.0)
+
+    def test_pipeline_pd_high_gain_implicit(self):
+        """Verify an extreme stiffness stays finite and matches the reference."""
+        self.run_test_actuator_pipeline(controller="pd", kp=1.0e8, kd=0.0, q0=0.0, target=0.5)
+
+    def test_pipeline_pid_implicit(self):
+        """Verify the implicit PID solve with the advanced integral folded in."""
+        self.run_test_actuator_pipeline(controller="pid", kp=400.0, ki=50.0, kd=6.0)
+
+    def test_pipeline_pid_implicit_multistep(self):
+        """Verify the PID integral accumulates across steps of the implicit pipeline."""
+        self.run_test_actuator_pipeline(controller="pid", kp=400.0, ki=50.0, kd=6.0, steps=5)
+
+    def test_pipeline_pid_antiwindup_implicit(self):
+        """Verify a saturating integral bound feeds the implicit solve each step."""
+        self.run_test_actuator_pipeline(controller="pid", kp=400.0, ki=50.0, kd=6.0, integral_max=0.02, steps=5)
+
+    def test_pipeline_pd_implicit_retune(self):
+        """Verify gain and clamp writes reach the installed implicit solve."""
+        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort", retune=True)
+
+    def test_pipeline_pd_explicit_retune(self):
+        """Verify the same gain and clamp writes in explicit mode."""
+        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort", implicit=False, retune=True)
+
+    def test_pipeline_pd_stiff_implicit_converges(self):
+        """Verify stiff gains converge to the target over a long implicit run."""
+        self.run_test_actuator_pipeline(
+            controller="pd", kp=5.0e4, kd=300.0, q0=0.0, steps=300, expect="converge", check_forces=False
+        )
+
+    def test_pipeline_pd_stiff_explicit_diverges(self):
+        """Verify explicit mode blows up where implicit mode stays bounded."""
+        self.run_test_actuator_pipeline(
+            controller="pd",
+            kp=5.0e4,
+            kd=300.0,
+            q0=0.0,
+            steps=300,
+            implicit=False,
+            expect="diverge",
+            check_forces=False,
+        )
+
+    def test_pipeline_pd_implicit_graph(self):
+        """Verify the implicit PD pipeline replays identically from a CUDA graph."""
+        self.run_test_actuator_pipeline(controller="pd", kp=800.0, kd=20.0, q0=0.1, capture=True)
+
+    def test_pipeline_pid_implicit_graph(self):
+        """Verify the stateful implicit PID pipeline is CUDA-graph safe."""
+        self.run_test_actuator_pipeline(controller="pid", kp=400.0, ki=50.0, kd=8.0, q0=0.15, capture=True, steps=2)
 
     def test_full_pipeline(self):
         """Two-joint template x 3 envs, per-DOF delays (2 / 3), PD + DC motor.

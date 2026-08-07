@@ -17,13 +17,12 @@ from newton.actuators import (
     ActuatorImplicitOptions,
     ClampingDCMotor,
     ClampingMaxEffort,
-    ClampingPositionBased,
     Controller,
     ControllerPD,
     ControllerPID,
     ResponseOracle,
 )
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 _HAS_ONNX = importlib.util.find_spec("onnx") is not None
 _HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
@@ -545,40 +544,6 @@ def test_pd_denominator_equivalence(test, device):
     test.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
 
 
-def test_high_gain_stability(test, device):
-    """At extreme stiffness the implicit force stays finite and far below explicit PD."""
-    h = 0.01
-    kp_val = 1.0e8
-    q0, target = 0.0, 0.5
-
-    model = _build_single_revolute(device)
-    state = model.state()
-    state.joint_q.assign(np.array([q0], dtype=np.float32))
-    state.joint_qd.assign(np.array([0.0], dtype=np.float32))
-
-    control = model.control()
-    control.joint_target_q.assign(np.array([target], dtype=np.float32))
-
-    actuator = _make_actuator(
-        model,
-        device,
-        kp=wp.array([kp_val], dtype=float, device=device),
-        kd=wp.zeros(model.joint_dof_count, dtype=float, device=device),
-    )
-    control.joint_f.zero_()
-    _step(actuator, state, control, h)
-
-    tau = control.joint_f.numpy()[0]
-    alpha = _alpha_reference(model, state)[0]
-    explicit_tau = kp_val * (target - q0)
-
-    test.assertTrue(np.isfinite(tau))
-    test.assertLess(abs(tau), 1.0e-3 * explicit_tau)
-    # As kp -> inf the impulse drives qd_next so that q_next -> target:
-    # tau -> (target - q0) / (alpha * h^2).
-    test.assertAlmostEqual(tau, (target - q0) / (alpha * h * h), delta=abs(tau) * 1e-2)
-
-
 def test_two_link_indexing(test, device):
     """The coupled solve uses the correct articulation-local indices."""
     h = 0.01
@@ -610,267 +575,6 @@ def test_two_link_indexing(test, device):
     jacobian = np.eye(2) + h * np.diag(h * kp + kd) @ response
     expected = np.linalg.solve(jacobian, h * f0) / h
     np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
-
-
-def test_end_to_end_stable_convergence(test, device):
-    """Driving a stiff pendulum through a solver converges and stays bounded."""
-    h = 0.01
-    kp_val, kd_val = 5.0e4, 300.0
-    target = 1.0
-    steps = 300
-
-    model = _build_single_revolute(device)
-    state_in = model.state()
-    state_out = model.state()
-    state_in.joint_q.assign(np.array([0.0], dtype=np.float32))
-    state_in.joint_qd.assign(np.array([0.0], dtype=np.float32))
-
-    control = model.control()
-    control.joint_target_q.assign(np.array([target], dtype=np.float32))
-
-    actuator = _make_actuator(
-        model,
-        device,
-        kp=wp.array([kp_val], dtype=float, device=device),
-        kd=wp.array([kd_val], dtype=float, device=device),
-    )
-    solver = newton.solvers.SolverFeatherstone(model)
-
-    max_abs_q = 0.0
-    for _ in range(steps):
-        control.joint_f.zero_()
-        _step(actuator, state_in, control, h)
-        solver.step(state_in, state_out, control, None, dt=h)
-        state_in, state_out = state_out, state_in
-        max_abs_q = max(max_abs_q, abs(float(state_in.joint_q.numpy()[0])))
-
-    q_final = float(state_in.joint_q.numpy()[0])
-    test.assertTrue(np.isfinite(q_final))
-    # Bounded (no explosion) and converged near the target.
-    test.assertLess(max_abs_q, 10.0 * target)
-    test.assertAlmostEqual(q_final, target, delta=0.05)
-
-
-def test_effort_limit_clamps_force(test, device):
-    """A max-effort clamp on the actuator bounds the implicit force exactly."""
-    h = 0.01
-    kp_val, kd_val = 500.0, 5.0
-    q0, target = 0.0, 1.0
-    max_effort = 10.0
-
-    model = _build_single_revolute(device)
-    state = model.state()
-    state.joint_q.assign(np.array([q0], dtype=np.float32))
-    state.joint_qd.assign(np.array([0.0], dtype=np.float32))
-
-    control = model.control()
-    control.joint_target_q.assign(np.array([target], dtype=np.float32))
-
-    # Unclamped reference.
-    actuator = _make_actuator(
-        model,
-        device,
-        kp=wp.array([kp_val], dtype=float, device=device),
-        kd=wp.array([kd_val], dtype=float, device=device),
-    )
-    control.joint_f.zero_()
-    _step(actuator, state, control, h)
-    unclamped = float(control.joint_f.numpy()[0])
-    test.assertGreater(abs(unclamped), max_effort)
-
-    control.joint_f.zero_()
-    actuator_clamped = _make_actuator(
-        model,
-        device,
-        kp=wp.array([kp_val], dtype=float, device=device),
-        kd=wp.array([kd_val], dtype=float, device=device),
-        max_effort=np.array([max_effort], dtype=np.float32),
-    )
-    control.raw_joint_f = wp.zeros(model.joint_dof_count, dtype=float, device=device)
-    actuator_clamped.control_computed_output_attr = "raw_joint_f"
-    _step(actuator_clamped, state, control, h)
-    clamped = float(control.joint_f.numpy()[0])
-    computed = float(control.raw_joint_f.numpy()[0])
-    test.assertAlmostEqual(clamped, max_effort, delta=max_effort * 1e-5)
-    alpha = float(_alpha_reference(model, state)[0])
-    qd_pred = alpha * h * clamped
-    q_pred = q0 + h * qd_pred
-    expected_computed = kp_val * (target - q_pred) - kd_val * qd_pred
-    test.assertAlmostEqual(computed, expected_computed, delta=abs(expected_computed) * 1e-4)
-    test.assertGreater(computed, clamped)
-
-
-def test_live_param_update_through_views(test, device):
-    """Writes through the usual parameter attributes reach the installed implicit solve.
-
-    After set_effort_mode_implicit, controller and clamp parameter attributes
-    are views into the packed kernel arrays: writing to them must change the
-    next solve, and reading them back must return the written values.
-    """
-    h = 0.01
-    kp1, kd1 = 500.0, 5.0
-    kp2, kd2 = 2000.0, 20.0
-    q0, target = 0.2, 1.0
-
-    model = _build_single_revolute(device)
-    state = model.state()
-    state.joint_q.assign(np.array([q0], dtype=np.float32))
-    control = model.control()
-    control.joint_target_q.assign(np.array([target], dtype=np.float32))
-
-    actuator = _make_actuator(
-        model,
-        device,
-        kp=wp.array([kp1], dtype=float, device=device),
-        kd=wp.array([kd1], dtype=float, device=device),
-        max_effort=np.array([1.0e6], dtype=np.float32),  # inactive for now
-    )
-
-    def expected(kp, kd):
-        alpha = _alpha_reference(model, state)[0]
-        return kp * (target - q0) / (1.0 + alpha * h * kd + alpha * h * h * kp)
-
-    control.joint_f.zero_()
-    _step(actuator, state, control, h)
-    test.assertAlmostEqual(control.joint_f.numpy()[0], expected(kp1, kd1), delta=abs(expected(kp1, kd1)) * 1e-4)
-
-    # Update the gains through the controller attributes and step again.
-    actuator.controller.kp.assign(np.array([kp2], dtype=np.float32))
-    actuator.controller.kd.assign(np.array([kd2], dtype=np.float32))
-    np.testing.assert_allclose(actuator.controller.kp.numpy(), [kp2])
-    control.joint_f.zero_()
-    _step(actuator, state, control, h)
-    test.assertAlmostEqual(control.joint_f.numpy()[0], expected(kp2, kd2), delta=abs(expected(kp2, kd2)) * 1e-4)
-
-    # Tighten the clamp limit through the clamp attribute below the PD force.
-    limit = 0.5 * expected(kp2, kd2)
-    actuator.clamping[0].max_effort.assign(np.array([limit], dtype=np.float32))
-    np.testing.assert_allclose(actuator.clamping[0].max_effort.numpy(), [limit], rtol=1e-6)
-    control.joint_f.zero_()
-    _step(actuator, state, control, h)
-    test.assertAlmostEqual(control.joint_f.numpy()[0], limit, delta=abs(limit) * 1e-5)
-
-
-def test_scatter_add_accumulates(test, device):
-    """The implicit force accumulates into joint_f like the explicit pipeline."""
-    h = 0.01
-    model = _build_single_revolute(device)
-    state = model.state()
-    control = model.control()
-    control.joint_target_q.assign(np.array([1.0], dtype=np.float32))
-
-    actuator = _make_actuator(
-        model,
-        device,
-        kp=wp.array([500.0], dtype=float, device=device),
-        kd=wp.array([5.0], dtype=float, device=device),
-    )
-    control.joint_f.zero_()
-    _step(actuator, state, control, h)
-    once = float(control.joint_f.numpy()[0])
-    _step(actuator, state, control, h)
-    test.assertAlmostEqual(float(control.joint_f.numpy()[0]), 2.0 * once, delta=abs(once) * 1e-5)
-
-
-def test_dc_motor_clamp_is_implicit(test, device):
-    """The DC-motor envelope is enforced at the predicted end-of-step velocity."""
-    h = 0.01
-    kp_val = 5.0e4
-    qd0 = 1.0
-    sat, vel_lim, max_e = 200.0, 2.0, 1.0e6
-
-    model = _build_single_revolute(device)
-    state = model.state()
-    state.joint_q.assign(np.array([0.0], dtype=np.float32))
-    state.joint_qd.assign(np.array([qd0], dtype=np.float32))
-
-    control = model.control()
-    control.joint_target_q.assign(np.array([1.0], dtype=np.float32))
-
-    indices = wp.array(np.arange(model.joint_dof_count, dtype=np.uint32), device=device)
-    actuator = Actuator(
-        indices=indices,
-        controller=ControllerPD(
-            kp=wp.array([kp_val], dtype=float, device=device),
-            kd=wp.zeros(1, dtype=float, device=device),
-        ),
-        clamping=[
-            ClampingDCMotor(
-                saturation_effort=wp.array([sat], dtype=float, device=device),
-                velocity_limit=wp.array([vel_lim], dtype=float, device=device),
-                max_motor_effort=wp.array([max_e], dtype=float, device=device),
-            )
-        ],
-        control_target_pos_attr="joint_target_q",
-        control_target_vel_attr="joint_target_qd",
-    )
-    oracle = ResponseOracle(model)
-    actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
-    actuator._test_oracle = oracle
-    control.joint_f.zero_()
-    _step(actuator, state, control, h)
-    tau = float(control.joint_f.numpy()[0])
-
-    alpha = float(_alpha_reference(model, state)[0])
-    # Saturated branch, self-consistent in the end-of-step velocity:
-    # tau = sat * (1 - (qd0 + alpha*h*tau) / vel_lim)
-    tau_selfconsistent = sat * (1.0 - qd0 / vel_lim) / (1.0 + sat * alpha * h / vel_lim)
-    envelope_at_current_qd = sat * (1.0 - qd0 / vel_lim)
-
-    test.assertAlmostEqual(tau, tau_selfconsistent, delta=abs(tau_selfconsistent) * 1e-3)
-    # A post-hoc clamp would have allowed the full envelope at the current velocity.
-    test.assertLess(tau, 0.8 * envelope_at_current_qd)
-
-
-def test_position_clamp_is_implicit(test, device):
-    """The position-based limit is interpolated at the predicted end-of-step position."""
-    h = 0.01
-    kp_val = 5.0e4
-    q0 = 0.2
-    # Steep table, so the predicted-position limit is far from the current one.
-    lookup_positions = (0.0, 1.0)
-    lookup_efforts = (200.0, 0.0)
-
-    model = _build_single_revolute(device)
-    state = model.state()
-    state.joint_q.assign(np.array([q0], dtype=np.float32))
-    state.joint_qd.assign(np.array([0.0], dtype=np.float32))
-
-    control = model.control()
-    control.joint_target_q.assign(np.array([2.0], dtype=np.float32))
-
-    indices = wp.array(np.arange(model.joint_dof_count, dtype=np.uint32), device=device)
-    actuator = Actuator(
-        indices=indices,
-        controller=ControllerPD(
-            kp=wp.array([kp_val], dtype=float, device=device),
-            kd=wp.zeros(1, dtype=float, device=device),
-        ),
-        clamping=[ClampingPositionBased(lookup_positions=lookup_positions, lookup_efforts=lookup_efforts)],
-        control_target_pos_attr="joint_target_q",
-        control_target_vel_attr="joint_target_qd",
-    )
-    oracle = ResponseOracle(model)
-    actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
-    actuator._test_oracle = oracle
-    control.joint_f.zero_()
-    _step(actuator, state, control, h)
-    tau = float(control.joint_f.numpy()[0])
-
-    # The limit is the actuator's own lookup table, interpolated at position.
-    def limit_at(q):
-        return float(np.interp(q, lookup_positions, lookup_efforts))
-
-    # Self-consistent saturated solution via fixed point in numpy:
-    # tau = limit(q_p) with q_p = q0 + h * (qd0 + alpha*h*tau), qd0 = 0.
-    alpha = float(_alpha_reference(model, state)[0])
-    tau_ref = limit_at(q0)
-    for _ in range(50):
-        q_p = q0 + h * (alpha * h * tau_ref)
-        tau_ref = limit_at(q_p)
-    test.assertAlmostEqual(tau, tau_ref, delta=abs(tau_ref) * 1e-4)
-    # Below the current-position limit, which is what a post-hoc clamp would give.
-    test.assertLess(tau, limit_at(q0) * (1.0 - 1e-3))
 
 
 def test_effort_mode_switch_roundtrip(test, device):
@@ -1352,47 +1056,6 @@ def test_singular_jacobian_stays_finite(test, device):
     test.assertTrue(np.all(np.isfinite(control.joint_f.numpy())))
 
 
-def test_implicit_beats_explicit_at_stiff_gains(test, device):
-    """The reason implicit mode exists: explicit diverges, implicit does not.
-
-    Same model, same stiff gains, same timestep, stepped through a solver.
-    """
-    h = 0.01
-    kp_val, kd_val, target, steps = 5.0e4, 300.0, 1.0, 300
-
-    def run(implicit):
-        model = _build_single_revolute(device)
-        s_in, s_out = model.state(), model.state()
-        control = model.control()
-        control.joint_target_q.assign(np.array([target], dtype=np.float32))
-        oracle = ResponseOracle(model)
-        actuator = Actuator(
-            indices=wp.array(np.arange(model.joint_dof_count, dtype=np.uint32), device=device),
-            controller=ControllerPD(
-                kp=wp.array([kp_val], dtype=float, device=device),
-                kd=wp.array([kd_val], dtype=float, device=device),
-            ),
-            control_target_pos_attr="joint_target_q",
-            control_target_vel_attr="joint_target_qd",
-        )
-        if implicit:
-            actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
-        solver = newton.solvers.SolverFeatherstone(model)
-        for _ in range(steps):
-            control.joint_f.zero_()
-            oracle.refresh(s_in)
-            actuator.step(s_in, control, dt=h)
-            solver.step(s_in, s_out, control, None, dt=h)
-            s_in, s_out = s_out, s_in
-        return float(s_in.joint_q.numpy()[0])
-
-    explicit_q = run(implicit=False)
-    implicit_q = run(implicit=True)
-    test.assertFalse(np.isfinite(explicit_q) and abs(explicit_q) < 10.0 * target)
-    test.assertTrue(np.isfinite(implicit_q))
-    test.assertAlmostEqual(implicit_q, target, delta=0.05)
-
-
 def test_multi_articulation_indexing(test, device):
     """Two articulations in one model solve with their own response blocks.
 
@@ -1536,206 +1199,6 @@ def test_validation_rejects_bad_options(test, device):
         actuator.step(model.state(), model.control(), dt=0.0)
 
 
-# ---------------------------------------------------------------------------
-# CUDA graph capture — implicit step + oracle.refresh must match eager
-# ---------------------------------------------------------------------------
-
-
-def _assert_implicit_graph_matches_eager(
-    test,
-    device,
-    *,
-    model,
-    actuator,
-    oracle,
-    q_init,
-    cycle_targets,
-    dt=0.01,
-    steps_per_cycle=2,
-):
-    """Capture ``refresh + step + solver`` and require graph replay == eager.
-
-    Mirrors :class:`TestDelayGraphCapture`: warm up (lazy alloc / module load),
-    run an eager trajectory over ``cycle_targets``, then replay the same loop
-    from a CUDA graph and compare ``joint_q``.
-    """
-    if not wp.is_mempool_enabled(device):
-        test.skipTest("CUDA graph capture requires memory pools")
-
-    test.assertTrue(actuator.is_graphable())
-    n = model.joint_dof_count
-    q_init = np.asarray(q_init, dtype=np.float32)
-    stateful = actuator.is_stateful()
-    solver_type = newton.solvers.SolverFeatherstone
-
-    def setup():
-        solver = solver_type(model)
-        s0, s1 = model.state(), model.state()
-        control = model.control()
-        s0.joint_q.assign(q_init)
-        s0.joint_qd.zero_()
-        newton.eval_fk(model, s0.joint_q, s0.joint_qd, s0)
-        oracle.refresh(s0)  # allocate oracle scratch before capture
-        act_a = act_b = None
-        if stateful:
-            act_a, act_b = actuator.state(), actuator.state()
-        return solver, s0, s1, control, act_a, act_b
-
-    def one_step(solver, s0, s1, control, act_a, act_b):
-        control.joint_f.zero_()
-        oracle.refresh(s0)
-        if stateful:
-            actuator.step(s0, control, act_a, act_b, dt=dt)
-            act_a, act_b = act_b, act_a
-        else:
-            actuator.step(s0, control, dt=dt)
-        solver.step(s0, s1, control, None, dt)
-        return s1, s0, act_a, act_b
-
-    def run_cycle(solver, s0, s1, control, act_a, act_b, target, steps):
-        control.joint_target_q.assign(np.asarray(target, dtype=np.float32))
-        for _ in range(steps):
-            s0, s1, act_a, act_b = one_step(solver, s0, s1, control, act_a, act_b)
-        return s0, s1, act_a, act_b
-
-    # --- Eager ---
-    solver, s0, s1, control, act_a, act_b = setup()
-    # Warm-up step so kernel modules are loaded before any later capture.
-    s0, s1, act_a, act_b = run_cycle(solver, s0, s1, control, act_a, act_b, cycle_targets[0], 1)
-    s0.joint_q.assign(q_init)
-    s0.joint_qd.zero_()
-    newton.eval_fk(model, s0.joint_q, s0.joint_qd, s0)
-    oracle.refresh(s0)
-    if stateful:
-        act_a, act_b = actuator.state(), actuator.state()
-
-    eager = []
-    for tgt in cycle_targets:
-        s0, s1, act_a, act_b = run_cycle(solver, s0, s1, control, act_a, act_b, tgt, steps_per_cycle)
-        eager.append(s0.joint_q.numpy().copy())
-
-    # --- Graph ---
-    solver_g, s0_g, s1_g, control_g, act_a_g, act_b_g = setup()
-    s0_g, s1_g, act_a_g, act_b_g = run_cycle(solver_g, s0_g, s1_g, control_g, act_a_g, act_b_g, cycle_targets[0], 1)
-    s0_g.joint_q.assign(q_init)
-    s0_g.joint_qd.zero_()
-    newton.eval_fk(model, s0_g.joint_q, s0_g.joint_qd, s0_g)
-    oracle.refresh(s0_g)
-    if stateful:
-        act_a_g, act_b_g = actuator.state(), actuator.state()
-
-    # Bind the first cycle's target before capture so the graph reads from the
-    # live control buffer; subsequent cycles overwrite the same array.
-    control_g.joint_target_q.assign(np.asarray(cycle_targets[0], dtype=np.float32))
-    with wp.ScopedCapture(device) as capture:
-        for _ in range(steps_per_cycle):
-            control_g.joint_f.zero_()
-            oracle.refresh(s0_g)
-            if stateful:
-                actuator.step(s0_g, control_g, act_a_g, act_b_g, dt=dt)
-                act_a_g, act_b_g = act_b_g, act_a_g
-            else:
-                actuator.step(s0_g, control_g, dt=dt)
-            solver_g.step(s0_g, s1_g, control_g, None, dt)
-            s0_g, s1_g = s1_g, s0_g
-    graph = capture.graph
-
-    # Reset to the same initial pose the eager path used after warm-up.
-    s0_g.joint_q.assign(q_init)
-    s0_g.joint_qd.zero_()
-    newton.eval_fk(model, s0_g.joint_q, s0_g.joint_qd, s0_g)
-    oracle.refresh(s0_g)
-    if stateful:
-        act_a_g.controller_state.integral.zero_()
-        act_b_g.controller_state.integral.zero_()
-
-    graph_results = []
-    for tgt in cycle_targets:
-        control_g.joint_target_q.assign(np.asarray(tgt, dtype=np.float32))
-        wp.capture_launch(graph)
-        graph_results.append(s0_g.joint_q.numpy().copy())
-
-    for ci, (g, e) in enumerate(zip(graph_results, eager, strict=True)):
-        np.testing.assert_allclose(
-            g,
-            e,
-            rtol=1e-4,
-            atol=1e-5,
-            err_msg=f"Cycle {ci}: implicit CUDA graph must match eager (n={n})",
-        )
-
-
-def test_pd_implicit_graph_matches_eager(test, device):
-    """PD implicit ``refresh + step + solver`` graph replay matches eager."""
-    model = _build_single_revolute(device)
-    oracle = ResponseOracle(model)
-    actuator = _make_actuator(
-        model,
-        device,
-        kp=wp.array([800.0], dtype=float, device=device),
-        kd=wp.array([20.0], dtype=float, device=device),
-        effective_inv_mass=oracle,
-    )
-    _assert_implicit_graph_matches_eager(
-        test,
-        device,
-        model=model,
-        actuator=actuator,
-        oracle=oracle,
-        q_init=[0.1],
-        cycle_targets=[[0.8], [-0.4], [1.2], [0.0]],
-    )
-
-
-def test_pd_coupled_implicit_graph_matches_eager(test, device):
-    """Coupled two-DOF PD implicit solve is CUDA-graph safe."""
-    model = _build_two_link(device)
-    oracle = ResponseOracle(model)
-    actuator = _make_actuator(
-        model,
-        device,
-        kp=wp.array([500.0, 400.0], dtype=float, device=device),
-        kd=wp.array([10.0, 8.0], dtype=float, device=device),
-        effective_inv_mass=oracle,
-    )
-    _assert_implicit_graph_matches_eager(
-        test,
-        device,
-        model=model,
-        actuator=actuator,
-        oracle=oracle,
-        q_init=[0.2, -0.3],
-        cycle_targets=[[0.6, 0.4], [-0.2, 0.5], [0.9, -0.6], [0.0, 0.0]],
-    )
-
-
-def test_pid_implicit_graph_matches_eager(test, device):
-    """Stateful PID implicit path (prepare_implicit + integral) matches under capture."""
-    model = _build_single_revolute(device)
-    oracle = ResponseOracle(model)
-    actuator = Actuator(
-        indices=wp.array([0], dtype=wp.uint32, device=device),
-        controller=ControllerPID(
-            kp=wp.array([400.0], dtype=float, device=device),
-            ki=wp.array([50.0], dtype=float, device=device),
-            kd=wp.array([8.0], dtype=float, device=device),
-            integral_max=wp.array([1.0e9], dtype=float, device=device),
-        ),
-        control_target_pos_attr="joint_target_q",
-        control_target_vel_attr="joint_target_qd",
-    )
-    actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
-    _assert_implicit_graph_matches_eager(
-        test,
-        device,
-        model=model,
-        actuator=actuator,
-        oracle=oracle,
-        q_init=[0.15],
-        cycle_targets=[[0.7], [-0.3], [1.0], [0.2]],
-    )
-
-
 def test_dc_motor_retune_takes_effect(test, device):
     """Retuning the envelope must change the clamp, in both effort modes.
 
@@ -1789,174 +1252,57 @@ def test_dc_motor_retune_takes_effect(test, device):
 
 
 devices = get_test_devices()
-cuda_graph_devices = [d for d in get_cuda_test_devices() if wp.is_mempool_enabled(d)]
 
 
 class TestActuatorImplicit(unittest.TestCase):
     pass
 
 
-add_function_test(
-    TestActuatorImplicit, "test_provider_matches_inverse_mass", test_provider_matches_inverse_mass, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_inverse_blocks_match_dense_inverse",
+_ORACLE_TESTS = (
+    test_provider_matches_inverse_mass,
     test_inverse_blocks_match_dense_inverse,
-    devices=devices,
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_pd_coupled_solve_matches_reference",
-    test_pd_coupled_solve_matches_reference,
-    devices=devices,
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_coupled_solve_clamp_in_residual",
-    test_coupled_solve_clamp_in_residual,
-    devices=devices,
-)
-add_function_test(
-    TestActuatorImplicit, "test_pd_denominator_equivalence", test_pd_denominator_equivalence, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_direct_write_from_solver",
+    test_armature_enters_the_response,
+    test_refresh_does_not_mutate_state,
+    test_multi_articulation_indexing,
     test_direct_write_from_solver,
-    devices=devices,
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_response_from_mujoco_mass_matrix",
     test_response_from_mujoco_mass_matrix,
-    devices=devices,
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_prediction_matches_featherstone_step",
-    test_prediction_matches_featherstone_step,
-    devices=devices,
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_full_loop_response_from_mujoco_matches_refresh",
     test_full_loop_response_from_mujoco_matches_refresh,
-    devices=devices,
 )
-add_function_test(TestActuatorImplicit, "test_high_gain_stability", test_high_gain_stability, devices=devices)
-add_function_test(TestActuatorImplicit, "test_two_link_indexing", test_two_link_indexing, devices=devices)
-add_function_test(
-    TestActuatorImplicit, "test_end_to_end_stable_convergence", test_end_to_end_stable_convergence, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit, "test_effort_limit_clamps_force", test_effort_limit_clamps_force, devices=devices
-)
-add_function_test(TestActuatorImplicit, "test_scatter_add_accumulates", test_scatter_add_accumulates, devices=devices)
-add_function_test(
-    TestActuatorImplicit,
-    "test_live_param_update_through_views",
-    test_live_param_update_through_views,
-    devices=devices,
-)
-add_function_test(
-    TestActuatorImplicit, "test_dc_motor_clamp_is_implicit", test_dc_motor_clamp_is_implicit, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit, "test_position_clamp_is_implicit", test_position_clamp_is_implicit, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit, "test_effort_mode_switch_roundtrip", test_effort_mode_switch_roundtrip, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit, "test_unsupported_controller_raises", test_unsupported_controller_raises, devices=devices
-)
-if _HAS_ONNX and _HAS_WARP_NN:
-    add_function_test(
-        TestActuatorImplicit,
-        "test_neural_mlp_implicit_linear_net",
-        test_neural_mlp_implicit_linear_net,
-        devices=devices,
-    )
-    add_function_test(
-        TestActuatorImplicit,
-        "test_neural_mlp_implicit_nonlinear_linearized",
-        test_neural_mlp_implicit_nonlinear_linearized,
-        devices=devices,
-    )
-    add_function_test(
-        TestActuatorImplicit,
-        "test_neural_lstm_implicit_machinery",
-        test_neural_lstm_implicit_machinery,
-        devices=devices,
-    )
-    add_function_test(
-        TestActuatorImplicit,
-        "test_neural_lstm_implicit_rejected",
-        test_neural_lstm_implicit_rejected,
-        devices=devices,
-    )
-add_function_test(
-    TestActuatorImplicit, "test_pid_implicit_matches_reference", test_pid_implicit_matches_reference, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_pid_implicit_multistep_antiwindup",
+
+_SOLVE_TESTS = (
+    test_pd_denominator_equivalence,
+    test_pd_coupled_solve_matches_reference,
+    test_two_link_indexing,
+    test_prediction_matches_featherstone_step,
+    test_pid_implicit_matches_reference,
     test_pid_implicit_multistep_antiwindup,
-    devices=devices,
+    test_coupled_solve_clamp_in_residual,
+    test_singular_jacobian_stays_finite,
 )
-add_function_test(
-    TestActuatorImplicit,
-    "test_selection_api_updates_implicit_solve",
+
+_LIFECYCLE_TESTS = (
+    test_effort_mode_switch_roundtrip,
+    test_bind_params_is_idempotent,
     test_selection_api_updates_implicit_solve,
-    devices=devices,
+    test_dc_motor_retune_takes_effect,
+    test_unsupported_controller_raises,
+    test_validation_errors,
+    test_validation_rejects_bad_options,
 )
-add_function_test(
-    TestActuatorImplicit, "test_singular_jacobian_stays_finite", test_singular_jacobian_stays_finite, devices=devices
+
+_NEURAL_TESTS = (
+    test_neural_mlp_implicit_linear_net,
+    test_neural_mlp_implicit_nonlinear_linearized,
+    test_neural_lstm_implicit_machinery,
+    test_neural_lstm_implicit_rejected,
 )
-add_function_test(
-    TestActuatorImplicit,
-    "test_implicit_beats_explicit_at_stiff_gains",
-    test_implicit_beats_explicit_at_stiff_gains,
-    devices=devices,
-)
-add_function_test(
-    TestActuatorImplicit, "test_multi_articulation_indexing", test_multi_articulation_indexing, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit, "test_refresh_does_not_mutate_state", test_refresh_does_not_mutate_state, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit, "test_armature_enters_the_response", test_armature_enters_the_response, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit, "test_bind_params_is_idempotent", test_bind_params_is_idempotent, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit, "test_validation_rejects_bad_options", test_validation_rejects_bad_options, devices=devices
-)
-add_function_test(
-    TestActuatorImplicit, "test_dc_motor_retune_takes_effect", test_dc_motor_retune_takes_effect, devices=devices
-)
-add_function_test(TestActuatorImplicit, "test_validation_errors", test_validation_errors, devices=devices)
-add_function_test(
-    TestActuatorImplicit,
-    "test_pd_implicit_graph_matches_eager",
-    test_pd_implicit_graph_matches_eager,
-    devices=cuda_graph_devices,
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_pd_coupled_implicit_graph_matches_eager",
-    test_pd_coupled_implicit_graph_matches_eager,
-    devices=cuda_graph_devices,
-)
-add_function_test(
-    TestActuatorImplicit,
-    "test_pid_implicit_graph_matches_eager",
-    test_pid_implicit_graph_matches_eager,
-    devices=cuda_graph_devices,
-)
+
+for _test in _ORACLE_TESTS + _SOLVE_TESTS + _LIFECYCLE_TESTS:
+    add_function_test(TestActuatorImplicit, _test.__name__, _test, devices=devices)
+
+if _HAS_ONNX and _HAS_WARP_NN:
+    for _test in _NEURAL_TESTS:
+        add_function_test(TestActuatorImplicit, _test.__name__, _test, devices=devices)
 
 
 if __name__ == "__main__":
