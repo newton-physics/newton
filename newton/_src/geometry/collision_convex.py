@@ -23,11 +23,16 @@ from .multicontact import create_build_manifold
 from .simplex_solver import create_solve_closest_distance
 
 
-def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_process_contact: Any):
+def create_solve_convex_multi_contact(
+    support_func: Any,
+    writer_func: Any,
+    post_process_contact: Any,
+    use_precomputed_center: bool = False,
+):
     """Factory: fused MPR+GJK multi-contact solver with shared support code."""
 
     # Create support functions ONCE — shared between MPR and GJK.
-    support_funcs = create_support_map_function(support_func)
+    support_funcs = create_support_map_function(support_func, use_precomputed_center)
     solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
 
@@ -135,11 +140,16 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
     return solve_convex_multi_contact
 
 
-def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post_process_contact: Any):
+def create_solve_convex_single_contact(
+    support_func: Any,
+    writer_func: Any,
+    post_process_contact: Any,
+    use_precomputed_center: bool = False,
+):
     """Factory: fused MPR+GJK single-contact solver with shared support code."""
 
     # Create support functions ONCE — shared between MPR and GJK.
-    support_funcs = create_support_map_function(support_func)
+    support_funcs = create_support_map_function(support_func, use_precomputed_center)
     solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
 

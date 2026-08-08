@@ -46,6 +46,98 @@ def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndar
     return (flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0
 
 
+_ANALYTIC_PRIMITIVE_PAIRS = frozenset(
+    {
+        (int(GeoType.PLANE), int(GeoType.SPHERE)),
+        (int(GeoType.PLANE), int(GeoType.CAPSULE)),
+        (int(GeoType.PLANE), int(GeoType.ELLIPSOID)),
+        (int(GeoType.PLANE), int(GeoType.CYLINDER)),
+        (int(GeoType.PLANE), int(GeoType.BOX)),
+        (int(GeoType.SPHERE), int(GeoType.SPHERE)),
+        (int(GeoType.SPHERE), int(GeoType.CAPSULE)),
+        (int(GeoType.SPHERE), int(GeoType.CYLINDER)),
+        (int(GeoType.SPHERE), int(GeoType.BOX)),
+        (int(GeoType.CAPSULE), int(GeoType.CAPSULE)),
+    }
+)
+
+
+def _pair_requires_generic_convex_narrow_phase(type_a: int, type_b: int) -> bool:
+    """Return whether a sorted shape-type pair can reach GJK/MPR."""
+    type_a, type_b = min(type_a, type_b), max(type_a, type_b)
+    if type_a in (int(GeoType.HFIELD), int(GeoType.MESH)):
+        return False
+    if type_b in (int(GeoType.HFIELD), int(GeoType.MESH)):
+        return False
+    if type_a == int(GeoType.PLANE) and type_b == int(GeoType.PLANE):
+        return False
+    return (type_a, type_b) not in _ANALYTIC_PRIMITIVE_PAIRS
+
+
+def _has_generic_convex_pairs(
+    model: Model,
+    *,
+    broad_phase_mode: str,
+    shape_pairs_filtered: wp.array[wp.vec2i] | None,
+) -> bool:
+    """Conservatively prove whether any broad-phase pair can reach GJK/MPR."""
+    shape_types_array = getattr(model, "shape_type", None)
+    if shape_types_array is None:
+        return True
+
+    shape_types = shape_types_array.numpy()
+    if broad_phase_mode == "explicit":
+        if shape_pairs_filtered is None:
+            return True
+        pairs = shape_pairs_filtered.numpy()
+        if pairs.size == 0:
+            return False
+        pair_types = shape_types[pairs.reshape(-1, 2)]
+        return any(
+            _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)) for type_a, type_b in pair_types
+        )
+
+    colliding_types = shape_types[_shape_collide_mask(model, len(shape_types))]
+    unique_types = np.unique(colliding_types)
+    return any(
+        _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b))
+        for index, type_a in enumerate(unique_types)
+        for type_b in unique_types[index:]
+    )
+
+
+def _all_pairs_require_generic_convex_narrow_phase(
+    model: Model,
+    *,
+    broad_phase_mode: str,
+    shape_pairs_filtered: wp.array[wp.vec2i] | None,
+) -> bool:
+    """Conservatively prove that every broad-phase pair requires GJK/MPR."""
+    shape_types_array = getattr(model, "shape_type", None)
+    if shape_types_array is None:
+        return False
+
+    shape_types = shape_types_array.numpy()
+    if broad_phase_mode == "explicit":
+        if shape_pairs_filtered is None:
+            return False
+        pairs = shape_pairs_filtered.numpy()
+        if pairs.size == 0:
+            return False
+        pair_types = shape_types[pairs.reshape(-1, 2)]
+        return all(
+            _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b)) for type_a, type_b in pair_types
+        )
+
+    colliding_types = shape_types[_shape_collide_mask(model, len(shape_types))]
+    unique_types = np.unique(colliding_types)
+    return bool(unique_types.size) and all(
+        _pair_requires_generic_convex_narrow_phase(int(type_a), int(type_b))
+        for index, type_a in enumerate(unique_types)
+        for type_b in unique_types[index:]
+    )
+
+
 @wp.struct
 class ContactWriterData:
     """Contact writer data for collide write_contact function."""
@@ -238,6 +330,43 @@ def compute_shape_aabbs(
         half_extents = wp.vec3(radius, radius, radius)
         aabb_lower[shape_id] = pos - half_extents - margin_vec
         aabb_upper[shape_id] = pos + half_extents + margin_vec
+    elif geo_type == GeoType.SPHERE:
+        radius = scale[0]
+        half_extents = wp.vec3(radius, radius, radius)
+        aabb_lower[shape_id] = pos - half_extents - margin_vec
+        aabb_upper[shape_id] = pos + half_extents + margin_vec
+    elif geo_type == GeoType.BOX:
+        # The absolute rotation maps local half-extents to exact world AABB extents.
+        r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
+        r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
+        r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+        half_extents = wp.vec3(
+            wp.abs(r0[0]) * scale[0] + wp.abs(r1[0]) * scale[1] + wp.abs(r2[0]) * scale[2],
+            wp.abs(r0[1]) * scale[0] + wp.abs(r1[1]) * scale[1] + wp.abs(r2[1]) * scale[2],
+            wp.abs(r0[2]) * scale[0] + wp.abs(r1[2]) * scale[1] + wp.abs(r2[2]) * scale[2],
+        )
+        aabb_lower[shape_id] = pos - half_extents - margin_vec
+        aabb_upper[shape_id] = pos + half_extents + margin_vec
+    elif geo_type == GeoType.CAPSULE:
+        radius = scale[0]
+        half_height = scale[1]
+        axis = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+        half_extents = wp.vec3(radius, radius, radius) + wp.abs(axis) * half_height
+        aabb_lower[shape_id] = pos - half_extents - margin_vec
+        aabb_upper[shape_id] = pos + half_extents + margin_vec
+    elif geo_type == GeoType.CYLINDER:
+        radius = scale[0]
+        half_height = scale[1]
+        r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
+        r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
+        r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+        half_extents = wp.vec3(
+            radius * wp.sqrt(r0[0] * r0[0] + r1[0] * r1[0]) + half_height * wp.abs(r2[0]),
+            radius * wp.sqrt(r0[1] * r0[1] + r1[1] * r1[1]) + half_height * wp.abs(r2[1]),
+            radius * wp.sqrt(r0[2] * r0[2] + r1[2] * r1[2]) + half_height * wp.abs(r2[2]),
+        )
+        aabb_lower[shape_id] = pos - half_extents - margin_vec
+        aabb_upper[shape_id] = pos + half_extents + margin_vec
     elif has_local_aabb:
         # Pre-computed local AABB transformed to world space.
         # Scale is already baked into shape_collision_aabb by the builder,
@@ -273,6 +402,7 @@ def compute_shape_aabbs(
             geom_scale = wp.vec3(scale[0] * 0.5, scale[1] * 0.5, 0.0)
         shape_data.scale = geom_scale
         shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+        shape_data.center = wp.vec3(0.0, 0.0, 0.0)
 
         # For CONVEX_MESH, pack the mesh pointer
         if geo_type == GeoType.CONVEX_MESH:
@@ -1057,6 +1187,8 @@ class CollisionPipeline:
             # should not trigger mesh-only kernel setup/launches.
             has_meshes = False
             use_lean_gjk_mpr = False
+            mesh_sdf_texture_only = False
+            mesh_sdf_identity_scale_only = False
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 colliding_mask = _shape_collide_mask(model, len(shape_types))
@@ -1074,6 +1206,31 @@ class CollisionPipeline:
                         np.any(colliding_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0))
                     )
                     has_meshes = has_meshes or has_planar_sdf_shapes
+                    mesh_sdf_shapes = colliding_mask & (
+                        (shape_types != int(GeoType.HFIELD))
+                        & ((shape_types == int(GeoType.MESH)) | (shape_edge_range[:, 1] > 0))
+                    )
+                    coarse_textures = getattr(model, "_texture_sdf_coarse_textures", None)
+                    has_texture_sdf = np.array(
+                        [
+                            sdf_idx >= 0
+                            and coarse_textures is not None
+                            and sdf_idx < len(coarse_textures)
+                            and coarse_textures[sdf_idx] is not None
+                            for sdf_idx in shape_sdf_index
+                        ],
+                        dtype=bool,
+                    )
+                    mesh_sdf_texture_only = bool(np.any(mesh_sdf_shapes) and np.all(has_texture_sdf[mesh_sdf_shapes]))
+                    if mesh_sdf_texture_only:
+                        texture_sdf_data = model._texture_sdf_data.numpy()
+                        scale_baked = texture_sdf_data["scale_baked"]
+                        shape_scale = model.shape_scale.numpy()
+                        identity_shape_scale = np.all(shape_scale == np.float32(1.0), axis=1)
+                        mesh_sdf_identity_scale_only = all(
+                            bool(scale_baked[shape_sdf_index[shape_idx]]) or identity_shape_scale[shape_idx]
+                            for shape_idx in np.flatnonzero(mesh_sdf_shapes)
+                        )
                 # Use lean GJK/MPR kernel when scene has no capsules, ellipsoids,
                 # cylinders, or cones (which need full support function and axial
                 # rolling post-processing)
@@ -1085,6 +1242,22 @@ class CollisionPipeline:
                 }
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
 
+            has_generic_convex_pairs = _has_generic_convex_pairs(
+                model,
+                broad_phase_mode=self.broad_phase_mode,
+                shape_pairs_filtered=self.shape_pairs_filtered,
+            )
+            all_pairs_generic_convex = (
+                has_generic_convex_pairs
+                and not has_meshes
+                and model.heightfield_count == 0
+                and hydroelastic_sdf is None
+                and _all_pairs_require_generic_convex_narrow_phase(
+                    model,
+                    broad_phase_mode=self.broad_phase_mode,
+                    shape_pairs_filtered=self.shape_pairs_filtered,
+                )
+            )
             # Initialize narrow phase with pre-allocated buffers
             # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
             # Pass write_contact as custom writer to write directly to final Contacts format
@@ -1109,6 +1282,10 @@ class CollisionPipeline:
                 has_meshes=has_meshes,
                 has_heightfields=model.heightfield_count > 0,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
+                has_generic_convex_pairs=has_generic_convex_pairs,
+                all_pairs_generic_convex=all_pairs_generic_convex,
+                mesh_sdf_identity_scale_only=mesh_sdf_identity_scale_only,
+                mesh_sdf_texture_only=mesh_sdf_texture_only,
                 deterministic=deterministic,
                 contact_max=rigid_contact_max,
                 verify_buffers=verify_buffers,
@@ -1488,6 +1665,8 @@ class CollisionPipeline:
             heightfield_data=model.heightfield_data,
             heightfield_elevations=model.heightfield_elevations,
             mesh_edge_indices=model.mesh_edge_indices,
+            mesh_edge_centers=model.mesh_edge_centers,
+            mesh_edge_halves=model.mesh_edge_halves,
             shape_edge_range=model.shape_edge_range,
             writer_data=writer_data,
             device=self.device,

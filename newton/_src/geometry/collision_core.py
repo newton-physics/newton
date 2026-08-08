@@ -279,6 +279,7 @@ def create_compute_gjk_mpr_contacts(
     writer_func: Any,
     post_process_contact: Any = post_process_axial_on_discrete_contact,
     support_func: Any = None,
+    use_precomputed_center: bool = False,
 ):
     """
     Factory function to create a compute_gjk_mpr_contacts function with a specific writer function.
@@ -360,7 +361,11 @@ def create_compute_gjk_mpr_contacts(
         contact_template.sort_sub_key = sort_sub_key
 
         if wp.static(ENABLE_MULTI_CONTACT):
-            wp.static(create_solve_convex_multi_contact(support_func, writer_func, post_process_contact))(
+            wp.static(
+                create_solve_convex_multi_contact(
+                    support_func, writer_func, post_process_contact, use_precomputed_center
+                )
+            )(
                 shape_a_data,
                 shape_b_data,
                 rot_a,
@@ -377,7 +382,11 @@ def create_compute_gjk_mpr_contacts(
                 contact_template,
             )
         else:
-            wp.static(create_solve_convex_single_contact(support_func, writer_func, post_process_contact))(
+            wp.static(
+                create_solve_convex_single_contact(
+                    support_func, writer_func, post_process_contact, use_precomputed_center
+                )
+            )(
                 shape_a_data,
                 shape_b_data,
                 rot_a,
@@ -549,6 +558,8 @@ def convert_infinite_plane_to_cube(
     # x, y: lateral coverage (parallel to plane)
     # z: depth perpendicular to plane
     result.scale = wp.vec3(lateral_size, lateral_size, depth)
+    result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+    result.center = wp.vec3(0.0, 0.0, 0.0)
 
     # Position the cube center at the plane surface, directly under/over the other object
     # Project the other object's position onto the plane
@@ -705,7 +716,10 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
         # Compute and write contacts using GJK/MPR
         wp.static(
             create_compute_gjk_mpr_contacts(
-                writer_func, post_process_contact=post_process_contact, support_func=support_func
+                writer_func,
+                post_process_contact=post_process_contact,
+                support_func=support_func,
+                use_precomputed_center=True,
             )
         )(
             shape_data_a,
@@ -974,6 +988,7 @@ def mesh_vs_convex_midphase(
     generic_shape_data.shape_type = geo_type
     generic_shape_data.scale = scale
     generic_shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+    generic_shape_data.center = wp.vec3(0.0, 0.0, 0.0)
 
     # For CONVEX_MESH, pack the mesh pointer
     if geo_type == GeoType.CONVEX_MESH:
@@ -1137,6 +1152,7 @@ def get_triangle_shape_from_mesh(
     shape_data.shape_type = int(GeoTypeEx.TRIANGLE)
     shape_data.scale = v1_world - v0_world  # B - A
     shape_data.auxiliary = v2_world - v0_world  # C - A
+    shape_data.center = wp.vec3(0.0, 0.0, 0.0)
 
     return shape_data, v0_world
 

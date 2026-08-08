@@ -344,7 +344,8 @@ def _register_hydroelastic_normal_bins_kernel(
     """Register normal-bin keys before deterministic aggregate accumulation."""
     tid = wp.tid()
     num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
-    for contact_id in range(tid, num_contacts, total_num_threads):
+    for buffer_idx in range(tid, num_contacts, total_num_threads):
+        contact_id = buffer_idx + 1
         pair = reducer_data.shape_pairs[contact_id]
         normal = decode_oct(reducer_data.normal[contact_id])
         key = make_contact_key(pair[0], pair[1], get_slot(normal))
@@ -382,7 +383,8 @@ def _create_unreduced_aggregate_kernel(pressure_func, mantissa_bits: int):
         ht_capacity = reducer_data.ht_capacity
         num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
 
-        for contact_id in range(tid, num_contacts, total_num_threads):
+        for buffer_idx in range(tid, num_contacts, total_num_threads):
+            contact_id = buffer_idx + 1
             entry_idx = reducer_data.contact_nbin_entry[contact_id]
             if entry_idx < 0:
                 continue
@@ -445,7 +447,8 @@ def _create_unreduced_moment_kernel(pressure_func, mantissa_bits: int):
         ht_capacity = reducer_data.ht_capacity
         num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
 
-        for contact_id in range(tid, num_contacts, total_num_threads):
+        for buffer_idx in range(tid, num_contacts, total_num_threads):
+            contact_id = buffer_idx + 1
             entry_idx = reducer_data.contact_nbin_entry[contact_id]
             if entry_idx < 0:
                 continue
@@ -590,9 +593,10 @@ def get_reduce_hydroelastic_contacts_kernel(pressure_func: Any, deterministic: b
         num_contacts = wp.min(num_contacts, reducer_data.capacity)
 
         for i in range(tid, num_contacts, total_num_threads):
-            pd = reducer_data.position_depth[i]
-            normal = decode_oct(reducer_data.normal[i])
-            pair = reducer_data.shape_pairs[i]
+            contact_id = i + 1
+            pd = reducer_data.position_depth[contact_id]
+            normal = decode_oct(reducer_data.normal[contact_id])
+            pair = reducer_data.shape_pairs[contact_id]
 
             position = wp.vec3(pd[0], pd[1], pd[2])
             depth = pd[3]
@@ -613,13 +617,13 @@ def get_reduce_hydroelastic_contacts_kernel(pressure_func: Any, deterministic: b
                 # Deterministic aggregate accumulation pre-registers normal
                 # bins. Reuse that result so a failed registration is counted
                 # once rather than again in this kernel.
-                entry_idx = reducer_data.contact_nbin_entry[i]
+                entry_idx = reducer_data.contact_nbin_entry[contact_id]
             else:
                 entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
 
             # Cache normal-bin entry index for downstream kernels (avoids repeated hash lookups)
             if reducer_data.contact_nbin_entry.shape[0] > 0:
-                reducer_data.contact_nbin_entry[i] = entry_idx
+                reducer_data.contact_nbin_entry[contact_id] = entry_idx
 
             if entry_idx >= 0:
                 # k_eff is constant for a shape pair, so redundant writes are safe.
@@ -638,16 +642,16 @@ def get_reduce_hydroelastic_contacts_kernel(pressure_func: Any, deterministic: b
                         score = wp.dot(pos_2d_centered, dir_2d) * pen_weight
                         value = make_contact_value(
                             score,
-                            reducer_data.contact_fingerprints[i],
-                            i,
+                            reducer_data.contact_fingerprints[contact_id],
+                            contact_id,
                             reducer_data.deterministic,
                         )
                         reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
 
                 max_depth_value = make_contact_value(
                     -depth,
-                    reducer_data.contact_fingerprints[i],
-                    i,
+                    reducer_data.contact_fingerprints[contact_id],
+                    contact_id,
                     reducer_data.deterministic,
                 )
                 reduction_update_slot(
@@ -667,7 +671,7 @@ def get_reduce_hydroelastic_contacts_kernel(pressure_func: Any, deterministic: b
                         # from buffer state (depth + shape_b) rather than cached.
                         # Previously this used area * |depth|, which implicitly
                         # assumed the linear law p = -kh * depth.
-                        area_i = reducer_data.contact_area[i]
+                        area_i = reducer_data.contact_area[contact_id]
                         p_i = wp.static(pressure_func)(depth, shape_b, pressure_data)
                         wp.atomic_add(agg_moment_unreduced, entry_idx, area_i * p_i * lever)
             elif not wp.static(deterministic):
@@ -692,8 +696,8 @@ def get_reduce_hydroelastic_contacts_kernel(pressure_func: Any, deterministic: b
                 )
                 voxel_value = make_contact_value(
                     -depth,
-                    reducer_data.contact_fingerprints[i],
-                    i,
+                    reducer_data.contact_fingerprints[contact_id],
+                    contact_id,
                     reducer_data.deterministic,
                 )
                 reduction_update_slot(

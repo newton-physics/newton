@@ -101,6 +101,42 @@ not show up in builder-state comparisons or survive past either builder's lifeti
 """
 
 
+def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
+    """Build a collision-only mesh containing each exact vertex position once."""
+    vertices = source.vertices
+    _, first_indices, inverse = np.unique(vertices, axis=0, return_index=True, return_inverse=True)
+    if len(first_indices) == len(vertices):
+        return source
+
+    # Retain first-occurrence order so support-map tie breaking stays unchanged.
+    first_order = np.argsort(first_indices)
+    unique_remap = np.empty(len(first_indices), dtype=np.int32)
+    unique_remap[first_order] = np.arange(len(first_indices), dtype=np.int32)
+    vertex_remap = unique_remap[inverse]
+    collision_mesh = Mesh(
+        vertices=vertices[first_indices[first_order]],
+        indices=vertex_remap[source.indices],
+        compute_inertia=False,
+        is_solid=source.is_solid,
+        maxhullvert=source.maxhullvert,
+        sdf=source.sdf,
+    )
+    collision_mesh.mass = source.mass
+    collision_mesh.com = source.com
+    collision_mesh.inertia = source.inertia
+    collision_mesh.has_inertia = source.has_inertia
+
+    if source._collision_edges is not None:
+        collision_edges = vertex_remap[source._collision_edges]
+        collision_edges = collision_edges[collision_edges[:, 0] != collision_edges[:, 1]]
+        if len(collision_edges) > 0:
+            _, first_edges = np.unique(collision_edges, axis=0, return_index=True)
+            collision_edges = collision_edges[np.sort(first_edges)]
+        collision_mesh._collision_edges = collision_edges
+
+    return collision_mesh
+
+
 @dataclass(frozen=True)
 class _ShapeCollisionFilterBlock:
     """Compact replicated collision-filter block."""
@@ -11090,6 +11126,18 @@ class ModelBuilder:
                 )
 
             generated_shape_sources = list(self.shape_source)
+            deduplicated_convex_sources = {}
+            for shape_idx, shape_type in enumerate(self.shape_type):
+                source = generated_shape_sources[shape_idx]
+                if shape_type != GeoType.CONVEX_MESH or not isinstance(source, Mesh):
+                    continue
+                source_identity = id(source)
+                if source_identity in deduplicated_convex_sources:
+                    generated_shape_sources[shape_idx] = deduplicated_convex_sources[source_identity]
+                    continue
+                deduplicated_source = _deduplicate_convex_collision_mesh(source)
+                deduplicated_convex_sources[source_identity] = deduplicated_source
+                generated_shape_sources[shape_idx] = deduplicated_source
             generated_sdf_edge_meshes = []
             unit_box_edge_mesh = None
             for shape_idx, shape_type in enumerate(self.shape_type):
@@ -11725,6 +11773,8 @@ class ModelBuilder:
 
             shape_edge_ranges = []
             edge_chunks = []
+            edge_center_chunks = []
+            edge_half_chunks = []
             edge_offset = 0
             edge_cache = {}  # mesh python id → (start, count)
 
@@ -11735,11 +11785,13 @@ class ModelBuilder:
                     and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
                     mesh = generated_shape_sources[i]
+                    shape_scale = np.asarray(self.shape_scale[i], dtype=np.float32)
+                    scale_key = tuple(float(value) for value in shape_scale)
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
-                        mesh_key = ("deferred", id(deferred_edges))
+                        mesh_key = ("deferred", id(deferred_edges), scale_key)
                     else:
-                        mesh_key = id(mesh)
+                        mesh_key = (id(mesh), scale_key)
                     if mesh_key in edge_cache:
                         shape_edge_ranges.append(edge_cache[mesh_key])
                     else:
@@ -11755,6 +11807,30 @@ class ModelBuilder:
                         start = edge_offset
                         count = len(edges)
                         edge_chunks.append(edges)
+                        if count > 0:
+                            vertices = np.asarray(mesh.vertices, dtype=np.float32) * shape_scale
+                            edge_v0 = vertices[edges[:, 0]]
+                            edge_v1 = vertices[edges[:, 1]]
+                            edge_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)
+                            edge_centers = np.ascontiguousarray((edge_v0 + edge_v1) * 0.5, dtype=np.float32)
+                            edge_radii = np.linalg.norm(edge_halves, axis=1, keepdims=True)
+                            canonical_edges = mesh._canonical_vertex_ids()[edges].reshape(-1)
+                            endpoint_indices = np.arange(2 * count, dtype=np.int64)
+                            first_endpoint = np.full(int(canonical_edges.max()) + 1, 2 * count, dtype=np.int64)
+                            np.minimum.at(first_endpoint, canonical_edges, endpoint_indices)
+                            owns_endpoint = (first_endpoint[canonical_edges] == endpoint_indices).reshape(-1, 2)
+                            # Zero remains the legacy "both endpoints owned" encoding.
+                            corner_ownership = (
+                                4.0 + owns_endpoint[:, 0].astype(np.float32) + 2.0 * owns_endpoint[:, 1]
+                            ).reshape(-1, 1)
+                            edge_center_chunks.append(
+                                np.ascontiguousarray(
+                                    np.concatenate((edge_centers, edge_radii), axis=1), dtype=np.float32
+                                )
+                            )
+                            edge_half_chunks.append(
+                                np.ascontiguousarray(np.concatenate((edge_halves, corner_ownership), axis=1))
+                            )
                         edge_offset += count
                         entry = (start, count)
                         edge_cache[mesh_key] = entry
@@ -11769,8 +11845,18 @@ class ModelBuilder:
             )
             m.mesh_edge_indices = (
                 wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
-                if edge_chunks
+                if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec2i, device=device)
+            )
+            m.mesh_edge_centers = (
+                wp.array(np.concatenate(edge_center_chunks), dtype=wp.vec4, device=device)
+                if edge_offset > 0
+                else wp.zeros(1, dtype=wp.vec4, device=device)
+            )
+            m.mesh_edge_halves = (
+                wp.array(np.concatenate(edge_half_chunks), dtype=wp.vec4, device=device)
+                if edge_offset > 0
+                else wp.zeros(1, dtype=wp.vec4, device=device)
             )
 
             # ---------------------

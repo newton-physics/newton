@@ -55,7 +55,7 @@ def vert_a(vert: Vert) -> wp.vec3:
     return vert.B + vert.BtoA
 
 
-def create_support_map_function(support_func: Any):
+def create_support_map_function(support_func: Any, use_precomputed_center: bool = False):
     """
     Factory function to create support mapping functions for MPR algorithm.
 
@@ -200,36 +200,40 @@ def create_support_map_function(support_func: Any):
         """
         center = Vert()
 
-        center_a = wp.vec3(0.0, 0.0, 0.0)
-        center_b_local = wp.vec3(0.0, 0.0, 0.0)
+        if wp.static(use_precomputed_center):
+            center_a = geom_a.center
+            center_b_local = geom_b.center
+        else:
+            center_a = wp.vec3(0.0, 0.0, 0.0)
+            center_b_local = wp.vec3(0.0, 0.0, 0.0)
 
-        if geom_a.shape_type == int(GeoType.CONVEX_MESH):
-            mesh_ptr_a = unpack_mesh_ptr(geom_a.auxiliary)
-            mesh_a = wp.mesh_get(mesh_ptr_a)
-            scale_a = geom_a.scale
-            num_verts_a = mesh_a.points.shape[0]
-            v0_a = wp.cw_mul(mesh_a.points[0], scale_a)
-            min_a = v0_a
-            max_a = v0_a
-            for i in range(1, num_verts_a):
-                v_a = wp.cw_mul(mesh_a.points[i], scale_a)
-                min_a = wp.min(min_a, v_a)
-                max_a = wp.max(max_a, v_a)
-            center_a = 0.5 * (min_a + max_a)
+            if geom_a.shape_type == int(GeoType.CONVEX_MESH):
+                mesh_ptr_a = unpack_mesh_ptr(geom_a.auxiliary)
+                mesh_a = wp.mesh_get(mesh_ptr_a)
+                scale_a = geom_a.scale
+                num_verts_a = mesh_a.points.shape[0]
+                v0_a = wp.cw_mul(mesh_a.points[0], scale_a)
+                min_a = v0_a
+                max_a = v0_a
+                for i in range(1, num_verts_a):
+                    v_a = wp.cw_mul(mesh_a.points[i], scale_a)
+                    min_a = wp.min(min_a, v_a)
+                    max_a = wp.max(max_a, v_a)
+                center_a = 0.5 * (min_a + max_a)
 
-        if geom_b.shape_type == int(GeoType.CONVEX_MESH):
-            mesh_ptr_b = unpack_mesh_ptr(geom_b.auxiliary)
-            mesh_b = wp.mesh_get(mesh_ptr_b)
-            scale_b = geom_b.scale
-            num_verts_b = mesh_b.points.shape[0]
-            v0_b = wp.cw_mul(mesh_b.points[0], scale_b)
-            min_b = v0_b
-            max_b = v0_b
-            for i in range(1, num_verts_b):
-                v_b = wp.cw_mul(mesh_b.points[i], scale_b)
-                min_b = wp.min(min_b, v_b)
-                max_b = wp.max(max_b, v_b)
-            center_b_local = 0.5 * (min_b + max_b)
+            if geom_b.shape_type == int(GeoType.CONVEX_MESH):
+                mesh_ptr_b = unpack_mesh_ptr(geom_b.auxiliary)
+                mesh_b = wp.mesh_get(mesh_ptr_b)
+                scale_b = geom_b.scale
+                num_verts_b = mesh_b.points.shape[0]
+                v0_b = wp.cw_mul(mesh_b.points[0], scale_b)
+                min_b = v0_b
+                max_b = v0_b
+                for i in range(1, num_verts_b):
+                    v_b = wp.cw_mul(mesh_b.points[i], scale_b)
+                    min_b = wp.min(min_b, v_b)
+                    max_b = wp.max(max_b, v_b)
+                center_b_local = 0.5 * (min_b + max_b)
 
         center_b_world = position_b + wp.quat_rotate(orientation_b, center_b_local)
         center_b_to_a = center_a - center_b_world

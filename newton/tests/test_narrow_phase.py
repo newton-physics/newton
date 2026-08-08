@@ -25,8 +25,9 @@ import warp as wp
 from warp.tests.unittest_utils import StdOutCapture
 
 import newton
+from newton._src.geometry.contact_data import ContactData
 from newton._src.geometry.flags import ShapeFlags
-from newton._src.geometry.narrow_phase import NarrowPhase
+from newton._src.geometry.narrow_phase import ContactWriterData, NarrowPhase, write_contact_simple
 from newton._src.geometry.types import GeoType
 
 _cuda_available = wp.is_cuda_available()
@@ -341,8 +342,41 @@ class _NarrowPhaseSetupMixin:
         )
 
 
+@wp.kernel
+def _write_nonunit_normal_contact(writer_data: ContactWriterData):
+    contact = ContactData()
+    contact.shape_a = 0
+    contact.shape_b = 1
+    contact.contact_point_center = wp.vec3(0.0)
+    contact.contact_normal_a_to_b = wp.vec3(0.0, 0.0, 2.0)
+    contact.contact_distance = -0.25
+    contact.gap_sum = 1.0
+    write_contact_simple(contact, writer_data, 0)
+
+
 class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
     """Test NarrowPhase collision detection API with various primitive pairs."""
+
+    def test_writer_normalizes_contact_normal(self):
+        """Normalize producer contact normals before reconstructing surface points."""
+        device = wp.get_device()
+        writer_data = ContactWriterData()
+        writer_data.contact_max = 1
+        writer_data.contact_count = wp.zeros(1, dtype=int, device=device)
+        writer_data.contact_pair = wp.zeros(1, dtype=wp.vec2i, device=device)
+        writer_data.contact_position = wp.zeros(1, dtype=wp.vec3, device=device)
+        writer_data.contact_normal = wp.zeros(1, dtype=wp.vec3, device=device)
+        writer_data.contact_penetration = wp.zeros(1, dtype=float, device=device)
+        writer_data.contact_tangent = wp.zeros(0, dtype=wp.vec3, device=device)
+        writer_data.contact_sort_key = wp.zeros(0, dtype=wp.int64, device=device)
+
+        wp.launch(_write_nonunit_normal_contact, dim=1, inputs=[writer_data], device=device)
+
+        np.testing.assert_array_equal(
+            writer_data.contact_normal.numpy()[0],
+            np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        )
+        self.assertEqual(float(writer_data.contact_penetration.numpy()[0]), -0.25)
 
     def test_launch_without_shape_edge_range(self):
         geom_list = [
