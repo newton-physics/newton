@@ -23,6 +23,7 @@ from bench_sensor_tiled_camera import SCENES as TILED_CAMERA_SCENES
 from benchmark_mujoco import Example
 
 import newton
+from newton.sensors import SensorTiledCamera
 from newton.viewer import ViewerGL
 
 
@@ -110,11 +111,7 @@ class KpiInitializeViewerGL:
 
 
 class _InitializeModelTiledCamera:
-    """Build models from tiled-camera scene presets with collision handling enabled.
-
-    This benchmarks replication and finalization coverage for the scenes used
-    by the tiled-camera benchmarks; it does not instantiate a SensorTiledCamera.
-    """
+    """Build models and tiled cameras from scene presets with collision handling enabled."""
 
     param_names = ["scene", "world_count"]
     rounds = 1
@@ -126,7 +123,7 @@ class _InitializeModelTiledCamera:
         self.world = TILED_CAMERA_SCENES[scene].build()
         warmup = newton.ModelBuilder()
         warmup.replicate(self.world, 1)
-        warmup.finalize()
+        _model, _sensor = self._initialize_model_and_sensor(warmup)
         self.replicated_builder = self._replicate(world_count)
         wp.synchronize_device()
 
@@ -136,14 +133,19 @@ class _InitializeModelTiledCamera:
         builder.add_ground_plane()
         return builder
 
+    def _initialize_model_and_sensor(self, builder):
+        model = builder.finalize()
+        sensor = SensorTiledCamera(model)
+        return model, sensor
+
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_model(self, scene, world_count):
-        _model = self._replicate(world_count).finalize()
+        _model, _sensor = self._initialize_model_and_sensor(self._replicate(world_count))
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_finalize_model(self, scene, world_count):
-        _model = self.replicated_builder.finalize()
+        _model, _sensor = self._initialize_model_and_sensor(self.replicated_builder)
         wp.synchronize_device()
 
     def teardown(self, scene, world_count):
