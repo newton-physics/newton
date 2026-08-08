@@ -6,7 +6,9 @@ from __future__ import annotations
 import collections
 import inspect
 import os
+import queue
 import warnings
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlparse
@@ -16,8 +18,9 @@ import warp as wp
 
 import newton
 
-from ..core.types import override
+from ..core.types import Axis, override
 from ..utils.texture import load_texture, normalize_texture
+from .picking import Picking
 from .viewer import ViewerBase, is_jupyter_notebook
 
 
@@ -34,9 +37,41 @@ class ViewerViser(ViewerBase):
         - Jupyter notebook integration with inline display
         - Static HTML export for sharing visualizations
         - Interactive camera controls
+        - Interactive transform gizmos and live scalar plots
+        - Picking forces through click-to-create translation handles
+
+    Click a rendered body to create a picking handle at the hit point. Drag
+    the handle to apply a spring force; releasing the handle drops the body.
+    A cyan line connects the moving body anchor to the handle target.
     """
 
     _viser_module = None
+
+    @property
+    def picking_enabled(self) -> bool:
+        """Whether rendered bodies can be selected for force picking."""
+        return self._picking_enabled
+
+    @picking_enabled.setter
+    def picking_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        was_enabled = getattr(self, "_picking_enabled", False)
+        object.__setattr__(self, "_picking_enabled", enabled)
+
+        callbacks = getattr(self, "_picking_click_callbacks", None)
+        if callbacks is None or enabled == was_enabled:
+            return
+        if not enabled:
+            for handle, _callback in list(callbacks.values()):
+                self._detach_picking_callback(handle)
+            for layer_id in list(getattr(self, "_picking_controls", {})):
+                self._remove_picking_control(layer_id, release=True)
+            return
+
+        for name, instance in getattr(self, "_instances", {}).items():
+            handle = getattr(self, "_scene_handles", {}).get(name)
+            if handle is not None and instance.get("pickable", False):
+                self._attach_picking_callback(handle, instance["layer_id"])
 
     @classmethod
     def _get_viser(cls):
@@ -140,6 +175,24 @@ class ViewerViser(ViewerBase):
         self._plot_history_size = plot_history_size
         self._plane_meshes = {}
         self._plane_handles = {}
+        self._gizmo_handles: dict[str, dict[str, Any]] = {}
+        self._gizmo_seen: set[str] = set()
+        self._active_gizmos: set[str] = set()
+        self.gizmo_is_using = False
+        self._picking_controls: dict[str, Any] = {}
+        self._picking_click_callbacks: dict[int, tuple[Any, Any]] = {}
+        self._interaction_events: queue.SimpleQueue[tuple[Any, ...]] = queue.SimpleQueue()
+        self._paused = False
+        self._step_requested = False
+        self._reset_callback: Callable[[], None] | None = None
+        self._wireframe = False
+        self._viewer_option_handles: dict[str, Any] = {}
+        self._simulation_gui_handles: dict[str, Any] = {}
+        self._example_browser_folder: Any = None
+        self._example_browser_handles: dict[str, Any] = {}
+        self._example_browser_options: dict[str, str] = {}
+        self._example_switch_callback: Callable[[str], None] | None = None
+        self._frame_atomic_context: Any = None
 
         super().__init__()
 
@@ -181,6 +234,7 @@ class ViewerViser(ViewerBase):
 
         # Set up default scene
         self._setup_scene()
+        self._setup_gui()
 
         if self._serializer is not None and verbose:
             print(f"Recording to: {record_to_viser}")
@@ -189,6 +243,12 @@ class ViewerViser(ViewerBase):
     def clear_model(self):
         """Reset model-dependent state, including scalar plot buffers."""
         owns = self._is_layer_owned_path
+
+        self._remove_picking_control(self.layer.layer_id, release=True)
+        for name in list(self._gizmo_handles):
+            if owns(name):
+                self._remove_gizmo(name)
+
         for plane_name in list(self._plane_handles.keys()):
             if owns(plane_name):
                 self._remove_plane_handles(plane_name)
@@ -197,6 +257,7 @@ class ViewerViser(ViewerBase):
         for name, handle in list(getattr(self, "_scene_handles", {}).items()):
             if not owns(name):
                 continue
+            self._detach_picking_callback(handle)
             try:
                 handle.remove()
             except Exception:
@@ -232,6 +293,57 @@ class ViewerViser(ViewerBase):
                 self._scalar_dirty.discard(name)
 
         super().clear_model()
+        self._sync_gui_controls()
+
+    @override
+    def _init_extra_layer_state(self, layer):
+        """Initialize Viser-specific per-layer interaction state."""
+        super()._init_extra_layer_state(layer)
+        layer.picking = None
+        layer._last_state = None
+
+    @override
+    def set_model(self, model: newton.Model | None):
+        """Set the model and initialize interactive picking for it.
+
+        Args:
+            model: Model to visualize and interact with.
+        """
+        super().set_model(model)
+        self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
+        if self.picking is not None:
+            self.picking.visible_worlds_mask = self._visible_worlds_mask
+
+        if model is not None:
+            try:
+                from ..geometry import raycast as _raycast_module  # noqa: PLC0415
+
+                wp.load_module(module=_raycast_module, device=model.device)
+                wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+            except Exception:
+                pass
+
+    @override
+    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+        """Set visible worlds and keep picking visibility in sync.
+
+        Args:
+            worlds: World indices to show, or ``None`` to show all worlds.
+        """
+        super().set_visible_worlds(worlds)
+        if self.picking is not None:
+            self.picking.visible_worlds_mask = self._visible_worlds_mask
+
+    @override
+    def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3) -> None:
+        """Set world offsets and keep picking coordinates in sync.
+
+        Args:
+            spacing: Spacing between worlds along each axis [m].
+        """
+        super().set_world_offsets(spacing)
+        if self.picking is not None:
+            self.picking.world_offsets = self.world_offsets
 
     def _setup_scene(self):
         """Set up the default scene configuration."""
@@ -240,6 +352,153 @@ class ViewerViser(ViewerBase):
 
         # remove HDR map
         self._server.scene.configure_environment_map(hdri=None)
+
+    def _begin_atomic_frame(self) -> None:
+        """Hold outgoing scene messages until the complete frame is ready."""
+        self._end_atomic_frame()
+        self._frame_atomic_context = self._server.atomic()
+        self._frame_atomic_context.__enter__()
+
+    def _end_atomic_frame(self) -> None:
+        """Publish a pending frame as one atomic Viser message group."""
+        context = self._frame_atomic_context
+        if context is None:
+            return
+        self._frame_atomic_context = None
+        context.__exit__(None, None, None)
+
+    def _setup_gui(self) -> None:
+        """Create native Viser controls for supported viewer settings."""
+        with self._server.gui.add_folder("Simulation", order=0.0):
+            pause = self._server.gui.add_checkbox("Pause", initial_value=self._paused)
+            step = self._server.gui.add_button("Step", disabled=True)
+            reset = self._server.gui.add_button("Reset", disabled=True)
+
+        @pause.on_update
+        def _on_pause(event):
+            if event.client_id is not None:
+                self._interaction_events.put(("viewer_option", "_paused", bool(event.target.value)))
+
+        @step.on_click
+        def _on_step(_event):
+            self._interaction_events.put(("step",))
+
+        @reset.on_click
+        def _on_reset(_event):
+            self._interaction_events.put(("reset",))
+
+        self._simulation_gui_handles = {"pause": pause, "step": step, "reset": reset}
+
+        options = (
+            ("show_visual", "Show Visual", None),
+            ("show_collision", "Show Collision", None),
+            (
+                "wireframe",
+                "Wireframe (untextured)",
+                "Viser exposes wireframe rendering for untextured meshes only.",
+            ),
+            ("show_ground", "Show Ground", None),
+            ("show_contacts", "Show Contacts", "Requires the example to log contacts."),
+            ("show_contact_normals", "Contact Normals", None),
+            ("show_contact_disks", "Contact Modes", None),
+            ("show_contact_forces", "Contact Forces", None),
+            ("show_joints", "Show Joints", None),
+            ("show_com", "Show Center of Mass", None),
+            ("show_particles", "Show Particles", None),
+            ("show_springs", "Show Springs", None),
+            ("show_triangles", "Show Cloth", None),
+            ("show_inertia_boxes", "Show Inertia Boxes", None),
+            ("picking_enabled", "Enable Picking", None),
+        )
+        with self._server.gui.add_folder("Visualization", order=10.0):
+            for attribute, label, hint in options:
+                value = self._wireframe if attribute == "wireframe" else bool(getattr(self, attribute))
+                handle = self._server.gui.add_checkbox(label, initial_value=value, hint=hint)
+
+                @handle.on_update
+                def _on_option(event, option=attribute):
+                    if event.client_id is not None:
+                        self._interaction_events.put(("viewer_option", option, bool(event.target.value)))
+
+                self._viewer_option_handles[attribute] = handle
+
+    def _sync_gui_controls(self) -> None:
+        """Synchronize native GUI values with viewer state."""
+        for attribute, handle in getattr(self, "_viewer_option_handles", {}).items():
+            value = self._wireframe if attribute == "wireframe" else bool(getattr(self, attribute))
+            if handle.value != value:
+                handle.value = value
+
+        simulation = getattr(self, "_simulation_gui_handles", {})
+        if simulation:
+            if simulation["pause"].value != self._paused:
+                simulation["pause"].value = self._paused
+            step_disabled = not self._paused
+            if simulation["step"].disabled != step_disabled:
+                simulation["step"].disabled = step_disabled
+            reset_disabled = self._reset_callback is None
+            if simulation["reset"].disabled != reset_disabled:
+                simulation["reset"].disabled = reset_disabled
+
+    def _set_wireframe(self, enabled: bool) -> None:
+        """Set wireframe rendering on Viser mesh batches that support it."""
+        self._wireframe = bool(enabled)
+        for name, handle in self._scene_handles.items():
+            instance = self._instances.get(name)
+            if instance is None or instance["use_trimesh"]:
+                continue
+            try:
+                handle.wireframe = self._wireframe
+            except Exception:
+                pass
+
+    def configure_example_browser(
+        self,
+        tree: dict[str, list[tuple[str, str]]],
+        callback: Callable[[str], None],
+    ) -> None:
+        """Configure a native dropdown for switching Newton examples.
+
+        Args:
+            tree: Example names and module paths grouped by category.
+            callback: Function called with the selected module path.
+        """
+        if self._example_browser_folder is not None:
+            try:
+                self._example_browser_folder.remove()
+            except Exception:
+                pass
+
+        options = {
+            f"{category} / {name}": module_path
+            for category, examples in sorted(tree.items())
+            for name, module_path in examples
+        }
+        self._example_browser_options = options
+        self._example_switch_callback = callback
+        if not options:
+            self._example_browser_folder = None
+            self._example_browser_handles = {}
+            return
+
+        folder = self._server.gui.add_folder("Examples", order=20.0, expand_by_default=False)
+        with folder:
+            dropdown = self._server.gui.add_dropdown("Example", tuple(options), initial_value=next(iter(options)))
+            load = self._server.gui.add_button("Load Example")
+
+        @load.on_click
+        def _on_load(_event):
+            module_path = self._example_browser_options.get(dropdown.value)
+            if module_path is not None:
+                self._interaction_events.put(("example_switch", module_path))
+
+        self._example_browser_folder = folder
+        self._example_browser_handles = {"dropdown": dropdown, "load": load}
+
+    def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register the callback invoked by the native Reset button."""
+        self._reset_callback = callback
+        self._sync_gui_controls()
 
     @staticmethod
     def _call_scene_method(method, **kwargs):
@@ -250,6 +509,342 @@ class ViewerViser(ViewerBase):
             return method(**allowed)
         except Exception:
             return method(**kwargs)
+
+    @staticmethod
+    def _set_handle_property_if_changed(handle: Any, name: str, value: Any) -> None:
+        """Update a Viser property only when its serialized value changed."""
+        try:
+            current = getattr(handle, name)
+            if isinstance(current, (np.ndarray, tuple, list)) or isinstance(value, (np.ndarray, tuple, list)):
+                unchanged = np.array_equal(np.asarray(current), np.asarray(value))
+            else:
+                unchanged = current == value
+            if unchanged:
+                return
+        except Exception:
+            pass
+        setattr(handle, name, value)
+
+    @staticmethod
+    def _transform_to_viser(transform: wp.transform) -> tuple[np.ndarray, np.ndarray]:
+        """Return a Warp transform as Viser position and WXYZ rotation."""
+        position = np.asarray((transform.p[0], transform.p[1], transform.p[2]), dtype=np.float32)
+        wxyz = np.asarray((transform.q[3], transform.q[0], transform.q[1], transform.q[2]), dtype=np.float32)
+        return position, wxyz
+
+    @staticmethod
+    def _assign_transform(transform: wp.transform, position, wxyz) -> None:
+        """Mutate a pass-by-reference Warp transform from Viser values."""
+        transform[:] = wp.transform(
+            wp.vec3(float(position[0]), float(position[1]), float(position[2])),
+            wp.quat(float(wxyz[1]), float(wxyz[2]), float(wxyz[3]), float(wxyz[0])),
+        )
+
+    @staticmethod
+    def _normalize_gizmo_axes(axes: Sequence[Axis] | None) -> tuple[Axis, ...]:
+        """Normalize an optional axis sequence into stable XYZ order."""
+        axis_order = (Axis.X, Axis.Y, Axis.Z)
+        if axes is None:
+            return axis_order
+        enabled = {Axis.from_any(axis) for axis in axes}
+        return tuple(axis for axis in axis_order if axis in enabled)
+
+    @staticmethod
+    def _gizmo_scene_path(name: str, kind: str) -> str:
+        """Build an internal scene path for a user-named gizmo handle."""
+        return f"/__newton/gizmos/{name.lstrip('/')}/{kind}"
+
+    def _sync_gizmo_handles(self, entry: dict[str, Any]) -> None:
+        """Push a gizmo's current pass-by-reference transform to Viser."""
+        position, wxyz = self._transform_to_viser(entry["transform"])
+        for handle in entry["handles"].values():
+            handle.position = position
+            handle.wxyz = wxyz
+
+    def _remove_gizmo(self, name: str) -> None:
+        """Remove all Viser controls associated with one gizmo."""
+        entry = self._gizmo_handles.pop(name, None)
+        if entry is not None:
+            for handle in entry["handles"].values():
+                try:
+                    handle.remove()
+                except Exception:
+                    pass
+        self._active_gizmos.discard(name)
+        self.gizmo_is_using = bool(self._active_gizmos)
+
+    def _create_gizmo(
+        self,
+        name: str,
+        transform: wp.transform,
+        translate: tuple[Axis, ...],
+        rotate: tuple[Axis, ...],
+        snap_to: wp.transform | None,
+    ) -> dict[str, Any]:
+        """Create translation and rotation controls for one logged gizmo."""
+        position, wxyz = self._transform_to_viser(transform)
+        scale = max(float(self.scene_scale) * 1.5, 0.2)
+        handles: dict[str, Any] = {}
+
+        def add_handle(kind: str, axes: tuple[Axis, ...], **kwargs):
+            active_axes = tuple(axis in axes for axis in (Axis.X, Axis.Y, Axis.Z))
+            handle = self._server.scene.add_transform_controls(
+                name=self._gizmo_scene_path(name, kind),
+                scale=scale,
+                active_axes=active_axes,
+                depth_test=False,
+                position=position,
+                wxyz=wxyz,
+                **kwargs,
+            )
+
+            @handle.on_update
+            def _on_update(event, gizmo_name=name):
+                self._interaction_events.put(
+                    (
+                        "gizmo_update",
+                        gizmo_name,
+                        tuple(float(v) for v in event.target.position),
+                        tuple(float(v) for v in event.target.wxyz),
+                    )
+                )
+
+            @handle.on_drag_start
+            def _on_drag_start(_event, gizmo_name=name):
+                # Mark active immediately so the simulation thread cannot push
+                # its previous transform over an in-flight browser drag.
+                self._active_gizmos.add(gizmo_name)
+                self.gizmo_is_using = True
+                self._interaction_events.put(("gizmo_drag_start", gizmo_name))
+
+            @handle.on_drag_end
+            def _on_drag_end(_event, gizmo_name=name):
+                self._interaction_events.put(("gizmo_drag_end", gizmo_name))
+
+            handles[kind] = handle
+
+        if translate:
+            add_handle("translate", translate, disable_rotations=True)
+        if rotate:
+            add_handle("rotate", rotate, disable_axes=True, disable_sliders=True)
+
+        entry = {
+            "transform": transform,
+            "snap_to": snap_to,
+            "translate": translate,
+            "rotate": rotate,
+            "handles": handles,
+        }
+        self._gizmo_handles[name] = entry
+        return entry
+
+    def _attach_picking_callback(self, handle: Any, layer_id: str) -> None:
+        """Make a rendered instance batch start picking when clicked."""
+        handle_id = id(handle)
+        if not self.picking_enabled or handle_id in self._picking_click_callbacks or not hasattr(handle, "on_click"):
+            return
+
+        def _on_click(event, clicked_layer_id=layer_id):
+            if not self.picking_enabled:
+                return
+            self._interaction_events.put(
+                (
+                    "picking_click",
+                    clicked_layer_id,
+                    tuple(float(v) for v in event.ray_origin),
+                    tuple(float(v) for v in event.ray_direction),
+                )
+            )
+
+        callback = handle.on_click(_on_click)
+        self._picking_click_callbacks[handle_id] = (handle, callback)
+
+    def _shape_instance_batch(self, name: str):
+        """Return the model shape batch associated with a scene path, if any."""
+        return next((batch for batch in self._shape_instances.values() if batch.name == name), None)
+
+    def _is_pickable_instance(self, name: str) -> bool:
+        """Return whether an instance batch contains body-attached model shapes."""
+        batch = self._shape_instance_batch(name)
+        return batch is not None and not batch.static
+
+    def _detach_picking_callback(self, handle: Any) -> None:
+        """Remove picking behavior and Viser's clickable hover highlight."""
+        entry = self._picking_click_callbacks.pop(id(handle), None)
+        if entry is None or not hasattr(handle, "remove_click_callback"):
+            return
+        try:
+            handle.remove_click_callback(entry[1])
+        except Exception:
+            pass
+
+    @staticmethod
+    def _transform_ray_to_layer(layer, ray_origin, ray_direction) -> tuple[wp.vec3, wp.vec3]:
+        """Transform a visual-space ray into a layer's pre-transform space."""
+        layer_inv = wp.transform_inverse(layer.xform)
+        origin = wp.transform_point(
+            layer_inv,
+            wp.vec3(float(ray_origin[0]), float(ray_origin[1]), float(ray_origin[2])),
+        )
+        direction = wp.quat_rotate(
+            layer_inv.q,
+            wp.vec3(float(ray_direction[0]), float(ray_direction[1]), float(ray_direction[2])),
+        )
+        return origin, direction
+
+    @staticmethod
+    def _picking_world_offset(layer, picking: Picking) -> np.ndarray:
+        """Return the visual world offset for the currently picked body."""
+        offset = np.zeros(3, dtype=np.float32)
+        body_idx = int(picking.pick_body.numpy()[0])
+        if body_idx < 0 or layer.world_offsets is None or layer.world_offsets.shape[0] == 0:
+            return offset
+        if layer.model is None or layer.model.body_world is None:
+            return offset
+        world_idx = int(layer.model.body_world.numpy()[body_idx])
+        if 0 <= world_idx < layer.world_offsets.shape[0]:
+            offset[:] = layer.world_offsets.numpy()[world_idx]
+        return offset
+
+    @classmethod
+    def _picking_point_to_visual(cls, layer, picking: Picking, point) -> np.ndarray:
+        """Convert a physics-space picking point into Viser scene space."""
+        point_with_offset = np.asarray(point, dtype=np.float32) + cls._picking_world_offset(layer, picking)
+        visual = wp.transform_point(
+            layer.xform,
+            wp.vec3(float(point_with_offset[0]), float(point_with_offset[1]), float(point_with_offset[2])),
+        )
+        return np.asarray((visual[0], visual[1], visual[2]), dtype=np.float32)
+
+    def _picking_control_path(self, layer_id: str) -> str:
+        """Build a stable internal path for a layer's picking handle."""
+        segment = "default" if not self._layers[layer_id].name_prefix else "_".join(layer_id.split()).replace("/", "_")
+        return f"/__newton/picking/{segment}"
+
+    def _remove_picking_control(self, layer_id: str, *, release: bool) -> None:
+        """Remove one layer's picking handle and optionally release its body."""
+        handle = self._picking_controls.pop(layer_id, None)
+        if handle is not None:
+            try:
+                handle.remove()
+            except Exception:
+                pass
+        layer = self._layers.get(layer_id)
+        picking = getattr(layer, "picking", None) if layer is not None else None
+        if release and picking is not None:
+            picking.release()
+
+    def _create_picking_control(self, layer_id: str) -> None:
+        """Create a translation-only handle at the current picking target."""
+        layer = self._layers[layer_id]
+        picking = layer.picking
+        pick_state = picking.pick_state.numpy()
+        target = self._picking_point_to_visual(layer, picking, pick_state[0]["picking_target_world"])
+        self._remove_picking_control(layer_id, release=False)
+        handle = self._server.scene.add_transform_controls(
+            name=self._picking_control_path(layer_id),
+            scale=max(float(layer.scene_scale), 0.15),
+            disable_rotations=True,
+            depth_test=False,
+            position=target,
+        )
+
+        @handle.on_update
+        def _on_update(event, picked_layer_id=layer_id):
+            self._interaction_events.put(
+                (
+                    "picking_target",
+                    picked_layer_id,
+                    tuple(float(v) for v in event.target.position),
+                )
+            )
+
+        @handle.on_drag_end
+        def _on_drag_end(_event, picked_layer_id=layer_id):
+            self._interaction_events.put(("picking_release", picked_layer_id))
+
+        self._picking_controls[layer_id] = handle
+
+    def _start_picking(self, layer_id: str, ray_origin, ray_direction) -> None:
+        """Raycast a click and show a Viser handle for a successful pick."""
+        layer = self._layers.get(layer_id)
+        if layer is None or layer.picking is None or layer._last_state is None:
+            return
+        self._remove_picking_control(layer_id, release=True)
+        origin, direction = self._transform_ray_to_layer(layer, ray_origin, ray_direction)
+        layer.picking.pick(layer._last_state, origin, direction)
+        if layer.picking.is_picking():
+            self._create_picking_control(layer_id)
+
+    def _set_picking_target(self, layer_id: str, visual_target) -> None:
+        """Update a picking spring target from a Viser control position."""
+        layer = self._layers.get(layer_id)
+        if layer is None or layer.picking is None or not layer.picking.is_picking():
+            return
+        layer_inv = wp.transform_inverse(layer.xform)
+        point_with_offset = wp.transform_point(
+            layer_inv,
+            wp.vec3(float(visual_target[0]), float(visual_target[1]), float(visual_target[2])),
+        )
+        offset = self._picking_world_offset(layer, layer.picking)
+        target = (
+            np.asarray((point_with_offset[0], point_with_offset[1], point_with_offset[2]), dtype=np.float32) - offset
+        )
+        pick_state = layer.picking.pick_state.numpy()
+        pick_state[0]["picking_target_world"] = target
+        layer.picking.pick_state.assign(pick_state)
+
+    def _process_interaction_events(self) -> None:
+        """Apply browser callbacks on the simulation thread between frames."""
+        while True:
+            try:
+                event = self._interaction_events.get_nowait()
+            except queue.Empty:
+                break
+
+            event_type = event[0]
+            if event_type == "gizmo_update":
+                _, name, position, wxyz = event
+                entry = self._gizmo_handles.get(name)
+                if entry is not None:
+                    self._assign_transform(entry["transform"], position, wxyz)
+                    self._sync_gizmo_handles(entry)
+            elif event_type == "gizmo_drag_start":
+                name = event[1]
+                if name in self._gizmo_handles:
+                    self._active_gizmos.add(name)
+                    self.gizmo_is_using = True
+            elif event_type == "gizmo_drag_end":
+                name = event[1]
+                entry = self._gizmo_handles.get(name)
+                if entry is not None and entry["snap_to"] is not None:
+                    entry["transform"][:] = entry["snap_to"]
+                    self._sync_gizmo_handles(entry)
+                self._active_gizmos.discard(name)
+                self.gizmo_is_using = bool(self._active_gizmos)
+            elif event_type == "picking_click":
+                _, layer_id, ray_origin, ray_direction = event
+                if self.picking_enabled:
+                    self._start_picking(layer_id, ray_origin, ray_direction)
+            elif event_type == "picking_target":
+                _, layer_id, visual_target = event
+                self._set_picking_target(layer_id, visual_target)
+            elif event_type == "picking_release":
+                self._remove_picking_control(event[1], release=True)
+            elif event_type == "viewer_option":
+                _, attribute, value = event
+                if attribute == "wireframe":
+                    self._set_wireframe(value)
+                else:
+                    setattr(self, attribute, value)
+            elif event_type == "step":
+                self._step_requested = True
+            elif event_type == "reset":
+                if self._reset_callback is not None:
+                    self._reset_callback()
+            elif event_type == "example_switch":
+                if self._example_switch_callback is not None:
+                    self._example_switch_callback(event[1])
 
     @property
     def url(self) -> str:
@@ -593,6 +1188,46 @@ class ViewerViser(ViewerBase):
         )
 
     @override
+    def log_gizmo(
+        self,
+        name: str,
+        transform: wp.transform,
+        *,
+        translate: Sequence[Axis] | None = None,
+        rotate: Sequence[Axis] | None = None,
+        snap_to: wp.transform | None = None,
+    ) -> None:
+        """Log or update an interactive Viser transform gizmo.
+
+        Translation arrows and rotation rings are separate, synchronized
+        controls so each operation can honor its own enabled-axis set.
+
+        Args:
+            name: Unique gizmo path/name.
+            transform: Gizmo world transform, mutated in place on interaction.
+            translate: Axes on which translation handles are shown.
+            rotate: Axes on which rotation rings are shown.
+            snap_to: Optional world transform applied when dragging ends.
+        """
+        name = self._qualify(name)
+        translate_axes = self._normalize_gizmo_axes(translate)
+        rotate_axes = self._normalize_gizmo_axes(rotate)
+        self._gizmo_seen.add(name)
+
+        entry = self._gizmo_handles.get(name)
+        if entry is not None and (entry["translate"] != translate_axes or entry["rotate"] != rotate_axes):
+            self._remove_gizmo(name)
+            entry = None
+        if entry is None:
+            entry = self._create_gizmo(name, transform, translate_axes, rotate_axes, snap_to)
+        else:
+            entry["transform"] = transform
+            entry["snap_to"] = snap_to
+
+        if name not in self._active_gizmos:
+            self._sync_gizmo_handles(entry)
+
+    @override
     def log_mesh(
         self,
         name: str,
@@ -722,6 +1357,7 @@ class ViewerViser(ViewerBase):
             return
         handles = handle if isinstance(handle, (list, tuple)) else (handle,)
         for handle in handles:
+            self._detach_picking_callback(handle)
             try:
                 handle.remove()
             except Exception:
@@ -741,14 +1377,26 @@ class ViewerViser(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         hidden: bool = False,
     ):
-        """Render plane instances as viser grids."""
-        self._remove_plane_handles(name)
-
+        """Render plane instances as persistent Viser grids."""
+        existing = self._plane_handles.get(name)
+        handles = (
+            list(existing) if isinstance(existing, (list, tuple)) else ([existing] if existing is not None else [])
+        )
         if hidden or xforms is None:
+            for handle in handles:
+                self._set_handle_property_if_changed(handle, "visible", False)
+            return
+
+        shape_batch = self._shape_instance_batch(name)
+        if handles and shape_batch is not None and shape_batch.static:
+            for handle in handles:
+                self._set_handle_property_if_changed(handle, "visible", True)
             return
 
         xforms_np = self._to_numpy(xforms)
         if xforms_np is None or len(xforms_np) == 0:
+            for handle in handles:
+                self._set_handle_property_if_changed(handle, "visible", False)
             return
 
         xforms_np = np.asarray(xforms_np, dtype=np.float32)
@@ -761,7 +1409,10 @@ class ViewerViser(ViewerBase):
         base_width = float(plane_info["width"])
         base_length = float(plane_info["length"])
 
-        handles = []
+        if len(handles) != len(positions):
+            self._remove_plane_handles(name)
+            handles = []
+
         for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
             width = base_width
             length = base_length
@@ -776,21 +1427,31 @@ class ViewerViser(ViewerBase):
                 length *= sy
                 cell_size *= max(sx, sy)
 
-            # The plane's local frame has its normal along +Z, so the grid lies in the local XY plane.
-            handle = self._call_scene_method(
-                self._server.scene.add_grid,
-                name=f"{name}/grid_{idx}",
-                width=width,
-                height=length,
-                plane="xy",
-                cell_color=(150, 150, 150),
-                section_color=(110, 110, 110),
-                cell_size=cell_size,
-                section_size=cell_size,
-                position=tuple(float(v) for v in position),
-                wxyz=tuple(float(v) for v in quat_wxyz),
-            )
-            handles.append(handle)
+            if idx < len(handles):
+                handle = handles[idx]
+                self._set_handle_property_if_changed(handle, "position", position)
+                self._set_handle_property_if_changed(handle, "wxyz", quat_wxyz)
+                self._set_handle_property_if_changed(handle, "width", width)
+                self._set_handle_property_if_changed(handle, "height", length)
+                self._set_handle_property_if_changed(handle, "cell_size", cell_size)
+                self._set_handle_property_if_changed(handle, "section_size", cell_size)
+                self._set_handle_property_if_changed(handle, "visible", True)
+            else:
+                # The plane's local frame has its normal along +Z, so the grid lies in the local XY plane.
+                handle = self._call_scene_method(
+                    self._server.scene.add_grid,
+                    name=f"{name}/grid_{idx}",
+                    width=width,
+                    height=length,
+                    plane="xy",
+                    cell_color=(150, 150, 150),
+                    section_color=(110, 110, 110),
+                    cell_size=cell_size,
+                    section_size=cell_size,
+                    position=tuple(float(v) for v in position),
+                    wxyz=tuple(float(v) for v in quat_wxyz),
+                )
+                handles.append(handle)
 
         if handles:
             self._plane_handles[name] = handles
@@ -844,6 +1505,7 @@ class ViewerViser(ViewerBase):
         if hidden:
             # Remove existing instances if present
             if name in self._scene_handles:
+                self._detach_picking_callback(self._scene_handles[name])
                 try:
                     self._scene_handles[name].remove()
                 except Exception:
@@ -857,23 +1519,27 @@ class ViewerViser(ViewerBase):
         if xforms is None:
             return
 
-        xforms_np = self._to_numpy(xforms)
-        scales_np = self._to_numpy(scales) if scales is not None else None
-        colors_np = self._to_numpy(colors) if colors is not None else None
-
-        num_instances = len(xforms_np)
-
-        # Extract positions from transforms
-        # Warp transform format: [x, y, z, qx, qy, qz, qw]
-        positions = xforms_np[:, :3].astype(np.float32)
-
-        quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
-
-        # Prepare scales
-        if scales_np is not None:
-            batched_scales = scales_np.astype(np.float32)
+        existing = self._instances.get(name) if name in self._scene_handles else None
+        shape_batch = self._shape_instance_batch(name)
+        if existing is not None and shape_batch is not None and shape_batch.static:
+            positions = existing["positions"]
+            quats_wxyz = existing["wxyzs"]
+            num_instances = existing["count"]
         else:
-            batched_scales = np.ones((num_instances, 3), dtype=np.float32)
+            xforms_np = self._to_numpy(xforms)
+            num_instances = len(xforms_np)
+            positions = xforms_np[:, :3].astype(np.float32)
+            quats_wxyz = self._quats_xyzw_to_wxyz(xforms_np[:, 3:7])
+
+        if existing is not None and shape_batch is not None:
+            batched_scales = existing["scales"]
+        else:
+            scales_np = self._to_numpy(scales) if scales is not None else None
+            if scales_np is not None:
+                batched_scales = scales_np.astype(np.float32)
+            else:
+                batched_scales = np.ones((num_instances, 3), dtype=np.float32)
+        colors_np = self._to_numpy(colors) if colors is not None else None
 
         # Prepare colors (convert from 0-1 float to 0-255 uint8)
         if colors_np is not None:
@@ -891,6 +1557,7 @@ class ViewerViser(ViewerBase):
 
             # If instance count changed, we need to recreate the mesh
             if prev_count != num_instances or prev_use_trimesh != use_trimesh:
+                self._detach_picking_callback(handle)
                 try:
                     handle.remove()
                 except Exception:
@@ -900,18 +1567,25 @@ class ViewerViser(ViewerBase):
             else:
                 # Update transforms in-place
                 try:
-                    handle.batched_positions = positions
-                    handle.batched_wxyzs = quats_wxyz
-                    if hasattr(handle, "batched_scales"):
+                    instance = self._instances[name]
+                    if not np.array_equal(instance["positions"], positions):
+                        handle.batched_positions = positions
+                        instance["positions"] = positions.copy()
+                    if not np.array_equal(instance["wxyzs"], quats_wxyz):
+                        handle.batched_wxyzs = quats_wxyz
+                        instance["wxyzs"] = quats_wxyz.copy()
+                    if hasattr(handle, "batched_scales") and not np.array_equal(instance["scales"], batched_scales):
                         handle.batched_scales = batched_scales
+                        instance["scales"] = batched_scales.copy()
                     # Only update colors if they were explicitly provided
                     if batched_colors is not None and hasattr(handle, "batched_colors"):
-                        handle.batched_colors = batched_colors
-                        # Cache the colors for future reference
-                        self._instances[name]["colors"] = batched_colors
+                        if not np.array_equal(instance["colors"], batched_colors):
+                            handle.batched_colors = batched_colors
+                            instance["colors"] = batched_colors.copy()
                     return
                 except Exception:
                     # If update fails, recreate the mesh
+                    self._detach_picking_callback(handle)
                     try:
                         handle.remove()
                     except Exception:
@@ -947,15 +1621,56 @@ class ViewerViser(ViewerBase):
                 batched_scales=batched_scales,
                 batched_colors=batched_colors,
                 lod="off",
+                wireframe=self._wireframe,
             )
 
+        pickable = self._is_pickable_instance(name)
         self._scene_handles[name] = handle
         self._instances[name] = {
             "mesh": mesh,
             "count": num_instances,
-            "colors": batched_colors,  # Cache the colors
+            "positions": positions.copy(),
+            "wxyzs": quats_wxyz.copy(),
+            "scales": batched_scales.copy(),
+            "colors": batched_colors.copy(),
             "use_trimesh": use_trimesh,
+            "layer_id": self.layer.layer_id,
+            "pickable": pickable,
         }
+        if pickable:
+            self._attach_picking_callback(handle, self.layer.layer_id)
+
+    @override
+    def log_state(self, state: newton.State) -> None:
+        """Log simulation state and update the interactive picking line.
+
+        Args:
+            state: Current simulation state.
+        """
+        self._last_state = state
+        super().log_state(state)
+        self._render_picking_line()
+
+    def _render_picking_line(self) -> None:
+        """Render the cyan line from the body anchor to the picking target."""
+        if not self.picking_enabled or self.picking is None or not self.picking.is_picking():
+            self.log_lines("picking_line", None, None, None)
+            return
+        body_idx = int(self.picking.pick_body.numpy()[0])
+        if body_idx < 0:
+            self.log_lines("picking_line", None, None, None)
+            return
+
+        pick_state = self.picking.pick_state.numpy()
+        anchor = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picked_point_world"])
+        target = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picking_target_world"])
+        self.log_lines(
+            "picking_line",
+            np.asarray([anchor], dtype=np.float32),
+            np.asarray([target], dtype=np.float32),
+            (0.0, 1.0, 1.0),
+            hidden=False,
+        )
 
     @override
     def begin_frame(self, time: float):
@@ -965,8 +1680,34 @@ class ViewerViser(ViewerBase):
         Args:
             time: The current simulation time.
         """
+        self._process_interaction_events()
+        self._sync_gui_controls()
+        self._gizmo_seen.clear()
         self._frame_dt = time - self.time
         self.time = time
+        self._begin_atomic_frame()
+
+    @override
+    def should_step(self) -> bool:
+        """Apply browser interactions before the simulation advances.
+
+        Returns:
+            bool: Whether the simulation should advance.
+        """
+        self._process_interaction_events()
+        self._sync_gui_controls()
+        if not self._paused:
+            self._step_requested = False
+            return True
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    @override
+    def is_paused(self) -> bool:
+        """Return whether simulation stepping is paused."""
+        return self._paused
 
     @override
     def end_frame(self):
@@ -976,11 +1717,17 @@ class ViewerViser(ViewerBase):
         If recording is active, inserts a sleep command for playback timing.
         Updates scalar plots if any data changed since last frame.
         """
-        self._update_scalar_plots()
+        try:
+            self._update_scalar_plots()
 
-        if self._serializer is not None:
-            # Insert sleep for frame timing during recording
-            self._serializer.insert_sleep(self._frame_dt)
+            for name in set(self._gizmo_handles) - self._gizmo_seen:
+                self._remove_gizmo(name)
+
+            if self._serializer is not None:
+                # Insert sleep for frame timing during recording
+                self._serializer.insert_sleep(self._frame_dt)
+        finally:
+            self._end_atomic_frame()
 
     def _update_scalar_plots(self):
         """Create or update uPlot chart handles for dirty scalar signals."""
@@ -1038,6 +1785,11 @@ class ViewerViser(ViewerBase):
         Close the viewer and clean up resources.
         """
         self._running = False
+        self._end_atomic_frame()
+        for name in list(self._gizmo_handles):
+            self._remove_gizmo(name)
+        for layer_id in list(self._picking_controls):
+            self._remove_picking_control(layer_id, release=True)
         try:
             self._server.stop()
             if self._serializer is not None:
@@ -1047,12 +1799,13 @@ class ViewerViser(ViewerBase):
 
     @override
     def apply_forces(self, state: newton.State):
-        """Viser backend does not apply interactive forces.
+        """Apply the force from an active Viser picking handle.
 
         Args:
             state: Current simulation state.
         """
-        pass
+        if self.picking_enabled and self.picking is not None:
+            self.picking._apply_picking_force(state)
 
     def save_recording(self):
         """
