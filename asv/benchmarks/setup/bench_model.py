@@ -110,7 +110,11 @@ class KpiInitializeViewerGL:
 
 
 class _InitializeModelTiledCamera:
-    """Replicate + finalize scenes with tiled camera and collision handling enabled."""
+    """Build models from tiled-camera scene presets with collision handling enabled.
+
+    This benchmarks replication and finalization coverage for the scenes used
+    by the tiled-camera benchmarks; it does not instantiate a SensorTiledCamera.
+    """
 
     param_names = ["scene", "world_count"]
     rounds = 1
@@ -123,7 +127,7 @@ class _InitializeModelTiledCamera:
         warmup = newton.ModelBuilder()
         warmup.replicate(self.world, 1)
         warmup.finalize()
-        self.replicated = self._replicate(world_count)
+        self.replicated_builder = self._replicate(world_count)
         wp.synchronize_device()
 
     def _replicate(self, world_count):
@@ -139,11 +143,11 @@ class _InitializeModelTiledCamera:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_finalize_model(self, scene, world_count):
-        _model = self.replicated.finalize()
+        _model = self.replicated_builder.finalize()
         wp.synchronize_device()
 
     def teardown(self, scene, world_count):
-        del self.replicated
+        del self.replicated_builder
         del self.world
 
 
