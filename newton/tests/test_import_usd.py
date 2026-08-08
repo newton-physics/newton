@@ -12239,7 +12239,7 @@ def Xform "Body" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_suppresses_approximated_visual_copy(self):
-        """hide_collision_shapes=True also suppresses the visual split off by approximation.
+        """Verify hide_collision_shapes=True also suppresses the visual split off by approximation.
 
         Approximating a viewport-drawn collider preserves its authored topology as a
         separate visual shape. That copy carries VISIBLE without COLLIDE_SHAPES, so the
@@ -12264,8 +12264,10 @@ def Xform "Body" (
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags & ShapeFlags.VISIBLE)
 
-        # The visual sphere is the only thing left drawn: the collider contributed no
-        # split-off copy, matching the same asset without ``physics:approximation``.
+        # The copy must not be produced at all, not merely produced and hidden: only the
+        # visual sphere and the collider itself remain, matching the same asset without
+        # ``physics:approximation``.
+        self.assertEqual(builder.shape_count, 2)
         drawn = [s for s in range(builder.shape_count) if builder.shape_flags[s] & ShapeFlags.VISIBLE]
         self.assertEqual(drawn, [path_shape_map["/Body/VisualSphere"]])
 
