@@ -1,0 +1,16 @@
+libuipc tetrahedral bunny asset
+================================
+
+Newton file: newton/examples/assets/bunny_tet.npz
+Source repository: https://github.com/spiriMirror/libuipc.git
+Source path: assets/sim_data/tetmesh/bunny0.msh
+Inspected revision: 619a5412cf958eb59cf3c9cebc9a8e8e9625ebd3
+First asset revision: 32988ff1237d74dc0dd0eef2bec9ee6f8898c7a2
+License: Apache License, Version 2.0
+
+The Newton file preserves the source vertex positions and ordered tetrahedron
+connectivity. It changes only the container from Gmsh `.msh` to NumPy `.npz`
+and regenerates boundary triangles from that connectivity at load time.
+
+The Apache License, Version 2.0 terms are provided in the repository-root
+LICENSE.md file.
