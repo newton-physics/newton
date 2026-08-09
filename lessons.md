@@ -23,3 +23,9 @@
 - Context: The user asked whether there was a cloth demo after discussing Isaac Sim integration.
 - Mistake: Launched Newton's standalone OpenGL cloth example instead of checking for a demo inside the full Isaac Sim GUI.
 - Rule: When the active workflow is Isaac Sim and the user asks to run or show a demo, default to the Isaac Sim GUI context. Clearly distinguish standalone Newton examples from Isaac Sim-integrated examples before launching anything.
+
+## 2026-08-09 — Treat tetrahedral ARAP as a Newton constraint
+
+- Context: Designing a traditional Newton FEM path with tetrahedral ARAP energy and future Affine Body Dynamics coupling.
+- Mistake: Proposed a separate FEM Newton solver even though the existing particle Newton solver already owns inertia, global assembly, and PCG, and ARAP only adds a four-particle energy stencil.
+- Rule: Implement tetrahedral ARAP as a four-particle static constraint in the existing Newton solver. Reuse its global Newton assembly and linear solve; introduce a new solver only when genuinely different degrees of freedom, such as affine-body 12-DOF blocks, require a broader shared system.
