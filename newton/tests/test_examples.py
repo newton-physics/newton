@@ -1175,6 +1175,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestSoftbodyExamples,
+    name="softbody.example_softbody_limx_arap_beam",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 20},
+    use_viewer=True,
+)
+
 
 class TestKaminoExamples(unittest.TestCase):
     pass

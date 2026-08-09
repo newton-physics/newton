@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
 import unittest
 import warnings
 
@@ -16,6 +17,7 @@ from newton._src.solvers.limx.constraints.tetrahedron_arap import (
     _project_psd,
     mat99,
 )
+from newton.viewer import ViewerNull
 
 
 def _mat33(values: np.ndarray) -> wp.mat33:
@@ -537,6 +539,121 @@ class TestConstraintTetrahedronARAPHessian(unittest.TestCase):
                 wp.zeros(4, dtype=wp.vec3, device="cpu"),
                 wp.zeros(4, dtype=wp.vec3, device="cpu"),
             )
+
+
+@unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+class TestConstraintTetrahedronARAPSolver(unittest.TestCase):
+    DEVICE = "cuda:0"
+    DT = 0.01
+
+    @classmethod
+    def make_beam(cls):
+        """Build a small anchored ARAP beam and its LIMX solver."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        builder.add_soft_grid(
+            pos=wp.vec3(0.0, -0.025, 0.75),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=4,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.05,
+            cell_y=0.05,
+            cell_z=0.05,
+            density=1000.0,
+            k_mu=0.0,
+            k_lambda=0.0,
+            k_damp=0.0,
+            fix_left=False,
+        )
+        model = builder.finalize(device=cls.DEVICE)
+        rest_positions = model.particle_q.numpy()
+        tetrahedra = model.tet_indices.numpy()
+        inverse_rest_matrices = model.tet_poses.numpy()
+        minimum_x = float(np.min(rest_positions[:, 0]))
+        maximum_x = float(np.max(rest_positions[:, 0]))
+        anchor_indices = np.flatnonzero(np.isclose(rest_positions[:, 0], minimum_x)).tolist()
+        free_end_indices = np.flatnonzero(np.isclose(rest_positions[:, 0], maximum_x)).tolist()
+        constraints = [
+            newton.solvers.ConstraintAnchor(
+                anchor_indices,
+                [wp.vec3(*position) for position in rest_positions[anchor_indices]],
+                [1.0e8] * len(anchor_indices),
+                model.particle_count,
+                cls.DEVICE,
+            ),
+            newton.solvers.ConstraintTetrahedronARAP(
+                tetrahedra.tolist(),
+                [_mat33(matrix) for matrix in inverse_rest_matrices],
+                [1.0e6] * model.tet_count,
+                model.particle_count,
+                cls.DEVICE,
+            ),
+        ]
+        solver = newton.solvers.SolverLIMX(
+            model,
+            constraints,
+            nonlinear_iterations=1,
+            linear_iterations=128,
+            velocity_damping=1.0,
+        )
+        return model, solver, rest_positions, tetrahedra, anchor_indices, free_end_indices
+
+    def test_single_newton_step_updates_velocity_from_position_increment(self):
+        """Advance ARAP particles with exactly one Newton increment."""
+        model, solver, initial_positions, _tetrahedra, _anchor_indices, _free_end_indices = self.make_beam()
+        state_in = model.state()
+        state_out = model.state()
+
+        solver.step(state_in, state_out, None, None, self.DT)
+
+        np.testing.assert_allclose(
+            state_out.particle_qd.numpy(),
+            (state_out.particle_q.numpy() - initial_positions) / self.DT,
+            rtol=2.0e-5,
+            atol=2.0e-5,
+        )
+        self.assertEqual(solver.nonlinear_iterations, 1)
+
+    def test_fixed_beam_rollout_sags_without_inversion(self):
+        """Keep a fixed ARAP beam finite, anchored, sagging, and positive-volume."""
+        model, solver, rest_positions, tetrahedra, anchor_indices, free_end_indices = self.make_beam()
+        state_in = model.state()
+        state_out = model.state()
+        initial_free_end_z = float(np.mean(rest_positions[free_end_indices, 2]))
+        minimum_free_end_z = np.inf
+
+        for _ in range(80):
+            solver.step(state_in, state_out, None, None, self.DT)
+            state_in, state_out = state_out, state_in
+            positions = state_in.particle_q.numpy()
+            minimum_free_end_z = min(minimum_free_end_z, float(np.mean(positions[free_end_indices, 2])))
+            self.assertTrue(np.isfinite(positions).all())
+            for tetrahedron in tetrahedra:
+                deformation_edges = np.column_stack(
+                    (
+                        positions[tetrahedron[1]] - positions[tetrahedron[0]],
+                        positions[tetrahedron[2]] - positions[tetrahedron[0]],
+                        positions[tetrahedron[3]] - positions[tetrahedron[0]],
+                    )
+                )
+                self.assertGreater(float(np.linalg.det(deformation_edges)), 0.0)
+
+        positions = state_in.particle_q.numpy()
+        velocities = state_in.particle_qd.numpy()
+        np.testing.assert_allclose(positions[anchor_indices], rest_positions[anchor_indices], atol=2.0e-3)
+        self.assertLess(minimum_free_end_z, initial_free_end_z - 2.0e-3)
+        self.assertTrue(np.isfinite(velocities).all())
+
+    def test_example_uses_one_full_newton_step_without_damping(self):
+        """Configure the ARAP beam with one undamped Newton step per frame."""
+        module = importlib.import_module("newton.examples.softbody.example_softbody_limx_arap_beam")
+        example = module.Example(ViewerNull(num_frames=1), None)
+
+        self.assertEqual(example.frame_dt, 0.01)
+        self.assertEqual(example.solver.nonlinear_iterations, 1)
+        self.assertEqual(example.solver.linear_iterations, 128)
+        self.assertEqual(example.solver.velocity_damping, 1.0)
 
 
 if __name__ == "__main__":

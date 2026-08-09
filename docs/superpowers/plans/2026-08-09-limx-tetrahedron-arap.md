@@ -590,7 +590,7 @@ Append the example to the existing ARAP changelog bullet so it reads:
 
 ```bash
 uv run --extra dev -m unittest newton.tests.test_constraint_tetrahedron_arap -v
-uv run --extra dev -m newton.tests -k test_softbody.example_softbody_limx_arap_beam
+uv run -m newton.examples softbody_limx_arap_beam --device cuda:0 --viewer null --test --num-frames 20
 ```
 
 Expected: the math/solver suite passes; the example completes 20 CUDA frames with finite positive-volume state and its final sag assertion passes.
@@ -618,7 +618,7 @@ git commit -m "Add LIMX ARAP beam example"
 - [ ] **Step 1: Launch the interactive scene for user review**
 
 ```bash
-uv run -m newton.examples softbody.example_softbody_limx_arap_beam --device cuda:0 --num-frames 1000
+uv run -m newton.examples softbody_limx_arap_beam --device cuda:0 --num-frames 1000
 ```
 
 Expected visual behavior: the left layer remains fixed, the free end bends and oscillates under gravity, no tetrahedron visibly explodes or inverts, and there is no collision/contact object. Confirm with the user before changing camera or material parameters.
@@ -679,7 +679,7 @@ and:
 
 ```bash
 uv run --extra dev -m unittest newton.tests.test_constraint_tetrahedron_arap -v
-uv run --extra dev -m newton.tests -k test_softbody.example_softbody_limx_arap_beam
+uv run -m newton.examples softbody_limx_arap_beam --device cuda:0 --viewer null --test --num-frames 20
 uv run docs/generate_api.py
 git diff --check
 ```
@@ -710,7 +710,7 @@ Expected: only planned feature files are included; unrelated user changes from t
 
 ```bash
 uv run --extra dev -m unittest newton.tests.test_constraint_tetrahedron_arap -v
-uv run --extra dev -m newton.tests -k test_softbody.example_softbody_limx_arap_beam
+uv run -m newton.examples softbody_limx_arap_beam --device cuda:0 --viewer null --test --num-frames 20
 git status -sb
 git log --oneline -6
 ```
