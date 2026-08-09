@@ -64,6 +64,7 @@ class ViewerViser(ViewerBase):
     """
 
     _viser_module = None
+    _IMAGE_JPEG_QUALITY = 90
 
     class _ImmediateGuiAdapter:
         """Translate the examples' immediate-mode controls to native Viser GUI handles."""
@@ -466,6 +467,7 @@ class ViewerViser(ViewerBase):
         self._image_folder: Any = None
         self._image_selector: Any = None
         self._image_handle: Any = None
+        self._image_transport_format: Literal["jpeg", "png"] | None = None
         self._selected_image_name: str | None = None
 
         super().__init__()
@@ -2730,6 +2732,7 @@ class ViewerViser(ViewerBase):
             self._image_folder = None
             self._image_selector = None
             self._image_handle = None
+            self._image_transport_format = None
             self._selected_image_name = None
             return
 
@@ -2742,6 +2745,7 @@ class ViewerViser(ViewerBase):
                 except Exception:
                     pass
                 self._image_handle = None
+                self._image_transport_format = None
         if self._image_selector is not None:
             if tuple(self._image_selector.options) != names:
                 self._image_selector.options = names
@@ -2791,10 +2795,25 @@ class ViewerViser(ViewerBase):
                 atlas_wp = cached[1]
             source = _to_canonical_4d_wp(image, n, h, w, c)
             _pack_rgba_warp(source, c, atlas_cols, atlas_wp)
-            return atlas_wp.numpy()
+            atlas = atlas_wp.numpy()
+        else:
+            self._image_atlas_buffers.pop(name, None)
+            atlas = _convert_to_packed_rgba_numpy(image, atlas_cols)
 
-        self._image_atlas_buffers.pop(name, None)
-        return _convert_to_packed_rgba_numpy(image, atlas_cols)
+        # The shared atlas packer leaves unused slots transparent. Make the
+        # padding opaque white so it does not force otherwise opaque image
+        # batches onto Viser's much slower PNG transport path.
+        final_row_tiles = n % atlas_cols
+        if final_row_tiles:
+            atlas[(atlas_rows - 1) * h :, final_row_tiles * w :] = 255
+        return atlas
+
+    @staticmethod
+    def _prepare_logged_image_transport(atlas: np.ndarray) -> tuple[np.ndarray, Literal["jpeg", "png"]]:
+        """Use fast JPEG transport for opaque images and preserve real alpha with PNG."""
+        if np.all(atlas[..., 3] == 255):
+            return np.ascontiguousarray(atlas[..., :3]), "jpeg"
+        return atlas, "png"
 
     @override
     def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
@@ -2805,17 +2824,23 @@ class ViewerViser(ViewerBase):
             return
 
         atlas = self._pack_logged_image(name, image)
+        transport_image, transport_format = self._prepare_logged_image_transport(atlas)
+        if self._image_handle is not None and self._image_transport_format != transport_format:
+            self._image_handle.remove()
+            self._image_handle = None
         if self._image_handle is None:
             with self._image_folder:
                 self._image_handle = self._server.gui.add_image(
-                    atlas,
+                    transport_image,
                     label=name,
-                    format="png",
+                    format=transport_format,
+                    jpeg_quality=self._IMAGE_JPEG_QUALITY,
                 )
+            self._image_transport_format = transport_format
         else:
             if self._image_handle.label != name:
                 self._image_handle.label = name
-            self._image_handle.image = atlas
+            self._image_handle.image = transport_image
 
     @override
     def log_array(self, name: str, array: wp.array[Any] | np.ndarray):

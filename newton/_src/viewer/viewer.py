@@ -1982,8 +1982,9 @@ class ViewerBase(ABC):
                 ``float32`` (values in ``[0, 1]``). Values outside the range
                 are clipped.
 
-        The base implementation is a no-op. Backends that render images
-        (currently only :class:`ViewerGL`) override this method.
+        The base implementation is a no-op. Backends that render images,
+        including :class:`ViewerGL` and :class:`ViewerViser`, override this
+        method.
         """
         return
 

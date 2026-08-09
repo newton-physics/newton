@@ -431,12 +431,16 @@ class TestViewerViserInteraction(unittest.TestCase):
         color = np.zeros((2, 2, 3, 4), dtype=np.uint8)
         color[0, ..., 0] = 255
         color[1, ..., 1] = 255
+        color[..., 3] = 255
         depth = np.full((2, 2, 3, 4), 127, dtype=np.uint8)
+        depth[..., 3] = 255
 
         self.viewer.log_image("color", color)
         image_handle = self.viewer._image_handle
         self.assertEqual(len(self.server.gui.images), 1)
-        self.assertEqual(image_handle.image.shape, (2, 6, 4))
+        self.assertEqual(image_handle.image.shape, (2, 6, 3))
+        self.assertEqual(image_handle.format, "jpeg")
+        self.assertEqual(image_handle.jpeg_quality, 90)
         np.testing.assert_array_equal(image_handle.image[:, :3, 0], 255)
         np.testing.assert_array_equal(image_handle.image[:, 3:, 1], 255)
 
@@ -452,6 +456,14 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.assertIs(self.viewer._image_handle, image_handle)
         self.assertEqual(image_handle.label, "depth")
         np.testing.assert_array_equal(image_handle.image, 127)
+
+        transparent = depth.copy()
+        transparent[..., 3] = 64
+        self.viewer.log_image("depth", transparent)
+        self.assertIsNot(self.viewer._image_handle, image_handle)
+        self.assertEqual(self.viewer._image_handle.format, "png")
+        self.assertEqual(self.viewer._image_handle.image.shape, (2, 6, 4))
+        np.testing.assert_array_equal(self.viewer._image_handle.image[..., 3], 64)
 
     def test_set_camera_uses_world_up_axis(self):
         """Match ViewerGL orientation and orbit-pivot behavior."""
