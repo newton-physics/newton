@@ -45,7 +45,9 @@ class TestViewerTransform(unittest.TestCase):
         point = wp.vec3(2.0, -1.0, 0.5)
 
         np.testing.assert_allclose(transform_inverse(self.transform), wp.transform_inverse(self.transform))
-        np.testing.assert_allclose(transform_multiply(self.transform, other), wp.transform_multiply(self.transform, other))
+        np.testing.assert_allclose(
+            transform_multiply(self.transform, other), wp.transform_multiply(self.transform, other)
+        )
         np.testing.assert_allclose(transform_point(self.transform, point), wp.transform_point(self.transform, point))
         np.testing.assert_allclose(transform_vector(self.transform, point), wp.transform_vector(self.transform, point))
 
