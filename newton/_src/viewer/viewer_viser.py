@@ -1986,15 +1986,28 @@ class ViewerViser(ViewerBase):
             if self._plot_folder is None:
                 self._plot_folder = self._server.gui.add_folder("Plots")
 
-            n = self._plot_history_size
-            x = np.arange(n, dtype=np.float64)
-
             for name in self._scalar_dirty:
                 buf = self._scalar_buffers[name]
-                y = np.full(n, np.nan, dtype=np.float64)
-                y[n - len(buf) :] = np.array(buf, dtype=np.float64)
-
                 handle = self._plot_handles.get(name)
+                if not buf:
+                    if handle is not None:
+                        empty = np.empty(0, dtype=np.float64)
+                        handle.data = (empty, empty)
+                    continue
+
+                # uPlot receives Float64Array data, which cannot represent its
+                # nullable gap values. Leading NaNs poison its auto-ranging and
+                # leave a partially filled history visually empty, so transfer
+                # only the finite samples currently in the rolling buffer.
+                samples = np.asarray(buf, dtype=np.float64)
+                finite = np.isfinite(samples)
+                y = samples[finite]
+                x = np.flatnonzero(finite).astype(np.float64)
+                if not len(y):
+                    if handle is not None:
+                        handle.data = (x, y)
+                    continue
+
                 if handle is None:
                     with self._plot_folder:
                         handle = self._server.gui.add_uplot(
@@ -2393,11 +2406,13 @@ class ViewerViser(ViewerBase):
             buf.clear()
             self._scalar_accumulators.pop(name, None)
 
+        plot_changed = clear
         if self._scalar_smoothing.get(name, smoothing) != smoothing:
             self._scalar_accumulators.pop(name, None)
         self._scalar_smoothing[name] = smoothing
         if smoothing <= 1:
             buf.append(val)
+            plot_changed = True
         else:
             acc = self._scalar_accumulators.get(name)
             if acc is None:
@@ -2407,8 +2422,10 @@ class ViewerViser(ViewerBase):
             if len(acc) >= smoothing:
                 buf.append(sum(acc) / len(acc))
                 acc.clear()
+                plot_changed = True
 
-        self._scalar_dirty.add(name)
+        if plot_changed:
+            self._scalar_dirty.add(name)
 
     def show_notebook(self, width: int | str = "100%", height: int | str = 400):
         """

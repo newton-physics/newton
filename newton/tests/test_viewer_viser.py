@@ -715,6 +715,24 @@ class TestViewerViserInteraction(unittest.TestCase):
         _x, y = self.server.gui.plots[0].data
         np.testing.assert_allclose(y, (2.0, 3.0, 4.0))
 
+    def test_smoothed_scalar_plot_contains_only_finite_committed_samples(self):
+        """Avoid NaN padding that breaks uPlot auto-ranging."""
+        fake_uplot = SimpleNamespace(
+            Series=lambda **kwargs: kwargs,
+            Scale=lambda **kwargs: kwargs,
+        )
+        with patch.dict(sys.modules, {"viser": SimpleNamespace(uplot=fake_uplot)}):
+            self.viewer._plot_history_size = 250
+            for value in range(20):
+                self.viewer.log_scalar("force", value, smoothing=10)
+                self.viewer.end_frame()
+
+        self.assertEqual(len(self.server.gui.plots), 1)
+        x, y = self.server.gui.plots[0].data
+        np.testing.assert_allclose(x, (0.0, 1.0))
+        np.testing.assert_allclose(y, (4.5, 14.5))
+        self.assertTrue(np.all(np.isfinite(y)))
+
 
 if __name__ == "__main__":
     unittest.main()
