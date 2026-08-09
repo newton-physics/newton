@@ -7,9 +7,10 @@
 def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, density=None, collision=True):
     """Author a GeomBasisCurves marked as a curve deformable (cable).
 
-    Binds a minimal canonical curve-deformable material carrying ``curvesThickness`` (and
-    optional ``density``). Pass ``thickness=None`` to leave the cable without a bound material,
-    e.g. to exercise the Newton no-material fallback or a test's own material binding. ``collision`` authors an
+    Binds a minimal canonical curve-deformable material carrying ``curvesThickness`` (and optional
+    ``density``) so the importer does not warn about an unauthored cable thickness. Pass
+    ``thickness=None`` to leave the cable without a bound material, e.g. to exercise the
+    default-radius fallback or a test's own material binding. ``collision`` authors an
     enabled ``PhysicsCollisionAPI`` (the common colliding case); pass ``False`` for the
     collision-gating tests.
     """

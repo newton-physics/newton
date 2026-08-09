@@ -48,7 +48,7 @@ from .import_usd_deformable_utils import (
 _AOUSD_DEFAULT_CURVES_THICKNESS = 1.0e-3
 _AOUSD_DEFAULT_YOUNGS_MODULUS = 1.0e6
 _AOUSD_DEFAULT_POISSONS_RATIO = 0.3
-_AOUSD_CURVES_SHEAR_CORRECTION = 0.9
+_AOUSD_CIRCULAR_SECTION_SHEAR_CORRECTION = 0.9
 # Attributes that distinguish proposal revisions; density is shared and intentionally omitted.
 _CURRENT_CURVE_MATERIAL_ATTRS = (
     "curvesThickness",
@@ -66,6 +66,8 @@ _LEGACY_CURVE_MATERIAL_ATTRS = (
     "bendStiffness",
     "twistStiffness",
 )
+# Thickness attributes in resolution order: the current revision first, then the deprecated name.
+_CABLE_THICKNESS_ATTRS = ("curvesThickness", "thickness")
 
 
 def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
@@ -144,10 +146,10 @@ def _cable_rest_segment_lengths(rest_points, world_mat, path: str, *, closed: bo
 
 
 def _warn_cable_rest_shape_effect(path: str) -> None:
-    """Report the intentionally limited effect of an accepted and used cable rest shape."""
+    """Report the intentionally limited effect of a valid cable rest shape."""
     warnings.warn(
-        f"{path}: restShapePoints affects only stiffness normalization; the cable is built at the "
-        f"current points, so it does not establish an initial strain / rest bend state.",
+        f"{path}: restShapePoints does not establish the simulated rest state; it is used only for "
+        f"stiffness normalization when material stiffness is available.",
         stacklevel=2,
     )
 
@@ -163,7 +165,7 @@ def _is_legacy_only_curve_material(material: dict[str, float]) -> bool:
 
 
 def _warn_legacy_curve_material(path: str, material: dict[str, float] | None) -> None:
-    """Warn once on the import path that consumes an earlier curve-material revision."""
+    """Warn when an earlier curve-material attribute is authored."""
     if material is not None and _has_legacy_curve_material(material):
         warnings.warn(
             f"{path}: unprefixed curve material attributes follow an earlier AOUSD proposal revision "
@@ -175,38 +177,47 @@ def _warn_legacy_curve_material(path: str, material: dict[str, float] | None) ->
         )
 
 
-def _warn_default_cable_radius(path: str, radius: float) -> None:
-    """Report Newton's radius fallback when no AOUSD curve material applies."""
+def _warn_default_cable_radius(path: str, radius: float, linear_unit: float) -> None:
+    """Report the radius assumed when no cable thickness resolves from authored material."""
     warnings.warn(
-        f"{path}: no cable thickness is available because no bound material applies "
-        f"PhysicsCurvesDeformableMaterialAPI; assuming a default radius of {radius:g} stage units "
-        f"(~{_CABLE_RADIUS_COMPATIBILITY_FALLBACK:g} m). Bind a curve material to use AOUSD material fallbacks; "
-        f"author physics:curvesThickness to override its thickness fallback.",
+        f"{path}: no cable thickness could be resolved from authored material "
+        f"(physics:curvesThickness); assuming a default radius of {radius:g} stage units "
+        f"(~{radius * linear_unit:g} m). Author physics:curvesThickness on the bound curve material to set it.",
         stacklevel=2,
     )
 
 
+def _cable_thickness_is_authored(material: dict[str, float] | None) -> bool:
+    """Whether the material authors a thickness under either proposal revision."""
+    return material is not None and any(name in material for name in _CABLE_THICKNESS_ATTRS)
+
+
 def _cable_radius_from_material(material: dict[str, float] | None, linear_unit: float) -> float:
-    """Resolve radius with current-attribute precedence and revision-specific fallbacks."""
-    if material is None:
-        return _CABLE_RADIUS_COMPATIBILITY_FALLBACK / linear_unit
-    if "curvesThickness" in material:
-        return 0.5 * material["curvesThickness"]
-    if "thickness" in material:
-        return 0.5 * material["thickness"]
-    if _is_legacy_only_curve_material(material):
-        return _CABLE_RADIUS_COMPATIBILITY_FALLBACK / linear_unit
-    return 0.5 * _AOUSD_DEFAULT_CURVES_THICKNESS / linear_unit
+    """Resolve radius from an authored thickness, else the revision-appropriate assumed value.
+
+    A bound current-revision material delegates an unauthored thickness to the proposal's assumed
+    value; no bound curve material, or one still on the earlier revision, keeps Newton's own.
+    """
+    if material is not None:
+        for name in _CABLE_THICKNESS_ATTRS:
+            if name in material:
+                return 0.5 * material[name]
+        if not _is_legacy_only_curve_material(material):
+            return 0.5 * _AOUSD_DEFAULT_CURVES_THICKNESS / linear_unit
+    return _CABLE_RADIUS_COMPATIBILITY_FALLBACK / linear_unit
 
 
-def _cable_structural_stiffnesses(
+def _resolve_cable_structural_stiffnesses(
     material: dict[str, float] | None, radius: float, linear_unit: float
 ) -> tuple[float | None, float | None, float | None, float | None] | None:
     """Resolve material-level stretch, shear, bend, and twist structural stiffnesses.
 
     Per mode, an authored ``physics:curves*Stiffness`` wins, then the deprecated unprefixed
     modulus times its cross-section factor, then the AOUSD derivation from ``E`` and ``nu``.
-    Returns ``None`` when no curve material applies, which leaves the rod-builder defaults.
+    A material authoring *only* deprecated attributes keeps its former behavior instead: it
+    converts what it authored, inherits shear from stretch and twist from bend, and leaves an
+    unresolved mode ``None`` so that rod-builder default stands. Returns ``None`` when no curve
+    material applies, which leaves every rod-builder default.
     """
     if material is None:
         return None
@@ -232,15 +243,20 @@ def _cable_structural_stiffnesses(
     poissons = material.get("poissonsRatio", _AOUSD_DEFAULT_POISSONS_RATIO)
     shear_modulus = youngs / (2.0 * (1.0 + poissons))
 
-    def resolve(name: str, legacy_name: str, section: float, modulus: float) -> float:
+    def resolve(name: str, legacy_name: str, geometric_factor: float, modulus: float) -> float:
         # A deprecated modulus and the AOUSD derivation both scale the same cross-section factor.
         if name in material:
             return material[name]
-        return material.get(legacy_name, modulus) * section
+        return material.get(legacy_name, modulus) * geometric_factor
 
     return (
         resolve("curvesStretchStiffness", "stretchStiffness", area, youngs),
-        resolve("curvesShearStiffness", "shearStiffness", area, _AOUSD_CURVES_SHEAR_CORRECTION * shear_modulus),
+        resolve(
+            "curvesShearStiffness",
+            "shearStiffness",
+            area,
+            _AOUSD_CIRCULAR_SECTION_SHEAR_CORRECTION * shear_modulus,
+        ),
         resolve("curvesBendStiffness", "bendStiffness", area_moment, youngs),
         resolve("curvesTwistStiffness", "twistStiffness", polar_moment, shear_modulus),
     )
@@ -254,20 +270,17 @@ def _apply_local_cable_stiffnesses(
     material: dict[str, float] | None,
     radius: float,
     linear_unit: float,
-) -> bool:
+) -> None:
     """Discretize structural stiffnesses using each joint's dual rest length.
 
     A joint spans half of each adjacent segment, so its length is ``0.5 * (L_parent + L_child)``.
     ``segment_rest_lengths[i]`` is the rest length of the segment body ``bodies[i]``. A curve
     material resolves every current AOUSD stiffness independently, while no material API leaves
     the rod-builder defaults unchanged.
-
-    Returns:
-        Whether at least one stiffness was applied.
     """
-    structural_stiffnesses = _cable_structural_stiffnesses(material, radius, linear_unit)
+    structural_stiffnesses = _resolve_cable_structural_stiffnesses(material, radius, linear_unit)
     if structural_stiffnesses is None or not any(stiffness is not None for stiffness in structural_stiffnesses):
-        return False
+        return
 
     body_rest_lengths = dict(zip(bodies, segment_rest_lengths, strict=True))
     for joint in joints:
@@ -278,7 +291,6 @@ def _apply_local_cable_stiffnesses(
         builder._set_joint_cable_stiffnesses(
             joint, stretch_stiffness=stretch, shear_stiffness=shear, bend_stiffness=bend, twist_stiffness=twist
         )
-    return True
 
 
 def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[str], set[str]]:
@@ -503,11 +515,10 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # duplicate or collapsed points. Reject the component with a warning instead, leaving its curves
         # to the per-curve pass (which warns and skips any individually-degenerate curve).
         edge_lengths = [float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges]
-        if not edge_lengths or any(not math.isfinite(length) or length <= 1.0e-8 for length in edge_lengths):
+        if min(edge_lengths, default=0.0) <= 1.0e-8:
             warnings.warn(
-                f"cable graph '{cid}': a welded curve has a non-finite or zero-length segment "
-                f"(invalid, duplicate, or collapsed points); skipping the welded component so its "
-                f"curves import individually.",
+                f"cable graph '{cid}': a welded curve has a zero-length segment (duplicate or collapsed "
+                f"points); skipping the welded component so its curves import individually.",
                 stacklevel=2,
             )
             return False
@@ -544,8 +555,8 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         rep = curve_recs[comp_paths[0]]
         for key in comp_paths:
             _warn_legacy_curve_material(key, curve_recs[key].material)
-        if rep.material is None:
-            _warn_default_cable_radius(comp_paths[0], rep.radius)
+        if not _cable_thickness_is_authored(rep.material):
+            _warn_default_cable_radius(comp_paths[0], rep.radius, linear_unit)
         # A welded graph necessarily flattens its curves to one representative radius, density,
         # and material. Warn when the curves disagree so this is explicit rather than silent.
         if len(comp_paths) > 1:
@@ -604,12 +615,11 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             wrap_in_articulation=True,
             body_frame_origin="com",
         )
-        stiffness_applied = _apply_local_cable_stiffnesses(
+        _apply_local_cable_stiffnesses(
             builder, body_ids, graph_joint_ids, material_edge_lengths, mat, radius, linear_unit
         )
-        if stiffness_applied:
-            for key in rest_lengths_by_curve:
-                _warn_cable_rest_shape_effect(key)
+        for key in rest_lengths_by_curve:
+            _warn_cable_rest_shape_effect(key)
 
         # Partition graph bodies back to their owning curve, and rebuild the per-prim anchor
         # maps the curve-to-xform attachment pass reads (point index / segment index -> body).
@@ -782,8 +792,8 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         cable_mat = usd._get_curve_deformable_material(prim, deformable_read)
         _warn_legacy_curve_material(path, cable_mat)
         radius = _cable_radius_from_material(cable_mat, linear_unit)
-        if cable_mat is None:
-            _warn_default_cable_radius(path, radius)
+        if not _cable_thickness_is_authored(cable_mat):
+            _warn_default_cable_radius(path, radius, linear_unit)
         # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.
         cable_density = _resolve_deformable_density(
             prim, None if cable_mat is None else cable_mat.get("density"), deformable_read
@@ -807,7 +817,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         # Per built curve: (point offset in the prim's masses array, point count, segment bodies),
         # so per-point masses can be lumped onto each curve's segments.
         cable_point_runs: list[tuple[int, int, list[int]]] = []
-        rest_shape_affects_stiffness = False
+        has_valid_rest_shape = False
         offset = 0
         flat_segment_index = 0
         for ci, vertex_count in enumerate(vertex_counts):
@@ -836,10 +846,9 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             # A zero-length segment (duplicate consecutive points) can't be oriented or
             # sized; warn and skip just this curve rather than aborting the whole import.
             seg_lengths = [float(wp.length(positions[i + 1] - positions[i])) for i in range(num_seg)]
-            if not seg_lengths or any(not math.isfinite(length) or length <= 1.0e-8 for length in seg_lengths):
+            if min(seg_lengths, default=0.0) <= 1.0e-8:
                 warnings.warn(
-                    f"{path}: curve {ci} has invalid or duplicate consecutive points "
-                    f"(non-finite or zero-length segment); skipping that curve.",
+                    f"{path}: curve {ci} has duplicate consecutive points (zero-length segment); skipping that curve.",
                     stacklevel=2,
                 )
                 flat_segment_index += curve_segment_count
@@ -879,10 +888,10 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 wrap_in_articulation=True,
                 body_frame_origin="com",
             )
-            stiffness_applied = _apply_local_cable_stiffnesses(
+            _apply_local_cable_stiffnesses(
                 builder, bodies, joints, material_seg_lengths, cable_mat, radius, linear_unit
             )
-            rest_shape_affects_stiffness |= rest_seg_lengths is not None and stiffness_applied
+            has_valid_rest_shape |= rest_seg_lengths is not None
             cable_bodies.extend(bodies)
             cable_joints.extend(joints)
             cable_point_runs.append((start, n, bodies))
@@ -909,7 +918,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             flat_segment_index += curve_segment_count
 
         if cable_bodies:
-            if rest_shape_affects_stiffness:
+            if has_valid_rest_shape:
                 _warn_cable_rest_shape_effect(path)
             _apply_cable_masses(builder, prim, cable_bodies, cable_point_runs, closed, deformable_read, len(points))
             path_cable_map[path] = (cable_bodies, cable_joints)

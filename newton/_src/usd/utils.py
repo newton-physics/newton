@@ -2101,12 +2101,13 @@ def _read_deformable_material(
     single-source namespace read, see :meth:`SchemaResolverManager.read_deformable_attr`) when the
     bound material declares ``api_schema``.
 
-    Returns a dict of the authored, finite values among ``attr_names``, or ``None`` if the bound
-    material does not declare ``api_schema``. Stiffness and Young's modulus accept zero; thickness
-    must be positive; density must be positive to be returned, while zero is its ignored sentinel;
-    and Poisson's ratio must lie in ``(-1, 0.5]``. The ``-inf`` simulator-default sentinel used by
-    stiffness, Young's modulus, and thickness is silently dropped. Other out-of-range or non-finite
-    values are dropped with a warning.
+    Returns a dict of the authored, in-range values among ``attr_names``, or ``None`` if the bound
+    material does not declare ``api_schema``; an applied API with no valid authored values returns
+    an empty dict. Stiffness and Young's modulus accept zero; thickness must be positive; density
+    must be positive to be returned, while zero is its ignored sentinel; and Poisson's ratio must
+    lie in ``(-1, 0.5]``. The ``-inf`` simulator-default sentinel used by stiffness, Young's modulus,
+    and thickness is silently dropped. Other out-of-range or non-finite values are dropped with a
+    warning.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None or not has_applied_api_schema(material_prim, api_schema):
@@ -2203,7 +2204,7 @@ def _get_surface_deformable_material(
 ) -> dict[str, float] | None:
     """Read surface-deformable (cloth) ``PhysicsSurfaceDeformableMaterialAPI`` parameters bound to a prim.
 
-    Returns a dict of authored, finite values among ``thickness``, ``stretchStiffness``,
+    Returns a dict of authored, in-range values among ``thickness``, ``stretchStiffness``,
     ``shearStiffness``, ``bendStiffness`` and ``density``; or ``None`` if the bound material does not
     declare ``PhysicsSurfaceDeformableMaterialAPI``. See :func:`_read_deformable_material` for the
     value-validation rules.

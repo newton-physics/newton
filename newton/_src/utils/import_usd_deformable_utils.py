@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 
     from ..sim.builder import ModelBuilder
 
-# Compatibility sizes [m] retained from importer behavior under an earlier AOUSD proposal
-# revision. These predate the current curve-material fallback; every use warns.
+# Physical-size fallbacks [m]. Cloth uses the assumed thickness below; the cable
+# radius preserves no-material and legacy-only behavior. Each fallback path warns.
 # TODO: evaluate moving these to configurable ModelBuilder defaults (like
 # default_particle_radius) when deformable import leaves its experimental phase.
 _DEFAULT_CLOTH_THICKNESS = 0.002

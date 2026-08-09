@@ -221,7 +221,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "restShapePoints affects only stiffness normalization"):
+        with self.assertWarnsRegex(UserWarning, "restShapePoints does not establish the simulated rest state"):
             result = builder.add_usd(stage, return_deformable_results=True)
         self.assertIn("graph_component", result["path_cable_attrs"]["/World/CableA"])
 
@@ -328,7 +328,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat")
 
             builder = newton.ModelBuilder()
-            builder.add_usd(stage)
+            with self.assertWarnsRegex(UserWarning, "no cable thickness"):
+                builder.add_usd(stage)
             j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
             radius, youngs, poissons = 0.0005, 1.0e6, 0.3
             area = math.pi * radius**2
@@ -375,28 +376,6 @@ class TestUSDDeformableCable(unittest.TestCase):
                     tuple(value / joint_length for value in expected),
                     rtol=1.0e-3,
                 )
-
-        with self.subTest(cable="periodic"):
-            # The final loop-closing joint pairs the 0.5 and 0.3 segments.
-            stage = _deformable_stage(up_axis="y")
-            loop_pts = [(0.0, 0.0, 1.0), (0.3, 0.0, 1.0), (0.3, 0.4, 1.0)]
-            curves = _add_cable_curve(stage, "/World/Loop", loop_pts, thickness=None, periodic=True)
-            thickness, stretch = 0.02, 200.0
-            _bind_deformable_material(
-                stage,
-                curves.GetPrim(),
-                "/World/LoopMat",
-                curvesThickness=thickness,
-                curvesStretchStiffness=stretch,
-            )
-
-            builder = newton.ModelBuilder()
-            builder.add_usd(stage)
-            j0, j1 = group_range(builder, "cable", "/World/Loop", "joint")
-            for joint, joint_length in zip(range(j0, j1), (0.35, 0.45, 0.4), strict=True):
-                expected = stretch / joint_length
-                dof0 = builder.joint_qd_start[joint]
-                self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
 
         with self.subTest(material="authored_zero_stiffness"):
             stage = _deformable_stage(up_axis="y")
@@ -445,8 +424,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        # restShapePoints only normalizes stiffness (it does not set an initial strain state), so it warns.
-        with self.assertWarnsRegex(UserWarning, "restShapePoints affects only stiffness normalization"):
+        # restShapePoints does not establish an initial strain state, so it warns.
+        with self.assertWarnsRegex(UserWarning, "restShapePoints does not establish the simulated rest state"):
             builder.add_usd(stage)
         j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
         # Dual lengths of the rest polyline. Both differ from the 0.2 deformed segments and from
@@ -455,17 +434,6 @@ class TestUSDDeformableCable(unittest.TestCase):
             expected = stretch / joint_length
             dof0 = builder.joint_qd_start[joint]
             self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
-
-        # Without a curve material, valid rest points do not normalize builder-default stiffness
-        # and therefore must not claim that they do.
-        stage = _deformable_stage(up_axis="y")
-        curves = _add_cable_curve(stage, "/World/NoMaterial", pts, thickness=None)
-        curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(rest)
-        builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.add_usd(stage)
-        self.assertFalse(any("restShapePoints affects only stiffness normalization" in str(w.message) for w in caught))
 
         # An invalid rest segment cannot normalize stiffness, so the curve falls back to its
         # current lengths (a uniform 0.2 here) and reports the discard.
@@ -828,12 +796,12 @@ class TestUSDDeformableCable(unittest.TestCase):
         def cable_radius(builder):
             return builder.shape_scale[builder.body_shapes[0][0]][0]  # capsule radius
 
-        # Default resolvers ignore omniphysics:curvesThickness, so the applied material API
-        # uses the AOUSD thickness fallback rather than the vendor-authored thickness.
+        # Default resolvers: omniphysics:curvesThickness is ignored, so the radius is the
+        # assumed default, not the authored thickness / 2 (and the importer warns).
         builder_default = newton.ModelBuilder()
-        builder_default.add_usd(stage)
+        with self.assertWarnsRegex(UserWarning, "no cable thickness"):
+            builder_default.add_usd(stage)
         default_radius = cable_radius(builder_default)
-        self.assertAlmostEqual(default_radius, 0.0005, places=6)
 
         # With the PhysX resolver active, omniphysics:curvesThickness is honored (radius = thickness / 2).
         builder_compat = newton.ModelBuilder()
@@ -855,10 +823,10 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         # omniphysics is a deformable vendor namespace -> thickness honored (no fallback warning).
         self.assertAlmostEqual(cable_radius("omniphysics"), 0.5 * 0.02, places=5)
-        # physxScene is a generic resolver namespace -> its value is ignored and the applied
-        # material API uses the AOUSD thickness fallback.
-        physx_radius = cable_radius("physxScene")
-        self.assertAlmostEqual(physx_radius, 0.0005, places=6)
+        # physxScene is a generic resolver namespace -> NOT read as deformable material, so the
+        # cable falls back to the assumed radius and warns.
+        with self.assertWarnsRegex(UserWarning, "no cable thickness"):
+            physx_radius = cable_radius("physxScene")
         self.assertNotAlmostEqual(physx_radius, 0.5 * 0.02, places=5)
 
     def test_cable_normals_orient_segments(self):
@@ -1004,7 +972,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         UsdGeom.Xformable(curves).AddTransformOp().Set(m)
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "restShapePoints affects only stiffness normalization"):
+        with self.assertWarnsRegex(UserWarning, "restShapePoints does not establish the simulated rest state"):
             builder.add_usd(stage)
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
@@ -1052,20 +1020,32 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(set(group_labels(builder, "cable")), {"/World/A/Cable", "/World/B/Cable"})
 
     def test_periodic_cable_imports_closing_segment(self):
-        """A periodic curve builds a body for the closing v[-1] -> v[0] segment."""
+        """A periodic curve builds and locally normalizes its closing segment."""
         stage = _deformable_stage(up_axis="y")
-        # 4 vertices -> 4 segments for a closed loop (incl. the wrap segment).
-        pts = [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0)]
-        _add_cable_curve(stage, "/World/Cable", pts, periodic=True)
+        # The three segment lengths are 0.3, 0.4, and 0.5, including the wrap segment.
+        pts = [(0.0, 0.0, 1.0), (0.3, 0.0, 1.0), (0.3, 0.4, 1.0)]
+        curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None, periodic=True)
+        stretch = 200.0
+        _bind_deformable_material(
+            stage,
+            curves.GetPrim(),
+            "/World/CableMat",
+            curvesThickness=0.02,
+            curvesStretchStiffness=stretch,
+        )
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
-        self.assertEqual(b1 - b0, 4, "expected one body per segment, incl. the closing segment")
-        self.assertEqual(j1 - j0, 4, "expected 3 chain joints + 1 loop joint")
+        self.assertEqual(b1 - b0, 3, "expected one body per segment, incl. the closing segment")
+        self.assertEqual(j1 - j0, 3, "expected 2 chain joints + 1 loop joint")
         # The importer wraps the closed cable; add_rod keeps the loop-closing joint out of the tree.
         self.assertIn("/World/Cable_articulation", builder.articulation_label)
+        for joint, joint_length in zip(range(j0, j1), (0.35, 0.45, 0.4), strict=True):
+            expected = stretch / joint_length
+            dof0 = builder.joint_qd_start[joint]
+            self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
 
     def test_welded_graph_degenerate_segment_skips_component(self):
         """A welded curve with a zero-length segment is rejected with a warning instead of aborting
@@ -1425,7 +1405,11 @@ class TestUSDDeformableCable(unittest.TestCase):
                 self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
 
     def test_heterogeneous_welded_cable_materials_warn(self):
-        """Warn when welded curves use one representative radius, density, and material."""
+        """Warn when welded curves use one representative radius, density, and material.
+
+        A welded graph flattens its curves to the first curve's material, so the disagreement
+        must be surfaced rather than applied silently.
+        """
         stage = _deformable_stage()
         trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)]

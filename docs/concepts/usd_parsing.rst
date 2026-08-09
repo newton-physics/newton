@@ -131,12 +131,11 @@ Known gaps of the experimental importer, tracked as follow-ups:
 
 * **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
   configuration. Cloth and volume rest attributes are ignored with a warning. For a cable,
-  including one in a welded graph, count-matched ``restShapePoints`` whose transformed segment
-  lengths are finite and positive supply only the rest lengths used to discretize an applied
-  material stiffness into joint stiffness (any invalid rest shape warns and is ignored); the rod
-  itself is still built relaxed at the current ``points`` pose, and mass distribution also uses
-  the current geometry. A body saved in a deformed pose therefore resumes relaxed at that pose
-  instead of springing back.
+  including one in a welded graph, valid ``restShapePoints`` supplies only the segment lengths
+  used to discretize material stiffness into joint stiffness; invalid values warn and fall back
+  to the current ``points`` lengths. The rod itself is still built relaxed at the current
+  ``points`` pose, and mass distribution also uses the current geometry. A body saved in a
+  deformed pose therefore resumes relaxed at that pose instead of springing back.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
@@ -165,13 +164,12 @@ Known gaps of the experimental importer, tracked as follow-ups:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
 * **Cable frames** -- if per-point normals are missing, segment orientation is synthesized.
-* **Thickness fallbacks** -- without an authored cloth thickness the importer assumes a 2 mm
-  shell and warns. A bound curve material with unauthored ``physics:curvesThickness`` uses the
-  AOUSD fallback of 1 mm diameter. A cable with no bound
-  ``PhysicsCurvesDeformableMaterialAPI`` instead retains Newton's 2.5 mm radius fallback and
-  warns. Material thickness governs mass, collision radius, and the AOUSD volumetric stiffness
-  fallback. The no-material Newton radius governs only mass and collision; stiffness retains the
-  rod-builder defaults.
+* **Thickness fallbacks** -- without a resolved thickness the importer assumes a default
+  (2 mm cloth shell thickness; for cables the proposal's 1 mm diameter with a bound
+  current-revision curve material, else Newton's 2.5 mm radius) and warns with the assumed
+  value. The assumed size affects mass, collision geometry, and stiffness derived from material
+  moduli. Author ``physics:thickness`` -- ``physics:curvesThickness`` for cables -- on the
+  material to override.
 * **Single-segment curves** -- an open two-point curve (one segment) is warned and skipped;
   the rod representation needs at least two segments. A periodic two-point curve closes into
   two segments and imports.
