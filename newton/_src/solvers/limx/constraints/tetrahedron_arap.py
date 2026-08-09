@@ -14,6 +14,104 @@ import warp as wp
 from ..block_csr import BlockCsrBuilder, BlockCsrMatrix
 
 
+@wp.func
+def _signed_svd3(deformation: wp.mat33) -> tuple[wp.mat33, wp.vec3, wp.mat33]:
+    """Return proper singular-vector bases while preserving the factorization."""
+    left, singular_values, right = wp.svd3(deformation)
+    if wp.determinant(left) < 0.0:
+        for row in range(3):
+            left[row, 2] = -left[row, 2]
+        singular_values[2] = -singular_values[2]
+    if wp.determinant(right) < 0.0:
+        for row in range(3):
+            right[row, 2] = -right[row, 2]
+        singular_values[2] = -singular_values[2]
+    return left, singular_values, right
+
+
+@wp.func
+def _deformation_gradient(
+    position_0: wp.vec3,
+    position_1: wp.vec3,
+    position_2: wp.vec3,
+    position_3: wp.vec3,
+    inverse_rest: wp.mat33,
+) -> wp.mat33:
+    """Compute ``Ds * Dm_inverse`` with spatial edge vectors as columns."""
+    edge_01 = position_1 - position_0
+    edge_02 = position_2 - position_0
+    edge_03 = position_3 - position_0
+    current_edges = wp.mat33(0.0)
+    for row in range(3):
+        current_edges[row, 0] = edge_01[row]
+        current_edges[row, 1] = edge_02[row]
+        current_edges[row, 2] = edge_03[row]
+    return current_edges * inverse_rest
+
+
+@wp.func
+def _material_gradient(inverse_rest: wp.mat33, local_vertex: int) -> wp.vec3:
+    """Return one vertex gradient of the tetrahedral material coordinates."""
+    if local_vertex == 1:
+        return wp.vec3(inverse_rest[0, 0], inverse_rest[0, 1], inverse_rest[0, 2])
+    if local_vertex == 2:
+        return wp.vec3(inverse_rest[1, 0], inverse_rest[1, 1], inverse_rest[1, 2])
+    if local_vertex == 3:
+        return wp.vec3(inverse_rest[2, 0], inverse_rest[2, 1], inverse_rest[2, 2])
+    return -wp.vec3(
+        inverse_rest[0, 0] + inverse_rest[1, 0] + inverse_rest[2, 0],
+        inverse_rest[0, 1] + inverse_rest[1, 1] + inverse_rest[2, 1],
+        inverse_rest[0, 2] + inverse_rest[1, 2] + inverse_rest[2, 2],
+    )
+
+
+@wp.func
+def _arap_energy(deformation: wp.mat33, stiffness: float, rest_volume: float) -> float:
+    """Evaluate ``kappa * V0 * ||F - R||_F^2``."""
+    left, _singular_values, right = _signed_svd3(deformation)
+    rotation = left * wp.transpose(right)
+    strain = deformation - rotation
+    return stiffness * rest_volume * wp.ddot(strain, strain)
+
+
+@wp.func
+def _arap_gradient(deformation: wp.mat33, stiffness: float, rest_volume: float) -> wp.mat33:
+    """Evaluate the first derivative of ARAP energy with respect to ``F``."""
+    left, _singular_values, right = _signed_svd3(deformation)
+    rotation = left * wp.transpose(right)
+    return 2.0 * stiffness * rest_volume * (deformation - rotation)
+
+
+@wp.kernel
+def _accumulate_tetrahedron_arap_force(
+    tetrahedron_indices: wp.array2d[int],
+    inverse_rest_matrices: wp.array[wp.mat33],
+    rest_volumes: wp.array[float],
+    stiffnesses: wp.array[float],
+    positions: wp.array[wp.vec3],
+    forces: wp.array[wp.vec3],
+):
+    tetrahedron = wp.tid()
+    particle_0 = tetrahedron_indices[tetrahedron, 0]
+    particle_1 = tetrahedron_indices[tetrahedron, 1]
+    particle_2 = tetrahedron_indices[tetrahedron, 2]
+    particle_3 = tetrahedron_indices[tetrahedron, 3]
+    inverse_rest = inverse_rest_matrices[tetrahedron]
+    deformation = _deformation_gradient(
+        positions[particle_0],
+        positions[particle_1],
+        positions[particle_2],
+        positions[particle_3],
+        inverse_rest,
+    )
+    gradient = _arap_gradient(deformation, stiffnesses[tetrahedron], rest_volumes[tetrahedron])
+
+    for local_vertex in range(4):
+        material_gradient = _material_gradient(inverse_rest, local_vertex)
+        particle = tetrahedron_indices[tetrahedron, local_vertex]
+        wp.atomic_sub(forces, particle, gradient * material_gradient)
+
+
 class ConstraintTetrahedronARAP:
     """A batch of tetrahedral as-rigid-as-possible elastic constraints."""
 
@@ -109,3 +207,19 @@ class ConstraintTetrahedronARAP:
         ]
         self.hessian_block_indices = wp.array2d(block_indices, dtype=int, device=self.device)
         self.hessian_value_count = len(matrix.values)
+
+    def accumulate_force(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:
+        """Add ARAP forces evaluated at ``positions`` to ``output``."""
+        wp.launch(
+            _accumulate_tetrahedron_arap_force,
+            dim=len(self.rest_volumes),
+            inputs=[
+                self.tetrahedron_indices,
+                self.inverse_rest_matrices,
+                self.rest_volumes,
+                self.stiffnesses,
+                positions,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
