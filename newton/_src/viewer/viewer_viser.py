@@ -216,12 +216,14 @@ class ViewerViser(ViewerBase):
         self._instances = {}
         self._shape_instance_batches_by_name = {}
         self._scene_handles = {}  # Track viser scene node handles
+        self._point_cloud_colors: dict[str, np.ndarray] = {}
         self._line_segment_counts = {}
         self._line_versions = {}
 
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._camera_fov_radians: float | None = None
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
@@ -278,6 +280,7 @@ class ViewerViser(ViewerBase):
             self._scene_handles.pop(name, None)
             self._instances.pop(name, None)
             self._meshes.pop(name, None)
+            self._point_cloud_colors.pop(name, None)
             self._line_segment_counts.pop(name, None)
             self._line_versions.pop(name, None)
 
@@ -1200,6 +1203,7 @@ class ViewerViser(ViewerBase):
 
         self._pending_camera_clients.discard(client_id)
         position, look_at, up_direction = self._camera_request
+        fov = self._camera_fov_radians
 
         # Keep camera updates synchronized to avoid transient jitter.
         if hasattr(client, "atomic"):
@@ -1207,10 +1211,14 @@ class ViewerViser(ViewerBase):
                 client.camera.position = tuple(position.tolist())
                 client.camera.look_at = tuple(look_at.tolist())
                 client.camera.up_direction = tuple(up_direction.tolist())
+                if fov is not None:
+                    client.camera.fov = fov
         else:
             client.camera.position = tuple(position.tolist())
             client.camera.look_at = tuple(look_at.tolist())
             client.camera.up_direction = tuple(up_direction.tolist())
+            if fov is not None:
+                client.camera.fov = fov
 
     @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
@@ -1236,6 +1244,35 @@ class ViewerViser(ViewerBase):
                 self._server.initial_camera.up = tuple(up_direction.tolist())
             elif hasattr(self._server.initial_camera, "up_direction"):
                 self._server.initial_camera.up_direction = tuple(up_direction.tolist())
+
+        for client in self._server.get_clients().values():
+            self._apply_camera_to_client(client)
+
+    @override
+    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
+        """Set the camera position, orbit target, and optional field of view."""
+        position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
+        look_at = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
+        if not np.all(np.isfinite(position)) or not np.all(np.isfinite(look_at)):
+            raise ValueError("Camera position and target must be finite")
+        if np.linalg.norm(look_at - position) <= 1.0e-12:
+            super().set_camera_look_at(pos, target, fov)
+            return
+
+        _, up_direction = self._compute_camera_front_up(0.0, 0.0)
+        self._camera_request = (position, look_at, up_direction)
+        if fov is not None:
+            self._camera_fov_radians = float(np.deg2rad(fov))
+
+        if hasattr(self._server, "initial_camera"):
+            self._server.initial_camera.position = tuple(position.tolist())
+            self._server.initial_camera.look_at = tuple(look_at.tolist())
+            if hasattr(self._server.initial_camera, "up"):
+                self._server.initial_camera.up = tuple(up_direction.tolist())
+            elif hasattr(self._server.initial_camera, "up_direction"):
+                self._server.initial_camera.up_direction = tuple(up_direction.tolist())
+            if self._camera_fov_radians is not None and hasattr(self._server.initial_camera, "fov"):
+                self._server.initial_camera.fov = self._camera_fov_radians
 
         for client in self._server.get_clients().values():
             self._apply_camera_to_client(client)
@@ -2197,23 +2234,19 @@ class ViewerViser(ViewerBase):
         """
         name = self._qualify(name)
 
-        # Remove existing points if present
-        if name in self._scene_handles:
-            try:
-                self._scene_handles[name].remove()
-            except Exception:
-                pass
-
-        if hidden:
-            return
-
-        if points is None:
+        existing_handle = self._scene_handles.get(name) if name in self._point_cloud_colors else None
+        if hidden or points is None:
+            if existing_handle is not None:
+                self._set_handle_property_if_changed(existing_handle, "visible", False)
             return
 
         pts = self._to_numpy(points)
         n_points = pts.shape[0]
+        points_val = np.asarray(pts, dtype=np.float32)
 
         if n_points == 0:
+            if existing_handle is not None:
+                self._set_handle_property_if_changed(existing_handle, "visible", False)
             return
 
         # Handle radii (point size)
@@ -2233,23 +2266,62 @@ class ViewerViser(ViewerBase):
             cols = self._to_numpy(colors)
             if cols.shape == (n_points, 3):
                 # Convert from 0-1 to 0-255
-                colors_val = (cols * 255).astype(np.uint8)
+                colors_val = np.rint(np.clip(cols, 0.0, 1.0) * 255.0).astype(np.uint8)
+                if np.all(colors_val == colors_val[0]):
+                    colors_val = colors_val[0]
             elif cols.shape == (3,):
-                colors_val = np.tile((cols * 255).astype(np.uint8), (n_points, 1))
+                colors_val = np.rint(np.clip(cols, 0.0, 1.0) * 255.0).astype(np.uint8)
             else:
                 colors_val = np.full((n_points, 3), 255, dtype=np.uint8)
         else:
+            colors_val = None
+
+        if existing_handle is not None:
+            cached_colors = self._point_cloud_colors[name]
+            if colors_val is None and cached_colors.ndim == 2 and len(cached_colors) != n_points:
+                # Viser requires per-point colors to match the position count.
+                # Model particles use a uniform color, so preserve that color
+                # when active-particle compaction changes the cloud length.
+                base_color = cached_colors[0] if len(cached_colors) else np.full(3, 255, dtype=np.uint8)
+                colors_val = np.asarray(base_color, dtype=np.uint8)
+            try:
+                existing_handle.points = points_val
+                self._set_handle_property_if_changed(existing_handle, "point_size", point_size)
+                if colors_val is not None and not np.array_equal(cached_colors, colors_val):
+                    existing_handle.colors = colors_val
+                    self._point_cloud_colors[name] = colors_val.copy()
+                self._set_handle_property_if_changed(existing_handle, "visible", True)
+                return
+            except Exception:
+                try:
+                    existing_handle.remove()
+                except Exception:
+                    pass
+                self._scene_handles.pop(name, None)
+                self._point_cloud_colors.pop(name, None)
+
+        stale_handle = self._scene_handles.get(name)
+        if stale_handle is not None:
+            try:
+                stale_handle.remove()
+            except Exception:
+                pass
+
+        if colors_val is None:
             colors_val = np.full((n_points, 3), 255, dtype=np.uint8)
 
         # Add point cloud to viser
         handle = self._server.scene.add_point_cloud(
             name=name,
-            points=pts.astype(np.float32),
+            points=points_val,
             colors=colors_val,
             point_size=point_size,
             point_shape="circle",
+            point_shading="gradient",
+            precision="float16",
         )
         self._scene_handles[name] = handle
+        self._point_cloud_colors[name] = colors_val.copy()
 
     @override
     def log_array(self, name: str, array: wp.array[Any] | np.ndarray):

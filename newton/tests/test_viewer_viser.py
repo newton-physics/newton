@@ -14,6 +14,7 @@ import warp as wp
 import newton
 from newton._src.core.types import Axis
 from newton._src.viewer.viewer_viser import ViewerViser
+from newton.examples.vbd._viewer import set_viewer_camera
 
 
 class _FakeHandle:
@@ -176,6 +177,7 @@ class _FakeScene:
     def __init__(self):
         self.controls = {}
         self.lines = {}
+        self.point_clouds = {}
 
     def add_light_ambient(self, name):
         return _FakeHandle(name=name)
@@ -204,6 +206,11 @@ class _FakeScene:
 
     def add_batched_meshes_simple(self, name, **kwargs):
         return _FakeHandle(name=name, **kwargs)
+
+    def add_point_cloud(self, name, **kwargs):
+        handle = _FakeHandle(name=name, **kwargs)
+        self.point_clouds[name] = handle
+        return handle
 
 
 class _FakeServer:
@@ -336,6 +343,58 @@ class TestViewerViserInteraction(unittest.TestCase):
         np.testing.assert_allclose(position, (3.0, -4.0, 2.0))
         np.testing.assert_allclose(look_at - position, (0.0, 0.8660254, -0.5), atol=1.0e-7)
         np.testing.assert_allclose(up_direction, (0.0, 0.0, 1.0))
+
+    def test_vbd_camera_helper_aims_at_target_without_gl_camera(self):
+        """Convert look-at targets to yaw and pitch for non-GL viewers."""
+        calls = []
+        viewer = SimpleNamespace(set_camera=lambda **kwargs: calls.append(kwargs))
+
+        set_viewer_camera(
+            viewer,
+            pos=wp.vec3(0.0, -7.2, 2.35),
+            target=wp.vec3(0.0, 0.0, 0.60),
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertAlmostEqual(calls[0]["yaw"], 90.0)
+        self.assertAlmostEqual(calls[0]["pitch"], np.degrees(np.arctan2(-1.75, 7.2)), places=5)
+
+    def test_set_camera_look_at_preserves_viser_orbit_target(self):
+        """Use the requested look-at point as Viser's orbit pivot."""
+        position = wp.vec3(0.0, -7.2, 2.35)
+        target = wp.vec3(0.0, 0.0, 0.60)
+
+        with patch.object(self.viewer, "_get_camera_up_axis", return_value=2):
+            self.viewer.set_camera_look_at(position, target, fov=42.0)
+
+        requested_position, look_at, up_direction = self.viewer._camera_request
+        np.testing.assert_allclose(requested_position, position)
+        np.testing.assert_allclose(look_at, target)
+        np.testing.assert_allclose(up_direction, (0.0, 0.0, 1.0))
+        self.assertAlmostEqual(self.viewer._camera_fov_radians, np.deg2rad(42.0))
+
+    def test_point_cloud_updates_in_place_with_shaded_persistent_color(self):
+        """Update particle positions without recreating or whitening the cloud."""
+        points = wp.array(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)), dtype=wp.vec3)
+        moved_points = wp.array(((0.0, 0.0, 0.5), (1.0, 0.0, 0.5)), dtype=wp.vec3)
+        colors = wp.array(((0.7, 0.6, 0.4), (0.7, 0.6, 0.4)), dtype=wp.vec3)
+
+        self.viewer.log_points("particles", points, radii=0.05, colors=colors)
+        handle = self.viewer._scene_handles["particles"]
+        original_colors = handle.colors.copy()
+        handle.property_updates.clear()
+
+        self.viewer.log_points("particles", moved_points, radii=0.05)
+
+        self.assertIs(self.viewer._scene_handles["particles"], handle)
+        self.assertFalse(handle.removed)
+        self.assertEqual(handle.point_shape, "circle")
+        self.assertEqual(handle.point_shading, "gradient")
+        self.assertEqual(handle.precision, "float16")
+        self.assertEqual(handle.property_updates.get("points"), 1)
+        self.assertNotIn("colors", handle.property_updates)
+        np.testing.assert_array_equal(handle.colors, original_colors)
+        np.testing.assert_allclose(handle.points, moved_points.numpy())
 
     def test_native_visualization_controls_update_viewer(self):
         """Apply supported visualization toggles through the native Viser GUI."""

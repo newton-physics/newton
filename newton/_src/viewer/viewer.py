@@ -806,6 +806,39 @@ class ViewerBase(ABC):
         """
         return
 
+    def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
+        """Set the camera position and aim it at a world-space target.
+
+        Backends that do not expose an orbit target fall back to equivalent
+        pitch and yaw angles.
+
+        Args:
+            pos: Camera position.
+            target: World-space point at which to aim the camera.
+            fov: Optional vertical field of view in degrees, when supported by
+                the viewer backend.
+        """
+        position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
+        target_np = np.asarray((float(target[0]), float(target[1]), float(target[2])), dtype=np.float64)
+        direction = target_np - position
+        direction_norm = float(np.linalg.norm(direction))
+        if not np.isfinite(direction_norm) or direction_norm <= 1.0e-12:
+            self.set_camera(pos, pitch=0.0, yaw=0.0)
+            return
+
+        direction /= direction_norm
+        up_axis = int(self.model.up_axis) if self.model is not None else 2
+        if up_axis == 0:
+            pitch = math.degrees(math.asin(float(np.clip(direction[0], -1.0, 1.0))))
+            yaw = math.degrees(math.atan2(float(direction[2]), float(direction[1])))
+        elif up_axis == 2:
+            pitch = math.degrees(math.asin(float(np.clip(direction[2], -1.0, 1.0))))
+            yaw = math.degrees(math.atan2(float(direction[1]), float(direction[0])))
+        else:
+            pitch = math.degrees(math.asin(float(np.clip(direction[1], -1.0, 1.0))))
+            yaw = math.degrees(math.atan2(float(direction[2]), float(direction[0])))
+        self.set_camera(pos, pitch=pitch, yaw=yaw)
+
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets for visual separation of multiple worlds.
 
