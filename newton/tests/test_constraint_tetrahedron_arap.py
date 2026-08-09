@@ -8,7 +8,13 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.limx.block_csr import BlockCsrBuilder
-from newton._src.solvers.limx.constraints.tetrahedron_arap import ConstraintTetrahedronARAP, _arap_energy
+from newton._src.solvers.limx.constraints.tetrahedron_arap import (
+    ConstraintTetrahedronARAP,
+    _arap_energy,
+    _arap_hessian_unscaled,
+    _project_psd,
+    mat99,
+)
 
 
 def _mat33(values: np.ndarray) -> wp.mat33:
@@ -29,6 +35,18 @@ def _evaluate_arap_energy(
         stiffnesses[tetrahedron],
         rest_volumes[tetrahedron],
     )
+
+
+@wp.kernel
+def _evaluate_arap_hessians(
+    deformation_gradients: wp.array[wp.mat33],
+    raw_hessians: wp.array[mat99],
+    projected_hessians: wp.array[mat99],
+):
+    tetrahedron = wp.tid()
+    raw_hessian = _arap_hessian_unscaled(deformation_gradients[tetrahedron])
+    raw_hessians[tetrahedron] = raw_hessian
+    projected_hessians[tetrahedron] = _project_psd(raw_hessian)
 
 
 def _proper_svd(deformation: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -75,6 +93,52 @@ def _rotation_matrix(axis: np.ndarray, angle: float) -> np.ndarray:
     x, y, z = direction
     cross = np.asarray([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
     return np.eye(3) + np.sin(angle) * cross + (1.0 - np.cos(angle)) * (cross @ cross)
+
+
+def _arap_gradient_reference(deformation: np.ndarray) -> np.ndarray:
+    """Evaluate the unscaled ARAP deformation-gradient derivative."""
+    u, _singular_values, vt = _proper_svd(deformation)
+    return 2.0 * (deformation - u @ vt)
+
+
+def _arap_hessian_reference(deformation: np.ndarray) -> np.ndarray:
+    """Evaluate libuipc's unscaled analytical ARAP Hessian."""
+    u, singular_values, vt = _proper_svd(deformation)
+    twists = (
+        np.asarray([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+        np.asarray([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]]),
+        np.asarray([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [-1.0, 0.0, 0.0]]),
+    )
+    modes = [(u @ twist @ vt / np.sqrt(2.0)).reshape(9, order="F") for twist in twists]
+    hessian = 2.0 * np.eye(9)
+    hessian -= 4.0 / (singular_values[0] + singular_values[1]) * np.outer(modes[0], modes[0])
+    hessian -= 4.0 / (singular_values[1] + singular_values[2]) * np.outer(modes[1], modes[1])
+    hessian -= 4.0 / (singular_values[0] + singular_values[2]) * np.outer(modes[2], modes[2])
+    return hessian
+
+
+def _project_psd_reference(hessian: np.ndarray) -> np.ndarray:
+    """Clamp a complete symmetric matrix through NumPy eigendecomposition."""
+    eigenvalues, eigenvectors = np.linalg.eigh(hessian)
+    return eigenvectors @ np.diag(np.maximum(eigenvalues, 0.0)) @ eigenvectors.T
+
+
+def _deformation_jacobian(inverse_rest: np.ndarray) -> np.ndarray:
+    """Build the column-major deformation-gradient Jacobian for four vertices."""
+    material_gradients = (
+        -np.sum(inverse_rest, axis=0),
+        inverse_rest[0],
+        inverse_rest[1],
+        inverse_rest[2],
+    )
+    jacobian = np.zeros((9, 12))
+    for local_vertex, material_gradient in enumerate(material_gradients):
+        for material_axis in range(3):
+            for spatial_axis in range(3):
+                jacobian[3 * material_axis + spatial_axis, 3 * local_vertex + spatial_axis] = material_gradient[
+                    material_axis
+                ]
+    return jacobian
 
 
 class TestConstraintTetrahedronARAPConstruction(unittest.TestCase):
@@ -281,6 +345,193 @@ class TestConstraintTetrahedronARAPMath(unittest.TestCase):
                 ) / (2.0 * epsilon)
 
         np.testing.assert_allclose(forces, -energy_gradient, rtol=3.0e-3, atol=3.0e-3)
+
+
+@unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+class TestConstraintTetrahedronARAPHessian(unittest.TestCase):
+    DEVICE = "cuda:0"
+    INVERSE_REST = np.eye(3, dtype=np.float64)
+    STIFFNESS = 7.0
+    REST_VOLUME = 1.0 / 6.0
+
+    @classmethod
+    def evaluate_hessians(cls, deformation: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate raw and projected deformation-gradient Hessians on CUDA."""
+        raw_hessians = wp.empty(1, dtype=mat99, device=cls.DEVICE)
+        projected_hessians = wp.empty(1, dtype=mat99, device=cls.DEVICE)
+        wp.launch(
+            _evaluate_arap_hessians,
+            dim=1,
+            inputs=[wp.array([_mat33(deformation)], dtype=wp.mat33, device=cls.DEVICE)],
+            outputs=[raw_hessians, projected_hessians],
+            device=cls.DEVICE,
+        )
+        return raw_hessians.numpy()[0], projected_hessians.numpy()[0]
+
+    @classmethod
+    def make_constraint(cls) -> ConstraintTetrahedronARAP:
+        """Create one unit-rest tetrahedron constraint on CUDA."""
+        return ConstraintTetrahedronARAP(
+            [(0, 1, 2, 3)],
+            [_mat33(cls.INVERSE_REST)],
+            [cls.STIFFNESS],
+            4,
+            cls.DEVICE,
+        )
+
+    @classmethod
+    def assemble_single_tetrahedron(
+        cls,
+        positions: np.ndarray,
+    ) -> tuple[ConstraintTetrahedronARAP, object, np.ndarray]:
+        """Assemble force and all block-CSR Hessian values for one tetrahedron."""
+        constraint = cls.make_constraint()
+        builder = BlockCsrBuilder(4)
+        constraint.append_hessian_structure(builder)
+        matrix = builder.finalize(cls.DEVICE)
+        constraint.bind_hessian(matrix)
+        forces = wp.zeros(4, dtype=wp.vec3, device=cls.DEVICE)
+        matrix.clear_values()
+        constraint.accumulate_force_and_hessian(
+            wp.array(positions, dtype=wp.vec3, device=cls.DEVICE),
+            forces,
+            matrix.values,
+        )
+        matrix.update_diagonal()
+        return constraint, matrix, forces.numpy()
+
+    @staticmethod
+    def dense_hessian(matrix) -> np.ndarray:
+        """Expand a four-particle block-CSR matrix into a dense matrix."""
+        values = matrix.values.numpy()
+        dense = np.empty((12, 12))
+        for particle_i in range(4):
+            for particle_j in range(4):
+                dense[3 * particle_i : 3 * particle_i + 3, 3 * particle_j : 3 * particle_j + 3] = values[
+                    matrix.block_index(particle_i, particle_j)
+                ]
+        return dense
+
+    def test_raw_hessian_matches_libuipc_formula(self):
+        """Match the complete analytical deformation-gradient Hessian."""
+        deformation = np.asarray(
+            [[1.2, 0.15, -0.05], [0.1, 1.1, 0.2], [0.0, -0.1, 0.95]],
+            dtype=np.float64,
+        )
+
+        raw_hessian, _projected_hessian = self.evaluate_hessians(deformation)
+
+        np.testing.assert_allclose(raw_hessian, _arap_hessian_reference(deformation), rtol=2.0e-4, atol=2.0e-4)
+
+    def test_raw_hessian_matches_gradient_finite_difference_when_psd(self):
+        """Match a PSD exact Hessian to a centered gradient finite difference."""
+        deformation = np.diag([1.4, 1.3, 1.2]).astype(np.float64)
+        raw_hessian, _projected_hessian = self.evaluate_hessians(deformation)
+        epsilon = 1.0e-4
+        finite_difference = np.empty((9, 9))
+
+        for column in range(9):
+            deformation_plus = deformation.copy().reshape(-1, order="F")
+            deformation_minus = deformation.copy().reshape(-1, order="F")
+            deformation_plus[column] += epsilon
+            deformation_minus[column] -= epsilon
+            gradient_plus = _arap_gradient_reference(deformation_plus.reshape(3, 3, order="F")).reshape(9, order="F")
+            gradient_minus = _arap_gradient_reference(deformation_minus.reshape(3, 3, order="F")).reshape(9, order="F")
+            finite_difference[:, column] = (gradient_plus - gradient_minus) / (2.0 * epsilon)
+
+        self.assertGreaterEqual(float(np.linalg.eigvalsh(raw_hessian)[0]), -2.0e-4)
+        np.testing.assert_allclose(raw_hessian, finite_difference, rtol=4.0e-3, atol=4.0e-3)
+
+    def test_full_evd_projection_matches_numpy(self):
+        """Clamp negative raw eigenvalues through complete symmetric EVD."""
+        deformation = np.asarray(
+            [[0.65, 0.08, 0.0], [0.02, 0.7, -0.04], [0.0, 0.03, 0.8]],
+            dtype=np.float64,
+        )
+        raw_hessian, projected_hessian = self.evaluate_hessians(deformation)
+        expected = _project_psd_reference(_arap_hessian_reference(deformation))
+
+        self.assertLess(float(np.linalg.eigvalsh(raw_hessian)[0]), -1.0e-2)
+        np.testing.assert_allclose(projected_hessian, expected, rtol=2.0e-3, atol=2.0e-3)
+        self.assertGreaterEqual(float(np.linalg.eigvalsh(projected_hessian)[0]), -2.0e-3)
+
+    def test_assembled_hessian_matches_jacobian_mapping_and_is_psd(self):
+        """Map the projected deformation Hessian into all particle blocks."""
+        positions = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [0.8, 0.02, 0.0],
+                [0.05, 0.75, 0.03],
+                [0.0, -0.02, 0.85],
+            ],
+            dtype=np.float64,
+        )
+        _constraint, matrix, _forces = self.assemble_single_tetrahedron(positions)
+        deformation = _deformation_gradient_reference(positions, self.INVERSE_REST)
+        hessian_f = _project_psd_reference(_arap_hessian_reference(deformation)) * self.STIFFNESS * self.REST_VOLUME
+        jacobian = _deformation_jacobian(self.INVERSE_REST)
+        expected = jacobian.T @ hessian_f @ jacobian
+        actual = self.dense_hessian(matrix)
+
+        np.testing.assert_allclose(actual, expected, rtol=3.0e-3, atol=3.0e-3)
+        np.testing.assert_allclose(actual, actual.T, atol=2.0e-5)
+        self.assertGreaterEqual(float(np.linalg.eigvalsh(actual)[0]), -2.0e-3)
+
+    def test_reassembly_changes_values_without_changing_block_topology(self):
+        """Keep sixteen block coordinates fixed while refreshing their values."""
+        initial_positions = TestConstraintTetrahedronARAPMath.REST_POSITIONS
+        constraint, matrix, _forces = self.assemble_single_tetrahedron(initial_positions)
+        row_offsets = matrix.row_offsets.numpy().copy()
+        column_indices = matrix.column_indices.numpy().copy()
+        initial_values = matrix.values.numpy().copy()
+        new_positions = np.asarray(
+            [[0.0, 0.0, 0.0], [1.2, 0.1, 0.0], [0.0, 0.9, 0.15], [0.05, 0.0, 1.1]],
+            dtype=np.float64,
+        )
+        forces = wp.zeros(4, dtype=wp.vec3, device=self.DEVICE)
+
+        matrix.clear_values()
+        constraint.accumulate_force_and_hessian(
+            wp.array(new_positions, dtype=wp.vec3, device=self.DEVICE),
+            forces,
+            matrix.values,
+        )
+
+        np.testing.assert_array_equal(matrix.row_offsets.numpy(), row_offsets)
+        np.testing.assert_array_equal(matrix.column_indices.numpy(), column_indices)
+        self.assertFalse(np.allclose(matrix.values.numpy(), initial_values))
+
+    def test_rejects_invalid_runtime_storage_before_launch(self):
+        """Reject unbound, mismatched, and wrong-device runtime arrays."""
+        constraint = self.make_constraint()
+        positions = wp.zeros(4, dtype=wp.vec3, device=self.DEVICE)
+        forces = wp.zeros(4, dtype=wp.vec3, device=self.DEVICE)
+
+        with self.assertRaisesRegex(RuntimeError, "bind_hessian"):
+            constraint.accumulate_force_and_hessian(
+                positions,
+                forces,
+                wp.zeros(16, dtype=wp.mat33, device=self.DEVICE),
+            )
+
+        builder = BlockCsrBuilder(4)
+        constraint.append_hessian_structure(builder)
+        matrix = builder.finalize(self.DEVICE)
+        constraint.bind_hessian(matrix)
+
+        with self.assertRaisesRegex(ValueError, "4 particle rows"):
+            constraint.accumulate_force(wp.zeros(3, dtype=wp.vec3, device=self.DEVICE), forces)
+        with self.assertRaisesRegex(ValueError, "16 Hessian blocks"):
+            constraint.accumulate_force_and_hessian(
+                positions,
+                forces,
+                wp.zeros(15, dtype=wp.mat33, device=self.DEVICE),
+            )
+        with self.assertRaisesRegex(ValueError, "same device"):
+            constraint.accumulate_force(
+                wp.zeros(4, dtype=wp.vec3, device="cpu"),
+                wp.zeros(4, dtype=wp.vec3, device="cpu"),
+            )
 
 
 if __name__ == "__main__":

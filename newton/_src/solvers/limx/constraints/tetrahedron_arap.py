@@ -10,8 +10,17 @@ from typing import Any
 
 import numpy as np
 import warp as wp
+from warp.fem.linalg import symmetric_eigenvalues_qr
 
 from ..block_csr import BlockCsrBuilder, BlockCsrMatrix
+
+
+class vec9(wp.types.vector(length=9, dtype=wp.float32)):
+    """Nine-vector used for column-major deformation-gradient coordinates."""
+
+
+class mat99(wp.types.matrix(shape=(9, 9), dtype=wp.float32)):
+    """Nine-by-nine deformation-gradient Hessian."""
 
 
 @wp.func
@@ -82,6 +91,112 @@ def _arap_gradient(deformation: wp.mat33, stiffness: float, rest_volume: float) 
     return 2.0 * stiffness * rest_volume * (deformation - rotation)
 
 
+@wp.func
+def _flatten_matrix_column_major(matrix: wp.mat33) -> vec9:
+    """Flatten a three-by-three matrix in libuipc's column-major order."""
+    result = vec9(0.0)
+    for column in range(3):
+        for row in range(3):
+            result[3 * column + row] = matrix[row, column]
+    return result
+
+
+@wp.func
+def _guarded_singular_sum(value_0: float, value_1: float) -> float:
+    """Keep an analytical twist denominator finite near a singular state."""
+    value = value_0 + value_1
+    if wp.abs(value) < 1.0e-6:
+        if value < 0.0:
+            return -1.0e-6
+        return 1.0e-6
+    return value
+
+
+@wp.func
+def _subtract_twist_mode(
+    hessian: mat99,
+    left: wp.mat33,
+    right: wp.mat33,
+    twist: wp.mat33,
+    singular_sum: float,
+) -> mat99:
+    """Subtract one exact rotational mode from the ARAP Hessian."""
+    rotated_twist = left * twist * wp.transpose(right) / wp.sqrt(2.0)
+    mode = _flatten_matrix_column_major(rotated_twist)
+    return hessian - (4.0 / singular_sum) * wp.outer(mode, mode)
+
+
+@wp.func
+def _arap_hessian_unscaled(deformation: wp.mat33) -> mat99:
+    """Evaluate libuipc's exact unscaled ARAP Hessian in ``vec(F)``."""
+    left, singular_values, right = _signed_svd3(deformation)
+    hessian = mat99(0.0)
+    for diagonal in range(9):
+        hessian[diagonal, diagonal] = 2.0
+
+    twist_0 = wp.mat33(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    twist_1 = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0)
+    twist_2 = wp.mat33(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0)
+    hessian = _subtract_twist_mode(
+        hessian,
+        left,
+        right,
+        twist_0,
+        _guarded_singular_sum(singular_values[0], singular_values[1]),
+    )
+    hessian = _subtract_twist_mode(
+        hessian,
+        left,
+        right,
+        twist_1,
+        _guarded_singular_sum(singular_values[1], singular_values[2]),
+    )
+    return _subtract_twist_mode(
+        hessian,
+        left,
+        right,
+        twist_2,
+        _guarded_singular_sum(singular_values[0], singular_values[2]),
+    )
+
+
+@wp.func
+def _project_psd(hessian: mat99) -> mat99:
+    """Project a complete symmetric Hessian with generic EVD clamping."""
+    eigenvalues, eigenvectors_by_row = symmetric_eigenvalues_qr(hessian, 1.0e-6)
+    projected = mat99(0.0)
+    for mode in range(9):
+        eigenvalue = wp.max(eigenvalues[mode], 0.0)
+        for row in range(9):
+            for column in range(9):
+                projected[row, column] += (
+                    eigenvalue * eigenvectors_by_row[mode, row] * eigenvectors_by_row[mode, column]
+                )
+    return projected
+
+
+@wp.func
+def _map_hessian_block(
+    hessian: mat99,
+    material_gradient_i: wp.vec3,
+    material_gradient_j: wp.vec3,
+) -> wp.mat33:
+    """Map a deformation Hessian into one ordered particle-pair block."""
+    block = wp.mat33(0.0)
+    for spatial_i in range(3):
+        for spatial_j in range(3):
+            value = float(0.0)
+            for material_i in range(3):
+                for material_j in range(3):
+                    value += (
+                        material_gradient_i[material_i]
+                        * hessian[3 * material_i + spatial_i, 3 * material_j + spatial_j]
+                        * material_gradient_j[material_j]
+                    )
+            block[spatial_i, spatial_j] = value
+    return block
+
+
 @wp.kernel
 def _accumulate_tetrahedron_arap_force(
     tetrahedron_indices: wp.array2d[int],
@@ -110,6 +225,46 @@ def _accumulate_tetrahedron_arap_force(
         material_gradient = _material_gradient(inverse_rest, local_vertex)
         particle = tetrahedron_indices[tetrahedron, local_vertex]
         wp.atomic_sub(forces, particle, gradient * material_gradient)
+
+
+@wp.kernel
+def _accumulate_tetrahedron_arap_force_and_hessian(
+    tetrahedron_indices: wp.array2d[int],
+    inverse_rest_matrices: wp.array[wp.mat33],
+    rest_volumes: wp.array[float],
+    stiffnesses: wp.array[float],
+    hessian_block_indices: wp.array2d[int],
+    positions: wp.array[wp.vec3],
+    forces: wp.array[wp.vec3],
+    hessian_values: wp.array[wp.mat33],
+):
+    tetrahedron = wp.tid()
+    particle_0 = tetrahedron_indices[tetrahedron, 0]
+    particle_1 = tetrahedron_indices[tetrahedron, 1]
+    particle_2 = tetrahedron_indices[tetrahedron, 2]
+    particle_3 = tetrahedron_indices[tetrahedron, 3]
+    inverse_rest = inverse_rest_matrices[tetrahedron]
+    rest_volume = rest_volumes[tetrahedron]
+    stiffness = stiffnesses[tetrahedron]
+    deformation = _deformation_gradient(
+        positions[particle_0],
+        positions[particle_1],
+        positions[particle_2],
+        positions[particle_3],
+        inverse_rest,
+    )
+    gradient = _arap_gradient(deformation, stiffness, rest_volume)
+    hessian = stiffness * rest_volume * _project_psd(_arap_hessian_unscaled(deformation))
+
+    for local_i in range(4):
+        material_gradient_i = _material_gradient(inverse_rest, local_i)
+        particle_i = tetrahedron_indices[tetrahedron, local_i]
+        wp.atomic_sub(forces, particle_i, gradient * material_gradient_i)
+        for local_j in range(4):
+            material_gradient_j = _material_gradient(inverse_rest, local_j)
+            block = _map_hessian_block(hessian, material_gradient_i, material_gradient_j)
+            block_index = hessian_block_indices[tetrahedron, 4 * local_i + local_j]
+            wp.atomic_add(hessian_values, block_index, block)
 
 
 class ConstraintTetrahedronARAP:
@@ -210,6 +365,7 @@ class ConstraintTetrahedronARAP:
 
     def accumulate_force(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:
         """Add ARAP forces evaluated at ``positions`` to ``output``."""
+        self._validate_runtime_arrays(positions, output)
         wp.launch(
             _accumulate_tetrahedron_arap_force,
             dim=len(self.rest_volumes),
@@ -223,3 +379,42 @@ class ConstraintTetrahedronARAP:
             outputs=[output],
             device=self.device,
         )
+
+    def accumulate_force_and_hessian(
+        self,
+        positions: wp.array[wp.vec3],
+        force_output: wp.array[wp.vec3],
+        hessian_values: wp.array[wp.mat33],
+    ) -> None:
+        """Add ARAP forces and full analytical PSD Hessian blocks."""
+        self._validate_runtime_arrays(positions, force_output)
+        if self.hessian_block_indices is None:
+            raise RuntimeError("bind_hessian() must be called before Hessian assembly")
+        if hessian_values.dtype != wp.mat33:
+            raise ValueError("Hessian values must contain wp.mat33 blocks")
+        if hessian_values.device != self.device:
+            raise ValueError("Constraint and Hessian values must use the same device")
+        if len(hessian_values) != self.hessian_value_count:
+            raise ValueError(f"Expected {self.hessian_value_count} Hessian blocks")
+        wp.launch(
+            _accumulate_tetrahedron_arap_force_and_hessian,
+            dim=len(self.rest_volumes),
+            inputs=[
+                self.tetrahedron_indices,
+                self.inverse_rest_matrices,
+                self.rest_volumes,
+                self.stiffnesses,
+                self.hessian_block_indices,
+                positions,
+            ],
+            outputs=[force_output, hessian_values],
+            device=self.device,
+        )
+
+    def _validate_runtime_arrays(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:
+        if positions.dtype != wp.vec3 or output.dtype != wp.vec3:
+            raise ValueError("Positions and forces must contain wp.vec3 rows")
+        if len(positions) != self.particle_count or len(output) != self.particle_count:
+            raise ValueError(f"Expected {self.particle_count} particle rows")
+        if positions.device != self.device or output.device != self.device:
+            raise ValueError("Constraint and runtime arrays must use the same device")
