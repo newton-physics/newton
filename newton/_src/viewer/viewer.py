@@ -26,6 +26,7 @@ from .kernels import (
     repack_shape_colors,
     transform_points,
 )
+from .transform import transform_add_translation, transform_from_array, transform_multiply
 
 #: Sentinel layer id used when no user-defined layer has been activated.
 #: Preserves the legacy behavior of unprefixed object names so that existing
@@ -1118,8 +1119,8 @@ class ViewerBase(ABC):
                 if body_q_np is None:
                     body_q_np = state.body_q.numpy()
 
-                body_xform = wp.transform_expand(body_q_np[parent])
-                world_xform = wp.transform_multiply(body_xform, shape_xform)
+                body_xform = transform_from_array(body_q_np[parent])
+                world_xform = transform_multiply(body_xform, shape_xform)
             else:
                 world_xform = shape_xform
 
@@ -1127,11 +1128,8 @@ class ViewerBase(ABC):
                 if offsets_np is None:
                     offsets_np = self.world_offsets.numpy()
                 offset = offsets_np[world_idx]
-                world_xform = wp.transformf(
-                    wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
-                    world_xform.q,
-                )
-            world_xform = wp.transform_multiply(self.layer.xform, world_xform)
+                world_xform = transform_add_translation(world_xform, offset)
+            world_xform = transform_multiply(self.layer.xform, world_xform)
             self.log_gaussian(gname, gaussian, xform=world_xform, hidden=False)
 
     def _log_non_shape_state(self, state: newton.State):
@@ -2310,7 +2308,7 @@ class ViewerBase(ABC):
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
-                    xform = wp.transform_expand(shape_transform[s])
+                    xform = transform_from_array(shape_transform[s])
                     gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
                     self._gaussian_instances.append(
                         (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
@@ -2385,7 +2383,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._shape_instances[shape_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
 
             if shape_display_color is not None:
@@ -2549,7 +2547,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._sdf_isomesh_instances[geo_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             # Apply shape scale if not baked into SDF, otherwise use (1,1,1)
             if scale_baked:
                 scale = np.array([1.0, 1.0, 1.0])

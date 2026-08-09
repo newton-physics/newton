@@ -21,6 +21,13 @@ import newton
 from ..core.types import Axis, override
 from ..utils.texture import load_texture, normalize_texture
 from .picking import Picking
+from .transform import (
+    transform_assign_position_wxyz,
+    transform_inverse,
+    transform_point,
+    transform_to_position_wxyz,
+    transform_vector,
+)
 from .viewer import ViewerBase, is_jupyter_notebook
 
 
@@ -193,6 +200,8 @@ class ViewerViser(ViewerBase):
         self._example_browser_options: dict[str, str] = {}
         self._example_switch_callback: Callable[[str], None] | None = None
         self._frame_atomic_context: Any = None
+        self._loading_splash_text: str | None = None
+        self._loading_notification_handles: dict[int, Any] = {}
 
         super().__init__()
 
@@ -202,6 +211,7 @@ class ViewerViser(ViewerBase):
         # Store mesh data for instances
         self._meshes = {}
         self._instances = {}
+        self._shape_instance_batches_by_name = {}
         self._scene_handles = {}  # Track viser scene node handles
         self._line_segment_counts = {}
         self._line_versions = {}
@@ -301,6 +311,10 @@ class ViewerViser(ViewerBase):
         super()._init_extra_layer_state(layer)
         layer.picking = None
         layer._last_state = None
+        layer._shape_instance_batches_by_name = {}
+        layer._packed_shape_world_xforms = None
+        layer._packed_shape_groups = []
+        layer._packed_shape_colors_host = None
 
     @override
     def set_model(self, model: newton.Model | None):
@@ -310,6 +324,7 @@ class ViewerViser(ViewerBase):
             model: Model to visualize and interact with.
         """
         super().set_model(model)
+        self._build_packed_shape_arrays()
         self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
         if self.picking is not None:
             self.picking.visible_worlds_mask = self._visible_worlds_mask
@@ -331,8 +346,29 @@ class ViewerViser(ViewerBase):
             worlds: World indices to show, or ``None`` to show all worlds.
         """
         super().set_visible_worlds(worlds)
+        self._build_packed_shape_arrays()
         if self.picking is not None:
             self.picking.visible_worlds_mask = self._visible_worlds_mask
+
+    def _build_packed_shape_arrays(self) -> None:
+        """Pack model shape outputs for one kernel launch and host transfer."""
+        batches = list(self._shape_instances.values())
+        self._shape_instance_batches_by_name = {batch.name: batch for batch in batches}
+        total = sum(len(batch.xforms) for batch in batches)
+        self._packed_shape_groups = []
+        self._packed_shape_world_xforms = None
+        self._packed_shape_colors_host = None
+        if total == 0:
+            return
+
+        packed = wp.empty(total, dtype=wp.transform, device=self.device)
+        offset = 0
+        for batch in batches:
+            count = len(batch.xforms)
+            batch.world_xforms = packed[offset : offset + count]
+            self._packed_shape_groups.append((batch, offset, count))
+            offset += count
+        self._packed_shape_world_xforms = packed
 
     @override
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3) -> None:
@@ -500,6 +536,48 @@ class ViewerViser(ViewerBase):
         self._reset_callback = callback
         self._sync_gui_controls()
 
+    def _show_loading_notification(self, client: Any) -> None:
+        """Show the current loading message on one connected client."""
+        text = self._loading_splash_text
+        if text is None:
+            return
+
+        client_id = int(client.client_id)
+        previous = self._loading_notification_handles.pop(client_id, None)
+        if previous is not None:
+            try:
+                previous.remove()
+            except Exception:
+                pass
+
+        self._loading_notification_handles[client_id] = client.add_notification(
+            title="Newton",
+            body=text,
+            loading=True,
+            with_close_button=False,
+        )
+
+    def show_loading_splash(self, text: str | None = None) -> None:
+        """Display a loading notification over each connected Viser canvas.
+
+        Args:
+            text: Loading message. Defaults to ``"Loading..."``.
+        """
+        self._loading_splash_text = text or "Loading..."
+        for client in self._server.get_clients().values():
+            self._show_loading_notification(client)
+
+    def hide_loading_splash(self) -> None:
+        """Remove notifications created by :meth:`show_loading_splash`."""
+        self._loading_splash_text = None
+        handles = tuple(self._loading_notification_handles.values())
+        self._loading_notification_handles.clear()
+        for handle in handles:
+            try:
+                handle.remove()
+            except Exception:
+                pass
+
     @staticmethod
     def _call_scene_method(method, **kwargs):
         """Call a viser scene method with only supported keyword args."""
@@ -528,17 +606,12 @@ class ViewerViser(ViewerBase):
     @staticmethod
     def _transform_to_viser(transform: wp.transform) -> tuple[np.ndarray, np.ndarray]:
         """Return a Warp transform as Viser position and WXYZ rotation."""
-        position = np.asarray((transform.p[0], transform.p[1], transform.p[2]), dtype=np.float32)
-        wxyz = np.asarray((transform.q[3], transform.q[0], transform.q[1], transform.q[2]), dtype=np.float32)
-        return position, wxyz
+        return transform_to_position_wxyz(transform)
 
     @staticmethod
     def _assign_transform(transform: wp.transform, position, wxyz) -> None:
         """Mutate a pass-by-reference Warp transform from Viser values."""
-        transform[:] = wp.transform(
-            wp.vec3(float(position[0]), float(position[1]), float(position[2])),
-            wp.quat(float(wxyz[1]), float(wxyz[2]), float(wxyz[3]), float(wxyz[0])),
-        )
+        transform_assign_position_wxyz(transform, position, wxyz)
 
     @staticmethod
     def _normalize_gizmo_axes(axes: Sequence[Axis] | None) -> tuple[Axis, ...]:
@@ -661,7 +734,12 @@ class ViewerViser(ViewerBase):
 
     def _shape_instance_batch(self, name: str):
         """Return the model shape batch associated with a scene path, if any."""
-        return next((batch for batch in self._shape_instances.values() if batch.name == name), None)
+        batch = self._shape_instance_batches_by_name.get(name)
+        if batch is None:
+            batch = next((candidate for candidate in self._shape_instances.values() if candidate.name == name), None)
+            if batch is not None:
+                self._shape_instance_batches_by_name[name] = batch
+        return batch
 
     def _is_pickable_instance(self, name: str) -> bool:
         """Return whether an instance batch contains body-attached model shapes."""
@@ -681,13 +759,13 @@ class ViewerViser(ViewerBase):
     @staticmethod
     def _transform_ray_to_layer(layer, ray_origin, ray_direction) -> tuple[wp.vec3, wp.vec3]:
         """Transform a visual-space ray into a layer's pre-transform space."""
-        layer_inv = wp.transform_inverse(layer.xform)
-        origin = wp.transform_point(
+        layer_inv = transform_inverse(layer.xform)
+        origin = transform_point(
             layer_inv,
             wp.vec3(float(ray_origin[0]), float(ray_origin[1]), float(ray_origin[2])),
         )
-        direction = wp.quat_rotate(
-            layer_inv.q,
+        direction = transform_vector(
+            layer_inv,
             wp.vec3(float(ray_direction[0]), float(ray_direction[1]), float(ray_direction[2])),
         )
         return origin, direction
@@ -710,11 +788,11 @@ class ViewerViser(ViewerBase):
     def _picking_point_to_visual(cls, layer, picking: Picking, point) -> np.ndarray:
         """Convert a physics-space picking point into Viser scene space."""
         point_with_offset = np.asarray(point, dtype=np.float32) + cls._picking_world_offset(layer, picking)
-        visual = wp.transform_point(
+        visual = transform_point(
             layer.xform,
             wp.vec3(float(point_with_offset[0]), float(point_with_offset[1]), float(point_with_offset[2])),
         )
-        return np.asarray((visual[0], visual[1], visual[2]), dtype=np.float32)
+        return np.asarray(visual).copy()
 
     def _picking_control_path(self, layer_id: str) -> str:
         """Build a stable internal path for a layer's picking handle."""
@@ -781,15 +859,13 @@ class ViewerViser(ViewerBase):
         layer = self._layers.get(layer_id)
         if layer is None or layer.picking is None or not layer.picking.is_picking():
             return
-        layer_inv = wp.transform_inverse(layer.xform)
-        point_with_offset = wp.transform_point(
+        layer_inv = transform_inverse(layer.xform)
+        point_with_offset = transform_point(
             layer_inv,
             wp.vec3(float(visual_target[0]), float(visual_target[1]), float(visual_target[2])),
         )
         offset = self._picking_world_offset(layer, layer.picking)
-        target = (
-            np.asarray((point_with_offset[0], point_with_offset[1], point_with_offset[2]), dtype=np.float32) - offset
-        )
+        target = np.asarray(point_with_offset).copy() - offset
         pick_state = layer.picking.pick_state.numpy()
         pick_state[0]["picking_target_world"] = target
         layer.picking.pick_state.assign(pick_state)
@@ -1035,13 +1111,16 @@ class ViewerViser(ViewerBase):
         return update_timestamp > 0.0
 
     def _handle_client_connect(self, client: Any):
-        """Apply cached camera settings to newly connected clients."""
+        """Apply cached camera and loading state to a newly connected client."""
         self._pending_camera_clients.discard(int(client.client_id))
         self._apply_camera_to_client(client)
+        self._show_loading_notification(client)
 
     def _handle_client_disconnect(self, client: Any):
-        """Clear pending camera state for disconnected clients."""
-        self._pending_camera_clients.discard(int(client.client_id))
+        """Clear pending client-specific state for a disconnected client."""
+        client_id = int(client.client_id)
+        self._pending_camera_clients.discard(client_id)
+        self._loading_notification_handles.pop(client_id, None)
 
     def _get_camera_up_axis(self) -> int:
         """Resolve the model up-axis as an integer index (0, 1, 2)."""
@@ -1053,7 +1132,7 @@ class ViewerViser(ViewerBase):
         return int(up_axis)
 
     def _compute_camera_front_up(self, pitch: float, yaw: float) -> tuple[np.ndarray, np.ndarray]:
-        """Compute camera front and up vectors from pitch/yaw angles."""
+        """Compute camera front and world-up vectors from pitch/yaw angles."""
         pitch = float(np.clip(pitch, -89.0, 89.0))
         yaw = float(yaw)
         pitch_rad = np.deg2rad(pitch)
@@ -1092,19 +1171,7 @@ class ViewerViser(ViewerBase):
             world_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
 
         front /= np.linalg.norm(front)
-        right = np.cross(front, world_up)
-        right_norm = np.linalg.norm(right)
-        if right_norm < 1.0e-8:
-            fallback_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-            if np.linalg.norm(np.cross(front, fallback_up)) < 1.0e-8:
-                fallback_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-            right = np.cross(front, fallback_up)
-            right_norm = np.linalg.norm(right)
-        right /= right_norm
-
-        up = np.cross(right, front)
-        up /= np.linalg.norm(up)
-        return front, up
+        return front, world_up
 
     def _apply_camera_to_client(self, client: Any):
         """Apply the cached camera request to a connected client if ready."""
@@ -1266,6 +1333,11 @@ class ViewerViser(ViewerBase):
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
 
+        existing_handle = self._scene_handles.get(name)
+        if hidden and existing_handle is not None:
+            self._set_handle_property_if_changed(existing_handle, "visible", False)
+            return
+
         # Convert to numpy arrays
         points_np = self._to_numpy(points).astype(np.float32)
         indices_np = self._to_numpy(indices).astype(np.uint32)
@@ -1295,19 +1367,43 @@ class ViewerViser(ViewerBase):
                     stacklevel=2,
                 )
 
-        # Store mesh data for instancing
-        self._meshes[name] = {
+        mesh_color = (180, 180, 180) if color is None else tuple(color)
+        mesh_side = "double" if not backface_culling else "front"
+        mesh_data = {
             "points": points_np,
             "indices": indices_np,
             "uvs": uvs_np,
             "texture": texture_image,
             "trimesh": trimesh_mesh,
+            "color": mesh_color,
+            "side": mesh_side,
         }
+        existing_mesh = self._meshes.get(name)
+        self._meshes[name] = mesh_data
 
-        # Remove existing mesh if present
-        if name in self._scene_handles:
+        can_update = (
+            existing_handle is not None
+            and existing_mesh is not None
+            and existing_mesh.get("trimesh") is None
+            and trimesh_mesh is None
+            and existing_mesh["points"].shape == points_np.shape
+            and existing_mesh["indices"].shape == indices_np.shape
+            and existing_mesh.get("color") == mesh_color
+            and existing_mesh.get("side") == mesh_side
+        )
+        if can_update:
             try:
-                self._scene_handles[name].remove()
+                existing_handle.vertices = points_np
+                if not np.array_equal(existing_mesh["indices"], indices_np):
+                    existing_handle.faces = indices_np
+                self._set_handle_property_if_changed(existing_handle, "visible", True)
+                return
+            except Exception:
+                pass
+
+        if existing_handle is not None:
+            try:
+                existing_handle.remove()
             except Exception:
                 pass
 
@@ -1327,9 +1423,9 @@ class ViewerViser(ViewerBase):
                 name=name,
                 vertices=points_np,
                 faces=indices_np,
-                color=(180, 180, 180) if color is None else color,
+                color=mesh_color,
                 wireframe=False,
-                side="double" if not backface_culling else "front",
+                side=mesh_side,
             )
         self._scene_handles[name] = handle
 
@@ -1408,6 +1504,7 @@ class ViewerViser(ViewerBase):
 
         base_width = float(plane_info["width"])
         base_length = float(plane_info["length"])
+        infinite_grid = bool(plane_info.get("infinite", False))
 
         if len(handles) != len(positions):
             self._remove_plane_handles(name)
@@ -1435,6 +1532,7 @@ class ViewerViser(ViewerBase):
                 self._set_handle_property_if_changed(handle, "height", length)
                 self._set_handle_property_if_changed(handle, "cell_size", cell_size)
                 self._set_handle_property_if_changed(handle, "section_size", cell_size)
+                self._set_handle_property_if_changed(handle, "infinite_grid", infinite_grid)
                 self._set_handle_property_if_changed(handle, "visible", True)
             else:
                 # The plane's local frame has its normal along +Z, so the grid lies in the local XY plane.
@@ -1444,10 +1542,11 @@ class ViewerViser(ViewerBase):
                     width=width,
                     height=length,
                     plane="xy",
-                    cell_color=(150, 150, 150),
-                    section_color=(110, 110, 110),
+                    cell_color=(210, 210, 210),
+                    section_color=(180, 180, 180),
                     cell_size=cell_size,
                     section_size=cell_size,
+                    infinite_grid=infinite_grid,
                     position=tuple(float(v) for v in position),
                     wxyz=tuple(float(v) for v in quat_wxyz),
                 )
@@ -1642,14 +1741,94 @@ class ViewerViser(ViewerBase):
 
     @override
     def log_state(self, state: newton.State) -> None:
-        """Log simulation state and update the interactive picking line.
+        """Log simulation state with packed model-shape transfers.
 
         Args:
             state: Current simulation state.
         """
         self._last_state = state
-        super().log_state(state)
+        if self.model is None:
+            return
+
+        packed = self._packed_shape_world_xforms
+        if packed is None or self._slot_to_shape_wp is None:
+            super().log_state(state)
+            self._render_picking_line()
+            return
+
+        self._sync_shape_colors_from_model()
+
+        from .kernels import update_model_shape_xforms  # noqa: PLC0415
+
+        wp.launch(
+            kernel=update_model_shape_xforms,
+            dim=len(packed),
+            inputs=[
+                self.model.shape_transform,
+                self.model.shape_body,
+                state.body_q,
+                self.model.shape_world,
+                self.world_offsets,
+                self.layer.xform,
+                self._slot_to_shape_wp,
+            ],
+            outputs=[packed],
+            device=self.device,
+            record_tape=False,
+        )
+
+        packed_xforms = self._to_numpy(packed)
+        packed_colors = self._to_numpy(self.model_shape_color) if self.model_shape_color is not None else None
+        colors_changed = self.model_changed
+        if packed_colors is not None:
+            colors_changed = (
+                colors_changed
+                or self._packed_shape_colors_host is None
+                or not np.array_equal(self._packed_shape_colors_host, packed_colors)
+            )
+            if colors_changed:
+                self._packed_shape_colors_host = packed_colors.copy()
+        layer_hidden = self._layer_force_hidden()
+
+        for shapes, offset, count in self._packed_shape_groups:
+            visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+            xforms = packed_xforms[offset : offset + count]
+            colors = packed_colors[offset : offset + count] if packed_colors is not None and colors_changed else None
+            materials = shapes.materials if self.model_changed else None
+
+            if shapes.geo_type == newton.GeoType.CAPSULE:
+                self.log_capsules(
+                    shapes.name,
+                    shapes.mesh,
+                    xforms,
+                    shapes.scales,
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
+            else:
+                self.log_instances(
+                    shapes.name,
+                    shapes.mesh,
+                    xforms,
+                    shapes.scales,
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
+            shapes.colors_changed = False
+
+        self._log_gaussian_shapes(state)
+        self._log_non_shape_state(state)
+        self.model_changed = False
         self._render_picking_line()
+
+    def _log_particles(self, state: newton.State) -> None:
+        """Skip particle compaction and transfer when particles are hidden."""
+        if self.model.particle_count and (not self.show_particles or self._layer_force_hidden()):
+            self.log_points(name=self._qualify("/model/particles"), points=None, hidden=True)
+            return
+        super()._log_particles(state)
 
     def _render_picking_line(self) -> None:
         """Render the cyan line from the body anchor to the picking target."""
@@ -1728,6 +1907,7 @@ class ViewerViser(ViewerBase):
                 self._serializer.insert_sleep(self._frame_dt)
         finally:
             self._end_atomic_frame()
+            self._server.flush()
 
     def _update_scalar_plots(self):
         """Create or update uPlot chart handles for dirty scalar signals."""
@@ -1786,6 +1966,7 @@ class ViewerViser(ViewerBase):
         """
         self._running = False
         self._end_atomic_frame()
+        self.hide_loading_splash()
         for name in list(self._gizmo_handles):
             self._remove_gizmo(name)
         for layer_id in list(self._picking_controls):
@@ -1972,8 +2153,10 @@ class ViewerViser(ViewerBase):
         name = self._qualify(name)
 
         if geo_type == newton.GeoType.PLANE:
-            # Handle "infinite" planes encoded with non-positive scales
-            if geo_scale[0] == 0.0 or geo_scale[1] == 0.0:
+            width = float(geo_scale[0]) if geo_scale else 0.0
+            length = float(geo_scale[1]) if len(geo_scale) > 1 else 10.0
+            infinite_grid = width <= 0.0 or length <= 0.0
+            if infinite_grid:
                 extents = self._get_world_extents()
                 if extents is None:
                     width, length = 10.0, 10.0
@@ -1981,12 +2164,10 @@ class ViewerViser(ViewerBase):
                     max_extent = max(max(extents) * 1.5, 8.0)
                     width = max_extent
                     length = max_extent
-            else:
-                width = geo_scale[0]
-                length = geo_scale[1] if len(geo_scale) > 1 else 10.0
             self._plane_meshes[name] = {
                 "width": float(width),
                 "length": float(length),
+                "infinite": infinite_grid,
             }
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)

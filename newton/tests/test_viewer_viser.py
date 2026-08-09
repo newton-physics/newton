@@ -11,6 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.core.types import Axis
 from newton._src.viewer.viewer_viser import ViewerViser
 
@@ -160,6 +161,17 @@ class _FakeGui:
         return plot
 
 
+class _FakeClient:
+    def __init__(self, client_id):
+        self.client_id = client_id
+        self.notifications = []
+
+    def add_notification(self, title, body, **kwargs):
+        handle = _FakeHandle(title=title, body=body, **kwargs)
+        self.notifications.append(handle)
+        return handle
+
+
 class _FakeScene:
     def __init__(self):
         self.controls = {}
@@ -184,8 +196,8 @@ class _FakeScene:
         self.lines[name] = handle
         return handle
 
-    def add_grid(self, name, **kwargs):
-        return _FakeHandle(name=name, **kwargs)
+    def add_grid(self, name, infinite_grid=False, **kwargs):
+        return _FakeHandle(name=name, infinite_grid=infinite_grid, **kwargs)
 
     def add_mesh_simple(self, name, **kwargs):
         return _FakeHandle(name=name, **kwargs)
@@ -198,9 +210,11 @@ class _FakeServer:
     def __init__(self, **_kwargs):
         self.scene = _FakeScene()
         self.gui = _FakeGui()
+        self.clients = {}
         self.stopped = False
         self.atomic_depth = 0
         self.atomic_frames = 0
+        self.flush_count = 0
 
     class _Atomic:
         def __init__(self, server):
@@ -216,6 +230,11 @@ class _FakeServer:
     def atomic(self):
         return self._Atomic(self)
 
+    def flush(self):
+        if self.atomic_depth != 0:
+            raise RuntimeError("Cannot flush an incomplete atomic frame")
+        self.flush_count += 1
+
     def on_client_connect(self, _callback):
         return None
 
@@ -226,7 +245,7 @@ class _FakeServer:
         return None
 
     def get_clients(self):
-        return {}
+        return self.clients
 
     def stop(self):
         self.stopped = True
@@ -308,6 +327,16 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.viewer._attach_picking_callback(handle, self.viewer.layer.layer_id)
         self.assertEqual(handle.click_callbacks, [])
 
+    def test_set_camera_uses_world_up_axis(self):
+        """Keep Viser orbit controls aligned with the model up axis."""
+        with patch.object(self.viewer, "_get_camera_up_axis", return_value=2):
+            self.viewer.set_camera(wp.vec3(3.0, -4.0, 2.0), pitch=-30.0, yaw=90.0)
+
+        position, look_at, up_direction = self.viewer._camera_request
+        np.testing.assert_allclose(position, (3.0, -4.0, 2.0))
+        np.testing.assert_allclose(look_at - position, (0.0, 0.8660254, -0.5), atol=1.0e-7)
+        np.testing.assert_allclose(up_direction, (0.0, 0.0, 1.0))
+
     def test_native_visualization_controls_update_viewer(self):
         """Apply supported visualization toggles through the native Viser GUI."""
         self.viewer._viewer_option_handles["show_contacts"].emit_update(True)
@@ -351,6 +380,33 @@ class TestViewerViserInteraction(unittest.TestCase):
 
         self.assertEqual(selected, ["newton.examples.basic.example_basic_pendulum"])
 
+    def test_loading_splash_uses_client_notifications(self):
+        """Show and remove a loading notification over the Viser canvas."""
+        client = _FakeClient(7)
+        self.server.clients[client.client_id] = client
+
+        self.viewer.show_loading_splash("Loading example...")
+
+        self.assertEqual(len(client.notifications), 1)
+        notification = client.notifications[0]
+        self.assertEqual(notification.kwargs["title"], "Newton")
+        self.assertEqual(notification.kwargs["body"], "Loading example...")
+        self.assertTrue(notification.kwargs["loading"])
+        self.assertFalse(notification.kwargs["with_close_button"])
+
+        self.viewer.hide_loading_splash()
+        self.assertTrue(notification.removed)
+
+    def test_loading_splash_is_shown_to_late_clients(self):
+        """Apply an active loading message when a client connects."""
+        self.viewer.show_loading_splash("Resetting...")
+        client = _FakeClient(8)
+
+        self.viewer._handle_client_connect(client)
+
+        self.assertEqual(len(client.notifications), 1)
+        self.assertEqual(client.notifications[0].kwargs["body"], "Resetting...")
+
     def test_frame_updates_are_published_atomically(self):
         """Group all scene updates between begin and end into one Viser frame."""
         self.viewer.begin_frame(0.0)
@@ -360,6 +416,7 @@ class TestViewerViserInteraction(unittest.TestCase):
 
         self.assertEqual(self.server.atomic_depth, 0)
         self.assertEqual(self.server.atomic_frames, 1)
+        self.assertEqual(self.server.flush_count, 1)
 
     def test_gizmo_updates_transform_and_snaps_on_release(self):
         """Mutate gizmo transforms and honor independent axes and snap targets."""
@@ -420,6 +477,24 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.viewer._log_plane_instances("ground", plane_info, second_xforms, None, hidden=True)
         self.assertFalse(handle.visible)
 
+    def test_infinite_plane_uses_native_viser_grid(self):
+        """Map non-positive Newton plane extents to Viser's infinite grid."""
+        xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
+
+        self.viewer.log_geo("ground", newton.GeoType.PLANE, (0.0, 0.0), 0.0, True)
+        ground_info = self.viewer._plane_meshes["ground"]
+        self.viewer._log_plane_instances("ground", ground_info, xforms, None)
+
+        self.assertTrue(ground_info["infinite"])
+        self.assertTrue(self.viewer._plane_handles["ground"][0].infinite_grid)
+
+        self.viewer.log_geo("platform", newton.GeoType.PLANE, (12.0, 8.0), 0.0, True)
+        platform_info = self.viewer._plane_meshes["platform"]
+        self.viewer._log_plane_instances("platform", platform_info, xforms, None)
+
+        self.assertFalse(platform_info["infinite"])
+        self.assertFalse(self.viewer._plane_handles["platform"][0].infinite_grid)
+
     def test_unchanged_instances_do_not_resend_properties(self):
         """Skip redundant websocket properties for unchanged instance batches."""
         points = wp.array(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)), dtype=wp.vec3)
@@ -437,6 +512,55 @@ class TestViewerViserInteraction(unittest.TestCase):
 
         self.assertEqual(handle.property_updates, {})
         self.assertEqual(to_numpy.call_count, 1)
+
+    def test_mesh_updates_vertices_without_recreating_handle(self):
+        """Keep deforming meshes persistent when their topology is unchanged."""
+        points = wp.array(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)), dtype=wp.vec3)
+        moved_points = wp.array(((0.0, 0.0, 0.5), (1.0, 0.0, 0.5), (0.0, 1.0, 0.5)), dtype=wp.vec3)
+        indices = wp.array((0, 1, 2), dtype=wp.int32)
+
+        self.viewer.log_mesh("cloth", points, indices, backface_culling=False)
+        handle = self.viewer._scene_handles["cloth"]
+        handle.property_updates.clear()
+
+        self.viewer.log_mesh("cloth", moved_points, indices, backface_culling=False)
+
+        self.assertIs(self.viewer._scene_handles["cloth"], handle)
+        self.assertFalse(handle.removed)
+        self.assertEqual(handle.property_updates.get("vertices"), 1)
+        self.assertNotIn("faces", handle.property_updates)
+        np.testing.assert_allclose(handle.vertices, moved_points.numpy())
+
+    def test_hidden_mesh_reuses_existing_handle(self):
+        """Hide and restore a mesh without resending its topology."""
+        points = wp.array(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)), dtype=wp.vec3)
+        indices = wp.array((0, 1, 2), dtype=wp.int32)
+
+        self.viewer.log_mesh("cloth", points, indices)
+        handle = self.viewer._scene_handles["cloth"]
+        self.viewer.log_mesh("cloth", points, indices, hidden=True)
+        self.viewer.log_mesh("cloth", points, indices)
+
+        self.assertIs(self.viewer._scene_handles["cloth"], handle)
+        self.assertFalse(handle.removed)
+        self.assertTrue(handle.visible)
+
+    def test_model_shapes_use_packed_host_transfers(self):
+        """Transfer all model-shape transforms and colors in two arrays."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(-1)
+        builder.add_shape_sphere(-1)
+        model = builder.finalize(device="cpu")
+        self.viewer.set_model(model)
+        state = model.state()
+        self.viewer.log_state(state)
+
+        with patch.object(self.viewer, "_to_numpy", wraps=self.viewer._to_numpy) as to_numpy:
+            self.viewer.log_state(state)
+
+        warp_transfers = [call.args[0] for call in to_numpy.call_args_list if isinstance(call.args[0], wp.array)]
+        self.assertEqual(len(self.viewer._packed_shape_groups), 2)
+        self.assertEqual(len(warp_transfers), 2)
 
     def test_gizmo_disappears_when_not_logged(self):
         """Remove a persistent Viser gizmo after a frame stops logging it."""
