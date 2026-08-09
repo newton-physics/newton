@@ -84,7 +84,7 @@ class Example:
         self.state_1 = self.model.state()
 
         self.viewer.set_model(self.model)
-        self.viewer.set_camera(wp.vec3(0.35, -0.8, 0.95), -12.0, 18.0)
+        self.viewer.set_camera(wp.vec3(0.3, -0.9, 0.95), -10.0, 90.0)
 
     def step(self):
         """Advance one undamped 0.01-second Newton step."""
