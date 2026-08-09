@@ -105,6 +105,9 @@ class _FakeGuiHandle:
         self.update_callbacks = []
         self.click_callbacks = []
         self.removed = False
+        for name, item in kwargs.items():
+            if not hasattr(self, name):
+                setattr(self, name, item)
 
     def on_update(self, callback):
         self.update_callbacks.append(callback)
@@ -133,6 +136,9 @@ class _FakeGui:
     def __init__(self):
         self.folders = []
         self.plots = []
+        self.images = []
+        self.markdowns = []
+        self.dividers = []
         self.inputs = {}
 
     def add_folder(self, name, **kwargs):
@@ -141,7 +147,7 @@ class _FakeGui:
         return folder
 
     def add_checkbox(self, label, initial_value, **kwargs):
-        handle = _FakeGuiHandle(initial_value, **kwargs)
+        handle = _FakeGuiHandle(initial_value, label=label, **kwargs)
         self.inputs[label] = handle
         return handle
 
@@ -151,9 +157,45 @@ class _FakeGui:
         return handle
 
     def add_dropdown(self, label, options, initial_value=None, **kwargs):
-        handle = _FakeGuiHandle(initial_value if initial_value is not None else options[0], **kwargs)
+        handle = _FakeGuiHandle(
+            initial_value if initial_value is not None else options[0],
+            label=label,
+            **kwargs,
+        )
         handle.options = tuple(options)
         self.inputs[label] = handle
+        return handle
+
+    def add_slider(self, label, min, max, step, initial_value, **kwargs):
+        handle = _FakeGuiHandle(
+            initial_value,
+            label=label,
+            min=min,
+            max=max,
+            step=step,
+            **kwargs,
+        )
+        self.inputs[label] = handle
+        return handle
+
+    def add_number(self, label, initial_value, **kwargs):
+        handle = _FakeGuiHandle(initial_value, label=label, **kwargs)
+        self.inputs[label] = handle
+        return handle
+
+    def add_markdown(self, content, **kwargs):
+        handle = _FakeHandle(content=content, **kwargs)
+        self.markdowns.append(handle)
+        return handle
+
+    def add_divider(self, **kwargs):
+        handle = _FakeHandle(**kwargs)
+        self.dividers.append(handle)
+        return handle
+
+    def add_image(self, image, **kwargs):
+        handle = _FakeHandle(image=np.asarray(image).copy(), **kwargs)
+        self.images.append(handle)
         return handle
 
     def add_uplot(self, **kwargs):
@@ -341,6 +383,75 @@ class TestViewerViserInteraction(unittest.TestCase):
 
         self.viewer._attach_picking_callback(handle, self.viewer.layer.layer_id)
         self.assertEqual(handle.click_callbacks, [])
+
+    def test_example_gui_callbacks_use_native_viser_controls(self):
+        """Drive common immediate-mode example widgets from Viser events."""
+        state = {
+            "enabled": False,
+            "quality": False,
+            "gain": 0.5,
+            "count": 2,
+            "target": 0.25,
+        }
+
+        def render_gui(ui):
+            ui.text("Custom controls")
+            ui.separator()
+            _changed, state["enabled"] = ui.checkbox("Enabled", state["enabled"])
+            if ui.radio_button("Quality", state["quality"]):
+                state["quality"] = True
+            _changed, state["gain"] = ui.slider_float("Gain", state["gain"], 0.0, 1.0, "%.2f")
+            _changed, state["count"] = ui.slider_int("Count", state["count"], 1, 10)
+            _changed, state["target"] = ui.input_float("Target", state["target"], format="%.3f")
+
+        self.viewer.register_ui_callback(render_gui, position="side")
+        self.viewer.should_step()
+
+        self.assertEqual(self.server.gui.markdowns[0].content, "Custom controls")
+        self.assertEqual(len(self.server.gui.dividers), 1)
+        self.assertIn("Enabled", self.server.gui.inputs)
+        self.assertIn("Quality", self.server.gui.inputs)
+        self.assertEqual(self.server.gui.inputs["Gain"].step, 0.01)
+
+        self.server.gui.inputs["Enabled"].emit_update(True)
+        self.server.gui.inputs["Quality"].emit_update(True)
+        self.server.gui.inputs["Gain"].emit_update(0.75)
+        self.server.gui.inputs["Count"].emit_update(7)
+        self.server.gui.inputs["Target"].emit_update(0.125)
+        self.viewer.should_step()
+
+        self.assertTrue(state["enabled"])
+        self.assertTrue(state["quality"])
+        self.assertEqual(state["gain"], 0.75)
+        self.assertEqual(state["count"], 7)
+        self.assertEqual(state["target"], 0.125)
+
+    def test_log_image_updates_selected_batched_atlas(self):
+        """Display one selected image stream and update its persistent handle."""
+        color = np.zeros((2, 2, 3, 4), dtype=np.uint8)
+        color[0, ..., 0] = 255
+        color[1, ..., 1] = 255
+        depth = np.full((2, 2, 3, 4), 127, dtype=np.uint8)
+
+        self.viewer.log_image("color", color)
+        image_handle = self.viewer._image_handle
+        self.assertEqual(len(self.server.gui.images), 1)
+        self.assertEqual(image_handle.image.shape, (2, 6, 4))
+        np.testing.assert_array_equal(image_handle.image[:, :3, 0], 255)
+        np.testing.assert_array_equal(image_handle.image[:, 3:, 1], 255)
+
+        self.viewer.log_image("depth", depth)
+        self.assertIs(self.viewer._image_handle, image_handle)
+        self.assertEqual(tuple(self.server.gui.inputs["Output"].options), ("color", "depth"))
+
+        self.server.gui.inputs["Output"].emit_update("depth")
+        self.viewer.begin_frame(0.0)
+        self.viewer.log_image("depth", depth)
+        self.viewer.end_frame()
+
+        self.assertIs(self.viewer._image_handle, image_handle)
+        self.assertEqual(image_handle.label, "depth")
+        np.testing.assert_array_equal(image_handle.image, 127)
 
     def test_set_camera_uses_world_up_axis(self):
         """Match ViewerGL orientation and orbit-pivot behavior."""

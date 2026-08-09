@@ -312,6 +312,7 @@ class Example:
             self.viewer.set_camera(wp.vec3(0.5, 0.0, 0.5), -15, -140)
             self.viewer.set_world_offsets(wp.vec3(1.0, 1.0, 0.0))
             self.viewer.show_hydro_contact_surface = self.show_isosurface
+        if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
 
         # Initialize state for IK setup

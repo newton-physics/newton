@@ -10,7 +10,7 @@ import queue
 import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import numpy as np
@@ -21,6 +21,13 @@ import newton
 from ..core.types import Axis, override
 from ..utils.texture import load_texture, normalize_texture
 from .camera import Camera
+from .gl.image_logger import (
+    _atlas_layout,
+    _convert_to_packed_rgba_numpy,
+    _pack_rgba_warp,
+    _to_canonical_4d_wp,
+    _validate,
+)
 from .picking import Picking
 from .transform import (
     transform_assign_position_wxyz,
@@ -57,6 +64,248 @@ class ViewerViser(ViewerBase):
     """
 
     _viser_module = None
+
+    class _ImmediateGuiAdapter:
+        """Translate the examples' immediate-mode controls to native Viser GUI handles."""
+
+        class WindowFlags_:
+            class _Flag:
+                value = 0
+
+            no_title_bar = _Flag()
+            no_mouse_inputs = _Flag()
+            no_scrollbar = _Flag()
+
+        _MISSING = object()
+
+        def __init__(self, viewer: ViewerViser):
+            self._viewer = viewer
+            self._callback_id = -1
+            self._widget_index = 0
+            # This is not an ImGui context. ViewerGL-only extensions can use
+            # this flag to decline registration while common controls still
+            # work through the callback argument.
+            self.is_available = False
+
+        def begin_callback(self, callback_id: int) -> None:
+            self._callback_id = callback_id
+            self._widget_index = 0
+
+        def end_callback(self) -> None:
+            stale = [
+                key
+                for key in self._viewer._example_gui_handles
+                if key[0] == self._callback_id and key[1] >= self._widget_index
+            ]
+            for key in stale:
+                _kind, handle = self._viewer._example_gui_handles.pop(key)
+                self._viewer._example_gui_pending.pop(key, None)
+                try:
+                    handle.remove()
+                except Exception:
+                    pass
+
+        def _next_handle(self, kind: str, create: Callable[[tuple[int, int]], Any]) -> tuple[tuple[int, int], Any]:
+            key = (self._callback_id, self._widget_index)
+            self._widget_index += 1
+            existing = self._viewer._example_gui_handles.get(key)
+            if existing is not None and existing[0] == kind:
+                return key, existing[1]
+            if existing is not None:
+                try:
+                    existing[1].remove()
+                except Exception:
+                    pass
+            handle = create(key)
+            self._viewer._example_gui_handles[key] = (kind, handle)
+            return key, handle
+
+        def _add(self, factory: Callable[[], Any]) -> Any:
+            folder = self._viewer._ensure_example_gui_folder()
+            with folder:
+                return factory()
+
+        @staticmethod
+        def _sync(handle: Any, name: str, value: Any) -> None:
+            if getattr(handle, name, None) != value:
+                setattr(handle, name, value)
+
+        def _consume(self, key: tuple[int, int], handle: Any, current: Any) -> tuple[bool, Any]:
+            value = self._viewer._example_gui_pending.pop(key, self._MISSING)
+            if value is self._MISSING:
+                self._sync(handle, "value", current)
+                return False, current
+            return True, value
+
+        def _queue_updates(self, handle: Any, key: tuple[int, int], cast: Callable[[Any], Any]) -> None:
+            @handle.on_update
+            def _on_update(event):
+                if event.client_id is not None:
+                    self._viewer._interaction_events.put(("example_gui", key, cast(event.target.value)))
+
+        @staticmethod
+        def _float_step(format: str | None, minimum: float, maximum: float) -> float:
+            if format is not None:
+                marker = format.find("%.")
+                suffix = format.find("f", marker + 2) if marker >= 0 else -1
+                if suffix > marker:
+                    precision = format[marker + 2 : suffix]
+                    if precision.isdigit():
+                        return 10.0 ** -int(precision)
+            return max(abs(float(maximum) - float(minimum)) / 100.0, 1.0e-6)
+
+        def text(self, value: Any) -> None:
+            content = str(value)
+
+            def create(_key):
+                return self._add(lambda: self._viewer._server.gui.add_markdown(content))
+
+            _key, handle = self._next_handle("text", create)
+            self._sync(handle, "content", content)
+
+        def separator(self) -> None:
+            self._next_handle("separator", lambda _key: self._add(self._viewer._server.gui.add_divider))
+
+        def checkbox(self, label: str, value: bool) -> tuple[bool, bool]:
+            def create(key):
+                handle = self._add(lambda: self._viewer._server.gui.add_checkbox(label, initial_value=bool(value)))
+                self._queue_updates(handle, key, bool)
+                return handle
+
+            key, handle = self._next_handle("checkbox", create)
+            self._sync(handle, "label", label)
+            changed, new_value = self._consume(key, handle, bool(value))
+            return changed, bool(new_value)
+
+        def radio_button(self, label: str, active: bool) -> bool:
+            def create(key):
+                handle = self._add(lambda: self._viewer._server.gui.add_checkbox(label, initial_value=bool(active)))
+                self._queue_updates(handle, key, bool)
+                return handle
+
+            key, handle = self._next_handle("radio", create)
+            self._sync(handle, "label", label)
+            changed, new_value = self._consume(key, handle, bool(active))
+            return changed and bool(new_value)
+
+        def slider_float(
+            self,
+            label: str,
+            value: float,
+            minimum: float,
+            maximum: float,
+            format: str = "%.3f",
+            **_kwargs,
+        ) -> tuple[bool, float]:
+            step = self._float_step(format, minimum, maximum)
+
+            def create(key):
+                handle = self._add(
+                    lambda: self._viewer._server.gui.add_slider(
+                        label,
+                        min=float(minimum),
+                        max=float(maximum),
+                        step=step,
+                        initial_value=float(value),
+                    )
+                )
+                self._queue_updates(handle, key, float)
+                return handle
+
+            key, handle = self._next_handle("slider_float", create)
+            self._sync(handle, "label", label)
+            self._sync(handle, "min", float(minimum))
+            self._sync(handle, "max", float(maximum))
+            self._sync(handle, "step", step)
+            changed, new_value = self._consume(key, handle, float(value))
+            return changed, float(new_value)
+
+        def slider_int(
+            self,
+            label: str,
+            value: int,
+            minimum: int,
+            maximum: int,
+            _format: str = "%d",
+            **_kwargs,
+        ) -> tuple[bool, int]:
+            def create(key):
+                handle = self._add(
+                    lambda: self._viewer._server.gui.add_slider(
+                        label,
+                        min=int(minimum),
+                        max=int(maximum),
+                        step=1,
+                        initial_value=int(value),
+                    )
+                )
+                self._queue_updates(handle, key, int)
+                return handle
+
+            key, handle = self._next_handle("slider_int", create)
+            self._sync(handle, "label", label)
+            self._sync(handle, "min", int(minimum))
+            self._sync(handle, "max", int(maximum))
+            changed, new_value = self._consume(key, handle, int(value))
+            return changed, int(new_value)
+
+        def input_float(
+            self,
+            label: str,
+            value: float,
+            _step: float = 0.0,
+            _step_fast: float = 0.0,
+            format: str = "%.3f",
+            **_kwargs,
+        ) -> tuple[bool, float]:
+            step = self._float_step(format, 0.0, 1.0)
+
+            def create(key):
+                handle = self._add(
+                    lambda: self._viewer._server.gui.add_number(
+                        label,
+                        initial_value=float(value),
+                        step=step,
+                    )
+                )
+                self._queue_updates(handle, key, float)
+                return handle
+
+            key, handle = self._next_handle("input_float", create)
+            self._sync(handle, "label", label)
+            self._sync(handle, "step", step)
+            changed, new_value = self._consume(key, handle, float(value))
+            return changed, float(new_value)
+
+        # Minimal no-op window helpers keep callbacks that add an optional
+        # ImGui overlay from failing when their shared controls are used.
+        @staticmethod
+        def ImVec2(x: float, y: float) -> tuple[float, float]:
+            return (float(x), float(y))
+
+        @staticmethod
+        def calc_text_size(value: str) -> tuple[float, float]:
+            return (float(len(value) * 7), 14.0)
+
+        @staticmethod
+        def set_next_window_pos(*_args, **_kwargs) -> None:
+            return None
+
+        @staticmethod
+        def set_next_window_size(*_args, **_kwargs) -> None:
+            return None
+
+        @staticmethod
+        def set_cursor_pos(*_args, **_kwargs) -> None:
+            return None
+
+        @staticmethod
+        def begin(*_args, **_kwargs) -> bool:
+            return True
+
+        @staticmethod
+        def end() -> None:
+            return None
 
     @property
     def picking_enabled(self) -> bool:
@@ -206,6 +455,18 @@ class ViewerViser(ViewerBase):
         self._frame_atomic_context: Any = None
         self._loading_splash_text: str | None = None
         self._loading_notification_handles: dict[int, Any] = {}
+        self._example_gui_callbacks: dict[int, tuple[Callable[[Any], None], str]] = {}
+        self._example_gui_handles: dict[tuple[int, int], tuple[str, Any]] = {}
+        self._example_gui_pending: dict[tuple[int, int], Any] = {}
+        self._example_gui_next_id = 0
+        self._example_gui_folder: Any = None
+        self._example_gui_adapter = self._ImmediateGuiAdapter(self)
+        self._logged_image_names: dict[str, None] = {}
+        self._image_atlas_buffers: dict[str, tuple[tuple[Any, ...], wp.array[Any]]] = {}
+        self._image_folder: Any = None
+        self._image_selector: Any = None
+        self._image_handle: Any = None
+        self._selected_image_name: str | None = None
 
         super().__init__()
 
@@ -262,6 +523,8 @@ class ViewerViser(ViewerBase):
         """Reset model-dependent state, including scalar plot buffers."""
         owns = self._is_layer_owned_path
 
+        self._clear_example_gui_callbacks()
+
         self._remove_picking_control(self.layer.layer_id, release=True)
         for name in list(self._gizmo_handles):
             if owns(name):
@@ -310,6 +573,12 @@ class ViewerViser(ViewerBase):
         for name in list(self._scalar_dirty):
             if owns(name):
                 self._scalar_dirty.discard(name)
+
+        for name in list(self._logged_image_names):
+            if owns(name):
+                self._logged_image_names.pop(name, None)
+                self._image_atlas_buffers.pop(name, None)
+        self._sync_image_gui_after_clear()
 
         super().clear_model()
         self._sync_gui_controls()
@@ -471,6 +740,86 @@ class ViewerViser(ViewerBase):
                         self._interaction_events.put(("viewer_option", option, bool(event.target.value)))
 
                 self._viewer_option_handles[attribute] = handle
+
+    @property
+    def ui(self) -> _ImmediateGuiAdapter:
+        """Return the example-GUI compatibility adapter.
+
+        The adapter intentionally reports ``is_available = False`` because it
+        is not a full ImGui context, while callbacks passed directly to
+        :meth:`register_ui_callback` can use its supported common controls.
+        """
+        return self._example_gui_adapter
+
+    def _ensure_example_gui_folder(self):
+        """Create the native folder that owns example-provided controls."""
+        if self._example_gui_folder is None:
+            self._example_gui_folder = self._server.gui.add_folder(
+                "Example Options",
+                order=30.0,
+                expand_by_default=True,
+            )
+        return self._example_gui_folder
+
+    def register_ui_callback(
+        self,
+        callback: Callable[[Any], None],
+        position: Literal["side", "stats", "free", "panel", "rendering"] = "side",
+    ) -> None:
+        """Register an example UI callback using native Viser controls.
+
+        The common immediate-mode controls used by Newton examples are mapped
+        to persistent Viser widgets. Viser has one control panel, so callback
+        positions are accepted for API compatibility and rendered together in
+        the ``Example Options`` folder.
+
+        Args:
+            callback: Function receiving an ImGui-compatible control adapter.
+            position: ViewerGL callback position retained for compatibility.
+        """
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        valid_positions = {"side", "stats", "free", "panel", "rendering"}
+        if position not in valid_positions:
+            raise ValueError(f"Invalid position '{position}'. Must be one of: {sorted(valid_positions)}")
+        callback_id = self._example_gui_next_id
+        self._example_gui_next_id += 1
+        self._example_gui_callbacks[callback_id] = (callback, position)
+
+    def _update_example_gui(self) -> None:
+        """Run example callbacks on the simulation thread and synchronize widgets."""
+        adapter = self._example_gui_adapter
+        for callback_id, (callback, _position) in tuple(self._example_gui_callbacks.items()):
+            adapter.begin_callback(callback_id)
+            try:
+                callback(adapter)
+            finally:
+                adapter.end_callback()
+
+    def _clear_example_gui_callbacks(self) -> None:
+        """Drop example-owned side/free callbacks when the model is cleared."""
+        removed_ids = {
+            callback_id
+            for callback_id, (_callback, position) in self._example_gui_callbacks.items()
+            if position in {"side", "free"}
+        }
+        for callback_id in removed_ids:
+            self._example_gui_callbacks.pop(callback_id, None)
+
+        for key in [key for key in self._example_gui_handles if key[0] in removed_ids]:
+            _kind, handle = self._example_gui_handles.pop(key)
+            self._example_gui_pending.pop(key, None)
+            try:
+                handle.remove()
+            except Exception:
+                pass
+
+        if not self._example_gui_handles and self._example_gui_folder is not None:
+            try:
+                self._example_gui_folder.remove()
+            except Exception:
+                pass
+            self._example_gui_folder = None
 
     def _sync_gui_controls(self) -> None:
         """Synchronize native GUI values with viewer state."""
@@ -928,6 +1277,14 @@ class ViewerViser(ViewerBase):
                     self._set_wireframe(value)
                 else:
                     setattr(self, attribute, value)
+            elif event_type == "example_gui":
+                _, key, value = event
+                if key in self._example_gui_handles:
+                    self._example_gui_pending[key] = value
+            elif event_type == "image_select":
+                name = event[1]
+                if name in self._logged_image_names:
+                    self._selected_image_name = name
             elif event_type == "step":
                 self._step_requested = True
             elif event_type == "reset":
@@ -1925,6 +2282,7 @@ class ViewerViser(ViewerBase):
             time: The current simulation time.
         """
         self._process_interaction_events()
+        self._update_example_gui()
         self._sync_gui_controls()
         self._gizmo_seen.clear()
         self._frame_dt = time - self.time
@@ -1939,6 +2297,7 @@ class ViewerViser(ViewerBase):
             bool: Whether the simulation should advance.
         """
         self._process_interaction_events()
+        self._update_example_gui()
         self._sync_gui_controls()
         if not self._paused:
             self._step_requested = False
@@ -2359,6 +2718,104 @@ class ViewerViser(ViewerBase):
         )
         self._scene_handles[name] = handle
         self._point_cloud_colors[name] = colors_val.copy()
+
+    def _sync_image_gui_after_clear(self) -> None:
+        """Synchronize or remove native image controls after names are cleared."""
+        if not self._logged_image_names:
+            if self._image_folder is not None:
+                try:
+                    self._image_folder.remove()
+                except Exception:
+                    pass
+            self._image_folder = None
+            self._image_selector = None
+            self._image_handle = None
+            self._selected_image_name = None
+            return
+
+        names = tuple(self._logged_image_names)
+        if self._selected_image_name not in self._logged_image_names:
+            self._selected_image_name = names[0]
+            if self._image_handle is not None:
+                try:
+                    self._image_handle.remove()
+                except Exception:
+                    pass
+                self._image_handle = None
+        if self._image_selector is not None:
+            if tuple(self._image_selector.options) != names:
+                self._image_selector.options = names
+            if self._image_selector.value != self._selected_image_name:
+                self._image_selector.value = self._selected_image_name
+
+    def _register_image_name(self, name: str) -> None:
+        """Register a logged image and lazily create its selector panel."""
+        if name in self._logged_image_names:
+            return
+        self._logged_image_names[name] = None
+        if self._selected_image_name is None:
+            self._selected_image_name = name
+
+        names = tuple(self._logged_image_names)
+        if self._image_folder is None:
+            self._image_folder = self._server.gui.add_folder("Images", order=40.0, expand_by_default=True)
+            with self._image_folder:
+                self._image_selector = self._server.gui.add_dropdown(
+                    "Output",
+                    names,
+                    initial_value=self._selected_image_name,
+                )
+
+            @self._image_selector.on_update
+            def _on_image_selected(event):
+                if event.client_id is not None:
+                    self._interaction_events.put(("image_select", str(event.target.value)))
+        elif tuple(self._image_selector.options) != names:
+            self._image_selector.options = names
+
+    def _pack_logged_image(self, name: str, image: wp.array[Any] | np.ndarray) -> np.ndarray:
+        """Pack one image batch into an RGBA atlas suitable for Viser."""
+        n, h, w, c = _validate(name, image)
+        atlas_cols, atlas_rows = _atlas_layout(n)
+        if isinstance(image, wp.array):
+            signature = (tuple(image.shape), image.dtype, image.device, atlas_cols)
+            cached = self._image_atlas_buffers.get(name)
+            if cached is None or cached[0] != signature:
+                atlas_wp = wp.zeros(
+                    (atlas_rows * h, atlas_cols * w, 4),
+                    dtype=wp.uint8,
+                    device=image.device,
+                )
+                self._image_atlas_buffers[name] = (signature, atlas_wp)
+            else:
+                atlas_wp = cached[1]
+            source = _to_canonical_4d_wp(image, n, h, w, c)
+            _pack_rgba_warp(source, c, atlas_cols, atlas_wp)
+            return atlas_wp.numpy()
+
+        self._image_atlas_buffers.pop(name, None)
+        return _convert_to_packed_rgba_numpy(image, atlas_cols)
+
+    @override
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+        """Display a selected image stream in a persistent native Viser panel."""
+        name = self._qualify(name)
+        self._register_image_name(name)
+        if name != self._selected_image_name:
+            return
+
+        atlas = self._pack_logged_image(name, image)
+        if self._image_handle is None:
+            with self._image_folder:
+                self._image_handle = self._server.gui.add_image(
+                    atlas,
+                    label=name,
+                    format="png",
+                )
+        else:
+            if self._image_handle.label != name:
+                self._image_handle.label = name
+            self._image_handle.image = atlas
 
     @override
     def log_array(self, name: str, array: wp.array[Any] | np.ndarray):
