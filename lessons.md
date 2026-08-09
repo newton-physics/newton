@@ -29,3 +29,15 @@
 - Context: Designing a traditional Newton FEM path with tetrahedral ARAP energy and future Affine Body Dynamics coupling.
 - Mistake: Proposed a separate FEM Newton solver even though the existing particle Newton solver already owns inertia, global assembly, and PCG, and ARAP only adds a four-particle energy stencil.
 - Rule: Implement tetrahedral ARAP as a four-particle static constraint in the existing Newton solver. Reuse its global Newton assembly and linear solve; introduce a new solver only when genuinely different degrees of freedom, such as affine-body 12-DOF blocks, require a broader shared system.
+
+## 2026-08-09 — Treat “开始” as authorization to implement
+
+- Context: The bunny table-drop design was already approved and the user said “开始”.
+- Mistake: Continued producing an implementation-plan document without creating the requested example code, leaving the user unable to find any implementation.
+- Rule: After an approved design, interpret “开始” as authorization to implement immediately. Keep required planning brief and internal to the workflow, then create the requested code before reporting progress.
+
+## 2026-08-09 — Resolve “刚才实现的代码” against completed work
+
+- Context: While preparing the bunny follow-up, the user asked where the code implemented “刚才” was located.
+- Mistake: Assumed the user meant the not-yet-created bunny example instead of the already-completed tetrahedral ARAP implementation.
+- Rule: When the user asks where recently implemented code is, first map the reference to completed commits and report its branch/worktree and exact paths. Do not reinterpret it as the current follow-up feature when that feature has not been implemented yet.
