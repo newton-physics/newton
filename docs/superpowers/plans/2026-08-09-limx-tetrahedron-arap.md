@@ -28,7 +28,7 @@
 - Modify `newton/_src/solvers/limx/constraints/__init__.py`: export the constraint from the constraint package.
 - Modify `newton/_src/solvers/limx/__init__.py`: export the constraint from LIMX.
 - Modify `newton/_src/solvers/__init__.py`: add the lazy public solver export.
-- Modify `docs/api/solvers.rst`: regenerate the public solver autosummary after adding the symbol.
+- Modify `docs/api/newton_solvers.rst`: regenerate the public solver autosummary after adding the symbol.
 - Modify `CHANGELOG.md`: announce the public ARAP constraint and fixed-beam example under `[Unreleased] / Added`.
 - Create `newton/examples/softbody/example_softbody_limx_arap_beam.py`: fixed tetrahedral cantilever example with one Newton iteration.
 - Modify `newton/tests/test_examples.py`: register a short CUDA smoke run of the example.
@@ -380,7 +380,7 @@ git commit -m "Assemble projected ARAP Hessians"
 - Modify: `newton/_src/solvers/limx/__init__.py`
 - Modify: `newton/_src/solvers/__init__.py`
 - Modify: `newton/tests/test_constraint_tetrahedron_arap.py`
-- Modify: `docs/api/solvers.rst`
+- Modify: `docs/api/newton_solvers.rst`
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
@@ -419,7 +419,7 @@ Run:
 uv run docs/generate_api.py
 ```
 
-Verify `docs/api/solvers.rst` lists `newton.solvers.ConstraintTetrahedronARAP`. Insert this line at a non-terminal position in `[Unreleased] / Added`:
+Verify `docs/api/newton_solvers.rst` lists `ConstraintTetrahedronARAP`. Insert this line at a non-terminal position in `[Unreleased] / Added`:
 
 ```markdown
 - Add a public LIMX tetrahedral ARAP constraint with exact analytical derivatives and full-matrix positive-semidefinite Hessian projection.
@@ -436,7 +436,7 @@ Expected: all focused tests pass and the public identity assertion succeeds.
 - [ ] **Step 6: Commit the public API**
 
 ```bash
-git add newton/_src/solvers/limx/constraints/__init__.py newton/_src/solvers/limx/__init__.py newton/_src/solvers/__init__.py newton/tests/test_constraint_tetrahedron_arap.py docs/api/solvers.rst CHANGELOG.md
+git add newton/_src/solvers/limx/constraints/__init__.py newton/_src/solvers/limx/__init__.py newton/_src/solvers/__init__.py newton/tests/test_constraint_tetrahedron_arap.py docs/api/newton_solvers.rst CHANGELOG.md docs/superpowers/plans/2026-08-09-limx-tetrahedron-arap.md
 git commit -m "Expose LIMX tetrahedral ARAP"
 ```
 

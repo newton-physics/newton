@@ -7,6 +7,7 @@ import warnings
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.constraints.tetrahedron_arap import (
     ConstraintTetrahedronARAP,
@@ -221,6 +222,10 @@ class TestConstraintTetrahedronARAPConstruction(unittest.TestCase):
         matrix = BlockCsrBuilder(5).finalize("cpu")
         with self.assertRaisesRegex(ValueError, "particle counts"):
             constraint.bind_hessian(matrix)
+
+    def test_public_export_resolves_constraint(self):
+        """Resolve the tetrahedral ARAP constraint through the public solver API."""
+        self.assertIs(newton.solvers.ConstraintTetrahedronARAP, ConstraintTetrahedronARAP)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_rejects_mismatched_block_matrix_device(self):

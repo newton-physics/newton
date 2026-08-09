@@ -6,6 +6,7 @@
 
 - Add a source-verified Isaac Sim 6.0.1 development launcher and CUDA rigid-body demo.
 - Add `SolverLIMX` with current-position projected-Newton assembly, fixed-topology 3×3 block-CSR elasticity, matrix-free dynamic constraint hooks, block-Jacobi PCG, and batched anchor, distance, and anisotropic triangle-membrane constraints.
+- Add a public LIMX tetrahedral ARAP constraint with exact analytical derivatives and full-matrix positive-semidefinite Hessian projection.
 - Add dihedral-angle bending to LIMX cloth with exact wrapped-angle forces and Gauss-Newton positive-semidefinite block-CSR Hessians.
 - Add frictionless LIMX cloth self-collision with GPU VF/EE detection, EF untangling, and full matrix-free positive-semidefinite contact Hessians.
 - Add adaptive LIMX self-collision stiffness derived from the current elastic diagonal and inertia, with independent VF, EE, and EF factors.

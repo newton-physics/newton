@@ -9,6 +9,7 @@ from .distance import ConstraintDistance
 from .dynamic_group import ConstraintGroupDynamic
 from .self_collision import ConstraintSelfCollision
 from .static_plane_contact import ConstraintStaticPlaneContact
+from .tetrahedron_arap import ConstraintTetrahedronARAP
 from .triangle_elastic import ConstraintTriangleElastic
 
 __all__ = [
@@ -18,5 +19,6 @@ __all__ = [
     "ConstraintGroupDynamic",
     "ConstraintSelfCollision",
     "ConstraintStaticPlaneContact",
+    "ConstraintTetrahedronARAP",
     "ConstraintTriangleElastic",
 ]
