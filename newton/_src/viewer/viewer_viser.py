@@ -20,6 +20,7 @@ import newton
 
 from ..core.types import Axis, override
 from ..utils.texture import load_texture, normalize_texture
+from .camera import Camera
 from .picking import Picking
 from .transform import (
     transform_assign_position_wxyz,
@@ -224,9 +225,11 @@ class ViewerViser(ViewerBase):
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._camera_fov_radians: float | None = None
+        self._camera_up_axis = 2
         self._pending_camera_clients: set[int] = set()
         self._server.on_client_connect(self._handle_client_connect)
         self._server.on_client_disconnect(self._handle_client_disconnect)
+        self._reset_camera_to_default(self._camera_up_axis)
 
         # Store configuration before any URL generation.
         self._port = port
@@ -329,6 +332,7 @@ class ViewerViser(ViewerBase):
         Args:
             model: Model to visualize and interact with.
         """
+        previous_up_axis = self._camera_up_axis
         super().set_model(model)
         self._build_packed_shape_arrays()
         self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
@@ -343,6 +347,10 @@ class ViewerViser(ViewerBase):
                 wp.load_module(module="newton._src.viewer.kernels", device=model.device)
             except Exception:
                 pass
+
+        up_axis = self._get_camera_up_axis()
+        if model is None or up_axis != previous_up_axis:
+            self._reset_camera_to_default(up_axis)
 
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
@@ -1180,6 +1188,41 @@ class ViewerViser(ViewerBase):
         front /= np.linalg.norm(front)
         return front, world_up
 
+    def _reset_camera_to_default(self, up_axis: int) -> None:
+        """Reset to the same initial pose and orbit pivot as ViewerGL."""
+        self._camera_up_axis = int(up_axis)
+        position = np.asarray(Camera.get_default_position(up_axis), dtype=np.float64)
+        front, up_direction = self._compute_camera_front_up(Camera.DEFAULT_PITCH, Camera.DEFAULT_YAW)
+        look_at = position + front * Camera.DEFAULT_PIVOT_DISTANCE
+        self._set_camera_request(position, look_at, up_direction, fov=Camera.DEFAULT_FOV)
+
+    def _set_camera_request(
+        self,
+        position: np.ndarray,
+        look_at: np.ndarray,
+        up_direction: np.ndarray,
+        *,
+        fov: float | None = None,
+    ) -> None:
+        """Cache and apply one camera request to the server and clients."""
+        self._camera_request = (position, look_at, up_direction)
+        self._camera_up_axis = self._get_camera_up_axis()
+        if fov is not None:
+            self._camera_fov_radians = float(np.deg2rad(fov))
+
+        if hasattr(self._server, "initial_camera"):
+            self._server.initial_camera.position = tuple(position.tolist())
+            self._server.initial_camera.look_at = tuple(look_at.tolist())
+            if hasattr(self._server.initial_camera, "up"):
+                self._server.initial_camera.up = tuple(up_direction.tolist())
+            elif hasattr(self._server.initial_camera, "up_direction"):
+                self._server.initial_camera.up_direction = tuple(up_direction.tolist())
+            if self._camera_fov_radians is not None and hasattr(self._server.initial_camera, "fov"):
+                self._server.initial_camera.fov = self._camera_fov_radians
+
+        for client in self._server.get_clients().values():
+            self._apply_camera_to_client(client)
+
     def _apply_camera_to_client(self, client: Any):
         """Apply the cached camera request to a connected client if ready."""
         if self._camera_request is None:
@@ -1234,19 +1277,15 @@ class ViewerViser(ViewerBase):
         """
         position = np.asarray((float(pos[0]), float(pos[1]), float(pos[2])), dtype=np.float64)
         front, up_direction = self._compute_camera_front_up(pitch, yaw)
-        look_at = position + front
-        self._camera_request = (position, look_at, up_direction)
-
-        if hasattr(self._server, "initial_camera"):
-            self._server.initial_camera.position = tuple(position.tolist())
-            self._server.initial_camera.look_at = tuple(look_at.tolist())
-            if hasattr(self._server.initial_camera, "up"):
-                self._server.initial_camera.up = tuple(up_direction.tolist())
-            elif hasattr(self._server.initial_camera, "up_direction"):
-                self._server.initial_camera.up_direction = tuple(up_direction.tolist())
-
-        for client in self._server.get_clients().values():
-            self._apply_camera_to_client(client)
+        if self._camera_request is None:
+            pivot_distance = Camera.DEFAULT_PIVOT_DISTANCE
+        else:
+            pivot_distance = max(
+                float(np.linalg.norm(self._camera_request[1] - position)),
+                Camera.MIN_PIVOT_DISTANCE,
+            )
+        look_at = position + front * pivot_distance
+        self._set_camera_request(position, look_at, up_direction)
 
     @override
     def set_camera_look_at(self, pos: wp.vec3, target: wp.vec3, fov: float | None = None):
@@ -1260,22 +1299,7 @@ class ViewerViser(ViewerBase):
             return
 
         _, up_direction = self._compute_camera_front_up(0.0, 0.0)
-        self._camera_request = (position, look_at, up_direction)
-        if fov is not None:
-            self._camera_fov_radians = float(np.deg2rad(fov))
-
-        if hasattr(self._server, "initial_camera"):
-            self._server.initial_camera.position = tuple(position.tolist())
-            self._server.initial_camera.look_at = tuple(look_at.tolist())
-            if hasattr(self._server.initial_camera, "up"):
-                self._server.initial_camera.up = tuple(up_direction.tolist())
-            elif hasattr(self._server.initial_camera, "up_direction"):
-                self._server.initial_camera.up_direction = tuple(up_direction.tolist())
-            if self._camera_fov_radians is not None and hasattr(self._server.initial_camera, "fov"):
-                self._server.initial_camera.fov = self._camera_fov_radians
-
-        for client in self._server.get_clients().values():
-            self._apply_camera_to_client(client)
+        self._set_camera_request(position, look_at, up_direction, fov=fov)
 
     @staticmethod
     def _camera_query_from_request(camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None) -> str:

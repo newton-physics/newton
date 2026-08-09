@@ -13,6 +13,7 @@ import warp as wp
 
 import newton
 from newton._src.core.types import Axis
+from newton._src.viewer.camera import Camera
 from newton._src.viewer.viewer_viser import ViewerViser
 from newton.examples.vbd._viewer import set_viewer_camera
 
@@ -166,6 +167,13 @@ class _FakeClient:
     def __init__(self, client_id):
         self.client_id = client_id
         self.notifications = []
+        self.camera = _FakeHandle(
+            position=(0.0, 0.0, 0.0),
+            look_at=(0.0, 0.0, 0.0),
+            up_direction=(0.0, 0.0, 1.0),
+            fov=np.deg2rad(45.0),
+            update_timestamp=1.0,
+        )
 
     def add_notification(self, title, body, **kwargs):
         handle = _FakeHandle(title=title, body=body, **kwargs)
@@ -335,14 +343,31 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.assertEqual(handle.click_callbacks, [])
 
     def test_set_camera_uses_world_up_axis(self):
-        """Keep Viser orbit controls aligned with the model up axis."""
+        """Match ViewerGL orientation and orbit-pivot behavior."""
+        gl_camera = Camera(up_axis="Z")
+        position = wp.vec3(3.0, -4.0, 2.0)
+        gl_camera.pos = gl_camera._as_vec3(position)
+        gl_camera.pitch = -30.0
+        gl_camera.yaw = 90.0
+        gl_camera.sync_pivot_to_view()
+
         with patch.object(self.viewer, "_get_camera_up_axis", return_value=2):
-            self.viewer.set_camera(wp.vec3(3.0, -4.0, 2.0), pitch=-30.0, yaw=90.0)
+            self.viewer.set_camera(position, pitch=-30.0, yaw=90.0)
 
         position, look_at, up_direction = self.viewer._camera_request
         np.testing.assert_allclose(position, (3.0, -4.0, 2.0))
-        np.testing.assert_allclose(look_at - position, (0.0, 0.8660254, -0.5), atol=1.0e-7)
+        np.testing.assert_allclose(look_at, gl_camera.pivot, atol=1.0e-7)
         np.testing.assert_allclose(up_direction, (0.0, 0.0, 1.0))
+
+    def test_default_camera_matches_viewer_gl(self):
+        """Open Z-up scenes from ViewerGL's front-facing default view."""
+        gl_camera = Camera(up_axis="Z")
+
+        position, look_at, up_direction = self.viewer._camera_request
+        np.testing.assert_allclose(position, gl_camera.pos)
+        np.testing.assert_allclose(look_at, gl_camera.pivot)
+        np.testing.assert_allclose(up_direction, (0.0, 0.0, 1.0))
+        self.assertAlmostEqual(self.viewer._camera_fov_radians, np.deg2rad(gl_camera.fov))
 
     def test_vbd_camera_helper_aims_at_target_without_gl_camera(self):
         """Convert look-at targets to yaw and pitch for non-GL viewers."""
