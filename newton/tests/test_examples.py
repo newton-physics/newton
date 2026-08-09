@@ -1183,6 +1183,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestSoftbodyExamples,
+    name="softbody.example_softbody_limx_arap_bunny_table",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 40},
+    use_viewer=True,
+)
+
 
 class TestKaminoExamples(unittest.TestCase):
     pass
