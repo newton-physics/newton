@@ -242,8 +242,15 @@ def estimate_world_extents(
     # Get shape's world assignment
     world_idx = shape_world[tid]
 
-    # Skip global shapes (world -1) or invalid world indices
-    if world_idx < 0 or world_idx >= world_count:
+    # A regular single-world model stores its shapes as global (world -1).
+    # Attribute those shapes to its only world so they contribute to bounds.
+    # In replicated models global shapes remain outside the per-world layout.
+    if world_idx < 0:
+        if world_count == 1:
+            world_idx = 0
+        else:
+            return
+    elif world_idx >= world_count:
         return
 
     # Get collision radius and skip shapes with unreasonably large radii

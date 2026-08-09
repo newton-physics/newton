@@ -437,10 +437,13 @@ class TestViewerViserInteraction(unittest.TestCase):
 
         self.assertEqual(translate.kwargs["active_axes"], (True, False, False))
         self.assertTrue(translate.kwargs["disable_rotations"])
-        self.assertGreaterEqual(translate.kwargs["scale"], 0.2)
+        self.assertTrue(translate.kwargs["fixed"])
+        self.assertEqual(translate.kwargs["scale"], 56.0)
         self.assertEqual(rotate.kwargs["active_axes"], (False, False, True))
         self.assertTrue(rotate.kwargs["disable_axes"])
         self.assertTrue(rotate.kwargs["disable_sliders"])
+        self.assertTrue(rotate.kwargs["fixed"])
+        self.assertEqual(rotate.kwargs["scale"], 56.0)
 
         translate.emit_drag_start()
         translate.emit_update((7.0, 8.0, 9.0))
@@ -592,6 +595,8 @@ class TestViewerViserInteraction(unittest.TestCase):
         np.testing.assert_allclose(picking.last_ray[0], (0.0, 0.0, -2.0))
 
         control = self.viewer._picking_controls[self.viewer.layer.layer_id]
+        self.assertTrue(control.kwargs["fixed"])
+        self.assertEqual(control.kwargs["scale"], 56.0)
         np.testing.assert_allclose(control.position, (10.0, 0.0, 0.0))
         control.emit_update((11.0, 2.0, 3.0))
         self.viewer.begin_frame(0.1)

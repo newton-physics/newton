@@ -30,6 +30,9 @@ from .transform import (
 )
 from .viewer import ViewerBase, is_jupyter_notebook
 
+# ViewerGL uses 0.07 clip-space units; 56 px matches that at an 800 px viewport.
+_GIZMO_SCALE_PX = 56.0
+
 
 class ViewerViser(ViewerBase):
     """
@@ -656,14 +659,14 @@ class ViewerViser(ViewerBase):
     ) -> dict[str, Any]:
         """Create translation and rotation controls for one logged gizmo."""
         position, wxyz = self._transform_to_viser(transform)
-        scale = max(float(self.scene_scale) * 1.5, 0.2)
         handles: dict[str, Any] = {}
 
         def add_handle(kind: str, axes: tuple[Axis, ...], **kwargs):
             active_axes = tuple(axis in axes for axis in (Axis.X, Axis.Y, Axis.Z))
             handle = self._server.scene.add_transform_controls(
                 name=self._gizmo_scene_path(name, kind),
-                scale=scale,
+                scale=_GIZMO_SCALE_PX,
+                fixed=True,
                 active_axes=active_axes,
                 depth_test=False,
                 position=position,
@@ -821,7 +824,8 @@ class ViewerViser(ViewerBase):
         self._remove_picking_control(layer_id, release=False)
         handle = self._server.scene.add_transform_controls(
             name=self._picking_control_path(layer_id),
-            scale=max(float(layer.scene_scale), 0.15),
+            scale=_GIZMO_SCALE_PX,
+            fixed=True,
             disable_rotations=True,
             depth_test=False,
             position=target,

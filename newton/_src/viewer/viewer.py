@@ -916,9 +916,13 @@ class ViewerBase(ABC):
         bounds_min_np = world_bounds_min.numpy()
         bounds_max_np = world_bounds_max.numpy()
 
-        # Find maximum extents across all worlds
-        # Mask out invalid bounds (inf values)
-        valid_mask = ~np.isinf(bounds_min_np[:, 0])
+        # Find maximum extents across all worlds. Bounds use finite MAXVAL
+        # sentinels, so an untouched row is detected by its inverted range.
+        valid_mask = (
+            np.all(np.isfinite(bounds_min_np), axis=1)
+            & np.all(np.isfinite(bounds_max_np), axis=1)
+            & np.all(bounds_min_np <= bounds_max_np, axis=1)
+        )
 
         if not valid_mask.any():
             # No valid worlds found
@@ -951,8 +955,8 @@ class ViewerBase(ABC):
     def _auto_compute_contact_scales(self):
         """Adapt contact-visualization scales to the current model.
 
-        Sets ``contact_viz_scale`` and ``contact_force_scale``, based on
-        aggregate model dimensions.
+        Sets ``contact_viz_scale`` and ``contact_force_scale`` based on a
+        characteristic rigid-shape size and force.
 
         Falls back to the literal defaults if the relevant model data is
         unavailable (e.g. no shapes / no dynamic bodies / zero gravity).
@@ -962,11 +966,10 @@ class ViewerBase(ABC):
         prev_default_scale = self._contact_viz_scale_default
         prev_default_force_scale = self._contact_force_scale_default
 
-        # Characteristic length L_char: 10% of the maximal extent.
-        L_char = 0.0
-        max_extents = self._get_world_extents()
-        if max_extents is not None:
-            L_char = float(0.1 * np.linalg.norm(max_extents))
+        # Characteristic length L_char: half the median collision radius of
+        # body-attached shapes. Unlike the full world diagonal, this remains
+        # proportional to the rendered rigid shapes in long or sparse scenes.
+        L_char = 0.5 * float(self.scene_scale)
         if not np.isfinite(L_char) or L_char <= 0.0:
             L_char = 1.0
 
