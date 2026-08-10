@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -17,23 +18,22 @@ from newton._src.viewer.viewer_gl import ViewerGL
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
     try:
-        import pyglet
-        from pyglet import gl
+        __import__("pyglet")
     except ImportError as exc:
         test.skipTest(f"ViewerGL dependencies not available: {exc}")
 
-    unavailable_errors = [
-        gl.ConfigException,
-        gl.ContextException,
-    ]
-
-    window_module = getattr(pyglet.window, "_module", pyglet.window)
-    if window_module is not None:
+    unavailable_errors = []
+    for module_name, exception_names in (
+        ("pyglet.gl", ("ConfigException", "ContextException")),
+        ("pyglet.window", ("NoSuchConfigException", "NoSuchDisplayException")),
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
         unavailable_errors.extend(
-            [
-                window_module.NoSuchConfigException,
-                window_module.NoSuchDisplayException,
-            ]
+            exception_type
+            for exception_name in exception_names
+            if isinstance(exception_type := getattr(module, exception_name, None), type)
         )
 
     return tuple(dict.fromkeys(unavailable_errors))
@@ -46,6 +46,8 @@ def _is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> 
     # Some pyglet platform backends raise their own NoSuchDisplayException
     # while importing pyglet.window, before the window-level class exists.
     return type(exc).__module__.startswith("pyglet.") and type(exc).__name__ in {
+        "ConfigException",
+        "ContextException",
         "NoSuchConfigException",
         "NoSuchDisplayException",
     }
@@ -115,11 +117,8 @@ class TestViewerGLGetFrame(unittest.TestCase):
         """Verify backend error discovery does not import pyglet.window."""
         try:
             import pyglet
-            from pyglet import gl
         except ImportError as exc:
             self.skipTest(f"ViewerGL dependencies not available: {exc}")
-
-        gl_config_exception = gl.ConfigException
 
         class _WindowProxy:
             _module = None
@@ -128,9 +127,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 raise AssertionError("pyglet.window must not be imported")
 
         with mock.patch.object(pyglet, "window", _WindowProxy()):
-            unavailable_errors = _viewer_gl_unavailable_error_types(self)
-
-        self.assertIn(gl_config_exception, unavailable_errors)
+            _viewer_gl_unavailable_error_types(self)
 
     def test_headless_frame_capture_across_devices(self):
         """Verify headless frame capture follows the active model device."""
@@ -208,7 +205,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
     def test_viewer_constructor_known_backend_error_skips(self):
         """Verify unavailable display/backend errors skip GL-dependent coverage."""
-        unavailable_error = _viewer_gl_unavailable_error_types(self)[0]
+        unavailable_error = type(
+            "ConfigException",
+            (Exception,),
+            {"__module__": "pyglet.gl"},
+        )
 
         with (
             mock.patch.object(newton.viewer, "ViewerGL", side_effect=unavailable_error("no GL config")),
