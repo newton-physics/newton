@@ -743,9 +743,18 @@ class SolverKamino(SolverBase, CouplingInterface):
             device=model.device,
         )
 
+        built_massless_np = (model.body_inv_mass.numpy() == 0.0) | np.all(
+            model.body_inv_inertia.numpy() == 0.0, axis=(1, 2)
+        )
+        self._built_massless = wp.array(
+            built_massless_np.astype(np.int32),
+            dtype=wp.int32,
+            device=model.device,
+        )
+
         # Scratch array for notify validation
         self._notify_violations = wp.empty(
-            len(self._kamino.JointUpdateViolation),
+            len(self._kamino.StructuralUpdateViolation),
             dtype=wp.int32,
             device=model.device,
         )
@@ -1361,25 +1370,29 @@ class SolverKamino(SolverBase, CouplingInterface):
         check_dof = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
         check_actuation = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES))
         check_axes = check_dof
-        if not check_dof and not check_actuation and not check_axes:
+        check_inertial = bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
+        if not check_dof and not check_actuation and not check_axes and not check_inertial:
             return
 
-        sentinel = self._kamino.validate_model_joint_updates(
+        sentinel = self._kamino.validate_model_structural_updates(
             self.model,
             self._model_kamino.joints,
             self._built_limit_finite,
+            self._built_massless,
             self._notify_violations,
             check_dof=check_dof,
             check_actuation=check_actuation,
             check_axes=check_axes,
+            check_inertial=check_inertial,
         )
         violations = self._notify_violations.numpy()
-        dynamic_joint = violations[self._kamino.JointUpdateViolation.DYNAMIC_CTS]
-        limit_dof = violations[self._kamino.JointUpdateViolation.LIMIT_FINITE]
-        actuation_joint = violations[self._kamino.JointUpdateViolation.ACTUATION_PARTITION]
-        invalid_joint = violations[self._kamino.JointUpdateViolation.INVALID_TARGET_MODE]
-        axis_joint = violations[self._kamino.JointUpdateViolation.NONORTHONORMAL_AXES]
-        gimbal_handedness_joint = violations[self._kamino.JointUpdateViolation.GIMBAL_HANDEDNESS]
+        dynamic_joint = violations[self._kamino.StructuralUpdateViolation.DYNAMIC_CTS]
+        limit_dof = violations[self._kamino.StructuralUpdateViolation.LIMIT_FINITE]
+        actuation_joint = violations[self._kamino.StructuralUpdateViolation.ACTUATION_PARTITION]
+        invalid_joint = violations[self._kamino.StructuralUpdateViolation.INVALID_TARGET_MODE]
+        axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
+        gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
+        massless_body = violations[self._kamino.StructuralUpdateViolation.MASSLESS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
@@ -1422,6 +1435,13 @@ class SolverKamino(SolverBase, CouplingInterface):
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
                 "gimbal axes must preserve the solver's original handedness"
+            )
+
+        if massless_body != sentinel:
+            body = int(massless_body)
+            label = self.model.body_label[body] if self.model.body_label else f"body {body}"
+            raise RuntimeError(
+                f"Making body {body} ({label!r}) massless is not supported; recreate SolverKamino to apply the change."
             )
 
     def _update_actuation_types(self) -> None:
