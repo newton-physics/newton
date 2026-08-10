@@ -28,7 +28,7 @@ from newton.usd import SchemaResolverPhysx
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCable(unittest.TestCase):
-    """Curve-deformable (cable) parsing into rods of capsule bodies + cable joints."""
+    """Curve-deformable (cable) parsing into capsule bodies joined by rod joints."""
 
     @staticmethod
     def _author_attached_cable_pair(*, gap, stiffness=None, damping=None):
@@ -191,7 +191,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(tb1 - tb0, 3, "trunk has 3 segments")
             self.assertEqual(bb1 - bb0, 2, "branch has 2 segments")
             # Graph cables are returned pre-wrapped, so the caller does no articulation work.
-            self.assertEqual(tj1 - tj0, 0, "graph cable joints are pre-wrapped (empty)")
+            self.assertEqual(tj1 - tj0, 0, "graph rod joints are pre-wrapped (empty)")
             self.assertEqual(builder.articulation_count, 1, "the welded component is one articulation")
 
             model = builder.finalize()
@@ -274,7 +274,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             expected_bend = bend_mod * inertia / seg_len
             expected_twist = twist_mod * polar_moment / seg_len
 
-            # Split cable joints store target_ke as stretch, shear, bend, twist.
+            # Split rod joints store target_ke as stretch, shear, bend, twist.
             dof0 = builder.joint_qd_start[j0]
             ke = builder.joint_target_ke
             self.assertAlmostEqual(ke[dof0], expected_stretch, delta=expected_stretch * 1e-3)
@@ -1081,7 +1081,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage = _deformable_stage()
             _add_cable_curve(stage, "/World/Loop2", [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0)], periodic=True)
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, r"Adding a CABLE joint.*undefined semantics"):
+            with self.assertWarnsRegex(UserWarning, r"Adding a ROD joint.*undefined semantics"):
                 builder.add_usd(stage)
             b0, b1 = group_range(builder, "cable", "/World/Loop2", "body")
             self.assertEqual(b1 - b0, 2, "two segments after closure")
@@ -1217,7 +1217,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         result = builder.add_usd(stage, ignore_paths=["/World/Junction"], return_deformable_results=True)
 
         # Both curves still import, but as independent single cables (not a welded graph):
-        # single cables expose their cable joints for the caller to wrap, so joints are non-empty.
+        # single cables expose their rod joints for the caller to wrap, so joints are non-empty.
         tb0, tb1 = group_range(builder, "cable", "/World/Trunk", "body")
         tj0, tj1 = group_range(builder, "cable", "/World/Trunk", "joint")
         bj0, bj1 = group_range(builder, "cable", "/World/Branch", "joint")

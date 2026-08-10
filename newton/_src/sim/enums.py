@@ -146,8 +146,35 @@ class BodyFlags(IntEnum):
     """Filter bitmask selecting all body types."""
 
 
+def _warn_joint_type_cable_deprecated() -> None:
+    warnings.warn(
+        "newton.JointType.CABLE is deprecated in Newton 1.6; use newton.JointType.ROD instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
+class _JointTypeMeta(EnumMeta):
+    def __getattribute__(cls, name: str):
+        value = super().__getattribute__(name)
+        if name == "CABLE":
+            _warn_joint_type_cable_deprecated()
+        return value
+
+    def __getitem__(cls, name: str):
+        # Aliases are reachable by name lookup as well as attribute access.
+        if name == "CABLE":
+            _warn_joint_type_cable_deprecated()
+        return super().__getitem__(name)
+
+    def __dir__(cls):
+        # Keep the released name discoverable throughout its deprecation window.
+        names = super().__dir__()
+        return names if "CABLE" in names else [*names, "CABLE"]
+
+
 # Types of joints linking rigid bodies
-class JointType(IntEnum):
+class JointType(IntEnum, metaclass=_JointTypeMeta):
     """
     Enumeration of joint types supported in Newton.
     """
@@ -173,8 +200,17 @@ class JointType(IntEnum):
     D6 = 6
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
-    CABLE = 7
-    """Cable joint: two DOF slots for linear stretch and angular bend/twist."""
+    ROD = 7
+    """Rod joint: four constraint slots for linear stretch/shear and angular bend/twist."""
+
+    # Keep the docstring inline so Sphinx's source analyzer marks the alias as
+    # deprecated without treating the whole enum as deprecated.
+    CABLE = ROD
+    """Deprecated alias for :attr:`ROD`.
+
+    .. deprecated:: 1.6
+        Use :attr:`ROD` instead.
+    """
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """

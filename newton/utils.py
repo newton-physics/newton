@@ -70,6 +70,10 @@ __all__ += [
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
     CableStiffness,
+    cable_parallel_transport_quaternions,
+    cable_stiffness_from_elastic_moduli,
+    cable_straight_points,
+    cable_straight_points_and_quaternions,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
     create_straight_cable_points,
@@ -78,11 +82,29 @@ from ._src.utils.cable import (  # noqa: E402
 
 __all__ += [
     "CableStiffness",
+    "cable_parallel_transport_quaternions",
+    "cable_stiffness_from_elastic_moduli",
+    "cable_straight_points",
+    "cable_straight_points_and_quaternions",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
     "create_straight_cable_points",
     "create_straight_cable_points_and_quaternions",
 ]
+
+# Warning-only compatibility names consumed by ``docs/generate_api.py``.
+__deprecated_symbols__ = {
+    "create_cable_stiffness_from_elastic_moduli": (
+        "Deprecated in 1.6; use cable_stiffness_from_elastic_moduli instead."
+    ),
+    "create_parallel_transport_cable_quaternions": (
+        "Deprecated in 1.6; use cable_parallel_transport_quaternions instead."
+    ),
+    "create_straight_cable_points": "Deprecated in 1.6; use cable_straight_points instead.",
+    "create_straight_cable_points_and_quaternions": (
+        "Deprecated in 1.6; use cable_straight_points_and_quaternions instead."
+    ),
+}
 
 # ==================================================================================
 # world utils

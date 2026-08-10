@@ -680,7 +680,7 @@ class ModelView:
         wp.launch(
             _replace_joint_type_kernel,
             dim=joint_indices.shape[0],
-            inputs=[joint_indices, joint_type, int(JointType.CABLE), int(JointType.D6)],
+            inputs=[joint_indices, joint_type, int(JointType.ROD), int(JointType.D6)],
             device=parent.device,
         )
 

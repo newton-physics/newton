@@ -419,7 +419,7 @@ def _transported_twist_angle_from_material_axes(
 
 @wp.struct
 class CableBendTwistMeasure:
-    """Live bend/twist geometry for one cable joint.
+    """Live bend/twist geometry for one rod joint.
 
     Measured once per force/Hessian evaluation and reused by the residual and
     analytic Jacobian columns.
@@ -435,9 +435,9 @@ class CableBendTwistMeasure:
 
 @wp.func
 def _measure_cable_bend_twist_z(q_wp: wp.quat, q_wc: wp.quat) -> CableBendTwistMeasure:
-    """Measure bend/twist for SolverVBD cables, whose material tangent is local +Z.
+    """Measure bend/twist for SolverVBD rod joints whose material tangent is local +Z.
 
-    The fixed cable material basis is local ``+X, +Y, +Z``.
+    The fixed rod material basis is local ``+X, +Y, +Z``.
     SolverVBD keeps body rotations normalized, so rotated basis axes are already
     orthonormal.
     """
@@ -566,7 +566,7 @@ def _geometric_cable_strain_directional_derivative_z_from_measure(
     omega_world: wp.vec3,
     is_parent: bool,
 ) -> wp.vec3:
-    """Directional derivative of [bend_x, bend_y, twist_z] for local +Z cables."""
+    """Directional derivative of [bend_x, bend_y, twist_z] for local +Z rod joints."""
     d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(
         q_wp, measure, omega_world, is_parent
     )
@@ -579,7 +579,7 @@ def _cable_bend_twist_jacobian_z_from_measure(
     measure: CableBendTwistMeasure,
     is_parent: bool,
 ) -> wp.mat33:
-    """Jacobian of [bend_x, bend_y, twist_z] for fixed local +Z cables.
+    """Jacobian of [bend_x, bend_y, twist_z] for rod joints with fixed local +Z.
 
     The local residual is exactly ``[bend_x, bend_y, twist_z]``, so no bend
     projector or twist-axis vector is needed in this hot path.
@@ -620,7 +620,7 @@ def _assemble_geometric_cable_kappa_z(
     kb_rest_local: wp.vec3,
     twist_rest: float,
 ) -> wp.vec3:
-    """Assemble [bend_x, bend_y, twist_z] for SolverVBD local +Z cables."""
+    """Assemble [bend_x, bend_y, twist_z] for SolverVBD local +Z rod joints."""
     bend_now_local = wp.quat_rotate(wp.quat_inverse(q_wp), kb_now_world)
     bend_residual_local = bend_now_local - kb_rest_local
     # In the local +Z convention, parent-frame x/y are bend and z is twist.
@@ -632,7 +632,7 @@ def _assemble_geometric_cable_kappa_z(
 
 @wp.func
 def _cable_bend_twist_delta(kappa: wp.vec3, kappa_prev: wp.vec3) -> wp.vec3:
-    """Return a temporal cable bend/twist strain increment.
+    """Return a temporal rod bend/twist strain increment.
 
     Args:
         kappa: Current ``[bend_x, bend_y, twist_z]`` strain.
@@ -656,7 +656,7 @@ def compute_geometric_cable_kappa_cached_z(
     kb_rest_local: wp.vec3,
     twist_rest: float,
 ) -> wp.vec3:
-    """Geometric cable strain residual for fixed local +Z cables."""
+    """Return the geometric strain residual for a rod joint with fixed local +Z."""
     measure = _measure_cable_bend_twist_z(q_wp, q_wc)
     return _assemble_geometric_cable_kappa_z(q_wp, measure.kb_world, measure.twist, kb_rest_local, twist_rest)
 
@@ -865,9 +865,9 @@ def evaluate_angular_constraint_force_hessian(
 ):
     """Projected angular constraint force/Hessian using rotation-vector error (kappa).
 
-    Generic evaluator for non-cable angular constraints. Computes force and
+    Generic evaluator for non-rod angular constraints. Computes force and
     Hessian in the constrained subspace defined by the orthogonal-complement
-    projector P. Angular Dahl friction is cable-only and handled separately, so
+    projector P. Angular Dahl friction is rod-only and handled separately, so
     this evaluator carries no friction term.
 
     C0 stabilization: when alpha > 0 and C0_ang is nonzero, the effective
@@ -935,9 +935,9 @@ def evaluate_cable_bend_twist_force_hessian_z(
     damping_active: bool,
     dt: float,
 ):
-    """Bend/twist torque and Hessian for SolverVBD local +Z cables.
+    """Bend/twist torque and Hessian for SolverVBD local +Z rod joints.
 
-    In the fixed cable material basis, local angular operators are diagonal:
+    In the fixed rod material basis, local angular operators are diagonal:
     ``[bend_x, bend_y, twist_z]``. Keep them as vec3 row scales in the hot path
     instead of building dense local matrices.
     """
@@ -991,7 +991,7 @@ def evaluate_linear_constraint_force_hessian(
 ):
     """Projected linear constraint force/Hessian for anchor coincidence.
 
-    Generic evaluator for non-cable linear constraints. Computes C = x_c - x_p,
+    Generic evaluator for non-rod linear constraints. Computes C = x_c - x_p,
     projects with P, and returns force/Hessian in world frame.
 
     C0 stabilization: when alpha > 0 and C0_lin is nonzero, the effective
@@ -1066,7 +1066,7 @@ def evaluate_cable_stretch_shear_force_hessian(
     damping_active: bool,
     dt: float,
 ):
-    """Cable stretch/shear anchor force, torque, and PSD Gauss-Newton self-Hessian.
+    """Rod-joint stretch/shear anchor force, torque, and PSD Gauss-Newton self-Hessian.
 
     All inputs are parent-material: residual ``u = R_p^T (x_c - x_p) =
     [shear_x, shear_y, stretch_z]``, diagonal ``k_diag = (k_shear, k_shear,
@@ -1773,14 +1773,14 @@ def evaluate_joint_force_hessian(
 ):
     """Compute AVBD joint force and Hessian contributions for one body.
 
-    Supported joint types: CABLE, BALL, FIXED, REVOLUTE, PRISMATIC, D6.
-    Cable uses split stretch/shear and bend/twist helpers; other joints use
+    Supported joint types: ROD, BALL, FIXED, REVOLUTE, PRISMATIC, D6.
+    Rod joints use split stretch/shear and bend/twist helpers; other joints use
     projector-based linear/angular evaluators.
 
     Indexing:
         joint_constraint_start[j] is a solver-owned start offset into the per-constraint
         arrays (joint_penalty_k, joint_penalty_kd). Layout per joint type:
-          - CABLE: 4 scalars -> [stretch, shear, bend, twist]
+          - ROD:   4 scalars -> [stretch, shear, bend, twist]
           - BALL:  1 scalar  -> [linear]
           - FIXED: 2 scalars -> [linear, angular]
           - REVOLUTE:  3 scalars -> [linear, angular, ang_drive_limit]
@@ -1791,7 +1791,7 @@ def evaluate_joint_force_hessian(
     """
     jt = joint_type[joint_index]
     if (
-        jt != JointType.CABLE
+        jt != JointType.ROD
         and jt != JointType.BALL
         and jt != JointType.FIXED
         and jt != JointType.REVOLUTE
@@ -1839,7 +1839,7 @@ def evaluate_joint_force_hessian(
     q_wp_prev = wp.transform_get_rotation(X_wp_prev)
     q_wc_prev = wp.transform_get_rotation(X_wc_prev)
 
-    if jt == JointType.CABLE:
+    if jt == JointType.ROD:
         stretch_idx = c_start
         shear_idx = c_start + 1
         bend_idx = c_start + 2
@@ -1969,7 +1969,7 @@ def evaluate_joint_force_hessian(
 
     P_I = wp.identity(3, float)
 
-    # Hard/soft AL gating for the non-cable linear structural slot.
+    # Hard/soft AL gating for the non-rod linear structural slot.
     lin_lambda = wp.vec3(0.0)
     lin_C0 = wp.vec3(0.0)
     lin_alpha = float(0.0)
@@ -1978,7 +1978,7 @@ def evaluate_joint_force_hessian(
         lin_C0 = joint_C0_lin[joint_index]
         lin_alpha = avbd_alpha
 
-    # BALL has no angular structural slot; other non-cable joints do.
+    # BALL has no angular structural slot; other non-rod joints do.
     ang_lambda = wp.vec3(0.0)
     ang_C0 = wp.vec3(0.0)
     ang_alpha = float(0.0)
@@ -2540,10 +2540,10 @@ def _reset_joint_history(
 ):
     """Reset immediately available joint solver history.
 
-    The cable Dahl friction state (kappa/sigma/increment: curvature, hysteretic
-    stress, and increment) is left untouched here: an enabled cable rebaselines it
-    from the next pre-step pose, while a disabled cable refreshes it in the
-    end-of-step finalizer.
+    The rod-joint Dahl friction state (kappa/sigma/increment: curvature,
+    hysteretic stress, and increment) is left untouched here: an enabled rod
+    joint rebaselines it from the next pre-step pose, while a disabled rod joint
+    refreshes it in the end-of-step finalizer.
     """
     constraint_start = joint_constraint_start[joint]
     constraint_dim = joint_constraint_dim[joint]
@@ -2865,12 +2865,12 @@ def init_cable_rest_bend_twist(
     joint_cable_rest_kb_local: wp.array[wp.vec3],
     joint_cable_rest_twist: wp.array[float],
 ):
-    """Precompute cable rest angular deformation invariants."""
+    """Precompute rod-joint rest angular deformation invariants."""
     j = wp.tid()
     joint_cable_rest_kb_local[j] = wp.vec3(0.0)
     joint_cable_rest_twist[j] = 0.0
 
-    if joint_type[j] != JointType.CABLE:
+    if joint_type[j] != JointType.ROD:
         return
 
     child = joint_child[j]
@@ -2921,8 +2921,8 @@ def step_joint_C0_lambda(
 ):
     """Per-step joint AVBD maintenance: k decay + C0 snapshot + lambda decay.
 
-    Sole owner of joint decay. Cable stretch/shear and bend/twist share linear
-    and angular AL state blocks; non-cable drive/limit slots stay soft.
+    Sole owner of joint decay. Rod stretch/shear and bend/twist share linear
+    and angular AL state blocks; non-rod drive/limit slots stay soft.
     """
     j = wp.tid()
     zero = wp.vec3(0.0)
@@ -2946,9 +2946,9 @@ def step_joint_C0_lambda(
 
     jt = joint_type[j]
 
-    # Cable has four structural slots, but AL state is stored as two vec3
+    # Rod joints have four structural slots, but AL state is stored as two vec3
     # blocks: linear = stretch/shear, angular = bend/twist.
-    if jt == JointType.CABLE:
+    if jt == JointType.ROD:
         stretch_idx = c_start
         shear_idx = c_start + 1
         bend_idx = c_start + 2
@@ -3000,7 +3000,7 @@ def step_joint_C0_lambda(
             joint_lambda_ang[j] = zero
         return
 
-    # Non-cable joints have at most two structural hard slots here: linear and
+    # Non-rod joints have at most two structural hard slots here: linear and
     # angular. Drive/limit slots are always soft and ignored by this snapshot.
     has_linear_hard = int(joint_is_hard[c_start])
     has_angular_hard = int(0)
@@ -3325,7 +3325,7 @@ def _cable_dahl_active_stiffness(
     joint_penalty_k: wp.array[float],
     joint_is_hard: wp.array[wp.int32],
 ) -> wp.vec3:
-    """Current stiffness for soft cable bend/twist modes; hard modes return zero."""
+    """Return current stiffness for soft rod bend/twist modes; hard modes return zero."""
     bend_idx = c_start + 2
     twist_idx = c_start + 3
 
@@ -3408,7 +3408,7 @@ def compute_cable_dahl_parameters(
     joint_C_fric: wp.array[wp.vec3],
 ):
     """
-    Compute shared cable Dahl hysteresis parameters (sigma0, C_fric) from
+    Compute shared rod Dahl hysteresis parameters (sigma0, C_fric) from
     the current bend/twist strain and the stored previous Dahl state.
 
     The outputs are:
@@ -3422,7 +3422,7 @@ def compute_cable_dahl_parameters(
 
     On a selected first/reset step, curvature is rebased to the current
     start-of-step pose and the stored stress and curvature increment are
-    cleared. This pre-solve rebaseline covers enabled cables; a disabled cable
+    cleared. This pre-solve rebaseline covers enabled rod joints; a disabled rod joint
     refreshes its history in ``update_cable_dahl_state`` (the end-of-step
     finalizer) instead, so a reset while disabled is applied there.
     """
@@ -3433,10 +3433,10 @@ def compute_cable_dahl_parameters(
     joint_sigma_start[j] = zero
     joint_C_fric[j] = zero
 
-    # Only cable joints own Dahl state. Disabled cables are not solved, and
+    # Only rod joints own Dahl state. Disabled rods are not solved, and
     # the finalizer refreshes their Dahl history every step, so they need no
     # begin-of-step rebaseline.
-    if not joint_enabled[j] or joint_type[j] != JointType.CABLE:
+    if not joint_enabled[j] or joint_type[j] != JointType.ROD:
         return
 
     parent = joint_parent[j]
@@ -4341,7 +4341,7 @@ def update_duals_joint(
 
     jt = joint_type[j]
     if (
-        jt != JointType.CABLE
+        jt != JointType.ROD
         and jt != JointType.BALL
         and jt != JointType.FIXED
         and jt != JointType.REVOLUTE
@@ -4360,8 +4360,8 @@ def update_duals_joint(
         X_wp = joint_X_p[j]
     X_wc = body_q[child] * joint_X_c[j]
 
-    # CABLE joint: fixed stretch/shear/bend/twist slots.
-    if jt == JointType.CABLE:
+    # ROD joint: fixed stretch/shear/bend/twist slots.
+    if jt == JointType.ROD:
         q_wp = wp.transform_get_rotation(X_wp)
         q_wc = wp.transform_get_rotation(X_wc)
 
@@ -5019,7 +5019,7 @@ def update_cable_dahl_state(
     joint_dkappa_prev: wp.array[wp.vec3],  # input/output (stores Delta kappa)
 ):
     """
-    Persist cable Dahl hysteresis state after solver convergence.
+    Persist rod Dahl hysteresis state after solver convergence.
 
     State is diagonal in [bend_x, bend_y, twist_z]. Only soft modes with active
     stiffness are advanced; inactive modes clear stress and use final strain as
@@ -5028,7 +5028,7 @@ def update_cable_dahl_state(
     j = wp.tid()
     zero = wp.vec3(0.0)
 
-    if joint_type[j] != JointType.CABLE:
+    if joint_type[j] != JointType.ROD:
         return
 
     parent = joint_parent[j]

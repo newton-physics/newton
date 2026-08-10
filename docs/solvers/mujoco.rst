@@ -70,7 +70,7 @@ Joint types
      - *(no joint)*
      - The distance constraint is dropped, but the body bookkeeping is
        handled like a free body (counted in MuJoCo's free-body slots).
-   * - :attr:`~newton.JointType.CABLE`
+   * - :attr:`~newton.JointType.ROD`
      - *unsupported*
      - Not forwarded to MuJoCo.
 
@@ -427,7 +427,7 @@ the relative motion of the two bodies according to the joint type:
 
 Other joint types used as loop closures
 (:attr:`~newton.JointType.PRISMATIC`, :attr:`~newton.JointType.FREE`,
-:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.CABLE`) emit a
+:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.ROD`) emit a
 warning and are silently skipped — the loop is *not* closed. A
 :attr:`~newton.JointType.D6` is dispatched by its degrees of freedom: one
 angular axis behaves as a revolute closure and three as a ball closure;

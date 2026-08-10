@@ -107,21 +107,21 @@ class SolverVBD(SolverBase, CouplingInterface):
     by the AVBD beta parameters. Hard contacts and hard joint slots additionally
     use augmented-Lagrangian state.
 
-    Non-cable structural joint slots default to **hard mode** (augmented Lagrangian
+    Non-rod structural joint slots default to **hard mode** (augmented Lagrangian
     with persistent lambda and C0 stabilization) and are initialized from the
     optional ``model.vbd.joint_is_hard`` custom attribute; author values at joint
-    creation, before constructing the solver. Cable stretch, shear, bend, and
+    creation, before constructing the solver. Rod stretch, shear, bend, and
     twist always initialize to **soft mode** regardless of ``joint_is_hard`` and
     are switched only at runtime. The hard/soft mode can be changed per slot at
-    runtime via :meth:`set_joint_constraint_mode` (for both cable and non-cable
+    runtime via :meth:`set_joint_constraint_mode` (for both rod and non-rod
     joints).
 
     Joint limitations:
-        - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
+        - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, ROD.
           DISTANCE joints are not supported.
         - :attr:`~newton.Model.joint_enabled` is supported for all joint types.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
-          for REVOLUTE, PRISMATIC, D6 (as drives), and CABLE (as stretch, shear,
+          for REVOLUTE, PRISMATIC, D6 (as drives), and ROD (as stretch, shear,
           bend, and twist stiffness and damping).
           VBD interprets ``kd`` as absolute damping in physical units.
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
@@ -205,20 +205,21 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Named constraint slot indices for :meth:`set_joint_constraint_mode`.
 
         Structural constraint slots by joint type:
-          - CABLE: STRETCH=0, SHEAR=1, BEND=2, TWIST=3
+          - ROD: STRETCH=0, SHEAR=1, BEND=2, TWIST=3
           - BALL: LINEAR=0 only
           - FIXED/REVOLUTE/PRISMATIC/D6: LINEAR=0, ANGULAR=1
 
-        STRETCH/SHEAR/BEND/TWIST are cable-only names for the SolverVBD cable
-        layout emitted by the builder cable APIs. Only structural slots are named
-        here; per-DOF drive/limit slots (slot 2+ on non-cable joints) are not.
+        STRETCH/SHEAR/BEND/TWIST name the four-slot layout emitted by the builder
+        rod APIs and apply only to :attr:`~newton.JointType.ROD`. Only structural
+        slots are named here; per-DOF drive/limit slots (slot 2+ on non-rod
+        joints) are not.
         """
 
-        # Non-cable structural slots.
+        # Non-rod structural slots.
         LINEAR = 0
         ANGULAR = 1
-        # Cable structural slots (all four are linear/angular cable constraints;
-        # they are not the non-cable LINEAR/ANGULAR despite STRETCH sharing index 0).
+        # Rod structural slots (all four are linear/angular rod constraints; they
+        # are not the non-rod LINEAR/ANGULAR despite STRETCH sharing index 0).
         STRETCH = 0
         SHEAR = 1
         BEND = 2
@@ -269,8 +270,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_joint_angular_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural angular joint constraints
         rigid_joint_linear_k_start: float = 1.0e2,  # Linear penalty seed (used when linear beta > 0)
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
-        rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-cable linear joint constraints
-        rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-cable angular joint constraints
+        rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-rod linear joint constraints
+        rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-rod angular joint constraints
         deterministic: wp.DeterministicMode | None = None,
     ):
         """
@@ -373,17 +374,17 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
             rigid_body_particle_contact_buffer_size: Max body-particle soft contacts tracked per rigid
                 body, covering both particle-vs-surface and full-surface edge/face contacts.
-            rigid_joint_linear_ke: Penalty stiffness ceiling for non-cable structural linear joint slots.
-            rigid_joint_angular_ke: Penalty stiffness ceiling for non-cable structural angular joint slots.
+            rigid_joint_linear_ke: Penalty stiffness ceiling for non-rod structural linear joint slots.
+            rigid_joint_angular_ke: Penalty stiffness ceiling for non-rod structural angular joint slots.
             rigid_joint_linear_k_start: Linear penalty seed for AVBD ramping. Used when
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the joint stiffness regardless of this value.
             rigid_joint_angular_k_start: Angular penalty seed for AVBD ramping. Used when
                 ``rigid_avbd_angular_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the angular beta is 0, k is fixed at the joint stiffness regardless of this value.
-            rigid_joint_linear_kd: Damping coefficient for non-cable linear joint constraints [N·s/m].
+            rigid_joint_linear_kd: Damping coefficient for non-rod linear joint constraints [N·s/m].
                 Negative values are clamped to 0.
-            rigid_joint_angular_kd: Damping coefficient for non-cable angular joint constraints [N·m·s/rad].
+            rigid_joint_angular_kd: Damping coefficient for non-rod angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
@@ -400,7 +401,7 @@ class SolverVBD(SolverBase, CouplingInterface):
               Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body
               contacts).
               Setting them excessively large may increase memory usage and degrade performance.
-            - Dahl hysteresis friction for cable angular response is controlled by custom model attributes
+            - Dahl hysteresis friction for rod angular response is controlled by custom model attributes
               ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
               ``SolverVBD.register_custom_attributes`` before building the model. Dahl friction is
               enabled only when positive Dahl parameters are authored.
@@ -688,7 +689,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         else:
             self.rigid_contact_alpha = rigid_avbd_alpha
 
-        # Joint constraint stiffness and damping for non-cable structural joints
+        # Joint constraint stiffness and damping for non-rod structural joints
         self.rigid_joint_linear_ke = rigid_joint_linear_ke
         self.rigid_joint_angular_ke = rigid_joint_angular_ke
         self.rigid_joint_linear_kd = max(0.0, rigid_joint_linear_kd)
@@ -775,7 +776,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.joint_C0_lin = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_C0_ang = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
 
-            # Dahl friction state (cable angular hysteresis, persistent across timesteps)
+            # Dahl friction state (rod angular hysteresis, persistent across timesteps)
             self.joint_sigma_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_kappa_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_dkappa_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
@@ -806,7 +807,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             # Per-joint DER rest invariants, refreshed at init and on model change
             # (see _refresh_cable_rest_bend_twist_cache): the parent-local rest
             # curvature binormal (bend) and the rest transported-material twist.
-            # Split cables use local +Z as the material tangent (a SolverVBD convention).
+            # Rod joints use local +Z as the material tangent (a SolverVBD convention).
             self.joint_cable_rest_kb_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_cable_rest_twist = wp.zeros(model.joint_count, dtype=float, device=self.device)
             self._refresh_cable_rest_bend_twist_cache()
@@ -1189,7 +1190,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
 
     def _refresh_cable_rest_bend_twist_cache(self) -> None:
-        """(Re)compute cable rest bend/twist invariants from the current rest pose.
+        """(Re)compute rod rest bend/twist invariants from the current rest pose.
 
         Called once at init and again from ``notify_model_changed`` whenever joint
         frames or the rest pose change.
@@ -1202,7 +1203,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         joint_type_np = self._to_numpy(self.model.joint_type, dtype=np.int32)
-        if not np.any(joint_type_np == int(JointType.CABLE)):
+        if not np.any(joint_type_np == int(JointType.ROD)):
             return
 
         wp.launch(
@@ -1234,7 +1235,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Initialize VBD-owned joint constraint indexing.
 
         VBD stores and adapts penalty stiffness values for scalar constraint components:
-          - CABLE: 4 scalars (stretch, shear, bend, twist)
+          - ROD:   4 scalars (stretch, shear, bend, twist)
           - BALL:  1 scalar (isotropic linear anchor-coincidence)
           - FIXED: 2 scalars (isotropic linear + isotropic angular)
           - REVOLUTE:  3 scalars (isotropic linear + 2-DOF perpendicular angular + angular drive/limit)
@@ -1253,13 +1254,13 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             dim_np = np.zeros((n_j,), dtype=np.int32)
             for j in range(n_j):
-                if jt[j] == JointType.CABLE:
+                if jt[j] == JointType.ROD:
                     lin_count = int(jdof_dim[j, 0])
                     ang_count = int(jdof_dim[j, 1])
                     if lin_count != 2 or ang_count != 2:
                         raise RuntimeError(
-                            "SolverVBD rigid joints: JointType.CABLE requires the split "
-                            "stretch/shear/bend/twist layout emitted by the cable builder APIs "
+                            "SolverVBD rigid joints: JointType.ROD requires the split "
+                            "stretch/shear/bend/twist layout emitted by the rod builder APIs "
                             f"(got linear={lin_count}, angular={ang_count}) "
                             f"for joint {j}."
                         )
@@ -1278,7 +1279,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     if jt[j] != JointType.FREE:
                         raise NotImplementedError(
                             f"SolverVBD rigid joints: JointType.{JointType(jt[j]).name} is not implemented yet "
-                            "(only CABLE, BALL, FIXED, REVOLUTE, PRISMATIC, and D6 are supported)."
+                            "(only ROD, BALL, FIXED, REVOLUTE, PRISMATIC, and D6 are supported)."
                         )
                     dim_np[j] = 0
 
@@ -1338,7 +1339,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             jdof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
             jc_start = self._to_numpy(self.joint_constraint_start, dtype=np.int32)
 
-            # Per-joint hard/soft mode for non-cable structural slots.
+            # Per-joint hard/soft mode for non-rod structural slots.
             vbd_attrs: Any = getattr(self.model, "vbd", None)
             if vbd_attrs is not None and hasattr(vbd_attrs, "joint_is_hard"):
                 j_is_hard = self._to_numpy(vbd_attrs.joint_is_hard, dtype=np.int32)
@@ -1352,12 +1353,12 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             n_j = self.model.joint_count
             for j in range(n_j):
-                if jt[j] == JointType.CABLE:
+                if jt[j] == JointType.ROD:
                     c0 = int(jc_start[j])
                     dof0 = int(jdofs[j])
                     if dof0 < 0 or (dof0 + 3) >= len(jtarget_ke) or (dof0 + 3) >= len(jtarget_kd):
                         raise RuntimeError(
-                            "SolverVBD _init_joint_penalty_k: JointType.CABLE requires "
+                            "SolverVBD _init_joint_penalty_k: JointType.ROD requires "
                             "4 DOF entries in "
                             "model.joint_target_ke/kd starting at joint_qd_start[j]. "
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
@@ -1545,13 +1546,13 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
-          - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode (non-cable joints)
-          - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional cable angular Dahl friction
+          - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode (non-rod joints)
+          - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional rod angular Dahl friction
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes and in USD as ``newton:vbd:<attr>``.
 
-        Dahl cable friction is enabled per joint only where both
+        Dahl rod friction is enabled per joint only where both
         ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
         positive; the attributes default to zero.
 
@@ -1562,7 +1563,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
                 .. deprecated:: 1.5
                     The compatibility mode will be removed; author positive Dahl
-                    values explicitly when Dahl cable friction is desired.
+                    values explicitly when Dahl rod friction is desired.
         """
         dahl_eps_default = 0.5 if dahl_defaults_enabled else 0.0
         dahl_tau_default = 1.0 if dahl_defaults_enabled else 0.0
@@ -1571,7 +1572,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "SolverVBD.register_custom_attributes(dahl_defaults_enabled=True) is deprecated "
                 "and the compatibility mode will be removed in a future release. Explicitly author "
                 "positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
-                "Dahl cable friction.",
+                "Dahl rod friction.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -1712,15 +1713,15 @@ class SolverVBD(SolverBase, CouplingInterface):
         to drive constraint violation toward zero across iterations.
         Soft mode (penalty-only): uses penalty stiffness only (no lambda or C0 state).
 
-        Non-cable structural slots are LINEAR (slot 0) and ANGULAR (slot 1).
-        Builder-created cable joints expose STRETCH (slot 0), SHEAR
+        Non-rod structural slots are LINEAR (slot 0) and ANGULAR (slot 1).
+        Builder-created rod joints expose STRETCH (slot 0), SHEAR
         (slot 1), BEND (slot 2), and TWIST (slot 3). Other drive/limit slots
         are always soft and cannot be set to hard.
 
-        By default, cable stretch, shear, bend, and twist slots are soft, while
-        non-cable structural slots are hard.
+        By default, rod stretch, shear, bend, and twist slots are soft, while
+        non-rod structural slots are hard.
 
-        For non-cable joints, hard/soft mode can also be authored per joint at
+        For non-rod joints, hard/soft mode can also be authored per joint at
         build time via the ``vbd:joint_is_hard`` custom attribute, avoiding a
         runtime :meth:`set_joint_constraint_mode` call::
 
@@ -1733,9 +1734,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             joint_index: Index of the joint to modify.
             hard: True for hard mode (AL), False for soft mode (penalty-only).
             slot: Specific slot index to set. If None, sets all structural slots.
-                Use JointSlot.LINEAR / JointSlot.ANGULAR for non-cable joints,
+                Use JointSlot.LINEAR / JointSlot.ANGULAR for non-rod joints,
                 or JointSlot.STRETCH / JointSlot.SHEAR / JointSlot.BEND /
-                JointSlot.TWIST for cables.
+                JointSlot.TWIST for rod joints.
 
         Raises:
             ValueError: If the joint index is out of range or the slot is not a
@@ -1754,14 +1755,14 @@ class SolverVBD(SolverBase, CouplingInterface):
             c0 = int(c_start_np[joint_index])
             cdim = int(c_dim_np[joint_index])
             joint_type = int(joint_type_np[joint_index])
-            structural_count = cdim if joint_type == int(JointType.CABLE) else min(cdim, 2)
+            structural_count = cdim if joint_type == int(JointType.ROD) else min(cdim, 2)
             val = 1 if hard else 0
 
             if slot is not None:
                 if slot < 0 or slot >= structural_count:
                     if structural_count == 0:
                         names = "no structural slots"
-                    elif joint_type == int(JointType.CABLE):
+                    elif joint_type == int(JointType.ROD):
                         names = "STRETCH=0, SHEAR=1, BEND=2, TWIST=3"
                     elif structural_count == 1:
                         names = "LINEAR=0"
@@ -1845,7 +1846,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Body fields selected by *flags* are copied from the model defaults.
         Joint penalty is restored to its minimum; joint C0 and AVBD dual history
-        is zeroed immediately. Pose and enabled-cable friction history (curvature,
+        is zeroed immediately. Pose and enabled-rod friction history (curvature,
         stress, and increment) are rebaselined together from the next :meth:`step`
         input pose, after any intervening state edits or forward kinematics.
         Selected-world contact warm-start is cold-started when fresh rigid contacts
@@ -1886,7 +1887,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         :meth:`~newton.CollisionPipeline.collide`. After moving bodies or
         particles, regenerate contacts so stale soft contacts are not reused, and
         let the next :meth:`step` refresh rigid contact state. The next
-        rigid :meth:`step` consumes the pose and cable rebaseline even when
+        rigid :meth:`step` consumes the pose and rod rebaseline even when
         ``contacts=None``, so author the final pose (or run :func:`~newton.eval_fk`)
         before stepping; contact invalidation instead waits for a fresh refresh.
         VBD cold-starts its numeric contact state for reset-selected worlds.
@@ -2459,7 +2460,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
-            # Compute cable bend/twist Dahl hysteresis parameters once per timestep.
+            # Compute rod bend/twist Dahl hysteresis parameters once per timestep.
             if self.enable_dahl_friction and model.joint_count > 0:
                 wp.launch(
                     kernel=compute_cable_dahl_parameters,
@@ -2492,7 +2493,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
-            # The forward step and any enabled cable update have consumed the mask.
+            # The forward step and any enabled rod update have consumed the mask.
             self._rigid_pose_rebaseline_mask.zero_()
 
         # ---------------------------
@@ -3227,7 +3228,7 @@ class SolverVBD(SolverBase, CouplingInterface):
     def _finalize_rigid_bodies(self, state_in: State, state_out: State, dt: float):
         """Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).
 
-        Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for cable bend/twist.
+        Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for rod bend/twist.
         Also transfers the final body poses from state_in to state_out.
         """
         model = self.model

@@ -268,7 +268,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |yes|
      - |yes|
      - |no|
-   * - CABLE
+   * - ROD
      - |no|
      - |no|
      - |no|

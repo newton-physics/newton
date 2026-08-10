@@ -4,7 +4,7 @@
 """USD cable / curve-deformable import passes.
 
 Imports linear ``UsdGeom.BasisCurves`` deformables as rods (chains of capsule bodies joined
-by cable joints, usable by any solver that supports them), welding curve-to-curve
+by rod joints, usable by any solver that supports them), welding curve-to-curve
 ``PhysicsAttachment`` junctions into shared rod graphs first, then importing remaining single
 curves. Driven by :func:`.import_usd.parse_usd` via a
 :class:`.import_usd_deformable_utils._DeformableImportContext`.
@@ -84,15 +84,15 @@ def _cable_stiffnesses_from_material(
     material: dict[str, float], radius: float, segment_length: float
 ) -> tuple[float | None, float | None, float | None, float | None]:
     """Convert USD cable moduli to per-joint stretch, shear, bend, and twist stiffnesses."""
-    from .cable import create_cable_stiffness_from_elastic_moduli  # noqa: PLC0415
+    from .cable import cable_stiffness_from_elastic_moduli  # noqa: PLC0415
 
     stretch = shear = bend = twist = None
     if "stretchStiffness" in material:
-        stretch = create_cable_stiffness_from_elastic_moduli(material["stretchStiffness"], radius, segment_length)[0]
+        stretch = cable_stiffness_from_elastic_moduli(material["stretchStiffness"], radius, segment_length)[0]
     if "shearStiffness" in material:
         shear = material["shearStiffness"] * math.pi * radius**2 / segment_length
     if "bendStiffness" in material:
-        bend = create_cable_stiffness_from_elastic_moduli(material["bendStiffness"], radius, segment_length)[1]
+        bend = cable_stiffness_from_elastic_moduli(material["bendStiffness"], radius, segment_length)[1]
     if "twistStiffness" in material:
         twist = material["twistStiffness"] * 0.5 * math.pi * radius**4 / segment_length
     return stretch, shear, bend, twist
@@ -598,7 +598,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             normals = None
 
         # The proposal authors curve "stretchStiffness" / "bendStiffness" in force/area, i.e.
-        # elastic moduli E. create_cable_stiffness_from_elastic_moduli() converts each to the
+        # elastic moduli E. cable_stiffness_from_elastic_moduli() converts each to the
         # per-joint stiffness add_rod expects via the circular cross-section and segment rest
         # length L (stretch = E*A/L, bend = E*I/L); applied per curve below.
         cable_mat = usd._get_curve_deformable_material(prim, deformable_read) or {}

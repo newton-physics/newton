@@ -45,21 +45,21 @@ use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 use maximal coordinates.
 Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
-Cable joints
-^^^^^^^^^^^^
+Rod joints
+^^^^^^^^^^
 
-:attr:`newton.JointType.CABLE` is represented in Newton's joint data model, but
-it is not a conventional generalized-coordinate joint. Its two entries are
-VBD constraint/material slots: one linear slot for stretch and one angular slot
-for bend/twist. These slots store per-cable stiffness and damping through
+:attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
+it is not a conventional generalized-coordinate joint. Its four entries are
+VBD constraint/material slots: two linear slots for stretch and shear, and two
+angular slots for bend and twist. These slots store per-rod stiffness and damping through
 :attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`;
 they are not ``joint_q`` coordinates that uniquely reconstruct the child body
 pose.
 
-Cable body poses and velocities are maximal-coordinate state stored in
+Rod body poses and velocities are maximal-coordinate state stored in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
 :class:`newton.solvers.SolverVBD`. Therefore :func:`newton.eval_fk` does not
-update cable child body transforms from ``joint_q`` / ``joint_qd``.
+update rod child body transforms from ``joint_q`` / ``joint_qd``.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
@@ -320,10 +320,10 @@ Joint types
      - Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom
      - up to 6
      - up to 6
-   * - ``JointType.CABLE``
-     - Cable joint with 1 linear (stretch/shear) and 1 angular (bend/twist) degree of freedom
-     - 2
-     - 2
+   * - ``JointType.ROD``
+     - Rod joint with 2 linear (stretch, shear) and 2 angular (bend, twist) constraint/material slots
+     - 4
+     - 4
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
