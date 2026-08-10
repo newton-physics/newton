@@ -233,43 +233,44 @@ def compute_shape_aabbs(
     geom_scale = scale
 
     if is_infinite_plane:
-        # Half-space AABB: unbounded except along world axes the plane normal
-        # aligns with, where the solid side is clamped at the surface. For an
-        # axis-aligned plane this makes AABB overlap equivalent to the exact
-        # half-space proximity test, so shapes far above the ground stop being
-        # broad-phase candidates. Tilted planes keep unbounded extents on
-        # non-aligned axes (conservative, matches the old always-overlap
-        # behavior in the worst case).
+        # Half-space AABB. The bounding-sphere fallback used the infinite
+        # plane's collision radius as a half extent, so the plane's AABB was a
+        # 1e6 m cube that overlapped every shape in the scene and made each one
+        # a permanent broad-phase candidate against the ground. Clamp the solid
+        # side at the plane surface instead, along the world axes the normal
+        # aligns with: for an exactly axis-aligned plane that makes AABB
+        # overlap equivalent to the exact half-space proximity test.
         #
-        # A NEARLY aligned normal must not be clamped as if it were exact: the
-        # residual lateral tilt lat = norm(other two normal components) raises
-        # the true surface by lat * r at lateral distance r from the plane
-        # anchor, so an anchor-height clamp silently drops resting contacts
-        # far from the anchor (with a fixed 1e-6 epsilon, a floor tilted
-        # 0.05 degrees loses a box 600 m out). Clamp only when that rise over
-        # the supported reach stays within a fraction of the effective gap,
-        # and carry the rise as slack so the clamped bound remains
-        # conservative for every shape within the reach.
+        # The clamp has to stay conservative for a normal that is only NEARLY
+        # aligned, or resting contacts far from the plane anchor are pruned and
+        # the shape falls through the floor. At lateral offset d from the
+        # anchor the surface rises by (|n_j| + |n_k|) * d / |n_i| along axis i.
+        # Bounding d by the extent this AABB itself admits -- HALF_SPACE_EXTENT
+        # about the anchor, the reach the bounding-sphere AABB already had --
+        # makes the clamped bound conservative for every shape the AABB does
+        # not already prune on the two lateral axes, with no assumption about
+        # how large the scene is. A deliberately tilted plane rises further
+        # than that extent over the same reach and keeps the unbounded bound.
         normal = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
-        plane_d = wp.dot(normal, pos)
-        HALF_SPACE_EXTENT = 1.0e10
-        # Lateral radius (about the world origin) within which the clamped
-        # bound is guaranteed conservative. Exactly aligned planes (lat == 0,
-        # including quat_rotate float noise of ~1e-7) clamp with negligible
-        # slack; deliberately tilted planes fail the gate and stay unbounded.
-        HALF_SPACE_REACH = 1.0e4
-        HALF_SPACE_TILT_GAP_FRACTION = 0.5
-        lo = wp.vec3(-HALF_SPACE_EXTENT, -HALF_SPACE_EXTENT, -HALF_SPACE_EXTENT)
-        hi = wp.vec3(HALF_SPACE_EXTENT, HALF_SPACE_EXTENT, HALF_SPACE_EXTENT)
+        # Matches compute_shape_radius's infinite-plane radius, so an axis the
+        # clamp skips reproduces the previous bounding-sphere extent exactly.
+        HALF_SPACE_EXTENT = 1.0e6
+        half_extents = wp.vec3(HALF_SPACE_EXTENT, HALF_SPACE_EXTENT, HALF_SPACE_EXTENT)
+        lo = pos - half_extents - margin_vec
+        hi = pos + half_extents + margin_vec
         for i in range(3):
-            n_j = normal[(i + 1) % 3]
-            n_k = normal[(i + 2) % 3]
-            tilt_slack = wp.sqrt(n_j * n_j + n_k * n_k) * HALF_SPACE_REACH
-            if tilt_slack <= HALF_SPACE_TILT_GAP_FRACTION * effective_gap:
-                if normal[i] > 0.0:
-                    hi[i] = plane_d + effective_gap + tilt_slack
-                elif normal[i] < 0.0:
-                    lo[i] = -plane_d - effective_gap - tilt_slack
+            n_i = normal[i]
+            # Below this the rise over the supported reach already exceeds
+            # HALF_SPACE_EXTENT, so the clamp could never be tighter than the
+            # unbounded bound; the guard also keeps the division below well
+            # conditioned.
+            if wp.abs(n_i) > 0.5:
+                lateral = wp.abs(normal[(i + 1) % 3]) + wp.abs(normal[(i + 2) % 3])
+                rise = lateral * HALF_SPACE_EXTENT / wp.abs(n_i)
+                if n_i > 0.0:
+                    hi[i] = wp.min(hi[i], pos[i] + rise + effective_gap)
+                else:
+                    lo[i] = wp.max(lo[i], pos[i] - rise - effective_gap)
         aabb_lower[shape_id] = lo
         aabb_upper[shape_id] = hi
     elif has_local_aabb:
