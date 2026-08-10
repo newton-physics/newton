@@ -33,6 +33,29 @@ def _has_mpm_schemas() -> bool:
         return False
 
 
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestMpmConfigUsdEntryGuards(unittest.TestCase):
+    def test_rejects_non_scene_prim(self):
+        """Reject a non-PhysicsScene prim as a configuration source."""
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        prim = UsdGeom.Xform.Define(stage, "/World").GetPrim()
+
+        with self.assertRaisesRegex(TypeError, "valid UsdPhysics.Scene prim"):
+            SolverImplicitMPM.Config.create_from_usd(prim)
+
+    def test_requires_mpm_scene_api(self):
+        """Reject a PhysicsScene without NewtonMPMSceneAPI."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene").GetPrim()
+
+        with self.assertRaisesRegex(ValueError, "NewtonMPMSceneAPI is not applied"):
+            SolverImplicitMPM.Config.create_from_usd(scene)
+
+
 @unittest.skipUnless(_has_mpm_schemas(), "Requires Newton USD schemas with MPM support")
 class TestImportUsdMPM(unittest.TestCase):
     @staticmethod
@@ -188,6 +211,14 @@ class TestImportUsdMPM(unittest.TestCase):
                 self.assertEqual(attr.Get(), expected)
 
         self.assertEqual(dataclasses.asdict(SolverImplicitMPM.Config.create_from_usd(scene)), defaults)
+
+    def test_config_reports_usd_context_for_invalid_capacity(self):
+        """Include the prim path and USD name in capacity validation errors."""
+        _stage, scene = self._stage()
+        scene.GetAttribute("newton:mpm:maxActiveCellCount").Set(0)
+
+        with self.assertRaisesRegex(ValueError, "/World/PhysicsScene.*newton:mpm:maxActiveCellCount"):
+            SolverImplicitMPM.Config.create_from_usd(scene)
 
     def test_material_schema_fallbacks_match_model_defaults(self):
         """Keep registered material fallbacks aligned with Newton's particle defaults."""

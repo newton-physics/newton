@@ -1087,7 +1087,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             value = authored("newton:mpm:maxActiveCellCount")
             if value is not None:
-                config.max_active_cell_count = _validate_sparse_grid_node_capacity("max_active_cell_count", value)
+                try:
+                    config.max_active_cell_count = _validate_sparse_grid_node_capacity("max_active_cell_count", value)
+                except ValueError as error:
+                    raise ValueError(f"{path}: invalid newton:mpm:maxActiveCellCount: {error}") from error
 
             value = authored("newton:mpm:criticalFraction")
             if value is not None:

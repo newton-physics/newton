@@ -42,8 +42,10 @@ Material Point Method Particles
 
 .. experimental::
 
-   MPM import depends on the Newton MPM schemas and may evolve while those
-   schemas and the AOUSD deformable-material proposal are being standardized.
+   MPM import requires a ``newton-usd-schemas`` build that registers
+   ``NewtonPointsDeformableSimAPI``, ``NewtonMPMSceneAPI``, and
+   ``NewtonMPMMaterialAPI``. These schemas may evolve while the AOUSD
+   deformable-material proposal is being standardized.
 
 :meth:`newton.ModelBuilder.add_usd` imports a ``UsdGeom.Points`` prim as MPM
 particles when it applies ``NewtonPointsDeformableSimAPI`` and is governed by
@@ -54,8 +56,9 @@ stage traversal order is used.
 
 The importer uses standard point and material representations:
 
-* ``points`` and ``velocities`` come from ``UsdGeom.Points``. Authored ``ids``
-  remain USD metadata; Newton does not currently copy them into its particle model.
+* ``points`` and ``velocities`` come from ``UsdGeom.Points``. The optional
+  ``ids`` attribute remains authored USD data; Newton does not currently copy it
+  into its particle model.
 * ``widths`` are particle diameters. An authored ``primvars:widths`` takes
   precedence and follows normal indexed, inherited, and interpolation rules.
   Widths become radii using ``width / 2`` after stage units and the prim's

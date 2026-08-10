@@ -401,9 +401,9 @@ def _point_material_subsets(points, count: int, path: str):
             f"'nonOverlapping' or 'partition', got {family_type!r}."
         )
 
-    # USD 26.3 rejects ValidateFamily(..., elementType='point') for Points even
-    # though point subsets are supported. Validate the collected subsets against
-    # the authored point count instead.
+    # Supported OpenUSD releases reject ValidateFamily(..., elementType='point')
+    # for Points even though point subsets are supported. Validate the collected
+    # subsets against the authored point count instead.
     valid, reason = UsdGeom.Subset.ValidateSubsets(point_subsets, count, family_type)
     if not valid:
         raise ValueError(f"{path}: invalid point material subsets: {reason}")

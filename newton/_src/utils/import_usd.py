@@ -427,29 +427,32 @@ def parse_usd(
         ``path_mpm_particle_map`` is always returned. It maps each imported
         ``UsdGeom.Points`` prim carrying ``NewtonPointsDeformableSimAPI`` whose
         governing ``PhysicsDeformableBodyAPI`` resolves to a
-        ``NewtonMPMSceneAPI`` owner to its
-        half-open ``[start, end)`` builder particle range. These ranges are
-        build-time snapshots and are not updated by later structural builder
-        mutations.
+        ``NewtonMPMSceneAPI`` owner to its half-open ``[start, end)`` builder
+        particle range. These ranges are build-time snapshots and are not
+        updated by later structural builder mutations.
         Each resolved whole-prim or point-``GeomSubset`` physics material must
         apply ``NewtonMPMMaterialAPI``, ``PhysicsMaterialAPI``, or
         ``PhysicsVolumeDeformableMaterialAPI``. MPM elasticity is read from
-        ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. Unbound MPM Points use Newton's
-        registered material defaults and ``builder.default_shape_cfg`` density.
-        All MPM Points imported by one call must resolve to the same MPM scene;
-        unrelated PhysicsScenes and particle systems are ignored.
-        ``mpm_config`` contains the owner's validated
-        :class:`SolverImplicitMPM.Config`. Without imported MPM Points,
-        ``mpm_config`` may be ``None``.
+        ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. After
+        unit conversion, Young's modulus is in Pa and density is in kg/m^3.
+        Unbound MPM Points use Newton's registered material defaults and
+        ``ModelBuilder.default_shape_cfg`` density. All MPM Points imported by
+        one call must resolve to the same MPM scene; unrelated PhysicsScenes
+        and particle systems are ignored. ``mpm_config`` contains the owner's
+        validated :class:`SolverImplicitMPM.Config`. Without imported MPM
+        Points, it contains the parser-selected PhysicsScene config only when
+        that scene carries ``NewtonMPMSceneAPI``; otherwise it is ``None``.
 
         Particle widths are diameters. Newton converts each radius as
         ``width / 2`` after applying stage units and the prim's uniform world
-        scale. Authored ``physics:masses`` take precedence over body mass or
-        density, then material density. Density-derived mass uses
-        ``physics:density * width**3``. Without widths, it uses
-        ``builder.default_particle_radius`` and a support width of twice that
-        radius. Non-uniform scale or shear is rejected because one scalar width
-        cannot preserve a spherical particle under that transform.
+        scale; converted widths and radii are in meters. Authored
+        ``physics:masses`` take precedence over body mass or density, then
+        material density. Density-derived mass uses
+        ``physics:density * width**3``; converted masses are in kilograms.
+        Without widths, it uses ``ModelBuilder.default_particle_radius`` and a
+        support width of twice that radius. Non-uniform scale or shear is
+        rejected because one scalar width cannot preserve a spherical particle
+        under that transform.
 
         The returned mapping has the following entries:
 
@@ -505,7 +508,7 @@ def parse_usd(
             * - ``"max_solver_iterations"``
               - The resolved maximum solver iterations (int or None)
             * - ``"mpm_config"``
-              - Validated :class:`SolverImplicitMPM.Config` for the resolved MPM owner scene, or the legacy first-scene result when no MPM Points are imported
+              - Validated :class:`SolverImplicitMPM.Config` for the resolved MPM owner scene; with no imported MPM Points, the parser-selected PhysicsScene config only when that scene carries ``NewtonMPMSceneAPI``, otherwise ``None``
             * - ``"path_body_relative_transform"``
               - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
             * - ``"path_original_body_map"``
@@ -2487,12 +2490,12 @@ def parse_usd(
                     f"{scene_path}: physics:gravityMagnitude does not convert to a finite, representable SI value."
                 )
 
-        gravity_enabled = R.get_value(
+        mpm_gravity_enabled = R.get_value(
             scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
         )
         gravity_xform = axis_xform if override_root_xform else incoming_world_xform
         direction = wp.transform_vector(gravity_xform, wp.vec3(*direction_array))
-        gravity = direction * magnitude_si if gravity_enabled else wp.vec3()
+        gravity = direction * magnitude_si if mpm_gravity_enabled else wp.vec3()
         if not np.isfinite(np.asarray(gravity, dtype=float)).all():
             raise ValueError(f"{scene_path}: transformed gravity must contain only finite SI values.")
         resolved_mpm_gravity = gravity
