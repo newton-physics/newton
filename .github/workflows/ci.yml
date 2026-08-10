@@ -149,6 +149,8 @@ jobs:
           --junit-report-xml rspec.xml
           --coverage
           --coverage-xml coverage.xml
+      - name: Run ASV benchmark tests
+        run: uv run --no-sync -m unittest discover -s asv/tests
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
