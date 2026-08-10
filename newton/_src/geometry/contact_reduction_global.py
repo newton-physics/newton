@@ -1754,7 +1754,7 @@ def reduce_buffered_contacts_speculative_kernel(
     tid = wp.tid()
     num_contacts = wp.min(reducer_data.contact_count[0], reducer_data.capacity)
     for i in range(tid, num_contacts, total_num_threads):
-        contact_id = i
+        contact_id = i + 1
         pair = reducer_data.shape_pairs[contact_id]
         shape_a = pair[0]
         shape_b = pair[1]

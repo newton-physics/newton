@@ -15,6 +15,8 @@ from newton._src.geometry.contact_reduction_global import (
     create_export_reduced_contacts_kernel,
     export_and_reduce_contact_centered_two_spatial_depths,
     export_and_reduce_predictive_contact,
+    export_contact_to_buffer,
+    reduce_buffered_contacts_speculative_kernel,
 )
 from newton._src.geometry.narrow_phase import ContactWriterData, NarrowPhase, write_contact_simple
 from newton._src.geometry.types import GeoType
@@ -237,6 +239,19 @@ def _register_predictive_clearance_candidates_contended(
 
 
 @wp.kernel
+def _buffer_one_contact(reducer_data: GlobalContactReducerData):
+    export_contact_to_buffer(
+        0,
+        1,
+        wp.vec3(0.0),
+        wp.vec3(1.0, 0.0, 0.0),
+        -0.01,
+        7,
+        reducer_data,
+    )
+
+
+@wp.kernel
 def _register_predictive_clearance_candidates_sequential(
     reducer_data: GlobalContactReducerData,
     shape_transform: wp.array[wp.transform],
@@ -276,7 +291,7 @@ _export_reduced_contacts = create_export_reduced_contacts_kernel(write_contact_s
 
 def _build_spheres(device, velocity: float, separation: float = 0.3):
     """Build two spheres separated along X with the first sphere moving."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     builder.rigid_gap = 0.0
     body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
     builder.add_shape_sphere(body_a, radius=0.1)
@@ -375,7 +390,7 @@ def test_speculative_candidates_preserve_physical_geometry(test, device):
 
 def test_speculative_candidates_include_angular_motion(test, device):
     """Verify an offset shape's angular motion expands and filters candidates."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     builder.rigid_gap = 0.0
     body = builder.add_body(
         xform=wp.transform_identity(),
@@ -475,7 +490,7 @@ def test_speculative_mesh_sdf_candidates(test, device):
     wall = newton.Mesh.create_box(0.02, 0.3, 0.3, compute_normals=False, compute_uvs=False)
     wall.build_sdf(device=device, max_resolution=32)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     builder.rigid_gap = 0.0
     body = builder.add_body(xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0)))
     builder.add_shape_mesh(body, mesh=projectile)
@@ -549,6 +564,38 @@ def test_predictive_reducer_reuses_regular_contact(test, device, deterministic):
     test.assertGreaterEqual(int(ids[0]), 0)
     test.assertEqual(int(ids[1]), int(ids[0]))
     test.assertEqual(int(ids[2]), int(ids[0]))
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), 1)
+    exported_count, _ = _export_reducer_contacts(reducer, device)
+    test.assertEqual(exported_count, 1)
+
+
+def test_speculative_buffered_reducer_uses_one_based_ids(test, device, deterministic):
+    """Verify buffered speculative reduction processes every real contact and skips reserved ID zero."""
+    reducer = GlobalContactReducer(capacity=8, device=device, deterministic=deterministic)
+    wp.launch(_buffer_one_contact, dim=1, inputs=[reducer.get_data_struct()], device=device)
+
+    shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
+    wp.launch(
+        reduce_buffered_contacts_speculative_kernel,
+        dim=1,
+        inputs=[
+            reducer.get_data_struct(),
+            wp.full(2, int(GeoType.BOX), dtype=wp.int32, device=device),
+            wp.zeros(2, dtype=wp.vec4, device=device),
+            wp.zeros(2, dtype=wp.float32, device=device),
+            shape_transform,
+            wp.zeros(2, dtype=wp.vec3, device=device),
+            wp.zeros(2, dtype=wp.vec3, device=device),
+            wp.full(2, wp.vec3(-1.0), dtype=wp.vec3, device=device),
+            wp.full(2, wp.vec3(1.0), dtype=wp.vec3, device=device),
+            wp.full(2, wp.vec3i(1), dtype=wp.vec3i, device=device),
+            0.1,
+            0.1,
+            1,
+        ],
+        device=device,
+    )
+
     test.assertEqual(int(reducer.contact_count.numpy()[0]), 1)
     exported_count, _ = _export_reducer_contacts(reducer, device)
     test.assertEqual(exported_count, 1)
@@ -694,6 +741,13 @@ for _deterministic in (False, True):
         TestSpeculativeContacts,
         f"test_predictive_reducer_reuses_regular_contact_{_suffix}",
         test_predictive_reducer_reuses_regular_contact,
+        devices=get_test_devices(),
+        deterministic=_deterministic,
+    )
+    add_function_test(
+        TestSpeculativeContacts,
+        f"test_speculative_buffered_reducer_uses_one_based_ids_{_suffix}",
+        test_speculative_buffered_reducer_uses_one_based_ids,
         devices=get_test_devices(),
         deterministic=_deterministic,
     )

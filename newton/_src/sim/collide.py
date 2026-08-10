@@ -1548,35 +1548,41 @@ class CollisionPipeline:
             if not np.isfinite(collision_update_dt) or collision_update_dt < 0.0:
                 raise ValueError(f"dt must be a non-negative finite number, got {collision_update_dt!r}")
             max_speculative_extension = config.max_speculative_extension
-            wp.launch(
-                kernel=compute_shape_velocities,
-                dim=model.shape_count,
-                inputs=[
-                    state.body_q,
-                    state.body_qd,
-                    model.body_com,
-                    model.shape_body,
-                    model.shape_transform,
-                    model.shape_collision_aabb_lower,
-                    model.shape_collision_aabb_upper,
-                    model.shape_collision_radius,
-                    model.shape_gap,
-                    collision_update_dt,
-                    max_speculative_extension,
-                ],
-                outputs=[
-                    self._shape_linear_velocity,
-                    self._shape_angular_velocity,
-                    self._shape_angular_speed_bound,
-                    self._shape_search_gap,
-                ],
-                device=self.device,
-                record_tape=False,
-            )
-            aabb_kernel = compute_shape_aabbs_speculative
+            if collision_update_dt > 0.0 and max_speculative_extension > 0.0:
+                wp.launch(
+                    kernel=compute_shape_velocities,
+                    dim=model.shape_count,
+                    inputs=[
+                        state.body_q,
+                        state.body_qd,
+                        model.body_com,
+                        model.shape_body,
+                        model.shape_transform,
+                        model.shape_collision_aabb_lower,
+                        model.shape_collision_aabb_upper,
+                        model.shape_collision_radius,
+                        model.shape_gap,
+                        collision_update_dt,
+                        max_speculative_extension,
+                    ],
+                    outputs=[
+                        self._shape_linear_velocity,
+                        self._shape_angular_velocity,
+                        self._shape_angular_speed_bound,
+                        self._shape_search_gap,
+                    ],
+                    device=self.device,
+                    record_tape=False,
+                )
+                shape_search_gap = self._shape_search_gap
+                aabb_kernel = compute_shape_aabbs_speculative
+            else:
+                shape_search_gap = model.shape_gap
+                aabb_kernel = compute_shape_aabbs
         else:
             collision_update_dt = 0.0
             max_speculative_extension = 0.0
+            shape_search_gap = model.shape_gap
             aabb_kernel = compute_shape_aabbs
 
         # Rigid contact detection -- broad phase + narrow phase.
@@ -1720,7 +1726,7 @@ class CollisionPipeline:
             shape_mesh_properties=model._shape_mesh_properties,
             shape_sdf_index=model._shape_sdf_index,
             texture_sdf_data=model._texture_sdf_data,
-            shape_gap=self._shape_search_gap,
+            shape_gap=shape_search_gap,
             shape_base_gap=model.shape_gap,
             shape_collision_radius=model.shape_collision_radius,
             shape_flags=model.shape_flags,
