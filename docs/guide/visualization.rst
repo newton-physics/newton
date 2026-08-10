@@ -730,21 +730,24 @@ frame capture where the image should replace the 3D scene:
 
 .. code-block:: python
 
-    viewer = newton.viewer.ViewerGL(width=640, height=480, headless=True)
+    from newton.sensors import SensorTiledCamera
+
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0)
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerNull()
     viewer.set_model(model)
-    depth_image = np.empty((480, 640), dtype=np.float32)
 
-    while viewer.is_running():
-        viewer.begin_frame(time)
-
-        # Fill or update this image every simulation frame.
-        sensor.update(state, depth_image)
-        max_depth = max(float(depth_image.max()), 1e-6)
-        normalized_depth = np.clip(depth_image / max_depth, 0.0, 1.0).astype(np.float32)
-        viewer.log_image("depth", normalized_depth, fullscreen=True)
-
-        viewer.end_frame()
-        frame = viewer.get_frame()
+    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
+    # output once and reuse it every frame; the RGBA conversion is a
+    # zero-copy view.
+    sensor = SensorTiledCamera(model=model)
+    W, H, camera_count = 16, 16, 1
+    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
+    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
+    rgba = sensor.utils.to_rgba_from_color(color_image)
+    viewer.log_image("tiled_camera", rgba, fullscreen=True)
 
 The ``fullscreen=True`` selection is per-frame: call
 :meth:`~newton.viewer.ViewerBase.log_image` with ``fullscreen=True`` after
