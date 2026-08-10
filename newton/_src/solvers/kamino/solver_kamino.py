@@ -1279,16 +1279,15 @@ class SolverKamino(SolverBase, CouplingInterface):
     def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
         """Finds bodies whose singular inertial properties make them unsafe to simulate.
 
-        A body with a singular inverse mass matrix has no representation in the dual formulation:
-        its rows of the Delassus operator vanish, so neither constraint reactions nor applied
-        wrenches can alter its velocity. Such a body is only safe in two situations:
+        A body with singular inverse mass or inertia cannot respond to all applied wrenches in the
+        dual formulation. Such a body is only safe in two situations:
 
         - It is welded to the world, so a permanently frozen velocity is the correct answer.
         - It only has a free joint to the world, and is not attached to any other bodies.
-          It then stays at its initial velocity and behaves as immovable static geometry.
+          It then stays at its initial velocity.
 
-        Otherwise its frozen velocity propagates through its joints and freezes every body
-        attached to it, including bodies that do have mass.
+        Otherwise its missing response propagates through its joints and prevents physically
+        meaningful motion of attached bodies.
 
         Args:
             model: The Newton model to validate.
@@ -1301,7 +1300,8 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         inv_mass = model.body_inv_mass.numpy()
         inv_inertia = model.body_inv_inertia.numpy()
-        singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or not np.any(inv_inertia[b])]
+        singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
+        singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
         if not singular:
             return []
 
@@ -1340,8 +1340,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             reasons = []
             if inv_mass[b] == 0.0:
                 reasons.append("zero inverse mass")
-            if not np.any(inv_inertia[b]):
-                reasons.append("zero inverse inertia")
+            if singular_inertia[b]:
+                reasons.append("singular inverse inertia")
             label = model.body_label[b] if model.body_label else f"body {b}"
             descriptions.append(f"'{label}' (index {b}): {' and '.join(reasons)}")
         return descriptions
