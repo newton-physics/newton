@@ -3,6 +3,8 @@
 
 .. currentmodule:: newton
 
+.. _Coupled Solvers:
+
 Coupled Solvers
 ===============
 
@@ -220,6 +222,8 @@ destination)``. One source step and one destination step are performed for each
 solver pair and proxy iteration, so a single proxy declaration can carry both
 body and particle mappings around the same destination solve.
 
+.. _ADMM coupling:
+
 ADMM Coupling
 -------------
 
@@ -245,7 +249,7 @@ objects. It does not currently accept arbitrary user-authored endpoint records
 as public API. Supported row sources are:
 
 - cross-solver model joints;
-- custom body-particle attachment attributes;
+- model body-particle attachments;
 - internally detected rigid-rigid, rigid-particle, and particle-particle
   contacts.
 
@@ -259,12 +263,18 @@ model joint friction. Prismatic, distance, and D6 joint rows are not yet part of
 the experimental API.
 
 Body-particle attachments cover interfaces that cannot be represented by a
-model joint because one endpoint is a particle. The helper
-``SolverCoupledADMM.add_body_particle_attachment()`` registers and fills custom
-attributes under ``coupling:body_particle_attachment`` with body id, particle id,
-body-local point, stiffness, damping, and enabled state. Importers can author the
-same custom attributes directly. Rows whose endpoints are unowned or owned by
-the same entry are ignored; only cross-solver attachments are coupled by ADMM.
+model joint because one endpoint is a particle. The coupler reads the model
+attachment rows described under :ref:`Body-particle attachments` and owns those
+whose body and particle endpoints belong to different entries; rows owned
+entirely by one entry are left to that entry's solver. The coupler logs a warning
+if that solver does not support attachments or if an endpoint is owned by no
+entry. Rows authored under the legacy ``coupling:body_particle_attachment``
+custom frequency are also consumed by ADMM, so importers that write those
+attributes keep working; these legacy rows remain invisible to
+:class:`~newton.solvers.SolverVBD`.
+``SolverCoupledADMM.add_body_particle_attachment()`` is deprecated in favor of
+:meth:`newton.ModelBuilder.add_attachment_body_particle`, but keeps writing the
+legacy custom-row layout until it is removed.
 
 Contact coupling is enabled by adding one or more ``ContactPair`` values to
 ``SolverCoupledADMM.Config.contact_pairs``. A contact pair names two entries.
