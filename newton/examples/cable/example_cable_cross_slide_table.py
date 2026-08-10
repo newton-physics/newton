@@ -774,6 +774,7 @@ class Example:
             rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=256,
+            rigid_articulation_solve=getattr(args, "rigid_articulation_solve", "local"),
         )
 
         self.state_0 = self.model.state()
@@ -978,6 +979,12 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--rigid-articulation-solve",
+        choices=("local", "block_sparse_joints"),
+        default="local",
+    )
+    viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
