@@ -421,6 +421,16 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         # Kamino's capacity should be at least as large as the pipeline's capacity. Due to rounding up to the nearest multiple of the world count.
         self.assertGreaterEqual(solver._contacts_kamino.model_max_contacts_host, pipeline.rigid_contact_max)
 
+    def test_internal_collision_capacity_updates_model(self):
+        """Verify internal collision capacity updates the Newton model."""
+        model = self._make_three_world_model()
+
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
+        pipeline = newton.CollisionPipeline(model)
+
+        self.assertEqual(model.rigid_contact_max, solver._contacts_kamino.model_max_contacts_host)
+        self.assertEqual(pipeline.rigid_contact_max, solver._contacts_kamino.model_max_contacts_host)
+
     def test_external_collisions_preserve_explicit_rigid_contact_max(self):
         """Verify external collisions preserve an explicit contact capacity."""
         model = self._make_three_world_model()
