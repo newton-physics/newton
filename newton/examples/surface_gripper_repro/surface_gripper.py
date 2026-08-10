@@ -1241,7 +1241,14 @@ def seal_quality_kernel(
         sdf0 = pad_lip_sdf0[k]  # engaged: cached seated sdf0
         if preparing:
             sdf0 = sdf_mesh(mesh, wp.transform_point(preparing_anchor_body, lip), max_dist)  # preparing: recomputed live
-        dev = sdf_mesh(mesh, wp.transform_point(t_seal_body, lip), max_dist) - sdf0
+        if sdf0 >= max_dist:
+            pad_rms[pad] = -1.0  # lip point outside SDF search radius: result is unreliable
+            return
+        sdf_now = sdf_mesh(mesh, wp.transform_point(t_seal_body, lip), max_dist)
+        if sdf_now >= max_dist:
+            pad_rms[pad] = -1.0  # lip point outside SDF search radius: result is unreliable
+            return
+        dev = sdf_now - sdf0
         dev_sq += dev * dev
         count += 1
     if count > 0:
