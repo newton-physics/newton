@@ -88,6 +88,59 @@ def make_contact_sort_key(shape_a: int, shape_b: int, sort_sub_key: int) -> wp.i
 
 
 @wp.func
+def compute_contact_approach_speed(
+    shape_a: int,
+    shape_b: int,
+    point_a: wp.vec3,
+    point_b: wp.vec3,
+    normal_a_to_b: wp.vec3,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+) -> float:
+    """Return the closing speed of two shape points along a contact normal.
+
+    ``shape_linear_velocity`` is the world-space velocity of each shape
+    origin, not the body COM velocity. This makes the point-velocity
+    reconstruction exact even when a body's COM is offset from its origin.
+    """
+    origin_a = wp.transform_get_translation(shape_transform[shape_a])
+    origin_b = wp.transform_get_translation(shape_transform[shape_b])
+    velocity_a = shape_linear_velocity[shape_a] + wp.cross(shape_angular_velocity[shape_a], point_a - origin_a)
+    velocity_b = shape_linear_velocity[shape_b] + wp.cross(shape_angular_velocity[shape_b], point_b - origin_b)
+    return wp.max(-wp.dot(velocity_b - velocity_a, normal_a_to_b), 0.0)
+
+
+@wp.func
+def compute_contact_predictive_score(
+    shape_a: int,
+    shape_b: int,
+    point_a: wp.vec3,
+    point_b: wp.vec3,
+    normal_a_to_b: wp.vec3,
+    physical_separation: float,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    collision_update_dt: float,
+    max_speculative_extension: float,
+) -> float:
+    """Return predicted penetration after one collision-update horizon [m]."""
+    approach_speed = compute_contact_approach_speed(
+        shape_a,
+        shape_b,
+        point_a,
+        point_b,
+        normal_a_to_b,
+        shape_transform,
+        shape_linear_velocity,
+        shape_angular_velocity,
+    )
+    extension = wp.min(approach_speed * collision_update_dt, max_speculative_extension)
+    return extension - physical_separation
+
+
+@wp.func
 def contact_passes_gap_check(
     contact_data: ContactData,
 ) -> bool:
@@ -119,3 +172,44 @@ def contact_passes_gap_check(
     d = distance - total_separation_needed
 
     return d <= contact_data.gap_sum
+
+
+@wp.func
+def contact_passes_speculative_gap_check(
+    contact_data: ContactData,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    collision_update_dt: float,
+    max_speculative_extension: float,
+) -> bool:
+    """Return whether a contact is present now or predicted before the next collision pass."""
+    total_separation_needed = (
+        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
+    )
+    normal = wp.normalize(contact_data.contact_normal_a_to_b)
+    point_a = contact_data.contact_point_center - normal * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
+    )
+    point_b = contact_data.contact_point_center + normal * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
+    )
+    physical_separation = wp.dot(point_b - point_a, normal) - total_separation_needed
+    if physical_separation <= contact_data.gap_sum:
+        return True
+    return (
+        compute_contact_predictive_score(
+            contact_data.shape_a,
+            contact_data.shape_b,
+            point_a,
+            point_b,
+            normal,
+            physical_separation,
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            collision_update_dt,
+            max_speculative_extension,
+        )
+        >= 0.0
+    )
