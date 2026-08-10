@@ -3516,6 +3516,11 @@ def parse_usd(
                 # geometry, and an empty viewport is the honest result of that. Reach for
                 # ``force_show_colliders`` to inspect such a scene.
                 collider_is_visible = (force_show_colliders or _is_viewport_drawn(prim)) and not hide_collider_for_body
+                # Approximating a viewport-drawn collider splits off its authored topology
+                # as a visual shape (see the approximation pass below). That copy is subject
+                # to ``hide_collision_shapes`` as well, so that the flag does not turn into a
+                # no-op for exactly those colliders that carry ``physics:approximation``.
+                splits_off_visual_copy = load_visual_shapes and _is_viewport_drawn(prim) and not hide_collider_for_body
 
                 # Contact response precedence:
                 #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
@@ -3826,10 +3831,8 @@ def parse_usd(
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
                     # The mesh needs its render material when anything will draw it: either
                     # the collider itself is visible, or it is viewport geometry whose
-                    # authored topology is about to be split off as a visual shape. The
-                    # latter is not covered by collider_is_visible, which hide_collision_shapes
-                    # can clear while the visual copy is still produced.
-                    if collider_is_visible or (load_visual_shapes and _is_viewport_drawn(prim)):
+                    # authored topology is about to be split off as a visual shape.
+                    if collider_is_visible or splits_off_visual_copy:
                         # Drawn colliders should render with the same visual material metadata
                         # as visual-only mesh imports.
                         mesh = _get_mesh_with_visual_material(prim, path_name=path)
@@ -3890,7 +3893,7 @@ def parse_usd(
                                     if remeshing_method not in remeshing_queue:
                                         remeshing_queue[remeshing_method] = []
                                     remeshing_queue[remeshing_method].append(shape_id)
-                                    if _is_viewport_drawn(prim):
+                                    if splits_off_visual_copy:
                                         approximated_viewport_shapes.add(shape_id)
 
                 elif key == UsdPhysics.ObjectType.PlaneShape:

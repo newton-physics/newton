@@ -12238,6 +12238,40 @@ def Xform "Body" (
         self.assertFalse(flags & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_hide_collision_shapes_suppresses_approximated_visual_copy(self):
+        """Verify hide_collision_shapes=True also suppresses the visual split off by approximation.
+
+        Approximating a viewport-drawn collider preserves its authored topology as a
+        separate visual shape. That copy carries VISIBLE without COLLIDE_SHAPES, so the
+        viewer's collision toggle cannot reach it. ``hide_collision_shapes`` must
+        suppress it too, otherwise the flag silently does nothing for exactly those
+        colliders that carry ``physics:approximation``.
+        """
+        from pxr import UsdPhysics
+
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.9, 0.1, 0.2), roughness=0.55, metallic=0.25, add_visual_sphere=True
+        )
+        collision_prim = stage.GetPrimAtPath("/Body/CollisionMesh")
+        UsdPhysics.MeshCollisionAPI.Apply(collision_prim).GetApproximationAttr().Set("convexHull")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        path_shape_map = result["path_shape_map"]
+
+        collision_shape = path_shape_map["/Body/CollisionMesh"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+
+        # The copy must not be produced at all, not merely produced and hidden: only the
+        # visual sphere and the collider itself remain, matching the same asset without
+        # ``physics:approximation``.
+        self.assertEqual(builder.shape_count, 2)
+        drawn = [s for s in range(builder.shape_count) if builder.shape_flags[s] & ShapeFlags.VISIBLE]
+        self.assertEqual(drawn, [path_shape_map["/Body/VisualSphere"]])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_fallback_with_material(self):
         """Colliders with material stay visible when the body has no other visual shapes."""
         stage = self._create_stage_with_pbr_collision_mesh(
