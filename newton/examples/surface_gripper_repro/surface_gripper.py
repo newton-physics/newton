@@ -986,8 +986,14 @@ def _seat_body_pose(
     dSdf = -grad.(v + w X q) = -grad.V - (q X grad).w = [grad, q X grad].[v, w]
     We seek the twist that results in Sdf + dSdf = 0.
     We have more equations than unknowns so a least squares algorithm is employed.
-    (J^T*J) * (v, w) = J^T * residual"""
-
+    (J^T*J) * (v, w) = J^T * residual
+    Note: it is necessary to compute the signed distance and its gradient in the frame 
+    of the mesh.  The term (v + w X q) is, however, in the frame of body b.  It is 
+    therefore necessary to compute [grad, q X grad] in the frame of body b as well. 
+    We compute grad_mesh and sample_point_in_mesh and need to transform these into the 
+    frame of body b.
+    [grad, q X grad] = [T_bs.rotate_only(grad_mesh),  (T_bs.transform(sample_point_in_mesh) X T_bs.rotate_only(grad_mesh)]
+    """
     # T_bs and its rotation are constant for this body; precompute once before the Gauss-Newton loop.
     T_bs = body_b_mesh_xform[body_b]
     R_bs = wp.transform_get_rotation(T_bs)
