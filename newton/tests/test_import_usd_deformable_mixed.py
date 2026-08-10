@@ -477,11 +477,12 @@ class TestUSDDeformableMixed(unittest.TestCase):
 
             solver = newton.solvers.SolverVBD(model, iterations=10)
             state_0, state_1, control = model.state(), model.state(), model.control()
-            contacts = model.contacts()
+            collision_pipeline = newton.CollisionPipeline(model)
+            contacts = collision_pipeline.contacts()
             dt = 1.0 / 240.0
             for _ in range(20):
                 state_0.clear_forces()
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
                 solver.step(state_0, state_1, control, contacts, dt)
                 state_0, state_1 = state_1, state_0
 

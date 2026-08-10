@@ -45,8 +45,16 @@ Platform-Specific Requirements
 
 **Linux aarch64 (ARM64)**
 
-On ARM64 Linux systems (such as NVIDIA Jetson Thor and DGX Spark), installing the ``examples`` extras currently requires
-X11 development libraries to build ``imgui_bundle`` from source:
+On ARM64 Linux, the ``importers`` extra requires GLIBC 2.35 or newer because
+`usd-exchange <https://pypi.org/project/usd-exchange/>`__ publishes its Linux
+ARM64 wheels for ``manylinux_2_35``. This also applies to extras that include
+``importers``, such as ``examples`` and ``dev``. Distributions with an older
+GLIBC, including RHEL 9 with GLIBC 2.34, can install the base Newton package but
+cannot install these extras from the published wheels.
+
+Installing the ``examples`` extra on ARM64 Linux systems such as NVIDIA Jetson
+Thor and DGX Spark also requires X11 development libraries to build
+``imgui_bundle`` from source:
 
 .. code-block:: console
 
@@ -164,14 +172,15 @@ required dependencies installed by ``pip install newton``:
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     # Step the simulation
     for step in range(120):
         state_0.clear_forces()
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
         state_0, state_1 = state_1, state_0
 

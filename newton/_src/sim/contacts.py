@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import warp as wp
 from warp import DeviceLike as Devicelike
 
@@ -109,8 +111,9 @@ class Contacts:
     Names of optional extended contact attributes that are not allocated by default.
 
     These can be requested via :meth:`newton.ModelBuilder.request_contact_attributes` or
-    :meth:`newton.Model.request_contact_attributes` before calling :meth:`newton.Model.contacts` or
-    :meth:`newton.CollisionPipeline.contacts`.
+    :meth:`newton.Model.request_contact_attributes` before calling
+    :meth:`newton.CollisionPipeline.contacts`. When constructing :class:`newton.Contacts` directly,
+    pass the names via ``requested_attributes``.
 
     See :ref:`extended_contact_attributes` for details and usage.
     """
@@ -197,6 +200,7 @@ class Contacts:
             raise ValueError("contact_report=True requires contact_matching=True")
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
+        self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
         with wp.ScopedDevice(device):
             # One int32[2] array holding two independent contact counts: [0] rigid, [1] soft.
             # rigid_contact_count (the [0:1] view) and soft_contact_count (the [1:2] view) index
@@ -295,17 +299,15 @@ class Contacts:
                 self.rigid_contact_match_index = wp.full(rigid_contact_max, -1, dtype=wp.int32)
                 """Per-contact match index from frame-to-frame matching.
 
-                Values: ``>= 0`` matched old contact index;
-                :data:`newton.geometry.MATCH_NOT_FOUND` (``-1``) new contact;
-                :data:`newton.geometry.MATCH_BROKEN` (``-2``) key matched but
-                position/normal thresholds exceeded.
+                Non-negative elements index matching contacts in the previous sorted contact buffer.
+                Negative elements indicate new or broken contacts.
                 Shape (rigid_contact_max,), dtype int32."""
             else:
                 self.rigid_contact_match_index = None
 
             if contact_report:
                 self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
-                """Indices of new contacts in the current sorted buffer (where ``match_index < 0``).
+                """Indices of new contacts in the current sorted buffer.
 
                 Valid after the collision pipeline runs.
                 Shape (rigid_contact_max,), dtype int32."""
@@ -463,6 +465,16 @@ class Contacts:
         Returns the device on which the contact buffers are allocated.
         """
         return self.rigid_contact_count.device
+
+    @property
+    def contact_matching_mode(self) -> Literal["disabled", "latest", "sticky"]:
+        """Frame-to-frame rigid-contact matching mode associated with this buffer.
+
+        This read-only value is set by :meth:`newton.CollisionPipeline.contacts` and
+        refreshed by :meth:`newton.CollisionPipeline.collide` when a buffer is reused.
+        Directly constructed buffers report ``"disabled"`` until then.
+        """
+        return self._contact_matching_mode
 
     def _assert_particle_only_soft_contacts(self, solver_name: str):
         """Raise if these contacts include full-surface (edge/face) soft records.

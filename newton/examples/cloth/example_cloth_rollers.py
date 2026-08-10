@@ -222,7 +222,7 @@ class Example:
         target_local_y = target_world_z - cloth_offset_z
 
         # Build model with zero gravity
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
         # Generate cloth mesh with extension going directly to target
         self.cloth_verts, self.cloth_faces, self.spiral_rows, self.ext_rows = rolled_cloth_mesh(

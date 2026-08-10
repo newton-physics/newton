@@ -9,17 +9,21 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.core.shapes import GeoType
 from newton._src.solvers.kamino._src.core.state import StateKamino
 from newton._src.solvers.kamino._src.dynamics import DualProblem
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
+from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.models.builders import testing
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
@@ -28,6 +32,18 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton._src.solvers.kamino.tests.utils.sampling import sample_world_mask
+from newton.tests.utils import basics
+
+###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+BASE_HEIGHT = 0.5
+SIM_DT = 1.0 / 60.0
+UNIT_INERTIA = wp.mat33(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1)
 
 ###
 # Kernels
@@ -312,12 +328,13 @@ def step_solver(
     state_n: StateKamino,
     control: ControlKamino,
     contacts: ContactsKamino | None = None,
+    detector: CollisionDetector | None = None,
     dt: float = 0.001,
     show_progress: bool = False,
 ):
     start_time = time.time()
     for step in range(num_steps):
-        solver.step(state_in=state_p, state_out=state_n, control=control, contacts=contacts, dt=dt)
+        solver.step(state_in=state_p, state_out=state_n, control=control, contacts=contacts, detector=detector, dt=dt)
         wp.synchronize()
         state_p.copy_from(state_n)
         if show_progress:
@@ -365,6 +382,59 @@ class TestSolverKaminoConfig(unittest.TestCase):
         self.assertEqual(config.rotation_correction, "continuous")
         self.assertEqual(config.dynamics.linear_solver_type, "CR")
         self.assertEqual(config.padmm.warmstart_mode, "internal")
+
+
+class TestCollisionCapacityInitialization(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def _make_three_world_model(self) -> newton.Model:
+        source_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(source_builder)
+        basics.build_sphere_on_plane(builder=source_builder, z_offset=0.5)
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        builder.replicate(source_builder, world_count=3)
+        return builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+    def test_capacity_allocation_for_pipeline_allocated_after_kamino(self):
+        """Verify capacity allocation for a pipeline allocated after Kamino."""
+        model = self._make_three_world_model()
+
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=False))
+
+        pipeline = newton.CollisionPipeline(model)
+
+        # Kamino's capacity should be equal to the pipeline's capacity.
+        self.assertEqual(solver._contacts_kamino.model_max_contacts_host, pipeline.rigid_contact_max)
+
+    def test_capacity_allocation_for_pipeline_allocated_before_kamino(self):
+        """Verify capacity allocation for a pipeline allocated before Kamino."""
+        model = self._make_three_world_model()
+
+        pipeline = newton.CollisionPipeline(model)
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=False))
+
+        # Kamino's capacity should be at least as large as the pipeline's capacity. Due to rounding up to the nearest multiple of the world count.
+        self.assertGreaterEqual(solver._contacts_kamino.model_max_contacts_host, pipeline.rigid_contact_max)
+
+    def test_external_collisions_preserve_explicit_rigid_contact_max(self):
+        """Verify external collisions preserve an explicit contact capacity."""
+        model = self._make_three_world_model()
+        model.rigid_contact_max = 1000
+
+        solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=False))
+
+        self.assertEqual(model.rigid_contact_max, 1000)
+        self.assertEqual(solver._contacts_kamino.world_max_contacts_host, [334, 334, 334])
+        self.assertEqual(solver._contacts_kamino.model_max_contacts_host, 1002)
+
+        contacts = newton.CollisionPipeline(model).contacts()
+        with self.assertNoLogs(level="WARNING"):
+            solver.update_contacts(contacts, model.state())
 
 
 class TestSolverKaminoImpl(unittest.TestCase):
@@ -625,12 +695,13 @@ class TestSolverKaminoImpl(unittest.TestCase):
         base_body_idx = model.info.base_body_index.numpy().copy()
         for wid in range(model.size.num_worlds):
             base_idx = base_body_idx[wid]
-            np.testing.assert_allclose(
-                state_n.q_i.numpy()[base_idx],
-                base_q_0_np[wid],
-                rtol=rtol,
-                atol=atol,
-            )
+            if base_idx >= 0:
+                np.testing.assert_allclose(
+                    state_n.q_i.numpy()[base_idx],
+                    base_q_0_np[wid],
+                    rtol=rtol,
+                    atol=atol,
+                )
 
         # Step the solver a few times to change the state
         solver._reset()
@@ -968,11 +1039,69 @@ class TestSolverKaminoImpl(unittest.TestCase):
         # Check that state was correctly preserved or reset based on mask
         assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
+    def test_10_reset_warmstarting_for_select_worlds(self):
+        """Test resetting the contacts warmstarting cache for select worlds."""
+        # Create a heterogenous, contact-rich model
+        shape_types = [GeoType.SPHERE, GeoType.CAPSULE, GeoType.CYLINDER, GeoType.BOX, GeoType.CONE]
+        shape_types = [type_.name.lower() for type_ in shape_types]
+        shape_pairs = [(type1, type2) for type1 in shape_types for type2 in shape_types]
+        builder = testing.make_shape_pairs_builder(
+            shape_pairs=shape_pairs,
+            distance=0.0,
+            ground_box=True,
+            ground_z=-1.0,  # Ensures non-zero contact reactions after just a few steps
+        )
+        model = builder.finalize(device=self.default_device)
+
+        # Initialize the solver and step it a few times
+        contacts = ContactsKamino(model=model)
+        config = SolverKamino.Config()
+        config.padmm.warmstart_mode = "containers"
+        solver = SolverKaminoImpl(model=model, contacts=contacts, config=config)
+        state_p = model.state()
+        state_n = model.state()
+        control = model.control()
+        detector = CollisionDetector(model)
+        step_solver(
+            num_steps=10,
+            solver=solver,
+            state_p=state_p,
+            state_n=state_n,
+            control=control,
+            contacts=contacts,
+            detector=detector,
+        )
+
+        # Check that all worlds have contacts, and that most reactions / velocities are non-trivial
+        self.assertTrue(np.all(contacts.world_active_contacts.numpy() > 0))
+        num_active = contacts.model_active_contacts.numpy()[0]
+        reaction_norms = np.linalg.norm(contacts.reaction.numpy()[:num_active], axis=1)
+        velocity_norms = np.linalg.norm(contacts.velocity.numpy()[:num_active], axis=1)
+        self.assertTrue(np.count_nonzero(reaction_norms + velocity_norms) > 0.8 * num_active)
+
+        # Reset the solver internals (including warmstarting) with a non-trivial mask
+        rng = np.random.default_rng(self.seed)
+        world_mask_np = sample_world_mask(model.size.num_worlds, rng, target_inactive_rate=0.5)[0]
+        world_mask = wp.array(world_mask_np, dtype=wp.bool, device=self.default_device)
+        solver.reset(state=state_n, world_mask=world_mask, config=SolverKamino.ResetConfig.preserve())
+
+        # Run contact warmstarting, and check that contacts in reset worlds get cold-started
+        solver._ws_contacts.warmstart(model=model, data=solver.data, contacts=contacts)
+        reaction_norms = np.linalg.norm(contacts.reaction.numpy()[:num_active], axis=1)
+        velocity_norms = np.linalg.norm(contacts.velocity.numpy()[:num_active], axis=1)
+        contact_wid = contacts.wid.numpy()[:num_active]
+        contact_reset_mask = world_mask_np[contact_wid]
+        np.testing.assert_equal(reaction_norms[contact_reset_mask], 0.0)
+        np.testing.assert_equal(velocity_norms[contact_reset_mask], 0.0)
+
+        # Sanity check that not everything got cold-started
+        self.assertTrue(max(reaction_norms) + max(velocity_norms) > 0.0)
+
     ###
     # Test Step Operations
     ###
 
-    def test_09_step_multiple_worlds_from_initial_state_without_contacts(self):
+    def test_11_step_multiple_worlds_from_initial_state_without_contacts(self):
         """
         Test stepping multiple worlds solvers initialized
         uniformly from the default initial state multiple times.
@@ -1149,7 +1278,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         np.testing.assert_allclose(multi_state_n.q_j.numpy(), multi_final_q_j, rtol=rtol, atol=atol)
         np.testing.assert_allclose(multi_state_n.dq_j.numpy(), multi_final_dq_j, rtol=rtol, atol=atol)
 
-    def test_10_step_multiple_worlds_from_initial_state_with_contacts(self):
+    def test_12_step_multiple_worlds_from_initial_state_with_contacts(self):
         """
         Test stepping multiple world solvers initialized
         uniformly from the default initial state multiple times.
@@ -1333,6 +1462,98 @@ class TestSolverKaminoImpl(unittest.TestCase):
         np.testing.assert_allclose(multi_state_n.u_i.numpy(), multi_final_u_i, rtol=rtol, atol=atol)
         np.testing.assert_allclose(multi_state_n.q_j.numpy(), multi_final_q_j, rtol=rtol, atol=atol)
         np.testing.assert_allclose(multi_state_n.dq_j.numpy(), multi_final_dq_j, rtol=rtol, atol=atol)
+
+
+class TestSolverKaminoMasslessBodies(unittest.TestCase):
+    """Massless bodies are supported when welded to the world and rejected otherwise."""
+
+    def test_massless_body_welded_to_world_stays_at_rest(self):
+        """Verify a massless body welded to the world stays at rest, along with its welded child.
+
+        This is the ``world -> fixed -> base -> fixed -> link0`` topology produced by importing a
+        fixed-base URDF whose root link carries no inertial properties.
+        """
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        base_xform = wp.transform(wp.vec3(0.0, 0.0, BASE_HEIGHT), wp.quat_identity())
+        base = builder.add_link(xform=base_xform, mass=0.0, label="base")
+        link0 = builder.add_link(xform=base_xform, mass=2.0, inertia=UNIT_INERTIA, label="link0")
+        joint_base = builder.add_joint_fixed(parent=-1, child=base, parent_xform=base_xform)
+        joint_link0 = builder.add_joint_fixed(parent=base, child=link0)
+        builder.add_articulation([joint_base, joint_link0])
+        model = builder.finalize()
+
+        inv_mass = model.body_inv_mass.numpy()
+        self.assertEqual(inv_mass[base], 0.0)
+        self.assertGreater(inv_mass[link0], 0.0)
+
+        solver = SolverKamino(model)
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        # A spurious velocity on the massless base is unrecoverable, so it must be caught per step
+        # rather than only at the end, where it would have grown far beyond the tolerance.
+        for step in range(30):
+            state_0.clear_forces()
+            solver.step(state_0, state_1, control, contacts=None, dt=SIM_DT)
+            state_0, state_1 = state_1, state_0
+            np.testing.assert_allclose(
+                state_0.body_qd.numpy()[[base, link0]],
+                0.0,
+                atol=1.0e-5,
+                err_msg=f"welded chain gained velocity at step {step}",
+            )
+
+        np.testing.assert_allclose(state_0.body_q.numpy()[[base, link0]][:, 2], BASE_HEIGHT, atol=1.0e-5)
+
+    def test_massless_tip_behind_revolute_joint_is_rejected(self):
+        """Verify a massless tip that is not welded to the world is rejected at construction.
+
+        Kamino cannot simulate this model.
+
+        The tip reaches the world only through a revolute joint, so it is free to move yet cannot be
+        accelerated by every constraint reaction. Its missing response would propagate through the
+        weld and prevent physically meaningful motion of the massive link carrying it, so the model
+        must be rejected rather than simulated.
+        """
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        link_xform = wp.transform(wp.vec3(0.0, 0.0, BASE_HEIGHT), wp.quat_identity())
+        link0 = builder.add_link(xform=link_xform, mass=2.0, inertia=UNIT_INERTIA, label="link0")
+        tip = builder.add_link(xform=link_xform, mass=0.0, label="tip")
+        joint_link0 = builder.add_joint_revolute(parent=-1, child=link0, axis=newton.Axis.Y)
+        joint_tip = builder.add_joint_fixed(parent=link0, child=tip)
+        builder.add_articulation([joint_link0, joint_tip])
+        model = builder.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverKamino(model)
+
+        message = str(ctx.exception)
+        self.assertIn("singular inertial properties", message)
+        self.assertIn("'tip'", message)
+        self.assertNotIn("'link0'", message)
+
+    def test_partially_singular_tip_behind_revolute_joint_is_rejected(self):
+        """Verify a partially singular tip is rejected at construction."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        link_xform = wp.transform(wp.vec3(0.0, 0.0, BASE_HEIGHT), wp.quat_identity())
+        link0 = builder.add_link(xform=link_xform, mass=2.0, inertia=UNIT_INERTIA, label="link0")
+        tip = builder.add_link(xform=link_xform, mass=2.0, inertia=UNIT_INERTIA, label="tip")
+        joint_link0 = builder.add_joint_revolute(parent=-1, child=link0, axis=newton.Axis.Y)
+        joint_tip = builder.add_joint_fixed(parent=link0, child=tip)
+        builder.add_articulation([joint_link0, joint_tip])
+        model = builder.finalize()
+
+        inv_inertia = model.body_inv_inertia.numpy()
+        inv_inertia[tip] = np.diag(np.array([0.0, 1.0, 1.0], dtype=np.float32))
+        model.body_inv_inertia.assign(inv_inertia)
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverKamino(model)
+
+        message = str(ctx.exception)
+        self.assertIn("singular inverse inertia", message)
+        self.assertIn("'tip'", message)
 
 
 ###

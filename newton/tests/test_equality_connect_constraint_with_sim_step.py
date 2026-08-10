@@ -125,10 +125,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_link (body index 0 in Newton's list of bodies), fixed joint to world
@@ -774,12 +774,16 @@ class TestConnectConstraintJointMuJoCoCPU(TestConnectConstraintWithSimStepBase, 
         return True
 
     def _create_solver(self, model):
+        # MuJoCo 3.11 can terminate before its first iteration, so require one
+        # iteration to exercise CONNECT constraint convergence in this test.
         return SolverMuJoCo(
             model,
             disable_contacts=True,
             use_mujoco_cpu=True,
             separate_worlds=True,
             integrator="euler",
+            iterations=1,
+            tolerance=0.0,
         )
 
 
@@ -836,10 +840,10 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_body (body 0), fixed to world
@@ -1285,9 +1289,9 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
         """Build a model with a revolute loop joint and a FIXED loop joint.
 
         Topology per world:
-            Articulation: world -> fixed -> root_body -> rev_joint -> body_a -> rev_joint2 -> body_b
-            Revolute loop joint: body_b (parent) -> root_body (child), not in articulation
-            Fixed loop joint: body_a (parent) -> root_body (child), not in articulation
+            Articulation: world -> root_body -> body_a -> body_b -> body_c
+            Revolute loop joint: body_c (parent) -> root_body (child), not in articulation
+            Fixed loop joint: body_b (parent) -> root_body (child), not in articulation
 
         The revolute loop joint creates 2 CONNECT constraints.
         The fixed loop joint creates 1 WELD constraint.
@@ -1312,10 +1316,10 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for _w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_body (body 0), fixed to world
@@ -1346,21 +1350,30 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
                 custom_attributes={"mujoco:dof_ref": -0.3},
             )
 
-            builder.add_articulation(joints=[root_joint, joint0, joint1])
+            # body_c (body 3), connected to body_b via revolute joint
+            body_c = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            joint2 = builder.add_joint_revolute(
+                parent=body_b,
+                child=body_c,
+                axis=2,  # Z axis
+                armature=1000000000000.0,
+            )
 
-            # Revolute loop joint: body_b (parent) -> root_body (child)
+            builder.add_articulation(joints=[root_joint, joint0, joint1, joint2])
+
+            # Revolute loop joint: body_c (parent) -> root_body (child)
             # Creates 2 CONNECT constraints
             builder.add_joint_revolute(
-                parent=body_b,
+                parent=body_c,
                 child=root_body,
                 axis=2,  # Z axis
                 armature=0.0,
             )
 
-            # FIXED loop joint: body_a (parent) -> root_body (child)
+            # FIXED loop joint: body_b (parent) -> root_body (child)
             # Creates 1 WELD constraint
             builder.add_joint_fixed(
-                parent=body_a,
+                parent=body_b,
                 child=root_body,
                 parent_xform=wp.transform(wp.vec3(0.0, 0.2, 0.0), wp.quat_identity()),
                 child_xform=wp.transform(wp.vec3(0.0, 0.1, 0.0), wp.quat_identity()),

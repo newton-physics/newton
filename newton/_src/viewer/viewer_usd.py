@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 import warnings
 from typing import Any
 
@@ -83,6 +84,7 @@ class ViewerUSD(ViewerBase):
         up_axis: str = "Z",
         num_frames: int | None = 100,
         scaling: float = 1.0,
+        points_as_spheres: bool = True,
     ):
         """
         Initialize the USD viewer backend for Newton physics simulations.
@@ -93,6 +95,10 @@ class ViewerUSD(ViewerBase):
             up_axis: USD up axis, either 'Y' or 'Z'. Default is 'Z'.
             num_frames: Maximum number of frames to record. Default is 100. If None, recording is unlimited.
             scaling: Uniform scaling applied to the scene root. Default is 1.0.
+            points_as_spheres: When True, :meth:`log_points` renders points as a
+                :class:`~pxr.UsdGeom.PointInstancer` of :class:`~pxr.UsdGeom.Sphere`
+                prototypes scaled by ``radii``, instead of flat
+                :class:`~pxr.UsdGeom.Points` splats. Default is True.
 
         Raises:
             ImportError: If the usd-core package is not installed.
@@ -107,6 +113,7 @@ class ViewerUSD(ViewerBase):
         self.up_axis = up_axis
         self.scaling = scaling
         self.num_frames = num_frames
+        self.points_as_spheres = points_as_spheres
 
         # Create USD stage. If this output path is already registered in the
         # current process, reuse and clear the existing layer instead of
@@ -177,6 +184,27 @@ class ViewerUSD(ViewerBase):
         self.stage.SetDefaultPrim(self.root.GetPrim())
         self._frame_index = 0
         self._frame_count = 0
+
+    @staticmethod
+    def _save_texture_atomic(tex_array: np.ndarray, tex_path: str) -> None:
+        """Write a texture image atomically so readers never see a partial PNG."""
+        from PIL import Image
+
+        tex_dir = os.path.dirname(tex_path)
+        base_name = os.path.basename(tex_path)
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix=f".{base_name}.", suffix=".tmp", dir=tex_dir)
+            os.close(fd)
+            Image.fromarray(tex_array).save(tmp_path, format="PNG")
+            os.replace(tmp_path, tex_path)
+            tmp_path = None
+        finally:
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _remove_active_layer_prims(self):
         names = set(self._meshes) | set(self._instance_groups) | set(self._instancers) | set(self._points)
@@ -339,10 +367,7 @@ class ViewerUSD(ViewerBase):
             st_pv = pv_api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
             st_pv.Set(uvs_np)
 
-        # Create and bind a material only when there is authored appearance
-        # data. A UsdUVTexture shader with no "st" primvar would sample
-        # undefined data, so textures require UVs.
-        material = None
+        # A UsdUVTexture shader without an "st" primvar would sample undefined data.
         if valid_texture:
             material = self._get_preview_surface_material(
                 name,
@@ -351,7 +376,6 @@ class ViewerUSD(ViewerBase):
                 roughness=roughness,
                 metallic=metallic,
             )
-            self._texture_materials[name] = material
         elif color is not None or roughness is not None or metallic is not None or opacity is not None:
             material = self._get_preview_surface_material(
                 name,
@@ -360,6 +384,8 @@ class ViewerUSD(ViewerBase):
                 roughness=roughness,
                 metallic=metallic,
             )
+        else:
+            material = None
 
         if material is not None:
             self._bind_material(mesh_prim.GetPrim(), material)
@@ -381,7 +407,6 @@ class ViewerUSD(ViewerBase):
         material = self._get_preview_surface_material(mesh_name, texture=texture)
         if material is not None:
             self._bind_material(mesh_prim.GetPrim(), material)
-            self._texture_materials[mesh_name] = material
         return material
 
     def _resolve_texture_path(self, mesh_name: str, texture) -> str | None:
@@ -402,9 +427,7 @@ class ViewerUSD(ViewerBase):
         safe_name = mesh_name.replace("/", "_").replace("\\", "_")
         tex_path = os.path.join(tex_dir, f"_tex_{safe_name}.png")
         try:
-            from PIL import Image
-
-            Image.fromarray(tex_array).save(tex_path)
+            self._save_texture_atomic(tex_array, tex_path)
         except Exception as exc:
             warnings.warn(
                 f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. Mesh will render without texture.",
@@ -883,7 +906,11 @@ class ViewerUSD(ViewerBase):
         colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
-        """Log points as a USD `Points` primitive.
+        """Log points as a USD primitive.
+
+        By default, each point is an instance of a ``UsdGeom.Sphere`` prototype
+        under a ``UsdGeom.PointInstancer``. Set ``points_as_spheres=False`` to
+        write flat ``UsdGeom.Points`` splats instead.
 
         Args:
             name: Unique name for the point primitive.
@@ -893,13 +920,16 @@ class ViewerUSD(ViewerBase):
             hidden: Whether the point primitive is hidden.
 
         Returns:
-            Sdf.Path of the created/updated points primitive.
+            ``Sdf.Path`` of the created/updated primitive.
         """
         name = self._qualify(name)
 
         if points is None:
             path = self._get_path(name)
-            instancer = UsdGeom.Points.Get(self.stage, path)
+            if self.points_as_spheres:
+                instancer = UsdGeom.PointInstancer.Get(self.stage, path)
+            else:
+                instancer = UsdGeom.Points.Get(self.stage, path)
             if instancer:
                 instancer.GetVisibilityAttr().Set("invisible", self._frame_index)
                 return instancer.GetPath()
@@ -918,6 +948,45 @@ class ViewerUSD(ViewerBase):
         colors, color_interp = self._normalize_point_colors(colors, num_points)
 
         path = self._get_path(name)
+
+        if self.points_as_spheres:
+            if name not in self._instancers:
+                self._ensure_scopes_for_path(self.stage, path)
+                instancer = UsdGeom.PointInstancer.Define(self.stage, path)
+                sphere = UsdGeom.Sphere.Define(self.stage, instancer.GetPath().AppendChild("sphere"))
+                sphere.GetRadiusAttr().Set(1.0)
+                instancer.CreatePrototypesRel().SetTargets((sphere.GetPath(),))
+                if colors is not None:
+                    UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
+                        "displayColor", Sdf.ValueTypeNames.Color3fArray, color_interp, 1
+                    )
+                self._instancers[name] = instancer
+
+            instancer = self._instancers[name]
+
+            # Proto indices must be updated every frame: particle count can vary due to stream compaction.
+            instancer.GetProtoIndicesAttr().Set(Vt.IntArray([0] * num_points), self._frame_index)
+            instancer.GetPositionsAttr().Set(points.numpy(), self._frame_index)
+
+            # PointInstancer scales are vec3; broadcast scalar or per-point radius to (N, 3).
+            if np.isscalar(radii):
+                scales = np.full((num_points, 3), radii, dtype=np.float32)
+            else:
+                r = radii.numpy() if isinstance(radii, wp.array) else np.array(radii, dtype=np.float32)
+                scales = np.stack([r, r, r], axis=1)
+            instancer.GetScalesAttr().Set(scales, self._frame_index)
+
+            if colors is not None:
+                primvar = UsdGeom.PrimvarsAPI(instancer).GetPrimvar("displayColor")
+                if not primvar:
+                    primvar = UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
+                        "displayColor", Sdf.ValueTypeNames.Color3fArray, color_interp, 1
+                    )
+                primvar.Set(colors, self._frame_index)
+
+            instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
+            return instancer.GetPath()
+
         instancer = UsdGeom.Points.Get(self.stage, path)
         if not instancer:
             self._ensure_scopes_for_path(self.stage, path)
@@ -1025,25 +1094,25 @@ class ViewerUSD(ViewerBase):
     def _normalize_point_colors(self, colors, num_points):
         """Normalize point colors and return (values, interpolation token)."""
         if colors is None:
-            return None, "constant"
+            return None, UsdGeom.Tokens.constant
 
         if isinstance(colors, wp.array):
             colors = colors.numpy()
 
         if self._is_single_rgb_triplet(colors):
             colors_arr = np.asarray(colors, dtype=np.float32)
-            return colors_arr.reshape(1, 3), "constant"
+            return colors_arr.reshape(1, 3), UsdGeom.Tokens.constant
 
         if isinstance(colors, np.ndarray):
-            return colors, "vertex"
+            return colors, UsdGeom.Tokens.vertex
 
         if isinstance(colors, list | tuple):
             # Keep list/tuple inputs as-is for existing valid per-point color inputs.
             if len(colors) == num_points:
-                return colors, "vertex"
-            return np.asarray(colors), "vertex"
+                return colors, UsdGeom.Tokens.vertex
+            return np.asarray(colors), UsdGeom.Tokens.vertex
 
-        return np.asarray(colors), "vertex"
+        return np.asarray(colors), UsdGeom.Tokens.vertex
 
     @staticmethod
     def _ensure_scopes_for_path(stage: Usd.Stage, prim_path_str: str):

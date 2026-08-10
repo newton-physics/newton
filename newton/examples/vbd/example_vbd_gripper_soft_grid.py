@@ -56,7 +56,7 @@ PARAMS = {
     "fps": 60,
     "sim_substeps": 20,
     "solver_iterations": 5,
-    "gravity": -9.8,
+    "gravity": (0.0, 0.0, -9.8),
     "num_frames": 360,
     # water-tight rigid-soft contact. True = grip the grid by its diagonal edge (this
     # feature); False = legacy per-particle contact only (== main behavior), grid slips.

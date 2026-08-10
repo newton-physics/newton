@@ -108,6 +108,7 @@ def _quat_from_x_axis(direction: np.ndarray) -> wp.quat:
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -117,7 +118,7 @@ class Example:
         self.use_graph = bool(args.graph_capture)
         self.world_count = max(1, int(args.world_count))
 
-        template = newton.ModelBuilder(gravity=-9.81)
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverKamino.register_custom_attributes(template)
         self._joint_checks: list[tuple[int, np.ndarray, int, np.ndarray]] = []
         self._emit_four_bar(template)
@@ -125,7 +126,7 @@ class Example:
         bodies_per_world = template.body_count
         joints_per_world = template.joint_count
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.replicate(template, world_count=self.world_count)
         builder.add_ground_plane()
         self._expand_world_indices(bodies_per_world, joints_per_world)
@@ -173,7 +174,8 @@ class Example:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)

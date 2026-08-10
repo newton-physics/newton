@@ -306,6 +306,138 @@ def Xform "World"
             err_msg="Rotated quaternion mismatch",
         )
 
+    def test_site_loading_is_independent_of_visual_shapes(self):
+        stage = self._create_usd_stage(
+            """#usda 1.0
+def Xform "World" {
+    def Xform "link" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+        def Xform "frame" {
+            def Sphere "site" (prepend apiSchemas = ["NewtonSiteAPI"]) {
+                double radius = 0.1
+            }
+            def Sphere "visual" {
+                double radius = 0.1
+            }
+        }
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, load_sites=True, load_visual_shapes=False)
+        model = builder.finalize()
+
+        site = model.shape_label.index("/World/link/frame/site")
+        self.assertTrue(model.shape_flags.numpy()[site] & ShapeFlags.SITE)
+        self.assertNotIn("/World/link/frame/visual", model.shape_label)
+
+    def test_site_beneath_collider_is_loaded(self):
+        stage = self._create_usd_stage(
+            """#usda 1.0
+def Xform "World" {
+    def Xform "link" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+        def Cube "collider" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+            def Sphere "site" (prepend apiSchemas = ["NewtonSiteAPI"]) {
+                double radius = 0.1
+            }
+            def Sphere "visual" {
+                double radius = 0.1
+            }
+        }
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        site = model.shape_label.index("/World/link/collider/site")
+        collider = model.shape_label.index("/World/link/collider")
+        self.assertTrue(model.shape_flags.numpy()[site] & ShapeFlags.SITE)
+        self.assertFalse(model.shape_flags.numpy()[collider] & ShapeFlags.SITE)
+        self.assertNotIn("/World/link/collider/visual", model.shape_label)
+
+    def test_site_beneath_instance_is_loaded(self):
+        stage = self._create_usd_stage(
+            """#usda 1.0
+def Xform "SitePrototype" {
+    def Sphere "site" (prepend apiSchemas = ["NewtonSiteAPI"]) {
+        double radius = 0.1
+    }
+}
+def Xform "World" {
+    def Xform "link" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+        def Xform "siteInstance" (
+            instanceable = true
+            prepend references = </SitePrototype>
+        ) {
+        }
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        site = model.shape_label.index("/World/link/siteInstance/site")
+        self.assertTrue(model.shape_flags.numpy()[site] & ShapeFlags.SITE)
+
+    def test_site_on_typed_instance_is_loaded(self):
+        stage = self._create_usd_stage(
+            """#usda 1.0
+def Sphere "SitePrototype" (prepend apiSchemas = ["NewtonSiteAPI"]) {
+    double radius = 0.1
+}
+def Xform "World" {
+    def Xform "link" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+        def Sphere "siteInstance" (
+            instanceable = true
+            prepend references = </SitePrototype>
+        ) {
+        }
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        site = model.shape_label.index("/World/link/siteInstance")
+        self.assertTrue(model.shape_flags.numpy()[site] & ShapeFlags.SITE)
+
+    def test_site_beneath_instanceable_rigid_body_is_loaded(self):
+        stage = self._create_usd_stage(
+            """#usda 1.0
+def Xform "LinkPrototype" {
+    def Sphere "site" (prepend apiSchemas = ["NewtonSiteAPI"]) {
+        double radius = 0.1
+    }
+}
+def Xform "World" {
+    def Xform "link" (
+        instanceable = true
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+        prepend references = </LinkPrototype>
+    ) {
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        site = model.shape_label.index("/World/link/site")
+        self.assertTrue(model.shape_flags.numpy()[site] & ShapeFlags.SITE)
+
     def test_site_without_mjcsite_api(self):
         """Test that shapes without MjcSiteAPI are not treated as sites."""
         usd_content = """#usda 1.0
@@ -362,6 +494,38 @@ def Xform "World"
         self.assertEqual(site_count, 1, "Should have exactly 1 site")
         self.assertFalse(regular_is_site, "regular_sphere should not be a site")
         self.assertTrue(site_is_site, "site_sphere should be a site")
+
+    def test_axial_site_scale_uses_authored_axis(self):
+        cases = (
+            ("X", (2, 3, 4), (0.4, 0.5, 0.0)),
+            ("Y", (2, 4, 3), (0.3, 1.0, 0.0)),
+            ("Z", (3, 4, 2), (0.4, 0.5, 0.0)),
+        )
+        for shape in ("Capsule", "Cylinder", "Cone"):
+            for axis, scale, expected in cases:
+                with self.subTest(shape=shape, axis=axis):
+                    stage = self._create_usd_stage(
+                        f"""#usda 1.0
+def Xform "World" {{
+    def Xform "link" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {{
+        def {shape} "site" (prepend apiSchemas = ["NewtonSiteAPI"]) {{
+            uniform token axis = "{axis}"
+            double radius = 0.1
+            double height = 0.5
+            float3 xformOp:scale = {scale}
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+        }}
+    }}
+}}
+"""
+                    )
+
+                    builder = newton.ModelBuilder()
+                    builder.add_usd(stage)
+                    model = builder.finalize()
+
+                    site = model.shape_label.index("/World/link/site")
+                    np.testing.assert_allclose(model.shape_scale.numpy()[site], expected)
 
 
 if __name__ == "__main__":

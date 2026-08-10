@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 from collections import Counter
 from enum import IntFlag, auto
 
@@ -12,8 +13,12 @@ import warp.examples
 import newton
 from newton import GeoType
 from newton._src.geometry import create_mesh_terrain
-from newton._src.geometry.flags import ParticleFlags, ShapeFlags
-from newton._src.geometry.kernels import create_soft_contacts, mesh_sdf
+from newton._src.geometry.flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
+from newton._src.geometry.kernels import (
+    create_soft_contacts,
+    mesh_sdf,
+    resolve_mesh_sign_method,
+)
 from newton._src.geometry.sdf_texture import TextureSDFData
 from newton._src.geometry.soft_contacts_sdf import (
     SDF_EDGE_ITERS,
@@ -27,9 +32,12 @@ from newton._src.geometry.soft_contacts_sdf import (
     optimize_face_sdf,
 )
 from newton._src.sim.collide import (
+    CollisionPipeline,
     _build_soft_edge_rigid_contact_pairs,
     _build_soft_face_rigid_contact_pairs,
+    _build_soft_particle_rigid_contact_pairs,
     _compute_per_world_shape_pairs_max,
+    _count_soft_particle_rigid_contact_pairs,
     _estimate_rigid_contact_max,
 )
 from newton._src.utils.heightfield import HeightfieldData
@@ -95,7 +103,7 @@ class CollisionSetup:
         self.sdf_max_resolution_b = sdf_max_resolution_b
         self._device = device
 
-        self.builder = newton.ModelBuilder(gravity=0.0)
+        self.builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Set contact margin to match previous test expectations
         # Note: margins are now summed (margin_a + margin_b), so we use half the previous value
         self.builder.rigid_gap = 0.005
@@ -239,8 +247,38 @@ devices = get_cuda_test_devices(mode="basic")
 
 
 class TestCollisionPipeline(unittest.TestCase):
+    def test_model_collision_helpers_deprecated(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            contacts = model.contacts(collision_pipeline=pipeline)
+            returned_contacts = model.collide(state, contacts, collision_pipeline=pipeline)
+
+        self.assertIs(returned_contacts, contacts)
+        self.assertIs(model._collision_pipeline, pipeline)
+        self.assertEqual(len(caught), 2)
+        self.assertTrue(all(item.category is DeprecationWarning for item in caught))
+        self.assertTrue(all(item.filename == __file__ for item in caught))
+        self.assertIn("pipeline.contacts()", str(caught[0].message))
+        self.assertIn("pipeline.collide(state, contacts)", str(caught[1].message))
+
+    def test_deprecated_model_collide_allocates_contacts(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+
+        with self.assertWarnsRegex(DeprecationWarning, r"pipeline\.collide"):
+            contacts = model.collide(model.state())
+
+        self.assertIsInstance(contacts, newton.Contacts)
+
     def test_soft_contact_max_zero_disables_soft_contact_generation(self):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
         builder.add_particle(pos=(0.0, 0.0, 0.025), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
         model = builder.finalize(device="cpu")
@@ -262,6 +300,31 @@ class TestCollisionPipeline(unittest.TestCase):
 
         self.assertEqual(disabled_contacts.soft_contact_max, 0)
         self.assertEqual(int(disabled_contacts.soft_contact_count.numpy()[0]), 0)
+
+
+def test_collision_pipeline_first_call_capture(test, device):
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+    builder.add_shape_sphere(body, radius=1.0)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state = model.state()
+
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(state, contacts)
+
+    wp.capture_launch(capture.graph)
+    test.assertGreater(contacts.rigid_contact_count.numpy()[0], 0)
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_collision_pipeline_first_call_capture",
+    test_collision_pipeline_first_call_capture,
+    devices=get_cuda_test_devices(mode="basic"),
+)
 
 
 # Collision pipeline tests - now supports both MESH and CONVEX_MESH
@@ -499,6 +562,69 @@ for mode_name, test_func in mesh_mesh_sdf_tests:
         )
 
 
+def test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage(test, device):
+    """Texture-SDF uncertainty keeps near-margin contacts in the preferred reduction tier."""
+    vertices = np.array(
+        [
+            [-0.10, -0.10, 0.50005],
+            [0.10, -0.10, 0.50005],
+            [0.00, 0.10, 0.50005],
+            [0.15, -0.10, 0.50500],
+            [0.35, -0.10, 0.50500],
+            [0.25, 0.10, 0.50500],
+        ],
+        dtype=np.float32,
+    )
+    probe_mesh = newton.Mesh(vertices, np.arange(6, dtype=np.int32), compute_inertia=False)
+    sdf_mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    sdf_mesh.build_sdf(max_resolution=64, device=device)
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, gap=0.01, margin=0.0)
+    builder.add_shape_mesh(body, mesh=probe_mesh, cfg=cfg)
+    builder.add_shape_mesh(-1, mesh=sdf_mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        deterministic=True,
+        rigid_contact_max=128,
+        max_triangle_pairs=128,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    points = contacts.rigid_contact_point0.numpy()[:count]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    top_face_points = points[normals[:, 2] < -0.99]
+
+    # All three directional representatives from the near-margin triangle must
+    # survive. With an exact zero-width inner tier, only two survive and the
+    # positive-X representative flickers into the gap-only outer tier.
+    near_margin_points = top_face_points[top_face_points[:, 2] < 0.501]
+    test.assertEqual(len(near_margin_points), 3)
+    test.assertTrue(np.any(near_margin_points[:, 0] > 0.09))
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage",
+    test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage,
+    devices=devices,
+)
+
+
 # ============================================================================
 # Mesh sign query regressions
 # ============================================================================
@@ -522,12 +648,8 @@ def _query_mesh_signs(
     parity = wp.mesh_query_point_sign_parity(mesh, p, max_dist)
     parity_sign[i] = parity.sign if parity.result else 0.0
 
-    sign = float(0.0)
-    face = int(0)
-    u = float(0.0)
-    v = float(0.0)
-    normal_hit = wp.mesh_query_point_sign_normal(mesh, p, max_dist, sign, face, u, v)
-    normal_sign[i] = sign if normal_hit else 0.0
+    normal = wp.mesh_query_point_sign_normal(mesh, p, max_dist)
+    normal_sign[i] = normal.sign if normal.result else 0.0
 
 
 @wp.kernel
@@ -539,6 +661,15 @@ def _query_mesh_sdf(
 ):
     i = wp.tid()
     distances[i] = mesh_sdf(mesh, points[i], max_dist)
+
+
+@wp.kernel
+def _resolve_mesh_sign_methods(
+    mesh_properties: wp.array[wp.int32],
+    methods: wp.array[wp.int32],
+):
+    i = wp.tid()
+    methods[i] = resolve_mesh_sign_method(mesh_properties[i])
 
 
 @wp.func
@@ -686,6 +817,59 @@ def _sample_thin_gap_points(sample_count: int = 8192) -> np.ndarray:
     return points
 
 
+def _make_open_square() -> tuple[np.ndarray, np.ndarray]:
+    vertices = np.array(
+        [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    return vertices, faces
+
+
+def _make_open_box() -> tuple[np.ndarray, np.ndarray]:
+    """Unit box centered at the origin with the +z (top) face removed.
+
+    A non-watertight mesh whose interior is still well defined below the
+    opening: parity ray-casts leak out through the missing face and wrongly sign
+    points near the opening, whereas the pseudo-normal stays correct.
+    """
+    vertices = np.array(
+        [
+            [-0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5],
+            [0.5, 0.5, -0.5],
+            [-0.5, 0.5, -0.5],
+            [-0.5, -0.5, 0.5],
+            [0.5, -0.5, 0.5],
+            [0.5, 0.5, 0.5],
+            [-0.5, 0.5, 0.5],
+        ],
+        dtype=np.float32,
+    )
+    # Outward-facing (CCW) triangles for every face except the top (4, 5, 6, 7).
+    faces = np.array(
+        [
+            [0, 2, 1],
+            [0, 3, 2],  # -z
+            [0, 1, 5],
+            [0, 5, 4],  # -y
+            [1, 2, 6],
+            [1, 6, 5],  # +x
+            [2, 3, 7],
+            [2, 7, 6],  # +y
+            [3, 0, 4],
+            [3, 4, 7],  # -x
+        ],
+        dtype=np.int32,
+    )
+    return vertices, faces
+
+
 def test_mixed_winding_convex_pile_contact_normal(test, device):
     vertices, faces = _make_mixed_winding_convex_pile_proxy()
     mesh = _make_warp_mesh(vertices, faces, device)
@@ -726,6 +910,8 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             wp.array([int(GeoType.CONVEX_MESH)], dtype=wp.int32, device=device),
             wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
             wp.array([mesh.id], dtype=wp.uint64, device=device),
+            # Tagged watertight so the sign method resolves to parity.
+            wp.array([int(MeshProperties.WATERTIGHT)], dtype=wp.int32, device=device),
             wp.array([-1], dtype=wp.int32, device=device),
             0.0,
             wp.array([0.0], dtype=wp.float32, device=device),
@@ -817,6 +1003,171 @@ def test_parity_sign_accuracy_exceeds_normal_query(test, device):
     )
 
 
+class _CountingMesh(newton.Mesh):
+    """Mesh subclass that counts reads of its ``is_watertight`` property."""
+
+    watertight_query_count = 0
+
+    @property
+    def is_watertight(self):
+        self.watertight_query_count += 1
+        return super().is_watertight
+
+
+def test_model_mesh_properties_track_watertight(test, device):
+    open_vertices, open_faces = _make_open_square()
+    closed_vertices, closed_faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+
+    open_mesh = newton.Mesh(open_vertices, open_faces, compute_inertia=False)
+    closed_mesh = _CountingMesh(closed_vertices, closed_faces, compute_inertia=False)
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    open_shape = builder.add_shape_mesh(body=-1, mesh=open_mesh)
+    closed_shape = builder.add_shape_mesh(body=-1, mesh=closed_mesh)
+    model = builder.finalize(device=device)
+
+    mesh_properties = model._shape_mesh_properties.numpy()
+    test.assertFalse(int(mesh_properties[open_shape]) & MeshProperties.WATERTIGHT)
+    test.assertTrue(int(mesh_properties[closed_shape]) & MeshProperties.WATERTIGHT)
+    test.assertEqual(closed_mesh.watertight_query_count, 1)
+
+    CollisionPipeline(model)
+    test.assertEqual(closed_mesh.watertight_query_count, 1)
+
+
+def test_visual_only_mesh_properties_skip_watertight_query(test, device):
+    vertices, faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+
+    mesh = _CountingMesh(vertices, faces, compute_inertia=False)
+    cfg = newton.ModelBuilder.ShapeConfig(
+        density=0.0,
+        has_shape_collision=False,
+        has_particle_collision=False,
+        is_visible=True,
+    )
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    shape = builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    mesh_properties = model._shape_mesh_properties.numpy()
+    test.assertFalse(int(mesh_properties[shape]) & MeshProperties.WATERTIGHT)
+    test.assertEqual(mesh.watertight_query_count, 0)
+
+
+def test_resolve_mesh_sign_method_from_properties(test, device):
+    """The runtime sign method is a pure function of the stored mesh
+    properties: parity for watertight meshes, pseudo-normal otherwise."""
+    mesh_properties = wp.array([0, int(MeshProperties.WATERTIGHT)], dtype=wp.int32, device=device)
+    methods = wp.empty(2, dtype=wp.int32, device=device)
+
+    wp.launch(_resolve_mesh_sign_methods, dim=2, inputs=[mesh_properties, methods], device=device)
+
+    methods_np = methods.numpy()
+    test.assertEqual(int(methods_np[0]), MeshSignMethod.NORMAL)
+    test.assertEqual(int(methods_np[1]), MeshSignMethod.PARITY)
+
+
+def test_build_sdf_sign_method_passthrough(test, device):
+    """Mesh.build_sdf forwards sign_method to SDF.create_from_mesh."""
+    vertices, faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+    mesh = newton.Mesh(vertices, faces, compute_inertia=False)
+
+    with test.assertRaisesRegex(ValueError, "sign_method"):
+        mesh.build_sdf(max_resolution=8, sign_method="bogus", device=device)
+
+    mesh.build_sdf(max_resolution=8, sign_method="normal", device=device)
+    test.assertIsNotNone(mesh.sdf)
+
+
+def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties: int) -> np.ndarray:
+    """Run ``create_soft_contacts`` for one particle against an open-box mesh and
+    return the resulting world-space contact normal (asserting a hit)."""
+    count = wp.zeros(1, dtype=wp.int32, device=device)
+    contact_particle = wp.empty(1, dtype=wp.int32, device=device)
+    contact_indices = wp.empty(1, dtype=wp.vec3i, device=device)
+    contact_barycentric = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_shape = wp.empty(1, dtype=wp.int32, device=device)
+    contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_tids = wp.empty(1, dtype=wp.int32, device=device)
+    wp.launch(
+        create_soft_contacts,
+        dim=1,
+        inputs=[
+            wp.array([wp.vec2i(0, 0)], dtype=wp.vec2i, device=device),
+            points,
+            wp.array([0.4], dtype=wp.float32, device=device),
+            wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=wp.transform, device=device),
+            wp.array([wp.transform()], dtype=wp.transform, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.array([int(GeoType.MESH)], dtype=wp.int32, device=device),
+            wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
+            wp.array([mesh_id], dtype=wp.uint64, device=device),
+            wp.array([mesh_properties], dtype=wp.int32, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            0.0,
+            wp.array([0.0], dtype=wp.float32, device=device),
+            1,
+            wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=HeightfieldData, device=device),
+            wp.empty(0, dtype=wp.float32, device=device),
+        ],
+        outputs=[
+            count,
+            contact_particle,
+            contact_indices,
+            contact_barycentric,
+            contact_shape,
+            contact_body_pos,
+            contact_body_vel,
+            contact_normal,
+            contact_tids,
+        ],
+        device=device,
+    )
+    test.assertEqual(int(count.numpy()[0]), 1)
+    return np.asarray(contact_normal.numpy()[0], dtype=np.float32)
+
+
+def test_open_mesh_soft_contact_uses_normal_sign(test, device):
+    """End-to-end soft contact against an open (non-watertight) mesh.
+
+    Reproduces issue #3242 at the contact level: a particle just below the
+    missing top face of an open box is signed incorrectly by parity (its ray
+    leaks out through the opening), which inverts the contact response. The
+    automatically selected normal method signs it correctly; a mesh wrongly
+    tagged watertight resolves to parity and flips the contact normal to the
+    opposite direction.
+    """
+    vertices, faces = _make_open_box()
+    mesh = _make_warp_mesh(vertices, faces, device)
+
+    # Interior point near the opening whose unique closest wall is +x at x=0.5.
+    points = wp.array(np.array([[0.25, 0.0, 0.3]], dtype=np.float32), dtype=wp.vec3, device=device)
+
+    parity_sign = wp.zeros(1, dtype=wp.float32, device=device)
+    normal_sign = wp.zeros(1, dtype=wp.float32, device=device)
+    wp.launch(_query_mesh_signs, dim=1, inputs=[mesh.id, points, 10.0, parity_sign, normal_sign], device=device)
+    # Parity wrongly signs the interior point as outside; normal correctly reports inside.
+    test.assertGreater(float(parity_sign.numpy()[0]), 0.0)
+    test.assertLess(float(normal_sign.numpy()[0]), 0.0)
+
+    # Open mesh (mesh_properties = 0) -> normal method: the contact normal
+    # points out through the nearest wall (+x), which is correct.
+    auto_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, 0)
+    test.assertGreater(float(np.dot(auto_normal, np.array([1.0, 0.0, 0.0], dtype=np.float32))), 0.99)
+
+    # A mesh wrongly tagged watertight resolves to parity, which inverts the
+    # sign and therefore the contact normal.
+    parity_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, int(MeshProperties.WATERTIGHT))
+    test.assertLess(float(np.dot(auto_normal, parity_normal)), -0.99)
+
+
 add_function_test(
     TestMeshSignQueries,
     "test_mixed_winding_convex_pile_contact_normal",
@@ -826,8 +1177,43 @@ add_function_test(
 )
 add_function_test(
     TestMeshSignQueries,
+    "test_open_mesh_soft_contact_uses_normal_sign",
+    test_open_mesh_soft_contact_uses_normal_sign,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_build_sdf_sign_method_passthrough",
+    test_build_sdf_sign_method_passthrough,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
     "test_parity_sign_accuracy_exceeds_normal_query",
     test_parity_sign_accuracy_exceeds_normal_query,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_model_mesh_properties_track_watertight",
+    test_model_mesh_properties_track_watertight,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_visual_only_mesh_properties_skip_watertight_query",
+    test_visual_only_mesh_properties_skip_watertight_query,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_resolve_mesh_sign_method_from_properties",
+    test_resolve_mesh_sign_method_from_properties,
     devices=devices,
     check_output=False,
 )
@@ -851,7 +1237,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         broad_phase: Broad phase algorithm to test (NXN or SAP).
     """
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = 0.01
         # Two overlapping spheres (same position so they definitely overlap)
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
@@ -903,7 +1289,7 @@ def test_collision_filter_consistent_across_broadphases(test, device):
     EXPLICIT, NXN, and SAP all report exactly the same set of contacting shape pairs.
     """
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = 0.01
 
         # Three overlapping spheres at the same position
@@ -998,7 +1384,7 @@ def test_rigid_contact_normal_sphere_sphere(test, device, broad_phase: str):
         y_offsets = [0.0, 3.0, 6.0, 9.0]
         expect_contact = [True, True, True, False]
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = gap
 
         positions = []
@@ -1102,6 +1488,76 @@ for bp_name in ("explicit", "nxn", "sap"):
     )
 
 
+def _quat_to_rotation_matrix(quaternion):
+    """Convert an xyzw quaternion to a NumPy rotation matrix."""
+    quaternion = np.asarray([quaternion[i] for i in range(4)], dtype=np.float64)
+    quaternion /= np.linalg.norm(quaternion)
+    x, y, z, w = quaternion
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ]
+    )
+
+
+def _assert_box_face_manifold(test, contacts, poses_and_sizes):
+    """Validate the complete four-corner contact contract for two stacked boxes."""
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertEqual(count, 4, f"Expected 4 face-corner contacts, got {count}")
+
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    points0 = contacts.rigid_contact_point0.numpy()[:count]
+    points1 = contacts.rigid_contact_point1.numpy()[:count]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+
+    np.testing.assert_array_equal(shape0, np.zeros(count, dtype=np.int32))
+    np.testing.assert_array_equal(shape1, np.ones(count, dtype=np.int32))
+
+    position0, orientation0, half_extents0 = poses_and_sizes[0]
+    position1, orientation1, half_extents1 = poses_and_sizes[1]
+    position0 = np.asarray([position0[i] for i in range(3)], dtype=np.float64)
+    position1 = np.asarray([position1[i] for i in range(3)], dtype=np.float64)
+    half_extents0 = np.asarray([half_extents0[i] for i in range(3)], dtype=np.float64)
+    half_extents1 = np.asarray([half_extents1[i] for i in range(3)], dtype=np.float64)
+    rotation0 = _quat_to_rotation_matrix(orientation0)
+    rotation1 = _quat_to_rotation_matrix(orientation1)
+
+    tangent_half_extents = np.minimum(half_extents0, half_extents1)
+    expected_point0 = np.array(
+        [
+            [-tangent_half_extents[0], half_extents0[1], -tangent_half_extents[2]],
+            [-tangent_half_extents[0], half_extents0[1], tangent_half_extents[2]],
+            [tangent_half_extents[0], half_extents0[1], -tangent_half_extents[2]],
+            [tangent_half_extents[0], half_extents0[1], tangent_half_extents[2]],
+        ]
+    )
+    expected_point1 = expected_point0.copy()
+    expected_point1[:, 1] = -half_extents1[1]
+
+    tangent_points0 = np.round(points0[:, (0, 2)], decimals=5)
+    tangent_points1 = np.round(points1[:, (0, 2)], decimals=5)
+    order0 = np.lexsort((tangent_points0[:, 1], tangent_points0[:, 0]))
+    order1 = np.lexsort((tangent_points1[:, 1], tangent_points1[:, 0]))
+    np.testing.assert_allclose(points0[order0], expected_point0, atol=2.0e-5)
+    np.testing.assert_allclose(points1[order1], expected_point1, atol=2.0e-5)
+    np.testing.assert_allclose(points0[:, (0, 2)], points1[:, (0, 2)], atol=2.0e-5)
+
+    np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1.0e-6)
+    np.testing.assert_allclose(normals, np.tile([0.0, 1.0, 0.0], (count, 1)), atol=1.0e-5)
+
+    points0_world = points0 @ rotation0.T + position0
+    points1_world = points1 @ rotation1.T + position1
+    actual_separation = np.sum((points1_world - points0_world) * normals, axis=1)
+    support0 = np.abs(normals @ rotation0) @ half_extents0
+    support1 = np.abs(normals @ rotation1) @ half_extents1
+    expected_separation = (normals @ (position1 - position0)) - support0 - support1
+    np.testing.assert_allclose(actual_separation, expected_separation, atol=2.0e-5)
+    test.assertTrue(np.all(actual_separation <= 0.0), f"Expected overlapping witnesses, got {actual_separation}")
+
+
 def test_box_box_quaternion_perturbation(test, device, broad_phase: str):
     """Verify box-box contacts are correct under tiny quaternion perturbation.
 
@@ -1162,6 +1618,93 @@ for bp_name in ("explicit", "nxn", "sap"):
         TestRigidContactNormal,
         f"test_box_box_quaternion_perturbation_{bp_name}",
         test_box_box_quaternion_perturbation,
+        devices=devices,
+        broad_phase=bp_name,
+    )
+
+
+def test_box_box_solver_drift_manifold(test, device, broad_phase: str):
+    """Preserve a face manifold under sub-microradian solver drift.
+
+    The transforms capture two adjacent boxes immediately before an aligned
+    XPBD stack lost its four-point manifold and collapsed.
+    """
+    with wp.ScopedDevice(device):
+        poses_and_sizes = (
+            (
+                wp.vec3(2.22675084e-7, 2.49728513, -9.83917175e-7),
+                wp.quat(-8.44083345e-8, -1.98136689e-8, 3.19972909e-10, 1.0),
+                wp.vec3(0.5, 0.5, 0.5),
+            ),
+            (
+                wp.vec3(3.51331039e-7, 3.49677420, -1.27835642e-6),
+                wp.quat(-8.78333211e-8, -2.35374653e-8, -7.91500110e-9, 1.0),
+                wp.vec3(0.5, 0.5, 0.5),
+            ),
+        )
+
+        builder = newton.ModelBuilder()
+        for position, orientation, half_extents in poses_and_sizes:
+            body = builder.add_body(xform=wp.transform(position, orientation))
+            builder.add_shape_box(body=body, hx=half_extents[0], hy=half_extents[1], hz=half_extents[2])
+
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        _assert_box_face_manifold(test, contacts, poses_and_sizes)
+
+
+for bp_name in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestRigidContactNormal,
+        f"test_box_box_solver_drift_manifold_{bp_name}",
+        test_box_box_solver_drift_manifold,
+        devices=devices,
+        broad_phase=bp_name,
+    )
+
+
+def test_unequal_box_box_solver_drift_manifold(test, device, broad_phase: str):
+    """Preserve a face manifold between unequal boxes under solver drift.
+
+    The transforms capture an initially aligned XPBD stack at the substep where
+    its four-point manifold collapsed to one tilted contact and catapulted the
+    upper box.
+    """
+    with wp.ScopedDevice(device):
+        poses_and_sizes = (
+            (
+                wp.vec3(3.7335610e-9, 4.9998292e-1, 3.5263259e-8),
+                wp.quat(-2.1688921e-8, -5.7160970e-10, -2.0992164e-10, 1.0),
+                wp.vec3(1.0, 0.5, 1.0),
+            ),
+            (
+                wp.vec3(6.4867449e-9, 1.4999746, 9.9460351e-8),
+                wp.quat(-2.5269783e-8, 6.4437003e-8, 3.1298550e-9, 1.0),
+                wp.vec3(0.5, 0.5, 0.5),
+            ),
+        )
+
+        builder = newton.ModelBuilder()
+        for position, orientation, half_extents in poses_and_sizes:
+            body = builder.add_body(xform=wp.transform(position, orientation))
+            builder.add_shape_box(body=body, hx=half_extents[0], hy=half_extents[1], hz=half_extents[2])
+
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        _assert_box_face_manifold(test, contacts, poses_and_sizes)
+
+
+for bp_name in ("explicit", "nxn", "sap"):
+    add_function_test(
+        TestRigidContactNormal,
+        f"test_unequal_box_box_solver_drift_manifold_{bp_name}",
+        test_unequal_box_box_solver_drift_manifold,
         devices=devices,
         broad_phase=bp_name,
     )
@@ -1299,9 +1842,11 @@ class TestParticleShapeContacts(unittest.TestCase):
         builder.add_world(shape_builder)
         model = builder.finalize(device="cpu")
 
-        contacts = model.collide(model.state())
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
 
-        self.assertEqual(model._collision_pipeline.soft_rigid_contact_pair_count, 0)
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 0)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
 
     def test_global_shape_contacts_particles_in_all_worlds(self):
@@ -1314,11 +1859,54 @@ class TestParticleShapeContacts(unittest.TestCase):
         builder.add_world(particle_builder)
         model = builder.finalize(device="cpu")
 
-        contacts = model.contacts()
-        model.collide(model.state(), contacts)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
 
-        self.assertEqual(model._collision_pipeline.soft_rigid_contact_pair_count, 2)
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
+
+    def test_particle_shape_pair_count_matches_built_pairs(self):
+        """Verify the offset-only pair count matches the materialized particle-shape pair list.
+
+        ``_count_soft_particle_rigid_contact_pairs`` derives its result from the CSR world offsets
+        alone, so it must agree exactly with what ``_build_soft_particle_rigid_contact_pairs`` emits.
+        """
+
+        def add_entities(builder, shapes, particles, z):
+            for i in range(shapes):
+                builder.add_shape_sphere(
+                    body=-1, xform=wp.transform(wp.vec3(float(i), 0.0, z), wp.quat_identity()), radius=0.1
+                )
+            for i in range(particles):
+                builder.add_particle(pos=wp.vec3(0.0, float(i), z), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+        # (label, per-world (shapes, particles), head globals (shapes, particles), tail globals).
+        cases = [
+            ("single world", [(1, 1)], (0, 0), (0, 0)),
+            ("ragged worlds", [(1, 3), (4, 1), (2, 5)], (0, 0), (0, 0)),
+            ("zero-particle world", [(2, 0), (1, 3)], (0, 0), (0, 0)),
+            ("zero-shape world", [(0, 4), (2, 2)], (0, 0), (0, 0)),
+            ("head globals only", [(1, 2), (3, 1)], (2, 3), (0, 0)),
+            ("tail globals only", [(1, 2), (3, 1)], (0, 0), (2, 3)),
+            ("head and tail globals", [(1, 2), (3, 1)], (2, 3), (1, 2)),
+            ("no worlds, all globals collapse into the head", [], (2, 3), (1, 2)),
+        ]
+        for label, worlds, head, tail in cases:
+            builder = newton.ModelBuilder()
+            add_entities(builder, *head, 5.0)  # Global head range.
+            for shapes, particles in worlds:
+                sub = newton.ModelBuilder()
+                add_entities(sub, shapes, particles, 0.0)
+                builder.add_world(sub)
+            add_entities(builder, *tail, 6.0)  # Global tail range.
+            model = builder.finalize(device="cpu")
+
+            self.assertEqual(
+                _count_soft_particle_rigid_contact_pairs(model),
+                len(_build_soft_particle_rigid_contact_pairs(model)),
+                label,
+            )
 
 
 class TestContactEstimator(unittest.TestCase):
@@ -1759,8 +2347,9 @@ def test_mesh_convex_midphase_queries_margin_shell(test, device):
     indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
     builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, indices), cfg=cfg)
 
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
-    builder.add_joint_free(child=body)
+    body = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
+    joint = builder.add_joint_free(child=body)
+    builder.add_articulation([joint])
     builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
 
     model = builder.finalize(device=device)
@@ -1924,10 +2513,11 @@ def test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge(test, 
     )
     builder.add_shape_heightfield(heightfield=heightfield, cfg=cfg)
 
-    body = builder.add_body(
+    body = builder.add_link(
         xform=wp.transform(wp.vec3(1.0 + radius + surface_separation, 0.0, 0.0), wp.quat_identity())
     )
-    builder.add_joint_free(child=body)
+    joint = builder.add_joint_free(child=body)
+    builder.add_articulation([joint])
     builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
 
     model = builder.finalize(device=device)
@@ -2056,7 +2646,7 @@ def _build_deterministic_scene(device):
                 )
                 shape_type = shape_types[shape_index % len(shape_types)]
                 shape_index += 1
-                body = builder.add_body(xform=wp.transform(p=pos, q=wp.quat_identity()))
+                body = builder.add_link(xform=wp.transform(p=pos, q=wp.quat_identity()))
                 if shape_type == "sphere":
                     builder.add_shape_sphere(body, radius=0.3)
                 elif shape_type == "box":

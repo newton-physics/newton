@@ -108,6 +108,7 @@ def _find_label_index(labels: list[str], suffix: str) -> int:
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -122,18 +123,18 @@ class Example:
         self.surface_z = float(PAYLOAD_CENTER[2]) - self.payload_radius
         self.grip_hold = min(GRIP_OPEN, max(GRIP_CLOSE, GRIP_HOLD_FACTOR * self.payload_radius))
 
-        template = newton.ModelBuilder(gravity=-9.81)
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         template.rigid_gap = 0.005
         SolverMuJoCo.register_custom_attributes(template)
         if self.payload_kind == "vbd-cable":
-            SolverVBD.register_custom_attributes(template, dahl_defaults_enabled=False)
+            SolverVBD.register_custom_attributes(template)
         self._emit_template(template)
 
         bodies_per_world = template.body_count
         joints_per_world = template.joint_count
         shapes_per_world = template.shape_count
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.replicate(template, world_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
         self.ground_shapes = [self._emit_ground_plane(builder)]
@@ -440,7 +441,7 @@ class Example:
 
     def _build_ik(self) -> None:
         # IK runs on a Franka-only model so payload coordinates do not enter the solve.
-        ik_builder = newton.ModelBuilder(gravity=-9.81)
+        ik_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         self._add_franka(ik_builder, self.surface_z)
         self.ik_model = ik_builder.finalize(device=self.device)
 
@@ -567,7 +568,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
-            self.model.collide(self.state_0, self.contacts, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             newton.eval_ik(self.model, self.state_1, self.state_1.joint_q, self.state_1.joint_qd)
             self.state_0, self.state_1 = self.state_1, self.state_0

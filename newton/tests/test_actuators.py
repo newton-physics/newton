@@ -1485,6 +1485,23 @@ class TestActuatorBuilder(unittest.TestCase):
 class TestActuatorSelectionAPI(unittest.TestCase):
     """Tests for actuator parameter access via ArticulationView."""
 
+    def build_actuator_view(self):
+        single_world_builder = newton.ModelBuilder()
+        body = single_world_builder.add_link()
+        joint = single_world_builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        single_world_builder.add_articulation([joint], label="robot")
+        single_world_builder.add_actuator(
+            ControllerPD,
+            index=single_world_builder.joint_qd_start[joint],
+            kp=100.0,
+        )
+
+        builder = newton.ModelBuilder()
+        builder.replicate(single_world_builder, 2)
+        model = builder.finalize()
+        view = ArticulationView(model, "robot")
+        return model.actuators[0], view
+
     def run_test_actuator_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="myart">
@@ -1677,6 +1694,25 @@ class TestActuatorSelectionAPI(unittest.TestCase):
     def test_actuator_selection_two_per_view_with_mask(self):
         self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
 
+    def test_set_actuator_parameter_rejects_invalid_masks_before_launch(self):
+        actuator, view = self.build_actuator_view()
+        values = wp.ones((view.world_count, 1), dtype=wp.float32, device=view.device)
+
+        invalid_masks = (
+            (wp.ones((view.world_count, 1), dtype=wp.bool, device=view.device), "mask shape"),
+            (wp.ones(view.world_count, dtype=wp.int32, device=view.device), "Boolean mask"),
+        )
+        if wp.is_cuda_available():
+            other_device = "cpu" if view.device.is_cuda else "cuda:0"
+            invalid_masks += ((wp.ones(view.world_count, dtype=wp.bool, device=other_device), "device"),)
+
+        for mask, message in invalid_masks:
+            with self.subTest(shape=mask.shape, dtype=mask.dtype, device=mask.device):
+                with patch.object(wp, "launch") as launch:
+                    with self.assertRaisesRegex(ValueError, message):
+                        view.set_actuator_parameter(actuator, actuator.controller, "kp", values, mask=mask)
+                    launch.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # 7. State reset (masked and full)
@@ -1795,12 +1831,34 @@ class TestStateReset(unittest.TestCase):
         self.assertTrue(all(v > 0 for v in integral_before), "integrals should have accumulated")
 
         mask = wp.array([True, False, True], dtype=wp.bool, device=device)
-        state_0.reset(mask)
+        with patch("newton._src.actuators.controllers.controller_pid.wp.launch", wraps=wp.launch) as launch:
+            state_0.reset(mask)
+
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.kwargs["device"], state_0.integral.device)
 
         integral_after = state_0.integral.numpy()
         self.assertAlmostEqual(integral_after[0], 0.0, places=6, msg="DOF 0 should be reset")
         self.assertAlmostEqual(integral_after[1], integral_before[1], places=6, msg="DOF 1 should be untouched")
         self.assertAlmostEqual(integral_after[2], 0.0, places=6, msg="DOF 2 should be reset")
+
+    def test_pid_masked_reset_rejects_invalid_mask(self):
+        state = ControllerPID.State(integral=wp.zeros(3, dtype=wp.float32, device="cpu"))
+
+        with self.assertRaisesRegex(ValueError, "one-dimensional Boolean array"):
+            state.reset(wp.zeros(3, dtype=wp.int32, device="cpu"))
+        with self.assertRaisesRegex(ValueError, "one-dimensional Boolean array"):
+            state.reset(wp.zeros((1, 3), dtype=wp.bool, device="cpu"))
+        with self.assertRaisesRegex(ValueError, r"mask length \(2\) must match integral length \(3\)"):
+            state.reset(wp.zeros(2, dtype=wp.bool, device="cpu"))
+
+    @unittest.skipUnless(wp.get_cuda_device_count() > 0, "CUDA device required")
+    def test_pid_masked_reset_rejects_wrong_device(self):
+        state = ControllerPID.State(integral=wp.zeros(3, dtype=wp.float32, device="cuda:0"))
+        mask = wp.zeros(3, dtype=wp.bool, device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "mask device .* must match integral device"):
+            state.reset(mask)
 
     def test_actuator_composed_reset(self):
         """Actuator.State.reset delegates to both delay and controller sub-states."""
@@ -2088,7 +2146,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
 
 class TestTargetPosIndicesSeparation(unittest.TestCase):
-    """Actuator must read joint_target_pos via target_pos_indices, not pos_indices."""
+    """Actuator must read joint_target_q via target_pos_indices, not pos_indices."""
 
     def test_target_pos_read_from_dof_index_not_coord_index(self):
         device = wp.get_device()
@@ -2103,32 +2161,29 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (legacy DOF target layout)
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
-        # This test deliberately exercises the legacy DOF-shaped target layout via
-        # the default attr resolution, which is deprecated and warns.
-        with self.assertWarns(DeprecationWarning):
-            actuator = Actuator(
-                indices=indices,
-                controller=ctrl,
-                pos_indices=pos_indices,
-                target_pos_indices=target_pos_indices,
-            )
+        actuator = Actuator(
+            indices=indices,
+            controller=ctrl,
+            pos_indices=pos_indices,
+            target_pos_indices=target_pos_indices,
+        )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])
         joint_qd = _a([0.0, 0.0])
-        # joint_target_pos padded to size 4 so both index 1 (correct) and
+        # joint_target_q padded to size 4 so both index 1 (correct) and
         # index 3 (sentinel) are reachable — lets us distinguish the two code paths
-        joint_target_pos = _a([0.0, correct_target, 0.0, sentinel])
-        joint_target_vel = _a([0.0, 0.0, 0.0, 0.0])
+        joint_target_q = _a([0.0, correct_target, 0.0, sentinel])
+        joint_target_qd = _a([0.0, 0.0, 0.0, 0.0])
         joint_f = wp.zeros(4, dtype=wp.float32, device=device)
 
         sim_state = types.SimpleNamespace(joint_q=joint_q, joint_qd=joint_qd)
         sim_control = types.SimpleNamespace(
-            joint_target_pos=joint_target_pos,
-            joint_target_vel=joint_target_vel,
+            joint_target_q=joint_target_q,
+            joint_target_qd=joint_target_qd,
             joint_act=None,
             joint_f=joint_f,
         )
@@ -2147,6 +2202,62 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
                 f"got {got}. If {wrong}, pos_indices was wrongly used for target lookup."
             ),
         )
+
+
+class TestControlTargetAttrDefaults(unittest.TestCase):
+    """``control_target_pos_attr`` / ``control_target_vel_attr`` accept ``None``.
+
+    Both parameters used to default to ``None``, meaning "resolve against the
+    active target layout". The layout switch removed that resolution step, but
+    callers may still pass ``None`` explicitly; it must keep selecting the
+    canonical names instead of reaching ``getattr()`` with a non-string.
+    """
+
+    def _actuator(self, **kwargs):
+        device = wp.get_device()
+        indices = wp.array([0], dtype=wp.uint32, device=device)
+        controller = ControllerPD(
+            kp=wp.array([10.0], dtype=wp.float32, device=device),
+            kd=wp.array([0.0], dtype=wp.float32, device=device),
+        )
+        return Actuator(indices=indices, controller=controller, **kwargs)
+
+    def test_omitted_attrs_default_to_canonical_names(self):
+        """Verify omitted attributes select canonical names."""
+        actuator = self._actuator()
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_normalizes_to_canonical_names(self):
+        """Verify explicit None normalizes to canonical names."""
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_still_steps(self):
+        """Verify stepping succeeds after passing explicit None."""
+        device = wp.get_device()
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+
+        def _a(vals):
+            return wp.array(vals, dtype=wp.float32, device=device)
+
+        sim_state = types.SimpleNamespace(joint_q=_a([0.0]), joint_qd=_a([0.0]))
+        sim_control = types.SimpleNamespace(
+            joint_target_q=_a([1.0]),
+            joint_target_qd=_a([0.0]),
+            joint_act=None,
+            joint_f=wp.zeros(1, dtype=wp.float32, device=device),
+        )
+        actuator.step(sim_state, sim_control, dt=0.01)
+        # kp * (target - pos) = 10 * (1.0 - 0.0)
+        self.assertAlmostEqual(float(sim_control.joint_f.numpy()[0]), 10.0, places=4)
+
+    def test_custom_attr_names_are_preserved(self):
+        """Verify caller-supplied attribute names remain unchanged."""
+        actuator = self._actuator(control_target_pos_attr="my_pos", control_target_vel_attr="my_vel")
+        self.assertEqual(actuator.control_target_pos_attr, "my_pos")
+        self.assertEqual(actuator.control_target_vel_attr, "my_vel")
 
 
 if __name__ == "__main__":

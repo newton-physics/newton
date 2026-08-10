@@ -342,7 +342,7 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     """Default picking keeps a low-inertia cable's angular speed bounded."""
     num_links = 12
     segment_length = 0.05
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     points = [wp.vec3(-0.5 * num_links * segment_length + i * segment_length, 0.0, 0.3) for i in range(num_links + 1)]
     quaternions = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=0.0)
     bodies, _ = builder.add_rod(

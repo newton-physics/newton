@@ -92,13 +92,32 @@ def test_fk_ik(test, device):
     assert_np_equal(qd_fk, qd_ik.numpy(), tol=1e-6)
 
 
+def test_fk_ik_revolute_small_angles(test, device):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    child = builder.add_link()
+    joint = builder.add_joint_revolute(parent=-1, child=child, axis=newton.Axis.Z)
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+
+    state = model.state()
+    q_ik = wp.zeros_like(model.joint_q, device=device)
+    qd_ik = wp.zeros_like(model.joint_qd, device=device)
+    angles = np.array([-4.0, -5.0e-4, -1.0e-4, 1.0e-4, 5.0e-4, 4.0], dtype=np.float32)
+
+    for angle in angles:
+        state.joint_q.assign(np.array([angle], dtype=np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        newton.eval_ik(model, state, q_ik, qd_ik)
+        test.assertAlmostEqual(float(q_ik.numpy()[0]), float(angle), delta=1.0e-6)
+
+
 def test_fk_ik_with_analytical_solution(test, device):
     # Verify FK computes correct positions for a 2-link planar arm, and IK recovers joint angles.
     # Test parameters: length of the two links
     L1, L2 = 1.0, 0.8
 
     # Add two dummy links with revolute joint
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     link0 = builder.add_link()
     builder.add_shape_sphere(link0, radius=0.01)
     link1 = builder.add_link()
@@ -170,7 +189,7 @@ def test_fk_ik_with_analytical_solution(test, device):
 
 
 def test_fk_descendant_linear_velocity_matches_finite_difference(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     link0 = builder.add_link()
     link1 = builder.add_link()
@@ -239,7 +258,7 @@ def test_fk_descendant_linear_velocity_matches_finite_difference(test, device):
 
 
 def test_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     slider = builder.add_link()
@@ -305,7 +324,7 @@ def test_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test,
 
 
 def test_ik_prismatic_descendant_recovers_joint_state(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     slider = builder.add_link()
@@ -372,7 +391,7 @@ def test_fk_free_distance_root_descendant_linear_velocity_matches_finite_differe
     Looping over both FK entry points guards both code paths against
     divergence on the FREE/DISTANCE root.
     """
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     child = builder.add_link()
@@ -499,7 +518,7 @@ def test_fk_free_distance_root_descendant_linear_velocity_matches_finite_differe
 
 
 def test_ik_free_distance_descendant_recovers_joint_state(test, device, joint_type):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     child = builder.add_link()
@@ -557,7 +576,7 @@ def test_ik_free_distance_descendant_recovers_joint_state(test, device, joint_ty
 
 
 def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     slider = builder.add_link()
@@ -1041,7 +1060,7 @@ def test_fk_ik_d6_left_handed_angular_axes(test, device):
     ``qfa(axis_0, q0) * qfa(axis_1, q1) * qfa(axis_2, q2)`` must hold for the resulting body rotation,
     and ``eval_ik`` must recover the original joint coordinates."""
     cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
     j = builder.add_joint_d6(
         parent=-1,
@@ -1095,6 +1114,12 @@ class TestSimKinematics(unittest.TestCase):
 
 
 add_function_test(TestSimKinematics, "test_fk_ik", test_fk_ik, devices=devices)
+add_function_test(
+    TestSimKinematics,
+    "test_fk_ik_revolute_small_angles",
+    test_fk_ik_revolute_small_angles,
+    devices=devices,
+)
 add_function_test(
     TestSimKinematics, "test_fk_ik_with_analytical_solution", test_fk_ik_with_analytical_solution, devices=devices
 )

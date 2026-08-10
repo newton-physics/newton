@@ -14,7 +14,41 @@ wp.config.log_level = wp.LOG_WARNING
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_kamino import DRLegsBenchmarkWorkload
+from benchmark_metrics import (
+    _SimulationMetricTracks,
+    _SimulationMetricTracksUnparameterized,
+    collect_simulation_metrics,
+)
+
+
+def _collect_metrics_dr_legs(robot, world_count, num_frames, samples, use_policy):
+    if wp.get_cuda_device_count() == 0:
+        return None
+
+    from benchmark_kamino import DRLegsBenchmarkWorkload  # noqa: PLC0415
+
+    builder = DRLegsBenchmarkWorkload.create_model_builder(robot, world_count)
+
+    def create_workload():
+        workload = DRLegsBenchmarkWorkload(
+            robot=robot,
+            world_count=world_count,
+            use_cuda_graph=True,
+            use_policy=use_policy,
+            builder=builder,
+        )
+        if workload.graph is None or workload.reset_graph is None:
+            raise RuntimeError("KPI benchmark requires CUDA graph capture (is the CUDA mempool allocator enabled?)")
+        wp.synchronize_device()
+        return workload
+
+    return collect_simulation_metrics(
+        create_workload=create_workload,
+        world_count=world_count,
+        num_frames=num_frames,
+        samples=samples,
+        validate=lambda workload: workload.test_final(),
+    )
 
 
 class _FastBenchmark:
@@ -28,6 +62,8 @@ class _FastBenchmark:
     world_count = None
 
     def setup(self):
+        from benchmark_kamino import DRLegsBenchmarkWorkload  # noqa: PLC0415
+
         if not hasattr(self, "_builder") or self._builder is None:
             self._builder = DRLegsBenchmarkWorkload.create_model_builder(self.robot, self.world_count)
 
@@ -58,7 +94,7 @@ class _FastBenchmark:
         wp.synchronize_device()
 
 
-class _KpiBenchmark:
+class _KpiBenchmark(_SimulationMetricTracks):
     """Utility base class for Kamino KPI benchmarks."""
 
     param_names: ClassVar[list[str]] = ["world_count"]
@@ -68,35 +104,20 @@ class _KpiBenchmark:
     samples = None
     use_policy = True
 
-    def setup(self, world_count):
-        if not hasattr(self, "_builder") or self._builder is None:
-            self._builder = {}
-        if world_count not in self._builder:
-            self._builder[world_count] = DRLegsBenchmarkWorkload.create_model_builder(self.robot, world_count)
+    def _collect_metrics(self):
+        if wp.get_cuda_device_count() == 0:
+            return None
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self, world_count):
-        total_time = 0.0
-        for _iter in range(self.samples):
-            workload = DRLegsBenchmarkWorkload(
+        metrics = {}
+        for world_count in self.params[0]:
+            metrics[world_count] = _collect_metrics_dr_legs(
                 robot=self.robot,
                 world_count=world_count,
-                use_cuda_graph=True,
+                num_frames=self.num_frames,
+                samples=self.samples,
                 use_policy=self.use_policy,
-                builder=self._builder[world_count],
             )
-            if workload.graph is None or workload.reset_graph is None:
-                raise RuntimeError("KPI benchmark requires CUDA graph capture (is the CUDA mempool allocator enabled?)")
-
-            wp.synchronize_device()
-            for _ in range(self.num_frames):
-                workload.step()
-            total_time += workload.benchmark_time
-            workload.test_final()
-
-        return total_time * 1000 / (self.num_frames * workload.sim_substeps * world_count * self.samples)
-
-    track_simulate.unit = "ms/world-step"
+        return metrics
 
 
 class FastDRLegs(_FastBenchmark):
@@ -106,11 +127,100 @@ class FastDRLegs(_FastBenchmark):
     world_count = 32
 
 
+class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
+    num_frames = 25
+    robot = "dr_legs"
+    samples = 2
+    world_count = 32
+
+    def setup_cache(self):
+        return _collect_metrics_dr_legs(
+            robot=self.robot,
+            world_count=self.world_count,
+            num_frames=self.num_frames,
+            samples=self.samples,
+            use_policy=False,
+        )
+
+
 class KpiDRLegs(_KpiBenchmark):
     params: ClassVar[list[list[int]]] = [[4096]]
     num_frames = 25
     robot = "dr_legs"
     samples = 2
+
+    def setup_cache(self):
+        return self._collect_metrics()
+
+    setup_cache.timeout = 1200
+
+
+class NotifyDRLegs:
+    """Benchmark Kamino model notifications for 2048 DR Legs worlds."""
+
+    number = 10
+    repeat = 7
+    rounds = 1
+    timeout = 3600
+    world_count = 2048
+
+    def setup(self):
+        from benchmark_kamino import DRLegsBenchmarkWorkload  # noqa: PLC0415
+
+        import newton  # noqa: PLC0415
+
+        builder = DRLegsBenchmarkWorkload.create_model_builder("dr_legs", self.world_count)
+        model = builder.finalize(skip_validation_joints=True)
+        self._solver = newton.solvers.SolverKamino(model)
+        self._model_flags = newton.ModelFlags
+        for flag in (
+            self._model_flags.MODEL_PROPERTIES,
+            self._model_flags.BODY_PROPERTIES,
+            self._model_flags.BODY_INERTIAL_PROPERTIES,
+            self._model_flags.SHAPE_PROPERTIES,
+            self._model_flags.JOINT_PROPERTIES,
+            self._model_flags.JOINT_DOF_PROPERTIES,
+            self._model_flags.ACTUATOR_PROPERTIES,
+            self._model_flags.ALL,
+        ):
+            self._solver.notify_model_changed(flag)
+        wp.synchronize_device()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_actuator_properties(self):
+        self._notify(self._model_flags.ACTUATOR_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_all(self):
+        self._notify(self._model_flags.ALL)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_body_inertial_properties(self):
+        self._notify(self._model_flags.BODY_INERTIAL_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_body_properties(self):
+        self._notify(self._model_flags.BODY_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_joint_dof_properties(self):
+        self._notify(self._model_flags.JOINT_DOF_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_joint_properties(self):
+        self._notify(self._model_flags.JOINT_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_model_properties(self):
+        self._notify(self._model_flags.MODEL_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_shape_properties(self):
+        self._notify(self._model_flags.SHAPE_PROPERTIES)
+
+    def _notify(self, flag):
+        self._solver.notify_model_changed(flag)
+        wp.synchronize_device()
 
 
 if __name__ == "__main__":
@@ -120,7 +230,9 @@ if __name__ == "__main__":
 
     benchmark_list = {
         "FastDRLegs": FastDRLegs,
+        "FastMetricsDRLegs": FastMetricsDRLegs,
         "KpiDRLegs": KpiDRLegs,
+        "NotifyDRLegs": NotifyDRLegs,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
