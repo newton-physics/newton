@@ -122,7 +122,6 @@
 - Fix `SchemaResolverPhysx` reading every D6 translational limit gain from the `linear` instance instead of its `transX`, `transY`, or `transZ` instance.
 - Fix USD capsule, cylinder, and cone visuals and sites without authored `radius`/`height` to use the UsdGeom schema fallbacks, matching collision shapes.
 - Fix `ViewerUSD` texture consumers observing partially written PNGs by publishing generated textures atomically (#3288)
-- Print the Rerun web viewer URL so examples remain accessible when the browser does not open automatically.
 - Fix loading of textures packaged inside `.usdz` archives; package-relative asset paths such as `scene.usdz[tex.png]` are resolved through USD's asset resolver instead of being treated as filesystem paths.
 - Preserve cross-import collision pairs when `SolverMuJoCo` combines independently imported MJCF mask domains.
 - Fix `ModelBuilder.add_usd()` raising `ValueError` when importing a mesh whose material subset binds a texture that decodes to an image array.
