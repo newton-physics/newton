@@ -831,7 +831,7 @@ class Example:
                     self.gripper_model,
                     self.gripper_state_input_prev,
                     self.gripper_state_output,
-                    self.gripper_state_input_curr.pad_engaged_body_b_id,
+                    self.gripper_state_input_curr,
                     self.body_mesh_id_wp,
                     self.body_mesh_xform_wp,
                     iters=SEAT_ITERS,

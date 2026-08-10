@@ -468,7 +468,7 @@ def _eval_pad_force_linear_kernel(
 
 
 # --------------------------------------------------------------------------------------------------
-# Inline (graph-capturable) Gauss-Newton seat fit of a gripped body's pose to the pad lips.
+# Inline Gauss-Newton seat fit of a gripped body's pose to the pad lips.
 #
 # Used by _attach_seal_seated_kernel on a pad's rising edge (:func:`_seat_body_pose`). Per lip point the
 # analytic Jacobian row of its SDF w.r.t. a body-frame pose twist xi = (v, omega) is -[grad; q x grad]
@@ -476,7 +476,7 @@ def _eval_pad_force_linear_kernel(
 # over the lips of every pad latching the body; a damped 6x6 solve gives the step dxi and the pose is
 # updated on-manifold: TB <- TB * exp(dxi). Repeated for a fixed ``iters`` (re-sampling the SDF at the
 # updated pose each step, so it converges for a curved object -- 1 step suffices for planar faces),
-# all in one kernel thread -- no scratch arrays, so it is graph-capturable.
+# all in one kernel thread.
 # --------------------------------------------------------------------------------------------------
 
 _mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
@@ -711,7 +711,7 @@ def _seal_quality_kernel(
     engaged = pad_engaged_body_b_id[pad] >= 0
     preparing = pad_preparing_body_b_id[pad] >= 0
     if not (engaged or preparing):
-        return  # released / not gripping and not preparing -> contributes nothing
+        return  # disengaged mode: pad_rms stays -1
     if preparing:
         body_b = pad_preparing_body_b_id[pad]  # preparing: the crate being approached
     else:
@@ -1122,9 +1122,9 @@ def attach_seal(
 def attach_seal_seated(
     state: newton.State,
     gripper_model: SurfaceGripperModel,
-    gripper_state_input: SurfaceGripperStateInput,
+    gripper_state_input_prev: SurfaceGripperStateInput,
     gripper_state_output: SurfaceGripperStateOutput,
-    pad_engaged_body_b_id_curr: wp.array[int],
+    gripper_state_input_curr: SurfaceGripperStateInput,
     body_b_mesh_id: wp.array[wp.uint64],
     body_b_mesh_xform: wp.array[wp.transform],
     max_dist: float = 1.0,
@@ -1132,37 +1132,33 @@ def attach_seal_seated(
     damping: float = 1.0e-3,
     iters: int = 8,
 ):
-    """For each pad that switches engagement (``pad_engaged_body_b_id_prev < 0``) -> engaged
-    (``pad_engaged_body_b_id_curr >= 0``):
+    """On each pad's rising edge (``gripper_state_input_prev.pad_engaged_body_b_id < 0`` and
+    ``gripper_state_input_curr.pad_engaged_body_b_id >= 0``), compute the seated body pose and
+    cache SB into ``gripper_state_output.pad_anchor_b``.
 
-    1. latch ``gripper_state_input.pad_engaged_body_b_id`` (the gripped body id);
-    2. for each gripped body affected by the state change, compute the pose that minimizes the signed
-       distance between the gripped body and all pads gripping it;
-    3. use that pose to compute ``gripper_state_output.pad_anchor_b`` (SB = GB0^-1 * SA0, see Frame nomenclature).
+    The seated pose is the world pose of body B (GB0, see Frame nomenclature) that minimises the signed distances of the lip
+    sample points of **all pads gripping or preparing to grip body B** to its surface — i.e., the
+    pose where all those lips sit flush simultaneously. After the fit, ``SB = GB0^-1 * SA0`` is cached (see Frame
+    nomenclature) and ``pad_lip_sdf0`` is written with the seated SDF baseline.
 
-    Done inline on the device (:func:`_attach_seal_seated_kernel`), so it is graph-capturable. Seated
-    variant of :func:`attach_seal`, which instead anchors to the gripped body's raw pose.
+    Seated variant of :func:`attach_seal`, which anchors to the raw (unfit) body pose instead.
 
     Args:
-        state: Simulation state; source of ``body_q`` (world body poses) for the seal frames and the fit.
+        state: Simulation state; source of ``body_q`` for the seat fit and seal frames.
         gripper_model: Finalized gripper holding the pad/gripper layout arrays.
-        gripper_state_input: Caller-controlled per-pad input state; ``pad_engaged_body_b_id`` is read as
-            the previous step's engagement (< 0 = released). ``pad_preparing_body_b_id`` (the target body,
-            < 0 = none) encodes preparing state (``>= 0`` means preparing).
-        gripper_state_output: Gripper output state; ``pad_anchor_b`` and ``pad_lip_sdf0`` are written on
-            each engagement rising edge.
-        pad_engaged_body_b_id_curr: This step's fresh per-pad gripped body id (< 0 = released), shape [n_pads].
-        body_b_mesh_id: Body id -> gripped-object SDF mesh id (a :class:`warp.Mesh` id), shape [n_bodies].
-        body_b_mesh_xform: Body id -> body-to-mesh-local transform, shape [n_bodies]. Use
-            :func:`warp.transform_identity` for each body whose mesh is centred at the body origin.
+        gripper_state_input_prev: Previous sub-step's input state; ``pad_engaged_body_b_id``
+            (< 0 = released last step) detects the rising edge, and ``pad_preparing_body_b_id``
+            identifies the target body for the seat fit (guaranteed non-negative while preparing).
+        gripper_state_output: Per-pad output state; ``pad_anchor_b`` and ``pad_lip_sdf0``
+            are written on each rising edge.
+        gripper_state_input_curr: Current sub-step's input state; ``pad_engaged_body_b_id``
+            (>= 0 = engaged this step) detects the rising edge.
+        body_b_mesh_id: Body id -> SDF mesh id (:class:`warp.Mesh`), shape [n_bodies].
+        body_b_mesh_xform: body_b_mesh_xform[b] = T_bs for body b (see Frame nomenclature).
         max_dist: SDF search radius [m].
-        grad_h: SDF central-difference step [m].
-        damping: A small stabiliser for the fit. When the pads don't fully pin the gripped object down --
-            e.g. a flat face lets it slide sideways or spin without changing any lip distance -- the fit
-            would drift in those free directions. Damping holds them still. Keep it small (too large just
-            slows the fit).
-        iters: Gauss-Newton iterations for the seat fit. 1 suffices for planar faces; increase for
-            curved gripped objects (each iteration re-samples the SDF at the updated pose).
+        grad_h: SDF central-difference step [m] for gradient estimation.
+        damping: Stabiliser for the Gauss-Newton fit; prevents drift in unconstrained directions.
+        iters: Gauss-Newton iterations (1 suffices for planar faces).
     """
     gm = gripper_model
     n_pads = gm.pad_xform.shape[0]
@@ -1172,8 +1168,8 @@ def attach_seal_seated(
         _attach_seal_seated_kernel,
         dim=n_pads,
         inputs=[
-            pad_engaged_body_b_id_curr,
-            gripper_state_input.pad_preparing_body_b_id,
+            gripper_state_input_curr.pad_engaged_body_b_id,
+            gripper_state_input_prev.pad_preparing_body_b_id,
             gm.gripper_body_id,
             gm.gripper_xform,
             gm.pad_gripper,
@@ -1189,7 +1185,7 @@ def attach_seal_seated(
             grad_h,
             damping,
             iters,
-            gripper_state_input.pad_engaged_body_b_id,
+            gripper_state_input_prev.pad_engaged_body_b_id,
             gripper_state_output.pad_anchor_b,
             gripper_state_output.pad_lip_sdf0,
         ],
@@ -1206,10 +1202,24 @@ def evaluate_gripper_force(
     gripper_control: SurfaceGripperControl,
     dt: float,
 ) -> None:
-    """Accumulate the linear per-DOF spring-damper seal wrench (:func:`_eval_pad_force_linear_kernel`) into
-    ``state.body_f``. No stick-slip anchors and no break metric -- each DOF is a plain spring-damper
-    with a fixed magnitude cap. Uses the engagement state (``pad_engaged``, ``pad_engaged_body_b_id``,
-    ``pad_anchor_b``).
+    """Accumulate the seal wrench for each engaged pad into ``state.body_f``.
+
+    For each engaged pad the bias ``SA^-1 * GB * SB`` (see Frame nomenclature) is decomposed into
+    six scalar DOF displacements (normal, shear x/y, peel x/y, twist) and a matching velocity.
+    A linear spring-damper acts on each DOF with a fixed magnitude cap; the resulting wrench is
+    expressed in the world frame (with the body COM as the reference point, matching Newton's
+    ``state.body_f`` convention) and applied equal-and-opposite to body A (end-effector) and body B
+    (gripped body).
+
+    Args:
+        model: Finalized Newton model; source of ``body_com``, ``body_mass``, ``body_inertia``.
+        state: Simulation state; ``body_q`` and ``body_qd`` are read, ``body_f`` is accumulated into.
+        gripper_model: Finalized gripper holding pad/gripper layout and seal stiffness/damping arrays.
+        gripper_state_input: Per-pad input state; ``pad_engaged_body_b_id`` selects engaged pads and
+            ``pad_anchor_b`` (SB) provides the cached seal reference frame.
+        gripper_state_output: Per-pad output state; ``pad_break_metric`` and ``pad_dof_force`` are written.
+        gripper_control: Per-pad control; ``pad_grip_control`` scales the normal pull cap.
+        dt: Physics sub-step duration [s]; used for implicit damping rescaling.
     """
     n_pads = gripper_model.pad_xform.shape[0]
     if n_pads == 0:
@@ -1273,7 +1283,8 @@ def evaluate_seal_quality(
     Compute a geometric seal quality per pad (pad_rms[pad]).
     Three mutually exclusive modes of operation: preparing (to grip), engaged (currently gripping)
     and disengaged. A pad is in preparing mode when ``pad_preparing_body_b_id[pad] >= 0``.
-    A pad is in engaged mode when ``pad_engaged_body_b_id[pad] >= 0``.
+    A pad is in engaged mode when ``pad_engaged_body_b_id[pad] >= 0``. 
+    Disengaged mode occurs when neither preparing nor engaged mode applies; pad_rms is set to -1.    
     In preparing and engaged modes, we compute the rms error per pad as follows:
     pad_rms = sqrt{ [sum_i (sdf_now(i) - sdf_baseline(i))^2]/n_sample_points_per_pad}
     i spans the sample points of the pad.
@@ -1284,7 +1295,7 @@ def evaluate_seal_quality(
     error that would immediately occur in the event that the pad state would be set to engaged.
     In preparing and engaged modes, sdf_now(i) is the signed distance of the ith sample point at the
     current pose.
-    In disengaged mode, pad_rms is set to -1.
+
 
     Args:
         state: Simulation state; source of ``body_q`` (world body poses).
