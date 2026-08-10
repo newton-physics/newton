@@ -14,7 +14,7 @@ class ModelFlags(IntEnum):
     """
 
     JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
+    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_cable_rest_orientation."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
     """Indicates joint DOF property updates: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""

@@ -1,0 +1,1 @@
+Add separate cable structural-rest poses to `ModelBuilder.add_joint_cable()`, `ModelBuilder.add_rod()`, and `ModelBuilder.add_rod_graph()`. Preserve `Model.body_q` as the initial/reset pose, expose VBD cable angular rest through `Model.joint_cable_rest_orientation`, and add the `cable_rest_initial_pose` example.
