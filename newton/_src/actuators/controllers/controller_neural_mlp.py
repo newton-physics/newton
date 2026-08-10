@@ -387,6 +387,7 @@ class ControllerNeuralMLP(Controller):
             device=device,
             batch_size=num_actuators,
             input_batch_axes=0,
+            requires_grad=True,
         )
         self._network = runtime
         self.network = runtime
@@ -462,11 +463,6 @@ class ControllerNeuralMLP(Controller):
         if self._grad_seed is None:
             self._net_input.requires_grad = True
             self._grad_seed = wp.full((self._num_actuators, 1), 1.0, dtype=wp.float32, device=self._device)
-            # Tape gradients are zero unless every intermediate tensor carries
-            # requires_grad; warp-nn allocates them without it.
-            for tensor in self._network._tensors.values():
-                if isinstance(tensor, wp.array) and not tensor.requires_grad:
-                    tensor.requires_grad = True
 
     def prepare_implicit(
         self,

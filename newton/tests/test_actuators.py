@@ -738,14 +738,13 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "vel_scale.*invalid_lstm.onnx"):
             ControllerNeuralLSTM(model_path=path)
 
-    def test_neural_lstm_implicit_machinery(self):
-        """The LSTM implicit path stays wired up while its flag is off.
+    def test_neural_lstm_implicit_linearized(self):
+        """The LSTM enters the implicit solve as a per-step linearization.
 
-        ``_IMPLICIT_AVAILABLE`` gates the path off because warp-nn returns zero
-        state gradients, which makes it unreachable and therefore unable to fail
-        in CI. This force-enables it so signature, pack-layout and buffer-width
-        drift are still caught. Written to hold both now (a = b = 0, so the law
-        is the constant tau0) and once warp-nn propagates real slopes.
+        A pack with zero slopes is the failure to watch for: it makes the law
+        the constant ``tau0``, which reduces the solve to the explicit impulse
+        while still paying for the Newton loop, and no assertion on the solved
+        effort alone would notice.
         """
         device = wp.get_device()
         h = 0.01
@@ -768,7 +767,6 @@ class TestControllerNeuralLSTM(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
 
-        controller._IMPLICIT_AVAILABLE = True  # instance-level, leaves the class alone
         actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
         oracle.refresh(state)
         sa, sb = actuator.state(), actuator.state()
@@ -780,6 +778,7 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         tau0, a, b, pq0, pqd0 = (float(v) for v in pack[0])
         self.assertAlmostEqual(pq0, q0, delta=1e-6)
         self.assertAlmostEqual(pqd0, qd0, delta=1e-6)
+        self.assertGreater(abs(a) + abs(b), 0.0)  # not a constant law
 
         # The solve must match the closed form of the affine law it was handed.
         alpha = _response_at_state(model, state)[0, 0]
@@ -789,27 +788,23 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         self.assertAlmostEqual(tau, expected, delta=abs(expected) * 1e-3 + 1e-6)
         self.assertTrue(np.any(sb.controller_state.hidden.numpy() != 0.0))
 
-    def test_neural_lstm_implicit_rejected(self):
-        """LSTM implicit actuation is refused rather than silently degrading.
+        # Finite differences of the controller's own output pin the sign and the
+        # scaling of the slopes. They are compared against the raw slopes, not
+        # the packed ones, which may be scaled down to bound the Jacobian.
+        actuator.set_effort_mode_explicit()
 
-        Warp-NN's LSTM op drops the input adjoint, so the per-step linearization
-        would come back with zero slopes and the solve would reduce to the
-        explicit impulse while still paying for the Newton loop. Installing
-        implicit mode must raise instead.
-        """
-        device = wp.get_device()
-        model = _build_pendulum(device)
-        path = self._save_lstm(filename="rejected_lstm.onnx", metadata={"effort_scale": 10.0})
-        controller = ControllerNeuralLSTM(model_path=path)
-        actuator = Actuator(
-            indices=wp.array([0], dtype=wp.uint32, device=device),
-            controller=controller,
-            control_target_pos_attr="joint_target_q",
-            control_target_vel_attr="joint_target_qd",
-        )
-        self.assertIsNone(controller.bind_params())
-        with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(effective_inv_mass=ResponseOracle(model))
+        def explicit_tau(q_val, qd_val):
+            state.joint_q.assign(np.array([q_val], dtype=np.float32))
+            state.joint_qd.assign(np.array([qd_val], dtype=np.float32))
+            control.joint_f.zero_()
+            actuator.step(state, control, actuator.state(), actuator.state(), dt=h)
+            return float(control.joint_f.numpy()[0])
+
+        eps = 1e-3
+        fd_dq = (explicit_tau(q0 + eps, qd0) - explicit_tau(q0 - eps, qd0)) / (2.0 * eps)
+        fd_dqd = (explicit_tau(q0, qd0 + eps) - explicit_tau(q0, qd0 - eps)) / (2.0 * eps)
+        self.assertAlmostEqual(float(controller._dtau_dq.numpy()[0]), fd_dq, delta=abs(fd_dq) * 0.02 + 1e-3)
+        self.assertAlmostEqual(float(controller._dtau_dqd.numpy()[0]), fd_dqd, delta=abs(fd_dqd) * 0.02 + 1e-3)
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
@@ -969,6 +964,28 @@ class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
 
         self.assertNotAlmostEqual(float(forces.numpy()[0]), 0.0, places=6)
         self.assertTrue(np.any(state_b.hidden.detach().cpu().numpy() != 0.0))
+
+    def test_implicit_rejected_for_torch_backend(self):
+        """Implicit actuation is refused for .pt checkpoints rather than degrading.
+
+        The Torch backend runs outside Warp's tape, so there is no input adjoint
+        to linearize the network with; the solve would silently fall back to the
+        explicit impulse while still paying for the Newton loop.
+        """
+        path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
+        self._build_legacy_lstm_checkpoint(path, hidden_size=4)
+
+        model = _build_pendulum(self.device)
+        controller = ControllerNeuralLSTM(model_path=path)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=self.device),
+            controller=controller,
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        self.assertIsNone(controller.bind_params())
+        with self.assertRaises(NotImplementedError):
+            actuator.set_effort_mode_implicit(effective_inv_mass=ResponseOracle(model))
 
 
 # ---------------------------------------------------------------------------

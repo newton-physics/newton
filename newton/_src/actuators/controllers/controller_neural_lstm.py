@@ -126,11 +126,9 @@ class ControllerNeuralLSTM(Controller):
     must have three graph outputs: effort, hidden output, and cell output.
     Metadata properties map those names to controller roles.
 
-    Implicit actuation is **not** currently available: Warp-NN's LSTM op does not
-    propagate gradients to the network input, so the per-step linearization the
-    implicit solve needs comes back with zero slopes. See
-    :attr:`_IMPLICIT_AVAILABLE`. :meth:`Actuator.set_effort_mode_implicit` raises
-    for this controller; use the explicit effort mode.
+    ONNX checkpoints support the implicit effort mode through a per-step
+    linearization of the network; Torch checkpoints do not and must use the
+    explicit mode.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -281,6 +279,7 @@ class ControllerNeuralLSTM(Controller):
                 self._hidden_in_name: 1,
                 self._cell_in_name: 1,
             },
+            requires_grad=True,
         )
         self._network = runtime
         self.network = runtime
@@ -330,13 +329,8 @@ class ControllerNeuralLSTM(Controller):
     #: in-kernel law (see :meth:`prepare_implicit`), like any other controller.
     evaluate_force = _mlp_linear_force
 
-    #: Warp-NN's LSTM op drops the input adjoint, so the linearization below returns
-    #: zero slopes and the solve degrades to the explicit impulse. Refusing beats a
-    #: silent no-op; flip this once warp-nn propagates the gradient.
-    _IMPLICIT_AVAILABLE = False
-
     def _implicit_supported(self) -> bool:
-        return self._IMPLICIT_AVAILABLE and not self._is_torch_checkpoint and self._network is not None
+        return not self._is_torch_checkpoint and self._network is not None
 
     def bind_params(self) -> wp.array2d[float] | None:
         """Linearization pack ``[tau0, a, b, q0, qd0]``; ``None`` if implicit unsupported.
@@ -350,11 +344,6 @@ class ControllerNeuralLSTM(Controller):
         if self._grad_seed is None:
             self._net_input.requires_grad = True
             self._grad_seed = wp.full((self._num_actuators, 1), 1.0, dtype=wp.float32, device=self._device)
-            # Tape gradients are zero unless every intermediate tensor carries
-            # requires_grad; warp-nn allocates them without it.
-            for tensor in self._network._tensors.values():
-                if isinstance(tensor, wp.array) and not tensor.requires_grad:
-                    tensor.requires_grad = True
 
     def prepare_implicit(
         self,
