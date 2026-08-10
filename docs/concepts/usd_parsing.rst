@@ -46,11 +46,11 @@ Material Point Method Particles
    schemas and the AOUSD deformable-material proposal are being standardized.
 
 :meth:`newton.ModelBuilder.add_usd` imports a ``UsdGeom.Points`` prim as MPM
-particles when it applies ``NewtonParticleAPI`` and its
-``physics:simulationOwner`` targets a ``PhysicsScene`` carrying
+particles when it applies ``NewtonPointsDeformableSimAPI`` and is governed by
+``PhysicsDeformableBodyAPI`` on the Points prim or its direct parent. The body's
+``physics:simulationOwner`` must select a ``PhysicsScene`` carrying
 ``NewtonMPMSceneAPI``. Without an authored owner, the first ``PhysicsScene`` in
-stage traversal order is used. Generic Newton particles owned by another kind of
-scene are ignored by the MPM importer.
+stage traversal order is used.
 
 The importer uses standard point and material representations:
 
@@ -60,16 +60,19 @@ The importer uses standard point and material representations:
   precedence and follows normal indexed, inherited, and interpolation rules.
   Widths become radii using ``width / 2`` after stage units and the prim's
   uniform world scale are applied. Non-uniform scale and shear are rejected.
+* ``physics:masses`` supplies per-point masses and takes precedence over
+  ``PhysicsDeformableBodyAPI`` mass or density and material density. Its length
+  must match ``points``. A body-total ``physics:mass`` is otherwise distributed
+  using the density-derived particle weights.
 * A physics-purpose material binding supplies ``physics:density`` and
-  ``NewtonMPMMaterialAPI`` properties. A material applying the proposed
-  ``PhysicsVolumeDeformableMaterialAPI`` can supply ``physics:youngsModulus`` and
-  ``physics:poissonsRatio``. Point-element ``GeomSubset`` bindings provide
-  discrete materials within one Points prim.
+  ``NewtonMPMMaterialAPI`` properties, including
+  ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. Point-element
+  ``GeomSubset`` bindings provide discrete materials within one Points prim.
 * ``newton:mpm:elasticDamping`` is authored as an absolute coefficient in Pa·s.
   Until the solver stores absolute damping directly, the importer divides it by
   the resolved Young's modulus. ``newton:mpm:initialPlasticVolumeStrain`` seeds
   the per-particle ``mpm:particle_Jp`` state and is preserved by solver resets.
-* Density-derived mass uses a cubical MPM support volume:
+* When ``physics:masses`` is unauthored, mass uses a cubical MPM support volume:
   ``mass = density * transformed_width**3``. If widths are absent, Newton uses
   :attr:`newton.ModelBuilder.default_particle_radius` and a support width of
   twice that radius.

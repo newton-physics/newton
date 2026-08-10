@@ -425,16 +425,16 @@ def parse_usd(
         appear in the authored metadata.
 
         ``path_mpm_particle_map`` is always returned. It maps each imported
-        ``UsdGeom.Points`` prim carrying ``NewtonParticleAPI`` whose resolved
-        ``physics:simulationOwner`` carries ``NewtonMPMSceneAPI`` to its
+        ``UsdGeom.Points`` prim carrying ``NewtonPointsDeformableSimAPI`` whose
+        governing ``PhysicsDeformableBodyAPI`` resolves to a
+        ``NewtonMPMSceneAPI`` owner to its
         half-open ``[start, end)`` builder particle range. These ranges are
         build-time snapshots and are not updated by later structural builder
         mutations.
         Each resolved whole-prim or point-``GeomSubset`` physics material must
         apply ``NewtonMPMMaterialAPI``, ``PhysicsMaterialAPI``, or
-        ``PhysicsVolumeDeformableMaterialAPI``. Standard elasticity is read
-        from ``physics:youngsModulus`` and ``physics:poissonsRatio`` on
-        ``PhysicsVolumeDeformableMaterialAPI``. Unbound MPM Points use Newton's
+        ``PhysicsVolumeDeformableMaterialAPI``. MPM elasticity is read from
+        ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. Unbound MPM Points use Newton's
         registered material defaults and ``builder.default_shape_cfg`` density.
         All MPM Points imported by one call must resolve to the same MPM scene;
         unrelated PhysicsScenes and particle systems are ignored.
@@ -443,9 +443,10 @@ def parse_usd(
         ``mpm_config`` may be ``None``.
 
         Particle widths are diameters. Newton converts each radius as
-        ``width / 2`` and derives mass from a cubical support volume,
-        ``physics:density * width**3``, after applying stage units and the prim's
-        uniform world scale. Without widths, it uses
+        ``width / 2`` after applying stage units and the prim's uniform world
+        scale. Authored ``physics:masses`` take precedence over body mass or
+        density, then material density. Density-derived mass uses
+        ``physics:density * width**3``. Without widths, it uses
         ``builder.default_particle_radius`` and a support width of twice that
         radius. Non-uniform scale or shear is rejected because one scalar width
         cannot preserve a spherical particle under that transform.

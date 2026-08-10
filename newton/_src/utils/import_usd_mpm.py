@@ -18,6 +18,8 @@ from ..sim.builder import ModelBuilder
 from ..usd import utils as usd
 
 _MATERIAL_ATTRIBUTES = {
+    "newton:mpm:youngsModulus": ("mpm:young_modulus", "pressure"),
+    "newton:mpm:poissonsRatio": ("mpm:poisson_ratio", "dimensionless"),
     "newton:mpm:elasticDamping": ("mpm:damping", "pressure_time"),
     "newton:mpm:internalFriction": ("mpm:friction", "dimensionless"),
     "newton:mpm:yieldPressure": ("mpm:yield_pressure", "pressure"),
@@ -40,6 +42,7 @@ _STANDARD_DEFORMABLE_MATERIAL_API = "PhysicsVolumeDeformableMaterialAPI"
 
 _SIMULATOR_DEFAULT_ATTRIBUTES = {
     "newton:mpm:yieldPressure",
+    "newton:mpm:youngsModulus",
     "physics:youngsModulus",
 }
 
@@ -226,24 +229,6 @@ def _read_material_prim(
     values: dict[str, float] = {}
     sources: dict[str, str] = {}
 
-    if has_newton_mpm_api:
-        for usd_name, (model_name, unit_kind) in _MATERIAL_ATTRIBUTES.items():
-            is_authored, value = authored_number(usd_name)
-            if not is_authored or value == float("-inf"):
-                continue
-            assert value is not None
-            if unit_kind in ("pressure", "pressure_time"):
-                value = _convert_to_si(
-                    value,
-                    linear_unit=linear_unit,
-                    mass_unit=mass_unit,
-                    distance_power=1,
-                    path=material_path,
-                    name=usd_name,
-                )
-            values[model_name] = value
-            sources[model_name] = usd_name
-
     if has_standard_deformable_api:
         for usd_name, (model_name, unit_kind) in _STANDARD_ELASTIC_ATTRIBUTES.items():
             is_authored, value = authored_number(usd_name)
@@ -262,16 +247,35 @@ def _read_material_prim(
             values[model_name] = value
             sources[model_name] = usd_name
 
+    # Newton's MPM-specific elasticity wins when both APIs are authored. The
+    # proposed standard volume material is retained as an input compatibility
+    # path, but it is not currently applicable to Points.
+    if has_newton_mpm_api:
+        for usd_name, (model_name, unit_kind) in _MATERIAL_ATTRIBUTES.items():
+            is_authored, value = authored_number(usd_name)
+            if not is_authored or value == float("-inf"):
+                continue
+            assert value is not None
+            if unit_kind in ("pressure", "pressure_time"):
+                value = _convert_to_si(
+                    value,
+                    linear_unit=linear_unit,
+                    mass_unit=mass_unit,
+                    distance_power=1,
+                    path=material_path,
+                    name=usd_name,
+                )
+            values[model_name] = value
+            sources[model_name] = usd_name
+
     poisson = values.get("mpm:poisson_ratio")
-    if poisson is not None and not -1.0 <= poisson <= 0.5:
+    if poisson is not None and not -1.0 < poisson <= 0.5:
         source = sources["mpm:poisson_ratio"]
-        raise ValueError(f"{material_path}: {source} must be in [-1, 0.5], got {poisson}.")
+        raise ValueError(f"{material_path}: {source} must be in (-1, 0.5], got {poisson}.")
     for name, value in values.items():
         if name != "mpm:poisson_ratio" and value < 0.0:
             raise ValueError(f"{material_path}: {sources[name]} must be non-negative, got {value}.")
     young_modulus = values.get("mpm:young_modulus")
-    if young_modulus is not None and young_modulus == 0.0:
-        raise ValueError(f"{material_path}: {sources['mpm:young_modulus']} must be positive.")
     for name in ("mpm:tensile_yield_ratio", "mpm:dilatancy"):
         value = values.get(name)
         if value is not None and value > 1.0:
@@ -280,9 +284,14 @@ def _read_material_prim(
     absolute_damping = values.get("mpm:damping")
     if absolute_damping is not None:
         damping_modulus = young_modulus if young_modulus is not None else default_young_modulus
-        if not math.isfinite(damping_modulus) or damping_modulus <= 0.0:
-            raise ValueError("The registered mpm:young_modulus default must be finite and positive.")
-        normalized_damping = absolute_damping / damping_modulus
+        if absolute_damping == 0.0:
+            normalized_damping = 0.0
+        elif not math.isfinite(damping_modulus) or damping_modulus <= 0.0:
+            raise ValueError(
+                f"{material_path}: non-zero newton:mpm:elasticDamping requires a finite positive Young's modulus."
+            )
+        else:
+            normalized_damping = absolute_damping / damping_modulus
         if not math.isfinite(normalized_damping) or (absolute_damping != 0.0 and normalized_damping == 0.0):
             raise ValueError(
                 f"{material_path}: newton:mpm:elasticDamping does not convert to a finite, representable "
@@ -291,6 +300,59 @@ def _read_material_prim(
         values["mpm:damping"] = normalized_damping
 
     return values, density
+
+
+def _read_particle_masses(prim, count: int, path: str, mass_unit: float) -> np.ndarray | None:
+    """Read authored per-point masses and convert them to kilograms."""
+    attr = prim.GetAttribute("physics:masses")
+    if not attr or not attr.HasAuthoredValue():
+        return None
+    value = attr.Get()
+    try:
+        masses = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{path}: physics:masses must contain numeric values, got {value!r}.") from error
+    if masses.size != count:
+        raise ValueError(f"{path}: physics:masses must contain {count} values, got {masses.size}.")
+    if not np.isfinite(masses).all() or np.any(masses <= 0.0):
+        raise ValueError(f"{path}: physics:masses must contain only finite positive values.")
+    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+        converted = masses * np.float64(mass_unit)
+    if not np.isfinite(converted).all() or np.any((masses != 0.0) & (converted == 0.0)):
+        raise ValueError(f"{path}: physics:masses do not convert to finite, representable SI values.")
+    return converted
+
+
+def _read_body_mass_overrides(prim, linear_unit: float, mass_unit: float) -> tuple[float | None, float | None]:
+    """Read positive total-mass and density overrides from the deformable body."""
+    body_prim = usd._find_deformable_body_prim(prim)
+    if body_prim is None:
+        return None, None
+    path = str(body_prim.GetPath())
+
+    def read(name: str, distance_power: int) -> float | None:
+        attr = body_prim.GetAttribute(name)
+        if not attr or not attr.HasAuthoredValue():
+            return None
+        value = attr.Get()
+        try:
+            value = float(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{path}: {name} must be a finite non-negative number, got {value!r}.") from error
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"{path}: {name} must be finite and non-negative, got {value!r}.")
+        if value == 0.0:
+            return None
+        return _convert_to_si(
+            value,
+            linear_unit=linear_unit,
+            mass_unit=mass_unit,
+            distance_power=distance_power,
+            path=path,
+            name=name,
+        )
+
+    return read("physics:mass", 0), read("physics:density", 3)
 
 
 def _direct_physics_material(prim):
@@ -462,31 +524,51 @@ def _read_particle_data(
         raise ValueError(f"{path}: particle widths and radii must convert to finite positive SI values.")
 
     material, density = _read_particle_materials(builder, points, point_count, path, linear_unit, mass_unit)
-    default_density = float(builder.default_shape_cfg.density)
-    if isinstance(density, np.ndarray):
-        resolved_density = density.copy()
-        needs_default = np.isnan(resolved_density)
-        if np.any(needs_default):
-            if not math.isfinite(default_density) or default_density <= 0.0:
-                raise ValueError(
-                    f"{path}: particle mass requires a finite positive bound physics:density "
-                    "or builder default density."
-                )
-            resolved_density[needs_default] = default_density
-    else:
-        resolved_density = density if density is not None else default_density
-        if not math.isfinite(resolved_density) or resolved_density <= 0.0:
+    masses = _read_particle_masses(prim, point_count, path, mass_unit)
+    if masses is None:
+        body_mass, body_density = _read_body_mass_overrides(prim, linear_unit, mass_unit)
+        default_density = float(builder.default_shape_cfg.density)
+        if body_density is not None:
+            resolved_density = body_density
+        elif isinstance(density, np.ndarray):
+            resolved_density = density.copy()
+            needs_default = np.isnan(resolved_density)
+            if np.any(needs_default):
+                if body_mass is not None:
+                    resolved_density[needs_default] = 1.0
+                elif not math.isfinite(default_density) or default_density <= 0.0:
+                    raise ValueError(
+                        f"{path}: particle mass requires a finite positive bound physics:density "
+                        "or builder default density."
+                    )
+                else:
+                    resolved_density[needs_default] = default_density
+        else:
+            resolved_density = density if density is not None else default_density
+            if not math.isfinite(resolved_density) or resolved_density <= 0.0:
+                if body_mass is not None:
+                    resolved_density = 1.0
+                else:
+                    raise ValueError(
+                        f"{path}: particle mass requires a finite positive bound physics:density "
+                        "or builder default density."
+                    )
+        if not np.isfinite(resolved_density).all() or np.any(resolved_density <= 0.0):
             raise ValueError(
-                f"{path}: particle mass requires a finite positive bound physics:density or builder default density."
+                f"{path}: particle mass requires finite positive bound physics:density values or builder defaults."
             )
-    if not np.isfinite(resolved_density).all() or np.any(resolved_density <= 0.0):
-        raise ValueError(
-            f"{path}: particle mass requires finite positive bound physics:density values or builder defaults."
-        )
-    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
-        masses = resolved_density * representative_widths**3
-    if not np.isfinite(masses).all() or np.any(masses <= 0.0):
-        raise ValueError(f"{path}: density and particle widths must produce finite positive SI masses.")
+        with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+            masses = resolved_density * representative_widths**3
+        if not np.isfinite(masses).all() or np.any(masses <= 0.0):
+            raise ValueError(f"{path}: density and particle widths must produce finite positive SI masses.")
+        if body_mass is not None:
+            mass_sum = float(np.sum(masses, dtype=np.float64))
+            if not math.isfinite(mass_sum) or mass_sum <= 0.0:
+                raise ValueError(f"{path}: particle weights cannot represent the authored physics:mass.")
+            with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+                masses = masses * (body_mass / mass_sum)
+            if not np.isfinite(masses).all() or np.any(masses <= 0.0):
+                raise ValueError(f"{path}: physics:mass does not produce finite positive SI particle masses.")
 
     return _MPMParticleData(
         path=path,
@@ -499,30 +581,37 @@ def _read_particle_data(
 
 
 def _resolve_simulation_owner(prim, default_scene):
-    """Resolve and validate the standard simulation owner for a particle prim."""
-    relationship = prim.GetRelationship("physics:simulationOwner")
+    """Resolve and validate the simulation owner on the governing deformable body."""
+    body_prim = usd._find_deformable_body_prim(prim)
+    if body_prim is None:
+        raise ValueError(
+            f"{prim.GetPath()}: NewtonPointsDeformableSimAPI requires PhysicsDeformableBodyAPI "
+            "on the Points prim or its direct parent."
+        )
+    relationship = body_prim.GetRelationship("physics:simulationOwner")
     targets = relationship.GetTargets() if relationship else []
     if not targets:
         return default_scene
     if len(targets) != 1:
         raise ValueError(
-            f"{prim.GetPath()}: physics:simulationOwner must target exactly one PhysicsScene, "
+            f"{body_prim.GetPath()}: physics:simulationOwner must target exactly one PhysicsScene, "
             f"got {[str(target) for target in targets]}."
         )
 
     forwarded_targets = relationship.GetForwardedTargets()
     if len(forwarded_targets) != 1:
         raise ValueError(
-            f"{prim.GetPath()}: physics:simulationOwner must resolve to exactly one PhysicsScene, "
+            f"{body_prim.GetPath()}: physics:simulationOwner must resolve to exactly one PhysicsScene, "
             f"got {[str(target) for target in forwarded_targets]}."
         )
-    owner = prim.GetStage().GetPrimAtPath(forwarded_targets[0])
+    owner = body_prim.GetStage().GetPrimAtPath(forwarded_targets[0])
 
     from pxr import UsdPhysics
 
     if not owner or not owner.IsValid() or not owner.IsA(UsdPhysics.Scene):
         raise ValueError(
-            f"{prim.GetPath()}: physics:simulationOwner target {forwarded_targets[0]} must resolve to a PhysicsScene."
+            f"{body_prim.GetPath()}: physics:simulationOwner target {forwarded_targets[0]} "
+            "must resolve to a PhysicsScene."
         )
     return owner
 
@@ -540,8 +629,9 @@ def import_mpm_particles(
 ) -> tuple[dict[str, tuple[int, int]], Any | None]:
     """Import opted-in Points and return ranges plus their validated scene config.
 
-    ``NewtonParticleAPI`` is a solver-independent marker. A marked Points prim
-    is imported as MPM only when its resolved ``physics:simulationOwner`` is a
+    ``NewtonPointsDeformableSimAPI`` marks a Points simulation geometry. The
+    governing ``PhysicsDeformableBodyAPI`` prim's ``physics:simulationOwner``
+    must resolve to a
     ``PhysicsScene`` carrying ``NewtonMPMSceneAPI``. Unauthored owner
     relationships use the first PhysicsScene in stage traversal order, matching
     the standard USD Physics ownership convention.
@@ -553,7 +643,7 @@ def import_mpm_particles(
         path = str(prim.GetPath())
         if any(re.match(pattern, path) for pattern in ignore_paths):
             continue
-        if not prim.IsA(UsdGeom.Points) or not usd.has_applied_api_schema(prim, "NewtonParticleAPI"):
+        if not prim.IsA(UsdGeom.Points) or not usd.has_applied_api_schema(prim, "NewtonPointsDeformableSimAPI"):
             continue
         candidate_prims.append(prim)
 
@@ -578,7 +668,7 @@ def import_mpm_particles(
     scene_paths = {str(owner.GetPath()) for owner in particle_owners}
     if len(scene_paths) != 1:
         raise ValueError(
-            "One USD import call cannot combine NewtonParticleAPI Points owned by different "
+            "One USD import call cannot combine NewtonPointsDeformableSimAPI Points owned by different "
             f"NewtonMPMSceneAPI scenes; found {sorted(scene_paths)}."
         )
     scene_prim = particle_owners[0]

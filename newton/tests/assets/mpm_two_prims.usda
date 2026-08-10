@@ -21,11 +21,11 @@ def Xform "World"
     }
 
     def Material "SandMaterial" (
-        prepend apiSchemas = ["NewtonMPMMaterialAPI", "PhysicsVolumeDeformableMaterialAPI"]
+        prepend apiSchemas = ["NewtonMPMMaterialAPI"]
     )
     {
         float physics:density = 2000
-        float physics:youngsModulus = 500
+        float newton:mpm:youngsModulus = 500
         float newton:mpm:internalFriction = 0.6
     }
 
@@ -50,11 +50,12 @@ def Xform "World"
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
 
         def Points "Sand" (
-            prepend apiSchemas = ["MaterialBindingAPI", "NewtonParticleAPI"]
+            prepend apiSchemas = ["MaterialBindingAPI", "NewtonPointsDeformableSimAPI", "PhysicsDeformableBodyAPI"]
         )
         {
             int64[] ids = [10, 11]
             point3f[] points = [(1, 0, 0), (2, 0, 0)]
+            float[] physics:masses = [2000, 16000]
             vector3f[] velocities = [(3, 0, 0), (0, 1, 0)]
             float[] widths = [0.5, 1]
             rel material:binding:physics = </World/SandMaterial>
@@ -63,7 +64,7 @@ def Xform "World"
     }
 
     def Points "Snow" (
-        prepend apiSchemas = ["MaterialBindingAPI", "NewtonParticleAPI"]
+        prepend apiSchemas = ["MaterialBindingAPI", "NewtonPointsDeformableSimAPI", "PhysicsDeformableBodyAPI"]
     )
     {
         int64[] ids = [20]

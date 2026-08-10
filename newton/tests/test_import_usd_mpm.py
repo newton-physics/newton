@@ -19,7 +19,21 @@ except ImportError:
     newton_usd_schemas = None
 
 
-@unittest.skipUnless(USD_AVAILABLE and newton_usd_schemas is not None, "Requires USD and Newton USD schemas")
+def _has_mpm_schemas() -> bool:
+    """Return whether the installed schema package contains the MPM APIs."""
+    if not USD_AVAILABLE or newton_usd_schemas is None:
+        return False
+    from pxr import Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    prim = UsdGeom.Points.Define(stage, "/Particles").GetPrim()
+    try:
+        return bool(prim.ApplyAPI("NewtonPointsDeformableSimAPI"))
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(_has_mpm_schemas(), "Requires Newton USD schemas with MPM support")
 class TestImportUsdMPM(unittest.TestCase):
     @staticmethod
     def _stage():
@@ -40,12 +54,16 @@ class TestImportUsdMPM(unittest.TestCase):
         velocities=None,
         widths=None,
         widths_interpolation=None,
+        masses=None,
         simulation_owner=None,
+        body_prim=None,
     ):
         from pxr import Sdf, UsdGeom
 
         points = UsdGeom.Points.Define(stage, path)
-        points.GetPrim().ApplyAPI("NewtonParticleAPI")
+        points.GetPrim().ApplyAPI("NewtonPointsDeformableSimAPI")
+        body_prim = body_prim or points.GetPrim()
+        body_prim.AddAppliedSchema("PhysicsDeformableBodyAPI")
         points.CreatePointsAttr(positions)
         if velocities is not None:
             points.CreateVelocitiesAttr(velocities)
@@ -55,10 +73,12 @@ class TestImportUsdMPM(unittest.TestCase):
                 points.SetWidthsInterpolation(widths_interpolation)
             elif len(widths) == 1:
                 points.SetWidthsInterpolation(UsdGeom.Tokens.constant)
+        if masses is not None:
+            points.GetPrim().GetAttribute("physics:masses").Set(masses)
         if simulation_owner is not None:
-            relationship = points.GetPrim().GetRelationship("physics:simulationOwner")
+            relationship = body_prim.GetRelationship("physics:simulationOwner")
             if not relationship:
-                relationship = points.GetPrim().CreateRelationship("physics:simulationOwner")
+                relationship = body_prim.CreateRelationship("physics:simulationOwner")
             relationship.SetTargets([Sdf.Path(simulation_owner)])
         return points
 
@@ -68,7 +88,6 @@ class TestImportUsdMPM(unittest.TestCase):
 
         material = UsdShade.Material.Define(stage, path)
         material.GetPrim().ApplyAPI("NewtonMPMMaterialAPI")
-        material.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableMaterialAPI")
         for name, value in attributes.items():
             attr = material.GetPrim().GetAttribute(name)
             if not attr:
@@ -177,6 +196,8 @@ class TestImportUsdMPM(unittest.TestCase):
         builder = newton.ModelBuilder()
         SolverImplicitMPM.register_custom_attributes(builder)
         fallback_fields = {
+            "newton:mpm:youngsModulus": "mpm:young_modulus",
+            "newton:mpm:poissonsRatio": "mpm:poisson_ratio",
             "newton:mpm:elasticDamping": "mpm:damping",
             "newton:mpm:internalFriction": "mpm:friction",
             "newton:mpm:yieldPressure": "mpm:yield_pressure",
@@ -190,6 +211,7 @@ class TestImportUsdMPM(unittest.TestCase):
             "newton:mpm:initialPlasticVolumeStrain": "mpm:particle_Jp",
         }
         simulator_default_fields = {
+            "newton:mpm:youngsModulus",
             "newton:mpm:yieldPressure",
         }
 
@@ -336,7 +358,7 @@ class TestImportUsdMPM(unittest.TestCase):
                     SolverImplicitMPM.Config.create_from_usd(scene)
 
     def test_selects_mpm_particles_by_simulation_owner(self):
-        """Import only generic particles owned by an MPM scene."""
+        """Import only deformable Points owned by an MPM scene."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -363,6 +385,25 @@ class TestImportUsdMPM(unittest.TestCase):
         result = newton.ModelBuilder().add_usd(stage, load_visual_shapes=False)
 
         self.assertEqual(result["path_mpm_particle_map"], {"/World/MPM": (0, 1)})
+
+    def test_resolves_simulation_owner_from_parent_deformable_body(self):
+        """Resolve simulation ownership from a Points prim's parent body."""
+        from pxr import Gf, UsdGeom
+
+        stage, _scene = self._stage()
+        body = UsdGeom.Xform.Define(stage, "/World/SandBody")
+        self._points(
+            stage,
+            "/World/SandBody/Particles",
+            [Gf.Vec3f()],
+            widths=[0.1],
+            simulation_owner="/World/PhysicsScene",
+            body_prim=body.GetPrim(),
+        )
+
+        result = newton.ModelBuilder().add_usd(stage, load_visual_shapes=False)
+
+        self.assertEqual(result["path_mpm_particle_map"], {"/World/SandBody/Particles": (0, 1)})
 
     def test_rejects_invalid_simulation_owner_before_particle_mutation(self):
         """Reject an explicit owner that does not resolve to one PhysicsScene."""
@@ -521,7 +562,7 @@ class TestImportUsdMPM(unittest.TestCase):
             "/World/SandMaterial",
             **{
                 "physics:density": 2000.0,
-                "physics:youngsModulus": 500.0,
+                "newton:mpm:youngsModulus": 500.0,
                 "newton:mpm:internalFriction": 0.6,
             },
         )
@@ -574,8 +615,8 @@ class TestImportUsdMPM(unittest.TestCase):
             "/World/Material",
             **{
                 "physics:density": 1000.0,
-                "physics:youngsModulus": 500.0,
-                "physics:poissonsRatio": 0.25,
+                "newton:mpm:youngsModulus": 500.0,
+                "newton:mpm:poissonsRatio": 0.25,
                 "newton:mpm:elasticDamping": 10.0,
                 "newton:mpm:internalFriction": 0.4,
                 "newton:mpm:yieldPressure": 200.0,
@@ -791,6 +832,77 @@ class TestImportUsdMPM(unittest.TestCase):
 
         np.testing.assert_allclose(builder.particle_mass, [8.0, 64.0], rtol=1.0e-6)
 
+    def test_prefers_authored_particle_masses_and_converts_mass_units(self):
+        """Prefer per-point masses and convert them independently of transform scale."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        stage, _scene = self._stage()
+        UsdGeom.SetStageMetersPerUnit(stage, 0.5)
+        UsdPhysics.SetStageKilogramsPerUnit(stage, 0.001)
+        points = self._points(
+            stage,
+            "/World/Sand",
+            [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)],
+            widths=[2.0, 4.0],
+            masses=[2000.0, 3000.0],
+        )
+        points.AddScaleOp().Set(Gf.Vec3f(4.0))
+        self._author_float(points.GetPrim(), "physics:mass", 100000.0)
+        self._author_float(points.GetPrim(), "physics:density", 100000.0)
+        self._bind(points, self._material(stage, "/World/SandMaterial", **{"physics:density": 1.0e6}))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, load_visual_shapes=False)
+
+        np.testing.assert_allclose(builder.particle_mass, [2.0, 3.0], rtol=1.0e-6)
+
+    def test_resolves_deformable_body_mass_and_density(self):
+        """Apply body density, then distribute an optional body-total mass."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        for total_mass, expected in ((None, [8.0, 64.0]), (9000.0, [1.0, 8.0])):
+            with self.subTest(total_mass=total_mass):
+                stage, _scene = self._stage()
+                UsdGeom.SetStageMetersPerUnit(stage, 0.5)
+                UsdPhysics.SetStageKilogramsPerUnit(stage, 0.001)
+                points = self._points(
+                    stage,
+                    "/World/Sand",
+                    [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)],
+                    widths=[2.0, 4.0],
+                )
+                self._author_float(points.GetPrim(), "physics:density", 1000.0)
+                if total_mass is not None:
+                    self._author_float(points.GetPrim(), "physics:mass", total_mass)
+                self._bind(points, self._material(stage, "/World/Material", **{"physics:density": 250.0}))
+
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage, load_visual_shapes=False)
+
+                np.testing.assert_allclose(builder.particle_mass, expected, rtol=1.0e-6)
+
+    def test_validates_authored_particle_masses_before_mutation(self):
+        """Reject malformed per-point masses before appending particles."""
+        from pxr import Gf
+
+        for masses in ([1.0], [1.0, 0.0], [1.0, -1.0], [1.0, float("nan")]):
+            with self.subTest(masses=masses):
+                stage, _scene = self._stage()
+                self._points(
+                    stage,
+                    "/World/Sand",
+                    [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)],
+                    widths=[0.1],
+                    masses=masses,
+                )
+                builder = newton.ModelBuilder()
+                builder.add_particle(pos=wp.vec3(-1.0), vel=wp.vec3(), mass=1.0)
+
+                with self.assertRaisesRegex(ValueError, "physics:masses"):
+                    builder.add_usd(stage, load_visual_shapes=False)
+
+                self.assertEqual(builder.particle_count, 1)
+
     def test_accepts_standard_deformable_material_elasticity(self):
         """Read canonical elasticity from recognized standard material APIs."""
         from pxr import Gf, UsdShade
@@ -844,14 +956,21 @@ class TestImportUsdMPM(unittest.TestCase):
             builder.custom_attributes["mpm:friction"].default,
         )
 
-    def test_ignores_elasticity_without_standard_volume_material_api(self):
-        """Require the standard volume-material API before reading elasticity."""
+    def test_prefers_newton_elasticity_over_standard_volume_material(self):
+        """Prefer MPM elasticity when both material APIs author values."""
         from pxr import Gf
 
         stage, _scene = self._stage()
         points = self._points(stage, "/World/Sand", [Gf.Vec3f()], widths=[0.1])
-        material = self._material(stage, "/World/Material")
-        material.GetPrim().RemoveAppliedSchema("PhysicsVolumeDeformableMaterialAPI")
+        material = self._material(
+            stage,
+            "/World/Material",
+            **{
+                "newton:mpm:youngsModulus": 600.0,
+                "newton:mpm:poissonsRatio": 0.35,
+            },
+        )
+        material.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableMaterialAPI")
         self._author_float(material.GetPrim(), "physics:youngsModulus", 300.0)
         self._author_float(material.GetPrim(), "physics:poissonsRatio", 0.25)
         self._bind(points, material)
@@ -860,17 +979,8 @@ class TestImportUsdMPM(unittest.TestCase):
         builder.add_usd(stage, load_visual_shapes=False)
         model = builder.finalize(device="cpu")
 
-        self.assertTrue(
-            np.isclose(
-                float(model.mpm.young_modulus.numpy()[0]),
-                builder.custom_attributes["mpm:young_modulus"].default,
-                rtol=1.0e-6,
-            )
-        )
-        self.assertAlmostEqual(
-            float(model.mpm.poisson_ratio.numpy()[0]),
-            builder.custom_attributes["mpm:poisson_ratio"].default,
-        )
+        self.assertAlmostEqual(float(model.mpm.young_modulus.numpy()[0]), 600.0)
+        self.assertAlmostEqual(float(model.mpm.poisson_ratio.numpy()[0]), 0.35)
 
     def test_material_sentinels_retain_registered_defaults(self):
         """Treat dimensional simulator-default sentinels as registered defaults."""
@@ -883,7 +993,7 @@ class TestImportUsdMPM(unittest.TestCase):
             "/World/Material",
             **{"newton:mpm:yieldPressure": float("-inf")},
         )
-        self._author_float(material.GetPrim(), "physics:youngsModulus", float("-inf"))
+        self._author_float(material.GetPrim(), "newton:mpm:youngsModulus", float("-inf"))
         self._bind(points, material)
 
         builder = newton.ModelBuilder()
@@ -973,7 +1083,7 @@ class TestImportUsdMPM(unittest.TestCase):
             "/World/DefaultMaterial",
             **{
                 "physics:density": 1000.0,
-                "physics:youngsModulus": 100.0,
+                "newton:mpm:youngsModulus": 100.0,
                 "newton:mpm:internalFriction": 0.1,
             },
         )
@@ -982,7 +1092,7 @@ class TestImportUsdMPM(unittest.TestCase):
             "/World/MaterialA",
             **{
                 "physics:density": 2000.0,
-                "physics:youngsModulus": 200.0,
+                "newton:mpm:youngsModulus": 200.0,
                 "newton:mpm:internalFriction": 0.2,
             },
         )
@@ -991,7 +1101,7 @@ class TestImportUsdMPM(unittest.TestCase):
             "/World/MaterialB",
             **{
                 "physics:density": 3000.0,
-                "physics:youngsModulus": 300.0,
+                "newton:mpm:youngsModulus": 300.0,
                 "newton:mpm:internalFriction": 0.3,
             },
         )
@@ -1127,7 +1237,9 @@ class TestImportUsdMPM(unittest.TestCase):
                 if case in ("density", "pressure"):
                     UsdGeom.SetStageMetersPerUnit(stage, 1.0e-50)
                     UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0e300)
-                    attributes = {"physics:density": 1.0e30} if case == "density" else {"physics:youngsModulus": 1.0e30}
+                    attributes = (
+                        {"physics:density": 1.0e30} if case == "density" else {"newton:mpm:youngsModulus": 1.0e30}
+                    )
                     self._bind(points, self._material(stage, "/World/Material", **attributes))
                 else:
                     scale = 1.0e300 if case == "width" else 1.0e110
@@ -1162,7 +1274,8 @@ class TestImportUsdMPM(unittest.TestCase):
 
         for name, value, message in (
             ("physics:density", -1.0, "physics:density"),
-            ("physics:youngsModulus", 0.0, "youngsModulus"),
+            ("newton:mpm:youngsModulus", -1.0, "youngsModulus"),
+            ("newton:mpm:poissonsRatio", -1.0, "poissonsRatio"),
             ("newton:mpm:tensileYieldRatio", 1.1, "tensile_yield_ratio"),
             ("newton:mpm:dilatancy", 1.1, "dilatancy"),
         ):
