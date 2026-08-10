@@ -672,15 +672,12 @@ def _cable_chain_connectivity_impl(test: unittest.TestCase, device):
     parent = model.joint_parent.numpy()
     child = model.joint_child.numpy()
 
-    # Ensure we have at least one rod joint and that the chain is contiguous
     cable_indices = np.where(jt == newton.JointType.ROD)[0]
     test.assertGreater(len(cable_indices), 0)
 
-    # Extract parent/child arrays for rod joints only
     cable_parents = parent[cable_indices]
     cable_children = child[cable_indices]
 
-    # Each rod joint should connect valid, in-range bodies
     test.assertTrue(np.all(cable_parents >= 0))
     test.assertTrue(np.all(cable_children >= 0))
     test.assertTrue(np.all(cable_parents < model.body_count))
