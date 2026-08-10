@@ -233,37 +233,22 @@ def compute_shape_aabbs(
     geom_scale = scale
 
     if is_infinite_plane:
-        # Half-space AABB. The bounding-sphere fallback used the infinite
-        # plane's collision radius as a half extent, so the plane's AABB was a
-        # 1e6 m cube that overlapped every shape in the scene and made each one
-        # a permanent broad-phase candidate against the ground. Clamp the solid
-        # side at the plane surface instead, along the world axes the normal
-        # aligns with: for an exactly axis-aligned plane that makes AABB
-        # overlap equivalent to the exact half-space proximity test.
-        #
-        # The clamp has to stay conservative for a normal that is only NEARLY
-        # aligned, or resting contacts far from the plane anchor are pruned and
-        # the shape falls through the floor. At lateral offset d from the
-        # anchor the surface rises by (|n_j| + |n_k|) * d / |n_i| along axis i.
-        # Bounding d by the extent this AABB itself admits -- HALF_SPACE_EXTENT
-        # about the anchor, the reach the bounding-sphere AABB already had --
-        # makes the clamped bound conservative for every shape the AABB does
-        # not already prune on the two lateral axes, with no assumption about
-        # how large the scene is. A deliberately tilted plane rises further
-        # than that extent over the same reach and keeps the unbounded bound.
+        # Clamp to the half space the plane bounds, replacing a bounding-sphere
+        # fallback whose 1e6 m cube made every shape a permanent ground-plane
+        # candidate. A nearly-aligned normal's surface rises by
+        # (|n_j| + |n_k|) * d / |n_i| at lateral offset d from the anchor, so
+        # bounding d by the reach this AABB itself admits keeps the clamp
+        # conservative for every shape it does not already prune laterally; a
+        # tilted plane's rise exceeds that reach and the bound stays unbounded.
         normal = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
-        # Matches compute_shape_radius's infinite-plane radius, so an axis the
-        # clamp skips reproduces the previous bounding-sphere extent exactly.
+        # Matches compute_shape_radius's infinite-plane radius.
         HALF_SPACE_EXTENT = 1.0e6
         half_extents = wp.vec3(HALF_SPACE_EXTENT, HALF_SPACE_EXTENT, HALF_SPACE_EXTENT)
         lo = pos - half_extents - margin_vec
         hi = pos + half_extents + margin_vec
         for i in range(3):
             n_i = normal[i]
-            # Below this the rise over the supported reach already exceeds
-            # HALF_SPACE_EXTENT, so the clamp could never be tighter than the
-            # unbounded bound; the guard also keeps the division below well
-            # conditioned.
+            # Below this the rise exceeds HALF_SPACE_EXTENT anyway, and the division stays well conditioned.
             if wp.abs(n_i) > 0.5:
                 lateral = wp.abs(normal[(i + 1) % 3]) + wp.abs(normal[(i + 2) % 3])
                 rise = lateral * HALF_SPACE_EXTENT / wp.abs(n_i)
