@@ -16,6 +16,13 @@ cross-bunny VF/EE contacts. The collision force, Hessian-vector product, and
 diagonal then participate in the same global PCG solve as every bunny's ARAP
 elasticity.
 
+Derive collision vertices exclusively from the unique indices referenced by
+the combined boundary triangle array. Interior tetrahedral vertices participate
+in ARAP elasticity but never become VF candidates and are never tested against
+the five box planes. EE and EF candidates already come from boundary triangle
+edges and faces. Disable EF recovery for this scene: only VF and EE contacts
+are detected or assembled into force and Hessian terms.
+
 Use a fixed nominal two-surface collision thickness of `0.003 m`. Do not set
 `geometry_radius_scale`; investigating geometry-aware thickness is explicitly
 deferred. The fixed-thickness baseline is intentional even though the bunny
@@ -100,7 +107,9 @@ Render the floor and walls as five static `body=-1` box shapes. Use `0.05 m`
 floor half-thickness and `0.025 m` wall half-thickness, placing the visible
 inner faces on the exact bounds above. Physical response comes from five
 inward-facing `ConstraintStaticPlaneContact` operators, not the rendered
-shapes. Each plane uses:
+shapes. Pass the unique boundary-triangle vertex indices to every plane so the
+box does not apply direct forces or Hessian blocks to interior tetrahedral
+vertices. Each plane uses:
 
 ```text
 thickness              0.003 m
@@ -118,7 +127,8 @@ Configure the shared `ConstraintSelfCollision` with:
 thickness              0.003 m
 geometry radius scale  None
 fixed stiffness        None
-stiffness factors      (0.5, 0.3, 1.5) for VF, EE, EF
+stiffness factors      (0.5, 0.3, 1.5), with the EF entry unused
+edge-face recovery     disabled
 friction               0.05
 friction epsilon       1e-2 m/s
 maximum contacts       262,144 per contact type
@@ -126,8 +136,8 @@ maximum contacts       262,144 per contact type
 
 The stiffness is adaptive to the assembled ARAP diagonal, particle masses,
 and `dt`; only stiffness adapts. Collision thickness remains fixed at `3 mm`.
-Edge-face (EF) contacts recover accidental intersections, while VF and EE are
-the normal contact path.
+Only VF and EE are active; the EF contact buffer remains empty and contributes
+no force, Hessian-vector product, or diagonal block.
 
 Compose the self-collision operator and five box planes with
 `ConstraintGroupDynamic`.
@@ -156,9 +166,10 @@ After every tested frame, verify:
 
 1. all positions and velocities are finite;
 2. all 58,848 current tetrahedron determinants remain strictly positive;
-3. particles below the open top have not escaped catastrophically through
+3. only the 8,624 unique boundary vertices are collision candidates;
+4. particles below the open top have not escaped catastrophically through
    the floor or four walls;
-4. VF, EE, and EF contact buffers report zero overflow.
+5. VF and EE contact buffers report zero overflow, and EF remains disabled.
 
 Read active VF and EE contact IDs and map their particle indices to bunny
 numbers. The run succeeds only after at least one contact contains particles
@@ -179,8 +190,7 @@ do not switch to geometry-aware thickness without a separate user decision.
 
 ## Scope
 
-The first implementation changes only the new example, a focused test, and
-example registration. It reuses the existing bunny asset and collision
-operators. It adds no public API, solver algorithm, dependency, screenshot,
-README entry, or changelog entry until the runtime result is visually
-accepted.
+The implementation reuses the existing bunny asset and adds a surface-vertex
+subset option to static-plane contact. It also fixes VF detection to derive its
+candidate vertices from the triangle topology. It adds no dependency,
+screenshot, or README entry until the runtime result is visually accepted.

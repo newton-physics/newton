@@ -162,6 +162,33 @@ class TestConstraintStaticPlaneContact(unittest.TestCase):
             atol=1.0e-5,
         )
 
+    def test_particle_indices_restrict_contact_to_surface_subset(self):
+        """Apply plane forces and Hessians only to selected surface particles."""
+        contact = self._make_contact(
+            particle_indices=[0, 2],
+            normal_damping=0.0,
+            friction=0.0,
+        )
+        positions = wp.array([(0.0, 0.0, 0.0)] * 3, dtype=wp.vec3, device=self.device)
+        velocities = wp.zeros_like(positions)
+        direction = wp.array([(0.0, 0.0, 1.0)] * 3, dtype=wp.vec3, device=self.device)
+        force = wp.zeros_like(positions)
+        product = wp.zeros_like(positions)
+        diagonal = wp.zeros(3, dtype=wp.mat33, device=self.device)
+
+        contact.begin_step(positions, velocities, 0.1)
+        contact.prepare(positions)
+        contact.accumulate_force(positions, force)
+        contact.hessian_multiply(positions, direction, product)
+        contact.accumulate_diagonal(positions, diagonal)
+
+        np.testing.assert_allclose(force.numpy(), [[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+        np.testing.assert_allclose(product.numpy(), [[0.0, 0.0, 10.0], [0.0, 0.0, 0.0], [0.0, 0.0, 10.0]])
+        np.testing.assert_allclose(
+            diagonal.numpy(),
+            [np.diag([0.0, 0.0, 10.0]), np.zeros((3, 3)), np.diag([0.0, 0.0, 10.0])],
+        )
+
     def test_rejects_invalid_parameters(self):
         cases = [
             ({"normal": (0.0, 0.0, 0.0)}, "normal"),
@@ -173,6 +200,10 @@ class TestConstraintStaticPlaneContact(unittest.TestCase):
             ({"friction": -1.0}, "friction"),
             ({"friction_epsilon": 0.0}, "friction_epsilon"),
             ({"particle_count": 0}, "particle_count"),
+            ({"particle_indices": []}, "particle_indices"),
+            ({"particle_indices": [0.0, 1.0]}, "integers"),
+            ({"particle_indices": [0, 3]}, "out-of-range"),
+            ({"particle_indices": [0, 0]}, "unique"),
         ]
         for overrides, message in cases:
             with self.subTest(overrides=overrides):

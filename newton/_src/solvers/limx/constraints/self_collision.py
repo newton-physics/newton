@@ -190,6 +190,7 @@ def _detect_vertex_face_contacts(
     use_geometry_radii: int,
     capacity: int,
     positions: wp.array[wp.vec3],
+    surface_vertex_indices: wp.array[int],
     particle_world: wp.array[int],
     triangle_indices: wp.array2d[int],
     contact_ids: wp.array2d[int],
@@ -199,7 +200,7 @@ def _detect_vertex_face_contacts(
     contact_count: wp.array[int],
     overflow_count: wp.array[int],
 ):
-    vertex = wp.tid()
+    vertex = surface_vertex_indices[wp.tid()]
     vertex_position = positions[vertex]
     query = wp.bvh_query_aabb(
         triangle_bvh_id,
@@ -2424,6 +2425,7 @@ class ConstraintSelfCollision:
         geometry_radius_scale: float | None = None,
         friction: float = 0.0,
         friction_epsilon: float = 1.0e-2,
+        enable_edge_face: bool = True,
     ):
         """Create a fixed-capacity GPU cloth self-collision operator.
 
@@ -2446,6 +2448,8 @@ class ConstraintSelfCollision:
             friction: Coulomb friction coefficient for vertex-face and
                 edge-edge contacts.
             friction_epsilon: Relative-velocity regularization threshold [m/s].
+            enable_edge_face: Whether to detect and assemble edge-face
+                intersection recovery contacts.
         """
         if not np.isfinite(thickness) or thickness <= 0.0:
             raise ValueError("thickness must be finite and positive")
@@ -2506,6 +2510,7 @@ class ConstraintSelfCollision:
         self.rest_positions = wp.clone(model.particle_q)
         self.friction = float(friction)
         self.friction_epsilon = float(friction_epsilon)
+        self.enable_edge_face = bool(enable_edge_face)
         self._friction_positions: wp.array[wp.vec3] | None = None
         if self.friction > 0.0:
             self._friction_positions = wp.empty_like(model.particle_q)
@@ -2526,6 +2531,10 @@ class ConstraintSelfCollision:
         ):
             raise ValueError("model triangles must contain three distinct particle indices")
 
+        surface_vertex_indices = np.unique(triangle_indices.reshape(-1)).astype(np.int32)
+        if len(surface_vertex_indices) == 0:
+            raise ValueError("ConstraintSelfCollision requires at least one surface vertex")
+
         nominal_radius = 0.5 * self.thickness
         if geometry_radius_scale is None:
             particle_radii = np.full(model.particle_count, nominal_radius, dtype=np.float32)
@@ -2545,8 +2554,10 @@ class ConstraintSelfCollision:
         if len(edge_indices) == 0:
             raise ValueError("ConstraintSelfCollision requires at least one mesh edge")
         self.triangle_indices = wp.array(triangle_indices, dtype=wp.int32, device=self.device)
+        self.surface_vertex_indices = wp.array(surface_vertex_indices, dtype=wp.int32, device=self.device)
         self.edge_indices = wp.array(edge_indices, dtype=wp.int32, device=self.device)
         self.triangle_count = len(triangle_indices)
+        self.surface_vertex_count = len(surface_vertex_indices)
         self.edge_count = len(edge_indices)
 
         self.triangle_lower_bounds = wp.empty(self.triangle_count, dtype=wp.vec3, device=self.device)
@@ -2619,7 +2630,7 @@ class ConstraintSelfCollision:
         self.edge_face_contacts.clear()
         wp.launch(
             _detect_vertex_face_contacts,
-            dim=self.particle_count,
+            dim=self.surface_vertex_count,
             inputs=[
                 self.triangle_bvh.id,
                 self.thickness,
@@ -2627,6 +2638,7 @@ class ConstraintSelfCollision:
                 self._use_geometry_radii,
                 self.max_contacts,
                 positions,
+                self.surface_vertex_indices,
                 self.particle_world,
                 self.triangle_indices,
             ],
@@ -2666,28 +2678,29 @@ class ConstraintSelfCollision:
             device=self.device,
         )
         self.edge_edge_contacts.prepare_hessian(positions)
-        wp.launch(
-            _detect_edge_face_untangle_contacts,
-            dim=self.edge_count,
-            inputs=[
-                self.triangle_bvh.id,
-                self.thickness,
-                self.max_contacts,
-                positions,
-                self.particle_world,
-                self.triangle_indices,
-                self.edge_indices,
-            ],
-            outputs=[
-                self.edge_face_contacts.ids,
-                self.edge_face_contacts.weights,
-                self.edge_face_contacts.directions,
-                self.edge_face_contacts.depths,
-                self.edge_face_contacts.count,
-                self.edge_face_contacts.overflow_count,
-            ],
-            device=self.device,
-        )
+        if self.enable_edge_face:
+            wp.launch(
+                _detect_edge_face_untangle_contacts,
+                dim=self.edge_count,
+                inputs=[
+                    self.triangle_bvh.id,
+                    self.thickness,
+                    self.max_contacts,
+                    positions,
+                    self.particle_world,
+                    self.triangle_indices,
+                    self.edge_indices,
+                ],
+                outputs=[
+                    self.edge_face_contacts.ids,
+                    self.edge_face_contacts.weights,
+                    self.edge_face_contacts.directions,
+                    self.edge_face_contacts.depths,
+                    self.edge_face_contacts.count,
+                    self.edge_face_contacts.overflow_count,
+                ],
+                device=self.device,
+            )
 
     def accumulate_force(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:
         """Add frozen-contact physical forces to ``output``."""
@@ -2695,7 +2708,8 @@ class ConstraintSelfCollision:
         if self.stiffness_factors is None:
             self.vertex_face_contacts.accumulate_force(self.stiffness, output)
             self.edge_edge_contacts.accumulate_force(self.stiffness, positions, output)
-            self.edge_face_contacts.accumulate_force(self.untangle_stiffness, output)
+            if self.enable_edge_face:
+                self.edge_face_contacts.accumulate_force(self.untangle_stiffness, output)
             if self.friction > 0.0:
                 anchor_positions, displacement_epsilon = self._friction_state()
                 self.vertex_face_contacts.accumulate_friction_force(
@@ -2723,9 +2737,10 @@ class ConstraintSelfCollision:
         self.edge_edge_contacts.accumulate_force_adaptive(
             self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, positions, output
         )
-        self.edge_face_contacts.accumulate_force_adaptive(
-            self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, output
-        )
+        if self.enable_edge_face:
+            self.edge_face_contacts.accumulate_force_adaptive(
+                self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, output
+            )
         if self.friction > 0.0:
             anchor_positions, displacement_epsilon = self._friction_state()
             self.vertex_face_contacts.accumulate_friction_force_adaptive(
@@ -2762,7 +2777,8 @@ class ConstraintSelfCollision:
         if self.stiffness_factors is None:
             self.vertex_face_contacts.hessian_multiply(self.stiffness, vector, output)
             self.edge_edge_contacts.hessian_multiply(self.stiffness, positions, vector, output)
-            self.edge_face_contacts.hessian_multiply(self.untangle_stiffness, vector, output)
+            if self.enable_edge_face:
+                self.edge_face_contacts.hessian_multiply(self.untangle_stiffness, vector, output)
             if self.friction > 0.0:
                 anchor_positions, displacement_epsilon = self._friction_state()
                 self.vertex_face_contacts.friction_hessian_multiply(
@@ -2792,9 +2808,10 @@ class ConstraintSelfCollision:
         self.edge_edge_contacts.hessian_multiply_adaptive(
             self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, positions, vector, output
         )
-        self.edge_face_contacts.hessian_multiply_adaptive(
-            self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, vector, output
-        )
+        if self.enable_edge_face:
+            self.edge_face_contacts.hessian_multiply_adaptive(
+                self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, vector, output
+            )
         if self.friction > 0.0:
             anchor_positions, displacement_epsilon = self._friction_state()
             self.vertex_face_contacts.friction_hessian_multiply_adaptive(
@@ -2828,7 +2845,8 @@ class ConstraintSelfCollision:
         if self.stiffness_factors is None:
             self.vertex_face_contacts.accumulate_diagonal(self.stiffness, output)
             self.edge_edge_contacts.accumulate_diagonal(self.stiffness, positions, output)
-            self.edge_face_contacts.accumulate_diagonal(self.untangle_stiffness, output)
+            if self.enable_edge_face:
+                self.edge_face_contacts.accumulate_diagonal(self.untangle_stiffness, output)
             if self.friction > 0.0:
                 anchor_positions, displacement_epsilon = self._friction_state()
                 self.vertex_face_contacts.accumulate_friction_diagonal(
@@ -2856,9 +2874,10 @@ class ConstraintSelfCollision:
         self.edge_edge_contacts.accumulate_diagonal_adaptive(
             self.stiffness_factors[1], static_diagonal, masses, inv_dt_squared, positions, output
         )
-        self.edge_face_contacts.accumulate_diagonal_adaptive(
-            self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, output
-        )
+        if self.enable_edge_face:
+            self.edge_face_contacts.accumulate_diagonal_adaptive(
+                self.stiffness_factors[2], static_diagonal, masses, inv_dt_squared, output
+            )
         if self.friction > 0.0:
             anchor_positions, displacement_epsilon = self._friction_state()
             self.vertex_face_contacts.accumulate_friction_diagonal_adaptive(

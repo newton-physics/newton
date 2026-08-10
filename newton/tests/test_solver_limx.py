@@ -1381,6 +1381,24 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             buffer.depths.numpy()[:count],
         )
 
+    def test_vertex_face_detection_uses_only_surface_vertices(self):
+        """Exclude particles outside the triangle topology from VF candidates."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, 0.05],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0)
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.vertex_face_contacts)
+
+        self.assertEqual(collision.surface_vertex_count, 3)
+        np.testing.assert_array_equal(collision.surface_vertex_indices.numpy(), [0, 1, 2])
+        self.assertFalse(np.any(ids[:, 0] == 3))
+
     def test_friction_parameters_validate_and_default_to_disabled(self):
         """Validate friction parameters and preserve a frictionless default."""
         positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
@@ -1975,6 +1993,39 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(directions[contact], [1.0, 0.0, 0.0], atol=1.0e-6)
         np.testing.assert_allclose(np.linalg.norm(directions[contact]), 1.0, atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.2, places=6)
+
+    def test_edge_face_detection_and_assembly_can_be_disabled(self):
+        """Disable EF detection, force, Hessian product, and diagonal assembly."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, -0.5],
+            [0.25, 0.25, 0.5],
+            [0.75, 0.25, 0.5],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=32,
+                enable_edge_face=False,
+            )
+            collision.prepare(model.particle_q)
+            force = wp.zeros_like(model.particle_q)
+            product = wp.zeros_like(model.particle_q)
+            diagonal = wp.zeros(model.particle_count, dtype=wp.mat33, device=model.device)
+            direction = wp.array([wp.vec3(1.0)] * model.particle_count, dtype=wp.vec3, device=model.device)
+            collision.accumulate_force(model.particle_q, force)
+            collision.hessian_multiply(model.particle_q, direction, product)
+            collision.accumulate_diagonal(model.particle_q, diagonal)
+
+        self.assertEqual(int(collision.edge_face_contacts.count.numpy()[0]), 0)
+        np.testing.assert_array_equal(force.numpy(), np.zeros((model.particle_count, 3)))
+        np.testing.assert_array_equal(product.numpy(), np.zeros((model.particle_count, 3)))
+        np.testing.assert_array_equal(diagonal.numpy(), np.zeros((model.particle_count, 3, 3)))
 
     def test_small_triangle_vertex_face_contact_is_not_treated_as_degenerate(self):
         positions = [

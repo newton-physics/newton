@@ -21,6 +21,7 @@ class TestLimxArapBunniesBoxExample(unittest.TestCase):
         self.assertEqual(example.model.particle_count, 14952)
         self.assertEqual(example.model.tet_count, 58848)
         self.assertEqual(example.model.tri_count, 17216)
+        self.assertEqual(len(example.surface_vertex_indices), 8624)
         self.assertEqual(example.model.body_count, 0)
         self.assertEqual(example.self_collision.thickness, 0.003)
         self.assertIsNone(example.self_collision.geometry_radius_scale)
@@ -28,7 +29,16 @@ class TestLimxArapBunniesBoxExample(unittest.TestCase):
         self.assertEqual(example.self_collision.stiffness_factors, (0.5, 0.3, 1.5))
         self.assertEqual(example.self_collision.friction, 0.05)
         self.assertEqual(example.self_collision.max_contacts, 262144)
+        self.assertFalse(example.self_collision.enable_edge_face)
         self.assertEqual(len(example.box_contacts), 5)
+        self.assertEqual(example.self_collision.surface_vertex_count, 8624)
+        self.assertTrue(all(contact.contact_particle_count == 8624 for contact in example.box_contacts))
+        self.assertTrue(
+            all(
+                (contact.particle_indices.numpy() == example.surface_vertex_indices).all()
+                for contact in example.box_contacts
+            )
+        )
         self.assertTrue(all(contact.thickness == 0.003 for contact in example.box_contacts))
         self.assertTrue(all(contact.normal_damping == 0.0 for contact in example.box_contacts))
         self.assertEqual(example.solver.nonlinear_iterations, 1)

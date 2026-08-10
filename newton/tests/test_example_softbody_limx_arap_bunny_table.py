@@ -55,6 +55,8 @@ class TestLimxArapBunnyTableExample(unittest.TestCase):
         self.assertEqual(example.table_contact.stiffness, 2.0e4)
         self.assertEqual(example.table_contact.normal_damping, 0.0)
         self.assertEqual(example.table_contact.friction, 0.05)
+        self.assertEqual(example.table_contact.contact_particle_count, 1078)
+        np.testing.assert_array_equal(example.table_contact.particle_indices.numpy(), example.surface_vertex_indices)
 
 
 if __name__ == "__main__":

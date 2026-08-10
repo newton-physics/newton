@@ -70,7 +70,7 @@ class Example:
         self.box_floor = 0.0
         self.box_wall_top = 0.75
         self.bunny_count = len(_BUNNY_CONFIGURATIONS)
-        self.maximum_contact_counts = np.zeros(3, dtype=np.int64)
+        self.maximum_contact_counts = np.zeros(2, dtype=np.int64)
         self.minimum_determinant = np.inf
         self.maximum_box_penetration = 0.0
         self.maximum_speed = 0.0
@@ -100,6 +100,7 @@ class Example:
         self.model = builder.finalize()
 
         self.tetrahedra = self.model.tet_indices.numpy()
+        self.surface_vertex_indices = np.unique(self.model.tri_indices.numpy()).astype(np.int32)
         inverse_rest_matrices = self.model.tet_poses.numpy()
         self.arap_constraint = newton.solvers.ConstraintTetrahedronARAP(
             self.tetrahedra.tolist(),
@@ -117,6 +118,7 @@ class Example:
             geometry_radius_scale=None,
             friction=0.05,
             friction_epsilon=1.0e-2,
+            enable_edge_face=False,
         )
         plane_parameters = (
             ((0.0, 0.0, 1.0), self.box_floor),
@@ -136,6 +138,7 @@ class Example:
                 friction_epsilon=1.0e-4,
                 particle_count=self.model.particle_count,
                 device=self.model.device,
+                particle_indices=self.surface_vertex_indices,
             )
             for normal, offset in plane_parameters
         ]
@@ -253,7 +256,6 @@ class Example:
         buffers = (
             self.self_collision.vertex_face_contacts,
             self.self_collision.edge_edge_contacts,
-            self.self_collision.edge_face_contacts,
         )
         contact_counts = []
         for buffer in buffers:

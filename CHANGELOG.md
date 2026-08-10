@@ -11,6 +11,7 @@
 - Add frictionless LIMX cloth self-collision with GPU VF/EE detection, EF untangling, and full matrix-free positive-semidefinite contact Hessians.
 - Add adaptive LIMX self-collision stiffness derived from the current elastic diagonal and inertia, with independent VF, EE, and EF factors.
 - Add regularized Coulomb friction to LIMX vertex-face and edge-edge cloth self-collision.
+- Add optional surface-particle subsets to LIMX static-plane contact and an option to disable edge-face recovery in self-collision.
 - Add a CUDA LIMX example that contrasts a settled control with geometry-aware VF/EE self-collision at a 6 mm nominal thickness.
 - Add a LIMX T-shirt table-contact example with self-collision, contact damping, and friction.
 - Break the viewer's shape count down into visual and collision shapes. The two are listed under `Shapes` in the stats overlay and need not sum to the total, since a shape can be both.
@@ -102,6 +103,7 @@
 
 ### Fixed
 
+- Restrict LIMX vertex-face candidates to vertices referenced by the surface triangle mesh.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
 - Fix `ModelBuilder.add_usd()` marking a `guide`-purpose collider visible when it has a bound render material. Such a collider is not viewport geometry, and the extra `VISIBLE` flag left it drawn by the viewer's visual toggle instead of its collision toggle. `force_show_colliders` still reveals it.

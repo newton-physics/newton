@@ -64,6 +64,7 @@ class Example:
 
         self.rest_positions = self.model.particle_q.numpy()
         self.tetrahedra = self.model.tet_indices.numpy()
+        self.surface_vertex_indices = np.unique(self.model.tri_indices.numpy()).astype(np.int32)
         self.particle_masses = self.model.particle_mass.numpy()
         self.initial_center_height = float(np.average(self.rest_positions[:, 2], weights=self.particle_masses))
         self.initial_minimum_height = float(self.rest_positions[:, 2].min())
@@ -86,6 +87,7 @@ class Example:
             friction_epsilon=1.0e-4,
             particle_count=self.model.particle_count,
             device=self.model.device,
+            particle_indices=self.surface_vertex_indices,
         )
         self.solver = newton.solvers.SolverLIMX(
             self.model,

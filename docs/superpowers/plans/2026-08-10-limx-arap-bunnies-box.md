@@ -14,11 +14,15 @@
 - Use scale `0.15`, density `1000 kg/m^3`, and ARAP stiffness `1e5 Pa` per bunny.
 - Use fixed VF/EE thickness `0.003 m`; leave `geometry_radius_scale=None`.
 - Use adaptive contact stiffness factors `(0.5, 0.3, 1.5)`, friction `0.05`, and `max_contacts=262144`.
+- Set `enable_edge_face=False`; only VF and EE may detect or assemble contact.
 - Use five inward box planes with `0.003 m` thickness, `2e4 N/m` stiffness, friction `0.05`, and zero normal damping.
+- Derive the 8,624 collision vertices from the boundary triangle array; never
+  use interior tetrahedral vertices as VF or box-plane candidates.
 - Use `dt=0.01 s`, one step, one Newton iteration, 50 PCG iterations, and `velocity_damping=1.0`.
 - Do not add substeps, line search, self-collision thickness adaptation, material damping, normal damping, or another collision algorithm.
 - Tests use `unittest`; every test method has an imperative triple-double-quoted docstring.
-- Do not add or change a public API.
+- Preserve the default all-particle behavior of static-plane contact while
+  adding an optional surface-particle subset.
 
 ---
 
@@ -140,6 +144,11 @@ validation that the resulting counts are 14,952 particles, 58,848 tetrahedra,
 and 17,216 triangles. Store `tetrahedra`, `particle_masses`, and the eight
 particle index ranges for diagnostics.
 
+Compute the sorted unique indices referenced by `model.tri_indices`. Assert
+that there are 8,624 surface vertices and use this compact set for all VF and
+box-plane candidate launches. The remaining 6,328 particles are interior ARAP
+degrees of freedom only.
+
 - [ ] **Step 3: Create ARAP, VF/EE, and box constraints**
 
 Use:
@@ -161,6 +170,7 @@ self.self_collision = newton.solvers.ConstraintSelfCollision(
     geometry_radius_scale=None,
     friction=0.05,
     friction_epsilon=1.0e-2,
+    enable_edge_face=False,
 )
 ```
 
@@ -177,7 +187,8 @@ Create floor and wall plane equations:
 ```
 
 Give every plane the approved 3 mm, `2e4 N/m`, zero-damping, `0.05`
-friction parameters. Compose collision and planes through
+friction parameters and the shared boundary vertex indices. Compose collision
+and planes through
 `ConstraintGroupDynamic`, then construct `SolverLIMX` with one Newton and 50
 PCG iterations.
 
@@ -217,7 +228,6 @@ if len(contained) and (
 for buffer in (
     self.self_collision.vertex_face_contacts,
     self.self_collision.edge_edge_contacts,
-    self.self_collision.edge_face_contacts,
 ):
     if int(buffer.overflow_count.numpy()[0]) != 0:
         raise AssertionError("LIMX ARAP bunny contact capacity overflowed")

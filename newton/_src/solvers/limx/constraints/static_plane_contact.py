@@ -16,6 +16,7 @@ import warp as wp
 def _prepare_static_plane_contact(
     positions: wp.array[wp.vec3],
     velocities: wp.array[wp.vec3],
+    particle_indices: wp.array[int],
     normal: wp.vec3,
     offset: float,
     thickness: float,
@@ -27,11 +28,12 @@ def _prepare_static_plane_contact(
     forces: wp.array[wp.vec3],
     hessians: wp.array[wp.mat33],
 ):
-    particle = wp.tid()
+    contact_particle = wp.tid()
+    particle = particle_indices[contact_particle]
     distance = wp.dot(normal, positions[particle]) - offset
     if distance >= thickness:
-        forces[particle] = wp.vec3(0.0)
-        hessians[particle] = wp.mat33(0.0)
+        forces[contact_particle] = wp.vec3(0.0)
+        hessians[contact_particle] = wp.mat33(0.0)
         return
 
     depth = thickness - distance
@@ -57,30 +59,42 @@ def _prepare_static_plane_contact(
     force -= alpha * tangent_displacement
     hessian += alpha * tangent
 
-    forces[particle] = force
-    hessians[particle] = hessian
+    forces[contact_particle] = force
+    hessians[contact_particle] = hessian
 
 
 @wp.kernel
-def _accumulate_static_plane_force(forces: wp.array[wp.vec3], output: wp.array[wp.vec3]):
-    particle = wp.tid()
-    output[particle] += forces[particle]
+def _accumulate_static_plane_force(
+    forces: wp.array[wp.vec3],
+    particle_indices: wp.array[int],
+    output: wp.array[wp.vec3],
+):
+    contact_particle = wp.tid()
+    particle = particle_indices[contact_particle]
+    output[particle] += forces[contact_particle]
 
 
 @wp.kernel
 def _static_plane_hessian_multiply(
     hessians: wp.array[wp.mat33],
+    particle_indices: wp.array[int],
     vector: wp.array[wp.vec3],
     output: wp.array[wp.vec3],
 ):
-    particle = wp.tid()
-    output[particle] += hessians[particle] * vector[particle]
+    contact_particle = wp.tid()
+    particle = particle_indices[contact_particle]
+    output[particle] += hessians[contact_particle] * vector[particle]
 
 
 @wp.kernel
-def _accumulate_static_plane_diagonal(hessians: wp.array[wp.mat33], output: wp.array[wp.mat33]):
-    particle = wp.tid()
-    output[particle] += hessians[particle]
+def _accumulate_static_plane_diagonal(
+    hessians: wp.array[wp.mat33],
+    particle_indices: wp.array[int],
+    output: wp.array[wp.mat33],
+):
+    contact_particle = wp.tid()
+    particle = particle_indices[contact_particle]
+    output[particle] += hessians[contact_particle]
 
 
 class ConstraintStaticPlaneContact:
@@ -97,6 +111,7 @@ class ConstraintStaticPlaneContact:
         friction_epsilon: float,
         particle_count: int,
         device: Any,
+        particle_indices: Sequence[int] | None = None,
     ):
         """Create a static-plane contact operator.
 
@@ -113,6 +128,8 @@ class ConstraintStaticPlaneContact:
             friction_epsilon: Tangential displacement regularization [m].
             particle_count: Number of particles in the associated model.
             device: Warp device storing runtime arrays.
+            particle_indices: Optional unique particle indices tested against
+                the plane. Defaults to all particles.
         """
         normal_array = np.asarray(normal, dtype=np.float64)
         if normal_array.shape != (3,) or not np.isfinite(normal_array).all():
@@ -135,6 +152,20 @@ class ConstraintStaticPlaneContact:
         if particle_count <= 0:
             raise ValueError("particle_count must be positive")
 
+        if particle_indices is None:
+            validated_particle_indices = np.arange(particle_count, dtype=np.int32)
+        else:
+            indices_array = np.asarray(particle_indices)
+            if indices_array.ndim != 1 or len(indices_array) == 0:
+                raise ValueError("particle_indices must be a nonempty one-dimensional sequence")
+            if not np.issubdtype(indices_array.dtype, np.integer):
+                raise ValueError("particle_indices must contain integers")
+            if np.any(indices_array < 0) or np.any(indices_array >= particle_count):
+                raise ValueError("particle_indices contains an out-of-range index")
+            if len(np.unique(indices_array)) != len(indices_array):
+                raise ValueError("particle_indices must be unique")
+            validated_particle_indices = indices_array.astype(np.int32)
+
         normalized = normal_array / normal_length
         self.normal = wp.vec3(float(normalized[0]), float(normalized[1]), float(normalized[2]))
         self.offset = float(offset)
@@ -145,9 +176,11 @@ class ConstraintStaticPlaneContact:
         self.friction_epsilon = float(friction_epsilon)
         self.particle_count = int(particle_count)
         self.device = wp.get_device(device)
+        self.contact_particle_count = len(validated_particle_indices)
+        self.particle_indices = wp.array(validated_particle_indices, dtype=wp.int32, device=self.device)
 
-        self.forces = wp.empty(self.particle_count, dtype=wp.vec3, device=self.device)
-        self.hessians = wp.empty(self.particle_count, dtype=wp.mat33, device=self.device)
+        self.forces = wp.empty(self.contact_particle_count, dtype=wp.vec3, device=self.device)
+        self.hessians = wp.empty(self.contact_particle_count, dtype=wp.mat33, device=self.device)
         self._velocities: wp.array[wp.vec3] | None = None
         self._dt = 0.0
 
@@ -181,10 +214,11 @@ class ConstraintStaticPlaneContact:
         self._validate_vectors((positions, "positions"))
         wp.launch(
             _prepare_static_plane_contact,
-            dim=self.particle_count,
+            dim=self.contact_particle_count,
             inputs=[
                 positions,
                 self._velocities,
+                self.particle_indices,
                 self.normal,
                 self.offset,
                 self.thickness,
@@ -208,8 +242,8 @@ class ConstraintStaticPlaneContact:
         self._validate_vectors((positions, "positions"), (output, "output"))
         wp.launch(
             _accumulate_static_plane_force,
-            dim=self.particle_count,
-            inputs=[self.forces],
+            dim=self.contact_particle_count,
+            inputs=[self.forces, self.particle_indices],
             outputs=[output],
             device=self.device,
         )
@@ -230,8 +264,8 @@ class ConstraintStaticPlaneContact:
         self._validate_vectors((positions, "positions"), (vector, "vector"), (output, "output"))
         wp.launch(
             _static_plane_hessian_multiply,
-            dim=self.particle_count,
-            inputs=[self.hessians, vector],
+            dim=self.contact_particle_count,
+            inputs=[self.hessians, self.particle_indices, vector],
             outputs=[output],
             device=self.device,
         )
@@ -252,8 +286,8 @@ class ConstraintStaticPlaneContact:
             raise TypeError("output must have dtype wp.mat33")
         wp.launch(
             _accumulate_static_plane_diagonal,
-            dim=self.particle_count,
-            inputs=[self.hessians],
+            dim=self.contact_particle_count,
+            inputs=[self.hessians, self.particle_indices],
             outputs=[output],
             device=self.device,
         )

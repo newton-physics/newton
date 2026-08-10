@@ -41,3 +41,15 @@
 - Context: While preparing the bunny follow-up, the user asked where the code implemented “刚才” was located.
 - Mistake: Assumed the user meant the not-yet-created bunny example instead of the already-completed tetrahedral ARAP implementation.
 - Rule: When the user asks where recently implemented code is, first map the reference to completed commits and report its branch/worktree and exact paths. Do not reinterpret it as the current follow-up feature when that feature has not been implemented yet.
+
+## 2026-08-10 — Restrict tetrahedral soft-body collision to the boundary
+
+- Context: Building VF/EE collision for eight volumetric ARAP bunnies.
+- Mistake: Treated `ConstraintSelfCollision` as surface-only because its faces and edges come from the boundary triangle mesh, without noticing that its VF detector still launched over every tetrahedral particle, including interior vertices. Static-plane contact likewise considered every volume particle.
+- Rule: For tetrahedral soft bodies, derive collision candidate vertices from the unique indices of the boundary triangle mesh. Use only those boundary vertices for VF and external plane/rigid contact; internal tetrahedral nodes participate through elasticity, never direct collision detection.
+
+## 2026-08-10 — Keep the requested collision feature set to VF/EE
+
+- Context: Stabilizing surface collision for the eight-bunny volumetric ARAP scene.
+- Mistake: Kept edge-face (EF) intersection recovery enabled even though the intended collision formulation is limited to vertex-face and edge-edge pairs.
+- Rule: For this LIMX collision path, detect and assemble only VF and EE contacts. Do not generate EF recovery contacts or include EF forces, Hessian-vector products, or diagonal blocks unless the user explicitly requests EF again.
