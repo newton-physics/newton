@@ -13,7 +13,7 @@
 - Run `docs/generate_api.py` when adding public API symbols.
 - Before relying on or changing a documented claim, open the relevant internal cross-references and external primary-source links. Verify Newton-specific behavior against the current code; if a linked source is unavailable, state that limitation instead of assuming it supports the claim.
 - Avoid new required dependencies. Strongly prefer not adding optional ones — use Warp, NumPy, or stdlib.
-- Create a feature branch before committing — never commit directly to `main`. Use `<username>/feature-desc`.
+- Use the canonical checkout on `dev` for daily development and push changes to `dev`. The user opens pull requests from `dev` into `main`; never commit directly to `main`. Do not create or use Git worktrees unless the user explicitly requests one.
 - Imperative mood in commit messages ("Fix X", not "Fixed X"), ~50 char subject, body wraps at 72 chars explaining _what_ and _why_.
 - Verify regression tests fail without the fix before committing.
 - Pin GitHub Actions by SHA: `action@<sha>  # vX.Y.Z`. Check `.github/workflows/` for allowlisted hashes.

@@ -125,3 +125,9 @@
 - Context: Choosing the automatic nominal VF/EE thickness while one-ring pairs receive special treatment and future EF parent candidates will unify feature cases.
 - Mistake: Added a velocity-dependent discrete-detection lower bound and proposed selecting from a feasible interval, despite the requested policy being a simple geometry-only cap.
 - Rule: For this experiment, compute the nominal thickness as `min(eta * two_ring_upper_bound, 0.005 m)` with `eta = 0.8`. Do not add a motion-derived lower bound, CCD criterion, or graph-one-ring redesign to this estimator.
+
+## 2026-08-10 — Use the canonical dev branch without worktrees
+
+- Context: Finishing the automatic LIMX collision-thickness change in a hidden linked worktree.
+- Mistake: Continued using a feature worktree and offered local merge or agent-created PR flows, adding friction to the user's preferred daily workflow.
+- Rule: For Newton, keep only `main` and `dev` as the normal working branches. Develop, commit, and push from the canonical repository path on `dev`; the user opens the PR from `dev` into `main`. Do not create or use worktrees unless the user explicitly requests one.
