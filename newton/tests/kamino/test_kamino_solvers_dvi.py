@@ -459,7 +459,7 @@ class TestDVISolver(unittest.TestCase):
             0,
         )
         self.assertEqual(
-            int(solver._collision_detector_kamino._unified_pipeline.contact_overflow_warning_emitted.numpy()[0]),
+            int(solver._collision_detector_kamino._unified_pipeline._contact_overflow_warning_emitted.numpy()[0]),
             1,
         )
 

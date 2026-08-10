@@ -39,6 +39,7 @@ from ..geometry.contacts import (
     DEFAULT_TRIANGLE_MAX_PAIRS,
     ContactsKamino,
     make_contact_frame_znorm,
+    reserve_contact_capacity,
 )
 from ..geometry.keying import build_pair_key2
 
@@ -152,34 +153,20 @@ def _write_contact_unified_kamino(
         wid = wid_b
     world_max_contacts = writer_data.world_max_contacts[wid]
 
-    # Always allocate from the model-level counter so the active count
-    # stays accurate regardless of whether the narrowphase pre-allocated
-    # an output_index (primitive kernel) or left it to the writer (-1).
-    wcid = wp.atomic_add(writer_data.contacts_world_num_active, wid, 1)
-    if wcid >= world_max_contacts:  # Roll back and exit if world counter exceeds max
-        wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
+    reservation = reserve_contact_capacity(
+        writer_data.model_max_contacts,
+        world_max_contacts,
+        wid,
+        1,
+        writer_data.contacts_model_num_active,
+        writer_data.contacts_world_num_active,
+        writer_data.contact_overflow_warning_emitted,
+    )
+    if reservation[0] == 0:
         wp.atomic_add(writer_data.dropped_contact_count, 0, 1)
-        if wp.atomic_exch(writer_data.contact_overflow_warning_emitted, 0, 1) == 0:
-            wp.printf(
-                "Warning: Kamino contact capacity exceeded. Increase collision_detector.max_contacts_per_world.\n"
-            )
         return
-    mcid = wp.atomic_add(writer_data.contacts_model_num_active, 0, 1)
-    if mcid >= writer_data.model_max_contacts:  # Roll back and exit if model counter exceeds max
-        wp.atomic_sub(writer_data.contacts_model_num_active, 0, 1)
-        wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
-        wp.atomic_add(writer_data.dropped_contact_count, 0, 1)
-        if wp.atomic_exch(writer_data.contact_overflow_warning_emitted, 0, 1) == 0:
-            wp.printf(
-                "Warning: Kamino contact capacity exceeded. Increase collision_detector.max_contacts_per_world.\n"
-            )
-        return
-    # Note: the world counter must be incremented first to ensure that once
-    # a thread increments the global counter, it won't decrease it again after
-    # because its world is saturated (leading to potential non-unique
-    # mcid in other threads working on other worlds)
-    # The decrease to the world counter if the model is saturated is not
-    # problematic because the model is saturated for all threads in all worlds anyway.
+    wcid = reservation[1]
+    mcid = reservation[2]
 
     # Retrieve the geom/body/material indices
     gid_a = contact_data.shape_a
@@ -527,7 +514,7 @@ class CollisionPipelineUnifiedKamino:
             self.broad_phase_pair_count = wp.zeros(1, dtype=wp.int32)
             self.narrow_phase_contact_count = wp.zeros(1, dtype=wp.int32)
             self.dropped_contact_count = wp.zeros(1, dtype=wp.int32)
-            self.contact_overflow_warning_emitted = wp.zeros(1, dtype=wp.int32)
+            self._contact_overflow_warning_emitted = wp.zeros(1, dtype=wp.int32)
             self.shape_sdf_data = wp.empty(shape=(0,), dtype=TextureSDFData)
             self.shape_sdf_index = wp.full_like(self._model.geoms.type, -1)
 
@@ -615,6 +602,7 @@ class CollisionPipelineUnifiedKamino:
         # Clear internal contact counts
         self.narrow_phase_contact_count.zero_()
         self.dropped_contact_count.zero_()
+        self._contact_overflow_warning_emitted.zero_()
 
         # Update geometry poses from body states and compute respective AABBs
         self._update_geom_data(data, state)
@@ -767,7 +755,7 @@ class CollisionPipelineUnifiedKamino:
         writer_data.contact_max = wp.int32(contacts.model_max_contacts_host)
         writer_data.contact_count = self.narrow_phase_contact_count
         writer_data.dropped_contact_count = self.dropped_contact_count
-        writer_data.contact_overflow_warning_emitted = self.contact_overflow_warning_emitted
+        writer_data.contact_overflow_warning_emitted = self._contact_overflow_warning_emitted
         writer_data.contacts_model_num_active = contacts.model_active_contacts
         writer_data.contacts_world_num_active = contacts.world_active_contacts
         writer_data.contact_wid = contacts.wid

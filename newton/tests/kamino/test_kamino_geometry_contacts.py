@@ -1388,7 +1388,6 @@ class TestGeometryContactConversions(unittest.TestCase):
         with self.assertNoLogs(level="WARNING"):
             convert_contacts_newton_to_kamino(model_nc, state_nc, contacts_nc, kamino_nc)
         self.assertEqual(int(kamino_nc.model_active_contacts.numpy()[0]), 0)
-        del model_nc, state_nc, contacts_nc, kamino_nc
 
         # 2) Capacity overflow.
         model, state, contacts = self._setup_newton_scene(with_force=False)
@@ -1409,6 +1408,14 @@ class TestGeometryContactConversions(unittest.TestCase):
             small_capacity,
             f"Active count {nc_small} must not exceed Kamino capacity {small_capacity}",
         )
+        self.assertEqual(int(kamino_small._data._contact_overflow_warning_emitted.numpy()[0]), 1)
+
+        convert_contacts_newton_to_kamino(model_nc, state_nc, contacts_nc, kamino_small)
+        self.assertEqual(int(kamino_small._data._contact_overflow_warning_emitted.numpy()[0]), 0)
+
+        with self.assertLogs(level="WARNING"):
+            convert_contacts_newton_to_kamino(model, state, contacts, kamino_small)
+        self.assertEqual(int(kamino_small._data._contact_overflow_warning_emitted.numpy()[0]), 1)
         # Geometry must be sound for whatever was kept.
         bid_AB = kamino_small.bid_AB.numpy()[:nc_small]
         for i in range(nc_small):
