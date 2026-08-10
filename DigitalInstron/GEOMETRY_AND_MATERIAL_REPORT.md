@@ -191,7 +191,82 @@ loop is reproduced exactly.
 
 Fixed (not fitted): `ν = 0.30`, `τ = 0.08 s`, `stretch_floor = 0.05`.
 
-## 4. Why this is a good idea
+## 4. Calibrating the law: derivative-free and differentiable backends
+
+The four parameters are recovered by **inverse identification**: drive the column
+bed through the measured compression cycle and descend a loss that matches the
+predicted reaction force to the bench force-displacement loop. Two backends share
+the *identical* train (cycles 90-98) / held-out (cycles 99-100) protocol, so exact
+gradients can be compared head-to-head against a derivative-free reference
+(`phase1.py`, `--compare`).
+
+### (a) `scipy` -- derivative-free least-squares (authoritative)
+
+`core.fit_material` runs a bounded least-squares fit (SciPy) of the four
+parameters against the per-trial, peak-normalized force residual of the analytic
+NumPy `core.predict` model. It needs no gradients, is robust from a cold manifest
+seed, and is the **authoritative** calibration used everywhere downstream (Phase-2
+dynamics, all figures). Fitted values: `G_inst = 19.0 kPa`, `alpha = 5.13`,
+`eq_fraction = 0.107`, `k_p = 918 N/m`.
+
+### (b) `diff` -- differentiable Adam with exact gradients
+
+`inverse_id.fit_material_to_trials` records the whole compression cycle -- *including
+the generalized-Maxwell loading/unloading hysteresis* -- on a `warp.Tape` and
+back-propagates the same peak-normalized force loss to get the exact gradient
+w.r.t. all four parameters in one backward pass, then takes Adam steps in a
+dimensionless `scale x reference` space (the parameters span very different
+magnitudes). It runs on the **differentiable sibling** force model
+(`dynamics_diff.DifferentiableMidsoleFoundation`), which is the same Hyperfoam-
+Maxwell-Pasternak law reshaped to be autodiff-safe: a write-once viscoelastic
+recurrence (no in-place `q_state` aliasing across substeps) and a smooth,
+cone-respecting Coulomb friction (`warp.smooth_normalize`) in place of the forward
+model's integer stick/slip flag. The material lives in a length-4 `requires_grad`
+array, so any simulation objective exposes `material_params.grad` directly.
+
+### (c) What the comparison shows
+
+Running both backends through the identical protocol (figures under
+`DigitalInstron/figures/backends/`) yields a clear result:
+
+- **scipy and warm-started diff coincide.** Seeding the differentiable Adam fit at
+  the scipy optimum reproduces it bit-for-bit (`eq_fraction 0.107`, held-out
+  hysteresis 16% / 17%) and the loss does not move -- scipy already sits at the
+  optimum the gradient points to.
+- **A cold diff descent settles in a worse basin.** Started from the manifest
+  seed, Adam converges but to `eq_fraction = 0.685` (far less Maxwell overstress ->
+  a too-thin loop), giving a **higher** train loss (0.96 vs 0.86) and held-out
+  hysteresis errors of **57% / 42%**. Peak and RMSE stay backend-independent; only
+  the loop area is spoiled.
+
+The conclusion is that **exact gradients do not beat the derivative-free fit on
+this static loop**: the residual floor is a *data/model identifiability ceiling*,
+not an optimizer limitation. `eq_fraction` (the equilibrium/instantaneous ratio,
+hence the hysteresis) is the weakly-identified direction that a single-rate loop
+cannot pin down tightly, so a far cold start can trade it off against the other
+parameters at nearly-equal peak/RMSE.
+
+### (d) Why keep the differentiable backend
+
+Its payoff is not out-fitting scipy on the static loop -- it is enabling
+gradient-based tasks the derivative-free fit *cannot* do:
+
+- **friction identification**: the Coulomb coefficient `mu` sits in its own length-1
+  `requires_grad` array, so a lateral-/shear-force target identifies friction by
+  gradient descent (`scenarios_diff.DifferentiableSlide`);
+- **gradients through the full dynamic loop**: contact, PD actuation, and smooth
+  friction of a mass-carrying stride (`scenarios_diff.DifferentiableAttached`,
+  integrated by `SolverSemiImplicit`), which the quasi-static `core.predict` cannot
+  reach;
+- **design / inverse problems** that need `d(objective)/d(material)`.
+
+The gradient is *exact while contact is continuous* and a valid subgradient at
+column make/break events (which a finite difference will not match at the event).
+So the practical policy is: **scipy is authoritative for the static material fit;
+the differentiable backend is used for gradient tasks and is best warm-started
+from the scipy optimum.**
+
+## 5. Why this is a good idea
 
 1. **Physically interpretable & minimal.** Four parameters, each with a distinct
    physical role *and* a distinct fingerprint in the data (slope, knee, loop area,
