@@ -101,3 +101,9 @@
 - Context: Filtering false same-bunny contacts for signed VF/EE volume collision.
 - Mistake: Assumed one-ring VF and adjacent-opposite EE filtering was sufficient because it removed every rest-state VF and most rest-state EE candidates. During deformation, all destabilizing same-bunny contacts were still within surface graph distance three, and the legacy local contacts had also been accidentally stiffening the soft body.
 - Rule: Diagnose dynamic contact graph distances, not only rest-state counts. For this oriented volume path, exclude VF/EE pairs through three surface-graph rings and validate material stiffness again after removing artificial local-contact stiffness.
+
+## 2026-08-10 — Keep permanent collision exclusions strictly incident
+
+- Context: Revisiting the three-ring exclusion used by outward-normal signed VF/EE volume collision.
+- Mistake: Turned a scene-specific stability observation into a permanent three-ring topology exclusion, which can suppress real local self-contact and allow undetected penetration.
+- Rule: Permanently exclude only incident primitives: shared features and one-ring adjacency. Keep graph-distance-two and farther VF/EE pairs eligible for collision. Do not introduce a tetrahedron determinant barrier unless the user requests it separately.

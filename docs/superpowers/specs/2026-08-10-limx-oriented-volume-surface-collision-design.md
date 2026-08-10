@@ -36,15 +36,19 @@ Signed volume contact must not treat local surface discretization as
 self-contact. In the bunny rest state, all 80 VF candidates are one-ring
 vertex-face pairs, and 200 of 216 EE candidates are topology-local opposite
 edges. Runtime diagnostics additionally found same-bunny false contacts up to
-surface graph distance three when the soft body began deforming.
+surface graph distance three when the soft body began deforming. Those pairs
+remain collision-eligible because permanently filtering them could hide real
+local self-contact.
 
 Build a compact vertex-neighbor CSR from the surface edges. In oriented mode:
 
-- reject a VF pair when the candidate vertex is within three surface edges of
-  any of the face's three vertices;
-- reject an EE pair when any endpoint is within three surface edges of the
-  opposite edge;
+- reject a VF pair when the candidate vertex is directly connected to any of
+  the face's three vertices;
+- reject an EE pair when any endpoint is directly connected to an endpoint of
+  the opposite edge;
 - continue rejecting contacts that share a feature endpoint.
+
+Pairs at surface graph distance two or greater remain active.
 
 The unsigned default retains its current topology-local EE thickness clamp
 and VF behavior for compatibility.
@@ -116,11 +120,12 @@ Focused CUDA tests must prove:
 
 1. an inside VF contact keeps the target face's outward normal and uses
    `thickness - signed_distance` depth;
-2. VF candidates through surface graph distance three are absent in oriented
-   mode, and points beyond the signed-distance band are absent;
+2. incident and one-ring VF candidates are absent, two-ring candidates remain
+   active, and points beyond the signed-distance band are absent;
 3. an already-crossed EE pair uses incident face normals rather than the
    flipped closest-point vector;
-4. EE pairs through surface graph distance three are absent in oriented mode;
+4. incident and one-ring EE pairs are absent while two-ring pairs remain
+   active;
 5. the default unsigned mode retains the existing tests;
 6. the bunny scene opts in, keeps EF disabled, and remains finite,
    positive-volume, and overflow-free for 300 frames.

@@ -18,7 +18,7 @@ _MIN_CONTACT_DISTANCE = 1.0e-7
 _MIN_GEOMETRY_NORM = 1.0e-8
 _MIN_STIFFNESS_DENOMINATOR = 1.0e-12
 _EE_MOLLIFIER_THRESHOLD_SCALE = 1.0e-3
-_ORIENTED_TOPOLOGY_EXCLUSION_RINGS = 3
+_ORIENTED_TOPOLOGY_EXCLUSION_RINGS = 1
 
 
 def _compute_geometry_aware_particle_radii(
@@ -2547,7 +2547,7 @@ class ConstraintSelfCollision:
                 intersection recovery contacts.
             use_outward_normals: Whether to use oriented signed VF/EE contact
                 for outward-wound closed volume surfaces. This also excludes
-                collision pairs within three surface-graph rings.
+                incident and one-ring collision pairs.
         """
         if not np.isfinite(thickness) or thickness <= 0.0:
             raise ValueError("thickness must be finite and positive")

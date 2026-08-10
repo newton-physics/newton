@@ -1652,8 +1652,8 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
 
         self.assertFalse(np.any(np.all(ids == [3, 0, 1, 2], axis=1)))
 
-    def test_oriented_vertex_face_excludes_three_ring_neighbor(self):
-        """Exclude three-ring vertices from oriented VF contacts."""
+    def test_oriented_vertex_face_retains_two_ring_neighbor(self):
+        """Keep two-ring vertices eligible for oriented VF contacts."""
         positions = [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -1666,7 +1666,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             [5.0, 1.0, 0.0],
         ]
         with wp.ScopedDevice("cuda:0"):
-            model = self._make_model(positions, [(0, 1, 2), (0, 3, 6), (3, 4, 7), (4, 5, 8)])
+            model = self._make_model(positions, [(0, 1, 2), (0, 3, 6), (3, 5, 8)])
             collision = ConstraintSelfCollision(
                 model,
                 thickness=0.1,
@@ -1677,7 +1677,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             collision.prepare(model.particle_q)
             ids, _, _, _ = self._stored_contacts(collision.vertex_face_contacts)
 
-        self.assertFalse(np.any(np.all(ids == [5, 0, 1, 2], axis=1)))
+        self.assertTrue(np.any(np.all(ids == [5, 0, 1, 2], axis=1)))
 
     def test_oriented_vertex_face_excludes_points_beyond_detection_band(self):
         """Exclude deep inside vertices beyond the discrete VF detection band."""
@@ -2143,8 +2143,8 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
 
         self.assertFalse(np.any(np.all(ids == [0, 1, 2, 3], axis=1)))
 
-    def test_oriented_edge_edge_excludes_three_ring_pair(self):
-        """Exclude three-ring edge pairs from oriented EE contacts."""
+    def test_oriented_edge_edge_retains_two_ring_pair(self):
+        """Keep two-ring edge pairs eligible for oriented EE contacts."""
         positions = [
             [-1.0, 0.0, -0.01],
             [1.0, 0.0, -0.01],
@@ -2158,7 +2158,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             [4.0, 1.0, 0.0],
             [5.0, 1.0, 0.0],
         ]
-        triangles = [(1, 0, 4), (3, 2, 5), (0, 6, 8), (6, 7, 9), (7, 2, 10)]
+        triangles = [(1, 0, 4), (3, 2, 5), (0, 6, 8), (6, 2, 10)]
         with wp.ScopedDevice("cuda:0"):
             model = self._make_model(positions, triangles)
             collision = ConstraintSelfCollision(
@@ -2182,7 +2182,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             )
             for contact_ids in ids
         )
-        self.assertFalse(central_pair_found)
+        self.assertTrue(central_pair_found)
 
     def test_edge_face_crossing_emits_five_particle_untangle_contact(self):
         positions = [
