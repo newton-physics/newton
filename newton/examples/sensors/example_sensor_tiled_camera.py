@@ -342,7 +342,14 @@ class Example:
         )
 
     def test_final(self):
-        self.render_sensors()
+        """Verify tiled camera outputs and main-view fallback behavior."""
+        sensor_image_is_main_view = self.render_sensors()
+        expected_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        assert sensor_image_is_main_view is expected_main_view
+
+        if not isinstance(self.viewer, ViewerGL):
+            self.sensor_color_as_main_view = True
+            assert self.render_sensors() is False
 
         expected_shape = (24, 1, self.sensor_render_height, self.sensor_render_width)
 

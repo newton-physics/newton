@@ -1737,7 +1737,8 @@ class ViewerGL(ViewerBase):
             if self.renderer.has_exit():
                 return
 
-            # Render either the selected logged image or the 3D scene, then present it.
+            # Fullscreen image logs are frame-scoped so stale sensor output cannot
+            # keep replacing the 3D scene after an example stops logging it.
             main_image_name = self._main_image_name
             if main_image_name is not None:
                 texture = self._image_logger.get_texture(main_image_name, fullscreen=True)

@@ -15,6 +15,30 @@ from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
 
 
+def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
+    try:
+        import pyglet
+        from pyglet import gl
+    except ImportError as exc:
+        test.skipTest(f"ViewerGL dependencies not available: {exc}")
+
+    return (
+        pyglet.window.NoSuchConfigException,
+        pyglet.window.NoSuchDisplayException,
+        gl.ConfigException,
+        gl.ContextException,
+    )
+
+
+def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64, height: int = 48):
+    unavailable_errors = _viewer_gl_unavailable_error_types(test)
+
+    try:
+        return newton.viewer.ViewerGL(width=width, height=height, headless=True)
+    except unavailable_errors as exc:
+        test.skipTest(f"ViewerGL display/backend not available: {exc}")
+
+
 def _make_box_model(device: str | wp.Device):
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
@@ -65,15 +89,12 @@ class _FakeGL:
 
 class TestViewerGLGetFrame(unittest.TestCase):
     def test_headless_frame_capture_across_devices(self):
+        """Verify headless frame capture follows the active model device."""
         cuda_devices = wp.get_cuda_devices()
         if cuda_devices:
             wp.zeros(1, dtype=wp.float32, device=cuda_devices[0])
 
-        try:
-            viewer = newton.viewer.ViewerGL(width=64, height=48, headless=True)
-        except Exception as exc:
-            self.skipTest(f"ViewerGL not available: {exc}")
-            return
+        viewer = _make_headless_viewer_gl_or_skip(self)
 
         try:
             cpu_device = wp.get_device("cpu")
@@ -114,11 +135,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
     def test_headless_capture_main_image_frame(self):
         """Verify get_frame captures a main image rendered headlessly."""
-        try:
-            viewer = newton.viewer.ViewerGL(width=64, height=48, headless=True)
-        except Exception as exc:
-            self.skipTest(f"ViewerGL not available: {exc}")
-            return
+        viewer = _make_headless_viewer_gl_or_skip(self)
 
         try:
             width = viewer.renderer._screen_width
@@ -145,7 +162,26 @@ class TestViewerGLGetFrame(unittest.TestCase):
         finally:
             viewer.close()
 
+    def test_viewer_constructor_known_backend_error_skips(self):
+        """Verify unavailable display/backend errors skip GL-dependent coverage."""
+        unavailable_error = _viewer_gl_unavailable_error_types(self)[0]
+
+        with (
+            mock.patch.object(newton.viewer, "ViewerGL", side_effect=unavailable_error("no GL config")),
+            self.assertRaises(unittest.SkipTest),
+        ):
+            _make_headless_viewer_gl_or_skip(self)
+
+    def test_viewer_constructor_unexpected_error_raises(self):
+        """Verify unexpected ViewerGL constructor errors fail the test."""
+        with (
+            mock.patch.object(newton.viewer, "ViewerGL", side_effect=RuntimeError("initialization regression")),
+            self.assertRaisesRegex(RuntimeError, "initialization regression"),
+        ):
+            _make_headless_viewer_gl_or_skip(self)
+
     def test_cpu_viewer_uses_host_pbo_readback(self):
+        """Verify CPU get_frame uses host PBO readback without CUDA interop."""
         pixels = np.array(
             [
                 [10, 11, 12],
