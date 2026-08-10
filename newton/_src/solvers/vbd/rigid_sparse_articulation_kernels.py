@@ -8,7 +8,14 @@ import warp as wp
 from newton._src.core.types import MAXVAL
 from newton._src.math import quat_velocity
 from newton._src.sim import JointType
-from newton._src.solvers.vbd.rigid_vbd_kernels import compute_kappa_and_jacobian, compute_kappa_dot
+from newton._src.solvers.vbd.rigid_vbd_kernels import (
+    _DRIVE_LIMIT_MODE_DRIVE,
+    _DRIVE_LIMIT_MODE_LIMIT_LOWER,
+    _DRIVE_LIMIT_MODE_LIMIT_UPPER,
+    compute_kappa_and_jacobian,
+    compute_kappa_dot,
+    resolve_drive_limit_mode,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -21,21 +28,19 @@ class mat66f(wp.types.matrix(shape=(6, 6), dtype=wp.float32)):
     pass
 
 
-_DRIVE_LIMIT_MODE_NONE = wp.constant(0)
-_DRIVE_LIMIT_MODE_LIMIT_LOWER = wp.constant(1)
-_DRIVE_LIMIT_MODE_LIMIT_UPPER = wp.constant(2)
-_DRIVE_LIMIT_MODE_DRIVE = wp.constant(3)
 _SPARSE_BLOCK_DIM = wp.constant(6)
 _SPARSE_BLOCK_SIZE = wp.constant(36)
 _SPARSE_CTA_THREADS = wp.constant(32)
 
 
+# Warp has no public device-side block or warp barriers for ordinary kernels.
+# The cooperative CUDA factorization requires both between dependent phases.
 @wp.func_native("""
 #if defined(__CUDA_ARCH__)
 __syncthreads();
 #endif
 """)
-def _cta_sync():
+def _block_sync():
     pass
 
 
@@ -51,17 +56,6 @@ def _warp_sync():
 @wp.func
 def _vec6_from_parts(linear: wp.vec3, angular: wp.vec3) -> vec6f:
     return vec6f(linear[0], linear[1], linear[2], angular[0], angular[1], angular[2])
-
-
-@wp.func
-def _vec6_get(v: vec6f, i: int) -> float:
-    return v[i]
-
-
-@wp.func
-def _vec6_set(v: vec6f, i: int, value: float) -> vec6f:
-    v[i] = value
-    return v
 
 
 @wp.func
@@ -95,15 +89,6 @@ def _scalar_vec_set(values: wp.array[float], row: int, comp: int, value: float):
 
 
 @wp.func
-def _quat_rotvec(q_in: wp.quat) -> wp.vec3:
-    q = wp.normalize(q_in)
-    if q[3] < 0.0:
-        q = wp.quat(-q[0], -q[1], -q[2], -q[3])
-    axis, angle = wp.quat_to_axis_angle(q)
-    return axis * angle
-
-
-@wp.func
 def _joint_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: wp.quat) -> wp.vec3:
     q_rel = wp.mul(wp.quat_inverse(q_wp), q_wc)
     q_rel_rest = wp.mul(wp.quat_inverse(q_wp_rest), q_wc_rest)
@@ -112,32 +97,6 @@ def _joint_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: wp
         q_align = wp.quat(-q_align[0], -q_align[1], -q_align[2], -q_align[3])
     axis, angle = wp.quat_to_axis_angle(q_align)
     return axis * angle
-
-
-@wp.func
-def _resolve_drive_limit_mode(
-    q: float,
-    target_pos: float,
-    lim_lower: float,
-    lim_upper: float,
-    has_drive: bool,
-    has_limits: bool,
-):
-    mode = _DRIVE_LIMIT_MODE_NONE
-    err_pos = float(0.0)
-    drive_target = target_pos
-    if has_limits:
-        drive_target = wp.clamp(target_pos, lim_lower, lim_upper)
-        if q < lim_lower:
-            mode = _DRIVE_LIMIT_MODE_LIMIT_LOWER
-            err_pos = q - lim_lower
-        elif q > lim_upper:
-            mode = _DRIVE_LIMIT_MODE_LIMIT_UPPER
-            err_pos = q - lim_upper
-    if mode == _DRIVE_LIMIT_MODE_NONE and has_drive:
-        mode = _DRIVE_LIMIT_MODE_DRIVE
-        err_pos = q - drive_target
-    return mode, err_pos
 
 
 @wp.func
@@ -213,14 +172,6 @@ def _add_rhs(rhs: wp.array[vec6f], index: int, value: vec6f):
 
 
 @wp.func
-def _mat66_identity(scale: float) -> mat66f:
-    A = mat66f(0.0)
-    for i in range(6):
-        A[i, i] = scale
-    return A
-
-
-@wp.func
 def _mat66_from_blocks(ll: wp.mat33, al: wp.mat33, aa: wp.mat33) -> mat66f:
     A = mat66f(0.0)
     for i in range(3):
@@ -242,7 +193,8 @@ def _mat66_from_angular_block(aa: wp.mat33) -> mat66f:
 
 
 @wp.func
-def _cholesky66(A_in: mat66f) -> mat66f:
+def _cholesky66_serial(A_in: mat66f) -> mat66f:
+    """Factor one diagonal block in the serial block-sparse Cholesky path."""
     L = mat66f(0.0)
     for i in range(6):
         for j in range(6):
@@ -1193,7 +1145,7 @@ def _body_diagonal_contribution(
     diag = mat66f(0.0)
     rhs_value = vec6f(0.0)
     if body_inv_mass[body] == 0.0:
-        diag = _mat66_identity(1.0e30)
+        diag = wp.identity(6, float) * 1.0e30
     else:
         q_star = body_inertia_q[body]
         body_com_local = body_com[body]
@@ -1212,7 +1164,8 @@ def _body_diagonal_contribution(
         if q_delta[3] < 0.0:
             q_delta = wp.quat(-q_delta[0], -q_delta[1], -q_delta[2], -q_delta[3])
 
-        theta_body = _quat_rotvec(q_delta)
+        axis_body, angle_body = wp.quat_to_axis_angle(q_delta)
+        theta_body = axis_body * angle_body
         I_body = body_inertia[body]
         tau_world = wp.quat_rotate(rot_current, I_body * (theta_body * dt_inv_sqr)) + body_torques[body]
         R = wp.quat_to_matrix(rot_current)
@@ -1692,9 +1645,7 @@ def assemble_articulation_joints_scalar(
             dkappa_dt = compute_kappa_dot(J_world, omega_parent, omega_child)
             dtheta_dt = wp.dot(dkappa_dt, axis_local)
 
-            mode, err_pos = _resolve_drive_limit_mode(
-                theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
-            )
+            mode, err_pos = resolve_drive_limit_mode(theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             avbd_ke = joint_penalty_k[c_start + 2]
             drive_ke = wp.min(avbd_ke, model_drive_ke)
             lim_ke = wp.min(avbd_ke, model_limit_ke)
@@ -1744,7 +1695,7 @@ def assemble_articulation_joints_scalar(
             d_along = wp.dot(C_vec, axis_world)
             dd_dt = wp.dot((C_vec - C_vec_prev) / dt, axis_world)
 
-            mode, err_pos = _resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
+            mode, err_pos = resolve_drive_limit_mode(d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits)
             avbd_ke = joint_penalty_k[c_start + 2]
             drive_ke = wp.min(avbd_ke, model_drive_ke)
             lim_ke = wp.min(avbd_ke, model_limit_ke)
@@ -1800,7 +1751,7 @@ def assemble_articulation_joints_scalar(
                     axis_world = wp.normalize(wp.quat_rotate(parent_anchor_q, joint_axis[dof_idx]))
                     d_along = wp.dot(C_vec, axis_world)
                     dd_dt = wp.dot((C_vec - C_vec_prev) / dt, axis_world)
-                    mode, err_pos = _resolve_drive_limit_mode(
+                    mode, err_pos = resolve_drive_limit_mode(
                         d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits
                     )
                     avbd_ke = joint_penalty_k[c_start + 2 + li]
@@ -1865,7 +1816,7 @@ def assemble_articulation_joints_scalar(
                         theta = wp.dot(kappa, axis_local)
                         theta_abs = theta + joint_rest_angle[dof_idx]
                         dtheta_dt = wp.dot(dkappa_dt, axis_local)
-                        mode, err_pos = _resolve_drive_limit_mode(
+                        mode, err_pos = resolve_drive_limit_mode(
                             theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
                         )
                         avbd_ke = joint_penalty_k[c_start + 2 + lin_count + ai]
@@ -1958,10 +1909,10 @@ def solve_articulation_sparse_block32_scalar(
     articulation_block_col_offsets: wp.array[wp.int32],
     articulation_block_col_rows: wp.array[wp.int32],
     articulation_block_col_slots: wp.array[wp.int32],
-    articulation_schur_offsets: wp.array[wp.int32],
-    articulation_schur_dst_slots: wp.array[wp.int32],
-    articulation_schur_left_slots: wp.array[wp.int32],
-    articulation_schur_right_slots: wp.array[wp.int32],
+    articulation_factor_update_offsets: wp.array[wp.int32],
+    articulation_factor_update_dst_slots: wp.array[wp.int32],
+    articulation_factor_update_left_slots: wp.array[wp.int32],
+    articulation_factor_update_right_slots: wp.array[wp.int32],
     articulation_diag_slots: wp.array[wp.int32],
     values_scalar: wp.array[float],
     rhs_scalar: wp.array[float],
@@ -1986,7 +1937,7 @@ def solve_articulation_sparse_block32_scalar(
         if lane == 0:
             _cholesky66_scalar(values_scalar, diag_slot)
 
-        _cta_sync()
+        _block_sync()
 
         col_begin = articulation_block_col_offsets[row_k]
         col_end = articulation_block_col_offsets[row_k + 1]
@@ -1995,14 +1946,14 @@ def solve_articulation_sparse_block32_scalar(
             if warp_lane < _SPARSE_BLOCK_DIM:
                 _right_solve_lower_transpose66_scalar_row(values_scalar, slot_ik, diag_slot, warp_lane)
 
-        _cta_sync()
+        _block_sync()
 
-        schur_begin = articulation_schur_offsets[row_k]
-        schur_end = articulation_schur_offsets[row_k + 1]
-        for schur_entry in range(schur_begin + warp, schur_end, warp_count):
-            dst_slot = articulation_schur_dst_slots[schur_entry]
-            left_slot = articulation_schur_left_slots[schur_entry]
-            right_slot = articulation_schur_right_slots[schur_entry]
+        factor_update_begin = articulation_factor_update_offsets[row_k]
+        factor_update_end = articulation_factor_update_offsets[row_k + 1]
+        for factor_update_entry in range(factor_update_begin + warp, factor_update_end, warp_count):
+            dst_slot = articulation_factor_update_dst_slots[factor_update_entry]
+            left_slot = articulation_factor_update_left_slots[factor_update_entry]
+            right_slot = articulation_factor_update_right_slots[factor_update_entry]
             elem = warp_lane
             for _elem_pass in range(2):
                 if elem < _SPARSE_BLOCK_SIZE:
@@ -2017,7 +1968,7 @@ def solve_articulation_sparse_block32_scalar(
                     _scalar_block_set(values_scalar, dst_slot, block_row, block_col, value - accum)
                 elem = elem + _SPARSE_CTA_THREADS
 
-        _cta_sync()
+        _block_sync()
 
     for local_i in range(body_count):
         row_i = body_start + local_i
@@ -2449,7 +2400,7 @@ def solve_articulation_sparse_serial(
                 dkappa_dt = compute_kappa_dot(J_world, omega_parent, omega_child)
                 dtheta_dt = wp.dot(dkappa_dt, axis_local)
 
-                mode, err_pos = _resolve_drive_limit_mode(
+                mode, err_pos = resolve_drive_limit_mode(
                     theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
                 )
                 avbd_ke = joint_penalty_k[c_start + 2]
@@ -2501,7 +2452,7 @@ def solve_articulation_sparse_serial(
                 d_along = wp.dot(C_vec, axis_world)
                 dd_dt = wp.dot((C_vec - C_vec_prev) / dt, axis_world)
 
-                mode, err_pos = _resolve_drive_limit_mode(
+                mode, err_pos = resolve_drive_limit_mode(
                     d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits
                 )
                 avbd_ke = joint_penalty_k[c_start + 2]
@@ -2559,7 +2510,7 @@ def solve_articulation_sparse_serial(
                         axis_world = wp.normalize(wp.quat_rotate(parent_anchor_q, joint_axis[dof_idx]))
                         d_along = wp.dot(C_vec, axis_world)
                         dd_dt = wp.dot((C_vec - C_vec_prev) / dt, axis_world)
-                        mode, err_pos = _resolve_drive_limit_mode(
+                        mode, err_pos = resolve_drive_limit_mode(
                             d_along, target_pos, lim_lower, lim_upper, has_drive, has_limits
                         )
                         avbd_ke = joint_penalty_k[c_start + 2 + li]
@@ -2624,7 +2575,7 @@ def solve_articulation_sparse_serial(
                             theta = wp.dot(kappa, axis_local)
                             theta_abs = theta + joint_rest_angle[dof_idx]
                             dtheta_dt = wp.dot(dkappa_dt, axis_local)
-                            mode, err_pos = _resolve_drive_limit_mode(
+                            mode, err_pos = resolve_drive_limit_mode(
                                 theta_abs, target_pos, lim_lower, lim_upper, has_drive, has_limits
                             )
                             avbd_ke = joint_penalty_k[c_start + 2 + lin_count + ai]
@@ -2670,7 +2621,7 @@ def solve_articulation_sparse_serial(
                 Lks = values[slot_ks]
                 Akk = Akk - Lks * wp.transpose(Lks)
 
-        Lkk = _cholesky66(Akk)
+        Lkk = _cholesky66_serial(Akk)
         values[diag_slot] = Lkk
 
         for local_i in range(local_k + 1, body_count):

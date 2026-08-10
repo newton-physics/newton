@@ -15,23 +15,23 @@ import warp as wp
 class RigidArticulationSparseLayout:
     """Static block-sparse articulation layout for rigid VBD solves."""
 
-    articulation_body_offsets: wp.array(dtype=wp.int32)
-    articulation_joint_offsets: wp.array(dtype=wp.int32)
-    articulation_bodies: wp.array(dtype=wp.int32)
-    articulation_joints: wp.array(dtype=wp.int32)
-    articulation_joint_body_start: wp.array(dtype=wp.int32)
-    articulation_block_row_offsets: wp.array(dtype=wp.int32)
-    articulation_block_cols: wp.array(dtype=wp.int32)
-    articulation_block_col_offsets: wp.array(dtype=wp.int32)
-    articulation_block_col_rows: wp.array(dtype=wp.int32)
-    articulation_block_col_slots: wp.array(dtype=wp.int32)
-    articulation_schur_offsets: wp.array(dtype=wp.int32)
-    articulation_schur_dst_slots: wp.array(dtype=wp.int32)
-    articulation_schur_left_slots: wp.array(dtype=wp.int32)
-    articulation_schur_right_slots: wp.array(dtype=wp.int32)
-    articulation_diag_slots: wp.array(dtype=wp.int32)
-    body_articulation_sparse: wp.array(dtype=wp.int32)
-    body_articulation_local: wp.array(dtype=wp.int32)
+    articulation_body_offsets: wp.array[wp.int32]
+    articulation_joint_offsets: wp.array[wp.int32]
+    articulation_bodies: wp.array[wp.int32]
+    articulation_joints: wp.array[wp.int32]
+    articulation_joint_body_start: wp.array[wp.int32]
+    articulation_block_row_offsets: wp.array[wp.int32]
+    articulation_block_cols: wp.array[wp.int32]
+    articulation_block_col_offsets: wp.array[wp.int32]
+    articulation_block_col_rows: wp.array[wp.int32]
+    articulation_block_col_slots: wp.array[wp.int32]
+    articulation_factor_update_offsets: wp.array[wp.int32]
+    articulation_factor_update_dst_slots: wp.array[wp.int32]
+    articulation_factor_update_left_slots: wp.array[wp.int32]
+    articulation_factor_update_right_slots: wp.array[wp.int32]
+    articulation_diag_slots: wp.array[wp.int32]
+    body_articulation_sparse: wp.array[wp.int32]
+    body_articulation_local: wp.array[wp.int32]
     articulation_count: int
     articulation_body_count: int
     articulation_joint_count: int
@@ -78,15 +78,19 @@ def _minimum_degree_order(body_count: int, edges: set[tuple[int, int]]) -> list[
 def build_rigid_articulation_sparse_layout(
     model, device: wp.context.Devicelike
 ) -> RigidArticulationSparseLayout | None:
-    """Build the static articulation sparse layout from Newton articulation ranges."""
+    """Build the static articulation sparse layout from Newton articulation ranges.
+
+    This host analysis runs once from :class:`SolverVBD` construction, never
+    from the per-step or per-iteration path. Repeated articulation topologies,
+    such as replicated RL environments, share cached ordering and fill analysis.
+    """
 
     if model.body_count == 0:
         return None
 
-    with wp.ScopedDevice("cpu"):
-        articulation_start = np.asarray(model.articulation_start.to("cpu").numpy(), dtype=np.int32)
-        joint_parent = np.asarray(model.joint_parent.to("cpu").numpy(), dtype=np.int32)
-        joint_child = np.asarray(model.joint_child.to("cpu").numpy(), dtype=np.int32)
+    articulation_start = np.asarray(model.articulation_start.to("cpu").numpy(), dtype=np.int32)
+    joint_parent = np.asarray(model.joint_parent.to("cpu").numpy(), dtype=np.int32)
+    joint_child = np.asarray(model.joint_child.to("cpu").numpy(), dtype=np.int32)
 
     articulation_bodies_host: list[int] = []
     articulation_joints_host: list[int] = []
@@ -98,10 +102,10 @@ def build_rigid_articulation_sparse_layout(
     block_col_rows_host: list[int] = []
     block_col_slots_host: list[int] = []
     block_col_offsets_host: list[int] = []
-    schur_dst_slots_host: list[int] = []
-    schur_left_slots_host: list[int] = []
-    schur_right_slots_host: list[int] = []
-    schur_offsets_host: list[int] = []
+    factor_update_dst_slots_host: list[int] = []
+    factor_update_left_slots_host: list[int] = []
+    factor_update_right_slots_host: list[int] = []
+    factor_update_offsets_host: list[int] = []
     diag_slots_host: list[int] = []
 
     body_articulation_sparse_host = np.full((model.body_count,), -1, dtype=np.int32)
@@ -132,6 +136,10 @@ def build_rigid_articulation_sparse_layout(
         if not body_seen[body]:
             articulation_groups.append(([body], []))
 
+    symbolic_cache: dict[
+        tuple[int, tuple[tuple[int, int], ...]],
+        tuple[list[int], list[list[int]]],
+    ] = {}
     for articulation_sparse, (bodies, joints) in enumerate(articulation_groups):
         local_index = {body: i for i, body in enumerate(bodies)}
         edges: set[tuple[int, int]] = set()
@@ -141,15 +149,20 @@ def build_rigid_articulation_sparse_layout(
             if parent >= 0 and child >= 0 and parent in local_index and child in local_index:
                 edges.add((local_index[parent], local_index[child]))
 
-        if len(bodies) > 1:
-            order = _minimum_degree_order(len(bodies), edges)
+        topology_key = (
+            len(bodies),
+            tuple(sorted((min(a, b), max(a, b)) for a, b in edges)),
+        )
+        symbolic = symbolic_cache.get(topology_key)
+        if symbolic is None:
+            order = _minimum_degree_order(len(bodies), edges) if len(bodies) > 1 else [0]
             old_to_new = {old: new for new, old in enumerate(order)}
-            ordered_bodies = [bodies[old] for old in order]
-            edges = {(old_to_new[a], old_to_new[b]) for a, b in edges}
-        else:
-            ordered_bodies = bodies
-
-        pattern = _symbolic_cholesky_pattern(len(ordered_bodies), edges)
+            ordered_edges = {(old_to_new[a], old_to_new[b]) for a, b in edges}
+            pattern = _symbolic_cholesky_pattern(len(bodies), ordered_edges)
+            symbolic = (order, pattern)
+            symbolic_cache[topology_key] = symbolic
+        order, pattern = symbolic
+        ordered_bodies = [bodies[old] for old in order]
 
         body_start = len(articulation_bodies_host)
         articulation_bodies_host.extend(ordered_bodies)
@@ -185,13 +198,13 @@ def build_rigid_articulation_sparse_layout(
                     block_col_rows_host.append(local_row)
                     block_col_slots_host.append(slot)
 
-            schur_offsets_host.append(len(schur_dst_slots_host))
+            factor_update_offsets_host.append(len(factor_update_dst_slots_host))
             for left_index, (left_row, left_slot) in enumerate(later_rows):
                 for right_row, right_slot in later_rows[: left_index + 1]:
                     dst_slot = block_lookup[(left_row, right_row)]
-                    schur_dst_slots_host.append(dst_slot)
-                    schur_left_slots_host.append(left_slot)
-                    schur_right_slots_host.append(right_slot)
+                    factor_update_dst_slots_host.append(dst_slot)
+                    factor_update_left_slots_host.append(left_slot)
+                    factor_update_right_slots_host.append(right_slot)
 
     articulation_bodies_np = np.asarray(articulation_bodies_host, dtype=np.int32)
     articulation_joints_np = np.asarray(articulation_joints_host, dtype=np.int32)
@@ -201,14 +214,14 @@ def build_rigid_articulation_sparse_layout(
     block_row_offsets_np = np.asarray(block_row_offsets_host, dtype=np.int32)
     block_cols_np = np.asarray(block_cols_host, dtype=np.int32)
     block_col_offsets_host.append(len(block_col_rows_host))
-    schur_offsets_host.append(len(schur_dst_slots_host))
+    factor_update_offsets_host.append(len(factor_update_dst_slots_host))
     block_col_offsets_np = np.asarray(block_col_offsets_host, dtype=np.int32)
     block_col_rows_np = np.asarray(block_col_rows_host, dtype=np.int32)
     block_col_slots_np = np.asarray(block_col_slots_host, dtype=np.int32)
-    schur_offsets_np = np.asarray(schur_offsets_host, dtype=np.int32)
-    schur_dst_slots_np = np.asarray(schur_dst_slots_host, dtype=np.int32)
-    schur_left_slots_np = np.asarray(schur_left_slots_host, dtype=np.int32)
-    schur_right_slots_np = np.asarray(schur_right_slots_host, dtype=np.int32)
+    factor_update_offsets_np = np.asarray(factor_update_offsets_host, dtype=np.int32)
+    factor_update_dst_slots_np = np.asarray(factor_update_dst_slots_host, dtype=np.int32)
+    factor_update_left_slots_np = np.asarray(factor_update_left_slots_host, dtype=np.int32)
+    factor_update_right_slots_np = np.asarray(factor_update_right_slots_host, dtype=np.int32)
     diag_slots_np = np.asarray(diag_slots_host, dtype=np.int32)
 
     return RigidArticulationSparseLayout(
@@ -222,10 +235,10 @@ def build_rigid_articulation_sparse_layout(
         articulation_block_col_offsets=wp.array(block_col_offsets_np, dtype=wp.int32, device=device),
         articulation_block_col_rows=wp.array(block_col_rows_np, dtype=wp.int32, device=device),
         articulation_block_col_slots=wp.array(block_col_slots_np, dtype=wp.int32, device=device),
-        articulation_schur_offsets=wp.array(schur_offsets_np, dtype=wp.int32, device=device),
-        articulation_schur_dst_slots=wp.array(schur_dst_slots_np, dtype=wp.int32, device=device),
-        articulation_schur_left_slots=wp.array(schur_left_slots_np, dtype=wp.int32, device=device),
-        articulation_schur_right_slots=wp.array(schur_right_slots_np, dtype=wp.int32, device=device),
+        articulation_factor_update_offsets=wp.array(factor_update_offsets_np, dtype=wp.int32, device=device),
+        articulation_factor_update_dst_slots=wp.array(factor_update_dst_slots_np, dtype=wp.int32, device=device),
+        articulation_factor_update_left_slots=wp.array(factor_update_left_slots_np, dtype=wp.int32, device=device),
+        articulation_factor_update_right_slots=wp.array(factor_update_right_slots_np, dtype=wp.int32, device=device),
         articulation_diag_slots=wp.array(diag_slots_np, dtype=wp.int32, device=device),
         body_articulation_sparse=wp.array(body_articulation_sparse_host, dtype=wp.int32, device=device),
         body_articulation_local=wp.array(body_articulation_local_host, dtype=wp.int32, device=device),
