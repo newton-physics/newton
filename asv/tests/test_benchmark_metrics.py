@@ -213,5 +213,6 @@ class TestBenchmarkMetrics(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "state.joint_qd"):
             validate_simulation_state(FakeState(), max_linear_speed=10.0, max_angular_speed=10.0)
 
+
 if __name__ == "__main__":
     unittest.main()
