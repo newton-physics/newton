@@ -48,7 +48,7 @@ class TestLimxArapBunnyTableExample(unittest.TestCase):
         self.assertGreater(example.initial_minimum_height, 0.14)
         self.assertLess(example.initial_minimum_height, 0.16)
         self.assertEqual(example.solver.nonlinear_iterations, 1)
-        self.assertEqual(example.solver.linear_iterations, 128)
+        self.assertEqual(example.solver.linear_iterations, 50)
         self.assertEqual(example.solver.velocity_damping, 1.0)
         self.assertIs(example.solver.dynamic_operator, example.table_contact)
         self.assertEqual(example.table_contact.thickness, 0.003)

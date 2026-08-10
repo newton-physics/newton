@@ -91,7 +91,7 @@ class Example:
             self.model,
             [self.arap_constraint],
             nonlinear_iterations=1,
-            linear_iterations=128,
+            linear_iterations=50,
             velocity_damping=1.0,
             dynamic_operator=self.table_contact,
         )
