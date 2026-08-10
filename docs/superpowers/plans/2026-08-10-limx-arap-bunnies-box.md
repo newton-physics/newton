@@ -15,7 +15,9 @@
 - Use fixed VF/EE thickness `0.003 m`; leave `geometry_radius_scale=None`.
 - Use adaptive contact stiffness factors `(0.5, 0.3, 1.5)`, friction `0.05`, and `max_contacts=262144`.
 - Set `enable_edge_face=False`; only VF and EE may detect or assemble contact.
-- Use five inward box planes with `0.003 m` thickness, `2e4 N/m` stiffness, friction `0.05`, and zero normal damping.
+- Render only the floor; keep five inward box planes, including four invisible
+  walls, with `0.003 m` thickness, `2e4 N/m` stiffness, friction `0.05`, and
+  zero normal damping.
 - Derive the 8,624 collision vertices from the boundary triangle array; never
   use interior tetrahedral vertices as VF or box-plane candidates.
 - Use `dt=0.01 s`, one step, one Newton iteration, 50 PCG iterations, and `velocity_damping=1.0`.
@@ -132,12 +134,13 @@ def _mark_cross_bunny_contacts(
             wp.atomic_max(saw_cross_contact, 0, 1)
 ```
 
-- [ ] **Step 2: Build the eight soft meshes and visible open box**
+- [ ] **Step 2: Build the eight soft meshes and floor-only visualization**
 
 For every layout row call `builder.add_soft_mesh()` with the shared asset,
 `scale=0.15`, `density=1000.0`, all native material coefficients zero, and
-`add_surface_mesh_edges=False`. Add a visible floor and four wall shapes with
-`body=-1`; place their inner surfaces at X `±0.36`, Y `±0.40`, and Z `0`.
+`add_surface_mesh_edges=False`. Add one visible floor shape with `body=-1` and
+its top surface at Z `0`. Do not add wall shapes; the four wall collision
+planes remain active and invisible at X `±0.36` and Y `±0.40`.
 
 After `builder.finalize()`, assert internally through normal constructor
 validation that the resulting counts are 14,952 particles, 58,848 tetrahedra,
@@ -308,6 +311,43 @@ one cross-bunny VF/EE contact is recorded.
 git add newton/tests/test_examples.py
 git commit -m "Test LIMX ARAP bunnies collision"
 ```
+
+### Task 4: Hide wall geometry while preserving wall collision
+
+**Files:**
+- Modify: `newton/examples/softbody/example_softbody_limx_arap_bunnies_box.py`
+- Modify: `newton/tests/test_example_softbody_limx_arap_bunnies_box.py`
+
+**Interfaces:**
+- Consumes: `_add_box_shapes()` and the existing five `box_contacts`.
+- Produces: one rendered floor shape and four invisible wall contacts.
+
+- [ ] **Step 1: Add a failing visibility contract**
+
+Add `self.assertEqual(example.model.shape_count, 1)` next to the model count
+assertions, while retaining `self.assertEqual(len(example.box_contacts), 5)`.
+
+- [ ] **Step 2: Verify the current five-shape scene fails**
+
+Run:
+
+```bash
+uv run --extra dev -m unittest \
+  newton.tests.test_example_softbody_limx_arap_bunnies_box -v
+```
+
+Expected: FAIL because `model.shape_count` is `5`, not `1`.
+
+- [ ] **Step 3: Remove only the wall rendering shapes**
+
+Reduce `_add_box_shapes()` to the existing floor `builder.add_shape_box()`
+call. Remove the four wall-shape loops and their wall-geometry calculations.
+Do not change `plane_parameters` or `self.box_contacts`.
+
+- [ ] **Step 4: Verify configuration and runtime**
+
+Run the focused unittest, then launch the OpenGL example. Expect one rendered
+floor, five physical plane contacts, and no visible wall geometry.
 
 ### Task 4: Launch the visual experiment
 

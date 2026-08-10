@@ -103,13 +103,13 @@ wall height            0.75 m
 floor height           0 m
 ```
 
-Render the floor and walls as five static `body=-1` box shapes. Use `0.05 m`
-floor half-thickness and `0.025 m` wall half-thickness, placing the visible
-inner faces on the exact bounds above. Physical response comes from five
-inward-facing `ConstraintStaticPlaneContact` operators, not the rendered
-shapes. Pass the unique boundary-triangle vertex indices to every plane so the
-box does not apply direct forces or Hessian blocks to interior tetrahedral
-vertices. Each plane uses:
+Render only the floor as a static `body=-1` box shape with `0.05 m` half
+thickness. Do not create visible wall shapes, so the user can see whether the
+upper bunnies slide down. Physical containment still comes from five
+inward-facing `ConstraintStaticPlaneContact` operators: one floor and four
+invisible walls. Pass the unique boundary-triangle vertex indices to every
+plane so the box does not apply direct forces or Hessian blocks to interior
+tetrahedral vertices. Each plane uses:
 
 ```text
 thickness              0.003 m
