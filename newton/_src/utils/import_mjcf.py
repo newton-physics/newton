@@ -40,6 +40,7 @@ from ..solvers.mujoco.utils import (
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
+    clamp_imported_opacity,
     collapse_massless_fixed_root_joints,
     is_xml_content,
     parse_custom_attributes,
@@ -48,21 +49,6 @@ from .import_utils import (
     should_show_collider,
 )
 from .mesh import load_meshes_from_file
-
-
-def _clamp_imported_opacity(value: float, source: str) -> float | None:
-    """Clamp display-only importer data without failing the model import."""
-    opacity = float(value)
-    if not np.isfinite(opacity):
-        warnings.warn(f"Ignoring non-finite opacity {opacity!r} from {source}.", stacklevel=2)
-        return None
-    clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
-    if clamped_opacity != opacity:
-        warnings.warn(
-            f"Clamping opacity {opacity!r} from {source} to {clamped_opacity!r}.",
-            stacklevel=2,
-        )
-    return clamped_opacity
 
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
@@ -1092,7 +1078,7 @@ def parse_mjcf(
                     )
                     shape_kwargs["color"] = material_color
                 if len(rgba_values) >= 4:
-                    opacity = _clamp_imported_opacity(rgba_values[3], "MJCF geom rgba")
+                    opacity = clamp_imported_opacity(rgba_values[3], "MJCF geom rgba")
                     if opacity is not None:
                         shape_kwargs["opacity"] = opacity
 

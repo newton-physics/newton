@@ -20,7 +20,7 @@ class _LogShapesProbe(ViewerNull):
         self.last_materials = None
         self.last_opacities = None
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, *, opacities=None, hidden=False):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False, opacities=None):
         self.last_colors = colors
         self.last_materials = materials
         self.last_opacities = opacities

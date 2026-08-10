@@ -59,7 +59,7 @@ class _ViewerGeometryBatchingProbe(ViewerNull):
     def log_instances(self, *_args, **_kwargs):
         self.log_instances_calls += 1
 
-    def log_capsules(self, name, mesh, xforms, scales, colors, materials, *, opacities=None, hidden=False):
+    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False, opacities=None):
         self.log_capsules_calls += 1
 
         # Fallback behavior: treat capsule batches like any other instanced geometry.

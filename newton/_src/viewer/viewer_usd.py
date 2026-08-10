@@ -159,7 +159,6 @@ class ViewerUSD(ViewerBase):
         layer._instance_groups = {}  # instance_name -> group prim for individually referenced meshes
         layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
         layer._points = {}  # point_name -> UsdGeom.Points
-        layer._texture_materials: dict[str, Any] = {}  # mesh_name -> UsdShade.Material
         layer._preview_materials: dict[tuple, Any] = {}  # material key -> UsdShade.Material
         layer._texture_paths: dict[str, str] = {}
         layer._mesh_appearance: dict[str, dict[str, Any]] = {}
@@ -212,9 +211,9 @@ class ViewerUSD(ViewerBase):
             if self._is_layer_owned_path(name):
                 self.stage.RemovePrim(self._get_path(name))
 
-        for mesh_name in list(self._texture_materials):
-            if self._is_layer_owned_path(mesh_name):
-                self.stage.RemovePrim(self._texture_material_path(mesh_name))
+        material_paths = {material.GetPath() for material in self._preview_materials.values()}
+        for material_path in sorted(material_paths, key=lambda path: str(path).count("/"), reverse=True):
+            self.stage.RemovePrim(material_path)
 
     def _has_user_layers(self) -> bool:
         return any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
@@ -296,10 +295,10 @@ class ViewerUSD(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
-        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        opacity: float | None = None,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -313,13 +312,13 @@ class ViewerUSD(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: If True, mesh will be hidden.
             backface_culling: If True, enable backface culling.
-            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            opacity: Optional display opacity in [0, 1].
         """
 
         name = self._qualify(name)
@@ -401,13 +400,6 @@ class ViewerUSD(ViewerBase):
                     "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
                 )
             display_opacity.Set([float(np.clip(opacity, 0.0, 1.0))], self._frame_index)
-
-    def _create_texture_material(self, mesh_name: str, mesh_prim, texture):
-        """Create a UsdPreviewSurface material with a diffuse texture and bind it to *mesh_prim*."""
-        material = self._get_preview_surface_material(mesh_name, texture=texture)
-        if material is not None:
-            self._bind_material(mesh_prim.GetPrim(), material)
-        return material
 
     def _resolve_texture_path(self, mesh_name: str, texture) -> str | None:
         """Resolve a texture path or export an image array next to the USD file."""
@@ -558,9 +550,8 @@ class ViewerUSD(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
-        *,
-        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log a batch of mesh instances for rendering.
@@ -572,8 +563,8 @@ class ViewerUSD(ViewerBase):
             scales: Array of scales.
             colors: Array of colors.
             materials: Array of materials.
-            opacities: Array of opacity values.
             hidden: Whether the instances are hidden.
+            opacities: Array of opacity values.
         """
         name = self._qualify(name)
         mesh = self._qualify(mesh)
@@ -621,10 +612,13 @@ class ViewerUSD(ViewerBase):
         cached_materials = appearance.get("materials")
         cached_opacities = appearance.get("opacities")
         if cached_colors is not None and len(cached_colors) != len(xforms):
+            appearance.pop("colors", None)
             cached_colors = None
         if cached_materials is not None and len(cached_materials) != len(xforms):
+            appearance.pop("materials", None)
             cached_materials = None
         if cached_opacities is not None and len(cached_opacities) != len(xforms):
+            appearance.pop("opacities", None)
             cached_opacities = None
 
         mesh_appearance = self._mesh_appearance.get(mesh, {})

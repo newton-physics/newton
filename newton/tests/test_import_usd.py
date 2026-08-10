@@ -12097,7 +12097,7 @@ def Xform "Body" (
         self.assertFalse(flags_disabled_forced & ShapeFlags.VISIBLE)
 
     @staticmethod
-    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, opacity=None, add_visual_sphere=False):
+    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False, opacity=None):
         """Create a stage with a rigid body containing a collision mesh with PBR material."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -14319,6 +14319,7 @@ def Xform "World"
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
         tet_indices = np.array([0, 1, 2, 3, 1, 2, 3, 4], dtype=np.int32)
         per_tet_region = np.array([10, 20], dtype=np.int32)
+        third_party_opacity = np.array([0.2, 0.8], dtype=np.float32)
         per_vertex_temp = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float32)
         tm = newton.TetMesh(
             vertices,
@@ -14327,7 +14328,11 @@ def Xform "World"
             k_lambda=2000.0,
             density=40.0,
             opacity=0.35,
-            custom_attributes={"regionId": per_tet_region, "temperature": per_vertex_temp},
+            custom_attributes={
+                "regionId": per_tet_region,
+                "newton_opacity": third_party_opacity,
+                "temperature": per_vertex_temp,
+            },
         )
 
         with tempfile.NamedTemporaryFile(suffix=".vtk", delete=False) as f:
@@ -14351,10 +14356,13 @@ def Xform "World"
 
             # Custom attributes round-trip (check values, not just keys)
             self.assertIn("regionId", tm2.custom_attributes)
+            self.assertIn("newton_opacity", tm2.custom_attributes)
             self.assertIn("temperature", tm2.custom_attributes)
             region_arr, _region_freq = tm2.custom_attributes["regionId"]
+            opacity_arr, _opacity_freq = tm2.custom_attributes["newton_opacity"]
             temp_arr, _temp_freq = tm2.custom_attributes["temperature"]
             assert_np_equal(region_arr.flatten(), per_tet_region)
+            assert_np_equal(opacity_arr.flatten(), third_party_opacity)
             assert_np_equal(temp_arr.flatten(), per_vertex_temp)
         finally:
             os.unlink(path)
@@ -14364,7 +14372,17 @@ def Xform "World"
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
 
-        for reserved in ("vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"):
+        for reserved in (
+            "vertices",
+            "tet_indices",
+            "k_mu",
+            "k_lambda",
+            "k_damp",
+            "density",
+            "__newton_opacity__",
+            "__custom_names__",
+            "__custom_freqs__",
+        ):
             with self.assertRaisesRegex(ValueError, "reserved", msg=f"Should reject reserved name '{reserved}'"):
                 newton.TetMesh(vertices, tet_indices, custom_attributes={reserved: np.array([1.0])})
 

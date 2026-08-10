@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import inspect
 import subprocess
+import warnings
 from typing import Any
 
 import numpy as np
@@ -40,10 +41,12 @@ class ViewerRerun(ViewerBase):
         """Call a rerun constructor with only supported keyword args."""
         try:
             signature = inspect.signature(ctor)
-            allowed = {k: v for k, v in kwargs.items() if k in signature.parameters}
-            return ctor(**allowed)
-        except Exception:
+        except (TypeError, ValueError):
             return ctor(**kwargs)
+
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+        allowed = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
+        return ctor(**allowed)
 
     @staticmethod
     def _flip_uvs_for_rerun(uvs: np.ndarray) -> np.ndarray:
@@ -247,10 +250,10 @@ class ViewerRerun(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
-        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        opacity: float | None = None,
     ):
         """
         Log a mesh to rerun for visualization.
@@ -264,13 +267,13 @@ class ViewerRerun(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling (unused).
-            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            opacity: Optional display opacity in [0, 1].
         """
         name = self._qualify(name)
 
@@ -374,9 +377,8 @@ class ViewerRerun(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
-        *,
-        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log instanced mesh data to rerun using InstancePoses3D.
@@ -388,8 +390,8 @@ class ViewerRerun(ViewerBase):
             scales: Instance scales.
             colors: Instance colors.
             materials: Instance materials.
-            opacities: Instance opacities.
             hidden: Whether the instances are hidden.
+            opacities: Instance opacities.
         """
         name = self._qualify(name)
         mesh = self._qualify(mesh)
@@ -431,6 +433,11 @@ class ViewerRerun(ViewerBase):
             )
             if opacities_np is not None and len(opacities_np) > 0:
                 first_opacity = float(opacities_np[0])
+                if not np.allclose(opacities_np, first_opacity):
+                    warnings.warn(
+                        "ViewerRerun does not support per-instance opacity; using the first opacity for the batch.",
+                        stacklevel=2,
+                    )
             if colors is not None and not has_texture:
                 colors_np = to_numpy(colors).astype(np.float32)
                 # Take the first instance's color and apply to all vertices

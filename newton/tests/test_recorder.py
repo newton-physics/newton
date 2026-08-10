@@ -634,6 +634,7 @@ def test_warp_dtype_file_roundtrip(test: TestRecorder, device):
 
 
 def test_mesh_recording_keeps_distinct_appearance(test: TestRecorder, device):
+    """Keep geometrically shared meshes distinct when appearance differs."""
     vertices = np.array(
         [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
         dtype=np.float32,

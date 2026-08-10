@@ -190,6 +190,7 @@ class ViewerRTX(ViewerUSD):
         self._rtx = None
         self._render_result = None
         self._render_products = None
+        self._uses_fractional_opacity = False
         self._transform_binding = None
         self._async = async_rendering
 
@@ -570,13 +571,12 @@ void main() {
         rp.CreateAttribute("omni:rtx:reflections:denoiser:enabled", Sdf.ValueTypeNames.Bool).Set(False)
         rp.CreateAttribute("omni:rtx:rt:ambientLight:color", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.1, 0.1, 0.1))
         rp.CreateAttribute("omni:rtx:rt:demoire", Sdf.ValueTypeNames.Bool).Set(False)
-        rp.CreateAttribute("omni:rtx:rt:fractionalOpacity", Sdf.ValueTypeNames.Bool).Set(True)
+        if self._uses_fractional_opacity:
+            rp.CreateAttribute("omni:rtx:rt:fractionalOpacity", Sdf.ValueTypeNames.Bool).Set(True)
         rp.CreateAttribute("omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts", Sdf.ValueTypeNames.Bool).Set(
             True
         )
-        rp.CreateAttribute("omni:rtx:rt:refractions:enabled", Sdf.ValueTypeNames.Bool).Set(True)
         rp.CreateAttribute("omni:rtx:rt:sss:samples", Sdf.ValueTypeNames.Int).Set(1)
-        rp.CreateAttribute("omni:rtx:rtpt:maxSpecularAndTransmissionBounces", Sdf.ValueTypeNames.Int).Set(23)
         rp.CreateAttribute("omni:rtx:rtpt:maxVolumeBounces", Sdf.ValueTypeNames.Int).Set(15)
         rp.CreateAttribute("omni:rtx:rtpt:modulatingRoughnessThreshold", Sdf.ValueTypeNames.Float).Set(0.08)
         rp.CreateAttribute("omni:rtx:scene:hydra:mdlMaterialWarmup", Sdf.ValueTypeNames.Bool).Set(True)
@@ -1428,6 +1428,8 @@ void main() {
     def _preview_surface_opacity_value(self, requested_opacity: float) -> float:
         """Map object opacity to RTX PreviewSurface per-hit opacity."""
         requested_opacity = float(np.clip(requested_opacity, 0.0, 1.0))
+        if requested_opacity < OPAQUE_OPACITY_THRESHOLD:
+            self._uses_fractional_opacity = True
         if requested_opacity <= 0.0 or requested_opacity >= OPAQUE_OPACITY_THRESHOLD:
             return requested_opacity
         return 1.0 - math.pow(1.0 - requested_opacity, 1.0 / self._PREVIEW_SURFACE_OPACITY_LAYERS)
@@ -1450,10 +1452,10 @@ void main() {
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
-        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        opacity: float | None = None,
     ) -> None:
         """Log a mesh for rendering.
 
@@ -1466,13 +1468,13 @@ void main() {
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Enable backface culling.
-            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            opacity: Optional display opacity in [0, 1].
         """
         name = self._qualify(name)
 
@@ -1515,9 +1517,8 @@ void main() {
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
-        *,
-        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ) -> None:
         """Log a batch of mesh instances for rendering.
 
@@ -1528,8 +1529,8 @@ void main() {
             scales: Array of scales.
             colors: Array of colors.
             materials: Array of materials.
-            opacities: Optional per-instance opacity values.
             hidden: Whether the instances are hidden.
+            opacities: Optional per-instance opacity values.
         """
         name = self._qualify(name)
         mesh = self._qualify(mesh)

@@ -21,6 +21,7 @@ from ..sim import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
 from .import_utils import (
+    clamp_imported_opacity,
     collapse_massless_fixed_root_joints,
     parse_custom_attributes,
     sanitize_xml_content,
@@ -31,21 +32,6 @@ from .texture import load_texture
 from .topology import topological_sort
 
 AttributeFrequency = Model.AttributeFrequency
-
-
-def _clamp_imported_opacity(value: float, source: str) -> float | None:
-    """Clamp display-only importer data without failing the model import."""
-    opacity = float(value)
-    if not np.isfinite(opacity):
-        warnings.warn(f"Ignoring non-finite opacity {opacity!r} from {source}.", stacklevel=2)
-        return None
-    clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
-    if clamped_opacity != opacity:
-        warnings.warn(
-            f"Clamping opacity {opacity!r} from {source} to {clamped_opacity!r}.",
-            stacklevel=2,
-        )
-    return clamped_opacity
 
 
 # Optional dependency for robust URI resolution
@@ -356,7 +342,7 @@ def parse_urdf(
                 if len(values) >= 3:
                     color = (float(values[0]), float(values[1]), float(values[2]))
                 if len(values) >= 4:
-                    opacity = _clamp_imported_opacity(values[3], "URDF material rgba")
+                    opacity = clamp_imported_opacity(values[3], "URDF material rgba")
 
         texture_el = material_element.find("texture")
         if texture_el is not None:
@@ -468,9 +454,8 @@ def parse_urdf(
             if incoming_xform is not None:
                 tf = incoming_xform * tf
 
-            material_info = {"color": None, "opacity": None, "texture": None}
+            material_info = resolve_material(geom_group.find("material"))
             if just_visual:
-                material_info = resolve_material(geom_group.find("material"))
                 if material_info["opacity"] is not None:
                     shape_kwargs["opacity"] = material_info["opacity"]
                 else:

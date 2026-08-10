@@ -420,6 +420,7 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
 
     def test_visual_material_rgba_preserves_opacity(self):
+        """Preserve the alpha channel from URDF visual materials."""
         urdf = """
         <robot name="rgba_test">
             <link name="base_link">
@@ -442,6 +443,7 @@ class TestImportUrdfBasic(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_opacity[0], 0.35, places=6)
 
     def test_visual_material_rgba_clamps_invalid_opacity(self):
+        """Clamp invalid URDF visual alpha values with a warning."""
         urdf = """
         <robot name="rgba_test">
             <link name="base_link">

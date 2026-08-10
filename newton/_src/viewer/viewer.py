@@ -1493,11 +1493,11 @@ class ViewerBase(ABC):
         xforms: wp.array[wp.transform],
         colors: wp.array[wp.vec3] | None = None,
         materials: wp.array[wp.vec4] | None = None,
-        opacities: wp.array[wp.float32] | None = None,
         geo_thickness: float = 0.0,
         geo_is_solid: bool = True,
         geo_src: newton.Mesh | newton.Heightfield | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Convenience helper to create/cache a mesh of a given geometry and
@@ -1514,12 +1514,12 @@ class ViewerBase(ABC):
             xforms: wp.array[wp.transform] of instance transforms
             colors: wp.array[wp.vec3] or None (broadcasted if length 1)
             materials: wp.array[wp.vec4] or None (broadcasted if length 1)
-            opacities: wp.array[wp.float32] or None (broadcasted if length 1)
             geo_thickness: Optional thickness used for hashing and solidification.
             geo_is_solid: If False, use shell-thickening for mesh-based geometry.
             geo_src: Source geometry to use only when ``geo_type`` is
                 :attr:`newton.GeoType.MESH`.
             hidden: If True, the shape will not be rendered
+            opacities: wp.array[wp.float32] or None (broadcasted if length 1)
         """
 
         # normalize geo_scale to a list for hashing + mesh creation
@@ -1776,10 +1776,10 @@ class ViewerBase(ABC):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
-        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        opacity: float | None = None,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1798,13 +1798,13 @@ class ViewerBase(ABC):
             texture: Optional texture image array or path.
             hidden: Whether the mesh should be hidden.
             backface_culling: Whether back-face culling should be enabled.
-            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            opacity: Optional display opacity in [0, 1].
         """
         pass
 
@@ -1817,9 +1817,8 @@ class ViewerBase(ABC):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
-        *,
-        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log a batch of mesh instances.
@@ -1835,8 +1834,8 @@ class ViewerBase(ABC):
             scales: Optional per-instance scales as a Warp vec3 array.
             colors: Optional per-instance colors as a Warp vec3 array.
             materials: Optional per-instance material parameters as a Warp vec4 array.
-            opacities: Optional per-instance opacity values as a Warp float array.
             hidden: Whether the instance batch should be hidden.
+            opacities: Optional per-instance opacity values as a Warp float array.
         """
         pass
 
@@ -1848,9 +1847,8 @@ class ViewerBase(ABC):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
-        *,
-        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log capsules as instances. This is a specialized path for rendering capsules.
@@ -1865,8 +1863,8 @@ class ViewerBase(ABC):
             scales: Optional per-capsule scales as a Warp vec3 array.
             colors: Optional per-capsule colors as a Warp vec3 array.
             materials: Optional per-capsule material parameters as a Warp vec4 array.
-            opacities: Optional per-capsule opacity values as a Warp float array.
             hidden: Whether the capsule batch should be hidden.
+            opacities: Optional per-capsule opacity values as a Warp float array.
         """
         self.log_instances(
             self._qualify(name),
@@ -2132,9 +2130,9 @@ class ViewerBase(ABC):
             scale: wp.vec3,
             color: wp.vec3,
             material: wp.vec4,
-            opacity: float,
             shape_index: int,
             world: int = -1,
+            opacity: float = 1.0,
         ):
             """
             Add an instance of the geometry to the batch.
@@ -2145,9 +2143,9 @@ class ViewerBase(ABC):
                 scale: The scale of the instance.
                 color: The color of the instance.
                 material: The material of the instance.
-                opacity: The opacity of the instance.
                 shape_index: The shape index.
                 world: The world index.
+                opacity: The opacity of the instance.
             """
             self.parents.append(parent)
             self.xforms.append(xform)
@@ -3044,7 +3042,7 @@ class ViewerBase(ABC):
         )
 
     def _triangle_opacities_changed(self) -> bool:
-        """Detect ``Model.tri_opacity`` mutations without downloading the array."""
+        """Detect ``Model.tri_opacity`` mutations without downloading the full array on CUDA."""
         current = self.model.tri_opacity
         cached = self._triangle_opacity_cached
         if cached is None or len(cached) != len(current):

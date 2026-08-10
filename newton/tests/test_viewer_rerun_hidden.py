@@ -62,6 +62,21 @@ class TestViewerRerunHidden(unittest.TestCase):
 
         return viewer
 
+    def test_constructor_filter_does_not_retry_failures(self):
+        """Propagate constructor failures without retrying unsupported arguments."""
+        from newton._src.viewer.viewer_rerun import ViewerRerun
+
+        calls = []
+
+        def constructor(*, supported=None):
+            calls.append(supported)
+            raise RuntimeError("constructor failed")
+
+        with self.assertRaisesRegex(RuntimeError, "constructor failed"):
+            ViewerRerun._call_rr_constructor(constructor, supported=1, ignored=2)
+
+        self.assertEqual(calls, [1])
+
     def _make_mock_wp_array(self, data):
         """Create a mock warp array that behaves enough for ViewerRerun."""
         arr = Mock()
@@ -173,6 +188,7 @@ class TestViewerRerunHidden(unittest.TestCase):
         self.assertEqual(mesh_kwargs["vertex_colors"].shape, (3, 3))
 
     def test_opacity_only_instance_update_preserves_previous_color(self):
+        """Preserve cached color when only instance opacity changes."""
         viewer = self._create_viewer()
         points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
         indices = wp.array([0, 1, 2], dtype=wp.int32)
@@ -208,6 +224,29 @@ class TestViewerRerunHidden(unittest.TestCase):
         mesh_kwargs = self.mock_rr.Mesh3D.call_args.kwargs
         np.testing.assert_array_equal(mesh_kwargs["vertex_colors"], previous_colors)
         self.assertEqual(mesh_kwargs["albedo_factor"], (255, 255, 255, 64))
+
+    def test_varying_instance_opacity_warns_about_uniform_fallback(self):
+        """Warn when Rerun can only apply the first batch opacity."""
+        viewer = self._create_viewer()
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        xforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=wp.vec3)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("template", points, indices, hidden=True)
+            with self.assertWarnsRegex(UserWarning, "first opacity"):
+                viewer.log_instances(
+                    "instances",
+                    "template",
+                    xforms,
+                    scales,
+                    colors=None,
+                    materials=None,
+                    opacities=wp.array([0.25, 0.75], dtype=wp.float32),
+                )
+
+        self.assertEqual(self.mock_rr.Mesh3D.call_args.kwargs["albedo_factor"], (255, 255, 255, 64))
 
     def test_log_instances_hidden_clears_entity(self):
         """log_instances(hidden=True) should clear a previously visible entity."""

@@ -705,7 +705,8 @@ class MeshInstancerGL:
                 gl.glDeleteBuffers(1, self.instance_transform_buffer)
                 gl.glDeleteBuffers(1, self.instance_color_buffer)
                 gl.glDeleteBuffers(1, self.instance_material_buffer)
-                gl.glDeleteBuffers(1, self.instance_opacity_buffer)
+                if self.instance_opacity_buffer is not None:
+                    gl.glDeleteBuffers(1, self.instance_opacity_buffer)
             except Exception:
                 # Ignore any errors during interpreter shutdown
                 pass
@@ -719,10 +720,8 @@ class MeshInstancerGL:
         self.instance_transform_buffer = gl.GLuint()
         self.instance_color_buffer = gl.GLuint()
         self.instance_material_buffer = gl.GLuint()
-        self.instance_opacity_buffer = gl.GLuint()
+        self.instance_opacity_buffer = None
         self.num_instances = num_instances
-
-        opaque_opacities = np.ones(self.num_instances, dtype=np.float32)
 
         gl.glGenVertexArrays(1, self.vao)
         gl.glBindVertexArray(self.vao)
@@ -811,22 +810,10 @@ class MeshInstancerGL:
         gl.glEnableVertexAttribArray(8)
         gl.glVertexAttribDivisor(8, 1)
 
-        # ------------------------
-        # opacity buffer
-
-        gl.glGenBuffers(1, self.instance_opacity_buffer)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
-        gl.glBufferData(
-            gl.GL_ARRAY_BUFFER,
-            self.instance_opacity_buffer_size,
-            opaque_opacities.ctypes.data,
-            gl.GL_STATIC_DRAW,
-        )
-
-        gl.glVertexAttribPointer(9, 1, gl.GL_FLOAT, gl.GL_FALSE, self.opacity_byte_size, ctypes.c_void_p(0))
+        # Opaque instancers use the constant attribute. Allocate a buffer only
+        # if a later update actually contains transparent instances.
         gl.glDisableVertexAttribArray(9)
         gl.glVertexAttrib1f(9, 1.0)
-        gl.glVertexAttribDivisor(9, 1)
 
         gl.glBindVertexArray(0)
 
@@ -933,8 +920,6 @@ class MeshInstancerGL:
 
         if active_count > 0:
             self._update_opacity_buffer(active_count, opacities)
-        else:
-            self._has_transparency = False
 
     def update_from_pinned(self, host_transforms_np, count, colors=None, materials=None, opacities=None):
         """Upload pre-computed mat44 transforms from pinned host memory to GL.
@@ -964,8 +949,6 @@ class MeshInstancerGL:
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
         if count > 0:
             self._update_opacity_buffer(count, opacities)
-        else:
-            self._has_transparency = False
 
     def _update_opacity_buffer(self, count: int, opacities: wp.array | None):
         gl = RendererGL.gl
@@ -976,12 +959,28 @@ class MeshInstancerGL:
         host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:count]
         host_opacities = np.clip(host_opacities, 0.0, 1.0)
         self._has_transparency = bool(np.any(host_opacities < OPAQUE_OPACITY_THRESHOLD))
-        self._set_opacity_attribute_enabled(self._has_transparency)
         if not self._has_transparency:
+            self._set_opacity_attribute_enabled(False)
             return
 
+        self._ensure_opacity_buffer()
+        self._set_opacity_attribute_enabled(True)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
         gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, host_opacities.nbytes, host_opacities.ctypes.data)
+
+    def _ensure_opacity_buffer(self):
+        if self.instance_opacity_buffer is not None:
+            return
+
+        gl = RendererGL.gl
+        self.instance_opacity_buffer = gl.GLuint()
+        gl.glGenBuffers(1, self.instance_opacity_buffer)
+        gl.glBindVertexArray(self.vao)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer_size, None, gl.GL_DYNAMIC_DRAW)
+        gl.glVertexAttribPointer(9, 1, gl.GL_FLOAT, gl.GL_FALSE, self.opacity_byte_size, ctypes.c_void_p(0))
+        gl.glVertexAttribDivisor(9, 1)
+        gl.glBindVertexArray(0)
 
     def _set_opacity_attribute_enabled(self, enabled: bool):
         if self._opacity_attribute_enabled == enabled:
@@ -1207,6 +1206,7 @@ class RendererGL:
         self._oit_accum_texture = None
         self._oit_reveal_texture = None
         self._oit_resolve_shader = None
+        self._shape_transparent_shader = None
         self._oit_supported = False
 
         self._sun_direction = None  # set on first render based on camera up_axis
@@ -1238,10 +1238,8 @@ class RendererGL:
 
         self._shadow_shader = ShadowShader(gl)
         self._shape_shader = ShaderShape(gl)
-        self._shape_transparent_shader = ShaderShape(gl, enable_transparency=True)
         self._edge_shader = ShaderEdge(gl)
         self._frame_shader = FrameShader(gl)
-        self._oit_resolve_shader = OITResolveShader(gl)
         self._sky_shader = ShaderSky(gl)
         self._wireframe_shader = ShaderLine(gl)
         self._arrow_shader = ShaderArrow(gl)
@@ -1776,9 +1774,20 @@ class RendererGL:
                 self.msaa_samples = 0
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
-        self._setup_oit_buffer()
+        if self._oit_fbo is not None:
+            self._setup_oit_buffer()
 
         check_gl_error()
+
+    def _ensure_transparency_resources(self):
+        """Create transparency-only shaders and buffers on first use."""
+        gl = RendererGL.gl
+        if self._shape_transparent_shader is None:
+            self._shape_transparent_shader = ShaderShape(gl, enable_transparency=True)
+        if self._oit_resolve_shader is None:
+            self._oit_resolve_shader = OITResolveShader(gl)
+        if self._oit_fbo is None:
+            self._setup_oit_buffer()
 
     def _setup_oit_buffer(self):
         gl = RendererGL.gl
@@ -2021,10 +2030,12 @@ class RendererGL:
             self._draw_objects(opaque_objects)
 
         if transparent_objects:
+            self._ensure_transparency_resources()
             if not self._oit_supported:
                 raise RuntimeError(
                     "ViewerGL transparency requires OpenGL independent blending and a complete OIT framebuffer."
                 )
+            assert self._shape_transparent_shader is not None
             self._update_shape_shader(self._shape_transparent_shader)
             with self._shape_transparent_shader:
                 if getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
@@ -2082,6 +2093,7 @@ class RendererGL:
 
     def _render_transparent_objects(self, transparent_objects):
         gl = RendererGL.gl
+        assert self._oit_resolve_shader is not None
 
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._oit_fbo)
         gl.glClearBufferfv(gl.GL_COLOR, 0, (gl.GLfloat * 4)(0.0, 0.0, 0.0, 0.0))

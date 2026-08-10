@@ -1330,10 +1330,10 @@ class ViewerFile(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
-        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        opacity: float | None = None,
     ):
         """File viewer does not render meshes.
 
@@ -1346,13 +1346,13 @@ class ViewerFile(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether back-face culling is enabled.
-            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            opacity: Optional display opacity in [0, 1].
         """
         pass
 
@@ -1365,9 +1365,8 @@ class ViewerFile(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
-        *,
-        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """File viewer does not render instances.
 
@@ -1378,8 +1377,8 @@ class ViewerFile(ViewerBase):
             scales: Optional per-instance scales.
             colors: Optional per-instance colors.
             materials: Optional per-instance material parameters.
-            opacities: Optional per-instance opacity values.
             hidden: Whether the instance batch is hidden.
+            opacities: Optional per-instance opacity values.
         """
         pass
 

@@ -2,13 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton._src.viewer.viewer import MAX_TRIANGLE_OPACITY_GROUPS
+from newton._src.viewer.gl.opengl import RendererGL
+from newton._src.viewer.viewer import MAX_TRIANGLE_OPACITY_GROUPS, Layer
 from newton._src.viewer.viewer_gl import ViewerGL, _compute_shape_vbo_xforms
 from newton.viewer import ViewerNull
 
@@ -22,7 +23,7 @@ class _ShapeColorProbe(ViewerNull):
         self.last_colors = None
         self.last_opacities = None
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, *, opacities=None, hidden=False):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False, opacities=None):
         """Capture the most recent instance appearance values sent to the viewer."""
         self.last_colors = None if colors is None else colors.numpy().copy()
         self.last_opacities = None if opacities is None else opacities.numpy().copy()
@@ -183,6 +184,7 @@ class TestShapeColors(unittest.TestCase):
                 self.assertEqual(len(builder.tri_opacity), 0)
 
     def test_triangle_opacity_array_rejects_wrong_length_before_mutation(self):
+        """Reject mismatched triangle opacity arrays before appending geometry."""
         builder = newton.ModelBuilder()
         for position in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
             builder.add_particle(pos=position, vel=(0.0, 0.0, 0.0), mass=1.0)
@@ -307,6 +309,7 @@ class TestShapeColors(unittest.TestCase):
         np.testing.assert_allclose(viewer.mesh_opacities["/model/triangles"], 0.4, atol=1e-6, rtol=1e-6)
 
     def test_viewer_warns_for_wrong_triangle_opacity_count(self):
+        """Fall back to opaque triangles when the model array length is invalid."""
         builder = newton.ModelBuilder()
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -330,6 +333,7 @@ class TestShapeColors(unittest.TestCase):
         self.assertEqual(groups[0][2], 1.0)
 
     def test_viewer_caps_continuous_triangle_opacity_groups(self):
+        """Bound draw-call growth for continuously varying triangle opacity."""
         builder = newton.ModelBuilder()
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -356,6 +360,7 @@ class TestShapeColors(unittest.TestCase):
         self.assertLessEqual(len(groups), MAX_TRIANGLE_OPACITY_GROUPS)
 
     def test_viewer_caches_triangle_opacity_groups_until_mutated(self):
+        """Reuse triangle groups until an in-place opacity mutation occurs."""
         builder = newton.ModelBuilder()
         builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -389,6 +394,7 @@ class TestShapeColors(unittest.TestCase):
         self.assertEqual(stale_third, groups_first)
 
     def test_opaque_and_transparent_shapes_use_separate_batches(self):
+        """Separate opaque and transparent instances into render-pass batches."""
         builder = newton.ModelBuilder()
         body0 = builder.add_body(mass=1.0)
         body1 = builder.add_body(mass=1.0)
@@ -402,6 +408,7 @@ class TestShapeColors(unittest.TestCase):
         self.assertEqual(sorted(batch.transparent for batch in viewer._shape_instances.values()), [False, True])
 
     def test_viewer_gl_opacity_kernel_sets_dirty_and_regroup_flags(self):
+        """Flag opacity changes and opaque-threshold crossings on the device."""
         device = wp.get_device("cpu")
         common_inputs = [
             wp.array([wp.transform_identity()], dtype=wp.transformf, device=device),
@@ -438,8 +445,18 @@ class TestShapeColors(unittest.TestCase):
         np.testing.assert_array_equal(get_flags(0.5, 0.4), [1, 0])
 
     def test_viewer_gl_rebuilds_opacity_dependent_caches(self):
+        """Rebuild all shape caches after an opacity pass transition."""
+
+        class FakeMeshInstancer:
+            pass
+
         viewer = ViewerGL.__new__(ViewerGL)
-        viewer.objects = {}
+        viewer._layers = {"solverA": Layer("solverA")}
+        viewer._active_layer_id = "solverA"
+        viewer.objects = {
+            "/layers/solverA/model/shapes/shape_0": FakeMeshInstancer(),
+            "/layers/solverB/model/shapes/shape_0": FakeMeshInstancer(),
+        }
         viewer._shape_instances = {"stale": object()}
         viewer._gaussian_instances = [object()]
         viewer._sdf_isomesh_instances = {0: object()}
@@ -454,11 +471,35 @@ class TestShapeColors(unittest.TestCase):
         viewer._populate_shapes = Mock()
         viewer._rebuild_gl_shape_caches = Mock()
 
-        viewer._rebuild_shape_batches_for_opacity_groups()
+        with patch("newton._src.viewer.gl.opengl.MeshInstancerGL", FakeMeshInstancer):
+            viewer._rebuild_shape_batches_for_opacity_groups()
 
         viewer._populate_shapes.assert_called_once_with()
         viewer._rebuild_gl_shape_caches.assert_called_once_with()
         self.assertTrue(viewer.model_changed)
+        self.assertNotIn("/layers/solverA/model/shapes/shape_0", viewer.objects)
+        self.assertIn("/layers/solverB/model/shapes/shape_0", viewer.objects)
+
+    def test_renderer_gl_lazily_creates_transparency_resources(self):
+        """Defer transparency shaders and framebuffers until first use."""
+        renderer = RendererGL.__new__(RendererGL)
+        renderer._shape_transparent_shader = None
+        renderer._oit_resolve_shader = None
+        renderer._oit_fbo = None
+        renderer._setup_oit_buffer = Mock(side_effect=lambda: setattr(renderer, "_oit_fbo", object()))
+
+        transparent_shader = object()
+        resolve_shader = object()
+        with (
+            patch("newton._src.viewer.gl.opengl.ShaderShape", return_value=transparent_shader) as shape_shader,
+            patch("newton._src.viewer.gl.opengl.OITResolveShader", return_value=resolve_shader) as oit_shader,
+        ):
+            renderer._ensure_transparency_resources()
+            renderer._ensure_transparency_resources()
+
+        shape_shader.assert_called_once_with(RendererGL.gl, enable_transparency=True)
+        oit_shader.assert_called_once_with(RendererGL.gl)
+        renderer._setup_oit_buffer.assert_called_once_with()
 
     def test_ground_plane_keeps_checkerboard_material_with_resolved_shape_colors(self):
         """Verify the ground plane keeps its checkerboard material after color resolution."""

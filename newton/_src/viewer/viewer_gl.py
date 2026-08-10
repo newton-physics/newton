@@ -855,8 +855,11 @@ class ViewerGL(ViewerBase):
         """Rebuild shape batches after opacity changes move shapes between render passes."""
         from .gl.opengl import MeshInstancerGL  # noqa: PLC0415
 
+        shape_prefix = self._qualify("/model/shapes/")
         stale_shape_objects = [
-            k for k, v in self.objects.items() if isinstance(v, MeshInstancerGL) and k.startswith("/model/shapes/")
+            key
+            for key, value in self.objects.items()
+            if isinstance(value, MeshInstancerGL) and key.startswith(shape_prefix)
         ]
         for k in stale_shape_objects:
             obj = self.objects.pop(k)
@@ -923,10 +926,10 @@ class ViewerGL(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
-        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        opacity: float | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -940,13 +943,13 @@ class ViewerGL(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Enable backface culling.
-            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            opacity: Optional display opacity in [0, 1].
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -985,9 +988,8 @@ class ViewerGL(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
-        *,
-        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log a batch of mesh instances for rendering.
@@ -999,8 +1001,8 @@ class ViewerGL(ViewerBase):
             scales: Array of scales.
             colors: Array of colors.
             materials: Array of materials.
-            opacities: Array of display opacities.
             hidden: Whether the instances are hidden.
+            opacities: Array of display opacities.
         """
         # Route user-supplied names through the active layer (idempotent).
         # ``mesh`` is the path of a previously registered mesh; qualify it
@@ -1048,9 +1050,8 @@ class ViewerGL(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
-        *,
-        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Render capsules using instanced cylinder bodies + instanced sphere end caps.
@@ -1065,8 +1066,8 @@ class ViewerGL(ViewerBase):
             scales: Capsule body instance scales, expected (radius, radius, half_height), length N.
             colors: Capsule instance colors (wp.vec3), length N or None (no update).
             materials: Capsule instance materials (wp.vec4), length N or None (no update).
-            opacities: Capsule display opacities (wp.float32), length N or None (no update).
             hidden: Whether the instances are hidden.
+            opacities: Capsule display opacities (wp.float32), length N or None (no update).
         """
         # Route the user-supplied capsule batch name through the active
         # layer so two layers calling ``log_capsules`` with the same path

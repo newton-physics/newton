@@ -227,21 +227,23 @@ class ViewerViser(ViewerBase):
         """Call a viser scene method with only supported keyword args."""
         try:
             signature = inspect.signature(method)
-            allowed = {k: v for k, v in kwargs.items() if k in signature.parameters}
-            dropped_appearance = [
-                key
-                for key in ("opacity", "batched_opacities", "color", "batched_colors", "material")
-                if kwargs.get(key) is not None and key not in signature.parameters
-            ]
-            if dropped_appearance:
-                warnings.warn(
-                    f"Viser {method.__name__} does not support requested appearance argument(s): "
-                    f"{', '.join(dropped_appearance)}.",
-                    stacklevel=2,
-                )
-            return method(**allowed)
-        except Exception:
+        except (TypeError, ValueError):
             return method(**kwargs)
+
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+        allowed = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
+        dropped_appearance = [
+            key
+            for key in ("opacity", "batched_opacities", "color", "batched_colors", "material")
+            if kwargs.get(key) is not None and key not in signature.parameters and not accepts_kwargs
+        ]
+        if dropped_appearance:
+            warnings.warn(
+                f"Viser {method.__name__} does not support requested appearance argument(s): "
+                f"{', '.join(dropped_appearance)}.",
+                stacklevel=2,
+            )
+        return method(**allowed)
 
     @property
     def url(self) -> str:
@@ -595,10 +597,10 @@ class ViewerViser(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
-        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        opacity: float | None = None,
     ):
         """
         Log a mesh to viser for visualization.
@@ -612,13 +614,13 @@ class ViewerViser(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling.
-            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            opacity: Optional display opacity in [0, 1].
         """
         name = self._qualify(name)
 
@@ -803,9 +805,8 @@ class ViewerViser(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
-        *,
-        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Log instanced mesh data to viser using efficient batched rendering.
@@ -820,8 +821,8 @@ class ViewerViser(ViewerBase):
             scales: Instance scales.
             colors: Instance colors.
             materials: Instance materials.
-            opacities: Instance opacities.
             hidden: Whether the instances are hidden.
+            opacities: Instance opacities.
         """
         name = self._qualify(name)
         mesh = self._qualify(mesh)

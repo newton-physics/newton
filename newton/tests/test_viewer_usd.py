@@ -441,13 +441,17 @@ class TestViewerUSD(unittest.TestCase):
     def test_viewer_rtx_compensates_preview_surface_opacity(self):
         """Compensate PreviewSurface opacity for RTX rendering layers."""
         viewer = ViewerRTX.__new__(ViewerRTX)
+        viewer._uses_fractional_opacity = False
+
+        self.assertAlmostEqual(viewer._preview_surface_opacity_value(1.0), 1.0, places=6)
+        self.assertFalse(viewer._uses_fractional_opacity)
 
         opacity = viewer._preview_surface_opacity_value(0.35)
 
         self.assertLess(opacity, 0.35)
         self.assertAlmostEqual(1.0 - (1.0 - opacity) ** viewer._PREVIEW_SURFACE_OPACITY_LAYERS, 0.35, places=6)
         self.assertEqual(viewer._preview_surface_ior_value(0.35), 1.0)
-        self.assertAlmostEqual(viewer._preview_surface_opacity_value(1.0), 1.0, places=6)
+        self.assertTrue(viewer._uses_fractional_opacity)
 
     def test_named_layers_write_distinct_prim_namespaces(self):
         viewer = self._make_viewer()
@@ -471,6 +475,7 @@ class TestViewerUSD(unittest.TestCase):
         self.assertTrue(prim_b.IsValid())
 
     def test_remove_layer_preserves_sibling_usd_prims(self):
+        """Remove one layer's geometry and materials without touching its sibling."""
         viewer = self._make_viewer()
 
         viewer.activate("solverA")
@@ -485,6 +490,13 @@ class TestViewerUSD(unittest.TestCase):
         viewer.log_state(viewer.model.state())
         viewer.end_frame()
 
+        prim_a = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes/shape_0/instance_0")
+        prim_b = viewer.stage.GetPrimAtPath("/root/layers/solverB/model/shapes/shape_0/instance_0")
+        material_a, _ = UsdShade.MaterialBindingAPI(prim_a).ComputeBoundMaterial()
+        material_b, _ = UsdShade.MaterialBindingAPI(prim_b).ComputeBoundMaterial()
+        material_a_path = material_a.GetPath()
+        material_b_path = material_b.GetPath()
+
         viewer.remove_layer("solverA")
 
         prim_a = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes/shape_0/instance_0")
@@ -492,6 +504,8 @@ class TestViewerUSD(unittest.TestCase):
 
         self.assertFalse(prim_a.IsValid())
         self.assertTrue(prim_b.IsValid())
+        self.assertFalse(viewer.stage.GetPrimAtPath(material_a_path).IsValid())
+        self.assertTrue(viewer.stage.GetPrimAtPath(material_b_path).IsValid())
 
     def test_layer_visibility_hides_usd_instances(self):
         viewer = self._make_viewer()
