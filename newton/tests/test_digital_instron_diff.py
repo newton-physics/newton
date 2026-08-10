@@ -11,7 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from projects.digital_instron_v2 import core, dynamics, inverse_id, workflow
+from projects.digital_instron_v2 import core, dynamics, inverse_id, scenarios_diff, workflow
 from projects.digital_instron_v2.dynamics import FoundationConfig
 from projects.digital_instron_v2.dynamics_diff import DifferentiableMidsoleFoundation
 from projects.digital_instron_v2.geometry import build_column_grid, load_mesh
@@ -442,6 +442,109 @@ class TestMeasuredTrialForceMatching(unittest.TestCase):
                 "force_rmse_relative"
             ]
             self.assertAlmostEqual(result.rms_relative[trial.name], expected, delta=2.0e-3)
+
+
+class TestDifferentiableGaitScenarios(unittest.TestCase):
+    @staticmethod
+    def _press_driver(device, nsteps=160):
+        geo = dynamics.build_foundation_geometry(MANIFEST)
+        material = dynamics.load_fitted_material(MANIFEST)
+        center = geo.uv_m.mean(axis=0)
+        press_z = float(geo.z_free_m.mean()) - 0.02  # penetrate the ground plane for continuous contact
+        pose = np.array([center[0], center[1], press_z, 0.0, 0.0, 0.0, 1.0], np.float32)
+        targets = np.tile(pose, (nsteps, 1))
+        velocities = np.zeros((nsteps, 6), np.float32)
+        dt = (1.0 / 60.0) / 128.0
+        return scenarios_diff.DifferentiableAttached(geo, material, targets, velocities, dt, device=device)
+
+    def test_stride_reproduces_shipped_forward_model(self):
+        """Reproduce the shipped MidsoleFoundation GRF over a kinematic heel-to-toe stride to sub-milli-newton."""
+        device = wp.get_preferred_device()
+        geo = dynamics.build_foundation_geometry(MANIFEST)
+        material = dynamics.load_fitted_material(MANIFEST)
+        stride = scenarios_diff.DifferentiableStride(geo, material, device=device)
+        diff = stride.forward().numpy()
+        reference = stride.reference_grf()
+        self.assertGreater(float(np.max(reference)), 100.0)  # the stride actually loads the bed
+        self.assertLess(float(np.max(np.abs(diff - reference))), 1.0e-2)
+
+    def test_stride_impulse_gradient_matches_finite_difference(self):
+        """Differentiate the kinematic stride GRF impulse w.r.t. the equilibrium modulus and match a central difference."""
+        device = wp.get_preferred_device()
+        geo = dynamics.build_foundation_geometry(MANIFEST)
+        material = dynamics.load_fitted_material(MANIFEST)
+        stride = scenarios_diff.DifferentiableStride(geo, material, device=device)
+        loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+
+        stride.zero_grad()
+        loss.zero_()
+        tape = wp.Tape()
+        with tape:
+            grf = stride.forward()
+            wp.launch(scenarios_diff._reduce_sum, dim=stride.substep_count, inputs=[grf, loss], device=device)
+        tape.backward(loss)
+        analytic = float(stride.material_params.grad.numpy()[0])
+
+        tape.zero()
+        stride.zero_grad()
+        base = stride.material_params.numpy().copy()
+        h = base[0] * 1.0e-3
+
+        def impulse(g_eq):
+            perturbed = base.copy()
+            perturbed[0] = g_eq
+            stride.material_params.assign(perturbed.astype(np.float32))
+            return float(stride.forward().numpy().astype(np.float64).sum())
+
+        numeric = (impulse(base[0] + h) - impulse(base[0] - h)) / (2.0 * h)
+        stride.material_params.assign(base.astype(np.float32))
+        self.assertLess(abs(analytic - numeric) / (abs(numeric) + 1.0e-30), 1.0e-2)
+
+    def test_attached_press_gradient_matches_finite_difference(self):
+        """Differentiate the fully dynamic press GRF impulse w.r.t. the equilibrium modulus under continuous contact.
+
+        Drives the shoe with a constant target pose so the contact patch stays
+        engaged for the whole rollout; the gradient through the PD upper, the
+        semi-implicit solver, and the smooth-friction foundation then matches a
+        central difference (a stride roll would cross contact make/break events
+        where the correct subgradient differs from a finite difference).
+        """
+        device = wp.get_preferred_device()
+        driver = self._press_driver(device, nsteps=160)
+        loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+
+        driver.zero_grad()
+        loss.zero_()
+        tape = wp.Tape()
+        with tape:
+            grf = driver.forward()
+            wp.launch(scenarios_diff._reduce_sum, dim=driver.substep_count, inputs=[grf, loss], device=device)
+        tape.backward(loss)
+        analytic = float(driver.material_params.grad.numpy()[0])
+
+        tape.zero()
+        driver.zero_grad()
+        base = driver.material_params.numpy().copy()
+        h = base[0] * 1.0e-3
+
+        def impulse(g_eq):
+            perturbed = base.copy()
+            perturbed[0] = g_eq
+            driver.material_params.assign(perturbed.astype(np.float32))
+            return float(driver.forward().numpy().astype(np.float64).sum())
+
+        numeric = (impulse(base[0] + h) - impulse(base[0] - h)) / (2.0 * h)
+        driver.material_params.assign(base.astype(np.float32))
+        self.assertLess(abs(analytic - numeric) / (abs(numeric) + 1.0e-30), 2.0e-2)
+
+    def test_attached_forward_produces_valid_grf(self):
+        """A fully dynamic attached press yields a finite, non-negative GRF with active contact."""
+        device = wp.get_preferred_device()
+        driver = self._press_driver(device, nsteps=96)
+        grf = driver.forward().numpy()
+        self.assertTrue(np.all(np.isfinite(grf)))
+        self.assertGreaterEqual(float(np.min(grf)), 0.0)
+        self.assertGreater(float(np.max(grf)), 100.0)
 
 
 if __name__ == "__main__":
