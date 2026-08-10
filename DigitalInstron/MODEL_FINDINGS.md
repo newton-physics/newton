@@ -390,3 +390,20 @@ under kinematic drive, and remains stable under closed-loop servo actuation. The
 residual peak/hysteresis gap is the same data/model ceiling identified in Phase
 1; moving it requires same-fixture multi-rate / relaxation experiments, not a
 dynamics change.
+
+
+### Figures
+
+Regenerate with ``uv run -m projects.digital_instron_v2.plot_phase2``
+(``DigitalInstron/figures/phase2/``):
+
+- ``fig1_hysteresis_loops.png`` -- measured vs simulated force-displacement
+  loops (kinematic), annotated with the peak / RMSE / hysteresis errors.
+- ``fig2_force_vs_phase.png`` -- force vs cycle phase, showing the pointwise
+  (active-RMSE) agreement.
+- ``fig3_dynamics_diagnostics.png`` -- COP trajectory, active contact area, max
+  column compression, and wrench continuity over the cycle (both fixtures).
+- ``fig4_kinematic_vs_servo.png`` -- loops by drive mode and servo tracking. The
+  servo hysteresis differs from kinematic only because closed-loop PD smooths the
+  crosshead velocity (an uncontrolled artifact, not a genuine model change), so
+  only the kinematic loops are gated.
