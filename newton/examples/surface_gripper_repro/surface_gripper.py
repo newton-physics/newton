@@ -42,7 +42,7 @@ GB    World pose of the gripped body (body B).
       ``body_q[body_b]``
 
 T_bs  Pose of the gripped body's SDF mesh in body B's local frame (mesh -> body B).
-      ``body_b_mesh_xform[body_b]``
+      ``model.shape_transform[shape_b]`` where ``shape_b`` is the gripped collision shape ID.
       The world pose of the mesh is ``GB * T_bs``.
 
 SB    Pose of the seal frame in body B's local frame, cached at engagement:
@@ -70,7 +70,7 @@ def _nat_freq_damping_ratio_to_stiffness_damping(mu: float, zeta: float, m_eff: 
     return m_eff * mu * mu, 2.0 * zeta * mu * m_eff
 
 
-def _lip_circle(radius, half_height, n_samples):
+def _lip_circle(radius: float, half_height: float, n_samples: int) -> list[wp.vec3]:
     """The ``n_samples`` lip sample points of one pad, in the pad frame: evenly spaced on the circle of
     ``radius`` at height ``half_height`` (the lip-plane offset along the grip axis). Returns a list of
     ``wp.vec3``; empty when ``n_samples`` is 0."""
@@ -322,24 +322,24 @@ def _clamp_magnitude_2d(fx: float, fy: float, f_max: float) -> tuple[float, floa
 
 @wp.kernel
 def _attach_seal_kernel(
-    pad_engaged_body_b_id_curr: wp.array[int],  # [pads] current step's gripped body (< 0 = released)
-    pad_preparing_body_b_id: wp.array[int],  # body each pad seals against this step
+    pad_engaged_bs_curr: wp.array[wp.vec2i],   # [pads] current step's gripped body/shape (``[0] < 0`` = released)
+    pad_preparing_bs: wp.array[wp.vec2i],      # body/shape each pad seals against this step
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],  # world pose of body A (the gripper body)
     hold_pose_body_b: wp.array[wp.transform],  # GB0 per body: raw body_q (attach_seal) or the fitted seated pose (attach_seal_seated)
-    pad_engaged_body_b_id_prev: wp.array[int],  # [pads] previous step's gripped body (< 0 = was released, for rising-edge detection)
+    pad_engaged_bs_prev: wp.array[wp.vec2i],   # [pads] previous step's gripped body/shape (``[0] < 0`` = was released, for rising-edge detection)
     # outputs
     pad_anchor_b: wp.array[wp.transform],
 ):
     """On a disengaged->engaged rising edge, cache SB = GB0^-1 * SA0 into pad_anchor_b (see Frame nomenclature)."""
     pad = wp.tid()
-    if pad_engaged_body_b_id_curr[pad] >= 0 and pad_engaged_body_b_id_prev[pad] < 0:
+    if pad_engaged_bs_curr[pad][0] >= 0 and pad_engaged_bs_prev[pad][0] < 0:
         gripper_id = pad_gripper[pad]
         seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # SA
-        pad_anchor_b[pad] = wp.transform_inverse(hold_pose_body_b[pad_preparing_body_b_id[pad]]) * seal_world
+        pad_anchor_b[pad] = wp.transform_inverse(hold_pose_body_b[pad_preparing_bs[pad][0]]) * seal_world
 
 
 @wp.kernel
@@ -366,7 +366,7 @@ def _eval_pad_force_linear_kernel(
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     pad_grip_control: wp.array[float],
-    pad_engaged_body_b_id: wp.array[int],
+    pad_engaged_bs: wp.array[wp.vec2i],
     pad_anchor_b: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
@@ -386,9 +386,9 @@ def _eval_pad_force_linear_kernel(
     equal-and-opposite wrench into ``body_f``.
     """
     pad = wp.tid()
-    if pad_engaged_body_b_id[pad] < 0:
+    if pad_engaged_bs[pad][0] < 0:
         return
-    engaged_body_b = pad_engaged_body_b_id[pad]
+    engaged_body_b = pad_engaged_bs[pad][0]
 
     gripper_id = pad_gripper[pad]
     body_a = gripper_body_id[gripper_id]
@@ -467,18 +467,6 @@ def _eval_pad_force_linear_kernel(
     pad_break_metric[pad] = 0.0  # break not evaluated on this path yet
 
 
-# --------------------------------------------------------------------------------------------------
-# Inline Gauss-Newton seat fit of a gripped body's pose to the pad lips.
-#
-# Used by _attach_seal_seated_kernel on a pad's rising edge (:func:`_seat_body_pose`). Per lip point the
-# analytic Jacobian row of its SDF w.r.t. a body-frame pose twist xi = (v, omega) is -[grad; q x grad]
-# (q = point in the object frame, grad = SDF gradient there). The normal equations (JtJ, b) are summed
-# over the lips of every pad latching the body; a damped 6x6 solve gives the step dxi and the pose is
-# updated on-manifold: TB <- TB * exp(dxi). Repeated for a fixed ``iters`` (re-sampling the SDF at the
-# updated pose each step, so it converges for a curved object -- 1 step suffices for planar faces),
-# all in one kernel thread.
-# --------------------------------------------------------------------------------------------------
-
 _mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 _vec6 = wp.types.vector(length=6, dtype=wp.float32)
 
@@ -532,13 +520,14 @@ def _seat_body_pose(
     body_b: int,
     pad_lo: int,  # scan only [pad_lo, pad_hi): the pads of body body_b's world (see pad_world_start)
     pad_hi: int,
-    pad_preparing_body_b_id: wp.array[int],
+    pad_preparing_bs: wp.array[wp.vec2i],
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
-    body_b_mesh_xform: wp.array[wp.transform],  # body_b_mesh_xform[b] = T_bs for body b
+    shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
+    shape_b: int,  # global shape ID of the gripped shape (indexes shape_transform)
     mesh_id: wp.uint64,
     pad_lip_local: wp.array[wp.vec3],  # precomputed lip points in the pad frame, indexed by pad_lip_start (start indices per pad)
     pad_lip_start: wp.array[int],  # [n_pads+1] start indices: pad p's lip points are pad_lip_local[pad_lip_start[p] : pad_lip_start[p+1]]
@@ -578,7 +567,7 @@ def _seat_body_pose(
     [grad, q X grad] = [T_bs.rotate_only(grad_mesh),  (T_bs.transform(sample_point_in_mesh) X T_bs.rotate_only(grad_mesh)]
     """
     # T_bs and its rotation are constant for this body; precompute once before the Gauss-Newton loop.
-    T_bs = body_b_mesh_xform[body_b]
+    T_bs = shape_transform[shape_b]
     R_bs = wp.transform_get_rotation(T_bs)
     tb = body_q[body_b]  # current pose estimate; refined by each Gauss-Newton iteration below
     for _ in range(iters):
@@ -588,7 +577,7 @@ def _seat_body_pose(
         rhs = _vec6()
         for p in range(pad_lo, pad_hi):
             # a pad participates in the fit when it is targeting this body (engaged or preparing)
-            if pad_preparing_body_b_id[p] == body_b:
+            if pad_preparing_bs[p][0] == body_b:
                 gripper_id = pad_gripper[p]
                 seal_world_pad = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[p]  # SA
                 t_rel_mesh = inv_mesh_world * seal_world_pad  # (GB · T_bs)^-1 · SA: seal frame in mesh-local
@@ -619,15 +608,15 @@ def _seat_body_pose(
 
 @wp.kernel
 def _attach_seal_seated_kernel(
-    pad_engaged_body_b_id_curr: wp.array[int],  # [pads] current step's gripped body (< 0 = released)
-    pad_preparing_body_b_id: wp.array[int],  # gripped body each pad seals against this step (< 0 = none)
+    pad_engaged_bs_curr: wp.array[wp.vec2i],   # [pads] current step's gripped body/shape (``[0] < 0`` = released)
+    pad_preparing_bs_prev: wp.array[wp.vec2i], # [pads] previous step's preparing body/shape
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
-    body_b_mesh_id: wp.array[wp.uint64],  # gripped-body SDF mesh (for the inline seat fit)
-    body_b_mesh_xform: wp.array[wp.transform],  # body_b_mesh_xform[b] = T_bs for body b
+    shape_mesh_id: wp.array[wp.uint64],  # shape_id -> SDF mesh id (for the inline seat fit)
+    shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
     pad_world: wp.array[int],  # world of each pad (see SurfaceGripperModel)
     pad_world_start: wp.array[int],  # start indices: world w's pads are pad-ids [pad_world_start[w] : pad_world_start[w+1]]
     pad_lip_local: wp.array[wp.vec3],  # precomputed lip points in the pad frame, indexed by pad_lip_start (start indices per pad)
@@ -636,7 +625,7 @@ def _attach_seal_seated_kernel(
     grad_h: float,  # SDF central-difference step [m]
     damping: float,  # small stabiliser: steadies the fit when the pads don't fully pin the gripped object
     iters: int,  # Gauss-Newton iterations for the seat fit (1 for planar faces, more for curved objects)
-    pad_engaged_body_b_id_prev: wp.array[int],  # [pads] previous step's gripped body (< 0 = was released, for rising-edge detection)
+    pad_engaged_bs_prev: wp.array[wp.vec2i],   # [pads] previous step's gripped body/shape (``[0] < 0`` = was released, for rising-edge detection)
     # outputs
     pad_anchor_b: wp.array[wp.transform],
     pad_lip_sdf0: wp.array[float],  # seated lip signed distances cached at engagement (indexed by pad_lip_start)
@@ -644,24 +633,26 @@ def _attach_seal_seated_kernel(
     """Seated variant of :func:`_attach_seal_kernel`: on each pad's rising edge, compute the gripped body's
     seated pose inline (:func:`_seat_body_pose`, scanning only this pad's world's pads), cache
     ``pad_anchor_b`` against it, and cache the seated lip signed distances in ``pad_lip_sdf0``. The seat
-    fit only runs on the rising edge. Does not write ``pad_engaged_body_b_id``."""
+    fit only runs on the rising edge. Does not write ``pad_engaged_bs``."""
     pad = wp.tid()
-    if pad_engaged_body_b_id_curr[pad] >= 0 and pad_engaged_body_b_id_prev[pad] < 0:  # rising edge: seat and cache SB
-        body_b = pad_preparing_body_b_id[pad]
+    if pad_engaged_bs_curr[pad][0] >= 0 and pad_engaged_bs_prev[pad][0] < 0:  # rising edge: seat and cache SB
+        body_b = pad_preparing_bs_prev[pad][0]
+        shape_b = pad_preparing_bs_prev[pad][1]
         if body_b >= 0:
             w = pad_world[pad]  # this pad's world; scan only that world's pads for body_b
             hold_pose_body_b = _seat_body_pose(
                 body_b,
                 pad_world_start[w],
                 pad_world_start[w + 1],
-                pad_preparing_body_b_id,
+                pad_preparing_bs_prev,
                 gripper_body_id,
                 gripper_xform,
                 pad_gripper,
                 pad_xform,
                 body_q,
-                body_b_mesh_xform,
-                body_b_mesh_id[body_b],
+                shape_transform,
+                shape_b,
+                shape_mesh_id[shape_b],
                 pad_lip_local,
                 pad_lip_start,
                 max_dist,
@@ -675,8 +666,8 @@ def _attach_seal_seated_kernel(
             seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # SA
             pad_anchor_b[pad] = wp.transform_inverse(hold_pose_body_b) * seal_world
             # Cache pad_lip_sdf0: SDF at each lip point placed by SB (in mesh frame). Seal-quality metric measures deviation from these.
-            mesh_b = body_b_mesh_id[body_b]
-            pad_anchor_in_mesh = wp.transform_inverse(body_b_mesh_xform[body_b]) * pad_anchor_b[pad]
+            mesh_b = shape_mesh_id[shape_b]
+            pad_anchor_in_mesh = wp.transform_inverse(shape_transform[shape_b]) * pad_anchor_b[pad]
             for k in range(pad_lip_start[pad], pad_lip_start[pad + 1]):
                 lip_mesh = wp.transform_point(pad_anchor_in_mesh, pad_lip_local[k])
                 pad_lip_sdf0[k] = sdf_mesh(mesh_b, lip_mesh, max_dist)
@@ -685,15 +676,15 @@ def _attach_seal_seated_kernel(
 
 @wp.kernel
 def _seal_quality_kernel(
-    pad_engaged_body_b_id: wp.array[int],  # [pads] latched gripped body while engaged (< 0 = released)
-    pad_preparing_body_b_id: wp.array[int],  # [pads] body a preparing pad is approaching (>= 0 means preparing)
+    pad_engaged_bs: wp.array[wp.vec2i],    # [pads] latched gripped body/shape while engaged (``[0] < 0`` = released)
+    pad_preparing_bs: wp.array[wp.vec2i],  # [pads] body/shape a preparing pad is approaching (``[0] >= 0`` means preparing)
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
-    body_b_mesh_id: wp.array[wp.uint64],
-    body_b_mesh_xform: wp.array[wp.transform],  # body_b_mesh_xform[b] = T_bs for body b
+    shape_mesh_id: wp.array[wp.uint64],  # shape_id -> SDF mesh id
+    shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
     pad_world: wp.array[int],
     pad_world_start: wp.array[int],
     pad_lip_local: wp.array[wp.vec3],  # precomputed lip points in the pad frame, indexed by pad_lip_start (start indices per pad)
@@ -708,21 +699,23 @@ def _seal_quality_kernel(
 ):
     pad = wp.tid()
     pad_rms[pad] = -1.0  # sentinel: "not evaluated" (overwritten below when engaged or preparing)
-    engaged = pad_engaged_body_b_id[pad] >= 0
-    preparing = pad_preparing_body_b_id[pad] >= 0
+    engaged = pad_engaged_bs[pad][0] >= 0
+    preparing = pad_preparing_bs[pad][0] >= 0
     if not (engaged or preparing):
         return  # disengaged mode: pad_rms stays -1
     if preparing:
-        body_b = pad_preparing_body_b_id[pad]  # preparing: the crate being approached
+        body_b = pad_preparing_bs[pad][0]  # preparing: the crate being approached
+        shape_b = pad_preparing_bs[pad][1]
     else:
-        body_b = pad_engaged_body_b_id[pad]  # engaged: the latched gripped body
+        body_b = pad_engaged_bs[pad][0]  # engaged: the latched gripped body
+        shape_b = pad_engaged_bs[pad][1]
     if body_b < 0:
         return
     gripper_id = pad_gripper[pad]
     seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]
-    mesh_b = body_b_mesh_id[body_b]
+    mesh_b = shape_mesh_id[shape_b]
     # world pose of the mesh: body world pose composed with the mesh-in-body pose (GB * T_bs)
-    mesh_world = body_q[body_b] * body_b_mesh_xform[body_b]
+    mesh_world = body_q[body_b] * shape_transform[shape_b]
     # seal frame in mesh-local coordinates: (GB * T_bs)^-1 * SA
     t_seal_mesh = wp.transform_inverse(mesh_world) * seal_world
     preparing_anchor_mesh = wp.transform_identity()  # seated seal frame in mesh frame (preparing only; recomputed below)
@@ -732,13 +725,14 @@ def _seal_quality_kernel(
             body_b,
             pad_world_start[w],
             pad_world_start[w + 1],
-            pad_preparing_body_b_id,
+            pad_preparing_bs,
             gripper_body_id,
             gripper_xform,
             pad_gripper,
             pad_xform,
             body_q,
-            body_b_mesh_xform,
+            shape_transform,
+            shape_b,
             mesh_b,
             pad_lip_local,
             pad_lip_start,
@@ -748,7 +742,7 @@ def _seal_quality_kernel(
             iters,
         )
         preparing_anchor_body = wp.transform_inverse(seated) * seal_world  # SB_preparing = GB0^-1 * SA (body frame)
-        preparing_anchor_mesh = wp.transform_inverse(body_b_mesh_xform[body_b]) * preparing_anchor_body  # T_bs^-1 * SB_preparing (mesh frame)
+        preparing_anchor_mesh = wp.transform_inverse(shape_transform[shape_b]) * preparing_anchor_body  # T_bs^-1 * SB_preparing (mesh frame)
     dev_sq = float(0.0)  # this pad's running totals (this thread owns pad_rms[pad], so no atomics needed)
     count = int(0)
     for k in range(pad_lip_start[pad], pad_lip_start[pad + 1]):
@@ -858,12 +852,12 @@ class SurfaceGripper:
         mass: float,
         inertia: wp.mat33,
         f_grip_max: float,
-        normal_mode: tuple,
-        shear_x_mode: tuple,
-        shear_y_mode: tuple,
-        peel_x_mode: tuple,
-        peel_y_mode: tuple,
-        torsion_mode: tuple,
+        normal_mode: tuple[float, float],
+        shear_x_mode: tuple[float, float],
+        shear_y_mode: tuple[float, float],
+        peel_x_mode: tuple[float, float],
+        peel_y_mode: tuple[float, float],
+        torsion_mode: tuple[float, float],
         f_normal_max: float = 0.0,
         f_shear_max: float = 0.0,
         f_peel_max: float = 0.0,
@@ -927,7 +921,7 @@ class SurfaceGripperBuilder:
         self.grippers.append(gripper)
         return len(self.grippers) - 1
 
-    def finalize(self, device=None) -> "SurfaceGripperModel":
+    def finalize(self, device: str | wp.Device | None = None) -> "SurfaceGripperModel":
         """Flatten all grippers into a device-resident :class:`SurfaceGripperModel`.
 
         Each gripper's ``n_lip_samples`` (lip sample points per pad, for the seat fit / seal-quality metric)
@@ -1021,13 +1015,14 @@ class SurfaceGripperStateInput:
     """Per-pad inputs to the gripper simulation, set by the caller. Per-pad arrays.
 
     The caller writes these fields each step; ``surface_gripper.py`` kernels only read them.
-    Engagement and preparing state are encoded directly in the body-ID fields: a non-negative value
-    means the pad is engaged or preparing to engage (and identifies the gripped body), while ``< 0`` means
-    released or idle.
+    Engagement and preparing state are encoded in ``[0]`` of each pair: a non-negative value means the
+    pad is engaged or preparing to engage (and identifies the gripped body), while ``[0] < 0`` means
+    released or idle. ``[1]`` carries the global shape ID of the gripped collision shape, giving direct
+    access to ``model.shape_transform`` (T_bs) and the SDF mesh via ``shape_mesh_id``.
     """
 
-    pad_engaged_body_b_id: wp.array[wp.int32]
-    pad_preparing_body_b_id: wp.array[wp.int32]
+    pad_engaged_bs: wp.array[wp.vec2i]    # ``[0]`` = body id, ``[1]`` = shape id; ``[0] < 0`` = not engaged
+    pad_preparing_bs: wp.array[wp.vec2i]  # ``[0]`` = body id, ``[1]`` = shape id; ``[0] < 0`` = not preparing
 
 
 class SurfaceGripperStateOutput:
@@ -1047,7 +1042,7 @@ class SurfaceGripperStateOutput:
 class SurfaceGripperControl:
     """Gripper control inputs. Per-pad arrays."""
 
-    pad_grip_control: wp.array  # per-pad grip command [0, 1]; f_min = pad_grip_control * f_grip_max
+    pad_grip_control: wp.array[float]  # per-pad grip command [0, 1]; f_min = pad_grip_control * f_grip_max
 
 
 class SurfaceGripperModel:
@@ -1061,8 +1056,8 @@ class SurfaceGripperModel:
         """Allocate a fresh per-pad :class:`SurfaceGripperStateInput` for this model."""
         si = SurfaceGripperStateInput()
         n = self.pad_xform.shape[0]
-        si.pad_engaged_body_b_id = wp.full(n, -1, dtype=wp.int32, device=self.pad_xform.device)
-        si.pad_preparing_body_b_id = wp.full(n, -1, dtype=wp.int32, device=self.pad_xform.device)
+        si.pad_engaged_bs = wp.full(n, wp.vec2i(-1, -1), dtype=wp.vec2i, device=self.pad_xform.device)
+        si.pad_preparing_bs = wp.full(n, wp.vec2i(-1, -1), dtype=wp.vec2i, device=self.pad_xform.device)
         return si
 
     def state_output(self) -> SurfaceGripperStateOutput:
@@ -1086,17 +1081,28 @@ class SurfaceGripperModel:
 
 
 def attach_seal(
-    state,
+    state: newton.State,
     gripper_model: "SurfaceGripperModel",
-    gripper_state_input: SurfaceGripperStateInput,
+    gripper_state_input_prev: SurfaceGripperStateInput,
     gripper_state_output: SurfaceGripperStateOutput,
-    pad_engaged_body_b_id_curr,
+    gripper_state_input_curr: SurfaceGripperStateInput,
 ) -> None:
     """Latch ``pad_anchor_b`` for pads that just engaged, then commit the seal state.
 
-    On a disengaged->engaged rising edge, cache SB into ``pad_anchor_b`` against the body's raw pose
-    (``state.body_q``).
+    On a disengaged->engaged rising edge (``gripper_state_input_prev.pad_engaged_bs[..][0] < 0`` and
+    ``gripper_state_input_curr.pad_engaged_bs[..][0] >= 0``), cache SB into ``pad_anchor_b`` against
+    the body's raw pose (``state.body_q``).
     Cf. :func:`attach_seal_seated`, which seats against the inline-fitted pose.
+
+    Args:
+        state: Simulation state; source of ``body_q`` (world body poses).
+        gripper_model: Finalized gripper holding the pad/gripper layout arrays.
+        gripper_state_input_prev: Previous sub-step's input state; ``pad_engaged_bs[..][0]``
+            (< 0 = released last step) detects the rising edge and ``pad_preparing_bs``
+            identifies the target body.
+        gripper_state_output: Per-pad output state; ``pad_anchor_b`` is written on each rising edge.
+        gripper_state_input_curr: Current sub-step's input state; ``pad_engaged_bs[..][0]``
+            (>= 0 = engaged this step) detects the rising edge.
     """
     n_pads = gripper_model.pad_xform.shape[0]
     if n_pads == 0:
@@ -1105,36 +1111,37 @@ def attach_seal(
         _attach_seal_kernel,
         dim=n_pads,
         inputs=[
-            pad_engaged_body_b_id_curr,
-            gripper_state_input.pad_preparing_body_b_id,
+            gripper_state_input_curr.pad_engaged_bs,
+            gripper_state_input_prev.pad_preparing_bs,
             gripper_model.gripper_body_id,
             gripper_model.gripper_xform,
             gripper_model.pad_gripper,
             gripper_model.pad_xform,
             state.body_q,
             state.body_q,  # hold pose = the body's raw pose
-            gripper_state_input.pad_engaged_body_b_id,
+            gripper_state_input_prev.pad_engaged_bs,
             gripper_state_output.pad_anchor_b,
         ],
     )
 
 
 def attach_seal_seated(
+    model: newton.Model,
     state: newton.State,
     gripper_model: SurfaceGripperModel,
     gripper_state_input_prev: SurfaceGripperStateInput,
     gripper_state_output: SurfaceGripperStateOutput,
     gripper_state_input_curr: SurfaceGripperStateInput,
-    body_b_mesh_id: wp.array[wp.uint64],
-    body_b_mesh_xform: wp.array[wp.transform],
+    shape_mesh_id: wp.array[wp.uint64],
     max_dist: float = 1.0,
     grad_h: float = 1.0e-4,
     damping: float = 1.0e-3,
     iters: int = 8,
-):
-    """On each pad's rising edge (``gripper_state_input_prev.pad_engaged_body_b_id < 0`` and
-    ``gripper_state_input_curr.pad_engaged_body_b_id >= 0``), compute the seated body pose and
-    cache SB into ``gripper_state_output.pad_anchor_b``.
+) -> None:
+    """On each pad's rising edge (``gripper_state_input_prev.pad_engaged_bs[..][0] < 0`` and
+    ``gripper_state_input_curr.pad_engaged_bs[..][0] >= 0``), compute the seated body pose and
+    cache the seal anchor SB (the seal frame expressed in body B's local frame) into
+    ``gripper_state_output.pad_anchor_b``.
 
     The seated pose is the world pose of body B (GB0, see Frame nomenclature) that minimises the signed distances of the lip
     sample points of **all pads gripping or preparing to grip body B** to its surface — i.e., the
@@ -1144,17 +1151,18 @@ def attach_seal_seated(
     Seated variant of :func:`attach_seal`, which anchors to the raw (unfit) body pose instead.
 
     Args:
+        model: Finalized Newton model; source of ``shape_transform`` (T_bs per shape).
         state: Simulation state; source of ``body_q`` for the seat fit and seal frames.
         gripper_model: Finalized gripper holding the pad/gripper layout arrays.
-        gripper_state_input_prev: Previous sub-step's input state; ``pad_engaged_body_b_id``
-            (< 0 = released last step) detects the rising edge, and ``pad_preparing_body_b_id``
-            identifies the target body for the seat fit (guaranteed non-negative while preparing).
+        gripper_state_input_prev: Previous sub-step's input state; ``pad_engaged_bs[..][0]``
+            (< 0 = released last step) detects the rising edge, ``pad_preparing_bs[..][0]``
+            identifies the target body for the seat fit, and ``pad_preparing_bs[..][1]``
+            identifies the gripped collision shape (guaranteed non-negative while preparing).
         gripper_state_output: Per-pad output state; ``pad_anchor_b`` and ``pad_lip_sdf0``
             are written on each rising edge.
-        gripper_state_input_curr: Current sub-step's input state; ``pad_engaged_body_b_id``
+        gripper_state_input_curr: Current sub-step's input state; ``pad_engaged_bs[..][0]``
             (>= 0 = engaged this step) detects the rising edge.
-        body_b_mesh_id: Body id -> SDF mesh id (:class:`warp.Mesh`), shape [n_bodies].
-        body_b_mesh_xform: body_b_mesh_xform[b] = T_bs for body b (see Frame nomenclature).
+        shape_mesh_id: shape id -> SDF mesh id (:class:`warp.Mesh`), shape [n_shapes].
         max_dist: SDF search radius [m].
         grad_h: SDF central-difference step [m] for gradient estimation.
         damping: Stabiliser for the Gauss-Newton fit; prevents drift in unconstrained directions.
@@ -1168,15 +1176,15 @@ def attach_seal_seated(
         _attach_seal_seated_kernel,
         dim=n_pads,
         inputs=[
-            gripper_state_input_curr.pad_engaged_body_b_id,
-            gripper_state_input_prev.pad_preparing_body_b_id,
+            gripper_state_input_curr.pad_engaged_bs,
+            gripper_state_input_prev.pad_preparing_bs,
             gm.gripper_body_id,
             gm.gripper_xform,
             gm.pad_gripper,
             gm.pad_xform,
             state.body_q,
-            body_b_mesh_id,
-            body_b_mesh_xform,
+            shape_mesh_id,
+            model.shape_transform,
             gm.pad_world,
             gm.pad_world_start,
             gm.pad_lip_local,
@@ -1185,7 +1193,7 @@ def attach_seal_seated(
             grad_h,
             damping,
             iters,
-            gripper_state_input_prev.pad_engaged_body_b_id,
+            gripper_state_input_prev.pad_engaged_bs,
             gripper_state_output.pad_anchor_b,
             gripper_state_output.pad_lip_sdf0,
         ],
@@ -1194,8 +1202,8 @@ def attach_seal_seated(
 
 
 def evaluate_gripper_force(
-    model,
-    state,
+    model: newton.Model,
+    state: newton.State,
     gripper_model: SurfaceGripperModel,
     gripper_state_input: SurfaceGripperStateInput,
     gripper_state_output: SurfaceGripperStateOutput,
@@ -1215,7 +1223,7 @@ def evaluate_gripper_force(
         model: Finalized Newton model; source of ``body_com``, ``body_mass``, ``body_inertia``.
         state: Simulation state; ``body_q`` and ``body_qd`` are read, ``body_f`` is accumulated into.
         gripper_model: Finalized gripper holding pad/gripper layout and seal stiffness/damping arrays.
-        gripper_state_input: Per-pad input state; ``pad_engaged_body_b_id`` selects engaged pads and
+        gripper_state_input: Per-pad input state; ``pad_engaged_bs[..][0]`` selects engaged pads and
             ``pad_anchor_b`` (SB) provides the cached seal reference frame.
         gripper_state_output: Per-pad output state; ``pad_break_metric`` and ``pad_dof_force`` are written.
         gripper_control: Per-pad control; ``pad_grip_control`` scales the normal pull cap.
@@ -1250,7 +1258,7 @@ def evaluate_gripper_force(
             gripper_model.pad_gripper,
             gripper_model.pad_xform,
             gripper_control.pad_grip_control,
-            gripper_state_input.pad_engaged_body_b_id,
+            gripper_state_input.pad_engaged_bs,
             gripper_state_output.pad_anchor_b,
             model.body_com,
             state.body_q,
@@ -1267,24 +1275,24 @@ def evaluate_gripper_force(
 
 
 def evaluate_seal_quality(
+    model: newton.Model,
     state: newton.State,
     gripper_model: SurfaceGripperModel,
     gripper_state_input: SurfaceGripperStateInput,
     gripper_state_output: SurfaceGripperStateOutput,
-    body_b_mesh_id: wp.array[wp.uint64],
-    body_b_mesh_xform: wp.array[wp.transform],
+    shape_mesh_id: wp.array[wp.uint64],
     pad_rms: wp.array[float],
     max_dist: float = 1.0,
     grad_h: float = 1.0e-4,
     damping: float = 1.0e-3,
     iters: int = 8,
-):
+) -> None:
     """
     Compute a geometric seal quality per pad (pad_rms[pad]).
     Three mutually exclusive modes of operation: preparing (to grip), engaged (currently gripping)
-    and disengaged. A pad is in preparing mode when ``pad_preparing_body_b_id[pad] >= 0``.
-    A pad is in engaged mode when ``pad_engaged_body_b_id[pad] >= 0``. 
-    Disengaged mode occurs when neither preparing nor engaged mode applies; pad_rms is set to -1.    
+    and disengaged. A pad is in preparing mode when ``pad_preparing_bs[pad][0] >= 0``.
+    A pad is in engaged mode when ``pad_engaged_bs[pad][0] >= 0``.
+    Disengaged mode occurs when neither preparing nor engaged mode applies; pad_rms is set to -1.
     In preparing and engaged modes, we compute the rms error per pad as follows:
     pad_rms = sqrt{ [sum_i (sdf_now(i) - sdf_baseline(i))^2]/n_sample_points_per_pad}
     i spans the sample points of the pad.
@@ -1298,15 +1306,15 @@ def evaluate_seal_quality(
 
 
     Args:
+        model: Finalized Newton model; source of ``shape_transform`` (T_bs per shape).
         state: Simulation state; source of ``body_q`` (world body poses).
         gripper_model: Finalized gripper holding the pad/gripper layout arrays.
-        gripper_state_input: Per-pad input state; ``pad_engaged_body_b_id`` and
-            ``pad_preparing_body_b_id`` select which mode each pad is in.
+        gripper_state_input: Per-pad input state; ``pad_engaged_bs[..][0]`` and
+            ``pad_preparing_bs[..][0]`` select which mode each pad is in; ``[1]`` of each
+            identifies the gripped collision shape.
         gripper_state_output: Per-pad output state; ``pad_lip_sdf0`` provides the cached
             seated baseline; ``pad_seal_quality_rms`` receives the result.
-        body_b_mesh_id: Body id -> gripped-object SDF mesh id, shape [n_bodies].
-        body_b_mesh_xform: Body id -> body-to-mesh-local transform, shape [n_bodies]. Use
-            :func:`warp.transform_identity` for each body whose mesh is centred at the body origin.
+        shape_mesh_id: shape id -> gripped-object SDF mesh id, shape [n_shapes].
         pad_rms: Per-pad output array [n_pads]; RMS lip-gap deviation [m], or ``-1`` if idle.
         max_dist: SDF search radius [m].
         grad_h: SDF central-difference step [m] for the seat fit in preparing mode.
@@ -1322,15 +1330,15 @@ def evaluate_seal_quality(
         _seal_quality_kernel,
         dim=n_pads,
         inputs=[
-            gripper_state_input.pad_engaged_body_b_id,
-            gripper_state_input.pad_preparing_body_b_id,
+            gripper_state_input.pad_engaged_bs,
+            gripper_state_input.pad_preparing_bs,
             gm.gripper_body_id,
             gm.gripper_xform,
             gm.pad_gripper,
             gm.pad_xform,
             state.body_q,
-            body_b_mesh_id,
-            body_b_mesh_xform,
+            shape_mesh_id,
+            model.shape_transform,
             gm.pad_world,
             gm.pad_world_start,
             gm.pad_lip_local,

@@ -151,29 +151,29 @@ BREAK_HOLD_TIME = 0.033  # [s]
 @wp.kernel
 def update_seal_break_kernel(
     pad_break_metric: wp.array[float],  # [pads] brittle break envelope from the previous force eval
-    pad_engaged_body_b_id_prev: wp.array[int],  # [pads] gripped body last sub-step (< 0 = was released)
+    pad_engaged_bs_prev: wp.array[wp.vec2i],  # [pads] gripped body/shape last sub-step (``[0] < 0`` = was released)
     break_threshold: float,  # break metric above this counts as over-capacity (1.0 = nominal capacity)
     break_hold_steps: int,  # sub-steps a pad must stay over threshold before the gripper fractures
     pad_offsets: wp.array[int],  # [grippers+1] start indices: gripper g owns pads [pad_offsets[g] : pad_offsets[g+1]]
     pad_seal_break_count_prev: wp.array[int],  # [pads] consecutive over-threshold sub-steps from the previous sub-step (read)
     pad_seal_break_count_curr: wp.array[int],  # [pads] consecutive over-threshold sub-steps for the current sub-step (written)
     # in/out: initialised by update_engagement_signals_kernel; overwritten with the break-logic result
-    pad_engaged_body_b_id_curr: wp.array[int],  # [pads] gripper_state_input_curr.pad_engaged_body_b_id
+    pad_engaged_bs_curr: wp.array[wp.vec2i],  # [pads] gripper_state_input_curr.pad_engaged_bs
 ):
-    """One thread per gripper. Reads the engagement state from pad_engaged_body_b_id_curr (set by
+    """One thread per gripper. Reads the engagement state from pad_engaged_bs_curr (set by
     update_engagement_signals_kernel), checks whether any pad's break metric has been over threshold for
-    break_hold_steps consecutive sub-steps, and clears pad_engaged_body_b_id_curr to -1 for the whole
+    break_hold_steps consecutive sub-steps, and clears pad_engaged_bs_curr to (-1, -1) for the whole
     gripper if any pad sustained an overload.
     """
     g = wp.tid()
     lo = pad_offsets[g]  # this gripper's pads are [lo, hi)
     hi = pad_offsets[g + 1]
-    cmd = pad_engaged_body_b_id_curr[lo] >= 0
+    cmd = pad_engaged_bs_curr[lo][0] >= 0
     any_broken = wp.bool(False)
     for p in range(lo, hi):
         if not cmd:
             pad_seal_break_count_curr[p] = 0
-        elif pad_engaged_body_b_id_prev[p] >= 0 and pad_break_metric[p] > break_threshold:
+        elif pad_engaged_bs_prev[p][0] >= 0 and pad_break_metric[p] > break_threshold:
             pad_seal_break_count_curr[p] = pad_seal_break_count_prev[p] + 1
             if pad_seal_break_count_curr[p] >= break_hold_steps:
                 any_broken = True
@@ -182,7 +182,7 @@ def update_seal_break_kernel(
     hold = cmd and not any_broken
     for p in range(lo, hi):
         if not hold:
-            pad_engaged_body_b_id_curr[p] = -1
+            pad_engaged_bs_curr[p] = wp.vec2i(-1, -1)
 
 
 def picked_box_seal_modes(gripper_model, state, model, body_b):
@@ -432,15 +432,16 @@ def update_engagement_signals_kernel(
     gripper_curr_box_prev: wp.array[int],        # [grippers] previous box index (read)
     gripper_curr_box_curr: wp.array[int],        # [grippers] current box index (written: carry or advance)
     gripper_box_body_ids: wp.array[int],         # [n_grippers * n_boxes_per_world] body ids in pick order per gripper
+    gripper_box_shape_ids: wp.array[int],        # [n_grippers * n_boxes_per_world] shape ids in pick order per gripper
     n_boxes_per_world: int,
     pad_gripper: wp.array[int],                  # [pads] pad -> gripper
     pad_offsets: wp.array[int],                  # [grippers+1] first pad index per gripper
     # _prev state: read for carry-forward
-    pad_engaged_body_b_id_prev: wp.array[int],
-    pad_preparing_body_b_id_prev: wp.array[int],
+    pad_engaged_bs_prev: wp.array[wp.vec2i],
+    pad_preparing_bs_prev: wp.array[wp.vec2i],
     # _curr state: written
-    pad_engaged_body_b_id_curr: wp.array[int],
-    pad_preparing_body_b_id_curr: wp.array[int],
+    pad_engaged_bs_curr: wp.array[wp.vec2i],
+    pad_preparing_bs_curr: wp.array[wp.vec2i],
 ):
     """One thread per pad. Fans per-gripper engaged/preparing signals out to per-pad state, with
     rising-edge latching, sustained carry-forward, and falling-edge clearing. The first pad of each
@@ -453,21 +454,23 @@ def update_engagement_signals_kernel(
     prep_curr = gripper_preparing_curr[g]
     prep_prev = gripper_preparing_prev[g]
     curr_box = gripper_curr_box_prev[g]
-    body_id = gripper_box_body_ids[g * n_boxes_per_world + curr_box]
+    box_slot = g * n_boxes_per_world + curr_box
+    body_id = gripper_box_body_ids[box_slot]
+    shape_id = gripper_box_shape_ids[box_slot]
 
     if eng_curr and not eng_prev:       # rising edge: latch
-        pad_engaged_body_b_id_curr[pad] = body_id
+        pad_engaged_bs_curr[pad] = wp.vec2i(body_id, shape_id)
     elif eng_curr:                       # sustained: carry from previous sub-step
-        pad_engaged_body_b_id_curr[pad] = pad_engaged_body_b_id_prev[pad]
+        pad_engaged_bs_curr[pad] = pad_engaged_bs_prev[pad]
     else:                                # command off: clear
-        pad_engaged_body_b_id_curr[pad] = -1
+        pad_engaged_bs_curr[pad] = wp.vec2i(-1, -1)
 
     if prep_curr and not prep_prev:     # rising edge: latch
-        pad_preparing_body_b_id_curr[pad] = body_id
+        pad_preparing_bs_curr[pad] = wp.vec2i(body_id, shape_id)
     elif prep_curr:                      # sustained: carry
-        pad_preparing_body_b_id_curr[pad] = pad_preparing_body_b_id_prev[pad]
+        pad_preparing_bs_curr[pad] = pad_preparing_bs_prev[pad]
     else:                                # off: clear
-        pad_preparing_body_b_id_curr[pad] = -1
+        pad_preparing_bs_curr[pad] = wp.vec2i(-1, -1)
 
     # Carry or advance the box index. Only the first pad of each gripper writes.
     if pad == pad_offsets[g]:
@@ -481,6 +484,7 @@ def update_engagement_signals(
     example_state_prev: "ExampleState",
     example_state_curr: "ExampleState",
     gripper_box_body_ids: wp.array,
+    gripper_box_shape_ids: wp.array,
     n_boxes_per_world: int,
     gripper_model,
     pad_offsets: wp.array,
@@ -491,7 +495,8 @@ def update_engagement_signals(
 
     Reads the current and previous per-gripper recording signals from ``example_state_curr/prev``,
     applies rising-edge latching, sustained carry-forward, and falling-edge clearing to the per-pad
-    input state arrays, and advances ``example_state_curr.gripper_curr_box_wp`` on the falling edge of engage.
+    input state arrays (both body-ID and shape-ID), and advances
+    ``example_state_curr.gripper_curr_box_wp`` on the falling edge of engage.
     """
     n_pads = gripper_model.pad_xform.shape[0]
     if n_pads == 0:
@@ -507,13 +512,14 @@ def update_engagement_signals(
             example_state_prev.gripper_curr_box_wp,
             example_state_curr.gripper_curr_box_wp,
             gripper_box_body_ids,
+            gripper_box_shape_ids,
             n_boxes_per_world,
             gripper_model.pad_gripper,
             pad_offsets,
-            gripper_state_input_prev.pad_engaged_body_b_id,
-            gripper_state_input_prev.pad_preparing_body_b_id,
-            gripper_state_input_curr.pad_engaged_body_b_id,
-            gripper_state_input_curr.pad_preparing_body_b_id,
+            gripper_state_input_prev.pad_engaged_bs,
+            gripper_state_input_prev.pad_preparing_bs,
+            gripper_state_input_curr.pad_engaged_bs,
+            gripper_state_input_curr.pad_preparing_bs,
         ],
     )
 
@@ -616,20 +622,25 @@ class Example:
 
         # Every world is an identical copy of the world loaded from usd.
         # As a consequence, there is no need to have unique sdf meshes for each world.
-        # Create a mapping between the meshes of the original simulation configuration 
-        # and the bodies in the worlds created as duplicates.
-        body_mesh_id = np.zeros(self.model.body_count, dtype=np.uint64)
+        # Build a map from env-local body id to env-local collision shape id for each pick box,
+        # so that the shape-indexed arrays can be filled correctly.
+        env_body_to_shape_id = {}
+        env_body_to_shape_id[panel_body_local_id] = pick["path_shape_map"][PANEL_PRIM + "/collision"]
+        for i in range(len(crate_body_local_ids)):
+            crate_prim = CRATE_PRIMS[i]
+            env_body_to_shape_id[crate_body_local_ids[i]] = pick["path_shape_map"][crate_prim + "/collision"]
+
+        # shape_mesh_id_wp[shape_id] is the SDF mesh id for that collision shape (0 for non-pick shapes).
+        # model.shape_transform[shape_id] gives T_bs (mesh-in-body transform), replacing body_mesh_xform_wp.
+        # For our axis-aligned boxes the mesh origin coincides with the body origin, so T_bs is identity
+        # and model.shape_transform already holds the correct value from the builder.
+        env_shape_count = len(env.shape_body)  # per-world shape stride
+        shape_mesh_id = np.zeros(self.model.shape_count, dtype=np.uint64)
         for w in range(NUM_WORLDS):
             for lb, mesh in self.sdf_meshes.items():
-                body_mesh_id[w * env.body_count + lb] = mesh.id
-        self.body_mesh_id_wp = wp.array(body_mesh_id, dtype=wp.uint64, device=self.model.device)
-
-        # body_mesh_xform_wp[i] is the pose of body i's SDF mesh in that body's local frame (mesh->body).
-        # For our axis-aligned boxes the mesh origin coincides with the body origin, so this is identity.
-        body_mesh_xform_list = []
-        for _ in range(self.model.body_count):
-            body_mesh_xform_list.append(wp.transform_identity())
-        self.body_mesh_xform_wp = wp.array(body_mesh_xform_list, dtype=wp.transform, device=self.model.device)
+                global_shape_id = w * env_shape_count + env_body_to_shape_id[lb]
+                shape_mesh_id[global_shape_id] = mesh.id
+        self.shape_mesh_id_wp = wp.array(shape_mesh_id, dtype=wp.uint64, device=self.model.device)
 
         # Note: Newton's collision pipeline is used in this example so set use_mujoco_contacts=False
         self.solver = newton.solvers.SolverMuJoCo(
@@ -681,16 +692,21 @@ class Example:
         self.example_state_prev = ExampleState(n_grippers, n_pads)
         self.example_state_curr = ExampleState(n_grippers, n_pads)
 
-        # Boxes (panel or crates) are picked in strict order. 
-        # For each world, compute the indices of the boxes that will be picked by that world.  
+        # Boxes (panel or crates) are picked in strict order.
+        # For each world, compute the global body ids and global shape ids of the boxes.
         n_boxes_per_world = 1 + len(CRATE_PRIMS)
         self.n_boxes_per_world = n_boxes_per_world
         box_body_ids = []
+        box_shape_ids = []
         for w in range(NUM_WORLDS):
             box_body_ids.append(w * env.body_count + panel_body_local_id)
-            for lb in crate_body_local_ids:
-                box_body_ids.append(w * env.body_count + lb)
+            box_shape_ids.append(w * env_shape_count + env_body_to_shape_id[panel_body_local_id])
+            for i in range(len(crate_body_local_ids)):
+                box_body_ids.append(w * env.body_count + crate_body_local_ids[i])
+                box_shape_ids.append(w * env_shape_count + env_body_to_shape_id[crate_body_local_ids[i]])
         self.gripper_box_body_ids_wp = wp.array(box_body_ids, dtype=wp.int32, device=self.model.device)
+        # Parallel to gripper_box_body_ids_wp: global shape ID of each box's collision shape.
+        self.gripper_box_shape_ids_wp = wp.array(box_shape_ids, dtype=wp.int32, device=self.model.device)
 
         # Each gripper g owns pads [g*npads : (g+1)*npads]
         pad_offsets = []
@@ -789,6 +805,7 @@ class Example:
                 self.example_state_prev,
                 self.example_state_curr,
                 self.gripper_box_body_ids_wp,
+                self.gripper_box_shape_ids_wp,
                 self.n_boxes_per_world,
                 self.gripper_model,
                 self.pad_offsets_wp,
@@ -813,27 +830,27 @@ class Example:
                 dim=self.example_state_curr.gripper_command_engaged_wp.shape[0],  # one thread per gripper
                 inputs=[
                     self.gripper_state_output.pad_break_metric,
-                    self.gripper_state_input_prev.pad_engaged_body_b_id,
+                    self.gripper_state_input_prev.pad_engaged_bs,
                     float(BREAK_THRESHOLD),
                     int(self.break_hold_steps),
                     self.pad_offsets_wp,
                     self.example_state_prev.pad_seal_break_count_wp,
                     self.example_state_curr.pad_seal_break_count_wp,
                 ],
-                outputs=[self.gripper_state_input_curr.pad_engaged_body_b_id],
+                outputs=[self.gripper_state_input_curr.pad_engaged_bs],
             )
             # On each pad's rising edge cache pad_anchor_b (the seal frame in the gripped body).
             # SEAL_SEAT_ON_ENGAGE: anchor to the on-device fitted (seated) box pose instead of the actual
             # one, so the seal seats the box on the pads. Fully kernel-driven, so it graph-captures.
             if SEAL_SEAT_ON_ENGAGE:
                 attach_seal_seated(
+                    self.model,
                     self.state_0,
                     self.gripper_model,
                     self.gripper_state_input_prev,
                     self.gripper_state_output,
                     self.gripper_state_input_curr,
-                    self.body_mesh_id_wp,
-                    self.body_mesh_xform_wp,
+                    self.shape_mesh_id_wp,
                     iters=SEAT_ITERS,
                 )
             else:
@@ -842,7 +859,7 @@ class Example:
                     self.gripper_model,
                     self.gripper_state_input_prev,
                     self.gripper_state_output,
-                    self.gripper_state_input_curr.pad_engaged_body_b_id,
+                    self.gripper_state_input_curr,
                 )
             evaluate_gripper_force(
                 self.model, self.state_0, self.gripper_model, self.gripper_state_input_prev, self.gripper_state_output, self.gripper_control, self.sim_dt
@@ -859,12 +876,12 @@ class Example:
         # on the final state. Part of the captured graph; the GUI reads it back. Engaged pads use the cached
         # sdf0; pads whose gripper is preparing recompute the seated pose + sdf0 live -- both in one call.
         evaluate_seal_quality(
+            self.model,
             self.state_0,
             self.gripper_model,
             self.gripper_state_input_prev,
             self.gripper_state_output,
-            self.body_mesh_id_wp,
-            self.body_mesh_xform_wp,
+            self.shape_mesh_id_wp,
             self.gripper_state_output.pad_seal_quality_rms,
             iters=SEAT_ITERS,
         )
@@ -891,7 +908,7 @@ class Example:
         # attach_seal) -- the two differ if a seal fractured or failed to grab.
         commanded = bool(self.example_state_prev.gripper_command_engaged_wp.numpy()[0])
         preparing = bool(self.example_state_prev.gripper_command_preparing_wp.numpy()[0])
-        held = int((self.gripper_state_input_prev.pad_engaged_body_b_id.numpy() >= 0).sum())
+        held = int((self.gripper_state_input_prev.pad_engaged_bs.numpy()[:, 0] >= 0).sum())
         ui.text(f"Grip cmd:  {'On' if commanded else 'Off'}  (recording)")
         ui.text(f"Preparing: {'On' if preparing else 'Off'}  (lead-in before engage)")
         ui.text(f"Seal engaged: {held}/{len(PAD_PRIMS)} pads  (actual)")
@@ -913,7 +930,7 @@ class Example:
         # is gripped (no pad engaged).
         ui.text("Picked-box seal modes:")
         modes = picked_box_seal_modes(
-            self.gripper_model, self.state_0, self.model, int(self.gripper_state_input_prev.pad_preparing_body_b_id.numpy()[0])
+            self.gripper_model, self.state_0, self.model, int(self.gripper_state_input_prev.pad_preparing_bs.numpy()[0, 0])
         )
         if held == 0:
             zeroed_modes = []
