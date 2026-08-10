@@ -4,7 +4,7 @@
 
 **Goal:** Add opt-in signed VF/EE contact using outward tetrahedral boundary normals, including same-bunny self-contact, without CCD.
 
-**Architecture:** Extend `ConstraintSelfCollision` with a backward-compatible `use_outward_normals` flag. In that mode, filter only incident and one-ring pairs, freeze oriented signed contact data during `prepare()`, and reuse the existing balanced force and PSD Hessian assembly.
+**Architecture:** Extend `ConstraintSelfCollision` with a backward-compatible `use_outward_normals` flag. Filter only strictly incident pairs that share primitive indices, freeze oriented signed contact data during `prepare()`, and reuse the existing balanced force and PSD Hessian assembly.
 
 **Tech Stack:** Python 3, NumPy, Warp, Newton LIMX, `MeshAdjacency`, `unittest`.
 
@@ -12,8 +12,8 @@
 
 - Keep `use_outward_normals=False` as the default cloth-compatible behavior.
 - Apply signed VF/EE uniformly to same-component and cross-component pairs.
-- Filter only incident and one-ring VF/EE pairs in oriented mode; retain pairs
-  at graph distance two or greater.
+- Filter only incident VF/EE pairs that share primitive indices; retain
+  nonincident pairs regardless of graph distance.
 - Use the current discrete BVH band and fixed 3 mm bunny thickness.
 - Do not add CCD, swept queries, EF recovery, substeps, damping, or line search.
 - Assemble force, Hessian-vector products, and diagonal blocks from the same frozen outward direction.
@@ -29,7 +29,7 @@
 
 **Interfaces:**
 - Consumes: `ConstraintSelfCollision(model, ..., use_outward_normals=True)`.
-- Produces: `vertex_neighbor_offsets`, `vertex_neighbors`, signed VF contact direction and depth.
+- Produces: signed VF contact direction and depth.
 
 - [ ] **Step 1: Add an inside-VF regression test**
 
@@ -40,10 +40,10 @@ vertex force. The current constructor must fail on the missing keyword.
 
 - [ ] **Step 2: Add topology exclusion and detection-band regression tests**
 
-Construct one-ring and two-ring fixtures whose candidate vertex projects
-inside its neighbor within thickness. Assert that oriented mode excludes the
-one-ring pair but retains the two-ring contact. Also reject a deep point
-outside the signed-distance band.
+Construct a one-ring fixture whose candidate vertex projects inside its
+neighbor within thickness. Assert that oriented mode retains the pair because
+the vertex is not part of the target face. Also reject a deep point outside
+the signed-distance band.
 
 - [ ] **Step 3: Verify both tests fail for the intended reason**
 
@@ -52,12 +52,10 @@ Run the two named `unittest` methods with `-v`. Expect
 
 - [ ] **Step 4: Implement the oriented VF path**
 
-Add the optional constructor flag and build surface vertex-neighbor CSR arrays
-from `MeshAdjacency.edge_indices[:, 2:4]`. Pass them to the VF kernel. When the
-flag is enabled, reject incident and one-ring candidates, keep the outward
-triangle normal, and store `effective_thickness - signed_distance` inside the
-absolute-distance detection band. Keep the old absolute-value branch unchanged
-when the flag is disabled.
+Add the optional constructor flag. Keep the shared-index incident rejection,
+the outward triangle normal, and `effective_thickness - signed_distance`
+inside the absolute-distance detection band. Keep the old absolute-value
+branch unchanged when the flag is disabled.
 
 - [ ] **Step 5: Run the focused VF tests and the full self-collision test class**
 
@@ -87,21 +85,21 @@ within `0.1 m` after crossing, with opposing outward pseudo-normals. Assert the
 force direction on edge 0 follows `normalize(ne1 - ne0)` and the depth equals
 `thickness - dot(closest0 - closest1, direction)`.
 
-- [ ] **Step 2: Add one-ring exclusion and two-ring retention EE tests**
+- [ ] **Step 2: Add nonincident one-ring EE retention tests**
 
 Reuse the adjacent-opposite-edge fixture and enable outward normals. Assert
-that no matching EE contact is stored.
+that the matching EE contact is stored because the two edges share no endpoint.
 
 - [ ] **Step 3: Verify both tests fail against the unsigned EE implementation**
 
-Run the two named tests. Expect a wrong direction/depth and an unexpected
-topology-local contact.
+Run the two named tests. Expect a wrong direction/depth before the oriented EE
+path exists.
 
 - [ ] **Step 4: Implement incident-face pseudo-normals and signed EE depth**
 
 Store `edge_tri_indices` on the constraint and pass it plus triangle topology
-to the EE kernel. In oriented mode, reject only incident and one-ring pairs,
-compute both edge pseudo-normals from current incident face normals, set direction to
+to the EE kernel. Reject only pairs sharing an endpoint, compute both edge
+pseudo-normals from current incident face normals, set direction to
 `normalize(ne1 - ne0)`, and set signed depth. Preserve the old closest-vector
 direction, local thickness clamp, and mollifier when oriented mode is off.
 
@@ -130,8 +128,7 @@ example unittest and expect failure before changing the scene.
 
 Pass `use_outward_normals=True` beside `enable_edge_face=False`. Do not change
 thickness, stiffness factors, time step, PCG iterations, or friction.
-Raise ARAP stiffness from `1e5 Pa` to `3e5 Pa` because filtering local false
-contacts removes their accidental structural stiffening.
+Use `3e5 Pa` ARAP stiffness for the bunny scene.
 
 - [ ] **Step 3: Run focused tests and 300 frames**
 

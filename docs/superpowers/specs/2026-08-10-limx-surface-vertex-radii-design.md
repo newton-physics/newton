@@ -40,4 +40,3 @@ a moving contact target can inject energy.
   in its initial separated rest configuration.
 - The 300-frame CUDA rollout remains finite, positive-volume, overflow-free,
   and generates cross-bunny contact after falling.
-

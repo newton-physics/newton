@@ -103,10 +103,9 @@ uv run --extra dev -m newton.tests -p test_solver_limx.py -k TestConstraintSelfC
 uv run --extra dev -m newton.tests -p test_example_softbody_limx_arap_bunnies_box.py
 ```
 
-Expected: 33 detection tests and both bunny tests pass, including the 300-frame CUDA rollout.
+Expected: 34 detection tests and both bunny tests pass, including the 300-frame CUDA rollout.
 
 - [ ] **Step 5: Run formatting and inspect the diff**
 
 Run `uvx pre-commit run --files` for all modified source, test, documentation,
 and changelog files, then run `git diff --check` and inspect `git diff`.
-

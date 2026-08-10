@@ -107,3 +107,9 @@
 - Context: Revisiting the three-ring exclusion used by outward-normal signed VF/EE volume collision.
 - Mistake: Turned a scene-specific stability observation into a permanent three-ring topology exclusion, which can suppress real local self-contact and allow undetected penetration.
 - Rule: Permanently exclude only incident primitives: shared features and one-ring adjacency. Keep graph-distance-two and farther VF/EE pairs eligible for collision. Do not introduce a tetrahedron determinant barrier unless the user requests it separately.
+
+## 2026-08-10 — Do not classify graph one-ring pairs as IPC-incident
+
+- Context: Comparing the oriented tetrahedral VF/EE topology filter with libuipc's IPC candidate filtering.
+- Mistake: Called graph one-ring adjacency “incident” and permanently excluded nonintersecting-index VF/EE pairs that IPC retains.
+- Rule: Match IPC's strict primitive-incidence test: reject VF only when the vertex is one of the face vertices, and reject EE only when the edges share an endpoint. Keep graph-adjacent pairs with disjoint vertex sets eligible for contact.

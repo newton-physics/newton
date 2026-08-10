@@ -1474,8 +1474,31 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         self.assertEqual(collision.geometry_radius_scale, 0.5)
         np.testing.assert_allclose(radii, expected, rtol=1.0e-6, atol=1.0e-7)
 
+    def test_geometry_aware_radii_ignore_unreferenced_interior_particles(self):
+        """Assign zero radius to particles absent from the collision surface."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, 0.25],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2)])
+            try:
+                collision = ConstraintSelfCollision(
+                    model,
+                    thickness=0.1,
+                    stiffness=10.0,
+                    geometry_radius_scale=0.25,
+                )
+            except ValueError as error:
+                self.fail(f"Geometry-aware radii rejected an interior particle: {error}")
+            radii = collision.particle_radii.numpy()
+
+        np.testing.assert_allclose(radii, [0.05, 0.05, 0.05, 0.0], rtol=0.0, atol=1.0e-7)
+
     def test_geometry_aware_radii_reject_invalid_rest_geometry(self):
-        """Reject non-finite, degenerate, and unreferenced rest geometry."""
+        """Reject non-finite and degenerate rest surface geometry."""
         valid_positions = np.asarray(
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             dtype=np.float32,
@@ -1500,18 +1523,6 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "degenerate"):
                 ConstraintSelfCollision(
                     degenerate_model,
-                    thickness=0.1,
-                    stiffness=10.0,
-                    geometry_radius_scale=0.25,
-                )
-
-            unreferenced_model = self._make_model(
-                np.vstack((valid_positions, [[2.0, 2.0, 0.0]])).astype(np.float32),
-                [(0, 1, 2)],
-            )
-            with self.assertRaisesRegex(ValueError, "referenced"):
-                ConstraintSelfCollision(
-                    unreferenced_model,
                     thickness=0.1,
                     stiffness=10.0,
                     geometry_radius_scale=0.25,
@@ -1630,8 +1641,8 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         self.assertAlmostEqual(float(depths[contact]), 0.15, places=6)
         self.assertGreater(float(force_np[3, 2]), 0.0)
 
-    def test_oriented_vertex_face_excludes_one_ring_neighbor(self):
-        """Exclude one-ring vertices from oriented VF contacts."""
+    def test_oriented_vertex_face_retains_nonincident_one_ring_neighbor(self):
+        """Keep a nonincident one-ring vertex eligible for oriented VF contact."""
         positions = [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -1650,7 +1661,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             collision.prepare(model.particle_q)
             ids, _, _, _ = self._stored_contacts(collision.vertex_face_contacts)
 
-        self.assertFalse(np.any(np.all(ids == [3, 0, 1, 2], axis=1)))
+        self.assertTrue(np.any(np.all(ids == [3, 0, 1, 2], axis=1)))
 
     def test_oriented_vertex_face_retains_two_ring_neighbor(self):
         """Keep two-ring vertices eligible for oriented VF contacts."""
@@ -2118,8 +2129,8 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         expected = 1.0e-3 * 0.1**2 * 0.08**2
         self.assertAlmostEqual(float(thresholds[int(matches[0])]), expected, places=12)
 
-    def test_oriented_edge_edge_excludes_topology_local_pair(self):
-        """Exclude topology-local edge pairs from oriented EE contacts."""
+    def test_oriented_edge_edge_retains_nonincident_one_ring_pair(self):
+        """Keep nonincident one-ring edges eligible for oriented EE contact."""
         sine = 0.2
         direction = np.asarray([np.sqrt(1.0 - sine * sine), sine, 0.0], dtype=np.float32)
         center = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
@@ -2141,7 +2152,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             collision.prepare(model.particle_q)
             ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
 
-        self.assertFalse(np.any(np.all(ids == [0, 1, 2, 3], axis=1)))
+        self.assertTrue(np.any(np.all(ids == [0, 1, 2, 3], axis=1)))
 
     def test_oriented_edge_edge_retains_two_ring_pair(self):
         """Keep two-ring edge pairs eligible for oriented EE contacts."""

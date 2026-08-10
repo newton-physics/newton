@@ -4,9 +4,9 @@
 ###########################################################################
 # Example Softbody LIMX ARAP Bunnies Box
 #
-# Eight volumetric ARAP bunnies fall into an open box. A shared fixed-3-mm
-# VF/EE operator handles both within-bunny and cross-bunny surface collision.
-# Every 0.01 s frame uses one Newton increment and 50 PCG iterations.
+# Eight volumetric ARAP bunnies fall into an open box. A shared VF/EE operator
+# caps per-surface-vertex radii by a nominal 3 mm pair thickness. Every 0.01 s
+# frame uses one Newton increment and 50 PCG iterations.
 #
 # Command: uv run -m newton.examples softbody_limx_arap_bunnies_box
 #
@@ -115,7 +115,7 @@ class Example:
             stiffness=None,
             max_contacts=262144,
             stiffness_factors=(0.5, 0.3, 1.5),
-            geometry_radius_scale=None,
+            geometry_radius_scale=0.25,
             friction=0.0,
             friction_epsilon=1.0e-2,
             enable_edge_face=False,

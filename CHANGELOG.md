@@ -12,7 +12,7 @@
 - Add adaptive LIMX self-collision stiffness derived from the current elastic diagonal and inertia, with independent VF, EE, and EF factors.
 - Add regularized Coulomb friction to LIMX vertex-face and edge-edge cloth self-collision.
 - Add optional surface-particle subsets to LIMX static-plane contact and an option to disable edge-face recovery in self-collision.
-- Add opt-in outward-normal signed VF/EE contact for closed LIMX volume surfaces, excluding only incident and one-ring pairs.
+- Add opt-in outward-normal signed VF/EE contact for closed LIMX volume surfaces, excluding only strictly incident pairs that share primitive indices.
 - Add a CUDA LIMX example that contrasts a settled control with geometry-aware VF/EE self-collision at a 6 mm nominal thickness.
 - Add a LIMX T-shirt table-contact example with self-collision, contact damping, and friction.
 - Break the viewer's shape count down into visual and collision shapes. The two are listed under `Shapes` in the stats overlay and need not sum to the total, since a shape can be both.
@@ -63,6 +63,7 @@
 - Make `CollisionPipeline` the sole owner of rigid-contact geometry for `SolverVBD`: `"latest"` supplies fresh geometry and `"sticky"` supplies replayed geometry. `SolverVBD(rigid_contact_history=True)` uses either mode's match indices only to warm-start its numeric lambda/penalty state.
 - Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).
 - Default LIMX edge-face untangling to three times the VF/EE contact stiffness; pass an explicit `untangle_stiffness` to retain a different recovery ratio.
+- Allow geometry-aware LIMX self-collision radii on tetrahedral surface meshes by assigning zero radius to particles absent from the collision surface.
 - Change experimental `SolverVBD` cable constraint slots from `[STRETCH=0, BEND=1]` to `[STRETCH=0, SHEAR=1, BEND=2, TWIST=3]`, allowing each stiffness and constraint mode to be configured independently. Existing cable calls using raw `slot=1` or `JointSlot.ANGULAR` now select shear; use `JointSlot.BEND` (now slot 2) to select bending.
 - Load visual-only USD geometry outside rigid-body hierarchies as static shapes by default; pass `load_static_visual_shapes=False` to retain the previous body-associated-visuals-only behavior.
 - Improve `SolverKamino` GPU simulation and kernel compilation performance.

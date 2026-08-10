@@ -27,31 +27,23 @@ use_outward_normals: bool = False
 ```
 
 `False` preserves the existing cloth-compatible unsigned VF/EE path. `True`
-enables signed contact and topology filtering. The eight-bunny example opts
-in explicitly.
+enables signed contact. The eight-bunny example opts in explicitly.
 
 ## Topology Filtering
 
-Signed volume contact must not treat local surface discretization as
-self-contact. In the bunny rest state, all 80 VF candidates are one-ring
-vertex-face pairs, and 200 of 216 EE candidates are topology-local opposite
-edges. Runtime diagnostics additionally found same-bunny false contacts up to
-surface graph distance three when the soft body began deforming. Those pairs
-remain collision-eligible because permanently filtering them could hide real
-local self-contact.
+Use IPC's strict primitive-incidence rule in both modes:
 
-Build a compact vertex-neighbor CSR from the surface edges. In oriented mode:
+- reject a VF pair only when the candidate vertex is one of the face's three
+  vertices;
+- reject an EE pair only when the two edges share an endpoint.
 
-- reject a VF pair when the candidate vertex is directly connected to any of
-  the face's three vertices;
-- reject an EE pair when any endpoint is directly connected to an endpoint of
-  the opposite edge;
-- continue rejecting contacts that share a feature endpoint.
+Graph adjacency alone is not incidence. A vertex connected to a face vertex,
+or two disjoint edges connected by another mesh edge, remains
+collision-eligible. This preserves real local folds and avoids creating
+topology-filtered penetration paths. No vertex-neighbor CSR is needed.
 
-Pairs at surface graph distance two or greater remain active.
-
-The unsigned default retains its current topology-local EE thickness clamp
-and VF behavior for compatibility.
+Retained topology-local EE pairs continue to use the existing local edge-length
+thickness clamp and mollifier.
 
 ## Signed Vertex-Face Contact
 
@@ -120,12 +112,12 @@ Focused CUDA tests must prove:
 
 1. an inside VF contact keeps the target face's outward normal and uses
    `thickness - signed_distance` depth;
-2. incident and one-ring VF candidates are absent, two-ring candidates remain
+2. incident VF candidates are absent, nonincident one-ring candidates remain
    active, and points beyond the signed-distance band are absent;
 3. an already-crossed EE pair uses incident face normals rather than the
    flipped closest-point vector;
-4. incident and one-ring EE pairs are absent while two-ring pairs remain
-   active;
+4. EE pairs sharing an endpoint are absent while nonincident one-ring pairs
+   remain active;
 5. the default unsigned mode retains the existing tests;
 6. the bunny scene opts in, keeps EF disabled, and remains finite,
    positive-volume, and overflow-free for 300 frames.
@@ -134,7 +126,6 @@ The visual experiment then checks whether all bunnies are pushed toward the
 exterior and settle on the floor with self-collision friction disabled. The
 separate floor and wall contacts retain their existing `0.05` friction.
 
-Removing topology-local contacts also removes their accidental structural
-stiffening. The example therefore uses `3e5 Pa` ARAP stiffness, which keeps the
-tetrahedra positive-volume under the same 3 mm contact, time step, adaptive
-contact factors, PCG iteration count, and friction settings.
+The example uses `3e5 Pa` ARAP stiffness and validates positive tetrahedral
+volume under the same 3 mm contact, time step, adaptive contact factors, PCG
+iteration count, and friction settings.
