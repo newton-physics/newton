@@ -233,11 +233,45 @@ def compute_shape_aabbs(
     geom_scale = scale
 
     if is_infinite_plane:
-        # Bounding sphere fallback for infinite planes
-        radius = shape_collision_radius[shape_id]
-        half_extents = wp.vec3(radius, radius, radius)
-        aabb_lower[shape_id] = pos - half_extents - margin_vec
-        aabb_upper[shape_id] = pos + half_extents + margin_vec
+        # Half-space AABB: unbounded except along world axes the plane normal
+        # aligns with, where the solid side is clamped at the surface. For an
+        # axis-aligned plane this makes AABB overlap equivalent to the exact
+        # half-space proximity test, so shapes far above the ground stop being
+        # broad-phase candidates. Tilted planes keep unbounded extents on
+        # non-aligned axes (conservative, matches the old always-overlap
+        # behavior in the worst case).
+        #
+        # A NEARLY aligned normal must not be clamped as if it were exact: the
+        # residual lateral tilt lat = norm(other two normal components) raises
+        # the true surface by lat * r at lateral distance r from the plane
+        # anchor, so an anchor-height clamp silently drops resting contacts
+        # far from the anchor (with a fixed 1e-6 epsilon, a floor tilted
+        # 0.05 degrees loses a box 600 m out). Clamp only when that rise over
+        # the supported reach stays within a fraction of the effective gap,
+        # and carry the rise as slack so the clamped bound remains
+        # conservative for every shape within the reach.
+        normal = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+        plane_d = wp.dot(normal, pos)
+        HALF_SPACE_EXTENT = 1.0e10
+        # Lateral radius (about the world origin) within which the clamped
+        # bound is guaranteed conservative. Exactly aligned planes (lat == 0,
+        # including quat_rotate float noise of ~1e-7) clamp with negligible
+        # slack; deliberately tilted planes fail the gate and stay unbounded.
+        HALF_SPACE_REACH = 1.0e4
+        HALF_SPACE_TILT_GAP_FRACTION = 0.5
+        lo = wp.vec3(-HALF_SPACE_EXTENT, -HALF_SPACE_EXTENT, -HALF_SPACE_EXTENT)
+        hi = wp.vec3(HALF_SPACE_EXTENT, HALF_SPACE_EXTENT, HALF_SPACE_EXTENT)
+        for i in range(3):
+            n_j = normal[(i + 1) % 3]
+            n_k = normal[(i + 2) % 3]
+            tilt_slack = wp.sqrt(n_j * n_j + n_k * n_k) * HALF_SPACE_REACH
+            if tilt_slack <= HALF_SPACE_TILT_GAP_FRACTION * effective_gap:
+                if normal[i] > 0.0:
+                    hi[i] = plane_d + effective_gap + tilt_slack
+                elif normal[i] < 0.0:
+                    lo[i] = -plane_d - effective_gap - tilt_slack
+        aabb_lower[shape_id] = lo
+        aabb_upper[shape_id] = hi
     elif has_local_aabb:
         # Pre-computed local AABB transformed to world space.
         # Scale is already baked into shape_collision_aabb by the builder,
