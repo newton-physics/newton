@@ -1281,7 +1281,6 @@ def evaluate_seal_quality(
     gripper_state_input: SurfaceGripperStateInput,
     gripper_state_output: SurfaceGripperStateOutput,
     shape_mesh_id: wp.array[wp.uint64],
-    pad_rms: wp.array[float],
     max_dist: float = 1.0,
     grad_h: float = 1.0e-4,
     damping: float = 1.0e-3,
@@ -1315,7 +1314,6 @@ def evaluate_seal_quality(
         gripper_state_output: Per-pad output state; ``pad_lip_sdf0`` provides the cached
             seated baseline; ``pad_seal_quality_rms`` receives the result.
         shape_mesh_id: shape id -> gripped-object SDF mesh id, shape [n_shapes].
-        pad_rms: Per-pad output array [n_pads]; RMS lip-gap deviation [m], or ``-1`` if idle.
         max_dist: SDF search radius [m].
         grad_h: SDF central-difference step [m] for the seat fit in preparing mode.
         damping: Stabiliser for the seat fit (prevents drift in unconstrained directions).
@@ -1348,7 +1346,7 @@ def evaluate_seal_quality(
             grad_h,
             damping,
             iters,
-            pad_rms,
+            gripper_state_output.pad_seal_quality_rms,
         ],
         device=gm.pad_xform.device,
     )

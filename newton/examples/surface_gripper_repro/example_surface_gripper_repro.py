@@ -882,7 +882,6 @@ class Example:
             self.gripper_state_input_prev,
             self.gripper_state_output,
             self.shape_mesh_id_wp,
-            self.gripper_state_output.pad_seal_quality_rms,
             iters=SEAT_ITERS,
         )
 
