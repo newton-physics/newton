@@ -92,8 +92,8 @@ def _build_revolute(
 def _build_gimbal() -> tuple[newton.Model, int]:
     """Build a minimal articulated three-axis D6 model for notify tests."""
     builder = newton.ModelBuilder()
-    parent = builder.add_link()
-    child = builder.add_link()
+    parent = builder.add_link(mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+    child = builder.add_link(mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
     root = builder.add_joint_fixed(-1, parent)
     gimbal = builder.add_joint_d6(
         parent,
