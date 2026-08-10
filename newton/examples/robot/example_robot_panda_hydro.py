@@ -68,6 +68,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.world_count = args.world_count
         self.viewer = viewer
+        self.viewer.picking_enabled = False
 
         sdf_max_resolution = 64
         sdf_narrow_band_range = (-0.01, 0.01)
@@ -307,11 +308,11 @@ class Example:
         )
 
         self.viewer.set_model(self.model)
-        self.viewer.picking_enabled = False  # Disable interactive picking for this example
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_camera(wp.vec3(0.5, 0.0, 0.5), -15, -140)
             self.viewer.set_world_offsets(wp.vec3(1.0, 1.0, 0.0))
             self.viewer.show_hydro_contact_surface = self.show_isosurface
+        if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
 
         # Initialize state for IK setup
