@@ -547,5 +547,101 @@ class TestDifferentiableGaitScenarios(unittest.TestCase):
         self.assertGreater(float(np.max(grf)), 100.0)
 
 
+class TestDifferentiableFriction(unittest.TestCase):
+    def test_slide_friction_gradient_matches_finite_difference(self):
+        """Differentiate the lateral drag impulse of a constant slide w.r.t. the friction coefficient.
+
+        Drives the foam bed at a fixed penetration and constant lateral speed so
+        the contact patch stays engaged and the tangential velocity never crosses
+        zero; the gradient of the accumulated drag with respect to ``mu`` then
+        matches a central difference.
+        """
+        device = wp.get_preferred_device()
+        geo = dynamics.build_foundation_geometry(MANIFEST)
+        material = dynamics.load_fitted_material(MANIFEST)
+        slide = scenarios_diff.DifferentiableSlide(
+            geo, material, depth_m=0.012, slide_speed_m_s=0.25, substeps=32, device=device
+        )
+        loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+
+        slide.zero_grad()
+        loss.zero_()
+        tape = wp.Tape()
+        with tape:
+            shear = slide.forward()
+            wp.launch(scenarios_diff._drag_impulse, dim=slide.substep_count, inputs=[shear, loss], device=device)
+        tape.backward(loss)
+        analytic = float(slide.friction_params.grad.numpy()[0])
+
+        tape.zero()
+        slide.zero_grad()
+        base = float(slide.friction_params.numpy()[0])
+        h = base * 1.0e-3
+
+        def drag(mu):
+            slide.friction_params.assign(np.array([mu], np.float32))
+            return -float(slide.forward().numpy()[:, 0].astype(np.float64).sum())
+
+        numeric = (drag(base + h) - drag(base - h)) / (2.0 * h)
+        slide.friction_params.assign(np.array([base], np.float32))
+        self.assertGreater(analytic, 0.0)  # more friction => more drag
+        self.assertLess(abs(analytic - numeric) / (abs(numeric) + 1.0e-30), 5.0e-3)
+
+    def test_slide_recovers_friction_coefficient(self):
+        """Recover the Coulomb friction coefficient from a lateral-force target using the analytic gradient.
+
+        The smooth-friction drag is exactly linear in ``mu`` at fixed kinematics, so
+        a single gradient-informed step from a wrong guess recovers the coefficient
+        that reproduces a measured drag impulse.
+        """
+        device = wp.get_preferred_device()
+        geo = dynamics.build_foundation_geometry(MANIFEST)
+        material = dynamics.load_fitted_material(MANIFEST)
+        slide = scenarios_diff.DifferentiableSlide(
+            geo, material, depth_m=0.012, slide_speed_m_s=0.25, substeps=32, device=device
+        )
+        mu_ref = float(slide.friction_params.numpy()[0])
+        target = -float(slide.forward().numpy()[:, 0].astype(np.float64).sum())
+
+        slide.friction_params.assign(np.array([mu_ref * 0.4], np.float32))
+        loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+        slide.zero_grad()
+        loss.zero_()
+        tape = wp.Tape()
+        with tape:
+            shear = slide.forward()
+            wp.launch(scenarios_diff._drag_impulse, dim=slide.substep_count, inputs=[shear, loss], device=device)
+        tape.backward(loss)
+        sensitivity = float(slide.friction_params.grad.numpy()[0])  # d(drag)/d(mu), constant
+        drag_guess = float(loss.numpy()[0])
+        recovered = float(slide.friction_params.numpy()[0]) + (target - drag_guess) / sensitivity
+        self.assertLess(abs(recovered - mu_ref) / mu_ref, 5.0e-3)
+
+    def test_attached_records_lateral_shear(self):
+        """The dynamic attached rollout records a finite, non-trivial lateral shear on the tape."""
+        device = wp.get_preferred_device()
+        geo = dynamics.build_foundation_geometry(MANIFEST)
+        material = dynamics.load_fitted_material(MANIFEST)
+        com_z = float(geo.z_free_m.mean())
+        poses, velocities, dt = scenarios_diff.stride_trajectory(
+            geo,
+            com_z,
+            period_s=0.15,
+            peak_depth_m=0.03,
+            pitch_deg=8.0,
+            roll_fraction=0.15,
+            frame_dt=1.0 / 60.0,
+            substeps=64,
+            with_velocity=True,
+        )
+        attached = scenarios_diff.DifferentiableAttached(geo, material, poses, velocities, dt, device=device)
+        attached.forward()
+        shear = attached.shear.numpy()
+        self.assertEqual(shear.shape, (attached.substep_count, 2))
+        self.assertTrue(np.all(np.isfinite(shear)))
+        self.assertGreater(float(np.max(np.abs(shear))), 1.0)
+        self.assertEqual(float(attached.friction_params.numpy()[0]), attached.config.mu)
+
+
 if __name__ == "__main__":
     unittest.main()

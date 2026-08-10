@@ -28,7 +28,10 @@ The constitutive parameters that a fit would vary -- the equilibrium shear
 modulus, Hyperfoam exponent, Maxwell overstress ratio, and Pasternak coupling --
 are held in a length-4 ``requires_grad`` device array so gradients of any
 simulation objective with respect to the foam material are available directly
-from ``material_params.grad``.
+from ``material_params.grad``. The Coulomb friction coefficient ``mu`` is held in
+a separate length-1 ``requires_grad`` ``friction_params`` array, so a lateral- or
+shear-force objective can be differentiated with respect to friction as well
+(friction identification), independent of the constitutive fit.
 
 See :mod:`projects.digital_instron_v2.dynamics` for the (faster, forward-only)
 production force model and the geometry/calibration helpers reused here.
@@ -47,6 +50,9 @@ MAT_G_EQ = wp.constant(0)  # equilibrium shear modulus G_inst * equilibrium_frac
 MAT_ALPHA = wp.constant(1)  # Hyperfoam exponent
 MAT_OVERSTRESS = wp.constant(2)  # (1 - equilibrium_fraction) / equilibrium_fraction
 MAT_PASTERNAK = wp.constant(3)  # Pasternak lateral coupling [N/m]
+
+# Index into the differentiable ``friction_params`` vector.
+FRIC_MU = wp.constant(0)  # Coulomb friction coefficient (smooth-cone bound)
 
 
 @wp.func
@@ -124,6 +130,7 @@ def foundation_apply_diff(
     base_pressure: wp.array[wp.float32],
     params: FoundationParams,
     material_params: wp.array[wp.float32],
+    friction_params: wp.array[wp.float32],
     friction_smoothing: wp.float32,
     body_f: wp.array[wp.spatial_vector],
     normal_force: wp.array[wp.float32],
@@ -137,7 +144,9 @@ def foundation_apply_diff(
     Laplacian, pressure floor, Kelvin-Voigt normal damping) but replaces the
     non-differentiable anchored bristle friction with a smooth, cone-respecting
     Coulomb law built on :func:`warp.smooth_normalize`. The Pasternak coupling is
-    read from the differentiable ``material_params`` vector.
+    read from the differentiable ``material_params`` vector and the friction
+    coefficient ``mu`` from the differentiable ``friction_params`` vector, so a
+    lateral-force objective can be differentiated with respect to friction too.
     """
     i = wp.tid()
     pasternak = material_params[MAT_PASTERNAK]
@@ -172,10 +181,11 @@ def foundation_apply_diff(
     # Cone-respecting smooth Coulomb friction: ft = -mu * fn * smooth_normalize(v_tan).
     # smooth_normalize(v, delta) = v / sqrt(delta^2 + |v|^2) has magnitude < 1, so the
     # tangential force is bounded by the cone mu * fn and is smooth through v_tan = 0.
+    mu = friction_params[FRIC_MU]
     f_tan = wp.vec2(0.0, 0.0)
-    if fn > 0.0 and params.mu > 0.0:
+    if fn > 0.0 and mu > 0.0:
         v_tan = wp.vec2(point_vel[0], point_vel[1])
-        f_tan = -params.mu * fn * wp.smooth_normalize(v_tan, friction_smoothing)
+        f_tan = -mu * fn * wp.smooth_normalize(v_tan, friction_smoothing)
 
     force = wp.vec3(f_tan[0], f_tan[1], fn)
     wp.atomic_add(body_f, carrier, wp.spatial_vector(force, wp.cross(r, force)))
@@ -205,8 +215,9 @@ class DifferentiableMidsoleFoundation:
                 solver.step(states[t], states[t + 1], None, None, dt)
             wp.launch(loss_kernel, ...)
         tape.backward(loss)
-        # gradients w.r.t. the foam material:
+        # gradients w.r.t. the foam material and the friction coefficient:
         foundation.material_params.grad.numpy()
+        foundation.friction_params.grad.numpy()
 
     Args:
         anchor_local: Column attachment points in the carrier body frame [m],
@@ -268,6 +279,13 @@ class DifferentiableMidsoleFoundation:
         # Differentiable constitutive vector [g_eq, alpha, overstress, pasternak].
         self.material_params = wp.array(
             np.array([params.g_eq, params.alpha, params.overstress, params.pasternak], np.float32),
+            dtype=wp.float32,
+            device=device,
+            requires_grad=True,
+        )
+        # Differentiable friction vector [mu] for gradient-based friction identification.
+        self.friction_params = wp.array(
+            np.array([params.mu], np.float32),
             dtype=wp.float32,
             device=device,
             requires_grad=True,
@@ -351,6 +369,7 @@ class DifferentiableMidsoleFoundation:
                 self.base_pressure[t],
                 self.params,
                 self.material_params,
+                self.friction_params,
                 self.friction_smoothing,
                 state.body_f,
                 self.normal_force,
@@ -363,6 +382,7 @@ class DifferentiableMidsoleFoundation:
     def zero_grad(self) -> None:
         """Zero the accumulated gradients on the differentiable buffers."""
         self.material_params.grad.zero_()
+        self.friction_params.grad.zero_()
         for buf in (*self.compression, *self.base_pressure, *self.q_state, *self.peq_prev):
             buf.grad.zero_()
         self.q_init.grad.zero_()

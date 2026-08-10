@@ -22,6 +22,17 @@ differentiated with respect to the foam material:
   smooth Coulomb friction -- which the quasi-static
   :func:`~projects.digital_instron_v2.core.predict` cannot do.
 
+* :class:`DifferentiableSlide` -- a *kinematic* constant-velocity lateral drag at
+  fixed penetration. It records the net shear force so the Coulomb friction
+  coefficient ``mu`` can be identified by gradient descent from a lateral-force
+  target, the clean (continuous-contact, non-zero-crossing) counterpart to the
+  normal-force scenarios above.
+
+Both dynamic drivers also record the per-substep net lateral shear on the tape
+(``self.shear``) and expose the differentiable friction coefficient
+(``self.friction_params``), so friction identification composes with the foam
+material fit.
+
 Both drivers use a per-substep, write-once GRF-accumulation kernel
 (:func:`_ground_reaction_force`) rather than the foundation's single overwritten
 ``normal_force`` diagnostic, and the attached driver uses a counter-free PD
@@ -46,7 +57,7 @@ from .dynamics import (
     load_fitted_material,
     synthetic_stride,
 )
-from .dynamics_diff import MAT_PASTERNAK, DifferentiableMidsoleFoundation
+from .dynamics_diff import FRIC_MU, MAT_PASTERNAK, DifferentiableMidsoleFoundation
 
 
 @wp.kernel
@@ -147,6 +158,72 @@ def _ground_reaction_force(
     if fn < 0.0:
         fn = 0.0
     wp.atomic_add(grf_hist, substep, fn)
+
+
+@wp.kernel
+def _shear_reaction_force(
+    carrier: wp.int32,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    anchor_local: wp.array[wp.vec3],
+    area: wp.array[wp.float32],
+    neighbors: wp.array2d[wp.int32],
+    compression: wp.array[wp.float32],
+    base_pressure: wp.array[wp.float32],
+    material_params: wp.array[wp.float32],
+    friction_params: wp.array[wp.float32],
+    friction_smoothing: wp.float32,
+    inv_h2: wp.float32,
+    normal_damping: wp.float32,
+    substep: wp.int32,
+    shear_hist: wp.array[wp.vec2],
+):
+    """Sum the net lateral (smooth-Coulomb) shear force for one substep into ``shear_hist[substep]``.
+
+    Re-derives the same normal force as :func:`_ground_reaction_force` and applies
+    the differentiable smooth-friction law ``ft = -mu * fn * smooth_normalize(v_tan)``,
+    so the accumulated horizontal drag is a differentiable function of the friction
+    coefficient (identification) as well as the foam material.
+    """
+    i = wp.tid()
+    pasternak = material_params[MAT_PASTERNAK]
+    ci = compression[i]
+    lap = -4.0 * ci
+    for side in range(4):
+        j = neighbors[i, side]
+        if j >= 0:
+            lap += compression[j]
+        elif j == -1:
+            lap += ci
+    lap *= inv_h2
+    pressure = base_pressure[i] - pasternak * lap
+    if pressure < 0.0:
+        pressure = 0.0
+    fn = pressure * area[i]
+
+    q_body = body_q[carrier]
+    world = wp.transform_point(q_body, anchor_local[i])
+    com_world = wp.transform_point(q_body, body_com[carrier])
+    r = world - com_world
+    vel = body_qd[carrier]
+    point_vel = wp.spatial_top(vel) + wp.cross(wp.spatial_bottom(vel), r)
+    if ci > 0.0:
+        fn = fn - normal_damping * point_vel[2]
+    if fn < 0.0:
+        fn = 0.0
+
+    mu = friction_params[FRIC_MU]
+    if fn > 0.0 and mu > 0.0:
+        v_tan = wp.vec2(point_vel[0], point_vel[1])
+        f_tan = -mu * fn * wp.smooth_normalize(v_tan, friction_smoothing)
+        wp.atomic_add(shear_hist, substep, f_tan)
+
+
+@wp.kernel
+def _drag_impulse(shear: wp.array[wp.vec2], out: wp.array[wp.float32]):
+    """Accumulate the streamwise (-x) drag component of the per-substep shear into ``out[0]``."""
+    wp.atomic_add(out, 0, -shear[wp.tid()][0])
 
 
 @wp.kernel
@@ -305,6 +382,7 @@ class DifferentiableStride:
             device=device,
         )
         self.material_params = self.foundation.material_params
+        self.friction_params = self.foundation.friction_params
         self.poses = [
             wp.array(self.poses_host[t].reshape(1, 7).copy(), dtype=wp.transform, device=device)
             for t in range(self.substep_count)
@@ -380,6 +458,151 @@ class DifferentiableStride:
             foundation.apply(state, self.dt)
             grf[t] = foundation.diagnostics()["normal_force_n"]
         return grf
+
+
+class DifferentiableSlide:
+    """Differentiable kinematic constant-velocity slide for friction identification.
+
+    Presses the foam bed to a fixed penetration and drags it laterally at a
+    constant speed (no solver), accumulating the per-substep net shear force as a
+    differentiable function of the Coulomb friction coefficient ``mu`` (and the
+    foam material). Because the pose and slide velocity are held constant the
+    contact patch stays engaged and the tangential velocity never crosses zero, so
+    the smooth-friction drag is a smooth, monotone function of ``mu`` -- the clean
+    setting for gradient-based friction identification from a lateral-force target.
+
+    Args:
+        geometry: Column bed from
+            :func:`~projects.digital_instron_v2.dynamics.build_foundation_geometry`.
+        material: Calibrated :class:`~projects.digital_instron_v2.core.Material`.
+        depth_m: Vertical penetration (compression) held during the slide [m].
+        slide_speed_m_s: Constant lateral slide speed [m/s].
+        direction: In-plane slide direction (need not be normalized).
+        substeps: Number of substeps in the slide rollout.
+        frame_dt: Render-frame duration [s] (substep is ``frame_dt / 8``).
+        config: Dynamic :class:`~projects.digital_instron_v2.dynamics.FoundationConfig`
+            (must set ``mu > 0`` for friction to act).
+        device: Warp device.
+    """
+
+    def __init__(
+        self,
+        geometry,
+        material,
+        *,
+        depth_m: float = 0.01,
+        slide_speed_m_s: float = 0.2,
+        direction=(1.0, 0.0),
+        substeps: int = 32,
+        frame_dt: float = 1.0 / 60.0,
+        config: FoundationConfig | None = None,
+        device=None,
+    ):
+        self.device = device
+        self.config = config or FoundationConfig(stretch_floor=0.05, normal_damping=8.0, mu=1.0)
+        geo = geometry
+        self.column_count = int(len(geo.slack_m))
+        self.substep_count = int(substeps)
+        self.dt = frame_dt / 8.0
+        center = geo.uv_m.mean(axis=0)
+        center_z = float(geo.surface_m.mean())
+        anchor_local = np.column_stack(
+            [geo.uv_m[:, 0] - center[0], geo.uv_m[:, 1] - center[1], geo.surface_m - center_z]
+        ).astype(np.float32)
+
+        self.body_com = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        self.foundation = DifferentiableMidsoleFoundation(
+            anchor_local,
+            geo.z_free_m.astype(np.float32),
+            geo.slack_m.astype(np.float32),
+            np.full(self.column_count, geo.area_m2, np.float32),
+            geo.neighbors,
+            geo.spacing_m,
+            material,
+            0,
+            self.body_com,
+            self.substep_count,
+            self.config,
+            device=device,
+        )
+        self.material_params = self.foundation.material_params
+        self.friction_params = self.foundation.friction_params
+
+        pose = np.array([center[0], center[1], center_z - depth_m, 0.0, 0.0, 0.0, 1.0], np.float32)
+        self.pose = wp.array(pose.reshape(1, 7), dtype=wp.transform, device=device)
+        speed = np.hypot(direction[0], direction[1]) or 1.0
+        vx = slide_speed_m_s * direction[0] / speed
+        vy = slide_speed_m_s * direction[1] / speed
+        self.body_qd = wp.array(
+            np.array([[vx, vy, 0.0, 0.0, 0.0, 0.0]], np.float32), dtype=wp.spatial_vector, device=device
+        )
+        self.body_f = [
+            wp.zeros(1, dtype=wp.spatial_vector, device=device, requires_grad=True) for _ in range(self.substep_count)
+        ]
+        self.grf = wp.zeros(self.substep_count, dtype=wp.float32, device=device, requires_grad=True)
+        self.shear = wp.zeros(self.substep_count, dtype=wp.vec2, device=device, requires_grad=True)
+
+    def forward(self) -> wp.array:
+        """Roll the constant slide and return the per-substep net shear force [N], shape ``[substeps, 2]``."""
+        self.grf.zero_()
+        self.shear.zero_()
+        for t in range(self.substep_count):
+            self.body_f[t].zero_()
+            state = _State(self.pose, self.body_qd, self.body_f[t])
+            self.foundation.apply(state, t, self.dt)
+            wp.launch(
+                _ground_reaction_force,
+                dim=self.column_count,
+                inputs=[
+                    0,
+                    self.pose,
+                    self.body_qd,
+                    self.foundation.body_com,
+                    self.foundation.anchor_local,
+                    self.foundation.area,
+                    self.foundation.neighbors,
+                    self.foundation.compression[t],
+                    self.foundation.base_pressure[t],
+                    self.foundation.material_params,
+                    self.foundation.params.inv_h2,
+                    self.foundation.params.normal_damping,
+                    t,
+                    self.grf,
+                ],
+                device=self.device,
+            )
+            wp.launch(
+                _shear_reaction_force,
+                dim=self.column_count,
+                inputs=[
+                    0,
+                    self.pose,
+                    self.body_qd,
+                    self.foundation.body_com,
+                    self.foundation.anchor_local,
+                    self.foundation.area,
+                    self.foundation.neighbors,
+                    self.foundation.compression[t],
+                    self.foundation.base_pressure[t],
+                    self.foundation.material_params,
+                    self.foundation.friction_params,
+                    self.foundation.friction_smoothing,
+                    self.foundation.params.inv_h2,
+                    self.foundation.params.normal_damping,
+                    t,
+                    self.shear,
+                ],
+                device=self.device,
+            )
+        return self.shear
+
+    def zero_grad(self) -> None:
+        """Zero the gradients on every differentiable buffer."""
+        self.foundation.zero_grad()
+        self.grf.grad.zero_()
+        self.shear.grad.zero_()
+        for buf in self.body_f:
+            buf.grad.zero_()
 
 
 class DifferentiableAttached:
@@ -469,6 +692,7 @@ class DifferentiableAttached:
             device=device,
         )
         self.material_params = self.foundation.material_params
+        self.friction_params = self.foundation.friction_params
 
         self.states = [self.model.state() for _ in range(self.substep_count + 1)]
         for state in self.states:
@@ -483,13 +707,20 @@ class DifferentiableAttached:
             for t in range(self.substep_count)
         ]
         self.grf = wp.zeros(self.substep_count, dtype=wp.float32, device=device, requires_grad=True)
+        self.shear = wp.zeros(self.substep_count, dtype=wp.vec2, device=device, requires_grad=True)
 
     def forward(self) -> wp.array:
-        """Integrate the dynamic shoe and return the per-substep vertical GRF [N]."""
+        """Integrate the dynamic shoe and return the per-substep vertical GRF [N].
+
+        The per-substep net lateral shear force is also recorded on the tape in
+        ``self.shear`` (shape ``[substep_count, 2]``) so a friction objective can be
+        differentiated with respect to ``friction_params`` over the rolling contact.
+        """
         kp_lin, kd_lin, kp_ang, kd_ang, max_force = self.pd_gains
         self.states[0].body_q.assign(self.initial_pose.reshape(1, 7))
         self.states[0].body_qd.zero_()
         self.grf.zero_()
+        self.shear.zero_()
         for t in range(self.substep_count):
             self.states[t].body_f.zero_()
             self.foundation.apply(self.states[t], t, self.dt)
@@ -532,6 +763,29 @@ class DifferentiableAttached:
                 ],
                 device=self.device,
             )
+            wp.launch(
+                _shear_reaction_force,
+                dim=self.column_count,
+                inputs=[
+                    self.carrier,
+                    self.states[t].body_q,
+                    self.states[t].body_qd,
+                    self.model.body_com,
+                    self.foundation.anchor_local,
+                    self.foundation.area,
+                    self.foundation.neighbors,
+                    self.foundation.compression[t],
+                    self.foundation.base_pressure[t],
+                    self.foundation.material_params,
+                    self.foundation.friction_params,
+                    self.foundation.friction_smoothing,
+                    self.foundation.params.inv_h2,
+                    self.foundation.params.normal_damping,
+                    t,
+                    self.shear,
+                ],
+                device=self.device,
+            )
             self.solver.step(self.states[t], self.states[t + 1], None, None, self.dt)
         return self.grf
 
@@ -539,6 +793,7 @@ class DifferentiableAttached:
         """Zero the gradients on every differentiable buffer."""
         self.foundation.zero_grad()
         self.grf.grad.zero_()
+        self.shear.grad.zero_()
         for state in self.states:
             state.body_q.grad.zero_()
             state.body_qd.grad.zero_()
@@ -681,6 +936,38 @@ def _demo() -> None:
         f"  continuous-press d(GRF impulse)/d(g_eq) = {float(press_driver.material_params.grad.numpy()[0]):.4f} "
         f"(exact through the full dynamic loop)"
     )
+
+    print("\nslide (kinematic constant-velocity lateral drag: friction identification)")
+    slide = DifferentiableSlide(geometry, material, depth_m=0.012, slide_speed_m_s=0.25, substeps=32, device=device)
+    shear = slide.forward().numpy()
+    mu0 = float(slide.friction_params.numpy()[0])
+    print(
+        f"  substeps={slide.substep_count}  mu={mu0:.3f}  peak shear={np.abs(shear[:, 0]).max():.0f} N  "
+        f"drag impulse={-shear[:, 0].sum():.0f}"
+    )
+    loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+    slide.zero_grad()
+    tape = wp.Tape()
+    with tape:
+        s = slide.forward()
+        wp.launch(_drag_impulse, dim=slide.substep_count, inputs=[s, loss], device=device)
+    tape.backward(loss)
+    print(f"  d(drag impulse)/d(mu) = {float(slide.friction_params.grad.numpy()[0]):.1f}")
+    tape.zero()
+
+    target = -slide.forward().numpy()[:, 0].astype(np.float64).sum()  # measured drag at the reference mu
+    slide.friction_params.assign(np.array([mu0 * 0.4], np.float32))  # start from a wrong guess
+    loss.zero_()
+    slide.zero_grad()
+    tape = wp.Tape()
+    with tape:
+        s = slide.forward()
+        wp.launch(_drag_impulse, dim=slide.substep_count, inputs=[s, loss], device=device)
+    tape.backward(loss)
+    sensitivity = float(slide.friction_params.grad.numpy()[0])  # d(drag)/d(mu), constant for this law
+    recovered = float(slide.friction_params.numpy()[0]) + (target - float(loss.numpy()[0])) / sensitivity
+    tape.zero()
+    print(f"  friction ID: recovered mu={recovered:.4f} from the analytic gradient (target {mu0:.4f})")
 
 
 if __name__ == "__main__":
