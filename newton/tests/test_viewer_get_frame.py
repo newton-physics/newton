@@ -22,21 +22,44 @@ def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[Ba
     except ImportError as exc:
         test.skipTest(f"ViewerGL dependencies not available: {exc}")
 
-    return (
-        pyglet.window.NoSuchConfigException,
-        pyglet.window.NoSuchDisplayException,
+    unavailable_errors = [
         gl.ConfigException,
         gl.ContextException,
-    )
+    ]
+
+    window_module = getattr(pyglet.window, "_module", pyglet.window)
+    if window_module is not None:
+        unavailable_errors.extend(
+            [
+                window_module.NoSuchConfigException,
+                window_module.NoSuchDisplayException,
+            ]
+        )
+
+    return tuple(dict.fromkeys(unavailable_errors))
+
+
+def _is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> bool:
+    if isinstance(exc, _viewer_gl_unavailable_error_types(test)):
+        return True
+
+    # Some pyglet platform backends raise their own NoSuchDisplayException
+    # while importing pyglet.window, before the window-level class exists.
+    return type(exc).__module__.startswith("pyglet.") and type(exc).__name__ in {
+        "NoSuchConfigException",
+        "NoSuchDisplayException",
+    }
 
 
 def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64, height: int = 48):
-    unavailable_errors = _viewer_gl_unavailable_error_types(test)
+    _viewer_gl_unavailable_error_types(test)
 
     try:
         return newton.viewer.ViewerGL(width=width, height=height, headless=True)
-    except unavailable_errors as exc:
-        test.skipTest(f"ViewerGL display/backend not available: {exc}")
+    except Exception as exc:
+        if _is_viewer_gl_unavailable_error(test, exc):
+            test.skipTest(f"ViewerGL display/backend not available: {exc}")
+        raise
 
 
 def _make_box_model(device: str | wp.Device):
@@ -88,6 +111,27 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    def test_backend_error_types_do_not_force_window_import(self):
+        """Verify backend error discovery does not import pyglet.window."""
+        try:
+            import pyglet
+            from pyglet import gl
+        except ImportError as exc:
+            self.skipTest(f"ViewerGL dependencies not available: {exc}")
+
+        gl_config_exception = gl.ConfigException
+
+        class _WindowProxy:
+            _module = None
+
+            def __getattr__(self, name):
+                raise AssertionError("pyglet.window must not be imported")
+
+        with mock.patch.object(pyglet, "window", _WindowProxy()):
+            unavailable_errors = _viewer_gl_unavailable_error_types(self)
+
+        self.assertIn(gl_config_exception, unavailable_errors)
+
     def test_headless_frame_capture_across_devices(self):
         """Verify headless frame capture follows the active model device."""
         cuda_devices = wp.get_cuda_devices()
@@ -168,6 +212,20 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
         with (
             mock.patch.object(newton.viewer, "ViewerGL", side_effect=unavailable_error("no GL config")),
+            self.assertRaises(unittest.SkipTest),
+        ):
+            _make_headless_viewer_gl_or_skip(self)
+
+    def test_viewer_constructor_pyglet_backend_display_error_skips(self):
+        """Verify pyglet backend display errors skip GL-dependent coverage."""
+        unavailable_error = type(
+            "NoSuchDisplayException",
+            (Exception,),
+            {"__module__": "pyglet.display.xlib"},
+        )
+
+        with (
+            mock.patch.object(newton.viewer, "ViewerGL", side_effect=unavailable_error("no display")),
             self.assertRaises(unittest.SkipTest),
         ):
             _make_headless_viewer_gl_or_skip(self)

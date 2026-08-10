@@ -89,7 +89,7 @@ class Example:
         self.time_delta = 0.005
 
         self.viewer = viewer
-        self.sensor_color_as_main_view = isinstance(self.viewer, ViewerGL)
+        self.sensor_color_as_main_view = False
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
         bunny_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
