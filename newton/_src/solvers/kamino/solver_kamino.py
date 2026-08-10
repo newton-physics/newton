@@ -777,6 +777,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._contacts_kamino = None
         if self._collision_detector_kamino is not None:
             self._contacts_kamino = self._collision_detector_kamino.contacts
+            # Keep Newton's externally allocated contact buffer in sync with Kamino.
+            model.rigid_contact_max = self._contacts_kamino.model_max_contacts_host
         else:
             # If collision detector is disabled allocate contacts based on the capacity estimate from the Newton CollisionPipeline.
             world_count = self.model.world_count
