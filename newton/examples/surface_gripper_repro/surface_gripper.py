@@ -20,11 +20,39 @@ Mirrors Newton's Builder -> Model -> State/Control layout::
 
     SurfaceGripper (authoring) -> SurfaceGripperBuilder.finalize() -> SurfaceGripperModel
     SurfaceGripperModel.state_input() / .state_output() / .control() -> SurfaceGripperStateInput / SurfaceGripperStateOutput / SurfaceGripperControl
+
+Frame nomenclature
+------------------
+All transforms are rigid-body poses (position + quaternion).  ``X_in_Y`` means frame X
+expressed relative to frame Y; ``X^-1`` is its inverse.
+
+GA    World pose of the end-effector (robot flange / body A).
+      ``body_q[gripper_body_id]``
+
+sgA   Pose of the surface-gripper assembly in the end-effector frame.
+      ``gripper_xform``
+
+padA  Pose of an individual suction pad in the surface-gripper frame.
+      ``pad_xform``
+
+SA    World pose of the pad seal frame: ``SA = GA * sgA * padA``.
+      Called ``seal_world`` in the kernels.
+
+GB    World pose of the gripped body (body B).
+      ``body_q[body_b]``
+
+T_bs  Pose of the gripped body's SDF mesh in body B's local frame (mesh -> body B).
+      ``body_b_mesh_xform[body_b]``
+      The world pose of the mesh is ``GB * T_bs``.
+
+SB    Pose of the seal frame in body B's local frame, cached at engagement:
+      ``SB = GB0^-1 * SA0`` where the subscript 0 denotes values at engagement time.
+      Stored in ``pad_anchor_b``.  The force kernel reconstructs the world seal pose
+      on body B as ``GB * SB`` and measures the bias ``SA^-1 * GB * SB`` against identity.
 """
 
 import math
 
-import numpy as np
 import warp as wp
 
 import newton
@@ -53,7 +81,7 @@ class SurfaceGripperStateOutput:
 
     pad_break_metric: wp.array[wp.float32]      # brittle break envelope; > 1 => seal exceeded capacity
     pad_dof_force: wp.array[wp.vec4]            # per-DOF force telemetry (normal, shear mag, peel mag, twist), per pad
-    pad_anchor_b: wp.array[wp.transform]        # TBS: seal frame in the gripped body's frame, cached at engagement
+    pad_anchor_b: wp.array[wp.transform]        # SB — see Frame nomenclature
     pad_lip_sdf0: wp.array[wp.float32]          # seated lip signed distances cached at engagement (indexed by model.pad_lip_start)
     pad_seal_quality_rms: wp.array[wp.float32]  # RMS lip-gap deviation from seated pose per pad [m]; -1 if not engaged or preparing
 
@@ -73,17 +101,16 @@ def attach_seal_kernel(
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],  # world pose of body A (the gripper body)
-    hold_pose_body_b: wp.array[wp.transform],  # per-body pose B is held at: raw body_q, or the fitted (seated) pose
+    hold_pose_body_b: wp.array[wp.transform],  # GB0 per body: raw body_q (attach_seal) or the fitted seated pose (attach_seal_seated)
     pad_engaged_body_b_id_prev: wp.array[int],  # [pads] previous step's gripped body (< 0 = was released, for rising-edge detection)
     # outputs
     pad_anchor_b: wp.array[wp.transform],
 ):
-    """On a disengaged->engaged rising edge, cache TBS = TB^-1 * TA(t0) * TAS (seal frame in body B).
-    Does not write pad_engaged_body_b_id -- that is managed by the caller."""
+    """On a disengaged->engaged rising edge, cache SB = GB0^-1 * SA0 into pad_anchor_b (see Frame nomenclature)."""
     pad = wp.tid()
     if pad_engaged_body_b_id_curr[pad] >= 0 and pad_engaged_body_b_id_prev[pad] < 0:
         gripper_id = pad_gripper[pad]
-        seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # TA * TAS
+        seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # SA
         pad_anchor_b[pad] = wp.transform_inverse(hold_pose_body_b[pad_preparing_body_b_id[pad]]) * seal_world
 
 
@@ -96,8 +123,8 @@ def attach_seal(
 ) -> None:
     """Latch ``pad_anchor_b`` for pads that just engaged, then commit the seal state.
 
-    On a disengaged->engaged rising edge, cache ``pad_anchor_b`` (TBS) against the body's raw pose
-    (``state.body_q``). Does not write ``pad_engaged_body_b_id`` -- the caller manages that.
+    On a disengaged->engaged rising edge, cache SB into ``pad_anchor_b`` against the body's raw pose
+    (``state.body_q``).
     Cf. :func:`attach_seal_seated`, which seats against the inline-fitted pose.
     """
     n_pads = gripper_model.pad_xform.shape[0]
@@ -128,17 +155,14 @@ def eval_pad_separation(
     """Per-DOF separation of the two seal frames accumulated since engagement.
 
     Args:
-        t_seal_a: World pose of the seal frame carried by body A, TA(t)*TAS.
-        t_seal_b: World pose of the seal frame carried by body B, TB(t)*TBS, where
-            TBS was cached when the pad engaged (so the two frames then coincided).
+        t_seal_a: Current world pose of SA (see Frame nomenclature).
+        t_seal_b: Current world pose of GB*SB; equals SA at engagement.
     Returns:
         ``(px, py, pz, theta_x, theta_y, theta_z)`` [m, m, m, rad, rad, rad]: shear
         along x/y, normal along z, peel about x/y, and twist about z.
     """
 
-    # TA(t)*TAS* TRel(t) = TB(t)*TBS
-    # t_seal_b*TRel(t) = t_seal_b
-    # TRel(t) = t_seal_b^-1 * t_seal_b
+    # bias = SA^-1 * GB * SB (see Frame nomenclature; equals identity at engagement)
     t_rel = wp.transform_inverse(t_seal_a) * t_seal_b
     p = wp.transform_get_translation(t_rel)
     q = wp.transform_get_rotation(t_rel)
@@ -712,7 +736,7 @@ def eval_pad_force_linear_kernel(
     gripper_id = pad_gripper[pad]
     body_a = gripper_body_id[gripper_id]
 
-    # world seal frames on A (TA*TAS) and B (TB*TBS); separation and relative velocity per DOF
+    # SA and GB*SB in world frame; separation and relative velocity per DOF (see Frame nomenclature)
     t_a_seal = body_q[body_a] * gripper_xform[gripper_id] * pad_xform[pad]
     q_a_seal = wp.transform_get_rotation(t_a_seal)
     p_a_seal = wp.transform_get_translation(t_a_seal)
@@ -845,34 +869,6 @@ def evaluate_gripper_force(
     )
 
 
-@wp.kernel
-def _points_sdf_kernel(
-    points: wp.array[wp.vec3],  # query points in world
-    obj_xform: wp.transform,  # object world pose
-    mesh_id: wp.uint64,  # object surface mesh (the SDF source; not used for collision)
-    max_dist: float,  # SDF search radius [m]
-    out: wp.array[float],  # signed distances [m]: >0 outside, ~0 on the surface, <0 inside
-):
-    i = wp.tid()
-    p_local = wp.transform_point(wp.transform_inverse(obj_xform), points[i])
-    out[i] = sdf_mesh(mesh_id, p_local, max_dist)
-
-
-def sample_object_sdf(points, obj_xform: wp.transform, mesh: wp.Mesh, max_dist: float = 1.0):
-    """Signed distances [m] from world ``points`` (iterable of ``wp.vec3``) to the surface of an object,
-    whose geometry is given by the triangle mesh ``mesh`` (used only for the SDF query, not collision),
-    posed at ``obj_xform``. Points are rotated into the object frame and sampled with
-    :func:`newton.geometry.sdf_mesh`; > 0 outside, ~0 on the surface, < 0 inside. Returns a numpy array.
-    """
-    pts = list(points)
-    if not pts:
-        return np.zeros(0)
-    dev = mesh.points.device
-    pts_wp = wp.array(pts, dtype=wp.vec3, device=dev)
-    out = wp.zeros(len(pts), dtype=float, device=dev)
-    wp.launch(_points_sdf_kernel, len(pts), inputs=[pts_wp, obj_xform, mesh.id, max_dist], outputs=[out], device=dev)
-    return out.numpy()
-
 
 # --------------------------------------------------------------------------------------------------
 # Inline (graph-capturable) Gauss-Newton seat fit of a gripped body's pose to the pad lips.
@@ -957,19 +953,9 @@ def _seat_body_pose(
     """
     Compute the pose of body b that minimises the rms of the signed distances of sample points 
     arranged around the lips of all pads gripping (or preparing to grip) body b.
-    With the following nomenclature:
-    GA = pose of end effector body in world frame
-    sgA = pose of surface gripper in end effector body frame
-    padA = pose of a pad in the surface grippe frame
-    lipA = pose of sample point in pad frame
-    GB = pose of body b (gripped body) in world frame
-    T_bs = pose of mesh being gripped in body b frame
-    lipB = pose of sample point in frame of mesh b
-    we may compute the pose of lipA in the frame of the mesh of body b
-    lipB = (GB * T_bs)⁻¹ * (GA * sgA * padA) * lipA.
-    Introduce SA = (GA * sgA * padA)
-    and we have 
-    lipB = (GB * T_bs)⁻¹ * SA * lipA.
+    Using the Frame nomenclature defined in the module docstring, with the additional symbols:
+    lipA = sample point in the pad frame
+    lipB = same point in the gripped mesh frame: lipB = (GB * T_bs)⁻¹ * SA * lipA
     It makes sense to cache (GB * T_bs)⁻¹ * SA for each pad being considered.
     For each sample point lipB we compute the signed distance using the sdf mesh.
     A least squares algorithm is employed to compute the pose of body b that
@@ -1063,7 +1049,7 @@ def attach_seal_seated_kernel(
     ``pad_anchor_b`` against it, and cache the seated lip signed distances in ``pad_lip_sdf0``. The seat
     fit only runs on the rising edge. Does not write ``pad_engaged_body_b_id``."""
     pad = wp.tid()
-    if pad_engaged_body_b_id_curr[pad] >= 0 and pad_engaged_body_b_id_prev[pad] < 0:  # rising edge: seat and cache TBS
+    if pad_engaged_body_b_id_curr[pad] >= 0 and pad_engaged_body_b_id_prev[pad] < 0:  # rising edge: seat and cache SB
         body_b = pad_preparing_body_b_id[pad]
         if body_b >= 0:
             w = pad_world[pad]  # this pad's world; scan only that world's pads for body_b
@@ -1087,25 +1073,11 @@ def attach_seal_seated_kernel(
                 iters,
             )
 
-            # GA = pose of end effector body in world frame
-            # sgA = pose of surface gripper in end effector body frame
-            # padA = pose of a pad in the surface grippe frame
-            # lipA = pose of sample point in pad frame
-            # GB = pose of body b (gripped body) in world frame
-            # T_bs = pose of mesh being gripped in body b frame
-            # lipB = pose of sample point in frame of mesh b
-            # we may compute the pose of lipA in the frame of the mesh of body b
-            # lipB = (GB * T_bs)⁻¹ * (GA * sgA * padA) * lipA.
-            # Introduce SA = (GA * sgA * padA)
-            # and we have 
-            # lipB = (GB * T_bs)⁻¹ * SA * lipA.
-            # Expand to produce
-            # lipB = T_bs⁻¹ * GB⁻¹ * SA * lipA.
+            # Cache SB = GB0^-1 * SA (see Frame nomenclature)
             gripper_id = pad_gripper[pad]
-            seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # TA * TAS
+            seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]  # SA
             pad_anchor_b[pad] = wp.transform_inverse(hold_pose_body_b) * seal_world
-            # Cache the seated lip signed distances: the lip circle (precomputed pad-frame points) placed by
-            # the seated seal frame (pad_anchor_b, in the body frame). The seal-quality metric measures deviation.
+            # Cache pad_lip_sdf0: SDF at each lip point placed by SB (in mesh frame). Seal-quality metric measures deviation from these.
             mesh_b = body_b_mesh_id[body_b]
             pad_anchor_in_mesh = wp.transform_inverse(body_b_mesh_xform[body_b]) * pad_anchor_b[pad]
             for k in range(pad_lip_start[pad], pad_lip_start[pad + 1]):
@@ -1132,7 +1104,7 @@ def attach_seal_seated(
     1. latch ``gripper_state_input.pad_engaged_body_b_id`` (the gripped body id);
     2. for each gripped body affected by the state change, compute the pose that minimizes the signed
        distance between the gripped body and all pads gripping it;
-    3. use that pose to compute ``gripper_state_output.pad_anchor_b`` (the cached seal frame TBS).
+    3. use that pose to compute ``gripper_state_output.pad_anchor_b`` (SB = GB0^-1 * SA0, see Frame nomenclature).
 
     Done inline on the device (:func:`attach_seal_seated_kernel`), so it is graph-capturable. Seated
     variant of :func:`attach_seal`, which instead anchors to the gripped body's raw pose.
@@ -1294,8 +1266,8 @@ def seal_quality_kernel(
             damping,
             iters,
         )
-        preparing_anchor_body = wp.transform_inverse(seated) * seal_world  # seated seal frame in the body frame
-        preparing_anchor_mesh = wp.transform_inverse(body_b_mesh_xform[body_b]) * preparing_anchor_body  # body frame -> mesh frame
+        preparing_anchor_body = wp.transform_inverse(seated) * seal_world  # SB_preparing = GB0^-1 * SA (body frame)
+        preparing_anchor_mesh = wp.transform_inverse(body_b_mesh_xform[body_b]) * preparing_anchor_body  # T_bs^-1 * SB_preparing (mesh frame)
     dev_sq = float(0.0)  # this pad's running totals (this thread owns pad_rms[pad], so no atomics needed)
     count = int(0)
     for k in range(pad_lip_start[pad], pad_lip_start[pad + 1]):
