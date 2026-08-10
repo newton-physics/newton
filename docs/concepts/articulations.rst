@@ -49,12 +49,14 @@ Cable joints
 ^^^^^^^^^^^^
 
 :attr:`newton.JointType.CABLE` is represented in Newton's joint data model, but
-it is not a conventional generalized-coordinate joint. Its two entries are
-VBD constraint/material slots: one linear slot for stretch and one angular slot
-for bend/twist. These slots store per-cable stiffness and damping through
+it is not a conventional generalized-coordinate joint. Its four per-joint
+entries are VBD constraint/material slots: two linear slots for stretch/shear
+and two angular slots for bend/twist. These slots store per-cable stiffness and
+damping through
 :attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`;
-they are not ``joint_q`` coordinates that uniquely reconstruct the child body
-pose.
+generic joint storage allocates matching ``joint_q`` / ``joint_qd`` entries, but
+they are not generalized coordinates or velocities that reconstruct the child
+body pose.
 
 Cable body poses and velocities are maximal-coordinate state stored in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
@@ -321,12 +323,16 @@ Joint types
      - up to 6
      - up to 6
    * - ``JointType.CABLE``
-     - Cable joint with 1 linear (stretch/shear) and 1 angular (bend/twist) degree of freedom
-     - 2
-     - 2
+     - Cable joint with 2 linear material slots (stretch/shear) and 2 angular
+       material slots (bend/twist)
+     - 4 structural entries
+     - 4 structural entries
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
+For ``JointType.CABLE``, the table reports allocated material-slot entries rather
+than generalized motion coordinates or velocity DOFs; cable motion is represented
+by maximal-coordinate body state as described in `Cable joints`_.
 
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^

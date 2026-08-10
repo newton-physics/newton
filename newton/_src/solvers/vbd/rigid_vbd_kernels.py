@@ -71,6 +71,13 @@ _CABLE_TRANSPORT_DENOM_EPS = wp.constant(1.0e-8)
 This is larger than _CABLE_KB_FOLD_EPS because transport has no curvature cap;
 the closed-form expression must be left before it becomes ill-conditioned."""
 
+_CABLE_TWIST_JACOBIAN_DIRECTIONAL_DENOM = wp.constant(2.0e-2)
+"""Near-fold threshold for evaluating the twist Jacobian through directional derivatives.
+
+The tangent-bisector row is algebraically exact, but loses float32 consistency
+with the normalized transport residual as 1 + dot(t0, t1) approaches zero. This
+cutoff is approximately where the curvature-binormal cap starts to engage."""
+
 _CABLE_TWIST_ATAN2_DENOM_EPS = wp.constant(1.0e-12)
 """Floor on sin^2 + cos^2 in the transported-twist atan2 derivative."""
 
@@ -606,14 +613,22 @@ def _transported_twist_angle_jacobian_from_measure(
 ) -> wp.vec3:
     """Jacobian row of transported twist for one endpoint rotation.
 
-    The tangent bisector is the closed form of the directional derivative in
-    ``_transported_twist_angle_derivative_from_measure``.
+    Use the tangent-bisector closed form for well-conditioned tangents. Near a
+    fold, evaluate the full directional derivative along each world axis so the
+    Jacobian remains consistent with the float32 transport residual.
     """
     t0 = measure.t0
     t1 = measure.t1
     denom = 1.0 + wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
-    if denom <= _CABLE_TRANSPORT_DENOM_EPS:
-        return -t0 if is_parent else t1
+    if denom <= _CABLE_TWIST_JACOBIAN_DIRECTIONAL_DENOM:
+        e0 = wp.vec3(1.0, 0.0, 0.0)
+        e1 = wp.vec3(0.0, 1.0, 0.0)
+        e2 = wp.vec3(0.0, 0.0, 1.0)
+        return wp.vec3(
+            _transported_twist_angle_derivative_from_measure(measure, e0, is_parent),
+            _transported_twist_angle_derivative_from_measure(measure, e1, is_parent),
+            _transported_twist_angle_derivative_from_measure(measure, e2, is_parent),
+        )
 
     jacobian = (t0 + t1) / denom
     return -jacobian if is_parent else jacobian
@@ -621,7 +636,6 @@ def _transported_twist_angle_jacobian_from_measure(
 
 @wp.func
 def _cable_bend_twist_jacobian_z_from_measure(
-    q_wp: wp.quat,
     measure: CableBendTwistMeasure,
     is_parent: bool,
 ) -> wp.mat33:
@@ -1010,7 +1024,7 @@ def evaluate_cable_bend_twist_force_hessian_z(
         f_local = f_local + wp.cw_mul(K_damp_diag, dkappa_dt)
         H_local_diag = H_local_diag + inv_dt * K_damp_diag
 
-    J_body = _cable_bend_twist_jacobian_z_from_measure(q_wp, measure, is_parent)
+    J_body = _cable_bend_twist_jacobian_z_from_measure(measure, is_parent)
     # Gauss-Newton self Hessian: J^T diag(H_local_diag) J.
     H_aa = wp.transpose(J_body) * _diag_mul_mat33(H_local_diag, J_body)
     tau_world = -(wp.transpose(J_body) * f_local)
