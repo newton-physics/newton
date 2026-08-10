@@ -1,0 +1,1 @@
+Deprecate `JointType.CABLE` and `ModelBuilder.add_joint_cable()` in favor of `JointType.ROD` and `ModelBuilder.add_joint_rod()`. The old names remain functional through 1.6 and are eligible for removal in 1.7.
