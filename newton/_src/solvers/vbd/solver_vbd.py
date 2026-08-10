@@ -461,14 +461,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         # detection query radius = margin + gap). The legacy radius/margin pair is
         # deprecated; its presence selects the legacy interpretation exactly.
         if particle_self_contact_radius is not None:
-            warnings.warn(
-                "particle_self_contact_radius is deprecated; use particle_self_contact_margin "
-                "(interaction distance) and particle_self_contact_gap (extra detection reach, "
-                "query radius = margin + gap) instead. With radius set, "
-                "particle_self_contact_margin keeps its legacy meaning (detection query radius).",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+            # Validate before warning: under warnings-as-errors (CI) a warning
+            # emitted first would mask the ValueError with a DeprecationWarning.
             if particle_self_contact_gap is not None:
                 raise ValueError(
                     "particle_self_contact_gap cannot be combined with the deprecated "
@@ -482,6 +476,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                     "particle_self_contact_margin is smaller than particle_self_contact_radius, this will result in missing contacts and cause instability.\n"
                     "It is advisable to make particle_self_contact_margin 1.5-2 times larger than particle_self_contact_radius."
                 )
+            warnings.warn(
+                "particle_self_contact_radius is deprecated; use particle_self_contact_margin "
+                "(interaction distance) and particle_self_contact_gap (extra detection reach, "
+                "query radius = margin + gap) instead. With radius set, "
+                "particle_self_contact_margin keeps its legacy meaning (detection query radius).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         else:
             _sc_margin = particle_self_contact_margin if particle_self_contact_margin is not None else 0.2
             _sc_gap = particle_self_contact_gap if particle_self_contact_gap is not None else 0.0
@@ -489,13 +491,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 raise ValueError(f"particle_self_contact_gap must be >= 0, got {_sc_gap}")
 
         if particle_collision_detection_interval is not None:
-            warnings.warn(
-                "particle_collision_detection_interval is deprecated; use the self-contact slot of "
-                "collision_frequency / collision_frequency_type instead (PRE_INIT ~ interval < 0, "
-                "PRE_POST_INIT ~ interval == 0, ITERATIONS ~ interval >= 1).",
-                DeprecationWarning,
-                stacklevel=2,
-            )
             if (
                 collision_frequency_type is not None
                 and SolverBase.CollisionFrequencyType(collision_frequency_type[1])
@@ -505,6 +500,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                     "set either the deprecated particle_collision_detection_interval or the "
                     "self-contact slot of collision_frequency_type, not both"
                 )
+            warnings.warn(
+                "particle_collision_detection_interval is deprecated; use the self-contact slot of "
+                "collision_frequency / collision_frequency_type instead (PRE_INIT ~ interval < 0, "
+                "PRE_POST_INIT ~ interval == 0, ITERATIONS ~ interval >= 1).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self._deprecated_particle_interval = particle_collision_detection_interval
         # Set before super().__init__: _default_collision_frequency_type (AUTO
         # resolution) reads it as soon as the base class is constructed.

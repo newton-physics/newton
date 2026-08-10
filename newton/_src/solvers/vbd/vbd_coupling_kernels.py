@@ -14,7 +14,6 @@ from .particle_vbd_kernels import (
     evaluate_edge_edge_contact_2_vertices,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
-from ...geometry.tri_mesh_collision import TriMeshCollisionInfo
 from .rigid_vbd_kernels import _eval_body_particle_contact, _eval_soft_ef_contact
 
 wp.set_module_options({"enable_backward": False})

@@ -45,6 +45,7 @@ __all__ = [
     "ParticleFlags",
     "ShapeFlags",
     "TetMesh",
+    "TriMeshCollisionInfo",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
