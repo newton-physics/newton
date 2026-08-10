@@ -158,10 +158,11 @@ class KpiDRLegs(_KpiBenchmark):
 class NotifyDRLegs:
     """Benchmark Kamino model notifications for 2048 DR Legs worlds."""
 
-    number = 10
-    repeat = 7
+    number = 1
+    repeat = 5
     rounds = 1
-    timeout = 3600
+    warmup_time = 0
+    timeout = 600
     world_count = 2048
 
     def setup(self):
