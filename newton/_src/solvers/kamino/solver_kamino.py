@@ -1218,6 +1218,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - triangles, edges, tetrahedra
         - muscles
         - distance or cable joints
+        - bodies with singular inertial properties that are attached to movable bodies
 
         Args:
             model: The Newton model to validate.
@@ -1258,12 +1259,92 @@ class SolverKamino(SolverBase, CouplingInterface):
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
 
+        singular_bodies = SolverKamino._find_unsupported_singular_inertia_bodies(model)
+        if len(singular_bodies) > 0:
+            unsupported_features.append(
+                "bodies with singular inertial properties that are attached to movable bodies:\n"
+                + "\n".join(f"      - {desc}" for desc in singular_bodies)
+                + "\n    Import with `collapse_fixed_joints=True` to merge these bodies into their neighbors,"
+                "\n    or give them a non-zero mass and inertia."
+            )
+
         # If any unsupported features were found, raise an error
         if len(unsupported_features) > 0:
             error_msg = "SolverKamino cannot simulate this model due to unsupported features:"
             for feature in unsupported_features:
                 error_msg += "\n  - " + feature
             raise ValueError(error_msg)
+
+    @staticmethod
+    def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
+        """Finds bodies whose singular inertial properties make them unsafe to simulate.
+
+        A body with singular inverse mass or inertia cannot respond to all applied wrenches in the
+        dual formulation. Such a body is only safe in two situations:
+
+        - It is welded to the world, so a permanently frozen velocity is the correct answer.
+        - It only has a free joint to the world, and is not attached to any other bodies.
+          It then stays at its initial velocity.
+
+        Otherwise its missing response propagates through its joints and prevents physically
+        meaningful motion of attached bodies.
+
+        Args:
+            model: The Newton model to validate.
+
+        Returns:
+            A human-readable description of each offending body, empty if the model is supported.
+        """
+        if model.body_count == 0:
+            return []
+
+        inv_mass = model.body_inv_mass.numpy()
+        inv_inertia = model.body_inv_inertia.numpy()
+        singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
+        singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
+        if not singular:
+            return []
+
+        # `-1` denotes the world.
+        welded_neighbors: dict[int, list[int]] = {}
+        coupling_joints = [0] * model.body_count
+        if model.joint_count > 0:
+            joint_type = model.joint_type.numpy()
+            joint_parent = model.joint_parent.numpy()
+            joint_child = model.joint_child.numpy()
+            for j in range(model.joint_count):
+                joint = int(joint_type[j])
+                parent, child = int(joint_parent[j]), int(joint_child[j])
+                if joint == JointType.FIXED:
+                    welded_neighbors.setdefault(parent, []).append(child)
+                    welded_neighbors.setdefault(child, []).append(parent)
+                elif joint == JointType.FREE and parent == -1:
+                    # Imposes no constraint, so it cannot transmit a frozen velocity.
+                    continue
+                for endpoint in (parent, child):
+                    if endpoint >= 0:
+                        coupling_joints[endpoint] += 1
+
+        welded_to_world = {-1}
+        stack = [-1]
+        while stack:
+            for neighbor in welded_neighbors.get(stack.pop(), ()):
+                if neighbor not in welded_to_world:
+                    welded_to_world.add(neighbor)
+                    stack.append(neighbor)
+
+        descriptions = []
+        for b in singular:
+            if b in welded_to_world or coupling_joints[b] == 0:
+                continue
+            reasons = []
+            if inv_mass[b] == 0.0:
+                reasons.append("zero inverse mass")
+            if singular_inertia[b]:
+                reasons.append("singular inverse inertia")
+            label = model.body_label[b] if model.body_label else f"body {b}"
+            descriptions.append(f"'{label}' (index {b}): {' and '.join(reasons)}")
+        return descriptions
 
     def _validate_structural_invariants(self, flags: ModelFlags | int) -> None:
         """Raise if a runtime edit changes a structural decision frozen at build.
