@@ -284,12 +284,10 @@ class PADMMSolver:
         """
         Resets the all internal solver data to sentinel values.
         """
-        # Reset the internal solver state
-        self._data.state.reset(use_acceleration=self._use_acceleration)
-
         # Reset the solution cache, which could be used for internal warm-starting
         # If no world mask is provided, reset data of all worlds
         if world_mask is None:
+            self._data.state.reset(use_acceleration=self._use_acceleration)
             self._data.solution.zero()
 
         # Otherwise, only the solution cache of the specified worlds

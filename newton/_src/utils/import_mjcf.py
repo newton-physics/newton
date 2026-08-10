@@ -21,6 +21,7 @@ from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_conv
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
+from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_KD,
     DEFAULT_LIMIT_KE,
@@ -374,6 +375,19 @@ def parse_mjcf(
     # Register the MuJoCo custom attributes needed to preserve imported model
     # properties. The operation is idempotent.
     SolverMuJoCo.register_custom_attributes(builder)
+    # Bit 1 in one MJCF file may describe different shapes than bit 1 in
+    # another. Give every add_mjcf() call a domain so those equal numbers are
+    # not mistaken for one shared collision rule. The domain is only a source
+    # label; it does not enable or disable collisions.
+    collision_mask_domain_key = "mujoco:collision_mask_domain"
+    collision_mask_domain_attr = builder.custom_attributes[collision_mask_domain_key]
+    collision_mask_domain = (
+        max(
+            (int(value) for value in collision_mask_domain_attr.values.values()),
+            default=MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
+        )
+        + 1
+    )
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
@@ -1024,6 +1038,14 @@ def parse_mjcf(
                 if shape_builder is builder
                 else {}
             )
+            if shape_builder is builder:
+                # Preserve both source masks and the namespace in which their
+                # bit positions were authored for a possible MuJoCo round trip.
+                if "mujoco:contype" in builder.custom_attributes:
+                    custom_attributes["mujoco:contype"] = contype & 0xFFFFFFFF
+                if "mujoco:conaffinity" in builder.custom_attributes:
+                    custom_attributes["mujoco:conaffinity"] = conaffinity & 0xFFFFFFFF
+                custom_attributes[collision_mask_domain_key] = collision_mask_domain
             if has_solref_mode and shape_builder is builder:
                 # Authored solref → RAW (forwarded verbatim); unauthored →
                 # MJCF_DEFAULT (force-space scaling is strictly opt-in for
@@ -3329,6 +3351,75 @@ def parse_mjcf(
         for a, i in enumerate(colliding_shapes):
             for j in colliding_shapes[a + 1 :]:
                 builder.add_shape_collision_filter_pair(i, j)
+
+    # Compile MuJoCo's asymmetric collision masks into Newton's signed groups
+    # plus sparse exact exclusions. Restrict the optimizer to one positive
+    # group so imported shapes retain the existing default-group interaction
+    # with Newton-authored shapes; negative group IDs are made unique across
+    # imports so separate assets do not accidentally suppress each other.
+    contype_attr = builder.custom_attributes.get("mujoco:contype")
+    conaffinity_attr = builder.custom_attributes.get("mujoco:conaffinity")
+    if contype_attr is not None and conaffinity_attr is not None:
+        colliding_shapes = np.asarray(
+            [
+                shape
+                for shape in range(start_shape_count, end_shape_count)
+                if builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES
+            ],
+            dtype=np.int32,
+        )
+        if colliding_shapes.shape[0]:
+            to_local = {int(shape): local for local, shape in enumerate(colliding_shapes)}
+            prefiltered_pairs = [
+                (to_local[shape_a], to_local[shape_b])
+                for shape_a, shape_b in builder._shape_collision_filter_pairs.explicit_pairs
+                if shape_a in to_local and shape_b in to_local
+            ]
+            collision_type = [
+                int(contype_attr.values.get(int(shape), contype_attr.default)) for shape in colliding_shapes
+            ]
+            collision_affinity = [
+                int(conaffinity_attr.values.get(int(shape), conaffinity_attr.default)) for shape in colliding_shapes
+            ]
+            compiled = compile_collision_masks(
+                collision_type,
+                collision_affinity,
+                prefiltered_pairs=prefiltered_pairs,
+                force_nonzero=True,
+                max_positive_groups=1,
+            )
+
+            default_positive_group = int(builder.default_shape_cfg.collision_group)
+            if default_positive_group <= 0:
+                default_positive_group = 1
+            used_negative_ids = {
+                -int(group) for group in builder.shape_collision_group[:start_shape_count] if int(group) < 0
+            }
+            negative_group_map = {}
+            next_negative_id = 1
+            for raw_group in np.unique(compiled.groups):
+                group = int(raw_group)
+                if group >= 0:
+                    continue
+                while next_negative_id in used_negative_ids:
+                    next_negative_id += 1
+                negative_group_map[group] = -next_negative_id
+                used_negative_ids.add(next_negative_id)
+                next_negative_id += 1
+
+            for local_shape, shape in enumerate(colliding_shapes):
+                group = int(compiled.groups[local_shape])
+                if group > 0:
+                    group = default_positive_group
+                elif group < 0:
+                    group = negative_group_map[group]
+                builder.shape_collision_group[int(shape)] = group
+
+            for shape_a, shape_b in compiled.excluded_pairs:
+                builder.add_shape_collision_filter_pair(
+                    int(colliding_shapes[shape_a]),
+                    int(colliding_shapes[shape_b]),
+                )
 
     # Create articulations from collected joints
     if parent_body != -1 or len(root_body_boundaries) <= 1:

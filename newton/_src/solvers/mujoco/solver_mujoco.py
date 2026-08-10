@@ -40,6 +40,13 @@ from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..solver import SolverBase
 from . import kernels
+from .collision_masks import (
+    MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
+    MUJOCO_COLLISION_MASK_UNSET,
+    NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT,
+    compile_newton_collision_graph,
+    mujoco_mask_to_signed,
+)
 from .constants import (
     DEFAULT_LIMIT_GAIN_RTOL,
     DEFAULT_LIMIT_KD,
@@ -495,9 +502,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Determines where an actuator gets its control input from:
 
-        - :attr:`JOINT_TARGET`: Maps from Newton's :attr:`~newton.Control.joint_target_q`/:attr:`~newton.Control.joint_target_qd` arrays
-          (or the deprecated :attr:`~newton.Control.joint_target_pos`/:attr:`~newton.Control.joint_target_vel` aliases when
-          :attr:`newton.use_coord_layout_targets` is ``False``).
+        - :attr:`JOINT_TARGET`: Maps from Newton's :attr:`~newton.Control.joint_target_q`/:attr:`~newton.Control.joint_target_qd` arrays.
         - :attr:`CTRL_DIRECT`: Uses ``control.mujoco.ctrl`` directly (for MuJoCo-native control)
         """
 
@@ -509,13 +514,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         For :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode, determines which target array to read from:
 
-        - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_q` (legacy alias
-          :attr:`~newton.Control.joint_target_pos`), syncs gains from
+        - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_q`, syncs gains from
           :attr:`~newton.Model.joint_target_ke`. For :attr:`~newton.JointTargetMode.POSITION`-only actuators,
           also syncs damping from :attr:`~newton.Model.joint_target_kd`. For
           :attr:`~newton.JointTargetMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
-        - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_qd` (legacy alias
-          :attr:`~newton.Control.joint_target_vel`), syncs gains from :attr:`~newton.Model.joint_target_kd`
+        - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_qd`, syncs gains from :attr:`~newton.Model.joint_target_kd`
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
         """
 
@@ -857,6 +860,43 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # endregion custom frequencies
 
         # region geom attributes
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="contype",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int64,
+                default=MUJOCO_COLLISION_MASK_UNSET,
+                namespace="mujoco",
+                usd_attribute_name="mjc:contype",
+                mjcf_attribute_name="contype",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="conaffinity",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int64,
+                default=MUJOCO_COLLISION_MASK_UNSET,
+                namespace="mujoco",
+                usd_attribute_name="mjc:conaffinity",
+                mjcf_attribute_name="conaffinity",
+            )
+        )
+        # Record which add_mjcf() call supplied each shape's masks. This is not
+        # another mask: it prevents equal bit numbers from separate files from
+        # being treated as if they were authored together.
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="collision_mask_domain",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int64,
+                default=MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
+                namespace="mujoco",
+            )
+        )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="condim",
@@ -3813,7 +3853,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def reset(
         self,
         state: State,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Reset joint state to model defaults and clear MuJoCo's internal buffers.
@@ -3843,8 +3883,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ``qpos`` / ``qvel`` are normally synced from the reset ``state`` at the
         start of the next :meth:`step`. When ``update_data_interval != 1`` that
         per-step sync is disabled or sparse, so the reset joint coordinates are
-        pushed into ``qpos`` / ``qvel`` immediately instead (for all worlds;
-        unmasked worlds round-trip through their current joint coordinates).
+        pushed into ``qpos`` / ``qvel`` immediately for the selected worlds.
         When sleeping is enabled, reset synchronizes immediately, rebuilds
         MuJoCo Warp's cached position- and velocity-dependent data, and restores
         the initial sleep state in the selected worlds.
@@ -3855,14 +3894,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 selecting which worlds to reset. The final entry represents
                 global world ``-1`` and is a no-op because MuJoCo does not
                 support global dynamic objects. If ``None``, all worlds are
-                reset. Passing the deprecated shape ``(world_count,)`` selects
-                local worlds only.
+                reset.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` bitmask controlling which
                 joint-state quantities are reset. If ``None``, all are reset.
                 The internal MuJoCo buffers are always cleared regardless.
         """
-        world_count = self.model.world_count
+        if state is None:
+            raise ValueError("'state' argument is required.")
+
         world_mask = self._normalize_reset_world_mask(world_mask)
+        world_count = self.model.world_count
+        native_template_world_selected = not self.use_mujoco_cpu or world_mask is None or bool(world_mask.numpy()[0])
 
         # Reset joint coordinates/velocities to model defaults for the selected
         # worlds. body_q/body_qd are FK outputs and intentionally not touched.
@@ -3894,13 +3941,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # below before rebuilding its cached data.
                 if self.update_data_interval != 1 and not self.enable_sleeping:
                     data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
-                    if data is not None:
-                        self._update_mjc_data(data, self.model, state)
+                    if data is not None and native_template_world_selected:
+                        self._update_mjc_data(data, self.model, state, world_mask=world_mask)
 
         # Clear the internal buffers that persist between steps.
         if self.use_mujoco_cpu:
             d = self.mj_data
             if d is None:
+                return
+            # Native MuJoCo owns one template-world MjData instance even when
+            # separate_worlds=True was requested for a multi-world Newton
+            # model. Its persistent buffers therefore belong to local world 0.
+            if not native_template_world_selected:
                 return
             # Single MjData instance: clear the whole buffers (no per-world mask).
             d.qacc_warmstart[:] = 0.0
@@ -3923,7 +3975,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
         if self.enable_sleeping:
-            self._update_mjc_data(d, self.model, state)
+            self._update_mjc_data(d, self.model, state, world_mask=world_mask)
             self._wake_sleeping_worlds(world_mask, clear_overflow=True)
             # Sleeping trees retain derived state, so rebuild it at the reset
             # coordinates before restoring the initial sleep bookkeeping.
@@ -4695,6 +4747,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self.mjc_body_to_newton,
                     model.body_flags,
                     state.body_f,
+                    model.body_mass,
+                    model.body_world,
+                    model.gravity,
+                    self.mjw_model.body_gravcomp,
                 ],
                 outputs=[
                     xfrc,
@@ -4723,7 +4779,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mj_data.ctrl[:] = ctrl.numpy().flatten()
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
-    def _update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
+    def _update_mjc_data(
+        self,
+        mj_data: MjWarpData | MjData,
+        model: Model,
+        state: State | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
+    ):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False
         if is_mjwarp:
@@ -4761,6 +4823,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 joint_q,
                 joint_qd,
+                world_mask,
                 joints_per_world,
                 model.joint_type,
                 model.joint_q_start,
@@ -4783,7 +4846,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wp.launch(
                 copy_qpos_and_detect_tree_change_kernel,
                 dim=qpos.shape,
-                inputs=[self._sleep_qpos, 1.0e-6, self._sleep_qpos_treeid],
+                inputs=[self._sleep_qpos, world_mask, 1.0e-6, self._sleep_qpos_treeid],
                 outputs=[qpos, self._sleep_tree_changed],
                 device=model.device,
             )
@@ -4954,6 +5017,66 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return [(selected_bodies[bodies_a[k]], selected_bodies[bodies_b[k]]) for k in np.flatnonzero(excluded)]
 
     @staticmethod
+    def _compile_newton_collision_masks(model: Model, selected_shapes: np.ndarray):
+        """Compile selected Newton groups and filters into MuJoCo masks."""
+        groups = model.shape_collision_group.numpy()[selected_shapes]
+        # The exact compiler materializes a dense pair graph. Enforce its size
+        # limit before even reading sparse filters; the fallback needs only the
+        # selected collision groups.
+        if selected_shapes.shape[0] > NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT:
+            return compile_newton_collision_graph(groups)
+
+        # Query only the bounded selected-shape graph. Materializing the global
+        # sparse pair array scales this template conversion with replicated worlds.
+        shape_a, shape_b = np.triu_indices(selected_shapes.shape[0], k=1)
+        candidate_pairs = np.column_stack((selected_shapes[shape_a], selected_shapes[shape_b]))
+        filtered = model.shape_collision_filter_mask(candidate_pairs)
+        local_filter_pairs = np.column_stack((shape_a[filtered], shape_b[filtered]))
+        return compile_newton_collision_graph(groups, excluded_pairs=local_filter_pairs)
+
+    @staticmethod
+    def _preserved_masks_cover_collision_filters(
+        model: Model,
+        selected_shapes: np.ndarray,
+        collision_type: np.ndarray,
+        collision_affinity: np.ndarray,
+        body_filters: Iterable[tuple[int, int]],
+    ) -> bool:
+        """Return whether preserved masks and body excludes cover Newton pair filters."""
+        filter_pairs = model.shape_collision_filter_pairs_array()
+        if filter_pairs.shape[0] == 0:
+            return True
+
+        selected = np.zeros(model.shape_count, dtype=bool)
+        selected[selected_shapes] = True
+        filter_pairs = filter_pairs[selected[filter_pairs[:, 0]] & selected[filter_pairs[:, 1]]]
+        if filter_pairs.shape[0] == 0:
+            return True
+
+        collision_type = (collision_type.astype(np.int64, copy=False) & np.int64(0xFFFFFFFF)).astype(np.uint32)
+        collision_affinity = (collision_affinity.astype(np.int64, copy=False) & np.int64(0xFFFFFFFF)).astype(np.uint32)
+        shape_a = filter_pairs[:, 0]
+        shape_b = filter_pairs[:, 1]
+        raw_masks_allow = ((collision_type[shape_a] & collision_affinity[shape_b]) != 0) | (
+            (collision_type[shape_b] & collision_affinity[shape_a]) != 0
+        )
+        remaining_pairs = filter_pairs[raw_masks_allow]
+        if remaining_pairs.shape[0] == 0:
+            return True
+
+        body_filter_set = {tuple(sorted((int(body_a), int(body_b)))) for body_a, body_b in body_filters}
+        shape_body = model.shape_body.numpy()
+        for shape_a, shape_b in remaining_pairs:
+            body_a = int(shape_body[shape_a])
+            body_b = int(shape_body[shape_b])
+            # MuJoCo never generates automatic contacts between geoms on the
+            # same body; whole-body Newton filters are emitted as excludes.
+            if body_a == body_b or tuple(sorted((body_a, body_b))) in body_filter_set:
+                continue
+            return False
+        return True
+
+    @staticmethod
     def _color_collision_shapes(
         model: Model, selected_shapes: np.ndarray, visualize_graph: bool = False, shape_labels: list[str] | None = None
     ) -> np.ndarray:
@@ -4986,7 +5109,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         candidate_pairs = np.stack((selected_shapes[shape_a], selected_shapes[shape_b]), axis=1)
         filtered = model.shape_collision_filter_mask(candidate_pairs)
         group_a, group_b = cgroup[shape_a], cgroup[shape_b]
-        edge_mask = ~filtered & ((group_a == group_b) | (group_a == -1) | (group_b == -1))
+        group_allowed = (group_a != 0) & (group_b != 0)
+        group_allowed &= ((group_a > 0) & ((group_a == group_b) | (group_b < 0))) | (
+            (group_a < 0) & (group_a != group_b)
+        )
+        edge_mask = ~filtered & group_allowed
         graph_edges = np.stack((shape_a[edge_mask], shape_b[edge_mask]), axis=1).astype(np.int32)
         shape_color = np.zeros(model.shape_count, dtype=np.int32)
         if len(graph_edges) > 0:
@@ -4995,10 +5122,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 graph_edge_indices=wp.array(graph_edges, dtype=wp.int32),
                 balance_colors=False,
             )
-            num_colors = 0
-            for group in color_groups:
-                num_colors += 1
-                shape_color[selected_shapes[group]] = num_colors
+            for color, group in enumerate(color_groups):
+                shape_color[selected_shapes[group]] = color
             if visualize_graph:
                 plot_graph(
                     vertices=np.arange(num_shapes),
@@ -5008,6 +5133,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
 
         return shape_color
+
+    @staticmethod
+    def _collision_color_masks(color: int) -> tuple[int, int]:
+        """Encode a collision color as signed MuJoCo ``contype`` and ``conaffinity`` masks."""
+        if color >= 32:
+            return 1, 1
+
+        uint32_mask = (1 << 32) - 1
+        contype = 1 << color
+        conaffinity = uint32_mask & ~contype
+
+        def as_signed_int32(mask: int) -> int:
+            return mask if mask < (1 << 31) else mask - (1 << 32)
+
+        return as_signed_int32(contype), as_signed_int32(conaffinity)
 
     def get_max_contact_count(self) -> int:
         """Return the maximum number of rigid contacts that can be generated by MuJoCo."""
@@ -5423,6 +5563,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return None
             return attr.numpy()
 
+        shape_mjc_contype = get_custom_attribute("contype")
+        shape_mjc_conaffinity = get_custom_attribute("conaffinity")
+        shape_mjc_collision_mask_domain = get_custom_attribute("collision_mask_domain")
         shape_condim = get_custom_attribute("condim")
         shape_geom_group = get_custom_attribute("geom_group")
         shape_priority = get_custom_attribute("geom_priority")
@@ -5478,9 +5621,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mimic_coef1 = model.constraint_mimic_coef1.numpy()
         mimic_enabled = model.constraint_mimic_enabled.numpy()
         mimic_world = model.constraint_mimic_world.numpy()
-
-        INT32_MAX = np.iinfo(np.int32).max
-        collision_mask_everything = INT32_MAX
 
         # mapping from joint axis to actuator index
         # axis_to_actuator[i, 0] = position actuator index
@@ -5690,9 +5830,42 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             colliding_shapes,
         )
 
-        shape_color = self._color_collision_shapes(
-            model, colliding_shapes, visualize_graph=False, shape_labels=model.shape_label
+        # Reuse the original masks only when all shapes came from the same
+        # add_mjcf() call and the masks already enforce every Newton filter.
+        # Otherwise generate new masks from Newton's final allowed shape pairs.
+        use_preserved_collision_masks = (
+            shape_mjc_contype is not None
+            and shape_mjc_conaffinity is not None
+            and shape_mjc_collision_mask_domain is not None
+            and np.all(shape_mjc_contype[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
+            and np.all(shape_mjc_conaffinity[colliding_shapes] != MUJOCO_COLLISION_MASK_UNSET)
+            and np.all(shape_mjc_collision_mask_domain[colliding_shapes] != MUJOCO_COLLISION_MASK_DOMAIN_UNSET)
+            and np.unique(shape_mjc_collision_mask_domain[colliding_shapes]).shape[0] <= 1
+            and self._preserved_masks_cover_collision_filters(
+                model,
+                colliding_shapes,
+                shape_mjc_contype,
+                shape_mjc_conaffinity,
+                body_filters,
+            )
         )
+        compiled_collision_type = None
+        compiled_collision_affinity = None
+        shape_color = None
+        if not use_preserved_collision_masks:
+            compiled_masks = self._compile_newton_collision_masks(model, colliding_shapes)
+            if compiled_masks.exact:
+                compiled_collision_type = np.zeros(model.shape_count, dtype=np.uint32)
+                compiled_collision_affinity = np.zeros(model.shape_count, dtype=np.uint32)
+                compiled_collision_type[colliding_shapes] = compiled_masks.collision_type
+                compiled_collision_affinity[colliding_shapes] = compiled_masks.collision_affinity
+            else:
+                shape_color = self._color_collision_shapes(
+                    model,
+                    colliding_shapes,
+                    visualize_graph=False,
+                    shape_labels=model.shape_label,
+                )
 
         selected_shapes_set = set(selected_shapes)
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -5910,7 +6083,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
                     vertices, indices, maxhullvert, is_planar = mesh_export
                     uses_mujoco_contacts = (
-                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) and int(shape_collision_group[shape]) != 0
+                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
+                        and (
+                            (
+                                use_preserved_collision_masks
+                                and bool(int(shape_mjc_contype[shape]) | int(shape_mjc_conaffinity[shape]))
+                            )
+                            or (not use_preserved_collision_masks and int(shape_collision_group[shape]) != 0)
+                        )
                     ) or shape in mujoco_pair_contact_shapes
                     if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
                         raise ValueError(
@@ -5941,18 +6121,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     geom_params["rgba"] = [0.0, 0.3, 0.6, 1.0]
 
                 # encode collision filtering information
-                if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) or shape_collision_group[shape] == 0:
-                    # Non-colliding shape, or collision_group=0 (e.g. MJCF contype=conaffinity=0
-                    # geoms that only participate in explicit <pair> contacts)
+                if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
+                    # Visual-only Newton shapes never participate in automatic
+                    # MuJoCo contacts, even if source metadata carried masks.
                     geom_params["contype"] = 0
                     geom_params["conaffinity"] = 0
+                elif use_preserved_collision_masks:
+                    geom_params["contype"] = mujoco_mask_to_signed(int(shape_mjc_contype[shape]))
+                    geom_params["conaffinity"] = mujoco_mask_to_signed(int(shape_mjc_conaffinity[shape]))
+                elif shape_collision_group[shape] == 0:
+                    geom_params["contype"] = 0
+                    geom_params["conaffinity"] = 0
+                elif compiled_collision_type is not None and compiled_collision_affinity is not None:
+                    geom_params["contype"] = mujoco_mask_to_signed(int(compiled_collision_type[shape]))
+                    geom_params["conaffinity"] = mujoco_mask_to_signed(int(compiled_collision_affinity[shape]))
                 else:
                     color = shape_color[shape]
-                    if color < 32:
-                        contype = 1 << color
-                        geom_params["contype"] = contype
-                        # collide with anything except shapes from the same color
-                        geom_params["conaffinity"] = collision_mask_everything & ~contype
+                    contype, conaffinity = self._collision_color_masks(int(color))
+                    geom_params["contype"] = contype
+                    geom_params["conaffinity"] = conaffinity
 
                 # set friction from Newton shape materials
                 mu = shape_mu[shape]

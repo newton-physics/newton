@@ -335,6 +335,26 @@ class TestMuJoCoSleeping(unittest.TestCase):
         state_0, _ = self._sleep_all(solver, state_0, state_1, control, contacts)
         np.testing.assert_array_equal(solver.mjw_data.ntree_awake.numpy(), [0, 0])
 
+        # Make the parent state disagree with MuJoCo so an unmasked sync would
+        # visibly overwrite the unselected world's native state.
+        joint_q = state_0.joint_q.numpy()
+        joint_qd = state_0.joint_qd.numpy()
+        joint_q[1] += 0.25
+        joint_qd[1] += 0.5
+        state_0.joint_q.assign(joint_q)
+        state_0.joint_qd.assign(joint_qd)
+        preserved_names = (
+            "qpos",
+            "qvel",
+            "tree_asleep",
+            "tree_awake",
+            "body_awake",
+            "ntree_awake",
+            "nbody_awake",
+            "nv_awake",
+        )
+        before = {name: getattr(solver.mjw_data, name).numpy().copy() for name in preserved_names}
+
         mask = wp.array([True, False, False], dtype=wp.bool, device=model.device)
         solver.reset(state_0, world_mask=mask, flags=0)
 
@@ -342,6 +362,14 @@ class TestMuJoCoSleeping(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjw_data.nv_awake.numpy(), [1, 0])
         self.assertLess(int(solver.mjw_data.tree_asleep.numpy()[0, 0]), 0)
         self.assertGreaterEqual(int(solver.mjw_data.tree_asleep.numpy()[1, 0]), 0)
+        for name, values in before.items():
+            np.testing.assert_array_equal(getattr(solver.mjw_data, name).numpy()[1], values[1], err_msg=name)
+
+        before = {name: getattr(solver.mjw_data, name).numpy().copy() for name in preserved_names}
+        all_false = wp.zeros(model.world_count + 1, dtype=wp.bool, device=model.device)
+        solver.reset(state_0, world_mask=all_false, flags=0)
+        for name, values in before.items():
+            np.testing.assert_array_equal(getattr(solver.mjw_data, name).numpy(), values, err_msg=name)
 
     def test_model_update_wakes_sleeping_trees(self):
         _, solver, state_0, state_1, control, contacts = self._make_sim(enable_sleeping=True, nvmax=1)
@@ -406,7 +434,7 @@ class TestMuJoCoSleeping(unittest.TestCase):
         self.assertEqual(int(solver.mjw_data.nv_awake.numpy()[0]), 2)
         np.testing.assert_array_equal(solver.mjw_data.overflow.numpy(), [0])
 
-    def test_sleeping_step_supports_cuda_graph_capture(self):
+    def test_sleeping_step_and_reset_support_cuda_graph_capture(self):
         model, solver, state_0, state_1, control, contacts = self._make_sim(enable_sleeping=True, nvmax=1)
         if not model.device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device")
@@ -417,6 +445,19 @@ class TestMuJoCoSleeping(unittest.TestCase):
 
         wp.capture_launch(capture.graph)
         self.assertTrue(np.all(np.isfinite(state_1.joint_q.numpy())))
+
+        all_false = wp.zeros(model.world_count + 1, dtype=wp.bool, device=model.device)
+        solver.reset(state_0, world_mask=all_false, flags=0)
+        qpos_before = solver.mjw_data.qpos.numpy().copy()
+        qvel_before = solver.mjw_data.qvel.numpy().copy()
+        tree_asleep_before = solver.mjw_data.tree_asleep.numpy().copy()
+        with wp.ScopedCapture(device=model.device) as capture:
+            solver.reset(state_0, world_mask=all_false, flags=0)
+
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(solver.mjw_data.qpos.numpy(), qpos_before)
+        np.testing.assert_array_equal(solver.mjw_data.qvel.numpy(), qvel_before)
+        np.testing.assert_array_equal(solver.mjw_data.tree_asleep.numpy(), tree_asleep_before)
 
 
 if __name__ == "__main__":
