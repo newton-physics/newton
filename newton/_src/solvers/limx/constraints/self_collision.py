@@ -18,6 +18,7 @@ _MIN_CONTACT_DISTANCE = 1.0e-7
 _MIN_GEOMETRY_NORM = 1.0e-8
 _MIN_STIFFNESS_DENOMINATOR = 1.0e-12
 _EE_MOLLIFIER_THRESHOLD_SCALE = 1.0e-3
+_ORIENTED_TOPOLOGY_EXCLUSION_RINGS = 3
 
 
 def _compute_geometry_aware_particle_radii(
@@ -132,6 +133,52 @@ def _is_topology_local_edge_pair(
 
 
 @wp.func
+def _is_vertex_within_topology_exclusion(
+    vertex: int,
+    candidate: int,
+    vertex_neighbor_offsets: wp.array[int],
+    vertex_neighbors: wp.array[int],
+):
+    for entry in range(vertex_neighbor_offsets[vertex], vertex_neighbor_offsets[vertex + 1]):
+        if vertex_neighbors[entry] == candidate:
+            return True
+    return False
+
+
+@wp.func
+def _triangle_unit_normal(
+    triangle: int,
+    positions: wp.array[wp.vec3],
+    triangle_indices: wp.array2d[int],
+):
+    if triangle < 0:
+        return wp.vec3(0.0)
+    position_0 = positions[triangle_indices[triangle, 0]]
+    position_1 = positions[triangle_indices[triangle, 1]]
+    position_2 = positions[triangle_indices[triangle, 2]]
+    normal = wp.cross(position_1 - position_0, position_2 - position_0)
+    length = wp.length(normal)
+    if length <= _MIN_GEOMETRY_NORM:
+        return wp.vec3(0.0)
+    return normal / length
+
+
+@wp.func
+def _edge_pseudo_normal(
+    edge: int,
+    positions: wp.array[wp.vec3],
+    triangle_indices: wp.array2d[int],
+    edge_triangle_indices: wp.array2d[int],
+):
+    normal = _triangle_unit_normal(edge_triangle_indices[edge, 0], positions, triangle_indices)
+    normal += _triangle_unit_normal(edge_triangle_indices[edge, 1], positions, triangle_indices)
+    length = wp.length(normal)
+    if length <= _MIN_GEOMETRY_NORM:
+        return wp.vec3(0.0)
+    return normal / length
+
+
+@wp.func
 def _edge_edge_mollified_residual_data(
     edge_0: wp.vec3,
     edge_1: wp.vec3,
@@ -191,6 +238,9 @@ def _detect_vertex_face_contacts(
     capacity: int,
     positions: wp.array[wp.vec3],
     surface_vertex_indices: wp.array[int],
+    use_outward_normals: int,
+    vertex_neighbor_offsets: wp.array[int],
+    vertex_neighbors: wp.array[int],
     particle_world: wp.array[int],
     triangle_indices: wp.array2d[int],
     contact_ids: wp.array2d[int],
@@ -216,6 +266,12 @@ def _detect_vertex_face_contacts(
             continue
         if particle_world[vertex] != particle_world[index_0]:
             continue
+        if use_outward_normals != 0 and (
+            _is_vertex_within_topology_exclusion(vertex, index_0, vertex_neighbor_offsets, vertex_neighbors)
+            or _is_vertex_within_topology_exclusion(vertex, index_1, vertex_neighbor_offsets, vertex_neighbors)
+            or _is_vertex_within_topology_exclusion(vertex, index_2, vertex_neighbor_offsets, vertex_neighbors)
+        ):
+            continue
 
         position_0 = positions[index_0]
         position_1 = positions[index_1]
@@ -227,8 +283,12 @@ def _detect_vertex_face_contacts(
         triangle_normal = normal_raw / normal_length
         signed_distance = wp.dot(vertex_position - position_0, triangle_normal)
         distance = wp.abs(signed_distance)
-        if distance <= _MIN_CONTACT_DISTANCE or distance >= thickness:
-            continue
+        if use_outward_normals != 0:
+            if distance >= thickness:
+                continue
+        else:
+            if distance <= _MIN_CONTACT_DISTANCE or distance >= thickness:
+                continue
 
         projected = vertex_position - signed_distance * triangle_normal
         barycentric = _triangle_barycentric(position_0, position_1, position_2, projected)
@@ -252,8 +312,11 @@ def _detect_vertex_face_contacts(
             continue
 
         direction = triangle_normal
-        if signed_distance < 0.0:
+        depth = effective_thickness - signed_distance
+        if use_outward_normals == 0 and signed_distance < 0.0:
             direction = -direction
+        if use_outward_normals == 0:
+            depth = effective_thickness - distance
         contact_ids[contact, 0] = vertex
         contact_ids[contact, 1] = index_0
         contact_ids[contact, 2] = index_1
@@ -263,7 +326,7 @@ def _detect_vertex_face_contacts(
         contact_weights[contact, 2] = -barycentric[1]
         contact_weights[contact, 3] = -barycentric[2]
         contact_directions[contact] = direction
-        contact_depths[contact] = effective_thickness - distance
+        contact_depths[contact] = depth
 
 
 @wp.kernel
@@ -276,7 +339,12 @@ def _detect_edge_edge_contacts(
     positions: wp.array[wp.vec3],
     rest_positions: wp.array[wp.vec3],
     particle_world: wp.array[int],
+    triangle_indices: wp.array2d[int],
     edge_indices: wp.array2d[int],
+    edge_triangle_indices: wp.array2d[int],
+    use_outward_normals: int,
+    vertex_neighbor_offsets: wp.array[int],
+    vertex_neighbors: wp.array[int],
     contact_ids: wp.array2d[int],
     contact_weights: wp.array2d[float],
     contact_directions: wp.array[wp.vec3],
@@ -305,6 +373,13 @@ def _detect_edge_edge_contacts(
             continue
         if particle_world[index_0] != particle_world[index_2]:
             continue
+        if use_outward_normals != 0 and (
+            _is_vertex_within_topology_exclusion(index_0, index_2, vertex_neighbor_offsets, vertex_neighbors)
+            or _is_vertex_within_topology_exclusion(index_0, index_3, vertex_neighbor_offsets, vertex_neighbors)
+            or _is_vertex_within_topology_exclusion(index_1, index_2, vertex_neighbor_offsets, vertex_neighbors)
+            or _is_vertex_within_topology_exclusion(index_1, index_3, vertex_neighbor_offsets, vertex_neighbors)
+        ):
+            continue
 
         position_2 = positions[index_2]
         position_3 = positions[index_3]
@@ -323,6 +398,15 @@ def _detect_edge_edge_contacts(
         closest_1 = wp.lerp(position_2, position_3, parameter_1)
         separation = closest_0 - closest_1
         distance = wp.length(separation)
+        topology_local = _is_topology_local_edge_pair(
+            edge,
+            other_edge,
+            index_0,
+            index_1,
+            index_2,
+            index_3,
+            edge_indices,
+        )
         limited_thickness = thickness
         if use_geometry_radii != 0:
             radius_0 = (1.0 - parameter_0) * particle_radii[index_0]
@@ -330,21 +414,31 @@ def _detect_edge_edge_contacts(
             radius_1 = (1.0 - parameter_1) * particle_radii[index_2]
             radius_1 += parameter_1 * particle_radii[index_3]
             limited_thickness = radius_0 + radius_1
-        else:
-            topology_local = _is_topology_local_edge_pair(
-                edge,
-                other_edge,
-                index_0,
-                index_1,
-                index_2,
-                index_3,
-                edge_indices,
-            )
-            if topology_local:
-                average_length = 0.5 * (wp.length(position_1 - position_0) + wp.length(position_3 - position_2))
-                limited_thickness = wp.min(limited_thickness, 0.5 * average_length)
-        if distance <= _MIN_CONTACT_DISTANCE or distance >= limited_thickness:
+        elif topology_local:
+            average_length = 0.5 * (wp.length(position_1 - position_0) + wp.length(position_3 - position_2))
+            limited_thickness = wp.min(limited_thickness, 0.5 * average_length)
+        if distance >= limited_thickness:
             continue
+
+        direction = wp.vec3(0.0)
+        depth = 0.0
+        if use_outward_normals != 0:
+            pseudo_normal_0 = _edge_pseudo_normal(edge, positions, triangle_indices, edge_triangle_indices)
+            pseudo_normal_1 = _edge_pseudo_normal(other_edge, positions, triangle_indices, edge_triangle_indices)
+            direction_raw = pseudo_normal_1 - pseudo_normal_0
+            direction_length = wp.length(direction_raw)
+            if direction_length <= _MIN_GEOMETRY_NORM:
+                continue
+            direction = direction_raw / direction_length
+            signed_distance = wp.dot(separation, direction)
+            if signed_distance >= limited_thickness:
+                continue
+            depth = limited_thickness - signed_distance
+        else:
+            if distance <= _MIN_CONTACT_DISTANCE:
+                continue
+            direction = separation / distance
+            depth = limited_thickness - distance
 
         contact = wp.atomic_add(contact_count, 0, 1)
         if contact >= capacity:
@@ -359,8 +453,8 @@ def _detect_edge_edge_contacts(
         contact_weights[contact, 1] = parameter_0
         contact_weights[contact, 2] = -(1.0 - parameter_1)
         contact_weights[contact, 3] = -parameter_1
-        contact_directions[contact] = separation / distance
-        contact_depths[contact] = limited_thickness - distance
+        contact_directions[contact] = direction
+        contact_depths[contact] = depth
         rest_edge_0 = rest_positions[index_1] - rest_positions[index_0]
         rest_edge_1 = rest_positions[index_3] - rest_positions[index_2]
         contact_mollifier_thresholds[contact] = (
@@ -2426,6 +2520,7 @@ class ConstraintSelfCollision:
         friction: float = 0.0,
         friction_epsilon: float = 1.0e-2,
         enable_edge_face: bool = True,
+        use_outward_normals: bool = False,
     ):
         """Create a fixed-capacity GPU cloth self-collision operator.
 
@@ -2450,6 +2545,9 @@ class ConstraintSelfCollision:
             friction_epsilon: Relative-velocity regularization threshold [m/s].
             enable_edge_face: Whether to detect and assemble edge-face
                 intersection recovery contacts.
+            use_outward_normals: Whether to use oriented signed VF/EE contact
+                for outward-wound closed volume surfaces. This also excludes
+                collision pairs within three surface-graph rings.
         """
         if not np.isfinite(thickness) or thickness <= 0.0:
             raise ValueError("thickness must be finite and positive")
@@ -2511,6 +2609,7 @@ class ConstraintSelfCollision:
         self.friction = float(friction)
         self.friction_epsilon = float(friction_epsilon)
         self.enable_edge_face = bool(enable_edge_face)
+        self.use_outward_normals = bool(use_outward_normals)
         self._friction_positions: wp.array[wp.vec3] | None = None
         if self.friction > 0.0:
             self._friction_positions = wp.empty_like(model.particle_q)
@@ -2550,12 +2649,50 @@ class ConstraintSelfCollision:
         self.particle_radii = wp.array(particle_radii, dtype=wp.float32, device=self.device)
         self._use_geometry_radii = int(geometry_radius_scale is not None)
 
-        edge_indices = MeshAdjacency(triangle_indices).edge_indices
+        mesh_adjacency = MeshAdjacency(triangle_indices)
+        edge_indices = mesh_adjacency.edge_indices
         if len(edge_indices) == 0:
             raise ValueError("ConstraintSelfCollision requires at least one mesh edge")
+        vertex_neighbor_offsets = np.zeros(model.particle_count + 1, dtype=np.int32)
+        vertex_neighbors = np.empty(0, dtype=np.int32)
+        if self.use_outward_normals:
+            one_ring_neighbors = [set() for _ in range(model.particle_count)]
+            for index_0, index_1 in edge_indices[:, 2:4]:
+                one_ring_neighbors[index_0].add(int(index_1))
+                one_ring_neighbors[index_1].add(int(index_0))
+            vertex_neighbor_sets = []
+            for vertex in range(model.particle_count):
+                visited = {vertex}
+                frontier = {vertex}
+                for _ in range(_ORIENTED_TOPOLOGY_EXCLUSION_RINGS):
+                    frontier = {
+                        neighbor
+                        for frontier_vertex in frontier
+                        for neighbor in one_ring_neighbors[frontier_vertex]
+                        if neighbor not in visited
+                    }
+                    visited.update(frontier)
+                visited.remove(vertex)
+                vertex_neighbor_sets.append(visited)
+            vertex_neighbor_offsets[1:] = np.cumsum(
+                [len(neighbors) for neighbors in vertex_neighbor_sets],
+                dtype=np.int32,
+            )
+            vertex_neighbors = np.fromiter(
+                (neighbor for neighbors in vertex_neighbor_sets for neighbor in sorted(neighbors)),
+                dtype=np.int32,
+                count=int(vertex_neighbor_offsets[-1]),
+            )
         self.triangle_indices = wp.array(triangle_indices, dtype=wp.int32, device=self.device)
         self.surface_vertex_indices = wp.array(surface_vertex_indices, dtype=wp.int32, device=self.device)
         self.edge_indices = wp.array(edge_indices, dtype=wp.int32, device=self.device)
+        self.edge_triangle_indices = wp.array(
+            mesh_adjacency.edge_tri_indices,
+            dtype=wp.int32,
+            device=self.device,
+        )
+        self.vertex_neighbor_offsets = wp.array(vertex_neighbor_offsets, dtype=wp.int32, device=self.device)
+        self.vertex_neighbors = wp.array(vertex_neighbors, dtype=wp.int32, device=self.device)
         self.triangle_count = len(triangle_indices)
         self.surface_vertex_count = len(surface_vertex_indices)
         self.edge_count = len(edge_indices)
@@ -2639,6 +2776,9 @@ class ConstraintSelfCollision:
                 self.max_contacts,
                 positions,
                 self.surface_vertex_indices,
+                int(self.use_outward_normals),
+                self.vertex_neighbor_offsets,
+                self.vertex_neighbors,
                 self.particle_world,
                 self.triangle_indices,
             ],
@@ -2664,7 +2804,12 @@ class ConstraintSelfCollision:
                 positions,
                 self.rest_positions,
                 self.particle_world,
+                self.triangle_indices,
                 self.edge_indices,
+                self.edge_triangle_indices,
+                int(self.use_outward_normals),
+                self.vertex_neighbor_offsets,
+                self.vertex_neighbors,
             ],
             outputs=[
                 self.edge_edge_contacts.ids,

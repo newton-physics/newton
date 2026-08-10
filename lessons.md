@@ -89,3 +89,15 @@
 - Context: Designing oriented VF/EE collision for the tetrahedral bunny surfaces without CCD.
 - Mistake: Proposed preserving the old unsigned formula for contacts within the same bunny while using signed outward normals only across different bunnies.
 - Rule: Apply the oriented signed VF/EE formulation uniformly to all tetrahedral boundary contacts, including same-bunny self-collision. Do not branch the response formula on connected-component identity; component labels may remain diagnostic only.
+
+## 2026-08-10 — Keep signed VF inside the discrete detection band
+
+- Context: Enabling outward-normal signed VF on the eight-bunny volume scene.
+- Mistake: Treated every `s < thickness` candidate from an expanded triangle AABB as active. Oblique triangle bounds admitted vertices much deeper than the 3 mm narrow phase, producing 15 mm contact depths and immediate tetrahedron inversion.
+- Rule: Preserve `abs(signed_distance) < effective_thickness` as the discrete VF narrow band. Use the sign only for the outward direction and `effective_thickness - signed_distance` response within that band.
+
+## 2026-08-10 — Measure topology-local contacts beyond one ring
+
+- Context: Filtering false same-bunny contacts for signed VF/EE volume collision.
+- Mistake: Assumed one-ring VF and adjacent-opposite EE filtering was sufficient because it removed every rest-state VF and most rest-state EE candidates. During deformation, all destabilizing same-bunny contacts were still within surface graph distance three, and the legacy local contacts had also been accidentally stiffening the soft body.
+- Rule: Diagnose dynamic contact graph distances, not only rest-state counts. For this oriented volume path, exclude VF/EE pairs through three surface-graph rings and validate material stiffness again after removing artificial local-contact stiffness.

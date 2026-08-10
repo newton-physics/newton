@@ -1597,6 +1597,113 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(directions[contact], [0.0, 0.0, 1.0], atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
 
+    def test_oriented_vertex_face_uses_outward_normal_after_crossing(self):
+        """Push an inside vertex along the target face's outward normal."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, -0.05],
+            [3.0, 3.0, -0.05],
+            [4.0, 3.0, -0.05],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=16,
+                use_outward_normals=True,
+            )
+            collision.prepare(model.particle_q)
+            ids, weights, directions, depths = self._stored_contacts(collision.vertex_face_contacts)
+            force = wp.zeros_like(model.particle_q)
+            collision.vertex_face_contacts.accumulate_force(10.0, force)
+            force_np = force.numpy()
+
+        matches = np.nonzero(np.all(ids == [3, 0, 1, 2], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        contact = int(matches[0])
+        np.testing.assert_allclose(weights[contact], [1.0, -0.5, -0.25, -0.25], atol=1.0e-6)
+        np.testing.assert_allclose(directions[contact], [0.0, 0.0, 1.0], atol=1.0e-6)
+        self.assertAlmostEqual(float(depths[contact]), 0.15, places=6)
+        self.assertGreater(float(force_np[3, 2]), 0.0)
+
+    def test_oriented_vertex_face_excludes_one_ring_neighbor(self):
+        """Exclude one-ring vertices from oriented VF contacts."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, 0.05],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (0, 1, 3)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=16,
+                use_outward_normals=True,
+            )
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.vertex_face_contacts)
+
+        self.assertFalse(np.any(np.all(ids == [3, 0, 1, 2], axis=1)))
+
+    def test_oriented_vertex_face_excludes_three_ring_neighbor(self):
+        """Exclude three-ring vertices from oriented VF contacts."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [0.25, 0.25, 0.05],
+            [3.0, 1.0, 0.0],
+            [4.0, 1.0, 0.0],
+            [5.0, 1.0, 0.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (0, 3, 6), (3, 4, 7), (4, 5, 8)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=32,
+                use_outward_normals=True,
+            )
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.vertex_face_contacts)
+
+        self.assertFalse(np.any(np.all(ids == [5, 0, 1, 2], axis=1)))
+
+    def test_oriented_vertex_face_excludes_points_beyond_detection_band(self):
+        """Exclude deep inside vertices beyond the discrete VF detection band."""
+        normal = np.asarray([1.0, 1.0, 1.0], dtype=np.float32) / np.sqrt(3.0)
+        positions = [
+            [1.0, -1.0, 0.0],
+            [0.0, 1.0, -1.0],
+            [-1.0, 0.0, 1.0],
+            -0.15 * normal,
+            [3.0, 3.0, 3.0],
+            [4.0, 3.0, 3.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=16,
+                use_outward_normals=True,
+            )
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.vertex_face_contacts)
+
+        self.assertFalse(np.any(np.all(ids == [3, 0, 1, 2], axis=1)))
+
     def test_vertex_face_friction_opposes_slip_and_adds_psd_operator(self):
         """Oppose VF slip with balanced friction and a PSD tangent operator."""
         current = np.asarray(
@@ -1752,6 +1859,47 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(np.sum(weights[contact]), 0.0, atol=1.0e-7)
         np.testing.assert_allclose(directions[contact], [0.0, 0.0, -1.0], atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
+
+    def test_oriented_edge_edge_uses_incident_face_pseudo_normals_after_crossing(self):
+        """Orient a crossed EE contact from its incident outward face normals."""
+        positions = [
+            [-1.0, 0.0, -0.01],
+            [1.0, 0.0, -0.01],
+            [0.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, -0.01],
+            [1.0, 0.0, 0.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(1, 0, 4), (3, 2, 5)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=32,
+                use_outward_normals=True,
+            )
+            collision.prepare(model.particle_q)
+            ids, _, directions, depths = self._stored_contacts(collision.edge_edge_contacts)
+
+        matches = [
+            contact
+            for contact, contact_ids in enumerate(ids)
+            if (
+                {int(contact_ids[0]), int(contact_ids[1])} == {0, 1}
+                and {int(contact_ids[2]), int(contact_ids[3])} == {2, 3}
+            )
+            or (
+                {int(contact_ids[0]), int(contact_ids[1])} == {2, 3}
+                and {int(contact_ids[2]), int(contact_ids[3])} == {0, 1}
+            )
+        ]
+        self.assertEqual(len(matches), 1)
+        contact = matches[0]
+        first_edge_is_lower = {int(ids[contact, 0]), int(ids[contact, 1])} == {0, 1}
+        expected_direction = [0.0, 0.0, 1.0 if first_edge_is_lower else -1.0]
+        np.testing.assert_allclose(directions[contact], expected_direction, atol=1.0e-6)
+        self.assertAlmostEqual(float(depths[contact]), 0.11, places=6)
 
     def test_edge_edge_friction_opposes_relative_slip(self):
         """Oppose EE slip with balanced friction and a PSD tangent operator."""
@@ -1969,6 +2117,72 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         expected = 1.0e-3 * 0.1**2 * 0.08**2
         self.assertAlmostEqual(float(thresholds[int(matches[0])]), expected, places=12)
+
+    def test_oriented_edge_edge_excludes_topology_local_pair(self):
+        """Exclude topology-local edge pairs from oriented EE contacts."""
+        sine = 0.2
+        direction = np.asarray([np.sqrt(1.0 - sine * sine), sine, 0.0], dtype=np.float32)
+        center = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
+        positions = [
+            [-0.05, 0.0, 0.0],
+            [0.05, 0.0, 0.0],
+            *(center + offset * 0.04 * direction for offset in (-1.0, 1.0)),
+            [0.0, 1.0, 0.5],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (2, 3, 4)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=32,
+                use_outward_normals=True,
+            )
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
+
+        self.assertFalse(np.any(np.all(ids == [0, 1, 2, 3], axis=1)))
+
+    def test_oriented_edge_edge_excludes_three_ring_pair(self):
+        """Exclude three-ring edge pairs from oriented EE contacts."""
+        positions = [
+            [-1.0, 0.0, -0.01],
+            [1.0, 0.0, -0.01],
+            [0.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, -0.01],
+            [1.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [4.0, 1.0, 0.0],
+            [5.0, 1.0, 0.0],
+        ]
+        triangles = [(1, 0, 4), (3, 2, 5), (0, 6, 8), (6, 7, 9), (7, 2, 10)]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, triangles)
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=64,
+                use_outward_normals=True,
+            )
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
+
+        central_pair_found = any(
+            (
+                {int(contact_ids[0]), int(contact_ids[1])} == {0, 1}
+                and {int(contact_ids[2]), int(contact_ids[3])} == {2, 3}
+            )
+            or (
+                {int(contact_ids[0]), int(contact_ids[1])} == {2, 3}
+                and {int(contact_ids[2]), int(contact_ids[3])} == {0, 1}
+            )
+            for contact_ids in ids
+        )
+        self.assertFalse(central_pair_found)
 
     def test_edge_face_crossing_emits_five_particle_untangle_contact(self):
         positions = [

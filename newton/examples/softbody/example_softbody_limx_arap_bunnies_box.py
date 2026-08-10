@@ -105,7 +105,7 @@ class Example:
         self.arap_constraint = newton.solvers.ConstraintTetrahedronARAP(
             self.tetrahedra.tolist(),
             [wp.mat33(*matrix.reshape(-1)) for matrix in inverse_rest_matrices],
-            [1.0e5] * self.model.tet_count,
+            [3.0e5] * self.model.tet_count,
             self.model.particle_count,
             self.model.device,
         )
@@ -119,6 +119,7 @@ class Example:
             friction=0.0,
             friction_epsilon=1.0e-2,
             enable_edge_face=False,
+            use_outward_normals=True,
         )
         plane_parameters = (
             ((0.0, 0.0, 1.0), self.box_floor),

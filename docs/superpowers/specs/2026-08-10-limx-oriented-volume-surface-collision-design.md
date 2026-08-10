@@ -35,13 +35,15 @@ in explicitly.
 Signed volume contact must not treat local surface discretization as
 self-contact. In the bunny rest state, all 80 VF candidates are one-ring
 vertex-face pairs, and 200 of 216 EE candidates are topology-local opposite
-edges.
+edges. Runtime diagnostics additionally found same-bunny false contacts up to
+surface graph distance three when the soft body began deforming.
 
 Build a compact vertex-neighbor CSR from the surface edges. In oriented mode:
 
-- reject a VF pair when the candidate vertex is one edge away from any of the
-  face's three vertices;
-- reject an EE pair when `_is_topology_local_edge_pair()` is true;
+- reject a VF pair when the candidate vertex is within three surface edges of
+  any of the face's three vertices;
+- reject an EE pair when any endpoint is within three surface edges of the
+  opposite edge;
 - continue rejecting contacts that share a feature endpoint.
 
 The unsigned default retains its current topology-local EE thickness clamp
@@ -59,8 +61,10 @@ depth = effective_thickness - s
 
 The projected point and barycentric weights are computed as before. The
 contact is active when the projection lies inside the triangle and
-`s < effective_thickness`. The BVH query remains the existing discrete 3 mm
-candidate band. Do not take `abs(s)` and do not flip `n` when `s < 0`.
+`abs(s) < effective_thickness`. This retains the discrete candidate band and
+prevents a point deep behind an oblique triangle from entering only because it
+lies in the triangle's expanded AABB. Do not use `abs(s)` in the depth and do
+not flip `n` when `s < 0`.
 
 The vertex receives force along `+n`; the face vertices receive the balanced
 opposite force through the existing barycentric weights. A negative signed
@@ -112,13 +116,20 @@ Focused CUDA tests must prove:
 
 1. an inside VF contact keeps the target face's outward normal and uses
    `thickness - signed_distance` depth;
-2. one-ring VF candidates are absent in oriented mode;
+2. VF candidates through surface graph distance three are absent in oriented
+   mode, and points beyond the signed-distance band are absent;
 3. an already-crossed EE pair uses incident face normals rather than the
    flipped closest-point vector;
-4. topology-local EE pairs are absent in oriented mode;
+4. EE pairs through surface graph distance three are absent in oriented mode;
 5. the default unsigned mode retains the existing tests;
 6. the bunny scene opts in, keeps EF disabled, and remains finite,
    positive-volume, and overflow-free for 300 frames.
 
 The visual experiment then checks whether all bunnies are pushed toward the
-exterior and settle on the floor without relying on friction.
+exterior and settle on the floor with self-collision friction disabled. The
+separate floor and wall contacts retain their existing `0.05` friction.
+
+Removing topology-local contacts also removes their accidental structural
+stiffening. The example therefore uses `3e5 Pa` ARAP stiffness, which keeps the
+tetrahedra positive-volume under the same 3 mm contact, time step, adaptive
+contact factors, PCG iteration count, and friction settings.

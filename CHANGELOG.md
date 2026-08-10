@@ -12,6 +12,7 @@
 - Add adaptive LIMX self-collision stiffness derived from the current elastic diagonal and inertia, with independent VF, EE, and EF factors.
 - Add regularized Coulomb friction to LIMX vertex-face and edge-edge cloth self-collision.
 - Add optional surface-particle subsets to LIMX static-plane contact and an option to disable edge-face recovery in self-collision.
+- Add opt-in outward-normal signed VF/EE contact for closed LIMX volume surfaces, including three-ring topology filtering.
 - Add a CUDA LIMX example that contrasts a settled control with geometry-aware VF/EE self-collision at a 6 mm nominal thickness.
 - Add a LIMX T-shirt table-contact example with self-collision, contact damping, and friction.
 - Break the viewer's shape count down into visual and collision shapes. The two are listed under `Shapes` in the stats overlay and need not sum to the total, since a shape can be both.
