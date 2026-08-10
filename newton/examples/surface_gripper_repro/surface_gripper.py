@@ -62,7 +62,7 @@ from newton.geometry import sdf_mesh
 # --------------- internal helpers and kernels ---------------
 
 
-def nat_freq_damping_ratio_to_stiffness_damping(mu: float, zeta: float, m_eff: float) -> tuple[float, float]:
+def _nat_freq_damping_ratio_to_stiffness_damping(mu: float, zeta: float, m_eff: float) -> tuple[float, float]:
     """``(k, d)`` for a 1-DOF spring-damper of effective mass/inertia ``m_eff`` tuned to angular natural
     frequency ``mu`` [rad/s] and damping ratio ``zeta``: ``k = m_eff*mu^2``, ``d = 2*zeta*mu*m_eff``.
     ``m_eff`` is a mass [kg] for a translation DOF, an inertia [kg.m^2] for a rotation DOF.
@@ -85,7 +85,7 @@ def _lip_circle(radius, half_height, n_samples):
 
 
 @wp.func
-def eval_pad_separation(
+def _eval_pad_separation(
     t_seal_a: wp.transform, t_seal_b: wp.transform
 ) -> tuple[float, float, float, float, float, float]:
     """Per-DOF separation of the two seal frames accumulated since engagement.
@@ -107,7 +107,7 @@ def eval_pad_separation(
 
 
 @wp.func
-def eval_pad_relative_velocity(
+def _eval_pad_relative_velocity(
     twist_a_world: wp.spatial_vector,
     twist_b_world: wp.spatial_vector,
     r_a_world: wp.vec3,
@@ -146,7 +146,7 @@ def eval_pad_relative_velocity(
 
 
 @wp.func
-def apparent_mass(axis_w: wp.vec3, r: wp.vec3, q_b: wp.quat, inv_m: float, inv_inertia: wp.mat33) -> float:
+def _apparent_mass(axis_w: wp.vec3, r: wp.vec3, q_b: wp.quat, inv_m: float, inv_inertia: wp.mat33) -> float:
     """Effective mass a rigid body presents to a force at offset ``r`` (world, COM->point) along the
     world unit direction ``axis_w``: ``1/m_app = 1/m + (r x n).I^-1.(r x n)`` -- translational compliance
     plus the rotational compliance from the off-COM spin. The rotational term is evaluated in the body
@@ -157,7 +157,7 @@ def apparent_mass(axis_w: wp.vec3, r: wp.vec3, q_b: wp.quat, inv_m: float, inv_i
 
 
 @wp.func
-def apparent_inertia(axis_w: wp.vec3, q_b: wp.quat, inv_inertia: wp.mat33) -> float:
+def _apparent_inertia(axis_w: wp.vec3, q_b: wp.quat, inv_inertia: wp.mat33) -> float:
     """Effective inertia a rigid body presents to a pure moment about the world unit axis ``axis_w``:
     ``1/(n.I^-1.n)`` -- the free-body angular admittance about the axis, inverted. The axis is first
     rotated into the body frame (``q_b``, where ``inv_inertia`` lives). No translation term: a couple
@@ -168,7 +168,7 @@ def apparent_inertia(axis_w: wp.vec3, q_b: wp.quat, inv_inertia: wp.mat33) -> fl
 
 
 @wp.func
-def effective_damping(d: float, m_eff: float, dt: float) -> float:
+def _effective_damping(d: float, m_eff: float, dt: float) -> float:
     """Backward-Euler (implicit) damping coefficient: the explicit ``d`` rescaled so the applied force
     lands the pad-point velocity at the implicit value ``v*m_eff/(m_eff + d*dt)`` in one step. Bounded by
     ``m_eff/dt`` for any ``d`` (the damper can't overshoot the velocity). ``m_eff`` is the DOF's effective
@@ -178,7 +178,7 @@ def effective_damping(d: float, m_eff: float, dt: float) -> float:
 
 
 @wp.func
-def eval_effective_damping(
+def _eval_effective_damping(
     q_seal: wp.quat,  # seal frame world orientation
     q_body_b: wp.quat,  # gripped body world orientation
     r_body_b: wp.vec3,  # gripped body COM -> seal point (world)
@@ -193,8 +193,8 @@ def eval_effective_damping(
     dt: float,
 ) -> tuple[float, float, float, float, float, float]:
     """Implicit (backward-Euler) damping coefficient for each of the six damped seal DOFs. Each raw
-    damping is rescaled via :func:`effective_damping` using that DOF's effective mass at the seal point
-    (:func:`apparent_mass`, translation) or effective inertia about the seal axis, 1/(n.I^-1.n) (peel
+    damping is rescaled via :func:`_effective_damping` using that DOF's effective mass at the seal point
+    (:func:`_apparent_mass`, translation) or effective inertia about the seal axis, 1/(n.I^-1.n) (peel
     and twist). Returns ``(d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff,
     d_torsion_eff)``. Pass ``d_torsion = 0`` when the caller's twist DOF is not viscously damped.
     """
@@ -269,16 +269,16 @@ def eval_effective_damping(
     d_trans_eff = wp.vec3(0.0, 0.0, 0.0)
     d_trans = wp.vec3(d_shear_x, d_shear_y, d_normal)
     for i in range(3):
-        m_app = apparent_mass(axes_w[i], r_body_b, q_body_b, inv_m, inv_inertia)
-        d_trans_eff[i] = effective_damping(d_trans[i], m_app, dt)
+        m_app = _apparent_mass(axes_w[i], r_body_b, q_body_b, inv_m, inv_inertia)
+        d_trans_eff[i] = _effective_damping(d_trans[i], m_app, dt)
 
     # Combine Step 1 and 2 for rotational dofs (peel about x/y, twist about z)
     # gamma_effective = gamma/[1 + gamma*dt/I_eff]
     d_rot_eff = wp.vec3(0.0, 0.0, 0.0)
     d_rot = wp.vec3(d_peel_x, d_peel_y, d_torsion)
     for i in range(3):
-        I_app = apparent_inertia(axes_w[i], q_body_b, inv_inertia)
-        d_rot_eff[i] = effective_damping(d_rot[i], I_app, dt)
+        I_app = _apparent_inertia(axes_w[i], q_body_b, inv_inertia)
+        d_rot_eff[i] = _effective_damping(d_rot[i], I_app, dt)
 
     return d_trans_eff[2], d_trans_eff[0], d_trans_eff[1], d_rot_eff[0], d_rot_eff[1], d_rot_eff[2]
 
@@ -292,7 +292,7 @@ def eval_effective_damping(
 # f_shear_max (combined magnitude), the two peel moments together to f_peel_max, and the twist to
 # +/-f_torsion_max (0 => uncapped). Stiffness/damping are set directly (no shape/geometry factors,
 # friction cones or stick-slip). Damping uses an implicit (backward-Euler) rescale
-# (:func:`effective_damping`). The brittle break metric is not evaluated (left at 0, so the seal never
+# (:func:`_effective_damping`). The brittle break metric is not evaluated (left at 0, so the seal never
 # fractures) -- to add later. Mirrors the Builder -> Model -> State/Control layout; the state/control are
 # the shared :class:`SurfaceGripperStateInput` / :class:`SurfaceGripperStateOutput` / :class:`SurfaceGripperControl`,
 # so the engagement helper (:func:`attach_seal`) works unchanged.
@@ -300,7 +300,7 @@ def eval_effective_damping(
 
 
 @wp.func
-def clamp_symmetric(f: float, f_max: float) -> float:
+def _clamp_symmetric(f: float, f_max: float) -> float:
     """Clamp ``f`` to ``[-f_max, f_max]``. ``f_max <= 0`` means no cap (``f`` returned unchanged)."""
     if f_max > 0.0:
         return wp.clamp(f, -f_max, f_max)
@@ -308,7 +308,7 @@ def clamp_symmetric(f: float, f_max: float) -> float:
 
 
 @wp.func
-def clamp_magnitude_2d(fx: float, fy: float, f_max: float) -> tuple[float, float]:
+def _clamp_magnitude_2d(fx: float, fy: float, f_max: float) -> tuple[float, float]:
     """Scale the pair ``(fx, fy)`` onto the disk of radius ``f_max``: if ``sqrt(fx^2+fy^2) > f_max``
     both components are scaled by ``f_max / mag``. ``f_max <= 0`` means no cap (returned unchanged)."""
     if f_max > 0.0:
@@ -321,7 +321,7 @@ def clamp_magnitude_2d(fx: float, fy: float, f_max: float) -> tuple[float, float
 
 
 @wp.kernel
-def attach_seal_kernel(
+def _attach_seal_kernel(
     pad_engaged_body_b_id_curr: wp.array[int],  # [pads] current step's gripped body (< 0 = released)
     pad_preparing_body_b_id: wp.array[int],  # body each pad seals against this step
     gripper_body_id: wp.array[int],
@@ -343,7 +343,7 @@ def attach_seal_kernel(
 
 
 @wp.kernel
-def eval_pad_force_linear_kernel(
+def _eval_pad_force_linear_kernel(
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
     gripper_f_grip_max: wp.array[float],
@@ -400,19 +400,19 @@ def eval_pad_force_linear_kernel(
     t_b_seal = body_q[engaged_body_b] * pad_anchor_b[pad]
     p_b_seal = wp.transform_get_translation(t_b_seal)
 
-    px, py, pz, theta_x, theta_y, theta_z = eval_pad_separation(t_a_seal, t_b_seal)
+    px, py, pz, theta_x, theta_y, theta_z = _eval_pad_separation(t_a_seal, t_b_seal)
 
     com_a = wp.transform_point(body_q[body_a], body_com[body_a])
     com_b = wp.transform_point(body_q[engaged_body_b], body_com[engaged_body_b])
     r_a = p_a_seal - com_a
     r_b = p_b_seal - com_b
-    vx, vy, vz, omega_x, omega_y, omega_z = eval_pad_relative_velocity(
+    vx, vy, vz, omega_x, omega_y, omega_z = _eval_pad_relative_velocity(
         body_qd[body_a], body_qd[engaged_body_b], r_a, r_b, q_a_seal
     )
 
     # implicit (backward-Euler) damping for all six DOFs (normal, shear x/y, peel x/y, twist)
     q_body_b = wp.transform_get_rotation(body_q[engaged_body_b])
-    d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff, d_torsion_eff = eval_effective_damping(
+    d_normal_eff, d_shear_x_eff, d_shear_y_eff, d_peel_x_eff, d_peel_y_eff, d_torsion_eff = _eval_effective_damping(
         q_a_seal,
         q_body_b,
         r_b,
@@ -440,15 +440,15 @@ def eval_pad_force_linear_kernel(
     # shear (x, y): spring-damper per axis, combined magnitude capped at f_shear_max
     fx = gripper_k_shear_x[gripper_id] * px + d_shear_x_eff * vx
     fy = gripper_k_shear_y[gripper_id] * py + d_shear_y_eff * vy
-    fx, fy = clamp_magnitude_2d(fx, fy, gripper_f_shear_max[gripper_id])
+    fx, fy = _clamp_magnitude_2d(fx, fy, gripper_f_shear_max[gripper_id])
 
     # peel (about x, y): spring-damper per axis, combined magnitude capped at f_peel_max
     m_peel_x = gripper_k_peel_x[gripper_id] * theta_x + d_peel_x_eff * omega_x
     m_peel_y = gripper_k_peel_y[gripper_id] * theta_y + d_peel_y_eff * omega_y
-    m_peel_x, m_peel_y = clamp_magnitude_2d(m_peel_x, m_peel_y, gripper_f_peel_max[gripper_id])
+    m_peel_x, m_peel_y = _clamp_magnitude_2d(m_peel_x, m_peel_y, gripper_f_peel_max[gripper_id])
 
     # twist (about z): linear spring-damper, clamped to +/-f_torsion_max
-    m_twist = clamp_symmetric(
+    m_twist = _clamp_symmetric(
         gripper_k_torsion[gripper_id] * theta_z + d_torsion_eff * omega_z, gripper_f_torsion_max[gripper_id]
     )
 
@@ -470,7 +470,7 @@ def eval_pad_force_linear_kernel(
 # --------------------------------------------------------------------------------------------------
 # Inline (graph-capturable) Gauss-Newton seat fit of a gripped body's pose to the pad lips.
 #
-# Used by attach_seal_seated_kernel on a pad's rising edge (:func:`_seat_body_pose`). Per lip point the
+# Used by _attach_seal_seated_kernel on a pad's rising edge (:func:`_seat_body_pose`). Per lip point the
 # analytic Jacobian row of its SDF w.r.t. a body-frame pose twist xi = (v, omega) is -[grad; q x grad]
 # (q = point in the object frame, grad = SDF gradient there). The normal equations (JtJ, b) are summed
 # over the lips of every pad latching the body; a damped 6x6 solve gives the step dxi and the pose is
@@ -618,7 +618,7 @@ def _seat_body_pose(
 
 
 @wp.kernel
-def attach_seal_seated_kernel(
+def _attach_seal_seated_kernel(
     pad_engaged_body_b_id_curr: wp.array[int],  # [pads] current step's gripped body (< 0 = released)
     pad_preparing_body_b_id: wp.array[int],  # gripped body each pad seals against this step (< 0 = none)
     gripper_body_id: wp.array[int],
@@ -641,7 +641,7 @@ def attach_seal_seated_kernel(
     pad_anchor_b: wp.array[wp.transform],
     pad_lip_sdf0: wp.array[float],  # seated lip signed distances cached at engagement (indexed by pad_lip_start)
 ):
-    """Seated variant of :func:`attach_seal_kernel`: on each pad's rising edge, compute the gripped body's
+    """Seated variant of :func:`_attach_seal_kernel`: on each pad's rising edge, compute the gripped body's
     seated pose inline (:func:`_seat_body_pose`, scanning only this pad's world's pads), cache
     ``pad_anchor_b`` against it, and cache the seated lip signed distances in ``pad_lip_sdf0``. The seat
     fit only runs on the rising edge. Does not write ``pad_engaged_body_b_id``."""
@@ -684,7 +684,7 @@ def attach_seal_seated_kernel(
 
 
 @wp.kernel
-def seal_quality_kernel(
+def _seal_quality_kernel(
     pad_engaged_body_b_id: wp.array[int],  # [pads] latched gripped body while engaged (< 0 = released)
     pad_preparing_body_b_id: wp.array[int],  # [pads] body a preparing pad is approaching (>= 0 means preparing)
     gripper_body_id: wp.array[int],
@@ -870,7 +870,7 @@ class SurfaceGripper:
         f_torsion_max: float = 0.0,
     ) -> "SurfaceGripper":
         """Set the seal from per-axis modes ``(angular natural frequency [rad/s], damping ratio)``,
-        converted to stiffness/damping (:func:`nat_freq_damping_ratio_to_stiffness_damping`) against a
+        converted to stiffness/damping (:func:`_nat_freq_damping_ratio_to_stiffness_damping`) against a
         design body of ``mass`` [kg] and ``inertia`` [kg.m^2, body frame]. Translation DOFs use the mass;
         peel/twist use the inertia about that axis (the diagonal terms). Returns ``self``.
         """
@@ -878,7 +878,7 @@ class SurfaceGripper:
         ixx = inertia[0, 0]  # inertia about x (peel-x)
         iyy = inertia[1, 1]  # about y (peel-y)
         izz = inertia[2, 2]  # about z (twist)
-        to = nat_freq_damping_ratio_to_stiffness_damping
+        to = _nat_freq_damping_ratio_to_stiffness_damping
         k_normal, d_normal = to(*normal_mode, m)
         k_shear_x, d_shear_x = to(*shear_x_mode, m)
         k_shear_y, d_shear_y = to(*shear_y_mode, m)
@@ -1102,7 +1102,7 @@ def attach_seal(
     if n_pads == 0:
         return
     wp.launch(
-        attach_seal_kernel,
+        _attach_seal_kernel,
         dim=n_pads,
         inputs=[
             pad_engaged_body_b_id_curr,
@@ -1140,7 +1140,7 @@ def attach_seal_seated(
        distance between the gripped body and all pads gripping it;
     3. use that pose to compute ``gripper_state_output.pad_anchor_b`` (SB = GB0^-1 * SA0, see Frame nomenclature).
 
-    Done inline on the device (:func:`attach_seal_seated_kernel`), so it is graph-capturable. Seated
+    Done inline on the device (:func:`_attach_seal_seated_kernel`), so it is graph-capturable. Seated
     variant of :func:`attach_seal`, which instead anchors to the gripped body's raw pose.
 
     Args:
@@ -1169,7 +1169,7 @@ def attach_seal_seated(
     if n_pads == 0:
         return
     wp.launch(
-        attach_seal_seated_kernel,
+        _attach_seal_seated_kernel,
         dim=n_pads,
         inputs=[
             pad_engaged_body_b_id_curr,
@@ -1206,7 +1206,7 @@ def evaluate_gripper_force(
     gripper_control: SurfaceGripperControl,
     dt: float,
 ) -> None:
-    """Accumulate the linear per-DOF spring-damper seal wrench (:func:`eval_pad_force_linear_kernel`) into
+    """Accumulate the linear per-DOF spring-damper seal wrench (:func:`_eval_pad_force_linear_kernel`) into
     ``state.body_f``. No stick-slip anchors and no break metric -- each DOF is a plain spring-damper
     with a fixed magnitude cap. Uses the engagement state (``pad_engaged``, ``pad_engaged_body_b_id``,
     ``pad_anchor_b``).
@@ -1215,7 +1215,7 @@ def evaluate_gripper_force(
     if n_pads == 0:
         return
     wp.launch(
-        eval_pad_force_linear_kernel,
+        _eval_pad_force_linear_kernel,
         dim=n_pads,
         inputs=[
             gripper_model.gripper_body_id,
@@ -1273,6 +1273,7 @@ def evaluate_seal_quality(
     Compute a geometric seal quality per pad (pad_rms[pad]).
     Three mutually exclusive modes of operation: preparing (to grip), engaged (currently gripping)
     and disengaged. A pad is in preparing mode when ``pad_preparing_body_b_id[pad] >= 0``.
+    A pad is in engaged mode when ``pad_engaged_body_b_id[pad] >= 0``.
     In preparing and engaged modes, we compute the rms error per pad as follows:
     pad_rms = sqrt{ [sum_i (sdf_now(i) - sdf_baseline(i))^2]/n_sample_points_per_pad}
     i spans the sample points of the pad.
@@ -1307,7 +1308,7 @@ def evaluate_seal_quality(
     if n_pads == 0:
         return
     wp.launch(
-        seal_quality_kernel,
+        _seal_quality_kernel,
         dim=n_pads,
         inputs=[
             gripper_state_input.pad_engaged_body_b_id,
