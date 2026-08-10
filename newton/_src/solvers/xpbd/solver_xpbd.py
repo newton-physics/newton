@@ -233,9 +233,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
     def _refresh_rigid_restitution_enabled(self) -> None:
         restitution = self.model.shape_material_restitution
-        self._rigid_restitution_enabled = bool(
-            restitution is not None and restitution.size > 0 and (restitution.numpy() > 0.0).any()
-        )
+        self._rigid_restitution_enabled = restitution is not None and restitution.size > 0
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
