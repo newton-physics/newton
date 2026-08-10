@@ -113,3 +113,15 @@
 - Context: Comparing the oriented tetrahedral VF/EE topology filter with libuipc's IPC candidate filtering.
 - Mistake: Called graph one-ring adjacency “incident” and permanently excluded nonintersecting-index VF/EE pairs that IPC retains.
 - Rule: Match IPC's strict primitive-incidence test: reject VF only when the vertex is one of the face vertices, and reject EE only when the edges share an endpoint. Keep graph-adjacent pairs with disjoint vertex sets eligible for contact.
+
+## 2026-08-10 — Do not broaden Style3D EE locality ahead of EF-derived candidates
+
+- Context: Estimating LIMX collision thickness while the future collision pipeline will derive VF/EE feature cases from edge-face parent candidates.
+- Mistake: Proposed broadening Style3D's adjacent-opposite EE special case to every graph-one-ring edge pair based on two close bunny pairs, even though the planned EF parent stencil will naturally unify those local feature cases.
+- Rule: Keep the current Style3D-local EE predicate for this experiment and do not redesign topology classification around graph hop distance. Estimate a feasible thickness interval instead: a discrete-detection lower bound and a geometry-based upper bound that prevents the nominal band from reaching two-ring pairs.
+
+## 2026-08-10 — Estimate collision thickness from only the geometric upper bound
+
+- Context: Choosing the automatic nominal VF/EE thickness while one-ring pairs receive special treatment and future EF parent candidates will unify feature cases.
+- Mistake: Added a velocity-dependent discrete-detection lower bound and proposed selecting from a feasible interval, despite the requested policy being a simple geometry-only cap.
+- Rule: For this experiment, compute the nominal thickness as `min(eta * two_ring_upper_bound, 0.005 m)` with `eta = 0.8`. Do not add a motion-derived lower bound, CCD criterion, or graph-one-ring redesign to this estimator.
