@@ -18,6 +18,160 @@ _MIN_CONTACT_DISTANCE = 1.0e-7
 _MIN_GEOMETRY_NORM = 1.0e-8
 _MIN_STIFFNESS_DENOMINATOR = 1.0e-12
 _EE_MOLLIFIER_THRESHOLD_SCALE = 1.0e-3
+_AUTOMATIC_THICKNESS_ETA = 0.8
+_AUTOMATIC_THICKNESS_MAX = 5.0e-3
+
+
+def _point_triangle_interior_distance(
+    point: np.ndarray,
+    position_0: np.ndarray,
+    position_1: np.ndarray,
+    position_2: np.ndarray,
+) -> float:
+    edge_0 = position_0 - position_2
+    edge_1 = position_1 - position_2
+    normal = np.cross(position_1 - position_0, position_2 - position_0)
+    normal_squared = float(np.dot(normal, normal))
+    if normal_squared <= _MIN_BARYCENTRIC_DENOMINATOR:
+        return np.inf
+
+    signed_scale = float(np.dot(point - position_0, normal)) / normal_squared
+    projected = point - signed_scale * normal
+    relative = projected - position_2
+    dot_00 = float(np.dot(edge_0, edge_0))
+    dot_01 = float(np.dot(edge_0, edge_1))
+    dot_02 = float(np.dot(edge_0, relative))
+    dot_11 = float(np.dot(edge_1, edge_1))
+    dot_12 = float(np.dot(edge_1, relative))
+    denominator = dot_00 * dot_11 - dot_01 * dot_01
+    if abs(denominator) <= _MIN_BARYCENTRIC_DENOMINATOR:
+        return np.inf
+
+    barycentric_0 = (dot_11 * dot_02 - dot_01 * dot_12) / denominator
+    barycentric_1 = (dot_00 * dot_12 - dot_01 * dot_02) / denominator
+    barycentric_2 = 1.0 - barycentric_0 - barycentric_1
+    if barycentric_0 < 0.0 or barycentric_1 < 0.0 or barycentric_2 < 0.0:
+        return np.inf
+    return abs(signed_scale) * np.sqrt(normal_squared)
+
+
+def _edge_edge_interior_distance(
+    position_0: np.ndarray,
+    position_1: np.ndarray,
+    position_2: np.ndarray,
+    position_3: np.ndarray,
+) -> float:
+    edge_0 = position_1 - position_0
+    edge_1 = position_3 - position_2
+    relative = position_0 - position_2
+    dot_00 = float(np.dot(edge_0, edge_0))
+    dot_01 = float(np.dot(edge_0, edge_1))
+    dot_11 = float(np.dot(edge_1, edge_1))
+    dot_0r = float(np.dot(edge_0, relative))
+    dot_1r = float(np.dot(edge_1, relative))
+    denominator = dot_00 * dot_11 - dot_01 * dot_01
+    if denominator <= _MIN_BARYCENTRIC_DENOMINATOR:
+        return np.inf
+
+    parameter_0 = (dot_01 * dot_1r - dot_11 * dot_0r) / denominator
+    parameter_1 = (dot_00 * dot_1r - dot_01 * dot_0r) / denominator
+    if (
+        parameter_0 <= _MIN_CONTACT_DISTANCE
+        or parameter_0 >= 1.0 - _MIN_CONTACT_DISTANCE
+        or parameter_1 <= _MIN_CONTACT_DISTANCE
+        or parameter_1 >= 1.0 - _MIN_CONTACT_DISTANCE
+    ):
+        return np.inf
+
+    closest_0 = position_0 + parameter_0 * edge_0
+    closest_1 = position_2 + parameter_1 * edge_1
+    return float(np.linalg.norm(closest_0 - closest_1))
+
+
+def _compute_two_ring_collision_upper_bound(
+    rest_positions: np.ndarray,
+    triangle_indices: np.ndarray,
+    edge_indices: np.ndarray,
+) -> float:
+    """Return the smallest exact-two-ring interior VF/EE rest distance."""
+    if rest_positions.ndim != 2 or rest_positions.shape[1] != 3:
+        raise ValueError("rest positions must have shape [particle_count, 3]")
+    if not np.isfinite(rest_positions).all():
+        raise ValueError("automatic collision thickness requires finite rest positions")
+
+    particle_count = len(rest_positions)
+    one_ring_neighbors = [set() for _ in range(particle_count)]
+    vertex_triangles = [set() for _ in range(particle_count)]
+    vertex_edges = [set() for _ in range(particle_count)]
+    edge_vertices = edge_indices[:, 2:4]
+    for edge, indices in enumerate(edge_vertices):
+        index_0, index_1 = (int(index) for index in indices)
+        one_ring_neighbors[index_0].add(index_1)
+        one_ring_neighbors[index_1].add(index_0)
+        vertex_edges[index_0].add(edge)
+        vertex_edges[index_1].add(edge)
+    for triangle, indices in enumerate(triangle_indices):
+        for vertex in indices:
+            vertex_triangles[int(vertex)].add(triangle)
+
+    two_ring_neighbors = []
+    for vertex, neighbors in enumerate(one_ring_neighbors):
+        two_ring = set()
+        for neighbor in neighbors:
+            two_ring.update(one_ring_neighbors[neighbor])
+        two_ring.difference_update(neighbors)
+        two_ring.discard(vertex)
+        two_ring_neighbors.append(two_ring)
+
+    upper_bound = np.inf
+    for vertex, two_ring in enumerate(two_ring_neighbors):
+        candidate_triangles = set()
+        for neighbor in two_ring:
+            candidate_triangles.update(vertex_triangles[neighbor])
+        for triangle in candidate_triangles:
+            indices = triangle_indices[triangle]
+            if vertex in indices or any(int(index) in one_ring_neighbors[vertex] for index in indices):
+                continue
+            if not any(int(index) in two_ring for index in indices):
+                continue
+            distance = _point_triangle_interior_distance(
+                rest_positions[vertex],
+                rest_positions[indices[0]],
+                rest_positions[indices[1]],
+                rest_positions[indices[2]],
+            )
+            upper_bound = min(upper_bound, distance)
+
+    for edge, indices in enumerate(edge_vertices):
+        index_0, index_1 = (int(index) for index in indices)
+        two_ring = two_ring_neighbors[index_0] | two_ring_neighbors[index_1]
+        candidate_edges = set()
+        for neighbor in two_ring:
+            candidate_edges.update(vertex_edges[neighbor])
+        for other_edge in candidate_edges:
+            if other_edge <= edge:
+                continue
+            index_2, index_3 = (int(index) for index in edge_vertices[other_edge])
+            if index_2 in (index_0, index_1) or index_3 in (index_0, index_1):
+                continue
+            if (
+                index_2 in one_ring_neighbors[index_0]
+                or index_3 in one_ring_neighbors[index_0]
+                or index_2 in one_ring_neighbors[index_1]
+                or index_3 in one_ring_neighbors[index_1]
+            ):
+                continue
+            if index_2 not in two_ring and index_3 not in two_ring:
+                continue
+            distance = _edge_edge_interior_distance(
+                rest_positions[index_0],
+                rest_positions[index_1],
+                rest_positions[index_2],
+                rest_positions[index_3],
+            )
+            upper_bound = min(upper_bound, distance)
+
+    return float(upper_bound)
 
 
 def _compute_geometry_aware_particle_radii(
@@ -2513,7 +2667,7 @@ class ConstraintSelfCollision:
     def __init__(
         self,
         model: Model,
-        thickness: float,
+        thickness: float | None,
         stiffness: float | None,
         untangle_stiffness: float | None = None,
         max_contacts: int = 32768,
@@ -2530,6 +2684,8 @@ class ConstraintSelfCollision:
         Args:
             model: Particle triangle-mesh model whose topology remains fixed.
             thickness: Nominal two-surface collision activation distance [m].
+                Pass ``None`` to estimate ``min(0.8 * two-ring rest
+                clearance, 0.005 m)`` from the surface geometry.
             stiffness: Fixed vertex-face and edge-edge penalty stiffness [N/m].
                 Set to ``None`` to use adaptive feature stiffness.
             untangle_stiffness: Edge-face recovery stiffness [N/m]. Defaults
@@ -2555,7 +2711,8 @@ class ConstraintSelfCollision:
             use_outward_normals: Whether to use oriented signed VF/EE contact
                 for outward-wound closed volume surfaces.
         """
-        if not np.isfinite(thickness) or thickness <= 0.0:
+        thickness_was_estimated = thickness is None
+        if thickness is not None and (not np.isfinite(thickness) or thickness <= 0.0):
             raise ValueError("thickness must be finite and positive")
         if not np.isfinite(friction):
             raise ValueError("friction must be finite")
@@ -2607,7 +2764,6 @@ class ConstraintSelfCollision:
 
         self.device = wp.get_device(model.device)
         self.particle_count = model.particle_count
-        self.thickness = float(thickness)
         self.stiffness = validated_stiffness
         self.untangle_stiffness = validated_untangle_stiffness
         self.stiffness_factors = validated_stiffness_factors
@@ -2642,11 +2798,33 @@ class ConstraintSelfCollision:
         if len(surface_vertex_indices) == 0:
             raise ValueError("ConstraintSelfCollision requires at least one surface vertex")
 
+        mesh_adjacency = MeshAdjacency(triangle_indices)
+        edge_indices = mesh_adjacency.edge_indices
+        if len(edge_indices) == 0:
+            raise ValueError("ConstraintSelfCollision requires at least one mesh edge")
+        rest_positions = np.asarray(model.particle_q.numpy(), dtype=np.float64)
+        if thickness is None:
+            two_ring_upper_bound = _compute_two_ring_collision_upper_bound(
+                rest_positions,
+                triangle_indices,
+                edge_indices,
+            )
+            if np.isfinite(two_ring_upper_bound):
+                if two_ring_upper_bound <= 0.0:
+                    raise ValueError("automatic thickness requires positive two-ring rest clearance")
+                thickness = min(
+                    _AUTOMATIC_THICKNESS_ETA * two_ring_upper_bound,
+                    _AUTOMATIC_THICKNESS_MAX,
+                )
+            else:
+                thickness = _AUTOMATIC_THICKNESS_MAX
+        self.thickness = float(thickness)
+        self.thickness_was_estimated = thickness_was_estimated
+
         nominal_radius = 0.5 * self.thickness
         if geometry_radius_scale is None:
             particle_radii = np.full(model.particle_count, nominal_radius, dtype=np.float32)
         else:
-            rest_positions = np.asarray(model.particle_q.numpy(), dtype=np.float64)
             particle_radii = _compute_geometry_aware_particle_radii(
                 rest_positions,
                 triangle_indices,
@@ -2658,10 +2836,6 @@ class ConstraintSelfCollision:
         self.particle_radii = wp.array(particle_radii, dtype=wp.float32, device=self.device)
         self._use_geometry_radii = int(geometry_radius_scale is not None)
 
-        mesh_adjacency = MeshAdjacency(triangle_indices)
-        edge_indices = mesh_adjacency.edge_indices
-        if len(edge_indices) == 0:
-            raise ValueError("ConstraintSelfCollision requires at least one mesh edge")
         vertex_neighbor_offsets = np.zeros(model.particle_count + 1, dtype=np.int32)
         vertex_neighbors = np.empty(0, dtype=np.int32)
         if self.geometry_radius_topology_local_only:

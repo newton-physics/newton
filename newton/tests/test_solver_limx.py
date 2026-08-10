@@ -1381,6 +1381,53 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             buffer.depths.numpy()[:count],
         )
 
+    @classmethod
+    def _make_two_ring_thickness_model(cls, clearance: float):
+        positions = [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [10.0, 10.0, 10.0],
+            [0.0, 0.0, clearance],
+            [11.0, 10.0, 10.0],
+            [10.0, 11.0, 10.0],
+        ]
+        return cls._make_model(positions, [(0, 1, 2), (2, 3, 5), (3, 4, 6)])
+
+    def test_automatic_thickness_uses_two_ring_vf_upper_bound(self):
+        """Scale the smallest two-ring VF clearance by eta."""
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_two_ring_thickness_model(0.004)
+            collision = ConstraintSelfCollision(model, thickness=None, stiffness=10.0)
+
+        self.assertTrue(collision.thickness_was_estimated)
+        self.assertAlmostEqual(collision.thickness, 0.0032, places=7)
+
+    def test_automatic_thickness_caps_at_five_millimeters(self):
+        """Cap an automatically estimated collision thickness at 5 mm."""
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_two_ring_thickness_model(0.1)
+            collision = ConstraintSelfCollision(model, thickness=None, stiffness=10.0)
+
+        self.assertTrue(collision.thickness_was_estimated)
+        self.assertAlmostEqual(collision.thickness, 0.005, places=7)
+
+    def test_automatic_thickness_rejects_zero_two_ring_clearance(self):
+        """Reject automatic thickness when a valid two-ring pair has zero clearance."""
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_two_ring_thickness_model(0.0)
+            with self.assertRaisesRegex(ValueError, "two-ring"):
+                ConstraintSelfCollision(model, thickness=None, stiffness=10.0)
+
+    def test_explicit_thickness_bypasses_geometry_estimate(self):
+        """Preserve an explicitly configured collision thickness."""
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_two_ring_thickness_model(0.004)
+            collision = ConstraintSelfCollision(model, thickness=0.0025, stiffness=10.0)
+
+        self.assertFalse(collision.thickness_was_estimated)
+        self.assertAlmostEqual(collision.thickness, 0.0025, places=7)
+
     def test_vertex_face_detection_uses_only_surface_vertices(self):
         """Exclude particles outside the triangle topology from VF candidates."""
         positions = [

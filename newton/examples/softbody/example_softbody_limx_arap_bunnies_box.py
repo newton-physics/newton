@@ -5,8 +5,9 @@
 # Example Softbody LIMX ARAP Bunnies Box
 #
 # Eight volumetric ARAP bunnies fall into an open box. A shared VF/EE operator
-# uses local geometry caps for one-ring pairs and uniform 3 mm thickness for
-# nonlocal pairs. Every 0.01 s frame uses one Newton increment and 50 PCG steps.
+# uses local geometry caps for one-ring pairs and estimates the nonlocal
+# thickness as min(0.8 * two-ring clearance, 5 mm). Every 0.01 s frame uses
+# one Newton increment and 50 PCG steps.
 #
 # Command: uv run -m newton.examples softbody_limx_arap_bunnies_box
 #
@@ -111,7 +112,7 @@ class Example:
         )
         self.self_collision = newton.solvers.ConstraintSelfCollision(
             self.model,
-            thickness=0.003,
+            thickness=None,
             stiffness=None,
             max_contacts=262144,
             stiffness_factors=(0.5, 0.3, 1.5),

@@ -11,8 +11,8 @@ from newton.viewer import ViewerNull
 
 @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
 class TestLimxArapBunniesBoxExample(unittest.TestCase):
-    def test_uses_topology_local_collision_thickness_configuration(self):
-        """Use local geometry caps with uniform nonlocal 3 mm VF/EE."""
+    def test_uses_automatic_topology_local_collision_thickness(self):
+        """Estimate nonlocal VF/EE thickness from the two-ring clearance."""
         module = importlib.import_module("newton.examples.softbody.example_softbody_limx_arap_bunnies_box")
         example = module.Example(ViewerNull(num_frames=1), None)
 
@@ -24,7 +24,9 @@ class TestLimxArapBunniesBoxExample(unittest.TestCase):
         self.assertEqual(len(example.surface_vertex_indices), 8624)
         self.assertEqual(example.model.body_count, 0)
         self.assertEqual(example.model.shape_count, 1)
-        self.assertEqual(example.self_collision.thickness, 0.003)
+        self.assertTrue(example.self_collision.thickness_was_estimated)
+        self.assertAlmostEqual(example.self_collision.thickness, 0.0029901, places=7)
+        self.assertLessEqual(example.self_collision.thickness, 0.005)
         self.assertEqual(set(example.arap_constraint.host_stiffnesses), {3.0e5})
         self.assertEqual(example.self_collision.geometry_radius_scale, 0.25)
         self.assertTrue(example.self_collision.geometry_radius_topology_local_only)
