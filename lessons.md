@@ -53,3 +53,39 @@
 - Context: Stabilizing surface collision for the eight-bunny volumetric ARAP scene.
 - Mistake: Kept edge-face (EF) intersection recovery enabled even though the intended collision formulation is limited to vertex-face and edge-edge pairs.
 - Rule: For this LIMX collision path, detect and assemble only VF and EE contacts. Do not generate EF recovery contacts or include EF forces, Hessian-vector products, or diagonal blocks unless the user explicitly requests EF again.
+
+## 2026-08-10 — Validate pile dynamics, not only numerical stability
+
+- Context: The eight-bunny VF/EE scene remained stable but its upper layer did not visibly slide down after the walls were hidden.
+- Mistake: Aligned every upper bunny almost exactly above a lower bunny and validated only positive volume, containment, and contact overflow. With friction `0.05`, the small lateral perturbations were dissipated and the scene settled into four stable columns.
+- Rule: When a collision demo is intended to show pile rearrangement, verify per-object center-of-mass motion and friction sensitivity. Avoid vertically aligned initial layers unless stable stacking is the behavior being tested.
+
+## 2026-08-10 — Measure friction thresholds before recommending coefficients
+
+- Context: Diagnosing why the upper bunnies remained stacked in the VF/EE pile scene.
+- Mistake: Recommended reducing self-collision friction from `0.05` to `0.01` after testing only the endpoints `0.05` and `0.0`.
+- Rule: Do not infer a useful intermediate friction value from endpoint behavior. Run the proposed coefficient first and compare per-object center-of-mass trajectories; this scene remains stacked at `0.01` and only the tested frictionless case clearly slides.
+
+## 2026-08-10 — Use the explicitly requested frictionless baseline
+
+- Context: After the `0.01` bunny self-friction experiment still produced stable stacking, the user specified zero friction so the pile should collapse to the floor.
+- Mistake: Proposed and launched an intermediate coefficient even though the already measured frictionless endpoint was the only configuration that clearly produced sliding.
+- Rule: For the current bunny-pile experiment, set VF/EE self-collision friction exactly to `0`; keep box-plane friction separate unless the user asks to change it.
+
+## 2026-08-10 — Preserve oriented tetrahedral boundary normals
+
+- Context: Cross-bunny collision used boundary triangles extracted from positive-volume tetrahedra, but treated them like an unoriented cloth mesh.
+- Mistake: VF detection replaced the oriented signed distance with its absolute value and flipped the response toward whichever side currently contained the vertex. Once a vertex crossed inside another bunny, this pushed it farther inward. EE likewise used only the closest-point separation vector and ignored incident outward face normals.
+- Rule: Preserve the outward winding of tetrahedral boundary faces. For cross-component volume contact, use signed VF penetration and the target face's outward normal consistently in force and Hessian assembly; use incident outward face normals to disambiguate EE response. Keep component identity explicit, because the same one-sided half-space rule is not valid for arbitrary same-component self-collision, and retain CCD to prevent contacts from crossing beyond the activation band.
+
+## 2026-08-10 — Defer CCD for oriented volume contact
+
+- Context: Scoping the correction for tetrahedral bunny surface collision after confirming that the current VF/EE response discards outward normals.
+- Mistake: Included CCD in the immediate correction even though the user only wants the discrete oriented response fixed first.
+- Rule: Implement component-aware outward-normal VF/EE response within the existing discrete 3 mm candidate band first. Do not add swept collision detection, trajectory tests, or CCD infrastructure until the user explicitly requests that separate phase.
+
+## 2026-08-10 — Use signed response for same-body volume self-contact
+
+- Context: Designing oriented VF/EE collision for the tetrahedral bunny surfaces without CCD.
+- Mistake: Proposed preserving the old unsigned formula for contacts within the same bunny while using signed outward normals only across different bunnies.
+- Rule: Apply the oriented signed VF/EE formulation uniformly to all tetrahedral boundary contacts, including same-bunny self-collision. Do not branch the response formula on connected-component identity; component labels may remain diagnostic only.

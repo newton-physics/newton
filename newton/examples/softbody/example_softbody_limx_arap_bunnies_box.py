@@ -116,7 +116,7 @@ class Example:
             max_contacts=262144,
             stiffness_factors=(0.5, 0.3, 1.5),
             geometry_radius_scale=None,
-            friction=0.05,
+            friction=0.0,
             friction_epsilon=1.0e-2,
             enable_edge_face=False,
         )
@@ -160,46 +160,18 @@ class Example:
         self.viewer.set_camera(wp.vec3(1.25, -1.55, 1.08), -18.0, 140.0)
 
     def _add_box_shapes(self, builder: newton.ModelBuilder) -> None:
-        wall_thickness = 0.025
         floor_half_thickness = 0.05
-        wall_center_z = 0.5 * (self.box_floor + self.box_wall_top)
-        wall_half_height = 0.5 * (self.box_wall_top - self.box_floor)
-        outer_half_x = float(self.box_max[0]) + 2.0 * wall_thickness
-        outer_half_y = float(self.box_max[1]) + 2.0 * wall_thickness
+        floor_margin = 0.05
         box_color = wp.vec3(0.34, 0.22, 0.12)
 
         builder.add_shape_box(
             body=-1,
             xform=wp.transform(wp.vec3(0.0, 0.0, self.box_floor - floor_half_thickness), wp.quat_identity()),
-            hx=outer_half_x,
-            hy=outer_half_y,
+            hx=float(self.box_max[0]) + floor_margin,
+            hy=float(self.box_max[1]) + floor_margin,
             hz=floor_half_thickness,
             color=box_color,
         )
-        for x_position in (
-            float(self.box_min[0]) - wall_thickness,
-            float(self.box_max[0]) + wall_thickness,
-        ):
-            builder.add_shape_box(
-                body=-1,
-                xform=wp.transform(wp.vec3(x_position, 0.0, wall_center_z), wp.quat_identity()),
-                hx=wall_thickness,
-                hy=outer_half_y,
-                hz=wall_half_height,
-                color=box_color,
-            )
-        for y_position in (
-            float(self.box_min[1]) - wall_thickness,
-            float(self.box_max[1]) + wall_thickness,
-        ):
-            builder.add_shape_box(
-                body=-1,
-                xform=wp.transform(wp.vec3(0.0, y_position, wall_center_z), wp.quat_identity()),
-                hx=outer_half_x,
-                hy=wall_thickness,
-                hz=wall_half_height,
-                color=box_color,
-            )
 
     def step(self):
         """Advance one undamped 0.01-second Newton step."""
@@ -210,7 +182,7 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
-        """Render all bunnies and the open box."""
+        """Render all bunnies and the floor."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()

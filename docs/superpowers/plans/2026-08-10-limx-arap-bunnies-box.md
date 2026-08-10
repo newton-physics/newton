@@ -13,7 +13,7 @@
 - Instantiate exactly eight bunnies in the approved deterministic `2 x 2 x 2` layout.
 - Use scale `0.15`, density `1000 kg/m^3`, and ARAP stiffness `1e5 Pa` per bunny.
 - Use fixed VF/EE thickness `0.003 m`; leave `geometry_radius_scale=None`.
-- Use adaptive contact stiffness factors `(0.5, 0.3, 1.5)`, friction `0.05`, and `max_contacts=262144`.
+- Use adaptive contact stiffness factors `(0.5, 0.3, 1.5)`, self-collision friction `0`, and `max_contacts=262144`.
 - Set `enable_edge_face=False`; only VF and EE may detect or assemble contact.
 - Render only the floor; keep five inward box planes, including four invisible
   walls, with `0.003 m` thickness, `2e4 N/m` stiffness, friction `0.05`, and
@@ -72,7 +72,7 @@ class TestLimxArapBunniesBoxExample(unittest.TestCase):
         self.assertIsNone(example.self_collision.geometry_radius_scale)
         self.assertIsNone(example.self_collision.stiffness)
         self.assertEqual(example.self_collision.stiffness_factors, (0.5, 0.3, 1.5))
-        self.assertEqual(example.self_collision.friction, 0.05)
+        self.assertEqual(example.self_collision.friction, 0.0)
         self.assertEqual(example.self_collision.max_contacts, 262144)
         self.assertEqual(len(example.box_contacts), 5)
         self.assertTrue(all(contact.thickness == 0.003 for contact in example.box_contacts))
@@ -171,7 +171,7 @@ self.self_collision = newton.solvers.ConstraintSelfCollision(
     max_contacts=262144,
     stiffness_factors=(0.5, 0.3, 1.5),
     geometry_radius_scale=None,
-    friction=0.05,
+    friction=0.0,
     friction_epsilon=1.0e-2,
     enable_edge_face=False,
 )

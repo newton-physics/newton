@@ -129,7 +129,7 @@ geometry radius scale  None
 fixed stiffness        None
 stiffness factors      (0.5, 0.3, 1.5), with the EF entry unused
 edge-face recovery     disabled
-friction               0.05
+friction               0
 friction epsilon       1e-2 m/s
 maximum contacts       262,144 per contact type
 ```
@@ -137,7 +137,8 @@ maximum contacts       262,144 per contact type
 The stiffness is adaptive to the assembled ARAP diagonal, particle masses,
 and `dt`; only stiffness adapts. Collision thickness remains fixed at `3 mm`.
 Only VF and EE are active; the EF contact buffer remains empty and contributes
-no force, Hessian-vector product, or diagonal block.
+no force, Hessian-vector product, or diagonal block. Bunny-bunny friction is
+disabled so the upper layer can slide; box-plane friction remains `0.05`.
 
 Compose the self-collision operator and five box planes with
 `ConstraintGroupDynamic`.
