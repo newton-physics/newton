@@ -12,10 +12,10 @@
 # isolating bend/twist mismatch from initial stretch/shear.
 #
 # Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_rest_initial_pose
+#   uv run --extra examples python -m newton.examples.vbd.example_cable_rest_initial_pose
 #
 # Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_rest_initial_pose --test --viewer null
+#   uv run --extra examples python -m newton.examples.vbd.example_cable_rest_initial_pose --test --viewer null
 #
 ###########################################################################
 
