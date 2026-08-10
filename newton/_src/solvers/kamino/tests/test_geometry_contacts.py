@@ -1396,7 +1396,8 @@ class TestGeometryContactConversions(unittest.TestCase):
         convert_contacts_newton_to_kamino(model_nc, state_nc, contacts_nc, kamino_small)
         self.assertEqual(int(kamino_small._data._contact_overflow_warning_emitted.numpy()[0]), 0)
 
-        convert_contacts_newton_to_kamino(model, state, contacts, kamino_small)
+        with self.assertLogs(level="WARNING"):
+            convert_contacts_newton_to_kamino(model, state, contacts, kamino_small)
         self.assertEqual(int(kamino_small._data._contact_overflow_warning_emitted.numpy()[0]), 1)
         # Geometry must be sound for whatever was kept.
         bid_AB = kamino_small.bid_AB.numpy()[:nc_small]
