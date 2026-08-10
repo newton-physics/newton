@@ -313,3 +313,80 @@ Decision: scipy least-squares remains the authoritative calibration backend. The
 differentiable fit is retained as an optional backend for gradient-based design
 and coupled objectives, warm-started from scipy when used for calibration. Exact
 gradients do not improve peak or hysteresis residuals on this two-cycle dataset.
+
+
+## Phase-2 Dynamic Replay (SolverMuJoCo)
+
+Phase 2 couples the Phase-1 effective law into MuJoCo-Warp as a live Warp
+foundation kernel: each substep the kernel writes a body wrench into Newton
+``state.body_f`` and ``SolverMuJoCo`` advances the model. The shared material is
+fit on the train cycles only (``phase1.fit_train_material``), so the dynamic
+replay is scored on held-out cycles [99, 100] that neither the fit nor the
+servo tuning ever saw. Run: ``uv run -m projects.digital_instron_v2.phase2``.
+
+Both fixtures now build a dynamic column bed: the fullfoot last samples the mesh
+footprint (606 active columns at peak, 152 cm^2), and a new flat-punch
+path (``_build_rearfoot_geometry``) samples the 62-column, 15 cm^2 heel
+disc with uniform anchoring (``z_free = slack``).
+
+### Drive modes
+
+- **Kinematic crosshead (gated).** A position-controlled body prescribes the
+  exact measured pose every substep -- the faithful digital twin of the
+  servo-hydraulic Instron. This is the mode scored against the bench data.
+- **Servo (stress test).** A prismatic PD joint (ke=5e+07, kd=2e+04) with
+  position + velocity feed-forward tracks the same trajectory in closed loop. It
+  is *not* gated on the rate-dependent hysteresis (a finite servo low-passes the
+  crosshead velocity and thins the loop) -- only on stability and continuity.
+
+### Held-out dynamic metrics (kinematic, substeps=32, dt=521 us)
+
+| fixture | peak err | active RMSE | hysteresis err | tracking | max dF/frame |
+|---|---|---|---|---|---|
+| rearfoot punch | 0.127 | 0.067 | 0.156 | 0.000 mm | 13.6 N |
+| fullfoot last | 0.146 | 0.041 | 0.171 | 0.000 mm | 31.1 N |
+
+The kinematic replay reproduces the Phase-1 *static* held-out metrics
+bit-for-bit (rearfoot 0.127 / 0.067 / 0.156; fullfoot 0.146 / 0.041 / 0.171),
+confirming the Warp/MuJoCo implementation of the calibrated law is faithful and
+phase aligned. The peak-force and hysteresis gates fail by the same margin as
+Phase 1 -- this is the two-cycle data/model identifiability ceiling, **not** a
+dynamics failure. Active pointwise RMSE passes (4-7%).
+
+A one-substep phase-misalignment between the logged force and the commanded
+displacement smears the loop badly (fullfoot hysteresis 0.171 -> 0.56); the
+recorder is therefore phase aligned (force and depth are logged *before* the
+substep clock advances). Driven kinematically at the measured frames, the
+foundation kernel matches ``core.predict`` exactly and is dt-robust (substeps
+16/32/64 all give the same loop).
+
+### Dynamics diagnostics (physical and continuous)
+
+- **COP.** Fullfoot peak COP (1.8, -2.4) mm sits near the last centroid;
+  rearfoot COP (-88.4, 0.7) mm sits at the heel-punch center.
+- **Wrench.** Peak body Fz 2288 N (fullfoot) / 1031 N (rearfoot); the
+  rearfoot moment (91 N.m) is the r x F of the 88 mm heel offset -- physical.
+- **Continuity.** Max force jump per frame 31 N (fullfoot) / 14 N (rearfoot),
+  far below 25% of peak; force finite throughout.
+- **Energy.** Simulated dissipation -1.79 J vs measured -1.52 J
+  (fullfoot); -0.93 J vs -1.11 J (rearfoot), consistent with the
+  hysteresis metric.
+
+### Servo stress test (stability under closed-loop actuation)
+
+| fixture | tracking | max dF/frame | finite |
+|---|---|---|---|
+| rearfoot punch | 0.193 mm | 13.5 N | True |
+| fullfoot last | 0.147 mm | 26.8 N | True |
+
+Closed-loop PD actuation stays stable and tracks the trajectory to <0.2 mm, so
+the calibrated law is dynamics-stable, not just kinematically replayable. (The
+stiff servo needs substeps >= 32: its natural period ~0.9 ms must resolve the
+substep dt.)
+
+**Conclusion.** The Phase-1 calibrated shoe law runs stably as a coupled
+Warp/MuJoCo body-wrench source, reproduces the held-out bench metrics exactly
+under kinematic drive, and remains stable under closed-loop servo actuation. The
+residual peak/hysteresis gap is the same data/model ceiling identified in Phase
+1; moving it requires same-fixture multi-rate / relaxation experiments, not a
+dynamics change.

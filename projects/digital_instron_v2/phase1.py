@@ -162,6 +162,37 @@ def _nuisance_parameters(source: dict[str, Any], policy: str) -> dict[str, Any]:
     return used
 
 
+def fit_train_material(
+    manifest_path: str | Path,
+    *,
+    backend: str = "scipy",
+    evaluations: int = 100,
+    iterations: int = 150,
+    learning_rate: float = 0.03,
+) -> tuple[Material, dict[str, Any], dict[str, Any]]:
+    """Fit one shared material on the train cycles only and return the split provenance.
+
+    Returns:
+        The train-fitted :class:`~projects.digital_instron_v2.core.Material`, the
+        backend fit-info mapping, and the generated train/validate split (paths and
+        provenance) from :func:`generate_split_traces`. Phase 2 reuses this so its
+        dynamic replay is scored against a material that never saw the held-out
+        cycles.
+    """
+    path = Path(manifest_path).resolve()
+    config = json.loads(path.read_text())
+    base = path.parent
+    midsole = load_mesh(base / config["midsole_mesh"], 0.001)
+    grid = build_column_grid(midsole, config["grid"]["coarse_spacing_m"])
+    split = generate_split_traces(path)
+    train_trials, _, _ = prepare_trials(base, config, grid, midsole, trace_paths=split["train"])
+    initial = Material(*config["fit"].values())
+    material, fit_info = _fit_backend(
+        train_trials, initial, backend, evaluations=evaluations, iterations=iterations, learning_rate=learning_rate
+    )
+    return material, fit_info, split
+
+
 def evaluate(
     manifest_path: str | Path,
     *,
@@ -180,14 +211,11 @@ def evaluate(
     midsole = load_mesh(base / config["midsole_mesh"], 0.001)
     grid = build_column_grid(midsole, config["grid"]["coarse_spacing_m"])
 
-    split = generate_split_traces(path)
+    material, fit_info, split = fit_train_material(
+        path, backend=backend, evaluations=evaluations, iterations=iterations, learning_rate=learning_rate
+    )
     train_trials, _, _ = prepare_trials(base, config, grid, midsole, trace_paths=split["train"])
     validate_trials, _, _ = prepare_trials(base, config, grid, midsole, trace_paths=split["validate"])
-
-    initial = Material(*config["fit"].values())
-    material, fit_info = _fit_backend(
-        train_trials, initial, backend, evaluations=evaluations, iterations=iterations, learning_rate=learning_rate
-    )
 
     by_name = {source["name"]: source for source in config["trials"]}
     train_metrics = {t.name: _trace_metrics(t, material) for t in train_trials}

@@ -32,7 +32,7 @@ import numpy as np
 import warp as wp
 
 from .core import EFFECTIVE_POISSON_RATIO, MAXWELL_RELAXATION_TIME_S, Material
-from .geometry import build_column_grid, load_mesh, raycast_surface, transform_mesh
+from .geometry import build_column_grid, load_mesh, raycast_surface, rearfoot_center, transform_mesh
 
 POISSON = wp.constant(EFFECTIVE_POISSON_RATIO)
 TAU_S = wp.constant(MAXWELL_RELAXATION_TIME_S)
@@ -417,6 +417,8 @@ def build_foundation_geometry(manifest_path: str | Path, fixture: str = "fullfoo
 
     source = next(t for t in config["trials"] if t["fixture"] == fixture)
     indenter = source["indenter"]
+    if "path" not in indenter:
+        return _build_rearfoot_geometry(config, base, grid, source, str(base / config["midsole_mesh"]))
     last = load_mesh(base / indenter["path"], 0.001, indenter["rotation_deg"], indenter["crop_height_m"])
     transform_mesh(
         last,
@@ -449,6 +451,41 @@ def build_foundation_geometry(manifest_path: str | Path, fixture: str = "fullfoo
         midsole_mesh_path=str(base / config["midsole_mesh"]),
         z_shift_m=z_shift,
         indenter_shift_m=indenter_shift,
+        thickness_axis=int(grid.thickness_axis),
+    )
+
+
+def _build_rearfoot_geometry(config: dict, base: Path, grid, source: dict, mesh_path: str) -> FoundationGeometry:
+    """Sample a flat circular-punch column bed for the rearfoot fixture.
+
+    The rearfoot test drives a rigid ``radius_m`` punch straight down onto the
+    heel, so every column under the disc compresses uniformly. Anchoring each
+    column top at its rest foam height (``z_free = slack``) reproduces the
+    calibration's uniform-compression assumption: a carrier descent ``d`` gives
+    every disc column the same compression ``d``.
+    """
+    radius = float(source["indenter"]["radius_m"])
+    center = rearfoot_center(
+        load_mesh(base / config["midsole_mesh"], 0.001), grid, config["grid"]["rearfoot_length_fraction"]
+    )
+    active = np.linalg.norm(grid.uv_m - center, axis=1) <= radius
+    uv = grid.uv_m[active]
+    slack = grid.slack_m[active]
+    count = int(np.count_nonzero(active))
+    area = float(np.pi * radius**2 / count)
+    return FoundationGeometry(
+        uv_m=uv,
+        slack_m=slack,
+        area_m2=area,
+        spacing_m=grid.spacing_m,
+        z_free_m=slack.copy(),
+        z_bottom_m=np.zeros(count, dtype=np.float64),
+        surface_m=slack.copy(),
+        gap0_m=np.zeros(count, dtype=np.float64),
+        neighbors=_neighbor_indices(uv, grid.uv_m, grid.spacing_m),
+        midsole_mesh_path=mesh_path,
+        z_shift_m=0.0,
+        indenter_shift_m=0.0,
         thickness_axis=int(grid.thickness_axis),
     )
 
