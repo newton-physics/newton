@@ -1451,6 +1451,19 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         self.assertIsNone(collision.geometry_radius_scale)
         np.testing.assert_allclose(radii, np.full(3, 0.05, dtype=np.float32), rtol=0.0, atol=1.0e-7)
 
+    def test_topology_local_geometry_radii_require_radius_scale(self):
+        """Require geometry radii when selecting the topology-local scope."""
+        positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2)])
+            with self.assertRaisesRegex(ValueError, "geometry_radius_scale"):
+                ConstraintSelfCollision(
+                    model,
+                    thickness=0.1,
+                    stiffness=10.0,
+                    geometry_radius_topology_local_only=True,
+                )
+
     def test_geometry_aware_radii_use_minimum_incident_triangle_altitude(self):
         """Cap each particle radius using its smallest incident rest altitude."""
         positions = [
@@ -1662,6 +1675,38 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             ids, _, _, _ = self._stored_contacts(collision.vertex_face_contacts)
 
         self.assertTrue(np.any(np.all(ids == [3, 0, 1, 2], axis=1)))
+
+    def test_topology_local_geometry_radii_limit_only_one_ring_vertex_face(self):
+        """Limit one-ring VF while retaining uniform-thickness nonlocal VF."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.25, 0.25, 0.05],
+            [0.60, 0.20, 0.05],
+            [3.0, 3.0, 2.0],
+            [4.0, 3.0, 2.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (0, 1, 3), (4, 5, 6)])
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=32,
+                geometry_radius_scale=0.25,
+                geometry_radius_topology_local_only=True,
+                use_outward_normals=True,
+            )
+            collision.particle_radii.assign([0.01] * len(positions))
+            collision.prepare(model.particle_q)
+            ids, _, _, depths = self._stored_contacts(collision.vertex_face_contacts)
+
+        local_matches = np.nonzero(np.all(ids == [3, 0, 1, 2], axis=1))[0]
+        nonlocal_matches = np.nonzero(np.all(ids == [4, 0, 1, 2], axis=1))[0]
+        self.assertEqual(len(local_matches), 0)
+        self.assertEqual(len(nonlocal_matches), 1)
+        self.assertAlmostEqual(float(depths[int(nonlocal_matches[0])]), 0.05, places=6)
 
     def test_oriented_vertex_face_retains_two_ring_neighbor(self):
         """Keep two-ring vertices eligible for oriented VF contacts."""
@@ -2071,6 +2116,49 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         self.assertAlmostEqual(float(depths[int(matches[0])]), 0.02, places=6)
         self.assertTrue(np.isfinite(force_np).all())
         self.assertGreater(float(np.linalg.norm(force_np)), 0.0)
+
+    def test_topology_local_geometry_radii_limit_only_one_ring_edge_edge(self):
+        """Limit one-ring EE while retaining uniform-thickness nonlocal EE."""
+        positions = [
+            [-0.05, 0.0, 0.0],
+            [0.05, 0.0, 0.0],
+            [0.0, -0.05, 0.02],
+            [0.0, 0.05, 0.02],
+            [1.0, 0.05, 0.02],
+            [0.0, -1.0, 1.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            local_model = self._make_model(positions, [(0, 1, 2), (2, 3, 4)])
+            local_collision = ConstraintSelfCollision(
+                local_model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=32,
+                geometry_radius_scale=0.25,
+                geometry_radius_topology_local_only=True,
+            )
+            local_collision.particle_radii.assign([0.005] * len(positions))
+            local_collision.prepare(local_model.particle_q)
+            local_ids, _, _, _ = self._stored_contacts(local_collision.edge_edge_contacts)
+
+            nonlocal_model = self._make_model(positions, [(0, 1, 4), (2, 3, 5)])
+            nonlocal_collision = ConstraintSelfCollision(
+                nonlocal_model,
+                thickness=0.1,
+                stiffness=10.0,
+                max_contacts=32,
+                geometry_radius_scale=0.25,
+                geometry_radius_topology_local_only=True,
+            )
+            nonlocal_collision.particle_radii.assign([0.005] * len(positions))
+            nonlocal_collision.prepare(nonlocal_model.particle_q)
+            nonlocal_ids, _, _, nonlocal_depths = self._stored_contacts(nonlocal_collision.edge_edge_contacts)
+
+        local_matches = np.nonzero(np.all(local_ids == [0, 1, 2, 3], axis=1))[0]
+        nonlocal_matches = np.nonzero(np.all(nonlocal_ids == [0, 1, 2, 3], axis=1))[0]
+        self.assertEqual(len(local_matches), 0)
+        self.assertEqual(len(nonlocal_matches), 1)
+        self.assertAlmostEqual(float(nonlocal_depths[int(nonlocal_matches[0])]), 0.08, places=6)
 
     def test_nonlocal_edge_pair_uses_rest_length_mollifier_threshold(self):
         """Compute a nonlocal EE mollifier threshold from the two rest edge lengths."""

@@ -11,6 +11,7 @@
 - Add frictionless LIMX cloth self-collision with GPU VF/EE detection, EF untangling, and full matrix-free positive-semidefinite contact Hessians.
 - Add adaptive LIMX self-collision stiffness derived from the current elastic diagonal and inertia, with independent VF, EE, and EF factors.
 - Add regularized Coulomb friction to LIMX vertex-face and edge-edge cloth self-collision.
+- Add a topology-local-only scope for geometry-aware LIMX self-collision radii so one-ring VF/EE can use rest-geometry caps while nonlocal pairs keep the nominal thickness.
 - Add optional surface-particle subsets to LIMX static-plane contact and an option to disable edge-face recovery in self-collision.
 - Add opt-in outward-normal signed VF/EE contact for closed LIMX volume surfaces, excluding only strictly incident pairs that share primitive indices.
 - Add a CUDA LIMX example that contrasts a settled control with geometry-aware VF/EE self-collision at a 6 mm nominal thickness.

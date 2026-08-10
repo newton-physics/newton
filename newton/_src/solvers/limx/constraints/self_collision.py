@@ -134,6 +134,19 @@ def _is_topology_local_edge_pair(
 
 
 @wp.func
+def _is_vertex_topology_neighbor(
+    vertex: int,
+    candidate: int,
+    vertex_neighbor_offsets: wp.array[int],
+    vertex_neighbors: wp.array[int],
+):
+    for entry in range(vertex_neighbor_offsets[vertex], vertex_neighbor_offsets[vertex + 1]):
+        if vertex_neighbors[entry] == candidate:
+            return True
+    return False
+
+
+@wp.func
 def _triangle_unit_normal(
     triangle: int,
     positions: wp.array[wp.vec3],
@@ -223,10 +236,13 @@ def _detect_vertex_face_contacts(
     thickness: float,
     particle_radii: wp.array[float],
     use_geometry_radii: int,
+    geometry_radius_topology_local_only: int,
     capacity: int,
     positions: wp.array[wp.vec3],
     surface_vertex_indices: wp.array[int],
     use_outward_normals: int,
+    vertex_neighbor_offsets: wp.array[int],
+    vertex_neighbors: wp.array[int],
     particle_world: wp.array[int],
     triangle_indices: wp.array2d[int],
     contact_ids: wp.array2d[int],
@@ -253,6 +269,14 @@ def _detect_vertex_face_contacts(
         if particle_world[vertex] != particle_world[index_0]:
             continue
 
+        topology_local = False
+        if geometry_radius_topology_local_only != 0:
+            topology_local = (
+                _is_vertex_topology_neighbor(vertex, index_0, vertex_neighbor_offsets, vertex_neighbors)
+                or _is_vertex_topology_neighbor(vertex, index_1, vertex_neighbor_offsets, vertex_neighbors)
+                or _is_vertex_topology_neighbor(vertex, index_2, vertex_neighbor_offsets, vertex_neighbors)
+            )
+
         position_0 = positions[index_0]
         position_1 = positions[index_1]
         position_2 = positions[index_2]
@@ -276,7 +300,7 @@ def _detect_vertex_face_contacts(
             continue
 
         effective_thickness = thickness
-        if use_geometry_radii != 0:
+        if use_geometry_radii != 0 and (geometry_radius_topology_local_only == 0 or topology_local):
             face_radius = (
                 barycentric[0] * particle_radii[index_0]
                 + barycentric[1] * particle_radii[index_1]
@@ -315,6 +339,7 @@ def _detect_edge_edge_contacts(
     thickness: float,
     particle_radii: wp.array[float],
     use_geometry_radii: int,
+    geometry_radius_topology_local_only: int,
     capacity: int,
     positions: wp.array[wp.vec3],
     rest_positions: wp.array[wp.vec3],
@@ -379,13 +404,19 @@ def _detect_edge_edge_contacts(
             edge_indices,
         )
         limited_thickness = thickness
-        if use_geometry_radii != 0:
+        if use_geometry_radii != 0 and geometry_radius_topology_local_only == 0:
             radius_0 = (1.0 - parameter_0) * particle_radii[index_0]
             radius_0 += parameter_0 * particle_radii[index_1]
             radius_1 = (1.0 - parameter_1) * particle_radii[index_2]
             radius_1 += parameter_1 * particle_radii[index_3]
             limited_thickness = radius_0 + radius_1
         elif topology_local:
+            if use_geometry_radii != 0:
+                radius_0 = (1.0 - parameter_0) * particle_radii[index_0]
+                radius_0 += parameter_0 * particle_radii[index_1]
+                radius_1 = (1.0 - parameter_1) * particle_radii[index_2]
+                radius_1 += parameter_1 * particle_radii[index_3]
+                limited_thickness = wp.min(limited_thickness, radius_0 + radius_1)
             average_length = 0.5 * (wp.length(position_1 - position_0) + wp.length(position_3 - position_2))
             limited_thickness = wp.min(limited_thickness, 0.5 * average_length)
         if distance >= limited_thickness:
@@ -2488,6 +2519,7 @@ class ConstraintSelfCollision:
         max_contacts: int = 32768,
         stiffness_factors: tuple[float, float, float] | None = None,
         geometry_radius_scale: float | None = None,
+        geometry_radius_topology_local_only: bool = False,
         friction: float = 0.0,
         friction_epsilon: float = 1.0e-2,
         enable_edge_face: bool = True,
@@ -2512,6 +2544,9 @@ class ConstraintSelfCollision:
                 this value times its minimum incident triangle altitude. The
                 initial recommended value is ``0.25``. Particles absent from
                 the collision surface receive zero radius.
+            geometry_radius_topology_local_only: Whether geometry-aware radii
+                apply only to topology-local VF/EE pairs. Nonlocal pairs keep
+                the nominal ``thickness``. Requires ``geometry_radius_scale``.
             friction: Coulomb friction coefficient for vertex-face and
                 edge-edge contacts.
             friction_epsilon: Relative-velocity regularization threshold [m/s].
@@ -2536,6 +2571,8 @@ class ConstraintSelfCollision:
             if geometry_radius_scale <= 0.0:
                 raise ValueError("geometry_radius_scale must be positive")
             geometry_radius_scale = float(geometry_radius_scale)
+        if geometry_radius_topology_local_only and geometry_radius_scale is None:
+            raise ValueError("geometry_radius_topology_local_only requires geometry_radius_scale")
         if stiffness_factors is None:
             if stiffness is None:
                 raise ValueError("stiffness_factors must be provided when stiffness is None")
@@ -2617,6 +2654,7 @@ class ConstraintSelfCollision:
                 geometry_radius_scale,
             )
         self.geometry_radius_scale = geometry_radius_scale
+        self.geometry_radius_topology_local_only = bool(geometry_radius_topology_local_only)
         self.particle_radii = wp.array(particle_radii, dtype=wp.float32, device=self.device)
         self._use_geometry_radii = int(geometry_radius_scale is not None)
 
@@ -2624,6 +2662,22 @@ class ConstraintSelfCollision:
         edge_indices = mesh_adjacency.edge_indices
         if len(edge_indices) == 0:
             raise ValueError("ConstraintSelfCollision requires at least one mesh edge")
+        vertex_neighbor_offsets = np.zeros(model.particle_count + 1, dtype=np.int32)
+        vertex_neighbors = np.empty(0, dtype=np.int32)
+        if self.geometry_radius_topology_local_only:
+            one_ring_neighbors = [set() for _ in range(model.particle_count)]
+            for index_0, index_1 in edge_indices[:, 2:4]:
+                one_ring_neighbors[index_0].add(int(index_1))
+                one_ring_neighbors[index_1].add(int(index_0))
+            vertex_neighbor_offsets[1:] = np.cumsum(
+                [len(neighbors) for neighbors in one_ring_neighbors],
+                dtype=np.int32,
+            )
+            vertex_neighbors = np.fromiter(
+                (neighbor for neighbors in one_ring_neighbors for neighbor in sorted(neighbors)),
+                dtype=np.int32,
+                count=int(vertex_neighbor_offsets[-1]),
+            )
         self.triangle_indices = wp.array(triangle_indices, dtype=wp.int32, device=self.device)
         self.surface_vertex_indices = wp.array(surface_vertex_indices, dtype=wp.int32, device=self.device)
         self.edge_indices = wp.array(edge_indices, dtype=wp.int32, device=self.device)
@@ -2632,6 +2686,8 @@ class ConstraintSelfCollision:
             dtype=wp.int32,
             device=self.device,
         )
+        self.vertex_neighbor_offsets = wp.array(vertex_neighbor_offsets, dtype=wp.int32, device=self.device)
+        self.vertex_neighbors = wp.array(vertex_neighbors, dtype=wp.int32, device=self.device)
         self.triangle_count = len(triangle_indices)
         self.surface_vertex_count = len(surface_vertex_indices)
         self.edge_count = len(edge_indices)
@@ -2712,10 +2768,13 @@ class ConstraintSelfCollision:
                 self.thickness,
                 self.particle_radii,
                 self._use_geometry_radii,
+                int(self.geometry_radius_topology_local_only),
                 self.max_contacts,
                 positions,
                 self.surface_vertex_indices,
                 int(self.use_outward_normals),
+                self.vertex_neighbor_offsets,
+                self.vertex_neighbors,
                 self.particle_world,
                 self.triangle_indices,
             ],
@@ -2737,6 +2796,7 @@ class ConstraintSelfCollision:
                 self.thickness,
                 self.particle_radii,
                 self._use_geometry_radii,
+                int(self.geometry_radius_topology_local_only),
                 self.max_contacts,
                 positions,
                 self.rest_positions,
