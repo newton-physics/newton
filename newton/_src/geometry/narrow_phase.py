@@ -223,14 +223,9 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
         shape_transform: wp.array[wp.transform],
         shape_source: wp.array[wp.uint64],
         shape_gap: wp.array[float],
-        shape_base_gap: wp.array[float],
         shape_flags: wp.array[wp.int32],
         shape_sdf_index: wp.array[wp.int32],
         shape_edge_range: wp.array[wp.vec2i],
-        shape_linear_velocity: wp.array[wp.vec3],
-        shape_angular_velocity: wp.array[wp.vec3],
-        collision_update_dt: float,
-        max_speculative_extension: float,
         writer_data: Any,
         total_num_threads: int,
         # Output: pairs that need GJK/MPR processing
@@ -610,7 +605,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                 contact_data.shape_a = shape_a
                 contact_data.shape_b = shape_b
                 if wp.static(speculative):
-                    contact_data.gap_sum = shape_base_gap[shape_a] + shape_base_gap[shape_b]
+                    contact_data.gap_sum = writer_data.shape_gap[shape_a] + writer_data.shape_gap[shape_b]
                 else:
                     contact_data.gap_sum = gap_sum
 
@@ -622,11 +617,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                     if wp.static(speculative):
                         contact_0_valid = contact_passes_speculative_gap_check(
                             contact_data,
-                            shape_transform,
-                            shape_linear_velocity,
-                            shape_angular_velocity,
-                            collision_update_dt,
-                            max_speculative_extension,
+                            writer_data.shape_transform,
+                            writer_data.shape_linear_velocity,
+                            writer_data.shape_angular_velocity,
+                            writer_data.collision_update_dt,
+                            writer_data.max_speculative_extension,
                         )
                     else:
                         contact_0_valid = contact_passes_gap_check(contact_data)
@@ -638,11 +633,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                     if wp.static(speculative):
                         contact_1_valid = contact_passes_speculative_gap_check(
                             contact_data,
-                            shape_transform,
-                            shape_linear_velocity,
-                            shape_angular_velocity,
-                            collision_update_dt,
-                            max_speculative_extension,
+                            writer_data.shape_transform,
+                            writer_data.shape_linear_velocity,
+                            writer_data.shape_angular_velocity,
+                            writer_data.collision_update_dt,
+                            writer_data.max_speculative_extension,
                         )
                     else:
                         contact_1_valid = contact_passes_gap_check(contact_data)
@@ -654,11 +649,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                     if wp.static(speculative):
                         contact_2_valid = contact_passes_speculative_gap_check(
                             contact_data,
-                            shape_transform,
-                            shape_linear_velocity,
-                            shape_angular_velocity,
-                            collision_update_dt,
-                            max_speculative_extension,
+                            writer_data.shape_transform,
+                            writer_data.shape_linear_velocity,
+                            writer_data.shape_angular_velocity,
+                            writer_data.collision_update_dt,
+                            writer_data.max_speculative_extension,
                         )
                     else:
                         contact_2_valid = contact_passes_gap_check(contact_data)
@@ -670,11 +665,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                     if wp.static(speculative):
                         contact_3_valid = contact_passes_speculative_gap_check(
                             contact_data,
-                            shape_transform,
-                            shape_linear_velocity,
-                            shape_angular_velocity,
-                            collision_update_dt,
-                            max_speculative_extension,
+                            writer_data.shape_transform,
+                            writer_data.shape_linear_velocity,
+                            writer_data.shape_angular_velocity,
+                            writer_data.collision_update_dt,
+                            writer_data.max_speculative_extension,
                         )
                     else:
                         contact_3_valid = contact_passes_gap_check(contact_data)
@@ -2034,14 +2029,9 @@ class NarrowPhase:
                 shape_transform,
                 shape_source,
                 shape_gap,
-                shape_base_gap,
                 shape_flags,
                 shape_sdf_index,
                 shape_edge_range,
-                shape_linear_velocity,
-                shape_angular_velocity,
-                collision_update_dt,
-                max_speculative_extension,
                 writer_data,
                 self.total_num_threads,
             ],

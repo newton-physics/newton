@@ -205,160 +205,132 @@ def write_contact_speculative(
     _write_contact_at_index(contact_data, writer_data, index, point_a_world, point_b_world, normal)
 
 
-def _create_compute_shape_aabbs_kernel(speculative: bool):
-    """Create a default or velocity-swept AABB kernel specialization."""
+@wp.kernel(enable_backward=False)
+def compute_shape_aabbs(
+    body_q: wp.array[wp.transform],
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_collision_radius: wp.array[float],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_margin: wp.array[float],
+    shape_gap: wp.array[float],
+    shape_collision_aabb_lower: wp.array[wp.vec3],
+    shape_collision_aabb_upper: wp.array[wp.vec3],
+    # Fused counter arrays — zeroed by thread 0 to avoid separate kernel launches.
+    contact_counters: wp.array[wp.int32],
+    contact_generation: wp.array[wp.int32],
+    broad_phase_pair_count: wp.array[wp.int32],
+    num_contact_counters: int,
+    # outputs
+    aabb_lower: wp.array[wp.vec3],
+    aabb_upper: wp.array[wp.vec3],
+    geom_data: wp.array[wp.vec4],
+    geom_xform: wp.array[wp.transform],
+):
+    """Compute AABBs, narrow-phase geometry data, and zero collision counters.
 
-    _module = f"compute_shape_aabbs_{speculative}"
+    Fuses AABB computation, narrow-phase data preparation, contact counter
+    zeroing, and generation bumping into a single kernel launch.
+    """
+    shape_id = wp.tid()
 
-    @wp.kernel(enable_backward=False, module=_module)
-    def compute_shape_aabbs_kernel(
-        body_q: wp.array[wp.transform],
-        shape_transform: wp.array[wp.transform],
-        shape_body: wp.array[int],
-        shape_type: wp.array[int],
-        shape_scale: wp.array[wp.vec3],
-        shape_collision_radius: wp.array[float],
-        shape_source_ptr: wp.array[wp.uint64],
-        shape_margin: wp.array[float],
-        shape_gap: wp.array[float],
-        shape_collision_aabb_lower: wp.array[wp.vec3],
-        shape_collision_aabb_upper: wp.array[wp.vec3],
-        contact_counters: wp.array[wp.int32],
-        contact_generation: wp.array[wp.int32],
-        broad_phase_pair_count: wp.array[wp.int32],
-        num_contact_counters: int,
-        shape_linear_velocity: wp.array[wp.vec3],
-        shape_angular_speed_bound: wp.array[float],
-        collision_update_dt: float,
-        max_speculative_extension: float,
-        # outputs
-        aabb_lower: wp.array[wp.vec3],
-        aabb_upper: wp.array[wp.vec3],
-        geom_data: wp.array[wp.vec4],
-        geom_xform: wp.array[wp.transform],
-    ):
-        """Compute AABBs, narrow-phase geometry data, and zero collision counters.
-
-        Fuses AABB computation, narrow-phase data preparation, contact counter
-        zeroing, and generation bumping into a single kernel launch.
-        """
-        shape_id = wp.tid()
-
-        # Thread 0: zero contact counters, bump contact generation, and zero the
-        # broad phase candidate-pair count in a single fused step.
-        if shape_id == 0:
-            for c in range(num_contact_counters):
-                contact_counters[c] = 0
-            g = contact_generation[0]
-            if g == 2147483647:
-                g = 0
-            else:
-                g = g + 1
-            contact_generation[0] = g
-            broad_phase_pair_count[0] = 0
-
-        rigid_id = shape_body[shape_id]
-        geo_type = shape_type[shape_id]
-
-        # Compute world transform
-        if rigid_id == -1:
-            X_ws = shape_transform[shape_id]
+    # Thread 0: zero contact counters, bump contact generation, and zero the
+    # broad phase candidate-pair count in a single fused step.
+    if shape_id == 0:
+        for c in range(num_contact_counters):
+            contact_counters[c] = 0
+        g = contact_generation[0]
+        if g == 2147483647:
+            g = 0
         else:
-            X_ws = wp.transform_multiply(body_q[rigid_id], shape_transform[shape_id])
+            g = g + 1
+        contact_generation[0] = g
+        broad_phase_pair_count[0] = 0
 
-        pos = wp.transform_get_translation(X_ws)
-        orientation = wp.transform_get_rotation(X_ws)
+    rigid_id = shape_body[shape_id]
+    geo_type = shape_type[shape_id]
 
-        margin = shape_margin[shape_id]
+    # Compute world transform
+    if rigid_id == -1:
+        X_ws = shape_transform[shape_id]
+    else:
+        X_ws = wp.transform_multiply(body_q[rigid_id], shape_transform[shape_id])
 
-        # Enlarge AABB by per-shape effective gap for contact detection
-        effective_gap = margin + shape_gap[shape_id]
-        margin_vec = wp.vec3(effective_gap, effective_gap, effective_gap)
+    pos = wp.transform_get_translation(X_ws)
+    orientation = wp.transform_get_rotation(X_ws)
 
-        # Check if this is an infinite plane or a shape with a pre-computed local AABB
-        scale = shape_scale[shape_id]
-        is_infinite_plane = (geo_type == GeoType.PLANE) and (scale[0] == 0.0 and scale[1] == 0.0)
-        has_local_aabb = geo_type == GeoType.MESH or geo_type == GeoType.HFIELD or geo_type == GeoType.CONVEX_MESH
+    margin = shape_margin[shape_id]
 
-        geom_scale = scale
+    # Enlarge AABB by per-shape effective gap for contact detection
+    effective_gap = margin + shape_gap[shape_id]
+    margin_vec = wp.vec3(effective_gap, effective_gap, effective_gap)
 
-        if is_infinite_plane:
-            # Bounding sphere fallback for infinite planes
-            radius = shape_collision_radius[shape_id]
-            half_extents = wp.vec3(radius, radius, radius)
-            lo = pos - half_extents - margin_vec
-            hi = pos + half_extents + margin_vec
-        elif has_local_aabb:
-            # Pre-computed local AABB transformed to world space.
-            # Scale is already baked into shape_collision_aabb by the builder,
-            # so we only need to handle the rotation here.
-            local_lo = shape_collision_aabb_lower[shape_id]
-            local_hi = shape_collision_aabb_upper[shape_id]
+    # Check if this is an infinite plane or a shape with a pre-computed local AABB
+    scale = shape_scale[shape_id]
+    is_infinite_plane = (geo_type == GeoType.PLANE) and (scale[0] == 0.0 and scale[1] == 0.0)
+    has_local_aabb = geo_type == GeoType.MESH or geo_type == GeoType.HFIELD or geo_type == GeoType.CONVEX_MESH
 
-            center = (local_lo + local_hi) * 0.5
-            half = (local_hi - local_lo) * 0.5
+    geom_scale = scale
 
-            # Rotate center to world frame
-            world_center = wp.quat_rotate(orientation, center) + pos
+    if is_infinite_plane:
+        # Bounding sphere fallback for infinite planes
+        radius = shape_collision_radius[shape_id]
+        half_extents = wp.vec3(radius, radius, radius)
+        aabb_lower[shape_id] = pos - half_extents - margin_vec
+        aabb_upper[shape_id] = pos + half_extents + margin_vec
+    elif has_local_aabb:
+        # Pre-computed local AABB transformed to world space.
+        # Scale is already baked into shape_collision_aabb by the builder,
+        # so we only need to handle the rotation here.
+        local_lo = shape_collision_aabb_lower[shape_id]
+        local_hi = shape_collision_aabb_upper[shape_id]
 
-            # Rotated AABB half-extents via abs of rotation matrix columns
-            r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
-            r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
-            r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
+        center = (local_lo + local_hi) * 0.5
+        half = (local_hi - local_lo) * 0.5
 
-            world_half = wp.vec3(
-                wp.abs(r0[0]) * half[0] + wp.abs(r1[0]) * half[1] + wp.abs(r2[0]) * half[2],
-                wp.abs(r0[1]) * half[0] + wp.abs(r1[1]) * half[1] + wp.abs(r2[1]) * half[2],
-                wp.abs(r0[2]) * half[0] + wp.abs(r1[2]) * half[1] + wp.abs(r2[2]) * half[2],
-            )
+        # Rotate center to world frame
+        world_center = wp.quat_rotate(orientation, center) + pos
 
-            lo = world_center - world_half - margin_vec
-            hi = world_center + world_half + margin_vec
-        else:
-            # Use support function to compute tight AABB.
-            # Create generic shape data.
-            shape_data = GenericShapeData()
-            shape_data.shape_type = geo_type
-            if geo_type == GeoType.PLANE:
-                geom_scale = wp.vec3(scale[0] * 0.5, scale[1] * 0.5, 0.0)
-            shape_data.scale = geom_scale
-            shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+        # Rotated AABB half-extents via abs of rotation matrix columns
+        r0 = wp.quat_rotate(orientation, wp.vec3(1.0, 0.0, 0.0))
+        r1 = wp.quat_rotate(orientation, wp.vec3(0.0, 1.0, 0.0))
+        r2 = wp.quat_rotate(orientation, wp.vec3(0.0, 0.0, 1.0))
 
-            # For CONVEX_MESH, pack the mesh pointer.
-            if geo_type == GeoType.CONVEX_MESH:
-                shape_data.auxiliary = pack_mesh_ptr(shape_source_ptr[shape_id])
+        world_half = wp.vec3(
+            wp.abs(r0[0]) * half[0] + wp.abs(r1[0]) * half[1] + wp.abs(r2[0]) * half[2],
+            wp.abs(r0[1]) * half[0] + wp.abs(r1[1]) * half[1] + wp.abs(r2[1]) * half[2],
+            wp.abs(r0[2]) * half[0] + wp.abs(r1[2]) * half[1] + wp.abs(r2[2]) * half[2],
+        )
 
-            data_provider = SupportMapDataProvider()
+        aabb_lower[shape_id] = world_center - world_half - margin_vec
+        aabb_upper[shape_id] = world_center + world_half + margin_vec
+    else:
+        # Use support function to compute tight AABB
+        # Create generic shape data
+        shape_data = GenericShapeData()
+        shape_data.shape_type = geo_type
+        if geo_type == GeoType.PLANE:
+            geom_scale = wp.vec3(scale[0] * 0.5, scale[1] * 0.5, 0.0)
+        shape_data.scale = geom_scale
+        shape_data.auxiliary = wp.vec3(0.0, 0.0, 0.0)
 
-            # Compute tight AABB using helper function.
-            aabb_min_world, aabb_max_world = compute_tight_aabb_from_support(
-                shape_data, orientation, pos, data_provider
-            )
+        # For CONVEX_MESH, pack the mesh pointer
+        if geo_type == GeoType.CONVEX_MESH:
+            shape_data.auxiliary = pack_mesh_ptr(shape_source_ptr[shape_id])
 
-            lo = aabb_min_world - margin_vec
-            hi = aabb_max_world + margin_vec
+        data_provider = SupportMapDataProvider()
 
-        if wp.static(speculative):
-            swept_translation = shape_linear_velocity[shape_id] * collision_update_dt
-            angular_extension = shape_angular_speed_bound[shape_id] * collision_update_dt
-            negative_extension = wp.max(-swept_translation, wp.vec3(0.0)) + wp.vec3(angular_extension)
-            positive_extension = wp.max(swept_translation, wp.vec3(0.0)) + wp.vec3(angular_extension)
-            cap = wp.vec3(max_speculative_extension)
-            lo = lo - wp.min(negative_extension, cap)
-            hi = hi + wp.min(positive_extension, cap)
+        # Compute tight AABB using helper function
+        aabb_min_world, aabb_max_world = compute_tight_aabb_from_support(shape_data, orientation, pos, data_provider)
 
-        aabb_lower[shape_id] = lo
-        aabb_upper[shape_id] = hi
+        aabb_lower[shape_id] = aabb_min_world - margin_vec
+        aabb_upper[shape_id] = aabb_max_world + margin_vec
 
-        # Narrow-phase geometry data (reuses X_ws and scale already computed above).
-        geom_data[shape_id] = wp.vec4(geom_scale[0], geom_scale[1], geom_scale[2], margin)
-        geom_xform[shape_id] = X_ws
-
-    return compute_shape_aabbs_kernel
-
-
-compute_shape_aabbs = _create_compute_shape_aabbs_kernel(speculative=False)
-compute_shape_aabbs_speculative = _create_compute_shape_aabbs_kernel(speculative=True)
+    # Narrow-phase geometry data (reuses X_ws and scale already computed above)
+    geom_data[shape_id] = wp.vec4(geom_scale[0], geom_scale[1], geom_scale[2], margin)
+    geom_xform[shape_id] = X_ws
 
 
 @wp.kernel(enable_backward=False)
@@ -377,16 +349,16 @@ def compute_shape_velocities(
     # outputs
     shape_linear_velocity: wp.array[wp.vec3],
     shape_angular_velocity: wp.array[wp.vec3],
-    shape_angular_speed_bound: wp.array[float],
     shape_search_gap: wp.array[float],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
 ):
-    """Compute shape-origin velocity and a conservative angular sweep bound."""
+    """Compute shape motion and expand its AABB over the prediction horizon."""
     shape_id = wp.tid()
     body_id = shape_body[shape_id]
     if body_id == -1:
         shape_linear_velocity[shape_id] = wp.vec3(0.0)
         shape_angular_velocity[shape_id] = wp.vec3(0.0)
-        shape_angular_speed_bound[shape_id] = 0.0
         shape_search_gap[shape_id] = shape_gap[shape_id]
         return
 
@@ -406,12 +378,19 @@ def compute_shape_velocities(
     furthest = wp.max(wp.abs(local_lower), wp.abs(local_upper))
     angular_radius = wp.max(wp.length(furthest), shape_collision_radius[shape_id])
     angular_speed_bound = wp.length(angular_velocity) * angular_radius
-    shape_angular_speed_bound[shape_id] = angular_speed_bound
     search_extension = wp.min(
         (wp.length(shape_origin_velocity) + angular_speed_bound) * collision_update_dt,
         max_speculative_extension,
     )
     shape_search_gap[shape_id] = shape_gap[shape_id] + search_extension
+
+    swept_translation = shape_origin_velocity * collision_update_dt
+    angular_extension = angular_speed_bound * collision_update_dt
+    negative_extension = wp.max(-swept_translation, wp.vec3(0.0)) + wp.vec3(angular_extension)
+    positive_extension = wp.max(swept_translation, wp.vec3(0.0)) + wp.vec3(angular_extension)
+    cap = wp.vec3(max_speculative_extension)
+    shape_aabb_lower[shape_id] = shape_aabb_lower[shape_id] - wp.min(negative_extension, cap)
+    shape_aabb_upper[shape_id] = shape_aabb_upper[shape_id] + wp.min(positive_extension, cap)
 
 
 # Primitive pairs (GJK/MPR) produce up to 5 manifold contacts.
@@ -1308,12 +1287,10 @@ class CollisionPipeline:
             if self._speculative_enabled:
                 self._shape_linear_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
-                self._shape_angular_speed_bound = wp.zeros(shape_count, dtype=wp.float32, device=device)
                 self._shape_search_gap = wp.zeros(shape_count, dtype=wp.float32, device=device)
             else:
                 self._shape_linear_velocity = wp.empty(0, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.empty(0, dtype=wp.vec3, device=device)
-                self._shape_angular_speed_bound = wp.empty(0, dtype=wp.float32, device=device)
                 self._shape_search_gap = model.shape_gap
 
         if (
@@ -1548,42 +1525,13 @@ class CollisionPipeline:
             if not np.isfinite(collision_update_dt) or collision_update_dt < 0.0:
                 raise ValueError(f"dt must be a non-negative finite number, got {collision_update_dt!r}")
             max_speculative_extension = config.max_speculative_extension
-            if collision_update_dt > 0.0 and max_speculative_extension > 0.0:
-                wp.launch(
-                    kernel=compute_shape_velocities,
-                    dim=model.shape_count,
-                    inputs=[
-                        state.body_q,
-                        state.body_qd,
-                        model.body_com,
-                        model.shape_body,
-                        model.shape_transform,
-                        model.shape_collision_aabb_lower,
-                        model.shape_collision_aabb_upper,
-                        model.shape_collision_radius,
-                        model.shape_gap,
-                        collision_update_dt,
-                        max_speculative_extension,
-                    ],
-                    outputs=[
-                        self._shape_linear_velocity,
-                        self._shape_angular_velocity,
-                        self._shape_angular_speed_bound,
-                        self._shape_search_gap,
-                    ],
-                    device=self.device,
-                    record_tape=False,
-                )
-                shape_search_gap = self._shape_search_gap
-                aabb_kernel = compute_shape_aabbs_speculative
-            else:
-                shape_search_gap = model.shape_gap
-                aabb_kernel = compute_shape_aabbs
+            speculative_active = collision_update_dt > 0.0 and max_speculative_extension > 0.0
+            shape_search_gap = self._shape_search_gap if speculative_active else model.shape_gap
         else:
             collision_update_dt = 0.0
             max_speculative_extension = 0.0
+            speculative_active = False
             shape_search_gap = model.shape_gap
-            aabb_kernel = compute_shape_aabbs
 
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
@@ -1594,7 +1542,7 @@ class CollisionPipeline:
         # Compute AABBs for all shapes, zero counters, bump generation.
         # Fuses contacts.clear() + broad_phase_pair_count.zero_() + AABB update.
         wp.launch(
-            kernel=aabb_kernel,
+            kernel=compute_shape_aabbs,
             dim=model.shape_count,
             inputs=[
                 state.body_q,
@@ -1612,10 +1560,6 @@ class CollisionPipeline:
                 contacts.contact_generation,
                 self.broad_phase_pair_count,
                 contacts.contact_counters.shape[0],
-                self._shape_linear_velocity,
-                self._shape_angular_speed_bound,
-                collision_update_dt,
-                max_speculative_extension,
             ],
             outputs=[
                 self.narrow_phase.shape_aabb_lower,
@@ -1626,6 +1570,34 @@ class CollisionPipeline:
             device=self.device,
             record_tape=False,
         )
+
+        if speculative_active:
+            wp.launch(
+                kernel=compute_shape_velocities,
+                dim=model.shape_count,
+                inputs=[
+                    state.body_q,
+                    state.body_qd,
+                    model.body_com,
+                    model.shape_body,
+                    model.shape_transform,
+                    model.shape_collision_aabb_lower,
+                    model.shape_collision_aabb_upper,
+                    model.shape_collision_radius,
+                    model.shape_gap,
+                    collision_update_dt,
+                    max_speculative_extension,
+                ],
+                outputs=[
+                    self._shape_linear_velocity,
+                    self._shape_angular_velocity,
+                    self._shape_search_gap,
+                    self.narrow_phase.shape_aabb_lower,
+                    self.narrow_phase.shape_aabb_upper,
+                ],
+                device=self.device,
+                record_tape=False,
+            )
 
         # Run broad phase (AABBs are already expanded by effective gaps, so pass None)
         if isinstance(self.broad_phase, BroadPhaseAllPairs):
