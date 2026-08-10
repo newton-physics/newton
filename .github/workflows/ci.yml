@@ -149,7 +149,7 @@ jobs:
           --junit-report-xml rspec.xml
           --coverage
           --coverage-xml coverage.xml
-      - name: Run ASV benchmark tests
+      - name: Run ASV harness unit tests
         run: >
           uv run --no-sync -m newton.tests
           --strict-warnings
