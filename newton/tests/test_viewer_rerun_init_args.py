@@ -52,27 +52,16 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     self.mock_rr.serve_grpc.assert_called_once()
                     # Verify rr.serve_web_viewer() was called
                     self.mock_rr.serve_web_viewer.assert_called_once()
+                    self.mock_print.assert_called_once_with(
+                        "Rerun web viewer running at: "
+                        "http://127.0.0.1:9090/?url=rerun%2Bhttp%3A%2F%2F127.0.0.1%3A9876%2Fproxy",
+                        flush=True,
+                    )
 
                     # Verify rr.connect_grpc() was NOT called
                     self.mock_rr.connect_grpc.assert_not_called()
                     # Verify rr.spawn() was NOT called
                     self.mock_rr.spawn.assert_not_called()
-
-    def test_default_prints_web_viewer_url(self):
-        """Print the browser URL with the recording source encoded."""
-        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
-            with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
-                    from newton._src.viewer.viewer_rerun import ViewerRerun
-
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        _ = ViewerRerun()
-
-        self.mock_print.assert_called_once_with(
-            "Rerun web viewer running at: http://127.0.0.1:9090/?url=rerun%2Bhttp%3A%2F%2F127.0.0.1%3A9876%2Fproxy",
-            flush=True,
-        )
 
     def test_native_viewer(self):
         """Test that ViewerRerun() with no arguments spawns a viewer."""
