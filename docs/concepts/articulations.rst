@@ -50,13 +50,16 @@ Cable joints
 
 :attr:`newton.JointType.CABLE` is represented in Newton's joint data model, but
 it is not a conventional generalized-coordinate joint. Its four per-joint
-entries are VBD constraint/material slots: two linear slots for stretch/shear
-and two angular slots for bend/twist. These slots store per-cable stiffness and
-damping through
-:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`;
-generic joint storage allocates matching ``joint_q`` / ``joint_qd`` entries, but
-they are not generalized coordinates or velocities that reconstruct the child
-body pose.
+entries are VBD constraint/material slots: stretch (slot 0, ``JointSlot.STRETCH``),
+shear (slot 1, ``JointSlot.SHEAR``), bend (slot 2, ``JointSlot.BEND``), and twist
+(slot 3, ``JointSlot.TWIST``). :attr:`newton.Model.joint_target_ke` and
+:attr:`newton.Model.joint_target_kd` independently control stiffness and damping
+for each slot. Generic joint storage allocates matching ``joint_q`` / ``joint_qd``
+entries, but they are not generalized coordinates or velocities that reconstruct
+the child body pose.
+
+Use the cable-specific ``JointSlot`` names: ``JointSlot.ANGULAR`` has value 1
+and selects shear, while bending uses ``JointSlot.BEND`` (slot 2).
 
 Cable body poses and velocities are maximal-coordinate state stored in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
@@ -337,9 +340,10 @@ by maximal-coordinate body state as described in `Cable joints`_.
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :attr:`newton.Model.joint_q` array stores the default generalized joint positions
-for all joints in the model and is used to initialize :attr:`newton.State.joint_q`.
-Both arrays share the same per-joint layout.
+Except for :attr:`newton.JointType.CABLE` (see `Cable joints`_), the
+:attr:`newton.Model.joint_q` array stores the default generalized joint
+positions and initializes :attr:`newton.State.joint_q`. Both arrays share the
+same per-joint layout.
 For scalar-coordinate joints (for example this D6 joint), the positional coordinates can be queried as follows:
 
 .. testsetup:: articulation-joint-layout
@@ -383,9 +387,10 @@ For scalar-coordinate joints (for example this D6 joint), the positional coordin
 Definition of ``joint_qd``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :attr:`newton.Model.joint_qd` array stores the default generalized joint velocities
-for all joints in the model and is used to initialize :attr:`newton.State.joint_qd`.
-The generalized joint forces at :attr:`newton.Control.joint_f` use the same DOF order.
+Except for :attr:`newton.JointType.CABLE` (see `Cable joints`_), the
+:attr:`newton.Model.joint_qd` array stores the default generalized joint
+velocities and initializes :attr:`newton.State.joint_qd`. The generalized joint
+forces at :attr:`newton.Control.joint_f` use the same DOF order.
 
 Several other arrays also use this same DOF-ordered layout, indexed from
 :attr:`newton.Model.joint_qd_start` rather than :attr:`newton.Model.joint_q_start`.
@@ -401,9 +406,9 @@ The position targets at :attr:`newton.Control.joint_target_q` instead match
 indexed via :attr:`newton.Model.joint_qd_start` — see the
 :ref:`migration guide <joint-target-layout>` for details.
 
-For every joint, these per-DOF arrays are stored consecutively, with linear DOFs
-first and angular DOFs second. Use :attr:`newton.Model.joint_dof_dim` to query
-how many of each a joint has.
+For generalized-coordinate joints, these per-DOF arrays are stored consecutively,
+with linear DOFs first and angular DOFs second. Use
+:attr:`newton.Model.joint_dof_dim` to query how many of each a joint has.
 
 The velocity DOFs for each joint can be queried as follows:
 

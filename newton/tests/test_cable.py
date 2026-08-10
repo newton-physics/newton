@@ -5876,7 +5876,7 @@ def _split_cable_bend_twist_deformation_derivative_matches_finite_difference(tes
 
 
 def _split_cable_bend_twist_jacobian_guard_branches_match_directional(test, device):
-    """Optimized Jacobian matches directional and finite-difference guard-branch references."""
+    """Verify the guard-branch Jacobian against directional and finite-difference references."""
     errors = wp.zeros(6, dtype=wp.vec3, device=device)
     wp.launch(_eval_bend_twist_jacobian_guard_branches_kernel, dim=6, outputs=[errors], device=device)
     errors_np = errors.numpy()
