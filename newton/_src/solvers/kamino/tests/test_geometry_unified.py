@@ -442,19 +442,19 @@ class TestCollisionPipelineUnified(unittest.TestCase):
             "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(4, 1)),
             "position_A": np.array(
                 [
+                    [-0.5, 0.5, 0.5 * abs(distance)],
                     [-0.5, -0.5, 0.5 * abs(distance)],
                     [0.5, -0.5, 0.5 * abs(distance)],
                     [0.5, 0.5, 0.5 * abs(distance)],
-                    [-0.5, 0.5, 0.5 * abs(distance)],
                 ],
                 dtype=np.float32,
             ),
             "position_B": np.array(
                 [
+                    [-0.5, 0.5, -0.5 * abs(distance)],
                     [-0.5, -0.5, -0.5 * abs(distance)],
                     [0.5, -0.5, -0.5 * abs(distance)],
                     [0.5, 0.5, -0.5 * abs(distance)],
-                    [-0.5, 0.5, -0.5 * abs(distance)],
                 ],
                 dtype=np.float32,
             ),
