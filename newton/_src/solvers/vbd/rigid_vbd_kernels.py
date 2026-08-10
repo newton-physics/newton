@@ -2889,7 +2889,8 @@ def init_cable_rest_bend_twist(
     if joint_type[j] != JointType.CABLE:
         return
 
-    # Zero preserves body_q-derived rest; explicit values are measured relative to an identity parent frame.
+    # Zero preserves body_q-derived rest. A shared parent rotation cancels, so
+    # (identity, explicit_rest) gives the same parent-local convention.
     explicit_rest = joint_cable_rest_orientation[j]
     if wp.length_sq(explicit_rest) > 0.0:
         q_wp_rest = wp.quat_identity()

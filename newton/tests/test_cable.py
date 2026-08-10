@@ -3926,14 +3926,16 @@ def _cable_separate_rest_and_initial_pose_impl(test: unittest.TestCase, device):
         builder,
         xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5)),
     )
+    copied_joint = copied_builder.joint_type.index(newton.JointType.CABLE)
     test.assertEqual(len(copied_builder.joint_cable_rest_orientation), copied_builder.joint_count)
     np.testing.assert_allclose(
-        copied_builder.joint_cable_rest_orientation[joint], np.array(expected_rest_q), atol=1.0e-6
+        copied_builder.joint_cable_rest_orientation[copied_joint], np.array(expected_rest_q), atol=1.0e-6
     )
     copied_builder.collapse_fixed_joints()
+    copied_joint = copied_builder.joint_type.index(newton.JointType.CABLE)
     test.assertEqual(len(copied_builder.joint_cable_rest_orientation), copied_builder.joint_count)
     np.testing.assert_allclose(
-        copied_builder.joint_cable_rest_orientation[joint], np.array(expected_rest_q), atol=1.0e-6
+        copied_builder.joint_cable_rest_orientation[copied_joint], np.array(expected_rest_q), atol=1.0e-6
     )
 
     legacy_builder = newton.ModelBuilder()
