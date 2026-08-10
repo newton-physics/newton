@@ -25,6 +25,7 @@ def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[Ba
     unavailable_errors = []
     for module_name, exception_names in (
         ("pyglet.gl", ("ConfigException", "ContextException")),
+        ("pyglet.gl.lib", ("MissingFunctionException",)),
         ("pyglet.window", ("NoSuchConfigException", "NoSuchDisplayException")),
     ):
         module = sys.modules.get(module_name)
@@ -48,6 +49,7 @@ def _is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> 
     return type(exc).__module__.startswith("pyglet.") and type(exc).__name__ in {
         "ConfigException",
         "ContextException",
+        "MissingFunctionException",
         "NoSuchConfigException",
         "NoSuchDisplayException",
     }
@@ -227,6 +229,20 @@ class TestViewerGLGetFrame(unittest.TestCase):
 
         with (
             mock.patch.object(newton.viewer, "ViewerGL", side_effect=unavailable_error("no display")),
+            self.assertRaises(unittest.SkipTest),
+        ):
+            _make_headless_viewer_gl_or_skip(self)
+
+    def test_viewer_constructor_pyglet_missing_function_error_skips(self):
+        """Verify pyglet missing GL function errors skip GL-dependent coverage."""
+        unavailable_error = type(
+            "MissingFunctionException",
+            (Exception,),
+            {"__module__": "pyglet.gl.lib"},
+        )
+
+        with (
+            mock.patch.object(newton.viewer, "ViewerGL", side_effect=unavailable_error("glCreateShader unavailable")),
             self.assertRaises(unittest.SkipTest),
         ):
             _make_headless_viewer_gl_or_skip(self)
