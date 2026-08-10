@@ -36,6 +36,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     update_duals_body_body_contacts,
     update_duals_joint,
 )
+from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, configure_sdf_for_collision_shapes, get_test_devices
 
 devices = get_test_devices()
@@ -3401,6 +3402,44 @@ def test_edge_face_reacts_on_rigid_body(test, device):
     test.assertGreater(z_after, z_before - 0.05, "box should be supported by the soft contact, not free-fall")
 
 
+def test_edge_face_reacts_through_coupled_proxy(test, device):
+    """Verify a detected face contact propagates through proxy coupling."""
+    model, body = _build_sphere_on_fixed_soft_triangle(device)
+    model.gravity.zero_()
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupledProxy.Entry(name="body", solver=newton.solvers.SolverSemiImplicit, bodies=[body]),
+            SolverCoupledProxy.Entry(
+                name="soft",
+                solver=lambda view: newton.solvers.SolverVBD(view, iterations=1),
+                particles=list(range(model.particle_count)),
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[SolverCoupledProxy.Proxy(source="body", destination="soft", bodies=[body])],
+            iterations=1,
+        ),
+    )
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+
+    for step in range(2):
+        pipeline.collide(state_in, contacts)
+        if step == 0:
+            total = int(contacts.soft_contact_count.numpy()[0])
+            indices = contacts.soft_contact_indices.numpy()[:total]
+            test.assertGreater(total, 0)
+            test.assertTrue(np.all(indices[:, 1] >= 0), "only edge/face contacts should be detected")
+        coupled.step(state_in, state_out, None, contacts, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+
+    test.assertGreater(float(state_in.body_qd.numpy()[body, 2]), 0.0)
+
+
 def _set_slot(arr, idx, value):
     a = arr.numpy()
     a[idx] = value
@@ -3596,10 +3635,8 @@ def test_flag_off_is_inert(test, device):
     np.testing.assert_allclose(q_after, q_before, atol=1.0e-6, err_msg="flag off must not move the soft body")
 
 
-def test_full_surface_rejected_by_vbd_proxy_coupling(test, device):
-    """SolverVBD's proxy-coupling hook fails loud on full-surface contacts, which its proxy harvest
-    cannot yet consume, instead of silently dropping edge/face force feedback (E5). Standalone
-    SolverVBD is unaffected -- this only guards the SolverCoupledProxy path (coupling_* hooks)."""
+def test_full_surface_rejected_for_vbd_proxy_particles(test, device):
+    """Reject full-surface contacts during VBD proxy-particle harvesting."""
     builder = newton.ModelBuilder()
     b = builder.add_body()
     builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
@@ -3615,8 +3652,20 @@ def test_full_surface_rejected_by_vbd_proxy_coupling(test, device):
     )
     contacts = pipeline.contacts()  # capability marker set True
     solver = newton.solvers.SolverVBD(model)
-    with test.assertRaises(NotImplementedError):
-        solver.coupling_prepare_proxy_contacts(model.state(), contacts)
+
+    harvest_kwargs = {
+        "particle_qd_before": wp.zeros(model.particle_count, dtype=wp.vec3, device=device),
+        "state": model.state(),
+        "state_out": model.state(),
+        "dt": 1.0 / 60.0,
+    }
+    with test.assertRaisesRegex(NotImplementedError, "proxy-particle"):
+        solver.coupling_harvest_proxy_particle_forces(
+            wp.array([0], dtype=int, device=device),
+            wp.zeros(1, dtype=wp.vec3, device=device),
+            contacts=contacts,
+            **harvest_kwargs,
+        )
 
 
 class TestVBDFullSurfaceContact(unittest.TestCase):
@@ -3633,6 +3682,12 @@ add_function_test(
     TestVBDFullSurfaceContact,
     "test_edge_face_reacts_on_rigid_body",
     test_edge_face_reacts_on_rigid_body,
+    devices=devices,
+)
+add_function_test(
+    TestVBDFullSurfaceContact,
+    "test_edge_face_reacts_through_coupled_proxy",
+    test_edge_face_reacts_through_coupled_proxy,
     devices=devices,
 )
 add_function_test(
@@ -3661,8 +3716,8 @@ add_function_test(
 )
 add_function_test(
     TestVBDFullSurfaceContact,
-    "test_full_surface_rejected_by_vbd_proxy_coupling",
-    test_full_surface_rejected_by_vbd_proxy_coupling,
+    "test_full_surface_rejected_for_vbd_proxy_particles",
+    test_full_surface_rejected_for_vbd_proxy_particles,
     devices=devices,
 )
 
