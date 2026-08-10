@@ -259,3 +259,57 @@ remain visible. Adding more fitted Maxwell branches to these same two cycles is
 not justified: tested branches collapse to redundant short timescales. The next
 material-model change must be supported by same-fixture multi-rate or relaxation
 data.
+
+
+## Phase-1 Held-Out Validation
+
+The raw Instron CSVs are now the source of truth for a train/validation split.
+`projects/digital_instron_v2/phase1.py` regenerates a train trace from cycles
+90-98 and a held-out validation trace from cycles 99-100 for each fixture
+(`cycle_windows.py`, top-of-stroke displacement zero, sign-flip force), fits one
+shared shoe material on the train traces only, and scores the official
+baseline-corrected peak, active-frame RMSE, and positive-hysteresis metrics on
+the held-out cycles (`validation.py`). Run it with:
+
+    uv run -m projects.digital_instron_v2.phase1 --backend scipy
+
+The held-out metrics match the in-sample metrics almost exactly, so the reduced
+model does not overfit the fitted cycles:
+
+| Trial | Split | Peak error | Active RMSE | Hysteresis error |
+|---|---|---:|---:|---:|
+| Rearfoot 140 ms | train 90-98 | 12.5% | 6.7% | 15.4% |
+| Rearfoot 140 ms | held-out 99-100 | 12.6% | 6.7% | 15.6% |
+| Full-foot 185 ms | train 90-98 | 14.4% | 4.1% | 16.8% |
+| Full-foot 185 ms | held-out 99-100 | 14.7% | 4.1% | 17.1% |
+
+The peak and hysteresis gates still fail by design. This is an identifiability
+ceiling of two single-rate cycles, not overfitting: the held-out generalization
+gap is under 0.4 points on every metric.
+
+## Calibration Backend Comparison
+
+The differentiable fit (`inverse_id.fit_material_to_trials`, exact Warp-tape
+gradients, Adam in scale space) was run through the identical train/validate
+protocol and compared against the shipped scipy least-squares fit:
+
+| Backend | G_inst | eq. fraction | Rearfoot peak/hyst | Full-foot peak/hyst |
+|---|---:|---:|---|---|
+| scipy (100 evals) | 19.0 kPa | 0.107 | 12.6% / 15.6% | 14.7% / 17.1% |
+| diff cold (400 iters) | 18.9 kPa | 0.632 | 13.5% / 53.6% | 15.4% / 40.3% |
+| diff warm from scipy | 19.0 kPa | 0.107 | 12.6% / 15.6% | 14.7% / 17.2% |
+
+Two findings decide the backend question:
+
+1. From the literature seed, Adam recovers the shear modulus and exponent but
+   stalls at equilibrium fraction 0.63 and wrecks hysteresis, because the
+   equilibrium/overstress direction is nearly flat in the peak/RMSE loss.
+   Levenberg-Marquardt conditions that ill-posed direction far better.
+2. Warm-started from the scipy optimum, exact gradients leave the material
+   unchanged and do not lower any residual. The residual floor is a data/model
+   identifiability limit, not an optimizer limit.
+
+Decision: scipy least-squares remains the authoritative calibration backend. The
+differentiable fit is retained as an optional backend for gradient-based design
+and coupled objectives, warm-started from scipy when used for calibration. Exact
+gradients do not improve peak or hysteresis residuals on this two-cycle dataset.

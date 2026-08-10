@@ -3,7 +3,7 @@
   "cache_dir": "processed/v2_cache",
   "grid": {
     "coarse_spacing_m": 0.005,
-    "rearfoot_length_fraction": 0.20
+    "rearfoot_length_fraction": 0.2
   },
   "fit": {
     "initial_instantaneous_shear_modulus_pa": 112000.0,
@@ -18,7 +18,9 @@
       "fixture": "rearfoot_punch",
       "indenter": {
         "radius_m": 0.022
-      }
+      },
+      "raw_csv_path": "04-07-2025_FR3_140ms_Rearfoot_100Cycle.steps.tracking.csv",
+      "split_prefix": "rearfoot"
     },
     {
       "name": "fullfoot_185ms",
@@ -26,14 +28,54 @@
       "fixture": "fullfoot_last",
       "indenter": {
         "path": "Instron Shoe Last Size 9 6drop merged attachment 1 left.STL",
-        "rotation_deg": [90.0, 0.0, 0.0],
+        "rotation_deg": [
+          90.0,
+          0.0,
+          0.0
+        ],
         "crop_height_m": 0.08,
         "contact_side": "near",
-        "pose_rotation_deg": [-1.00784, -1.81921, 0.0],
-        "pose_translation_m": [0.0, 0.0, 0.0],
+        "pose_rotation_deg": [
+          -1.00784,
+          -1.81921,
+          0.0
+        ],
+        "pose_translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
         "contact_percentile": 95.0,
         "height_offset_m": 0.0
-      }
+      },
+      "raw_csv_path": "04-07-2025_FR3_185ms_Fullfoot_100Cycle.steps.tracking.csv",
+      "split_prefix": "fullfoot"
     }
-  ]
+  ],
+  "cycle_windows": {
+    "phase_count": 501,
+    "displacement_zero_policy": "top_of_stroke",
+    "output_dir": "processed",
+    "train": {
+      "cycles": [
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98
+      ],
+      "suffix": "train_cycles_90_98"
+    },
+    "validate": {
+      "cycles": [
+        99,
+        100
+      ],
+      "suffix": "validate_cycles_99_100"
+    }
+  }
 }

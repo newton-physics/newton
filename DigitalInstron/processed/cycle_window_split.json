@@ -1,0 +1,124 @@
+{
+  "fullfoot_185ms": {
+    "frame_config": {
+      "displacement_zero": -0.466327865435159,
+      "force_column": "Force (N)",
+      "force_sign": -1.0,
+      "position_column": "Position (mm)",
+      "position_sign": -1.0,
+      "time_column": "Total Time (s)"
+    },
+    "train": {
+      "csv": "processed/fullfoot_train_cycles_90_98.csv",
+      "cycle_column": "Elapsed Cycles",
+      "cycle_time_column": "Cycle Elapsed Time (s)",
+      "cycles": [
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98
+      ],
+      "displacement_zero_policy": "top_of_stroke",
+      "force_zero_policy": "sign_flip_only",
+      "frame_config": {
+        "displacement_zero": -0.466327865435159,
+        "force_column": "Force (N)",
+        "force_sign": -1.0,
+        "position_column": "Position (mm)",
+        "position_sign": -1.0,
+        "time_column": "Total Time (s)"
+      },
+      "mean_duration_s": 0.5001111111111118,
+      "phase_count": 501,
+      "source_csv": "/home/jo31399/newton-worktrees/differentiable-contact/DigitalInstron/04-07-2025_FR3_185ms_Fullfoot_100Cycle.steps.tracking.csv"
+    },
+    "validate": {
+      "csv": "processed/fullfoot_validate_cycles_99_100.csv",
+      "cycle_column": "Elapsed Cycles",
+      "cycle_time_column": "Cycle Elapsed Time (s)",
+      "cycles": [
+        99,
+        100
+      ],
+      "displacement_zero_policy": "top_of_stroke",
+      "force_zero_policy": "sign_flip_only",
+      "frame_config": {
+        "displacement_zero": -0.466327865435159,
+        "force_column": "Force (N)",
+        "force_sign": -1.0,
+        "position_column": "Position (mm)",
+        "position_sign": -1.0,
+        "time_column": "Total Time (s)"
+      },
+      "mean_duration_s": 0.5000000000000002,
+      "phase_count": 501,
+      "source_csv": "/home/jo31399/newton-worktrees/differentiable-contact/DigitalInstron/04-07-2025_FR3_185ms_Fullfoot_100Cycle.steps.tracking.csv"
+    }
+  },
+  "rearfoot_140ms": {
+    "frame_config": {
+      "displacement_zero": 13.6088419795054,
+      "force_column": "Force (N)",
+      "force_sign": -1.0,
+      "position_column": "Position (mm)",
+      "position_sign": -1.0,
+      "time_column": "Total Time (s)"
+    },
+    "train": {
+      "csv": "processed/rearfoot_train_cycles_90_98.csv",
+      "cycle_column": "Elapsed Cycles",
+      "cycle_time_column": "Cycle Elapsed Time (s)",
+      "cycles": [
+        90,
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98
+      ],
+      "displacement_zero_policy": "top_of_stroke",
+      "force_zero_policy": "sign_flip_only",
+      "frame_config": {
+        "displacement_zero": 13.6088419795054,
+        "force_column": "Force (N)",
+        "force_sign": -1.0,
+        "position_column": "Position (mm)",
+        "position_sign": -1.0,
+        "time_column": "Total Time (s)"
+      },
+      "mean_duration_s": 0.5001111111111111,
+      "phase_count": 501,
+      "source_csv": "/home/jo31399/newton-worktrees/differentiable-contact/DigitalInstron/04-07-2025_FR3_140ms_Rearfoot_100Cycle.steps.tracking.csv"
+    },
+    "validate": {
+      "csv": "processed/rearfoot_validate_cycles_99_100.csv",
+      "cycle_column": "Elapsed Cycles",
+      "cycle_time_column": "Cycle Elapsed Time (s)",
+      "cycles": [
+        99,
+        100
+      ],
+      "displacement_zero_policy": "top_of_stroke",
+      "force_zero_policy": "sign_flip_only",
+      "frame_config": {
+        "displacement_zero": 13.6088419795054,
+        "force_column": "Force (N)",
+        "force_sign": -1.0,
+        "position_column": "Position (mm)",
+        "position_sign": -1.0,
+        "time_column": "Total Time (s)"
+      },
+      "mean_duration_s": 0.5000000000000002,
+      "phase_count": 501,
+      "source_csv": "/home/jo31399/newton-worktrees/differentiable-contact/DigitalInstron/04-07-2025_FR3_140ms_Rearfoot_100Cycle.steps.tracking.csv"
+    }
+  }
+}

@@ -7,10 +7,8 @@ import argparse
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, cast
 
 import numpy as np
-import warp as wp
 
 from .core import (
     EFFECTIVE_POISSON_RATIO,
@@ -64,15 +62,34 @@ def compression_laplacian(
 
 
 def prepare_trials(
-    base: Path, config: dict, grid, midsole
+    base: Path,
+    config: dict,
+    grid,
+    midsole,
+    trace_paths: dict[str, str | Path] | None = None,
 ) -> tuple[list[Trial], dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """Convert the rearfoot and full-foot traces to column histories."""
+    """Convert the rearfoot and full-foot traces to column histories.
+
+    Args:
+        base: Manifest directory used to resolve relative asset paths.
+        config: Parsed manifest.
+        grid: Column grid from :func:`build_column_grid`.
+        midsole: Loaded midsole mesh.
+        trace_paths: Optional mapping of trial name to force-displacement trace
+            path. When given (for example the generated train or held-out split),
+            it overrides each trial's ``averaged_cycle_path`` so the same geometry
+            can be driven by a different cycle window.
+    """
 
     trials = []
     displacement_by_name = {}
     uv_by_name = {}
     for source in config["trials"]:
-        time, displacement, force = load_trace(base / source["averaged_cycle_path"])
+        if trace_paths is not None:
+            trace_path = Path(trace_paths[source["name"]])
+        else:
+            trace_path = base / source["averaged_cycle_path"]
+        time, displacement, force = load_trace(trace_path)
         dt = np.diff(time, prepend=time[0] - (time[1] - time[0]))
         if source["fixture"] == "rearfoot_punch":
             radius = source["indenter"]["radius_m"]
