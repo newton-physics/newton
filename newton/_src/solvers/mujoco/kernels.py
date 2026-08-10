@@ -246,21 +246,22 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
     out: wp.array[wp.vec3],
 ):
     body = wp.tid()
-    world = int(0)
-    if body_gravcomp.shape[0] > 1:
-        if body < body_world.shape[0]:
-            world = body_world[body]
-        else:
-            world = int(-1)
+    gravity_world = int(-1)
+    if body < body_world.shape[0]:
+        gravity_world = body_world[body]
+
+    mujoco_world = int(0)
+    if body_gravcomp.shape[0] > 1 and gravity_world >= 0:
+        mujoco_world = gravity_world
 
     g = wp.vec3(0.0, 0.0, 0.0)
-    if world >= 0 and world < gravity.shape[0]:
-        g = gravity[world]
+    if gravity_world >= -1 and gravity_world < gravity.shape[0]:
+        g = gravity[gravity_world]
 
     gravcomp = float(0.0)
-    mjc_body = find_mujoco_body_from_newton_body(world, body, mjc_body_to_newton)
-    if world >= 0 and world < body_gravcomp.shape[0] and mjc_body >= 0 and mjc_body < body_gravcomp.shape[1]:
-        gravcomp = body_gravcomp[world, mjc_body]
+    mjc_body = find_mujoco_body_from_newton_body(mujoco_world, body, mjc_body_to_newton)
+    if mjc_body >= 0 and mjc_body < body_gravcomp.shape[1]:
+        gravcomp = body_gravcomp[mujoco_world, mjc_body]
 
     out[body] = (1.0 - gravcomp) * g
 
@@ -888,6 +889,7 @@ def convert_mj_coords_to_warp_kernel(
 def convert_warp_coords_to_mj_kernel(
     joint_q: wp.array[wp.float32],
     joint_qd: wp.array[wp.float32],
+    world_mask: wp.array[wp.bool],
     joints_per_world: int,
     joint_type: wp.array[wp.int32],
     joint_q_start: wp.array[wp.int32],
@@ -905,6 +907,9 @@ def convert_warp_coords_to_mj_kernel(
     qvel: wp.array2d[wp.float32],
 ):
     worldid, jntid = wp.tid()
+
+    if world_mask and not world_mask[worldid]:
+        return
 
     joint_id = joints_per_world * worldid + jntid
 
@@ -1695,13 +1700,18 @@ def apply_mjc_body_f_kernel(
     mjc_body_to_newton: wp.array2d[wp.int32],
     body_flags: wp.array[wp.int32],
     body_f: wp.array[wp.spatial_vector],
+    body_mass: wp.array[float],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
+    body_gravcomp: wp.array2d[float],
     # outputs
     xfrc_applied: wp.array2d[wp.spatial_vector],
 ):
     """Apply Newton body forces to MuJoCo xfrc_applied array.
 
-    Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
-    and copies the force.
+    Iterates over MuJoCo bodies [world, mjc_body], looks up the Newton body
+    index, copies its force, and corrects for body-specific gravity when a
+    MuJoCo world contains both local and global bodies.
     """
     world, mjc_body = wp.tid()
     newton_body = mjc_body_to_newton[world, mjc_body]
@@ -1712,6 +1722,12 @@ def apply_mjc_body_f_kernel(
     f = body_f[newton_body]
     v = wp.vec3(f[0], f[1], f[2])
     w = wp.vec3(f[3], f[4], f[5])
+
+    gravity_world = body_world[newton_body]
+    if gravity_world >= -1 and gravity_world < gravity.shape[0]:
+        gravcomp = body_gravcomp[world, mjc_body]
+        v += body_mass[newton_body] * (1.0 - gravcomp) * (gravity[gravity_world] - gravity[world])
+
     xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
 
 
@@ -3296,6 +3312,7 @@ def restore_sleeping_state_kernel(
 @wp.kernel(enable_backward=False)
 def copy_qpos_and_detect_tree_change_kernel(
     qpos_new: wp.array2d[wp.float32],
+    world_mask: wp.array[wp.bool],
     tolerance: float,
     qpos_treeid: wp.array[wp.int32],
     qpos: wp.array2d[wp.float32],
@@ -3303,6 +3320,8 @@ def copy_qpos_and_detect_tree_change_kernel(
 ):
     """Copy converted coordinates and flag trees with external pose edits."""
     worldid, i = wp.tid()
+    if world_mask and not world_mask[worldid]:
+        return
     value = qpos_new[worldid, i]
     if wp.abs(value - qpos[worldid, i]) > tolerance:
         treeid = qpos_treeid[i]

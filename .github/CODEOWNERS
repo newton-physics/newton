@@ -8,6 +8,8 @@
 
 # Common PR companion files do not require maintainer approval
 /CHANGELOG.md
+/changelog/
+/changelog/README.md                     @newton-physics/maintainers
 /README.md
 
 # Repo tooling and config

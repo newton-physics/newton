@@ -845,8 +845,12 @@ class SolverKamino(SolverBase, CouplingInterface):
                 worlds should be reset. Shape ``(world_count + 1,)``, with the
                 final entry representing global world ``-1``. The global entry
                 is a no-op because Kamino does not support global dynamic
-                objects. Passing the deprecated shape ``(world_count,)`` selects
-                local worlds only.
+                objects.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.

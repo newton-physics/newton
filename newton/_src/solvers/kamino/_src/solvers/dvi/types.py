@@ -40,6 +40,9 @@ class DVIConfigStruct:
     inequality_sweeps_per_iteration: int32
     """Projected sweeps for unilateral inequalities in each direct-bilateral block."""
 
+    tangential_warmstart_scale: float32
+    """Scale applied to cached tangential reactions before each solve."""
+
     bilateral_solve_interval: int32
     """Block iteration period for repeated direct bilateral solves."""
 
@@ -180,5 +183,6 @@ def convert_config_to_struct(config: DVISolverConfig) -> DVIConfigStruct:
     config_struct.omega = config.omega
     config_struct.max_alternating_iterations = config.max_alternating_iterations
     config_struct.inequality_sweeps_per_iteration = config.inequality_sweeps_per_iteration
+    config_struct.tangential_warmstart_scale = config.tangential_warmstart_scale
     config_struct.bilateral_solve_interval = config.bilateral_solve_interval
     return config_struct

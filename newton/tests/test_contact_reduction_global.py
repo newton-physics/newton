@@ -11,10 +11,12 @@ import warp as wp
 from newton._src.geometry.contact_data import ContactData, make_contact_sort_key
 from newton._src.geometry.contact_reduction import float_flip
 from newton._src.geometry.contact_reduction_global import (
+    EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
     SCORE_SHIFT,
     GlobalContactReducer,
     GlobalContactReducerData,
     _make_contact_value_det,
+    _make_contact_value_fast,
     _make_preprune_probe_det,
     _unpack_contact_id_det,
     create_export_reduced_contacts_kernel,
@@ -23,8 +25,10 @@ from newton._src.geometry.contact_reduction_global import (
     export_and_reduce_contact,
     export_and_reduce_contact_centered,
     export_and_reduce_contact_centered_two_spatial_depths,
+    export_contact_to_buffer,
     make_contact_key,
 )
+from newton._src.geometry.hashtable import hashtable_find_or_insert
 from newton._src.geometry.narrow_phase import ContactWriterData
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -141,7 +145,9 @@ def test_basic_contact_storage(test, device):
     test.assertEqual(get_contact_count(reducer), 1)
 
     # Check stored data
-    pd = reducer.position_depth.numpy()[0]
+    position_depth = reducer.position_depth.numpy()
+    test.assertTrue(np.array_equal(position_depth[0], np.zeros(4)), "Contact ID zero must remain reserved")
+    pd = position_depth[1]
     test.assertAlmostEqual(pd[0], 1.0)
     test.assertAlmostEqual(pd[1], 2.0)
     test.assertAlmostEqual(pd[2], 3.0)
@@ -539,6 +545,50 @@ def test_export_reduced_contacts_kernel(test, device):
         device=device,
     )
 
+    @wp.kernel
+    def store_roundoff_duplicate_winners_kernel(reducer_data: GlobalContactReducerData):
+        contact_a = export_contact_to_buffer(
+            shape_a=10,
+            shape_b=110,
+            position=wp.vec3(0.01, 0.02, 0.03),
+            normal=wp.vec3(0.0, 1.0, 0.0),
+            depth=-0.01,
+            fingerprint=30,
+            reducer_data=reducer_data,
+        )
+        contact_b = export_contact_to_buffer(
+            shape_a=10,
+            shape_b=110,
+            position=wp.vec3(0.010000000707805157, 0.02, 0.03),
+            normal=wp.vec3(0.0, 1.0, 0.0),
+            depth=-0.01,
+            fingerprint=20,
+            reducer_data=reducer_data,
+        )
+        contact_c = export_contact_to_buffer(
+            shape_a=10,
+            shape_b=110,
+            position=wp.vec3(0.010000004433095455, 0.02, 0.03),
+            normal=wp.vec3(0.0, 1.0, 0.0),
+            depth=-0.01,
+            fingerprint=10,
+            reducer_data=reducer_data,
+        )
+        entry_idx = hashtable_find_or_insert(
+            make_contact_key(10, 110, 0), reducer_data.ht_keys, reducer_data.ht_active_slots
+        )
+        reducer_data.ht_values[entry_idx] = _make_contact_value_fast(1.0, 30, contact_a)
+
+        sentinel_entry_idx = hashtable_find_or_insert(
+            make_contact_key(11, 111, 0), reducer_data.ht_keys, reducer_data.ht_active_slots
+        )
+        reducer_data.ht_values[sentinel_entry_idx] = _make_contact_value_fast(2.0, 0, 0)
+        reducer_data.ht_values[reducer_data.ht_capacity + entry_idx] = _make_contact_value_fast(1.0, 20, contact_b)
+        reducer_data.ht_values[2 * reducer_data.ht_capacity + entry_idx] = _make_contact_value_fast(1.0, 10, contact_c)
+        reducer_data.ht_values[3 * reducer_data.ht_capacity + entry_idx] = _make_contact_value_fast(1.0, 30, contact_a)
+
+    wp.launch(store_roundoff_duplicate_winners_kernel, dim=1, inputs=[reducer_data], device=device)
+
     # Prepare output buffers
     max_output = 100
     contact_pair_out = wp.zeros(max_output, dtype=wp.vec2i, device=device)
@@ -570,11 +620,11 @@ def test_export_reduced_contacts_kernel(test, device):
     writer_data.contact_tangent = contact_tangent_out
 
     # Launch export kernel
-    total_threads = 128  # Grid stride threads
+    total_blocks = 128
     reducer.exported_flags.zero_()
-    wp.launch(
+    wp.launch_tiled(
         export_kernel,
-        dim=total_threads,
+        dim=total_blocks,
         inputs=[
             reducer.hashtable.keys,
             reducer.ht_values,  # Values are now managed by GlobalContactReducer
@@ -588,16 +638,23 @@ def test_export_reduced_contacts_kernel(test, device):
             shape_data,
             shape_gap,
             writer_data,
-            total_threads,
+            total_blocks,
+            int(not device.is_cpu),
             0,  # deterministic=0 (fast packing)
         ],
         device=device,
+        block_dim=EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
     )
 
-    # Verify output - should have exported all unique winners
+    # Verify output: ID zero is skipped, leaving five distinct pairs plus one
+    # representative from the numerically equivalent winner pair.
     num_exported = int(contact_count_out.numpy()[0])
-
-    test.assertGreater(num_exported, 0)
+    test.assertEqual(num_exported, 6)
+    pairs = contact_pair_out.numpy()[:num_exported]
+    positions = contact_position_out.numpy()[:num_exported]
+    duplicate_pair = np.nonzero((pairs[:, 0] == 10) & (pairs[:, 1] == 110))[0]
+    test.assertEqual(len(duplicate_pair), 1)
+    test.assertEqual(positions[duplicate_pair[0], 0], np.float32(0.010000004433095455))
 
 
 def test_key_uniqueness(test, device):
@@ -719,7 +776,6 @@ def test_centered_two_spatial_depths_prefers_inner_then_outer(test, device):
     ):
         position = wp.vec3(x, 0.0, 0.0)
         normal = wp.vec3(0.0, 1.0, 0.0)
-        X_ws_shape = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
         export_and_reduce_contact_centered_two_spatial_depths(
             shape_a=0,
@@ -731,7 +787,7 @@ def test_centered_two_spatial_depths_prefers_inner_then_outer(test, device):
             centered_position=position,
             inner_spatial_depth=0.0,
             outer_spatial_depth=0.1,
-            X_ws_voxel_shape=X_ws_shape,
+            position_local=position,
             aabb_lower_voxel=wp.vec3(-1.0, -1.0, -1.0),
             aabb_upper_voxel=wp.vec3(1.0, 1.0, 1.0),
             voxel_res=wp.vec3i(1, 1, 1),

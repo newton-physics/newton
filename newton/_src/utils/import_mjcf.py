@@ -21,6 +21,7 @@ from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_conv
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
+from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_KD,
     DEFAULT_LIMIT_KE,
@@ -355,13 +356,6 @@ def parse_mjcf(
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     contact_sections = root.findall("contact")
-    explicit_pair_geom_names: set[str] = set()
-    for contact in contact_sections:
-        for pair in contact.findall("pair"):
-            for geom_key in ("geom1", "geom2"):
-                geom_name = pair.attrib.get(geom_key)
-                if geom_name:
-                    explicit_pair_geom_names.add(geom_name)
 
     use_degrees = True  # angles are in degrees by default
     eulerseq = "xyz"  # default sequence (lowercase = intrinsic axes, per MuJoCo)
@@ -381,6 +375,19 @@ def parse_mjcf(
     # Register the MuJoCo custom attributes needed to preserve imported model
     # properties. The operation is idempotent.
     SolverMuJoCo.register_custom_attributes(builder)
+    # Bit 1 in one MJCF file may describe different shapes than bit 1 in
+    # another. Give every add_mjcf() call a domain so those equal numbers are
+    # not mistaken for one shared collision rule. The domain is only a source
+    # label; it does not enable or disable collisions.
+    collision_mask_domain_key = "mujoco:collision_mask_domain"
+    collision_mask_domain_attr = builder.custom_attributes[collision_mask_domain_key]
+    collision_mask_domain = (
+        max(
+            (int(value) for value in collision_mask_domain_attr.values.values()),
+            default=MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
+        )
+        + 1
+    )
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
@@ -524,6 +531,15 @@ def parse_mjcf(
             ambient_defaults = class_defaults["__all__"]
         defaults = resolve_class_defaults(element.get("class"), ambient_defaults)
         return merge_attrib(defaults.get(tag, {}), element.attrib)
+
+    explicit_pair_geom_names: set[str] = set()
+    for contact in contact_sections:
+        for pair in contact.findall("pair"):
+            pair_attrib = resolve_element_attrib(pair, "pair")
+            for geom_key in ("geom1", "geom2"):
+                geom_name = pair_attrib.get(geom_key)
+                if geom_name:
+                    explicit_pair_geom_names.add(geom_name)
 
     mesh_assets = {}
     texture_assets = {}
@@ -865,6 +881,34 @@ def parse_mjcf(
             return wp.quat_from_matrix(wp.mat33(rot_matrix))
         return wp.quat_identity()
 
+    def parse_fromto_transform(
+        attrib, incoming_xform: wp.transform | None = None, zero_length_error: str | None = None
+    ) -> tuple[wp.transform, float]:
+        """Parse a MuJoCo fromto segment into its transform and half-length."""
+        values = parse_vec(attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        start = wp.vec3(values[0:3]) * scale
+        end = wp.vec3(values[3:6]) * scale
+
+        if incoming_xform is not None:
+            start = wp.transform_point(incoming_xform, start)
+            end = wp.transform_point(incoming_xform, end)
+
+        position = (start + end) * 0.5
+        # Match MuJoCo's compiler, which points local +Z from the second endpoint to the first.
+        direction = start - end
+        length = wp.length(direction)
+        if length < 1.0e-6:
+            if zero_length_error is not None:
+                raise ValueError(zero_length_error)
+            return wp.transform(position, wp.quat_identity()), 0.0
+
+        direction /= length
+        if float(direction[2]) < -0.999999:
+            rotation = wp.quat(1.0, 0.0, 0.0, 0.0)
+        else:
+            rotation = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
+        return wp.transform(position, rotation), float(length) * 0.5
+
     def parse_shapes(
         defaults,
         body_name,
@@ -994,6 +1038,14 @@ def parse_mjcf(
                 if shape_builder is builder
                 else {}
             )
+            if shape_builder is builder:
+                # Preserve both source masks and the namespace in which their
+                # bit positions were authored for a possible MuJoCo round trip.
+                if "mujoco:contype" in builder.custom_attributes:
+                    custom_attributes["mujoco:contype"] = contype & 0xFFFFFFFF
+                if "mujoco:conaffinity" in builder.custom_attributes:
+                    custom_attributes["mujoco:conaffinity"] = conaffinity & 0xFFFFFFFF
+                custom_attributes[collision_mask_domain_key] = collision_mask_domain
             if has_solref_mode and shape_builder is builder:
                 # Authored solref → RAW (forwarded verbatim); unauthored →
                 # MJCF_DEFAULT (force-space scaling is strictly opt-in for
@@ -1221,37 +1273,8 @@ def parse_mjcf(
 
             elif geom_type in {"capsule", "cylinder"}:
                 if "fromto" in geom_attrib:
-                    geom_fromto = parse_vec(geom_attrib, "fromto", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-
-                    start = wp.vec3(geom_fromto[0:3]) * scale
-                    end = wp.vec3(geom_fromto[3:6]) * scale
-
-                    # Apply incoming_xform to fromto coordinates
-                    if incoming_xform is not None:
-                        start = wp.transform_point(incoming_xform, start)
-                        end = wp.transform_point(incoming_xform, end)
-
-                    # Compute pos and quat matching MuJoCo's fromto convention:
-                    # direction = start - end, align Z axis with it (mjuu_z2quat).
-                    # quat_between_vectors degenerates for anti-parallel vectors,
-                    # so handle that case with an explicit 180° rotation around X.
-                    # Guard against zero-length fromto (start == end) which would
-                    # produce NaN from wp.quat_between_vectors.
-                    geom_pos = (start + end) * 0.5
-                    dir_vec = start - end
-                    dir_len = wp.length(dir_vec)
-                    if dir_len < 1.0e-6:
-                        geom_rot = wp.quat_identity()
-                    else:
-                        direction = dir_vec / dir_len
-                        if float(direction[2]) < -0.999999:
-                            geom_rot = wp.quat(1.0, 0.0, 0.0, 0.0)  # 180° around X
-                        else:
-                            geom_rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
-                    tf = wp.transform(geom_pos, geom_rot)
-
+                    tf, geom_height = parse_fromto_transform(geom_attrib, incoming_xform)
                     geom_radius = geom_size[0]
-                    geom_height = dir_len * 0.5
 
                 else:
                     geom_radius = geom_size[0]
@@ -1453,14 +1476,6 @@ def parse_mjcf(
             if ignore_site:
                 continue
 
-            # Parse site transform
-            site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
-            site_rot = parse_orientation(site_attrib)
-            site_xform = wp.transform(site_pos, site_rot)
-
-            if incoming_xform is not None:
-                site_xform = incoming_xform * site_xform
-
             # Parse site type (defaults to sphere if not specified)
             site_type = site_attrib.get("type", "sphere")
 
@@ -1475,7 +1490,29 @@ def parse_mjcf(
                 for i, val in enumerate(size_values):
                     if i < 3:
                         site_size[i] = val
-            site_size = wp.vec3(site_size * scale)
+            site_size *= scale
+
+            if "fromto" in site_attrib:
+                if "pos" in site_attrib:
+                    raise ValueError(f"MJCF site '{site_name}' cannot define both pos and fromto")
+                if site_type not in {"capsule", "cylinder", "ellipsoid", "box"}:
+                    raise ValueError(f"MJCF site '{site_name}' cannot use fromto with type '{site_type}'")
+                site_xform, half_length = parse_fromto_transform(
+                    site_attrib,
+                    incoming_xform,
+                    zero_length_error=f"MJCF site '{site_name}' has a zero-length fromto segment",
+                )
+                if site_type in {"capsule", "cylinder"}:
+                    site_size[1] = half_length
+                else:
+                    site_size = np.array([site_size[0], site_size[0], half_length], dtype=np.float32)
+            else:
+                site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
+                site_xform = wp.transform(site_pos, parse_orientation(site_attrib))
+                if incoming_xform is not None:
+                    site_xform = incoming_xform * site_xform
+
+            site_size = wp.vec3(site_size)
 
             # Map MuJoCo site types to Newton GeoType
             type_map = {
@@ -2728,8 +2765,9 @@ def parse_mjcf(
         # Parse <pair> elements - explicit contact pairs with custom properties
         pairs = (pair for contact in contact_sections for pair in contact.findall("pair"))
         for pair in pairs:
-            geom1_name = pair.attrib.get("geom1")
-            geom2_name = pair.attrib.get("geom2")
+            merged_attrib = resolve_element_attrib(pair, "pair")
+            geom1_name = merged_attrib.get("geom1")
+            geom2_name = merged_attrib.get("geom2")
 
             if not geom1_name or not geom2_name:
                 if verbose:
@@ -2749,7 +2787,10 @@ def parse_mjcf(
                 continue
 
             # Parse attributes using the standard custom attribute parsing
-            pair_attrs = parse_custom_attributes(pair.attrib, builder_custom_attr_pair, parsing_mode="mjcf")
+            pair_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_pair, parsing_mode="mjcf")
+            for distance_key in ("mujoco:pair_margin", "mujoco:pair_gap"):
+                if distance_key in pair_attrs:
+                    pair_attrs[distance_key] *= scale
 
             # Build values dict for all pair attributes
             pair_values: dict[str, Any] = {
@@ -3310,6 +3351,75 @@ def parse_mjcf(
         for a, i in enumerate(colliding_shapes):
             for j in colliding_shapes[a + 1 :]:
                 builder.add_shape_collision_filter_pair(i, j)
+
+    # Compile MuJoCo's asymmetric collision masks into Newton's signed groups
+    # plus sparse exact exclusions. Restrict the optimizer to one positive
+    # group so imported shapes retain the existing default-group interaction
+    # with Newton-authored shapes; negative group IDs are made unique across
+    # imports so separate assets do not accidentally suppress each other.
+    contype_attr = builder.custom_attributes.get("mujoco:contype")
+    conaffinity_attr = builder.custom_attributes.get("mujoco:conaffinity")
+    if contype_attr is not None and conaffinity_attr is not None:
+        colliding_shapes = np.asarray(
+            [
+                shape
+                for shape in range(start_shape_count, end_shape_count)
+                if builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES
+            ],
+            dtype=np.int32,
+        )
+        if colliding_shapes.shape[0]:
+            to_local = {int(shape): local for local, shape in enumerate(colliding_shapes)}
+            prefiltered_pairs = [
+                (to_local[shape_a], to_local[shape_b])
+                for shape_a, shape_b in builder._shape_collision_filter_pairs.explicit_pairs
+                if shape_a in to_local and shape_b in to_local
+            ]
+            collision_type = [
+                int(contype_attr.values.get(int(shape), contype_attr.default)) for shape in colliding_shapes
+            ]
+            collision_affinity = [
+                int(conaffinity_attr.values.get(int(shape), conaffinity_attr.default)) for shape in colliding_shapes
+            ]
+            compiled = compile_collision_masks(
+                collision_type,
+                collision_affinity,
+                prefiltered_pairs=prefiltered_pairs,
+                force_nonzero=True,
+                max_positive_groups=1,
+            )
+
+            default_positive_group = int(builder.default_shape_cfg.collision_group)
+            if default_positive_group <= 0:
+                default_positive_group = 1
+            used_negative_ids = {
+                -int(group) for group in builder.shape_collision_group[:start_shape_count] if int(group) < 0
+            }
+            negative_group_map = {}
+            next_negative_id = 1
+            for raw_group in np.unique(compiled.groups):
+                group = int(raw_group)
+                if group >= 0:
+                    continue
+                while next_negative_id in used_negative_ids:
+                    next_negative_id += 1
+                negative_group_map[group] = -next_negative_id
+                used_negative_ids.add(next_negative_id)
+                next_negative_id += 1
+
+            for local_shape, shape in enumerate(colliding_shapes):
+                group = int(compiled.groups[local_shape])
+                if group > 0:
+                    group = default_positive_group
+                elif group < 0:
+                    group = negative_group_map[group]
+                builder.shape_collision_group[int(shape)] = group
+
+            for shape_a, shape_b in compiled.excluded_pairs:
+                builder.add_shape_collision_filter_pair(
+                    int(colliding_shapes[shape_a]),
+                    int(colliding_shapes[shape_b]),
+                )
 
     # Create articulations from collected joints
     if parent_body != -1 or len(root_body_boundaries) <= 1:
