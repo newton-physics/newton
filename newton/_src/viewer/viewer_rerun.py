@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import subprocess
 from typing import Any
+from urllib.parse import urlencode
 
 import numpy as np
 import warp as wp
@@ -193,6 +194,8 @@ class ViewerRerun(ViewerBase):
             if serve_web_viewer:
                 self._grpc_server_uri = rr.serve_grpc(grpc_port=grpc_port, default_blueprint=blueprint)
                 rr.serve_web_viewer(connect_to=self._grpc_server_uri, web_port=web_port)
+                query = urlencode({"url": self._grpc_server_uri})
+                print(f"Rerun web viewer running at: http://127.0.0.1:{web_port}/?{query}", flush=True)
             else:
                 rr.spawn(port=grpc_port)
 
