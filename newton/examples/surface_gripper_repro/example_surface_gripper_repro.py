@@ -624,7 +624,14 @@ class Example:
                 body_mesh_id[w * env.body_count + lb] = mesh.id
         self.body_mesh_id_wp = wp.array(body_mesh_id, dtype=wp.uint64, device=self.model.device)
 
-        # Note: Newton's collision pipeline is used in this example so set use_mujoco_contacts=False 
+        # body_mesh_xform_wp[i] is the pose of body i's SDF mesh in that body's local frame (mesh->body).
+        # For our axis-aligned boxes the mesh origin coincides with the body origin, so this is identity.
+        body_mesh_xform_list = []
+        for _ in range(self.model.body_count):
+            body_mesh_xform_list.append(wp.transform_identity())
+        self.body_mesh_xform_wp = wp.array(body_mesh_xform_list, dtype=wp.transform, device=self.model.device)
+
+        # Note: Newton's collision pipeline is used in this example so set use_mujoco_contacts=False
         self.solver = newton.solvers.SolverMuJoCo(
             self.model, nconmax=256 * NUM_WORLDS, njmax=2048 * NUM_WORLDS, iterations=10, use_mujoco_contacts=False
         )
@@ -826,6 +833,7 @@ class Example:
                     self.gripper_state_output,
                     self.gripper_state_input_curr.pad_engaged_body_b_id,
                     self.body_mesh_id_wp,
+                    self.body_mesh_xform_wp,
                     iters=SEAT_ITERS,
                 )
             else:
@@ -856,6 +864,7 @@ class Example:
             self.gripper_state_input_prev,
             self.gripper_state_output,
             self.body_mesh_id_wp,
+            self.body_mesh_xform_wp,
             self.gripper_state_output.pad_seal_quality_rms,
             iters=SEAT_ITERS,
         )
