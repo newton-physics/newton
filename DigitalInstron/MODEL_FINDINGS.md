@@ -407,3 +407,28 @@ Regenerate with ``uv run -m projects.digital_instron_v2.plot_phase2``
   servo hysteresis differs from kinematic only because closed-loop PD smooths the
   crosshead velocity (an uncontrolled artifact, not a genuine model change), so
   only the kinematic loops are gated.
+
+
+### Backend comparison figures
+
+Regenerate with ``uv run -m projects.digital_instron_v2.plot_backends`` (uses the
+GPU differentiable backend; a few minutes; ``DigitalInstron/figures/backends/``):
+
+- ``fig1_backend_heldout_loops.png`` -- held-out force-displacement loops for
+  ``scipy``, ``diff (cold)`` and ``diff (warm <- scipy)``. scipy and warm-diff
+  overlap; cold-diff is visibly thinner.
+- ``fig2_backend_metrics.png`` -- held-out peak / RMSE / hysteresis per fixture.
+  peak and RMSE are backend-independent; only cold-diff hysteresis blows up
+  (57% / 42% vs ~16%).
+- ``fig3_backend_parameters.png`` -- fitted shared parameters. G_inst, alpha and
+  pasternak agree; the tell is ``eq_fraction`` (scipy/warm 0.107 vs cold 0.685),
+  which sets the Maxwell overstress and hence the loop area.
+- ``fig4_backend_convergence.png`` -- Adam loss vs iteration. Cold-diff descends
+  from the seed but plateaus *above* the scipy train-loss optimum; warm-diff sits
+  on it and does not move.
+
+Takeaway: exact gradients do not beat the derivative-free scipy fit. Warm-started
+diff reproduces scipy; a cold diff descent settles in a worse basin (higher train
+loss, wrecked held-out hysteresis). The residual floor is a data/model
+identifiability ceiling, not an optimizer limitation -- so scipy least-squares is
+the authoritative calibration backend.
