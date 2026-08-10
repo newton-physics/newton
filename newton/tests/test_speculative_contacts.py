@@ -1,0 +1,743 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for velocity-expanded rigid-contact candidate generation."""
+
+import unittest
+
+import warp as wp
+
+import newton
+from newton._src.geometry.contact_reduction_global import (
+    EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
+    GlobalContactReducer,
+    GlobalContactReducerData,
+    create_export_reduced_contacts_kernel,
+    export_and_reduce_contact_centered_two_spatial_depths,
+    export_and_reduce_predictive_contact,
+)
+from newton._src.geometry.narrow_phase import ContactWriterData, NarrowPhase, write_contact_simple
+from newton._src.geometry.types import GeoType
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+
+
+@wp.kernel
+def _register_regular_and_predictive_contact(
+    reducer_data: GlobalContactReducerData,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    contact_ids: wp.array[wp.int32],
+):
+    position = wp.vec3(0.0)
+    normal = wp.vec3(1.0, 0.0, 0.0)
+    contact_id = export_and_reduce_contact_centered_two_spatial_depths(
+        0,
+        1,
+        position,
+        normal,
+        0.05,
+        17,
+        position,
+        0.0,
+        0.1,
+        position,
+        wp.vec3(-1.0),
+        wp.vec3(1.0),
+        wp.vec3i(1),
+        reducer_data,
+    )
+    contact_ids[0] = contact_id
+    contact_ids[1] = export_and_reduce_predictive_contact(
+        0,
+        1,
+        position,
+        normal,
+        0.05,
+        0.0,
+        17,
+        shape_transform,
+        shape_linear_velocity,
+        shape_angular_velocity,
+        0.1,
+        0.1,
+        contact_id,
+        reducer_data,
+    )
+    contact_ids[2] = export_and_reduce_predictive_contact(
+        0,
+        1,
+        position,
+        normal,
+        0.05,
+        0.0,
+        17,
+        shape_transform,
+        shape_linear_velocity,
+        shape_angular_velocity,
+        0.1,
+        0.1,
+        contact_id,
+        reducer_data,
+    )
+
+
+@wp.kernel
+def _register_inner_and_rotating_leading_contact(
+    reducer_data: GlobalContactReducerData,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    contact_ids: wp.array[wp.int32],
+):
+    normal = wp.vec3(1.0, 0.0, 0.0)
+    inner_position = wp.vec3(0.0)
+    contact_ids[0] = export_and_reduce_contact_centered_two_spatial_depths(
+        0,
+        1,
+        inner_position,
+        normal,
+        -0.01,
+        11,
+        inner_position,
+        0.01,
+        0.1,
+        inner_position,
+        wp.vec3(-2.0),
+        wp.vec3(2.0),
+        wp.vec3i(1),
+        reducer_data,
+    )
+
+    leading_position = wp.vec3(0.0, 1.0, 0.0)
+    regular_contact_id = export_and_reduce_contact_centered_two_spatial_depths(
+        0,
+        1,
+        leading_position,
+        normal,
+        0.05,
+        23,
+        leading_position,
+        0.01,
+        0.1,
+        leading_position,
+        wp.vec3(-2.0),
+        wp.vec3(2.0),
+        wp.vec3i(1),
+        reducer_data,
+    )
+    contact_ids[1] = regular_contact_id
+    contact_ids[2] = export_and_reduce_predictive_contact(
+        0,
+        1,
+        leading_position,
+        normal,
+        0.05,
+        0.0,
+        23,
+        shape_transform,
+        shape_linear_velocity,
+        shape_angular_velocity,
+        0.1,
+        0.1,
+        regular_contact_id,
+        reducer_data,
+    )
+
+
+@wp.kernel
+def _register_predictive_clearance_candidates(
+    reducer_data: GlobalContactReducerData,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    contact_ids: wp.array[wp.int32],
+):
+    normal = wp.vec3(1.0, 0.0, 0.0)
+    for candidate_idx in range(8):
+        clearance = float(0.07)
+        fingerprint = int(7)
+        position_y = float(0.0)
+        if candidate_idx == 1:
+            clearance = 0.06
+            fingerprint = 3
+        elif candidate_idx == 2:
+            clearance = 0.05
+            fingerprint = 14
+        elif candidate_idx == 3:
+            clearance = 0.04
+            fingerprint = 2
+        elif candidate_idx == 4:
+            clearance = 0.03
+            fingerprint = 1
+        elif candidate_idx == 5:
+            clearance = 0.02
+            fingerprint = 16
+        elif candidate_idx == 6:
+            clearance = 0.01
+            fingerprint = 12
+        elif candidate_idx == 7:
+            clearance = 0.08
+            fingerprint = 18
+            position_y = 10.0
+        contact_ids[candidate_idx] = export_and_reduce_predictive_contact(
+            0,
+            1,
+            wp.vec3(0.0, position_y, clearance),
+            normal,
+            clearance,
+            0.0,
+            fingerprint,
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            0.1,
+            0.1,
+            -1,
+            reducer_data,
+        )
+
+
+@wp.kernel
+def _register_predictive_clearance_candidates_contended(
+    reducer_data: GlobalContactReducerData,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    clearance_order: int,
+):
+    candidate_idx = wp.tid()
+    clearance_rank = candidate_idx
+    if clearance_order == 1:
+        clearance_rank = 254 - candidate_idx
+    elif clearance_order == 2:
+        clearance_rank = (candidate_idx * 73) % 255
+    clearance = 0.01 + float(clearance_rank) * 0.0001
+    fingerprint = (candidate_idx << 2) | ((candidate_idx & 1) << 1)
+    position_y = 0.0
+    if candidate_idx == 255:
+        clearance = 0.08
+        position_y = 10.0
+    export_and_reduce_predictive_contact(
+        0,
+        1,
+        wp.vec3(0.0, position_y, clearance),
+        wp.vec3(1.0, 0.0, 0.0),
+        clearance,
+        0.0,
+        fingerprint,
+        shape_transform,
+        shape_linear_velocity,
+        shape_angular_velocity,
+        0.1,
+        0.1,
+        -1,
+        reducer_data,
+    )
+
+
+@wp.kernel
+def _register_predictive_clearance_candidates_sequential(
+    reducer_data: GlobalContactReducerData,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+):
+    candidate_idx = int(0)
+    while candidate_idx < 256:
+        clearance_rank = (candidate_idx * 73) % 255
+        clearance = 0.01 + float(clearance_rank) * 0.0001
+        fingerprint = (candidate_idx << 2) | ((candidate_idx & 1) << 1)
+        position_y = 0.0
+        if candidate_idx == 255:
+            clearance = 0.08
+            position_y = 10.0
+        export_and_reduce_predictive_contact(
+            0,
+            1,
+            wp.vec3(0.0, position_y, clearance),
+            wp.vec3(1.0, 0.0, 0.0),
+            clearance,
+            0.0,
+            fingerprint,
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            0.1,
+            0.1,
+            -1,
+            reducer_data,
+        )
+        candidate_idx = candidate_idx + 1
+
+
+_export_reduced_contacts = create_export_reduced_contacts_kernel(write_contact_simple)
+
+
+def _build_spheres(device, velocity: float, separation: float = 0.3):
+    """Build two spheres separated along X with the first sphere moving."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.rigid_gap = 0.0
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
+    builder.add_shape_sphere(body_a, radius=0.1)
+    builder.body_qd[body_a] = (velocity, 0.0, 0.0, 0.0, 0.0, 0.0)
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(separation, 0.0, 0.0)))
+    builder.add_shape_sphere(body_b, radius=0.1)
+    model = builder.finalize(device=device)
+    return model, model.state()
+
+
+def _collide(model, state, speculative: bool):
+    """Run one collision pass and return the populated contact buffer."""
+    config = None
+    if speculative:
+        config = newton.CollisionPipeline.SpeculativeContactConfig(
+            collision_update_dt=0.02,
+            max_speculative_extension=0.25,
+        )
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_config=config)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    return contacts
+
+
+def _export_reducer_contacts(reducer: GlobalContactReducer, device):
+    """Export reducer winners and return their count and world positions."""
+    contact_count = wp.zeros(1, dtype=wp.int32, device=device)
+    contact_position = wp.zeros(8, dtype=wp.vec3, device=device)
+    writer_data = ContactWriterData()
+    writer_data.contact_max = 8
+    writer_data.contact_count = contact_count
+    writer_data.contact_pair = wp.zeros(8, dtype=wp.vec2i, device=device)
+    writer_data.contact_position = contact_position
+    writer_data.contact_normal = wp.zeros(8, dtype=wp.vec3, device=device)
+    writer_data.contact_penetration = wp.zeros(8, dtype=wp.float32, device=device)
+    writer_data.contact_tangent = wp.empty(0, dtype=wp.vec3, device=device)
+    writer_data.contact_sort_key = wp.empty(0, dtype=wp.int64, device=device)
+    shape_gap = wp.full(2, 0.1, dtype=wp.float32, device=device)
+    writer_data.shape_gap = shape_gap
+    writer_data.shape_transform = wp.empty(0, dtype=wp.transform, device=device)
+    writer_data.shape_linear_velocity = wp.empty(0, dtype=wp.vec3, device=device)
+    writer_data.shape_angular_velocity = wp.empty(0, dtype=wp.vec3, device=device)
+    writer_data.collision_update_dt = 0.0
+    writer_data.max_speculative_extension = 0.0
+    reducer.exported_flags.zero_()
+    total_blocks = 2
+    wp.launch_tiled(
+        _export_reduced_contacts,
+        dim=total_blocks,
+        inputs=[
+            reducer.hashtable.keys,
+            reducer.ht_values,
+            reducer.hashtable.active_slots,
+            reducer.position_depth,
+            reducer.normal,
+            reducer.shape_pairs,
+            reducer.contact_fingerprints,
+            reducer.exported_flags,
+            wp.zeros(2, dtype=wp.int32, device=device),
+            wp.zeros(2, dtype=wp.vec4, device=device),
+            shape_gap,
+            writer_data,
+            total_blocks,
+            int(not device.is_cpu),
+            int(reducer.deterministic),
+        ],
+        block_dim=EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
+        device=device,
+    )
+    return int(contact_count.numpy()[0]), contact_position.numpy()
+
+
+def test_speculative_candidates_are_opt_in(test, device):
+    """Verify separated approaching shapes only emit a candidate when enabled."""
+    model, state = _build_spheres(device, velocity=10.0)
+    test.assertEqual(int(_collide(model, state, speculative=False).rigid_contact_count.numpy()[0]), 0)
+    test.assertGreater(int(_collide(model, state, speculative=True).rigid_contact_count.numpy()[0]), 0)
+
+
+def test_speculative_candidates_require_approach(test, device):
+    """Verify separated stationary and diverging shapes emit no candidate."""
+    for velocity in (0.0, -10.0):
+        model, state = _build_spheres(device, velocity=velocity)
+        contacts = _collide(model, state, speculative=True)
+        test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_speculative_candidates_preserve_physical_geometry(test, device):
+    """Verify candidate generation does not enlarge stored physical margins."""
+    model, state = _build_spheres(device, velocity=10.0)
+    contacts = _collide(model, state, speculative=True)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+    test.assertAlmostEqual(float(contacts.rigid_contact_margin0.numpy()[0]), 0.1, places=6)
+    test.assertAlmostEqual(float(contacts.rigid_contact_margin1.numpy()[0]), 0.1, places=6)
+
+
+def test_speculative_candidates_include_angular_motion(test, device):
+    """Verify an offset shape's angular motion expands and filters candidates."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.rigid_gap = 0.0
+    body = builder.add_body(
+        xform=wp.transform_identity(),
+        mass=1.0,
+        inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        lock_inertia=True,
+    )
+    builder.add_shape_sphere(body, radius=0.1, xform=wp.transform(wp.vec3(0.0, 1.0, 0.0)))
+    builder.body_qd[body] = (0.0, 0.0, 0.0, 0.0, 0.0, -10.0)
+    builder.add_shape_sphere(-1, radius=0.1, xform=wp.transform(wp.vec3(0.3, 1.0, 0.0)))
+    model = builder.finalize(device=device)
+    contacts = _collide(model, model.state(), speculative=True)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_speculative_narrow_phase_launch(test, device):
+    """Verify the public narrow-phase convenience API performs exact admission."""
+    shape_transform = wp.array(
+        [wp.transform_identity(), wp.transform(wp.vec3(0.3, 0.0, 0.0))],
+        dtype=wp.transform,
+        device=device,
+    )
+    shape_aabb_lower = wp.full(2, wp.vec3(-0.1), dtype=wp.vec3, device=device)
+    shape_aabb_upper = wp.full(2, wp.vec3(0.1), dtype=wp.vec3, device=device)
+    narrow_phase = NarrowPhase(
+        max_candidate_pairs=1,
+        reduce_contacts=False,
+        device=device,
+        shape_aabb_lower=shape_aabb_lower,
+        shape_aabb_upper=shape_aabb_upper,
+        shape_voxel_resolution=wp.full(2, wp.vec3i(1), dtype=wp.vec3i, device=device),
+        has_meshes=False,
+        contact_max=4,
+        verify_buffers=False,
+        speculative=True,
+    )
+
+    candidate_pair = wp.array([wp.vec2i(0, 1)], dtype=wp.vec2i, device=device)
+    candidate_pair_count = wp.array([1], dtype=wp.int32, device=device)
+    shape_types = wp.array([int(GeoType.SPHERE), int(GeoType.SPHERE)], dtype=wp.int32, device=device)
+    shape_data = wp.array(
+        [wp.vec4(0.1, 0.1, 0.1, 0.0), wp.vec4(0.1, 0.1, 0.1, 0.0)],
+        dtype=wp.vec4,
+        device=device,
+    )
+    shape_gap = wp.array([0.2, 0.0], dtype=wp.float32, device=device)
+    shape_base_gap = wp.zeros(2, dtype=wp.float32, device=device)
+    shape_angular_velocity = wp.zeros(2, dtype=wp.vec3, device=device)
+
+    for velocity, expected_count in ((10.0, 1), (-10.0, 0)):
+        contact_count = wp.zeros(1, dtype=wp.int32, device=device)
+        narrow_phase.launch(
+            candidate_pair=candidate_pair,
+            candidate_pair_count=candidate_pair_count,
+            shape_types=shape_types,
+            shape_data=shape_data,
+            shape_transform=shape_transform,
+            shape_source=wp.zeros(2, dtype=wp.uint64, device=device),
+            shape_sdf_index=wp.full(2, -1, dtype=wp.int32, device=device),
+            shape_gap=shape_gap,
+            shape_base_gap=shape_base_gap,
+            shape_collision_radius=wp.full(2, 0.1, dtype=wp.float32, device=device),
+            shape_flags=wp.zeros(2, dtype=wp.int32, device=device),
+            shape_collision_aabb_lower=shape_aabb_lower,
+            shape_collision_aabb_upper=shape_aabb_upper,
+            shape_voxel_resolution=wp.full(2, wp.vec3i(1), dtype=wp.vec3i, device=device),
+            contact_pair=wp.zeros(4, dtype=wp.vec2i, device=device),
+            contact_position=wp.zeros(4, dtype=wp.vec3, device=device),
+            contact_normal=wp.zeros(4, dtype=wp.vec3, device=device),
+            contact_penetration=wp.zeros(4, dtype=wp.float32, device=device),
+            contact_count=contact_count,
+            contact_tangent=wp.empty(0, dtype=wp.vec3, device=device),
+            shape_linear_velocity=wp.array([wp.vec3(velocity, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device),
+            shape_angular_velocity=shape_angular_velocity,
+            collision_update_dt=0.02,
+            max_speculative_extension=0.25,
+            device=device,
+        )
+        test.assertEqual(int(contact_count.numpy()[0]), expected_count)
+
+
+def test_speculative_narrow_phase_rejects_hydroelastic(test, device):
+    """Verify indexed hydroelastic writers cannot silently bypass exact admission."""
+    with test.assertRaisesRegex(NotImplementedError, "does not yet support hydroelastic"):
+        NarrowPhase(
+            max_candidate_pairs=1,
+            device=device,
+            hydroelastic_sdf=object(),
+            speculative=True,
+        )
+
+
+def test_speculative_mesh_sdf_candidates(test, device):
+    """Verify separated approaching mesh SDFs retain leading candidates."""
+    projectile = newton.Mesh.create_box(0.05, compute_normals=False, compute_uvs=False)
+    projectile.build_sdf(device=device, max_resolution=32)
+    wall = newton.Mesh.create_box(0.02, 0.3, 0.3, compute_normals=False, compute_uvs=False)
+    wall.build_sdf(device=device, max_resolution=32)
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.rigid_gap = 0.0
+    body = builder.add_body(xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0)))
+    builder.add_shape_mesh(body, mesh=projectile)
+    builder.body_qd[body] = (20.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    builder.add_shape_mesh(-1, mesh=wall)
+    model = builder.finalize(device=device)
+
+    contacts = _collide(model, model.state(), speculative=True)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device):
+    """Verify an inner SDF contact cannot hide the rod end rotating toward the board."""
+    rod = newton.Mesh.create_box(0.5, 0.04, 0.04, compute_normals=False, compute_uvs=False)
+    rod.build_sdf(device=device, max_resolution=64)
+    board = newton.Mesh.create_box(0.7, 0.3, 0.02, compute_normals=False, compute_uvs=False)
+    board.build_sdf(device=device, max_resolution=64)
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.rigid_gap = 0.0
+    rod_body = builder.add_body(
+        xform=wp.transform(
+            wp.vec3(0.0, 0.0, 0.095),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -0.1),
+        )
+    )
+    builder.add_shape_mesh(rod_body, mesh=rod)
+    builder.body_qd[rod_body] = (0.0, 0.0, 0.0, 0.0, 10.0, 0.0)
+    builder.add_shape_mesh(-1, mesh=board)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
+            collision_update_dt=0.03,
+            max_speculative_extension=0.15,
+        ),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 1)
+    rod_points = contacts.rigid_contact_point0.numpy()[:count]
+    test.assertLess(float(rod_points[:, 0].min()), -0.3)
+    test.assertGreater(float(rod_points[:, 0].max()), 0.3)
+
+
+def test_predictive_reducer_reuses_regular_contact(test, device, deterministic):
+    """Verify one candidate winning regular and predictive keys exports once."""
+    reducer = GlobalContactReducer(capacity=8, device=device, deterministic=deterministic)
+    shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
+    shape_linear_velocity = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+    shape_angular_velocity = wp.zeros(2, dtype=wp.vec3, device=device)
+    contact_ids = wp.zeros(3, dtype=wp.int32, device=device)
+    wp.launch(
+        _register_regular_and_predictive_contact,
+        dim=1,
+        inputs=[
+            reducer.get_data_struct(),
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            contact_ids,
+        ],
+        device=device,
+    )
+
+    ids = contact_ids.numpy()
+    test.assertGreater(int(ids[0]), 0)
+    test.assertEqual(int(ids[1]), int(ids[0]))
+    test.assertEqual(int(ids[2]), int(ids[0]))
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), 1)
+    exported_count, _ = _export_reducer_contacts(reducer, device)
+    test.assertEqual(exported_count, 1)
+
+
+def test_predictive_reducer_retains_rotating_leading_contact(test, device, deterministic):
+    """Verify an inner winner cannot suppress an imminent angular-only feature."""
+    reducer = GlobalContactReducer(capacity=8, device=device, deterministic=deterministic)
+    shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
+    shape_linear_velocity = wp.zeros(2, dtype=wp.vec3, device=device)
+    shape_angular_velocity = wp.array([wp.vec3(0.0, 0.0, -1.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+    contact_ids = wp.zeros(3, dtype=wp.int32, device=device)
+    wp.launch(
+        _register_inner_and_rotating_leading_contact,
+        dim=1,
+        inputs=[
+            reducer.get_data_struct(),
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            contact_ids,
+        ],
+        device=device,
+    )
+
+    ids = contact_ids.numpy()
+    test.assertGreater(int(ids[0]), 0)
+    test.assertEqual(int(ids[1]), -1)
+    test.assertGreater(int(ids[2]), 0)
+    test.assertNotEqual(int(ids[2]), int(ids[0]))
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), 2)
+    exported_count, positions = _export_reducer_contacts(reducer, device)
+    test.assertEqual(exported_count, 2)
+    test.assertAlmostEqual(float(max(positions[:exported_count, 1])), 1.0, places=6)
+
+
+def test_predictive_reducer_retains_clearance_manifold(test, device, deterministic):
+    """Verify the nearest clearance in each deterministic shard and the impact guard survive."""
+    reducer = GlobalContactReducer(capacity=16, device=device, deterministic=deterministic)
+    shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
+    shape_linear_velocity = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+    shape_angular_velocity = wp.array([wp.vec3(0.0, 0.0, -1.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+    contact_ids = wp.full(8, -1, dtype=wp.int32, device=device)
+    wp.launch(
+        _register_predictive_clearance_candidates,
+        dim=1,
+        inputs=[
+            reducer.get_data_struct(),
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            contact_ids,
+        ],
+        device=device,
+    )
+
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), 8)
+    exported_count, positions = _export_reducer_contacts(reducer, device)
+    test.assertEqual(exported_count, 7)
+    clearances = sorted(float(position[2]) for position in positions[:exported_count])
+    for actual, expected in zip(clearances, (0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08), strict=True):
+        test.assertAlmostEqual(actual, expected, places=6)
+
+
+def test_predictive_reducer_retains_clearance_manifold_under_contention(test, device, deterministic):
+    """Verify concurrent blocks retain sharded clearance and time-of-impact winners."""
+    reducer = GlobalContactReducer(capacity=256, device=device, deterministic=deterministic)
+    shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
+    shape_linear_velocity = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+    shape_angular_velocity = wp.array([wp.vec3(0.0, 0.0, -1.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+    wp.launch(
+        _register_predictive_clearance_candidates_contended,
+        dim=256,
+        inputs=[
+            reducer.get_data_struct(),
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            2,
+        ],
+        block_dim=32,
+        device=device,
+    )
+
+    exported_count, positions = _export_reducer_contacts(reducer, device)
+    test.assertEqual(exported_count, 7)
+    clearances = sorted(float(position[2]) for position in positions[:exported_count])
+    for actual, expected in zip(clearances, (0.01, 0.0101, 0.0102, 0.0104, 0.0107, 0.011, 0.08), strict=True):
+        test.assertAlmostEqual(actual, expected, places=6)
+
+
+def test_predictive_reducer_preserves_winners_with_small_buffer(test, device, deterministic):
+    """Verify 256 ordered contenders preserve shard winners within a 16-contact buffer."""
+    reducer = GlobalContactReducer(capacity=16, device=device, deterministic=deterministic)
+    shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
+    shape_linear_velocity = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+    shape_angular_velocity = wp.array([wp.vec3(0.0, 0.0, -1.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+    wp.launch(
+        _register_predictive_clearance_candidates_sequential,
+        dim=1,
+        inputs=[
+            reducer.get_data_struct(),
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+        ],
+        device=device,
+    )
+
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), 14)
+    exported_count, positions = _export_reducer_contacts(reducer, device)
+    test.assertEqual(exported_count, 7)
+    clearances = sorted(float(position[2]) for position in positions[:exported_count])
+    for actual, expected in zip(clearances, (0.01, 0.0101, 0.0102, 0.0104, 0.0107, 0.011, 0.08), strict=True):
+        test.assertAlmostEqual(actual, expected, places=6)
+
+
+class TestSpeculativeContacts(unittest.TestCase):
+    """Test inexpensive speculative-candidate behavior."""
+
+
+class TestSpeculativeMeshContacts(unittest.TestCase):
+    """Test speculative mesh/SDF candidate generation on CUDA."""
+
+
+for _name, _test in (
+    ("test_speculative_candidates_are_opt_in", test_speculative_candidates_are_opt_in),
+    ("test_speculative_candidates_require_approach", test_speculative_candidates_require_approach),
+    ("test_speculative_candidates_preserve_physical_geometry", test_speculative_candidates_preserve_physical_geometry),
+    ("test_speculative_candidates_include_angular_motion", test_speculative_candidates_include_angular_motion),
+    ("test_speculative_narrow_phase_launch", test_speculative_narrow_phase_launch),
+    (
+        "test_speculative_narrow_phase_rejects_hydroelastic",
+        test_speculative_narrow_phase_rejects_hydroelastic,
+    ),
+):
+    add_function_test(TestSpeculativeContacts, _name, _test, devices=get_test_devices())
+
+for _deterministic in (False, True):
+    _suffix = "deterministic" if _deterministic else "fast"
+    add_function_test(
+        TestSpeculativeContacts,
+        f"test_predictive_reducer_reuses_regular_contact_{_suffix}",
+        test_predictive_reducer_reuses_regular_contact,
+        devices=get_test_devices(),
+        deterministic=_deterministic,
+    )
+    add_function_test(
+        TestSpeculativeContacts,
+        f"test_predictive_reducer_retains_rotating_leading_contact_{_suffix}",
+        test_predictive_reducer_retains_rotating_leading_contact,
+        devices=get_test_devices(),
+        deterministic=_deterministic,
+    )
+    add_function_test(
+        TestSpeculativeContacts,
+        f"test_predictive_reducer_retains_clearance_manifold_{_suffix}",
+        test_predictive_reducer_retains_clearance_manifold,
+        devices=get_test_devices(),
+        deterministic=_deterministic,
+    )
+    add_function_test(
+        TestSpeculativeContacts,
+        f"test_predictive_reducer_retains_clearance_manifold_under_contention_{_suffix}",
+        test_predictive_reducer_retains_clearance_manifold_under_contention,
+        devices=get_test_devices(),
+        deterministic=_deterministic,
+    )
+    add_function_test(
+        TestSpeculativeContacts,
+        f"test_predictive_reducer_preserves_winners_with_small_buffer_{_suffix}",
+        test_predictive_reducer_preserves_winners_with_small_buffer,
+        devices=get_test_devices(),
+        deterministic=_deterministic,
+    )
+
+add_function_test(
+    TestSpeculativeMeshContacts,
+    "test_speculative_mesh_sdf_candidates",
+    test_speculative_mesh_sdf_candidates,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSpeculativeMeshContacts,
+    "test_speculative_mesh_sdf_retains_rotating_leading_feature",
+    test_speculative_mesh_sdf_retains_rotating_leading_feature,
+    devices=get_cuda_test_devices(),
+)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
