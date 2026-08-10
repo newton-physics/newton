@@ -9,6 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry.contact_reduction_global import (
+    EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
     GlobalContactReducer,
     GlobalContactReducerData,
     create_export_reduced_contacts_kernel,
@@ -40,7 +41,7 @@ def _register_regular_and_predictive_contact(
         position,
         0.0,
         0.1,
-        wp.transform_identity(),
+        position,
         wp.vec3(-1.0),
         wp.vec3(1.0),
         wp.vec3i(1),
@@ -101,7 +102,7 @@ def _register_inner_and_rotating_leading_contact(
         inner_position,
         0.01,
         0.1,
-        wp.transform_identity(),
+        inner_position,
         wp.vec3(-2.0),
         wp.vec3(2.0),
         wp.vec3i(1),
@@ -119,7 +120,7 @@ def _register_inner_and_rotating_leading_contact(
         leading_position,
         0.01,
         0.1,
-        wp.transform_identity(),
+        leading_position,
         wp.vec3(-2.0),
         wp.vec3(2.0),
         wp.vec3i(1),
@@ -321,10 +322,10 @@ def _export_reducer_contacts(reducer: GlobalContactReducer, device):
     writer_data.collision_update_dt = 0.0
     writer_data.max_speculative_extension = 0.0
     reducer.exported_flags.zero_()
-    total_threads = 128
-    wp.launch(
+    total_blocks = 128
+    wp.launch_tiled(
         _export_reduced_contacts,
-        dim=total_threads,
+        dim=total_blocks,
         inputs=[
             reducer.hashtable.keys,
             reducer.ht_values,
@@ -338,10 +339,12 @@ def _export_reducer_contacts(reducer: GlobalContactReducer, device):
             wp.zeros(2, dtype=wp.vec4, device=device),
             shape_gap,
             writer_data,
-            total_threads,
+            total_blocks,
+            int(not device.is_cpu),
             int(reducer.deterministic),
         ],
         device=device,
+        block_dim=EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
     )
     return int(contact_count.numpy()[0]), contact_position.numpy()
 
