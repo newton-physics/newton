@@ -1400,7 +1400,7 @@ Soft contacts are generated automatically when particles are present. They use a
 
 .. testcode:: soft-contacts
 
-    # Set soft contact margin
+    # Set the soft-contact detection gap (slack added to the particle radius)
     pipeline = CollisionPipeline(model, soft_contact_gap=0.01)
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)

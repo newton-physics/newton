@@ -955,6 +955,8 @@ class CollisionPipeline:
             soft_contact_gap = soft_contact_margin
         elif soft_contact_gap is None:
             soft_contact_gap = 0.01
+        if soft_contact_gap < 0.0:
+            raise ValueError(f"soft_contact_gap must be >= 0, got {soft_contact_gap}")
 
         if max_triangle_pairs <= 0:
             raise ValueError("max_triangle_pairs must be > 0")
