@@ -81,7 +81,7 @@ examples = [
     "newton[importers]",    # include import dependencies
     "newton[onnx]",         # for RL policy examples
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
-    "GitPython>=3.1.47",    # for downloading assets via newton.utils.download_asset()
+    "GitPython>=3.1.58",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
@@ -127,7 +127,7 @@ docs = [
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
-    "GitPython>=3.1.47",            # for downloading tutorial assets via newton.utils.download_asset() (>=3.1.47 for GHSA-x2qx-6953-8485)
+    "GitPython>=3.1.58",            # for downloading tutorial assets via newton.utils.download_asset()
     # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
     "viser==1.0.26",
 ]
