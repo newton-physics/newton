@@ -156,7 +156,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples basic_dzhanibekov</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples basic_limx_affine_body</code>
+      <code>uv run -m newton.examples basic_limx_affine_body</code>
     </td>
   </tr>
   <tr>
