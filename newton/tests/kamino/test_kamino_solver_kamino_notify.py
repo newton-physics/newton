@@ -367,6 +367,24 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver.reset(state)
         np.testing.assert_allclose(state.body_q.numpy(), model.body_q.numpy(), atol=1e-6)
 
+    def test_making_body_massless_raises(self):
+        """Reject changing an initially massive body's inverse mass to zero."""
+        model = _build_revolute()
+        solver = SolverKamino(model)
+        model.body_inv_mass.assign([0.0])
+
+        with self.assertRaisesRegex(RuntimeError, "massless.*recreate SolverKamino"):
+            solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+    def test_making_inverse_inertia_fully_zero_raises(self):
+        """Reject changing an initially nonzero inverse inertia matrix to zero."""
+        model = _build_revolute()
+        solver = SolverKamino(model)
+        model.body_inv_inertia.assign([wp.mat33f(0.0)])
+
+        with self.assertRaisesRegex(RuntimeError, "massless.*recreate SolverKamino"):
+            solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
     def test_material_value_update_propagates(self):
         """Two shapes sharing one material can update it together and keep sharing it."""
         model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
