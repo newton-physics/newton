@@ -121,6 +121,9 @@ in float ViewDepth;
 // Reciprocal of the reference distance to the transparent content. Normalizing
 // view depth by it keeps the OIT weight curve below independent of scene scale.
 uniform float oit_inv_depth_reference;
+// False when the GL context cannot drive the weighted-OIT accumulation buffers
+// and transparency falls back to single-pass alpha blending.
+uniform bool oit_enabled;
 #endif
 
 uniform vec3 view_pos;
@@ -410,17 +413,27 @@ void main()
 
 #ifdef ENABLE_TRANSPARENCY
     float alpha = clamp(Opacity, 0.0, 1.0);
-    // Weighted-blended OIT (McGuire & Bavoil 2013, eq. 9). The published curve
-    // is tuned for meter-scale view depth; evaluating it on depth normalized by
-    // the transparent content's reference distance keeps the weight spread
-    // across its clamp range for any scene scale. Feeding it the raw
-    // window-space depth instead pins every fragment to the clamp ceiling,
-    // collapsing the resolve to a plain alpha-weighted average.
-    float d = ViewDepth * oit_inv_depth_reference;
-    float depth_weight = clamp(10.0 / (1e-5 + pow(2.0 * d, 2.0) + pow(0.6 * d, 6.0)), 1e-2, 3e3);
-    float weight = alpha * depth_weight;
-    FragColor = vec4(color * alpha, alpha) * weight;
-    Revealage = vec4(alpha);
+    if (oit_enabled)
+    {
+        // Weighted-blended OIT (McGuire & Bavoil 2013, eq. 9). The published
+        // curve is tuned for meter-scale view depth; evaluating it on depth
+        // normalized by the transparent content's reference distance keeps the
+        // weight spread across its clamp range for any scene scale. Feeding it
+        // the raw window-space depth instead pins every fragment to the clamp
+        // ceiling, collapsing the resolve to a plain alpha-weighted average.
+        float d = ViewDepth * oit_inv_depth_reference;
+        float depth_weight = clamp(10.0 / (1e-5 + pow(2.0 * d, 2.0) + pow(0.6 * d, 6.0)), 1e-2, 3e3);
+        float weight = alpha * depth_weight;
+        FragColor = vec4(color * alpha, alpha) * weight;
+        Revealage = vec4(alpha);
+    }
+    else
+    {
+        // Fallback: straight source-alpha blending into the shared color
+        // target. Revealage has no bound draw buffer in this pass.
+        FragColor = vec4(color, alpha);
+        Revealage = vec4(alpha);
+    }
 #else
     FragColor = vec4(color, 1.0);
 #endif
@@ -614,9 +627,23 @@ class ShaderShape(ShaderGL):
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
-            self.loc_oit_inv_depth_reference = (
-                self._get_uniform_location("oit_inv_depth_reference") if enable_transparency else None
-            )
+            self.loc_oit_inv_depth_reference = None
+            self.loc_oit_enabled = None
+            if enable_transparency:
+                self.loc_oit_inv_depth_reference = self._get_uniform_location("oit_inv_depth_reference")
+                self.loc_oit_enabled = self._get_uniform_location("oit_enabled")
+                self._gl.glUniform1i(self.loc_oit_enabled, 1)
+
+    def set_oit_enabled(self, enabled: bool):
+        """Select weighted-OIT accumulation or the alpha-blended fallback.
+
+        Args:
+            enabled: Whether the weighted-OIT accumulation buffers are bound.
+        """
+        if self.loc_oit_enabled is None:
+            return
+        with self:
+            self._gl.glUniform1i(self.loc_oit_enabled, int(enabled))
 
     def update(
         self,

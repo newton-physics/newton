@@ -5,6 +5,7 @@ import ctypes
 import io
 import os
 import sys
+import warnings
 
 import numpy as np
 import warp as wp
@@ -1208,6 +1209,7 @@ class RendererGL:
         self._oit_resolve_shader = None
         self._shape_transparent_shader = None
         self._oit_supported = False
+        self._oit_fallback_warned = False
 
         self._sun_direction = None  # set on first render based on camera up_axis
 
@@ -1847,8 +1849,14 @@ class RendererGL:
 
         check_gl_error()
 
-    def _ensure_transparency_resources(self):
-        """Create transparency-only shaders and buffers on first use."""
+    def _ensure_transparency_resources(self) -> bool:
+        """Create transparency-only shaders and buffers on first use.
+
+        Returns:
+            True when weighted OIT is usable. False when the GL context lacks
+            independent blending or a complete OIT framebuffer, in which case
+            transparency degrades to single-pass alpha blending.
+        """
         gl = RendererGL.gl
         if self._shape_transparent_shader is None:
             self._shape_transparent_shader = ShaderShape(gl, enable_transparency=True)
@@ -1856,6 +1864,15 @@ class RendererGL:
             self._oit_resolve_shader = OITResolveShader(gl)
         if self._oit_fbo is None:
             self._setup_oit_buffer()
+        if not self._oit_supported and not self._oit_fallback_warned:
+            self._oit_fallback_warned = True
+            warnings.warn(
+                "ViewerGL: weighted order-independent transparency is unavailable on this GL context "
+                "(requires independent blending and a float OIT framebuffer). Falling back to unsorted "
+                "alpha blending, so overlapping transparent surfaces may blend in the wrong order.",
+                stacklevel=2,
+            )
+        return self._oit_supported
 
     def _setup_oit_buffer(self):
         gl = RendererGL.gl
@@ -2099,18 +2116,20 @@ class RendererGL:
             self._draw_objects(opaque_objects)
 
         if transparent_objects:
-            self._ensure_transparency_resources()
-            if not self._oit_supported:
-                raise RuntimeError(
-                    "ViewerGL transparency requires OpenGL independent blending and a complete OIT framebuffer."
-                )
+            oit_supported = self._ensure_transparency_resources()
             assert self._shape_transparent_shader is not None
             self._update_shape_shader(self._shape_transparent_shader)
+            self._shape_transparent_shader.set_oit_enabled(oit_supported)
             with self._shape_transparent_shader:
-                if getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
-                    self._resolve_msaa_frame()
-                    msaa_resolved = True
-                self._render_transparent_objects(transparent_objects)
+                if not oit_supported:
+                    # Blend straight into the active target so transparency still
+                    # benefits from MSAA and no early resolve is needed.
+                    self._render_blended_transparent_objects(transparent_objects)
+                else:
+                    if getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
+                        self._resolve_msaa_frame()
+                        msaa_resolved = True
+                    self._render_transparent_objects(transparent_objects)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
@@ -2159,6 +2178,25 @@ class RendererGL:
             gl.GL_NEAREST,
         )
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
+
+    def _render_blended_transparent_objects(self, transparent_objects):
+        """Draw transparent objects with source-alpha blending into the active target.
+
+        Used when weighted OIT is unavailable. Blending is unsorted, so
+        overlapping transparent surfaces may composite in the wrong order, but
+        rendering keeps working instead of failing the frame.
+        """
+        gl = RendererGL.gl
+
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendEquation(gl.GL_FUNC_ADD)
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+        gl.glDepthMask(False)
+        for _name, obj in transparent_objects:
+            if hasattr(obj, "render"):
+                obj.render()
+        gl.glDepthMask(True)
+        gl.glDisable(gl.GL_BLEND)
 
     def _render_transparent_objects(self, transparent_objects):
         gl = RendererGL.gl

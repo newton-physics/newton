@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-from unittest.mock import Mock, patch
+import warnings
+from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
 import warp as wp
@@ -481,13 +482,21 @@ class TestShapeColors(unittest.TestCase):
         self.assertNotIn("/layers/solverA/model/shapes/shape_0", viewer.objects)
         self.assertIn("/layers/solverB/model/shapes/shape_0", viewer.objects)
 
-    def test_renderer_gl_lazily_creates_transparency_resources(self):
-        """Defer transparency shaders and framebuffers until first use."""
+    @staticmethod
+    def _make_transparency_renderer(oit_supported: bool):
+        """Build a bare ``RendererGL`` with just the transparency state populated."""
         renderer = RendererGL.__new__(RendererGL)
         renderer._shape_transparent_shader = None
         renderer._oit_resolve_shader = None
         renderer._oit_fbo = None
+        renderer._oit_supported = oit_supported
+        renderer._oit_fallback_warned = False
         renderer._setup_oit_buffer = Mock(side_effect=lambda: setattr(renderer, "_oit_fbo", object()))
+        return renderer
+
+    def test_renderer_gl_lazily_creates_transparency_resources(self):
+        """Defer transparency shaders and framebuffers until first use."""
+        renderer = self._make_transparency_renderer(oit_supported=True)
 
         transparent_shader = object()
         resolve_shader = object()
@@ -495,12 +504,65 @@ class TestShapeColors(unittest.TestCase):
             patch("newton._src.viewer.gl.opengl.ShaderShape", return_value=transparent_shader) as shape_shader,
             patch("newton._src.viewer.gl.opengl.OITResolveShader", return_value=resolve_shader) as oit_shader,
         ):
-            renderer._ensure_transparency_resources()
-            renderer._ensure_transparency_resources()
+            self.assertTrue(renderer._ensure_transparency_resources())
+            self.assertTrue(renderer._ensure_transparency_resources())
 
         shape_shader.assert_called_once_with(RendererGL.gl, enable_transparency=True)
         oit_shader.assert_called_once_with(RendererGL.gl)
         renderer._setup_oit_buffer.assert_called_once_with()
+
+    def test_renderer_gl_warns_once_when_oit_is_unsupported(self):
+        """Report unsupported weighted OIT once instead of failing the frame."""
+        renderer = self._make_transparency_renderer(oit_supported=False)
+
+        with (
+            patch("newton._src.viewer.gl.opengl.ShaderShape", return_value=object()),
+            patch("newton._src.viewer.gl.opengl.OITResolveShader", return_value=object()),
+        ):
+            with self.assertWarnsRegex(UserWarning, "Falling back to unsorted alpha blending"):
+                self.assertFalse(renderer._ensure_transparency_resources())
+
+            # A second frame must not re-warn, but must still report no OIT.
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                self.assertFalse(renderer._ensure_transparency_resources())
+
+        self.assertEqual(caught, [])
+
+    def test_render_scene_falls_back_to_alpha_blending_without_oit(self):
+        """Render transparency with alpha blending when weighted OIT is unavailable."""
+        renderer = RendererGL.__new__(RendererGL)
+        transparent_shader = MagicMock()
+        renderer._shape_shader = MagicMock()
+        renderer._shape_transparent_shader = transparent_shader
+        renderer.draw_sky = False
+        renderer.draw_wireframe = False
+        renderer.draw_edges = False
+        renderer.msaa_samples = 4
+        renderer._frame_msaa_fbo = object()
+        renderer._ensure_transparency_resources = Mock(return_value=False)
+        renderer._update_shape_shader = Mock()
+        renderer._draw_objects = Mock()
+        renderer._resolve_msaa_frame = Mock()
+        renderer._render_transparent_objects = Mock()
+        renderer._render_blended_transparent_objects = Mock()
+
+        transparent_object = Mock(hidden=False)
+        transparent_object.has_transparency = Mock(return_value=True)
+        opaque_object = Mock(hidden=False)
+        opaque_object.has_transparency = Mock(return_value=False)
+        objects = {"transparent": transparent_object, "opaque": opaque_object}
+
+        with patch.object(RendererGL, "gl", MagicMock()):
+            msaa_resolved = renderer._render_scene(objects, scene_has_transparency=True)
+
+        self.assertFalse(msaa_resolved)
+        transparent_shader.set_oit_enabled.assert_called_once_with(False)
+        renderer._render_blended_transparent_objects.assert_called_once_with([("transparent", transparent_object)])
+        renderer._render_transparent_objects.assert_not_called()
+        # The opaque MSAA target stays multisampled; no early resolve is needed.
+        renderer._resolve_msaa_frame.assert_not_called()
+        renderer._draw_objects.assert_called_once_with({"opaque": opaque_object})
 
     def test_oit_depth_weight_discriminates_depth(self):
         """Weight nearer transparent fragments above farther ones.
