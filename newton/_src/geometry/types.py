@@ -1677,10 +1677,12 @@ class TetMesh:
         }
     )
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
         tet_indices: Sequence[int] | np.ndarray,
+        *,
         k_mu: np.ndarray | float | None = None,
         k_lambda: np.ndarray | float | None = None,
         k_damp: np.ndarray | float | None = None,

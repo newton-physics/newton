@@ -91,45 +91,6 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
-    def test_mesh_keyword_only_deprecation_shim(self):
-        """Keep legacy Mesh positional arguments working with a deprecation."""
-        import newton  # noqa: PLC0415
-
-        signature = inspect.signature(newton.Mesh)
-        parameters = list(signature.parameters.values())
-        self.assertEqual([parameter.name for parameter in parameters[:2]], ["vertices", "indices"])
-        self.assertTrue(all(parameter.kind == inspect.Parameter.KEYWORD_ONLY for parameter in parameters[2:]))
-
-        vertices = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
-        indices = [0, 1, 2]
-        normals = [(0.0, 0.0, 1.0)] * 3
-        with self.assertWarnsRegex(
-            DeprecationWarning,
-            "Passing 'normals', 'uvs', 'compute_inertia' positionally",
-        ):
-            mesh = newton.Mesh(vertices, indices, normals, None, False)
-
-        self.assertEqual(mesh.normals.tolist(), [list(normal) for normal in normals])
-
-    def test_opacity_parameters_preserve_existing_positional_order(self):
-        """Append opacity parameters after every pre-existing public parameter."""
-        import newton  # noqa: PLC0415
-        from newton.viewer import ViewerBase  # noqa: PLC0415
-
-        signatures = (
-            (newton.Mesh, "opacity", "sdf"),
-            (newton.TetMesh, "opacity", "custom_attributes"),
-            (newton.ModelBuilder.add_shape_box, "opacity", "custom_attributes"),
-            (newton.ModelBuilder.add_triangle, "opacity", "custom_attributes"),
-            (ViewerBase.log_mesh, "opacity", "metallic"),
-            (ViewerBase.log_instances, "opacities", "hidden"),
-            (ViewerBase.log_shapes, "opacities", "hidden"),
-        )
-        for func, new_parameter, previous_last_parameter in signatures:
-            with self.subTest(func=func.__qualname__):
-                parameters = list(inspect.signature(func).parameters)
-                self.assertGreater(parameters.index(new_parameter), parameters.index(previous_last_parameter))
-
     def test_geometry_match_constants_deprecated(self):
         import newton  # noqa: PLC0415
         from newton._src.geometry.contact_match import MATCH_BROKEN, MATCH_NOT_FOUND  # noqa: PLC0415

@@ -4,6 +4,7 @@
 import builtins
 import functools
 import hashlib
+import inspect
 import logging
 import math
 import os
@@ -13827,6 +13828,25 @@ def Mesh "cube"
 
 
 class TestTetMesh(unittest.TestCase):
+    def test_tetmesh_keyword_only_deprecation_shim(self):
+        """Keep legacy TetMesh positional arguments working with a deprecation."""
+        signature = inspect.signature(newton.TetMesh)
+        parameters = list(signature.parameters.values())
+        self.assertEqual([parameter.name for parameter in parameters[:2]], ["vertices", "tet_indices"])
+        self.assertTrue(all(parameter.kind == inspect.Parameter.KEYWORD_ONLY for parameter in parameters[2:]))
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        with self.assertWarnsRegex(
+            DeprecationWarning,
+            "Passing 'k_mu', 'k_lambda', 'k_damp', 'density', 'custom_attributes', 'opacity' positionally",
+        ):
+            tet_mesh = newton.TetMesh(vertices, tet_indices, 1.0, 2.0, 3.0, 4.0, None, 0.5)
+
+        assert_np_equal(tet_mesh.k_mu, np.array([1.0], dtype=np.float32))
+        self.assertEqual(tet_mesh.density, 4.0)
+        self.assertEqual(tet_mesh.opacity, 0.5)
+
     def test_tetmesh_basic(self):
         """Test TetMesh construction from raw arrays."""
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=np.float32)
