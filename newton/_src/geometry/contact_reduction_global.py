@@ -114,6 +114,7 @@ HASHTABLE_WARN_LOAD_PERCENT = 80
 
 # Vector type for tracking exported contact IDs (used in export kernels)
 exported_ids_vec_type = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
+replaced_values_vec_type = wp.types.vector(length=VALUES_PER_KEY + 1, dtype=wp.uint64)
 
 
 @wp.func
@@ -238,12 +239,13 @@ def reduction_try_update_slot(
     value: wp.uint64,
     values: wp.array[wp.uint64],
     capacity: int,
-) -> bool:
-    """Atomically update a slot and report whether this thread improved it."""
+) -> wp.uint64:
+    """Atomically update a slot and return the value that occupied it."""
     value_idx = slot_id * capacity + entry_idx
-    if values[value_idx] >= value:
-        return False
-    return wp.atomic_max(values, value_idx, value) < value
+    previous_value = values[value_idx]
+    if previous_value >= value:
+        return previous_value
+    return wp.atomic_max(values, value_idx, value)
 
 
 @wp.func
@@ -251,12 +253,13 @@ def reduction_rollback_slot(
     entry_idx: int,
     slot_id: int,
     provisional_value: wp.uint64,
+    previous_value: wp.uint64,
     values: wp.array[wp.uint64],
     capacity: int,
 ):
-    """Clear a failed provisional claim without overwriting a newer winner."""
+    """Restore a displaced value without overwriting a newer winner."""
     value_idx = slot_id * capacity + entry_idx
-    wp.atomic_cas(values, value_idx, provisional_value, wp.uint64(0))
+    wp.atomic_cas(values, value_idx, provisional_value, previous_value)
 
 
 @wp.func
@@ -800,7 +803,8 @@ def _clear_active_kernel(
 
     if tid == 0:
         contact_count[0] = 0
-        reclaimed_contact_head[0] = wp.uint64(0)
+        if reclaimed_contact_head.shape[0] > 0:
+            reclaimed_contact_head[0] = wp.uint64(0)
         ht_insert_failures[0] = 0
 
     # Read count from GPU - stored at active_slots[capacity].
@@ -912,6 +916,7 @@ class GlobalContactReducer:
         store_moment_data: bool = False,
         deterministic: bool = False,
         hashtable_size_factor: float = 0.25,
+        enable_contact_reclamation: bool = False,
     ):
         """Initialize the global contact reducer.
 
@@ -926,6 +931,8 @@ class GlobalContactReducer:
                 deterministic variant.
             hashtable_size_factor: Multiplier applied to ``capacity`` when sizing
                 the reduction hashtable. Must be positive.
+            enable_contact_reclamation: Allocate the reservation-reuse stack used
+                by predictive contact reduction.
         """
         hashtable_size_factor = float(hashtable_size_factor)
         if not hashtable_size_factor > 0.0:
@@ -945,6 +952,7 @@ class GlobalContactReducer:
         self.store_hydroelastic_data = store_hydroelastic_data
         self.deterministic = deterministic
         self.hashtable_size_factor = hashtable_size_factor
+        self.enable_contact_reclamation = enable_contact_reclamation
 
         self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1
 
@@ -972,8 +980,12 @@ class GlobalContactReducer:
         # Atomic counter for contact allocation
         self.contact_count = wp.zeros(1, dtype=wp.int32, device=device)
         # ABA-tagged Treiber stack for reservations superseded before finalization.
-        self.reclaimed_contact_head = wp.zeros(1, dtype=wp.uint64, device=device)
-        self.reclaimed_contact_next = wp.zeros(buffer_size, dtype=wp.int32, device=device)
+        if enable_contact_reclamation:
+            self.reclaimed_contact_head = wp.zeros(1, dtype=wp.uint64, device=device)
+            self.reclaimed_contact_next = wp.zeros(buffer_size, dtype=wp.int32, device=device)
+        else:
+            self.reclaimed_contact_head = wp.zeros(0, dtype=wp.uint64, device=device)
+            self.reclaimed_contact_next = wp.zeros(0, dtype=wp.int32, device=device)
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
 
@@ -1122,6 +1134,8 @@ class GlobalContactReducer:
 @wp.func
 def reclaim_contact_id(contact_id: int, reducer_data: GlobalContactReducerData):
     """Return an unreferenced materialized contact ID to the reservation stack."""
+    if reducer_data.reclaimed_contact_head.shape[0] == 0:
+        return
     head_value = reducer_data.reclaimed_contact_head[0]
     while True:
         head_id = int(head_value & wp.uint64(0xFFFFFFFF))
@@ -1185,14 +1199,22 @@ def export_contact_to_buffer(
     Returns:
         Contact ID if successfully stored, -1 if buffer full
     """
-    contact_id = _pop_reclaimed_contact_id(reducer_data)
-    if contact_id == 0:
-        # On overflow, contact_count keeps incrementing past capacity so
-        # (contact_count - capacity) gives the drop count.
-        buffer_idx = wp.atomic_add(reducer_data.contact_count, 0, 1)
-        if buffer_idx >= reducer_data.capacity:
-            return -1
+    # Prefer fresh IDs so the default path never probes the optional
+    # reclamation stack. Once fresh capacity is exhausted, speculative
+    # reducers can reuse reservations that lost every slot claim.
+    buffer_idx = wp.atomic_add(reducer_data.contact_count, 0, 1)
+    if buffer_idx < reducer_data.capacity:
         contact_id = buffer_idx + 1  # ID zero is reserved for provisional winners.
+    else:
+        contact_id = int(0)
+        if reducer_data.reclaimed_contact_head.shape[0] > 0:
+            contact_id = _pop_reclaimed_contact_id(reducer_data)
+        if contact_id == 0:
+            # Failed allocations remain above capacity so the difference is
+            # the drop count reported by buffer diagnostics.
+            return -1
+        # A successful reuse is not a dropped contact.
+        wp.atomic_add(reducer_data.contact_count, 0, -1)
 
     # Store contact data (packed into vec4, normal octahedral-encoded into vec2)
     reducer_data.position_depth[contact_id] = wp.vec4(position[0], position[1], position[2], depth)
@@ -1564,37 +1586,50 @@ def export_and_reduce_contact_centered_two_spatial_depths(
         voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
 
     won_mask = int(0)
+    replaced_values = replaced_values_vec_type()
     if use_inner and entry_idx >= 0:
         for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
             dir_2d = get_spatial_direction_2d(dir_i)
             score = wp.dot(pos_2d, dir_2d)
             provisional_value = make_spatial_contact_value(score, True, fingerprint, 0, reducer_data.deterministic)
-            if reduction_try_update_slot(entry_idx, dir_i, provisional_value, reducer_data.ht_values, ht_capacity):
+            previous_value = reduction_try_update_slot(
+                entry_idx, dir_i, provisional_value, reducer_data.ht_values, ht_capacity
+            )
+            if previous_value < provisional_value:
                 won_mask |= 1 << dir_i
+                replaced_values[dir_i] = previous_value
 
         provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
-        if reduction_try_update_slot(
+        previous_value = reduction_try_update_slot(
             entry_idx,
             wp.static(NUM_SPATIAL_DIRECTIONS),
             provisional_value,
             reducer_data.ht_values,
             ht_capacity,
-        ):
+        )
+        if previous_value < provisional_value:
             won_mask |= 1 << wp.static(NUM_SPATIAL_DIRECTIONS)
+            replaced_values[wp.static(NUM_SPATIAL_DIRECTIONS)] = previous_value
     elif entry_idx >= 0:
         for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
             dir_2d = get_spatial_direction_2d(dir_i)
             score = wp.dot(pos_2d, dir_2d)
             provisional_value = make_spatial_contact_value(score, False, fingerprint, 0, reducer_data.deterministic)
-            if reduction_try_update_slot(entry_idx, dir_i, provisional_value, reducer_data.ht_values, ht_capacity):
+            previous_value = reduction_try_update_slot(
+                entry_idx, dir_i, provisional_value, reducer_data.ht_values, ht_capacity
+            )
+            if previous_value < provisional_value:
                 won_mask |= 1 << dir_i
+                replaced_values[dir_i] = previous_value
 
     if use_inner and voxel_entry_idx >= 0:
         provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
-        if reduction_try_update_slot(
+        previous_value = reduction_try_update_slot(
             voxel_entry_idx, voxel_local_slot, provisional_value, reducer_data.ht_values, ht_capacity
-        ):
+        )
+        if previous_value < provisional_value:
             won_mask |= 1 << wp.static(NUM_SPATIAL_DIRECTIONS + 1)
+            replaced_values[wp.static(NUM_SPATIAL_DIRECTIONS + 1)] = previous_value
 
     if won_mask == 0:
         return -1
@@ -1639,20 +1674,33 @@ def export_and_reduce_contact_centered_two_spatial_depths(
                     provisional_value = make_spatial_contact_value(
                         score, use_inner, fingerprint, 0, reducer_data.deterministic
                     )
-                    reduction_rollback_slot(entry_idx, dir_i, provisional_value, reducer_data.ht_values, ht_capacity)
+                    reduction_rollback_slot(
+                        entry_idx,
+                        dir_i,
+                        provisional_value,
+                        replaced_values[dir_i],
+                        reducer_data.ht_values,
+                        ht_capacity,
+                    )
             if use_inner and (won_mask & (1 << wp.static(NUM_SPATIAL_DIRECTIONS))) != 0:
                 provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
                 reduction_rollback_slot(
                     entry_idx,
                     wp.static(NUM_SPATIAL_DIRECTIONS),
                     provisional_value,
+                    replaced_values[wp.static(NUM_SPATIAL_DIRECTIONS)],
                     reducer_data.ht_values,
                     ht_capacity,
                 )
         if use_inner and voxel_entry_idx >= 0 and (won_mask & (1 << wp.static(NUM_SPATIAL_DIRECTIONS + 1))) != 0:
             provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
             reduction_rollback_slot(
-                voxel_entry_idx, voxel_local_slot, provisional_value, reducer_data.ht_values, ht_capacity
+                voxel_entry_idx,
+                voxel_local_slot,
+                provisional_value,
+                replaced_values[wp.static(NUM_SPATIAL_DIRECTIONS + 1)],
+                reducer_data.ht_values,
+                ht_capacity,
             )
         return -1
 
@@ -1788,16 +1836,18 @@ def export_and_reduce_predictive_contact(
 
     provisional_clearance_value = make_contact_value(clearance_score, fingerprint, 0, reducer_data.deterministic)
     provisional_impact_time_value = make_contact_value(impact_time_score, fingerprint, 0, reducer_data.deterministic)
-    clearance_won = reduction_try_update_slot(
+    previous_clearance_value = reduction_try_update_slot(
         entry_idx, clearance_slot, provisional_clearance_value, reducer_data.ht_values, ht_capacity
     )
-    impact_time_won = reduction_try_update_slot(
+    previous_impact_time_value = reduction_try_update_slot(
         entry_idx,
         wp.static(NUM_SPATIAL_DIRECTIONS),
         provisional_impact_time_value,
         reducer_data.ht_values,
         ht_capacity,
     )
+    clearance_won = previous_clearance_value < provisional_clearance_value
+    impact_time_won = previous_impact_time_value < provisional_impact_time_value
     if clearance_won:
         clearance_won = reducer_data.ht_values[clearance_idx] == provisional_clearance_value
     if impact_time_won:
@@ -1812,6 +1862,7 @@ def export_and_reduce_predictive_contact(
                 entry_idx,
                 clearance_slot,
                 provisional_clearance_value,
+                previous_clearance_value,
                 reducer_data.ht_values,
                 ht_capacity,
             )
@@ -1820,6 +1871,7 @@ def export_and_reduce_predictive_contact(
                 entry_idx,
                 wp.static(NUM_SPATIAL_DIRECTIONS),
                 provisional_impact_time_value,
+                previous_impact_time_value,
                 reducer_data.ht_values,
                 ht_capacity,
             )

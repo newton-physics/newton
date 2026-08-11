@@ -265,6 +265,64 @@ def _buffer_one_contact(reducer_data: GlobalContactReducerData):
 
 
 @wp.kernel
+def _replace_full_buffer_predictive_winner(
+    reducer_data: GlobalContactReducerData,
+    shape_transform: wp.array[wp.transform],
+    shape_linear_velocity: wp.array[wp.vec3],
+    shape_angular_velocity: wp.array[wp.vec3],
+    contact_ids: wp.array[wp.int32],
+):
+    normal = wp.vec3(1.0, 0.0, 0.0)
+    fingerprint = int(7)
+    original_clearance = 0.08
+    original_contact_id = export_contact_to_buffer(
+        0,
+        1,
+        wp.vec3(0.0, 0.0, original_clearance),
+        normal,
+        original_clearance,
+        fingerprint,
+        reducer_data,
+    )
+    contact_ids[0] = export_and_reduce_predictive_contact(
+        0,
+        1,
+        wp.vec3(0.0, 0.0, original_clearance),
+        normal,
+        original_clearance,
+        0.0,
+        0.0,
+        0.0,
+        fingerprint,
+        shape_transform,
+        shape_linear_velocity,
+        shape_angular_velocity,
+        0.1,
+        0.1,
+        original_contact_id,
+        reducer_data,
+    )
+    contact_ids[1] = export_and_reduce_predictive_contact(
+        0,
+        1,
+        wp.vec3(0.0, 0.0, 0.05),
+        normal,
+        0.05,
+        0.0,
+        0.0,
+        0.0,
+        fingerprint,
+        shape_transform,
+        shape_linear_velocity,
+        shape_angular_velocity,
+        0.1,
+        0.1,
+        -1,
+        reducer_data,
+    )
+
+
+@wp.kernel
 def _replace_validated_predictive_claims(
     reducer_data: GlobalContactReducerData,
     allocated_ids: wp.array[wp.int32],
@@ -388,6 +446,16 @@ def _expected_contended_clearances(clearance_order: int) -> list[float]:
 
 
 _export_reduced_contacts = create_export_reduced_contacts_kernel(write_contact_simple)
+
+
+def _make_predictive_reducer(capacity, device, deterministic):
+    """Create reducer storage for predictive reservation tests."""
+    return GlobalContactReducer(
+        capacity=capacity,
+        device=device,
+        deterministic=deterministic,
+        enable_contact_reclamation=True,
+    )
 
 
 def _build_spheres(device, velocity: float, separation: float = 0.3):
@@ -836,7 +904,7 @@ def test_speculative_buffered_reducer_uses_one_based_ids(test, device, determini
 def test_predictive_reducer_reclaims_replaced_reservation(test, device, deterministic):
     """Reclaim capacity when both validated predictive claims are replaced."""
     capacity = 8
-    reducer = GlobalContactReducer(capacity=capacity, device=device, deterministic=deterministic)
+    reducer = _make_predictive_reducer(capacity, device, deterministic)
     allocated_ids = wp.full(capacity, -1, dtype=wp.int32, device=device)
     wp.launch(
         _replace_validated_predictive_claims,
@@ -851,7 +919,7 @@ def test_predictive_reducer_reclaims_replaced_reservation(test, device, determin
 
 def test_predictive_reducer_retains_rotating_leading_contact(test, device, deterministic):
     """Verify an inner winner cannot suppress an imminent angular-only feature."""
-    reducer = GlobalContactReducer(capacity=8, device=device, deterministic=deterministic)
+    reducer = _make_predictive_reducer(8, device, deterministic)
     shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
     shape_linear_velocity = wp.zeros(2, dtype=wp.vec3, device=device)
     shape_angular_velocity = wp.array([wp.vec3(0.0, 0.0, -1.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
@@ -882,7 +950,7 @@ def test_predictive_reducer_retains_rotating_leading_contact(test, device, deter
 
 def test_predictive_reducer_retains_clearance_manifold(test, device, deterministic):
     """Verify the nearest clearance in each deterministic shard and the impact guard survive."""
-    reducer = GlobalContactReducer(capacity=16, device=device, deterministic=deterministic)
+    reducer = _make_predictive_reducer(16, device, deterministic)
     shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
     shape_linear_velocity = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
     shape_angular_velocity = wp.array([wp.vec3(0.0, 0.0, -1.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
@@ -915,7 +983,7 @@ def test_predictive_reducer_retains_clearance_manifold_under_contention(test, de
     shape_angular_velocity = wp.array([wp.vec3(0.0, 0.0, -1.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
     for clearance_order in (0, 1, 2):
         with test.subTest(clearance_order=clearance_order):
-            reducer = GlobalContactReducer(capacity=16, device=device, deterministic=deterministic)
+            reducer = _make_predictive_reducer(16, device, deterministic)
             wp.launch(
                 _register_predictive_clearance_candidates_contended,
                 dim=256,
@@ -941,7 +1009,7 @@ def test_predictive_reducer_retains_clearance_manifold_under_contention(test, de
 
 def test_predictive_reducer_preserves_winners_with_small_buffer(test, device, deterministic):
     """Verify 256 ordered contenders preserve shard winners within a 16-contact buffer."""
-    reducer = GlobalContactReducer(capacity=16, device=device, deterministic=deterministic)
+    reducer = _make_predictive_reducer(16, device, deterministic)
     shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
     shape_linear_velocity = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
     shape_angular_velocity = wp.array([wp.vec3(0.0, 0.0, -1.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
@@ -957,12 +1025,47 @@ def test_predictive_reducer_preserves_winners_with_small_buffer(test, device, de
         device=device,
     )
 
-    test.assertEqual(int(reducer.contact_count.numpy()[0]), 14)
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), reducer.capacity)
     exported_count, positions = _export_reducer_contacts(reducer, device)
     test.assertEqual(exported_count, 7)
     clearances = sorted(float(position[2]) for position in positions[:exported_count])
     for actual, expected in zip(clearances, (0.01, 0.0101, 0.0102, 0.0104, 0.0107, 0.011, 0.08), strict=True):
         test.assertAlmostEqual(actual, expected, places=6)
+
+
+def test_predictive_reducer_restores_winner_when_buffer_is_full(test, device, deterministic):
+    """Preserve displaced winners when a stronger candidate cannot allocate storage."""
+    reducer = _make_predictive_reducer(1, device, deterministic)
+    shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
+    shape_linear_velocity = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+    shape_angular_velocity = wp.zeros(2, dtype=wp.vec3, device=device)
+    contact_ids = wp.full(2, -1, dtype=wp.int32, device=device)
+    wp.launch(
+        _replace_full_buffer_predictive_winner,
+        dim=1,
+        inputs=[
+            reducer.get_data_struct(),
+            shape_transform,
+            shape_linear_velocity,
+            shape_angular_velocity,
+            contact_ids,
+        ],
+        device=device,
+    )
+
+    ids = contact_ids.numpy()
+    test.assertEqual(int(ids[0]), 1)
+    test.assertEqual(int(ids[1]), -1)
+    exported_count, positions = _export_reducer_contacts(reducer, device)
+    test.assertEqual(exported_count, 1)
+    test.assertAlmostEqual(float(positions[0, 2]), 0.08, places=6)
+
+
+def test_predictive_reducer_reclamation_storage_is_opt_in(test, device):
+    """Avoid allocating predictive reservation storage in the default reducer."""
+    reducer = GlobalContactReducer(capacity=32, device=device)
+    test.assertEqual(reducer.reclaimed_contact_head.shape[0], 0)
+    test.assertEqual(reducer.reclaimed_contact_next.shape[0], 0)
 
 
 class TestSpeculativeContacts(unittest.TestCase):
@@ -989,6 +1092,10 @@ for _name, _test in (
     (
         "test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction",
         test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction,
+    ),
+    (
+        "test_predictive_reducer_reclamation_storage_is_opt_in",
+        test_predictive_reducer_reclamation_storage_is_opt_in,
     ),
 ):
     add_function_test(TestSpeculativeContacts, _name, _test, devices=get_test_devices())
@@ -1041,6 +1148,13 @@ for _deterministic in (False, True):
         TestSpeculativeContacts,
         f"test_predictive_reducer_preserves_winners_with_small_buffer_{_suffix}",
         test_predictive_reducer_preserves_winners_with_small_buffer,
+        devices=get_test_devices(),
+        deterministic=_deterministic,
+    )
+    add_function_test(
+        TestSpeculativeContacts,
+        f"test_predictive_reducer_restores_winner_when_buffer_is_full_{_suffix}",
+        test_predictive_reducer_restores_winner_when_buffer_is_full,
         devices=get_test_devices(),
         deterministic=_deterministic,
     )

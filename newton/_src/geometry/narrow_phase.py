@@ -1802,6 +1802,7 @@ class NarrowPhase:
                 device=device,
                 deterministic=deterministic,
                 hashtable_size_factor=contact_reduction_hashtable_size_factor,
+                enable_contact_reclamation=speculative,
             )
         else:
             self.export_reduced_contacts_kernel = None
