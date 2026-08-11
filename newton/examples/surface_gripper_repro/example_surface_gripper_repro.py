@@ -141,13 +141,23 @@ TWIST_MODE = (2.79962, 0.0)
 # graph-captures and runs on CPU and graphed CUDA alike.
 SEAL_SEAT_ON_ENGAGE = True
 
-# Seal fractures (releases) once its break metric exceeds this. The metric is the largest ratio of
-# demanded (unclamped) to supplied (clamped) load across the four DOF groups, so 1.0 means no group
-# hit its cap and > 1 means a group is being driven that many times past its limit. A value > 1 is a
-# tolerance: the seal survives being over-driven by up to this factor before it lets go.
-BREAK_THRESHOLD = 2.0
+# Which signal decides that a seal has fractured:
+#   False -> force-based:    the largest ratio of demanded (unclamped) to supplied (clamped) load
+#                            across the four DOF groups. 1.0 = no group hit its cap; > 1 = a group is
+#                            being driven that many times past its limit.
+#   True  -> geometry-based: the pad's RMS lip-gap deviation [m] from the pose the seal formed at,
+#                            i.e. how far the gripped surface has pulled away from the lip.
+# Each uses its own threshold below; the hold-time debounce is shared.
+BREAK_ON_SEAL_QUALITY = False
 
-# The break metric must stay over BREAK_THRESHOLD for at least this long before the seal fractures.
+# Force-based threshold: a demanded/supplied load ratio. > 1 is a tolerance -- the seal survives being
+# over-driven by up to this factor before it lets go.
+BREAK_THRESHOLD_LOAD_RATIO = 2.0
+
+# Geometry-based threshold: RMS lip-gap deviation [m] from the seated pose at engagement.
+BREAK_THRESHOLD_SEAL_RMS = 0.005  # [m]
+
+# The break metric must stay over its threshold for at least this long before the seal fractures.
 # Debounces lone transient spikes (a genuine overload is sustained), so a held box is not dropped by a
 # brief sub-step spike. Expressed as a time so it is independent of the sim rate; the sub-step count is
 # round(BREAK_HOLD_TIME / sim_dt), floored at 1.
@@ -158,8 +168,10 @@ BREAK_HOLD_TIME = 0.033  # [s]
 def update_seal_break_kernel(
     pad_seal_load: wp.array[wp.vec4],            # [pads] (normal, shear, peel, torsion) after the caps
     pad_seal_load_unclamped: wp.array[wp.vec4],  # [pads] the same four groups before the caps
+    pad_seal_quality_rms: wp.array[float],       # [pads] RMS lip-gap deviation from the seated pose [m]
+    break_on_seal_quality: wp.bool,  # False = force-based metric, True = geometry-based (RMS) metric
     pad_engaged_bs_prev: wp.array[wp.vec2i],  # [pads] gripped body/shape last sub-step (``[0] < 0`` = was released)
-    break_threshold: float,  # demanded/supplied ratio above this counts as over-capacity (1.0 = at the cap)
+    break_threshold: float,  # metric above this counts as over-capacity (units depend on the mode)
     break_hold_steps: int,  # sub-steps a pad must stay over threshold before the gripper fractures
     pad_offsets: wp.array[int],  # [grippers+1] start indices: gripper g owns pads [pad_offsets[g] : pad_offsets[g+1]]
     pad_seal_break_count_prev: wp.array[int],  # [pads] consecutive over-threshold sub-steps from the previous sub-step (read)
@@ -167,14 +179,20 @@ def update_seal_break_kernel(
     # in/out: initialised by update_engagement_signals_kernel; overwritten with the break-logic result
     pad_engaged_bs_curr: wp.array[wp.vec2i],  # [pads] gripper_state_input_curr.pad_engaged_bs
 ):
-    """One thread per gripper. For each of its pads, forms the break metric as the largest ratio of
-    demanded (unclamped) to supplied (clamped) load across the four DOF groups, and counts how many
-    consecutive sub-steps that ratio has exceeded break_threshold. If any pad stays over for
-    break_hold_steps, the whole gripper releases: pad_engaged_bs_curr is cleared to (-1, -1).
+    """One thread per gripper. For each of its pads, forms a break metric and counts how many
+    consecutive sub-steps it has exceeded break_threshold. If any pad stays over for break_hold_steps,
+    the whole gripper releases: pad_engaged_bs_curr is cleared to (-1, -1).
 
-    Comparing the two loads needs no capacity parameters: a group whose cap was not reached has
-    demanded == supplied (ratio 1), while a group driven past its cap has demanded > supplied. The
-    ratio therefore measures directly how far past its limit the seal is being pushed.
+    Two metrics are available, selected by break_on_seal_quality:
+
+    Force-based (False): the largest ratio of demanded (unclamped) to supplied (clamped) load across
+    the four DOF groups. This needs no capacity parameters -- a group whose cap was not reached has
+    demanded == supplied (ratio 1), while a group driven past its cap has demanded > supplied, so the
+    ratio measures directly how far past its limit the seal is being pushed.
+
+    Geometry-based (True): the pad's RMS lip-gap deviation [m] from the pose the seal formed at, i.e.
+    how far the gripped surface has pulled away from the lip since engagement. A pad that is not
+    engaged or preparing reports -1, which never exceeds a positive threshold.
     """
     g = wp.tid()
     lo = pad_offsets[g]  # this gripper's pads are [lo, hi)
@@ -185,16 +203,19 @@ def update_seal_break_kernel(
         if not engaged:
             pad_seal_break_count_curr[p] = 0
         elif pad_engaged_bs_prev[p][0] >= 0:
-            supplied = pad_seal_load[p]  # (normal, shear, peel, torsion)
-            demanded = pad_seal_load_unclamped[p]
-            metric = float(1.0)  # 1 = nothing was clamped; > 1 = a group was driven past its cap
-            for i in range(SurfaceGripperStateOutput.SEAL_LOAD_COUNT):  # normal, shear, peel, torsion
-                s = wp.abs(supplied[i])
-                d = wp.abs(demanded[i])
-                if s > 0.0:
-                    ratio = d / s
-                    if ratio > metric:
-                        metric = ratio
+            if break_on_seal_quality:
+                metric = pad_seal_quality_rms[p]  # [m]; -1 when the pad is neither engaged nor preparing
+            else:
+                supplied = pad_seal_load[p]  # (normal, shear, peel, torsion)
+                demanded = pad_seal_load_unclamped[p]
+                metric = float(1.0)  # 1 = nothing was clamped; > 1 = a group was driven past its cap
+                for i in range(SurfaceGripperStateOutput.SEAL_LOAD_COUNT):  # normal, shear, peel, torsion
+                    s = wp.abs(supplied[i])
+                    d = wp.abs(demanded[i])
+                    if s > 0.0:
+                        ratio = d / s
+                        if ratio > metric:
+                            metric = ratio
 
             if metric > break_threshold:
                 pad_seal_break_count_curr[p] = pad_seal_break_count_prev[p] + 1
@@ -583,6 +604,11 @@ class Example:
         self.sim_substeps = max(1, round(self.frame_dt * SIM_HZ))
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.break_hold_steps = max(1, round(BREAK_HOLD_TIME / self.sim_dt))  # debounce span in sub-steps
+        # The two break metrics have different units, so each carries its own threshold.
+        if BREAK_ON_SEAL_QUALITY:
+            self.break_threshold = BREAK_THRESHOLD_SEAL_RMS  # RMS lip-gap deviation [m]
+        else:
+            self.break_threshold = BREAK_THRESHOLD_LOAD_RATIO  # demanded/supplied load ratio
 
         # sim_step_count_wp stores the number of completed simulation steps.
         # last_lo_wp is used to iterate through the recording of the robot arm.
@@ -876,6 +902,19 @@ class Example:
             )
             self.state_0.clear_forces()  # zero body_f each sub-step (the surface gripper accumulates into it)
 
+            # Per-pad seal quality (RMS lip-gap deviation from the seated pose) at this sub-step's pose.
+            # Engaged pads measure against the sdf0 cached at engagement; preparing pads recompute the
+            # seated pose + sdf0 live. Feeds the break check below and is read back by the GUI.
+            evaluate_seal_quality(
+                self.model,
+                self.state_0,
+                self.gripper_model,
+                self.gripper_state_input_prev,
+                self.gripper_state_output,
+                self.shape_mesh_id_wp,
+                iters=SEAT_ITERS,
+            )
+
             # Release the gripper when any pad's unclamped load stays over capacity for long enough.
             wp.launch(
                 update_seal_break_kernel,
@@ -883,8 +922,10 @@ class Example:
                 inputs=[
                     self.gripper_state_output.pad_seal_load,
                     self.gripper_state_output.pad_seal_load_unclamped,
+                    self.gripper_state_output.pad_seal_quality_rms,
+                    bool(BREAK_ON_SEAL_QUALITY),
                     self.gripper_state_input_prev.pad_engaged_bs,
-                    float(BREAK_THRESHOLD),
+                    float(self.break_threshold),
                     int(self.break_hold_steps),
                     self.pad_offsets_wp,
                     self.example_state_prev.pad_seal_break_count_wp,
@@ -924,19 +965,6 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
             self.gripper_state_input_prev, self.gripper_state_input_curr = self.gripper_state_input_curr, self.gripper_state_input_prev
             self.example_state_prev, self.example_state_curr = self.example_state_curr, self.example_state_prev
-
-        # Per-pad seal-quality metric (each pad's RMS lip-gap deviation from its seated pose), once per frame
-        # on the final state. Part of the captured graph; the GUI reads it back. Engaged pads use the cached
-        # sdf0; pads whose gripper is preparing recompute the seated pose + sdf0 live -- both in one call.
-        evaluate_seal_quality(
-            self.model,
-            self.state_0,
-            self.gripper_model,
-            self.gripper_state_input_prev,
-            self.gripper_state_output,
-            self.shape_mesh_id_wp,
-            iters=SEAT_ITERS,
-        )
 
     def step(self):
         # the target kernel interpolates and applies the drive targets and advances the sub-step
