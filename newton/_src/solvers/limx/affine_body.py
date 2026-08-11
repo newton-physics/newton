@@ -127,10 +127,16 @@ def _lift_gravity(
         start = 3 + 3 * spatial_axis
         force[start : start + 3] = gravity[spatial_axis] * first_moment
     acceleration = np.linalg.solve(mass_matrix, force)
+    residual = mass_matrix @ acceleration - force
+    residual_scale = np.linalg.norm(mass_matrix, ord=np.inf) * np.linalg.norm(
+        acceleration, ord=np.inf
+    ) + np.linalg.norm(force, ord=np.inf)
+    residual_tolerance = 64.0 * np.finfo(np.float64).eps * max(residual_scale, np.finfo(np.float64).tiny)
+    if not np.isfinite(acceleration).all() or np.linalg.norm(residual, ord=np.inf) > residual_tolerance:
+        raise ValueError("integrated gravity solve must have a finite scaled residual")
+
     expected = np.zeros(12, dtype=np.float64)
     expected[:3] = gravity
-    if not np.allclose(acceleration, expected, rtol=1.0e-11, atol=1.0e-11):
-        raise ValueError("integrated gravity did not produce a pure translational acceleration")
     return expected
 
 

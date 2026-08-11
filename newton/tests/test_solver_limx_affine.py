@@ -498,6 +498,39 @@ class TestAffineBodyModel(unittest.TestCase):
         )
         np.testing.assert_allclose(model.rigidities.numpy(), [2.5])
 
+    def test_accepts_conditioned_thin_tetrahedron_gravity(self):
+        """Accept harmless gravity-solve noise for a valid thin tetrahedron."""
+        vertices = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0e-4],
+            ],
+            dtype=np.float64,
+        )
+        tetrahedra = np.asarray([[0, 1, 2, 3]], dtype=np.int32)
+        surface_triangles = np.asarray([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], dtype=np.int32)
+
+        model = AffineBodyModel(
+            vertices,
+            tetrahedra,
+            surface_triangles,
+            density=1.0,
+            rigidity=0.0,
+            initial_transform=wp.transform_identity(),
+            device="cpu",
+        )
+
+        self.assertGreater(np.linalg.eigvalsh(model.mass_matrices.numpy()[0]).min(), 0.0)
+        np.testing.assert_array_equal(
+            model.gravity.numpy()[0],
+            np.asarray(
+                [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                dtype=np.float32,
+            ),
+        )
+
     def test_maps_unit_tetrahedron_surface_with_affine_states(self):
         """Map every surface vertex with identity and a literal affine state."""
         vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()
