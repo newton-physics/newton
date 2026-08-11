@@ -44,9 +44,11 @@ def _accumulate_rank_one_mixed_diagonal(
     affine_diagonal: wp.array[mat1212],
 ):
     for row in range(3):
-        particle_diagonal[0][row, row] += stiffness * particle_jacobian[row] * particle_jacobian[row]
+        for column in range(3):
+            particle_diagonal[0][row, column] += stiffness * particle_jacobian[row] * particle_jacobian[column]
     for row in range(12):
-        affine_diagonal[0][row, row] += stiffness * affine_jacobian[row] * affine_jacobian[row]
+        for column in range(12):
+            affine_diagonal[0][row, column] += stiffness * affine_jacobian[row] * affine_jacobian[column]
 
 
 class _RankOneMixedOperator:
@@ -345,6 +347,21 @@ class TestMixedPcg(unittest.TestCase):
         )
         operator = MixedLinearOperator(particle_operator, affine_matrix, mixed_dynamic_operator, "cpu")
         operator.prepare(wp.zeros(1, dtype=wp.vec3, device="cpu"), dt=1.0)
+        expected_particle_diagonal = particle_static + np.eye(3, dtype=np.float32)
+        expected_particle_diagonal += stiffness * np.outer(particle_jacobian, particle_jacobian)
+        expected_affine_diagonal = affine_static + stiffness * np.outer(affine_jacobian, affine_jacobian)
+        np.testing.assert_allclose(
+            operator.particle_operator.diagonal.numpy()[0],
+            expected_particle_diagonal,
+            rtol=2.0e-5,
+            atol=2.0e-6,
+        )
+        np.testing.assert_allclose(
+            operator.affine_diagonal.numpy()[0],
+            expected_affine_diagonal,
+            rtol=2.0e-5,
+            atol=2.0e-6,
+        )
         solver = MixedPcgSolver(particle_count=1, affine_count=1, device="cpu")
         rhs = MixedVector3x12(
             wp.array([wp.vec3(*rhs_values[:3])], dtype=wp.vec3, device="cpu"),
