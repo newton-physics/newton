@@ -209,7 +209,7 @@ def _write_dof_values(model, array, dof_indices, values):
 
 def _build_pendulum(device):
     """Single revolute joint with an offset COM and no gravity — one scalar DOF."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
     builder.body_com[body] = wp.vec3(0.5, 0.0, 0.0)
@@ -220,7 +220,7 @@ def _build_pendulum(device):
 
 def _two_link_builder(armature: float = 0.0):
     """Builder for a two-link revolute chain — one articulation, two coupled DOFs."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     base = builder.add_link(mass=1.5)
     tip = builder.add_link(mass=0.8)
     builder.add_shape_box(base, hx=0.2, hy=0.1, hz=0.1)
@@ -2463,7 +2463,7 @@ class TestResponseOracle(unittest.TestCase):
         q0 = np.array([0.3, -0.8, 0.1, -0.2], dtype=np.float32)
         target = np.array([0.6, 0.4, -0.3, 0.5], dtype=np.float32)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _ in range(2):
             builder.add_builder(_two_link_builder())
         model = builder.finalize(device=device)
