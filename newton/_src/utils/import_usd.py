@@ -391,11 +391,10 @@ def parse_usd(
                 arguments may change without prior notice.
         use_applied_schema_fallbacks: True uses an applied schema's USD fallback
             before importer defaults and lower-priority resolvers, opting into the
-            future behavior without migration warnings. Registered schema
-            definitions supply fallbacks when available; built-in resolvers may
-            supply them for schemas without public plugins. False explicitly
-            retains legacy resolution and is the default during the compatibility
-            period.
+            future behavior without migration warnings. Only registered schema
+            definitions own this precedence; unregistered resolver defaults remain
+            compatibility defaults after importer defaults. False explicitly retains
+            legacy resolution and is the default during the compatibility period.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:

@@ -1,0 +1,1 @@
+Add opt-in registered USD schema fallback precedence to `ModelBuilder.add_usd()` with migration warnings for affected prims. Pass `use_applied_schema_fallbacks=True` to adopt the new precedence, or explicitly author values to retain current results.

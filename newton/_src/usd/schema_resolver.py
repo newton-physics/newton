@@ -413,9 +413,9 @@ class SchemaResolverManager:
         Args:
             resolvers: List of instantiated resolvers in priority order.
             use_applied_schema_fallbacks: Use the owning applied schema's fallback
-                before importer defaults. Registered schema definitions supply
-                fallbacks when available; resolvers may supply them otherwise.
-                Defaults to False.
+                before importer defaults. Only registered schema definitions supply
+                these fallbacks; unregistered resolver defaults remain after importer
+                defaults. Defaults to False.
         """
         self.resolvers = list(resolvers)
         self._use_applied_schema_fallbacks = use_applied_schema_fallbacks

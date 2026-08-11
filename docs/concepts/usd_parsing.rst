@@ -470,23 +470,33 @@ When multiple physics solvers define conflicting attributes for the same propert
 
 **Resolution Hierarchy:**
 
-The attribute resolution process follows a three-layer fallback hierarchy to determine which value to use:
+By default, attribute resolution retains the compatibility hierarchy:
 
 1. **Authored Values**: Resolvers are queried in priority order; the first resolver that finds an authored value on the prim returns it and remaining resolvers are not consulted.
 2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
 3. **Resolver Compatibility Defaults**: If neither an authored value nor an importer default is available, Newton falls back to the resolver mapping's compatibility default.
 
-This order is retained during a compatibility period. In the future, applying a
-schema will give it ownership of its properties: an unauthored property will use
-its schema fallback before a lower-priority resolver or importer default.
-Registered schema definitions supply fallbacks when available. Built-in
-resolvers provide equivalent fallback data for supported schemas without public
-plugins, so registration does not affect priority. Newton emits a
-:class:`DeprecationWarning` when the future rule would select a different value
-or source. Author the intended property value explicitly to preserve it across
-the transition, or pass
-``use_applied_schema_fallbacks=True`` to adopt the future behavior now without
-migration warnings.
+Pass ``use_applied_schema_fallbacks=True`` to enable schema ownership. Resolution
+then follows four stages:
+
+1. **Authored Value**: Read the current resolver's authored property value.
+2. **Registered Schema Fallback**: If that resolver's schema is applied and the
+   property is unauthored and unblocked, read its fallback from the composed prim
+   definition in :class:`Usd.SchemaRegistry`. Repeat stages 1 and 2 for each
+   resolver in priority order.
+3. **Importer Default**: Use the property-specific importer fallback after no
+   resolver supplies an authored value or registered schema fallback.
+4. **Resolver Compatibility Default**: For an applied but unregistered schema,
+   use the resolver mapping's compatibility default only after the importer
+   default. Unregistered schemas do not own fallbacks.
+
+The default hierarchy remains in place during the compatibility period. Newton
+emits one :class:`DeprecationWarning` when registered schema ownership would
+select a different value or source; the warning lists the affected properties
+and prim paths. Author the intended property values to preserve them across the
+transition, or enable ``use_applied_schema_fallbacks`` to adopt the future
+behavior without migration warnings. Newton does not copy PhysX or MuJoCo
+fallback catalogs when their schema plugins are unavailable.
 
 **Configuring Resolver Priority:**
 

@@ -14,6 +14,7 @@ import tempfile
 import types
 import unittest
 import warnings
+from typing import ClassVar
 from unittest import mock
 from urllib.parse import urlparse
 
@@ -1789,8 +1790,8 @@ def Xform "Articulation" (
 
         class CountingResolver(usd.SchemaResolver):
             name = "counting"
-            _schema_names = {usd.PrimType.JOINT: "NewtonJointAPI"}
-            mapping = {
+            _schema_names: ClassVar = {usd.PrimType.JOINT: "NewtonJointAPI"}
+            mapping: ClassVar = {
                 usd.PrimType.JOINT: {
                     "velocity_limit": usd.SchemaResolver.SchemaAttribute("newton:velocityLimit", float("inf"))
                 }
@@ -1825,6 +1826,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_applied_newton_joint_api_warns_before_fallback_change(self):
+        """Warn before registered Newton joint fallbacks change results."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -1862,6 +1864,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_composed_fallback_policy_covers_joint_special_cases(self):
+        """Apply registered joint fallbacks to specialized properties."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -1905,6 +1908,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_merged_joint_warns_before_velocity_fallback_change(self):
+        """Warn when merged joint velocity fallbacks change results."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -3805,7 +3809,7 @@ def Xform "Articulation" (
         from pxr import Usd
 
         class UnregisteredPhysxResolver(usd.SchemaResolverPhysx):
-            _schema_names = {
+            _schema_names: ClassVar = {
                 usd.PrimType.JOINT: {
                     "limit_linear_ke": "UnregisteredPhysxLimitAPI:linear",
                     "limit_linear_kd": "UnregisteredPhysxLimitAPI:linear",
@@ -3847,7 +3851,7 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         from pxr import Usd
 
         class UnregisteredPhysxResolver(usd.SchemaResolverPhysx):
-            _schema_names = {usd.PrimType.JOINT: {"velocity_limit": "UnregisteredPhysxJointAPI"}}
+            _schema_names: ClassVar = {usd.PrimType.JOINT: {"velocity_limit": "UnregisteredPhysxJointAPI"}}
 
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(

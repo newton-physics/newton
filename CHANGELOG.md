@@ -50,9 +50,6 @@
 
 ### Changed
 
-- Detect applied but unauthored USD schema properties whose schema fallbacks will change resolver results in a future release, while retaining the current values during the compatibility period; pass ``use_applied_schema_fallbacks=True`` to opt into the future behavior.
-
-- Compile tiled camera render kernels with CUDA fast math by default for faster rendering; set `SensorTiledCamera.render_config.enable_fast_math = False` for bit-exact, IEEE-precise output.
 - Decide collider visibility from USD `purpose` and visibility rather than from a bound render material. A collider whose `purpose` resolves to `default` is viewport geometry and is drawn; mark it `guide` to state that it is collision-only. Previously an unrelated visual elsewhere in the scene could make a collider vanish. `force_show_colliders` and `hide_collision_shapes` are unchanged.
 - Filter shared full-surface soft contacts per `SolverCoupled` entry, preserving them for capable solvers and dropping them for particle-only solvers or records spanning entries.
 - Require `warp-lang>=1.16.0`; upgrade Warp to version 1.16.0 or later.

@@ -78,6 +78,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(self.ant_usda_path.exists(), f"Ant USDA file not found: {self.ant_usda_path}")
 
     def test_newton_owned_properties_have_registered_fallbacks(self):
+        """Require registered fallbacks for Newton-owned properties."""
         registry = Usd.SchemaRegistry()
         resolver = SchemaResolverNewton()
         for prim_type, mapping in resolver.mapping.items():
@@ -93,6 +94,8 @@ class TestSchemaResolver(unittest.TestCase):
                     self.assertIsNotNone(definition.GetAttributeFallbackValue(name), f"{schema_name}:{name}")
 
     def test_registered_fallbacks_omit_properties_without_fallbacks(self):
+        """Omit registered properties that have no fallback value."""
+
         class PrimDefinition:
             def GetPropertyNames(self):
                 return ["withFallback", "withoutFallback"]
@@ -103,6 +106,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(_registered_attribute_fallbacks(PrimDefinition()), {"withFallback": 0.0})
 
     def test_schema_application_controls_fallback_ownership(self):
+        """Grant fallback ownership only when the schema is applied."""
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         resolver = SchemaResolverManager([SchemaResolverNewton()])
@@ -141,6 +145,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertNotIn("/joint4", message)
 
     def test_composed_fallback_policy_selects_schema_default(self):
+        """Select the registered schema fallback under the composed policy."""
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")
@@ -158,6 +163,8 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertFalse(resolver._legacy_fallback_properties)
 
     def test_pxr_only_getter_remains_compatible_during_audit(self):
+        """Keep PXR-only getters compatible during fallback audits."""
+
         class LegacyResolver(SchemaResolver):
             name = "legacy"
             _schema_names: ClassVar = {PrimType.JOINT: "NewtonJointAPI"}
@@ -183,6 +190,8 @@ class TestSchemaResolver(unittest.TestCase):
         )
 
     def test_unexpected_fallback_getter_error_is_not_suppressed(self):
+        """Propagate unexpected errors from fallback getters."""
+
         def fail_on_fallback(read_attribute):
             value = read_attribute("newton:armature")
             if value is not None:
@@ -208,6 +217,8 @@ class TestSchemaResolver(unittest.TestCase):
             resolver.get_value(joint, PrimType.JOINT, "armature")
 
     def test_composed_fallback_may_transform_to_none(self):
+        """Preserve fallback provenance when transformation returns None."""
+
         class SentinelResolver(SchemaResolver):
             name = "sentinel"
             _schema_names: ClassVar = {PrimType.SHAPE: "NewtonCollisionAPI"}
@@ -242,6 +253,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(resolved.authored)
 
     def test_composed_value_block_suppresses_schema_fallback(self):
+        """Suppress schema fallbacks for blocked property values."""
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")
@@ -258,6 +270,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 12.0)
 
     def test_composed_physx_engine_default_margin_uses_builder_default(self):
+        """Keep importer margin defaults ahead of unregistered PhysX defaults."""
         stage = Usd.Stage.CreateInMemory()
         UsdPhysics.Scene.Define(stage, "/scene")
         cube = UsdGeom.Cube.Define(stage, "/cube")
@@ -277,6 +290,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(builder.shape_margin[shape], builder.default_shape_cfg.margin)
 
     def test_applied_sdf_effective_defaults_do_not_warn(self):
+        """Avoid warnings when registered SDF fallbacks preserve effective values."""
         stage = Usd.Stage.CreateInMemory()
         UsdPhysics.Scene.Define(stage, "/scene")
         cube = UsdGeom.Cube.Define(stage, "/cube")
@@ -300,6 +314,7 @@ class TestSchemaResolver(unittest.TestCase):
                 self.assertFalse(builder.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
 
     def test_applied_sdf_effective_default_change_warns(self):
+        """Warn when a registered SDF fallback changes the effective value."""
         stage = Usd.Stage.CreateInMemory()
         UsdPhysics.Scene.Define(stage, "/scene")
         cube = UsdGeom.Cube.Define(stage, "/cube")
@@ -322,9 +337,7 @@ class TestSchemaResolver(unittest.TestCase):
             name = "unregistered"
             _schema_names: ClassVar = {PrimType.SCENE: "UnregisteredSceneAPI"}
             mapping: ClassVar = {
-                PrimType.SCENE: {
-                    "gravity_enabled": SchemaResolver.SchemaAttribute("unregistered:gravityEnabled")
-                }
+                PrimType.SCENE: {"gravity_enabled": SchemaResolver.SchemaAttribute("unregistered:gravityEnabled")}
             }
 
         stage = Usd.Stage.CreateInMemory()
