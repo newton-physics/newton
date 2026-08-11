@@ -167,10 +167,12 @@ class Mesh:
     MAX_HULL_VERTICES = 64
     """Default maximum vertex count for convex hull approximation."""
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         vertices: Sequence[Vec3] | np.ndarray,
         indices: Sequence[int] | np.ndarray,
+        *,
         normals: Sequence[Vec3] | np.ndarray | None = None,
         uvs: Sequence[Vec2] | np.ndarray | None = None,
         compute_inertia: bool = True,
@@ -180,7 +182,6 @@ class Mesh:
         roughness: float | None = None,
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
-        *,
         sdf: "SDF | None" = None,
         opacity: float | None = None,
     ):

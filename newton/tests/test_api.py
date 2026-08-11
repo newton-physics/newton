@@ -91,6 +91,26 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
+    def test_mesh_keyword_only_deprecation_shim(self):
+        """Keep legacy Mesh positional arguments working with a deprecation."""
+        import newton  # noqa: PLC0415
+
+        signature = inspect.signature(newton.Mesh)
+        parameters = list(signature.parameters.values())
+        self.assertEqual([parameter.name for parameter in parameters[:2]], ["vertices", "indices"])
+        self.assertTrue(all(parameter.kind == inspect.Parameter.KEYWORD_ONLY for parameter in parameters[2:]))
+
+        vertices = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+        indices = [0, 1, 2]
+        normals = [(0.0, 0.0, 1.0)] * 3
+        with self.assertWarnsRegex(
+            DeprecationWarning,
+            "Passing 'normals', 'uvs', 'compute_inertia' positionally",
+        ):
+            mesh = newton.Mesh(vertices, indices, normals, None, False)
+
+        self.assertEqual(mesh.normals.tolist(), [list(normal) for normal in normals])
+
     def test_opacity_parameters_preserve_existing_positional_order(self):
         """Append opacity parameters after every pre-existing public parameter."""
         import newton  # noqa: PLC0415
