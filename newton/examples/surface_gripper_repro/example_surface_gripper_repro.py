@@ -17,8 +17,8 @@
 # Example Surface Gripper Isaac Sim Repro
 #
 # Reproduction scene for the surface-gripper on a robot arm. Loads the robot arm from a USD stage
-# (Assets/fanuc_arm.usda) with a fixed base on a ground plane, then plays back a
-# recorded FANUC palletizer cycle (Assets/robot_recording.jsonl). Playback is time-accurate:
+# (assets/fanuc_arm.usda) with a fixed base on a ground plane, then plays back a
+# recorded FANUC palletizer cycle (assets/fanuc_recording.jsonl). Playback is time-accurate:
 # the six arm joint position targets are interpolated from the recorded timestamps at the current simulation
 # time (J3 coupled to J2, degrees -> radians) and updated before every physics sub-step, so the arm
 # follows the recording at its true speed. The recording's surface-gripper engagement and disengagement
@@ -48,16 +48,16 @@ from newton.examples.surface_gripper_repro.surface_gripper import (
     evaluate_seal_quality,
 )
 
-# Asset paths (global constants). All assets live in the Assets/ directory alongside this example.
-ASSETS = Path(__file__).parent / "Assets"
+# Asset paths (global constants). All assets live in the shared newton/examples/assets/ directory.
+ASSETS = Path(__file__).parent.parent / "assets"
 # robot arm USD
 ROBOT_USD = ASSETS / "fanuc_arm.usda"
 # ArticulationView pattern matching the robot arm's USD root prim label (used to find its joint_q offsets).
 ROBOT_ARTICULATION_PATTERN = "*Robot*"
 # Pick scene (2 static pallets + panel + 6 crates as box colliders at their waiting poses).
-PICK_SCENE_USD = ASSETS / "pick_scene.usda"
+PICK_SCENE_USD = ASSETS / "fanuc_pick_scene.usda"
 # recording of the robot arm motion and surface gripper engagement/disengagement.
-RECORDING_JSONL = ASSETS / "robot_recording.jsonl"
+RECORDING_JSONL = ASSETS / "fanuc_recording.jsonl"
 
 # rendered frames per second
 FPS = 60
