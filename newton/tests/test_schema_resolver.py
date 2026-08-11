@@ -445,6 +445,29 @@ class TestSchemaResolver(unittest.TestCase):
         unapplied = UsdPhysics.RevoluteJoint.Define(stage, "/unapplied").GetPrim()
         self.assertIsNone(resolver.get_value(unapplied, PrimType.JOINT, "armature"))
 
+    def test_registered_property_without_fallback_omits_compatibility_default(self):
+        """Omit compatibility defaults for registered properties without fallbacks."""
+
+        class RegisteredResolver(SchemaResolver):
+            name = "registered"
+            _schema_names: ClassVar = {PrimType.BODY: "PhysicsRigidBodyAPI"}
+            mapping: ClassVar = {
+                PrimType.BODY: {
+                    "simulation_owner": SchemaResolver.SchemaAttribute("physics:simulationOwner", 9.0),
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        prim = UsdGeom.Xform.Define(stage, "/body").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        resolver = SchemaResolverManager(
+            [RegisteredResolver()],
+            use_applied_schema_fallbacks=True,
+        )
+
+        self.assertEqual(resolver.get_value(prim, PrimType.BODY, "simulation_owner", default=4.0), 4.0)
+        self.assertIsNone(resolver.get_value(prim, PrimType.BODY, "simulation_owner"))
+
     def test_vendor_compatibility_defaults_survive_unregistered_schemas(self):
         """Retain vendor compatibility defaults when schema plugins are absent."""
 

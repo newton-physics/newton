@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 
 _MISSING_FALLBACK = object()
+_UNREGISTERED_SCHEMA = object()
 
 
 @dataclass(frozen=True)
@@ -369,9 +370,9 @@ class _SchemaResolution:
 
             if not value.blocked and schema_is_applied(resolver, key):
                 fallback = read_fallback(resolver, key)
-                if fallback is _MISSING_FALLBACK:
+                if fallback is _UNREGISTERED_SCHEMA:
                     compatibility_fallbacks.add(id(resolver))
-                else:
+                elif fallback is not _MISSING_FALLBACK:
                     return _ResolvedValue(fallback, resolver, False)
 
         if default is not None:
@@ -804,7 +805,7 @@ class SchemaResolverManager:
 
         fallbacks = self._registered_schema_fallbacks[cache_key]
         if fallbacks is None:
-            return _MISSING_FALLBACK
+            return _UNREGISTERED_SCHEMA
         value = resolver._get_fallback_with_reader(
             lambda name: fallbacks.get(name, _MISSING_FALLBACK),
             prim_type,
