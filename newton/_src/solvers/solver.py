@@ -248,7 +248,12 @@ class SolverBase:
             raise ValueError("pipeline and solver must use the same model")
         self.pipeline = pipeline
         """The solver-owned collision pipeline, or ``None`` when detection is driven externally."""
-        self._pipeline_contacts = pipeline.contacts() if pipeline is not None else None
+        if pipeline is not None:
+            self._pipeline_contacts = pipeline.contacts()
+        elif not hasattr(self, "_pipeline_contacts"):
+            # Preserve contact storage assigned by existing SolverBase subclasses
+            # before calling super().__init__().
+            self._pipeline_contacts = None
 
         self._collision_frequency: list[int] = [1, 1]
         self._collision_frequency_type: list[SolverBase.CollisionFrequencyType] = [
@@ -270,6 +275,11 @@ class SolverBase:
         this buffer externally, e.g. ``pipeline.collide(state, solver.contacts)``.
         """
         return self._pipeline_contacts
+
+    @contacts.setter
+    def contacts(self, value: Contacts | None) -> None:
+        """Set contact storage for compatibility with existing solver subclasses."""
+        self._pipeline_contacts = value
 
     @property
     def collision_frequency(self) -> list[int]:

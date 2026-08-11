@@ -76,6 +76,11 @@ def test_frequency_validation_and_ownership(test, device):
         def step(self, state_in, state_out, control, contacts, dt):
             pass
 
+    class _LegacyContactsSolver(_NonOwning):
+        def __init__(self, model, contacts):
+            self.contacts = contacts
+            super().__init__(model)
+
     # Pipeline passed to a solver that does not opt in.
     with test.assertRaises(ValueError):
         _NonOwning(model, pipeline=pipeline)
@@ -93,6 +98,11 @@ def test_frequency_validation_and_ownership(test, device):
     test.assertIsNone(plain.contacts)
     external = pipeline.contacts()
     test.assertIs(plain._resolve_step_contacts(external), external)
+
+    # A public SolverBase subclass may have used this attribute before the
+    # ownership API introduced the property on the base class.
+    legacy = _LegacyContactsSolver(model, external)
+    test.assertIs(legacy.contacts, external)
 
     # Active rigid slot without a pipeline.
     with test.assertRaises(ValueError):
@@ -237,6 +247,53 @@ def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
     test.assertTrue(np.isfinite(state_b.particle_q.numpy()).all())
 
 
+def test_vbd_pipeline_iterations_without_internal_bodies(test, device):
+    """Run scheduled pipeline passes for particles colliding with static shapes."""
+
+    class _TrackingSolver(SolverVBD):
+        def __init__(self, *args, **kwargs):
+            self.collision_passes = 0
+            super().__init__(*args, **kwargs)
+
+        def _run_rigid_collision(self, state):
+            self.collision_passes += 1
+            super()._run_rigid_collision(state)
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_particle(pos=(0.0, 0.0, 0.05), vel=(0.0, 0.0, 0.0), mass=0.1, radius=0.1)
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    test.assertEqual(model.body_count, 0)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1)
+    solver = _TrackingSolver(
+        model,
+        iterations=3,
+        pipeline=pipeline,
+        collision_frequency=[1, 1],
+        collision_frequency_type=[Frequency.ITERATIONS, Frequency.NONE],
+    )
+    state_a, state_b = model.state(), model.state()
+    solver.step(state_a, state_b, None, None, 1e-3)
+
+    # One pre-initialization pass plus passes before iterations 1 and 2.
+    test.assertEqual(solver.collision_passes, 3)
+    test.assertGreater(int(solver.contacts.soft_contact_count.numpy()[0]), 0)
+
+
+def test_vbd_external_rigid_iterate_view(test, device):
+    """Use externally integrated body poses for mid-iteration collision detection."""
+    model = _build_model(device)
+    solver = SolverVBD(model, integrate_with_external_rigid_solver=True)
+    state_in, state_out = model.state(), model.state()
+
+    view = solver._rigid_iterate_view(state_in, state_out)
+
+    test.assertIs(view.body_q, state_out.body_q)
+    test.assertIs(view.body_qd, state_out.body_qd)
+
+
 def _build_cloth_model(device):
     builder = newton.ModelBuilder()
     builder.add_cloth_grid(
@@ -371,6 +428,18 @@ add_function_test(
     TestSolverCollisionFrequency,
     "test_vbd_rigid_iterations_refreshes_body_particle_contacts",
     test_vbd_rigid_iterations_refreshes_body_particle_contacts,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_pipeline_iterations_without_internal_bodies",
+    test_vbd_pipeline_iterations_without_internal_bodies,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_external_rigid_iterate_view",
+    test_vbd_external_rigid_iterate_view,
     devices=devices,
 )
 add_function_test(

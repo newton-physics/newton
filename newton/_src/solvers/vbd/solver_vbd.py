@@ -1978,15 +1978,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self._rigid_mode_this_step == _Frequency.ITERATIONS
                 and iter_num > 0
                 and iter_num % self._rigid_freq_this_step == 0
-                and self.model.body_count > 0
-                and not self.integrate_with_external_rigid_solver
             ):
-                # Mid-solve rigid re-detection at the current iterate poses:
-                # rigid iterations update state_in.body_q in place and particle
-                # iterations update state_out.particle_q. In-flight contact
-                # lambdas are snapshotted first so the matched warm-start
-                # restore carries them onto the re-detected contact set (a
-                # cold restart when history/matching are disabled).
+                # Re-detect all pipeline contacts at the current iterate. This
+                # must also run without internally integrated bodies because
+                # the pipeline owns particle-shape contacts. In-flight rigid
+                # lambdas are snapshotted first so matching can carry them onto
+                # the refreshed contact set.
                 self._snapshot_rigid_contact_history(contacts)
                 self._run_rigid_collision(self._rigid_iterate_view(state_in, state_out))
                 self._refresh_rigid_contact_state(contacts, refresh=True)
@@ -3481,12 +3478,18 @@ class SolverVBD(SolverBase, CouplingInterface):
     def _rigid_iterate_view(self, state_in: State, state_out: State) -> State:
         """A State aliasing the mid-solve iterate arrays for collision detection.
 
-        No arrays are copied: rigid iterations update ``state_in.body_q`` in
-        place, and particle iterations update ``state_out.particle_q``.
+        No arrays are copied: internal rigid iterations update
+        ``state_in.body_q`` in place, externally integrated rigid bodies are
+        supplied through ``state_out``, and particle iterations update
+        ``state_out.particle_q``.
         """
         view = State()
-        view.body_q = state_in.body_q
-        view.body_qd = state_in.body_qd
+        if self.integrate_with_external_rigid_solver:
+            view.body_q = state_out.body_q
+            view.body_qd = state_out.body_qd
+        else:
+            view.body_q = state_in.body_q
+            view.body_qd = state_in.body_qd
         view.particle_q = state_out.particle_q if state_out.particle_q is not None else state_in.particle_q
         view.particle_qd = state_in.particle_qd
         return view
