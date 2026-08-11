@@ -383,6 +383,18 @@ def broadcast_arm_targets_kernel(
 
 
 @wp.kernel
+def broadcast_gripper_command_kernel(
+    gripper_command_engaged: wp.array[wp.bool],    # in/out: index 0 written by the playback, copied to 1..n-1
+    gripper_command_preparing: wp.array[wp.bool],  # in/out: same
+):
+    """Copy world 0's sampled engaged/preparing commands to every other gripper. The playback only
+    writes index 0, but every world replays the same recording. One thread per gripper >= 1."""
+    g = wp.tid() + 1  # dim = n_grippers - 1; gripper 0 is the source
+    gripper_command_engaged[g] = gripper_command_engaged[0]
+    gripper_command_preparing[g] = gripper_command_preparing[0]
+
+
+@wp.kernel
 def teleport_crate_kernel(
     gripper_curr_box_prev: wp.array[int],   # [grippers] box index before this sub-step
     gripper_curr_box_curr: wp.array[int],   # [grippers] box index after this sub-step
@@ -637,6 +649,8 @@ class Example:
         # and add a shared ground plane.
         builder = newton.ModelBuilder()
         builder.add_ground_plane()  # global (world -1): adds no body, so per-world bodies stay contiguous
+        # The ground plane does add a shape, so per-world shapes start after it.
+        world_shape_offset = len(builder.shape_body)
         for _ in range(NUM_WORLDS):
             builder.add_world(env)
         self.model = builder.finalize(device=device)  # same device the SDF meshes were built on
@@ -659,7 +673,7 @@ class Example:
         shape_mesh_id = np.zeros(self.model.shape_count, dtype=np.uint64)
         for w in range(NUM_WORLDS):
             for lb, mesh in self.sdf_meshes.items():
-                global_shape_id = w * env_shape_count + env_body_to_shape_id[lb]
+                global_shape_id = world_shape_offset + w * env_shape_count + env_body_to_shape_id[lb]
                 shape_mesh_id[global_shape_id] = mesh.id
         self.shape_mesh_id_wp = wp.array(shape_mesh_id, dtype=wp.uint64, device=self.model.device)
 
@@ -721,10 +735,10 @@ class Example:
         box_shape_ids = []
         for w in range(NUM_WORLDS):
             box_body_ids.append(w * env.body_count + panel_body_local_id)
-            box_shape_ids.append(w * env_shape_count + env_body_to_shape_id[panel_body_local_id])
+            box_shape_ids.append(world_shape_offset + w * env_shape_count + env_body_to_shape_id[panel_body_local_id])
             for i in range(len(crate_body_local_ids)):
                 box_body_ids.append(w * env.body_count + crate_body_local_ids[i])
-                box_shape_ids.append(w * env_shape_count + env_body_to_shape_id[crate_body_local_ids[i]])
+                box_shape_ids.append(world_shape_offset + w * env_shape_count + env_body_to_shape_id[crate_body_local_ids[i]])
         self.gripper_box_body_ids_wp = wp.array(box_body_ids, dtype=wp.int32, device=self.model.device)
         # Parallel to gripper_box_body_ids_wp: global shape ID of each box's collision shape.
         self.gripper_box_shape_ids_wp = wp.array(box_shape_ids, dtype=wp.int32, device=self.model.device)
@@ -733,7 +747,7 @@ class Example:
         pad_offsets = []
         for g in range(n_grippers + 1):
             pad_offsets.append(g * len(PAD_PRIMS))
-        self.pad_offsets_wp = wp.array(pad_offsets, dtype=wp.int32)
+        self.pad_offsets_wp = wp.array(pad_offsets, dtype=wp.int32, device=self.model.device)
 
         # The crates are teleported from their waiting pose to their grip pose.
         # This requires knowledge of the indices of the array elements in 
@@ -760,18 +774,22 @@ class Example:
         self.crate_joint_qd_start_wp = wp.array(crate_joint_qd_start.flatten(), dtype=wp.int32, device=self.model.device)
         self.crate_grip_q_wp = wp.array(crate_grip_q.flatten(), dtype=wp.float32, device=self.model.device)
 
-        # Cache the per-world offset and stride in joint_target_q for the arm, used by
-        # broadcast_arm_targets_kernel. ArticulationView finds the arm by its USD root prim label.
+        # Per-world offsets and strides for the arm's joint arrays. state.joint_q uses the coord
+        # layout; control.joint_target_q uses the dof layout (they differ whenever a world contains
+        # free joints, whose coord count (7) exceeds their dof count (6)).
         arm_view = ArticulationView(self.model, pattern=ROBOT_ARTICULATION_PATTERN)
         arm_coord_layout = arm_view.frequency_layouts[newton.Model.AttributeFrequency.JOINT_COORD]
-        self.arm_target_offset = arm_coord_layout.offset
-        self.arm_target_stride = arm_coord_layout.stride_between_worlds
+        arm_dof_layout = arm_view.frequency_layouts[newton.Model.AttributeFrequency.JOINT_DOF]
+        self.arm_coord_offset = arm_coord_layout.offset  # into state.joint_q (coord layout)
+        self.arm_coord_stride = arm_coord_layout.stride_between_worlds
+        self.arm_dof_offset = arm_dof_layout.offset      # into control.joint_target_q (dof layout)
+        self.arm_dof_stride = arm_dof_layout.stride_between_worlds
 
         # Start each world's arm at the first recorded pose.
         initial_arm_q = self.robot_arm_playback.rec_targets_wp.numpy()[0]  # drive target at t=0, the start pose
         joint_q = self.state_0.joint_q.numpy()
         for w in range(NUM_WORLDS):
-            start = self.arm_target_offset + w * self.arm_target_stride
+            start = self.arm_coord_offset + w * self.arm_coord_stride
             joint_q[start : start + NUM_ARM_DOFS] = initial_arm_q
         self.state_0.joint_q.assign(joint_q)
         self.state_0.joint_qd.zero_()
@@ -814,12 +832,20 @@ class Example:
                 self.example_state_curr.gripper_command_engaged_wp,   # out: engagement command (ro[0]) for world 0
                 self.example_state_curr.gripper_command_preparing_wp,  # out: preparing flag (ro[2]) for world 0
             )
-            # Fan world 0's arm targets out to the other worlds.
+            # The playback only fills world 0; fan its arm targets and gripper commands out to the rest.
             if NUM_WORLDS > 1:
                 wp.launch(
                     broadcast_arm_targets_kernel,
                     dim=(NUM_WORLDS - 1) * NUM_ARM_DOFS,
-                    inputs=[NUM_ARM_DOFS, self.arm_target_offset, self.arm_target_stride, self.control.joint_target_q],
+                    inputs=[NUM_ARM_DOFS, self.arm_dof_offset, self.arm_dof_stride, self.control.joint_target_q],
+                )
+                wp.launch(
+                    broadcast_gripper_command_kernel,
+                    dim=NUM_WORLDS - 1,
+                    inputs=[
+                        self.example_state_curr.gripper_command_engaged_wp,
+                        self.example_state_curr.gripper_command_preparing_wp,
+                    ],
                 )
             # Fan per-gripper engaged/preparing signals to all pads, with edge detection and box advance.
             update_engagement_signals(
