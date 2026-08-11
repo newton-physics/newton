@@ -31,7 +31,7 @@ _RIGID_CONTACT_DIFF_REPLACEMENTS = {
 def _warn_rigid_contact_diff_deprecated(name: str) -> None:
     replacement = _RIGID_CONTACT_DIFF_REPLACEMENTS[name]
     warnings.warn(
-        f"Contacts.{name} is deprecated and will be removed in a future release; {replacement}.",
+        f"Contacts.{name} is deprecated in Newton 1.6 and will be removed in a future release; {replacement}.",
         DeprecationWarning,
         stacklevel=3,
     )
@@ -491,7 +491,7 @@ class Contacts:
     def rigid_contact_diff_distance(self) -> wp.array[float] | None:
         """Differentiable signed distance [m].
 
-        .. deprecated:: 1.5
+        .. deprecated:: 1.6
             Allocate an output array and pass it as ``out_distance`` to
             :func:`newton.eval_rigid_contact_kinematics`.
         """
@@ -507,7 +507,7 @@ class Contacts:
     def rigid_contact_diff_normal(self) -> wp.array[wp.vec3] | None:
         """Frozen world-space contact normal.
 
-        .. deprecated:: 1.5
+        .. deprecated:: 1.6
             Use :attr:`rigid_contact_normal`, which contains the same values.
         """
         _warn_rigid_contact_diff_deprecated("rigid_contact_diff_normal")
@@ -526,7 +526,7 @@ class Contacts:
     def rigid_contact_diff_point0_world(self) -> wp.array[wp.vec3] | None:
         """Differentiable world-space contact point on shape 0 [m].
 
-        .. deprecated:: 1.5
+        .. deprecated:: 1.6
             Allocate an output array and pass it as ``out_point0_world`` to
             :func:`newton.eval_rigid_contact_kinematics`.
         """
@@ -542,7 +542,7 @@ class Contacts:
     def rigid_contact_diff_point1_world(self) -> wp.array[wp.vec3] | None:
         """Differentiable world-space contact point on shape 1 [m].
 
-        .. deprecated:: 1.5
+        .. deprecated:: 1.6
             Allocate an output array and pass it as ``out_point1_world`` to
             :func:`newton.eval_rigid_contact_kinematics`.
         """

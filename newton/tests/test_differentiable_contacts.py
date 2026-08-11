@@ -131,7 +131,7 @@ def test_legacy_rigid_contact_kinematics_deprecated(test, device):
         warnings.simplefilter("error", DeprecationWarning)
         pipeline.collide(model.state(), contacts)
 
-    with test.assertWarnsRegex(DeprecationWarning, "out_distance"):
+    with test.assertWarnsRegex(DeprecationWarning, r"deprecated in Newton 1\.6.*out_distance"):
         distance = contacts.rigid_contact_diff_distance
         test.assertTrue(np.any(distance.numpy()[: contacts.rigid_contact_count.numpy()[0]] < 0.0))
     with test.assertWarnsRegex(DeprecationWarning, "rigid_contact_normal"):

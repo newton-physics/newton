@@ -1676,9 +1676,10 @@ helper and gradients do not flow through its direction.
     })
     grad_body_q = tape.gradients[state.body_q]
 
-The ``Contacts.rigid_contact_diff_*`` attributes are deprecated compatibility
-outputs. The distance and point arrays remain allocated and populated when the
-collision pipeline has ``requires_grad=True`` during the deprecation window.
+Starting in Newton 1.6, the ``Contacts.rigid_contact_diff_*`` attributes are
+deprecated compatibility outputs. The distance and point arrays remain allocated
+and populated when the collision pipeline has ``requires_grad=True`` during the
+deprecation window.
 Allocate only the outputs you need and call
 :func:`newton.eval_rigid_contact_kinematics` explicitly to prepare
 for their removal. The deprecated ``rigid_contact_diff_normal`` attribute is
