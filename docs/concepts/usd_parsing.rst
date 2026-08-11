@@ -482,7 +482,7 @@ then follows four stages:
 1. **Authored Value**: Read the current resolver's authored property value.
 2. **Registered Schema Fallback**: If that resolver's schema is applied and the
    property is unauthored and unblocked, read its fallback from the composed prim
-   definition in :class:`Usd.SchemaRegistry`. Repeat stages 1 and 2 for each
+   definition in ``Usd.SchemaRegistry``. Repeat stages 1 and 2 for each
    resolver in priority order.
 3. **Importer Default**: Use the property-specific importer fallback after no
    resolver supplies an authored value or registered schema fallback.
@@ -491,7 +491,7 @@ then follows four stages:
    default. Unregistered schemas do not own fallbacks.
 
 The default hierarchy remains in place during the compatibility period. Newton
-emits one :class:`DeprecationWarning` when registered schema ownership would
+emits one :exc:`DeprecationWarning` when registered schema ownership would
 select a different value or source; the warning lists the affected properties
 and prim paths. Author the intended property values to preserve them across the
 transition, or enable ``use_applied_schema_fallbacks`` to adopt the future
