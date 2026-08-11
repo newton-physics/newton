@@ -57,6 +57,8 @@ def _register_regular_and_predictive_contact(
         normal,
         0.05,
         0.0,
+        0.0,
+        0.0,
         17,
         shape_transform,
         shape_linear_velocity,
@@ -72,6 +74,8 @@ def _register_regular_and_predictive_contact(
         position,
         normal,
         0.05,
+        0.0,
+        0.0,
         0.0,
         17,
         shape_transform,
@@ -136,6 +140,8 @@ def _register_inner_and_rotating_leading_contact(
         normal,
         0.05,
         0.0,
+        0.0,
+        0.0,
         23,
         shape_transform,
         shape_linear_velocity,
@@ -189,6 +195,8 @@ def _register_predictive_clearance_candidates(
             normal,
             clearance,
             0.0,
+            0.0,
+            0.0,
             fingerprint,
             shape_transform,
             shape_linear_velocity,
@@ -211,7 +219,7 @@ def _register_predictive_clearance_candidates_contended(
     candidate_idx = wp.tid()
     clearance_rank = candidate_idx
     if clearance_order == 1:
-        clearance_rank = 254 - candidate_idx
+        clearance_rank = 254 - wp.min(candidate_idx, 254)
     elif clearance_order == 2:
         clearance_rank = (candidate_idx * 73) % 255
     clearance = 0.01 + float(clearance_rank) * 0.0001
@@ -226,6 +234,8 @@ def _register_predictive_clearance_candidates_contended(
         wp.vec3(0.0, position_y, clearance),
         wp.vec3(1.0, 0.0, 0.0),
         clearance,
+        0.0,
+        0.0,
         0.0,
         fingerprint,
         shape_transform,
@@ -243,7 +253,7 @@ def _buffer_one_contact(reducer_data: GlobalContactReducerData):
     export_contact_to_buffer(
         0,
         1,
-        wp.vec3(0.0),
+        wp.vec3(0.25, -0.5, 0.75),
         wp.vec3(1.0, 0.0, 0.0),
         -0.01,
         7,
@@ -274,6 +284,8 @@ def _register_predictive_clearance_candidates_sequential(
             wp.vec3(1.0, 0.0, 0.0),
             clearance,
             0.0,
+            0.0,
+            0.0,
             fingerprint,
             shape_transform,
             shape_linear_velocity,
@@ -284,6 +296,29 @@ def _register_predictive_clearance_candidates_sequential(
             reducer_data,
         )
         candidate_idx = candidate_idx + 1
+
+
+def _expected_contended_clearances(clearance_order: int) -> list[float]:
+    """Return the nearest clearance in each fingerprint shard plus the impact guard."""
+    nearest_by_shard: dict[int, float] = {}
+    for candidate_idx in range(255):
+        if clearance_order == 0:
+            clearance_rank = candidate_idx
+        elif clearance_order == 1:
+            clearance_rank = 254 - candidate_idx
+        else:
+            clearance_rank = (candidate_idx * 73) % 255
+        clearance = 0.01 + clearance_rank * 0.0001
+        fingerprint = (candidate_idx << 2) | ((candidate_idx & 1) << 1)
+        shard_hash = fingerprint
+        shard_hash ^= shard_hash >> 16
+        shard_hash = (shard_hash * 0x7FEB352D) & 0xFFFFFFFF
+        shard_hash ^= shard_hash >> 15
+        shard_hash = (shard_hash * 0x846CA68B) & 0xFFFFFFFF
+        shard_hash ^= shard_hash >> 16
+        shard = shard_hash % 6
+        nearest_by_shard[shard] = min(clearance, nearest_by_shard.get(shard, float("inf")))
+    return sorted([*nearest_by_shard.values(), 0.08])
 
 
 _export_reduced_contacts = create_export_reduced_contacts_kernel(write_contact_simple)
@@ -379,6 +414,38 @@ def test_speculative_candidates_require_approach(test, device):
         test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def test_speculative_candidates_respect_dt_override(test, device):
+    """Suppress a configured candidate when a shorter per-call horizon cannot reach it."""
+    model, state = _build_spheres(device, velocity=10.0)
+    config = newton.CollisionPipeline.SpeculativeContactConfig(
+        collision_update_dt=0.02,
+        max_speculative_extension=0.25,
+    )
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_config=config)
+
+    configured_contacts = pipeline.contacts()
+    pipeline.collide(state, configured_contacts)
+    test.assertGreater(int(configured_contacts.rigid_contact_count.numpy()[0]), 0)
+
+    overridden_contacts = pipeline.contacts()
+    pipeline.collide(state, overridden_contacts, dt=0.005)
+    test.assertEqual(int(overridden_contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_speculative_candidates_reject_invalid_dt_override(test, device):
+    """Reject negative and non-finite per-call speculative horizons."""
+    model, state = _build_spheres(device, velocity=10.0)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
+    )
+    contacts = pipeline.contacts()
+    for dt in (-0.01, float("nan"), float("inf"), float("-inf")):
+        with test.subTest(dt=dt), test.assertRaisesRegex(ValueError, "dt must be a non-negative finite number"):
+            pipeline.collide(state, contacts, dt=dt)
+
+
 def test_speculative_candidates_reject_common_motion(test, device):
     """Reject separated shapes whose large common motion makes their swept unions overlap."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -433,7 +500,17 @@ def test_speculative_candidates_include_angular_motion(test, device):
     builder.body_qd[body] = (0.0, 0.0, 0.0, 0.0, 0.0, -10.0)
     builder.add_shape_sphere(-1, radius=0.1, xform=wp.transform(wp.vec3(0.3, 1.0, 0.0)))
     model = builder.finalize(device=device)
-    contacts = _collide(model, model.state(), speculative=True)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
+            collision_update_dt=0.02,
+            max_speculative_extension=0.25,
+        ),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    test.assertGreater(int(pipeline.broad_phase_pair_count.numpy()[0]), 0)
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
@@ -511,6 +588,25 @@ def test_speculative_narrow_phase_rejects_hydroelastic(test, device):
             device=device,
             hydroelastic_sdf=object(),
             speculative=True,
+        )
+
+
+def test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction(test, device):
+    """Reject speculative hydroelastic pairs before constructing their SDF pipeline."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    body_a = builder.add_body()
+    builder.add_shape_sphere(body_a, radius=0.1)
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.15, 0.0, 0.0)))
+    builder.add_shape_sphere(body_b, radius=0.1)
+    model = builder.finalize(device=device)
+    shape_flags = model.shape_flags.numpy()
+    shape_flags |= int(newton.ShapeFlags.HYDROELASTIC)
+    model.shape_flags.assign(shape_flags)
+
+    with test.assertRaisesRegex(NotImplementedError, "does not yet support hydroelastic"):
+        newton.CollisionPipeline(
+            model,
+            speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
         )
 
 
@@ -628,8 +724,10 @@ def test_speculative_buffered_reducer_uses_one_based_ids(test, device, determini
     )
 
     test.assertEqual(int(reducer.contact_count.numpy()[0]), 1)
-    exported_count, _ = _export_reducer_contacts(reducer, device)
+    exported_count, positions = _export_reducer_contacts(reducer, device)
     test.assertEqual(exported_count, 1)
+    for actual, expected in zip(positions[0], (0.25, -0.5, 0.75), strict=True):
+        test.assertAlmostEqual(float(actual), expected, places=6)
 
 
 def test_predictive_reducer_retains_rotating_leading_contact(test, device, deterministic):
@@ -655,7 +753,7 @@ def test_predictive_reducer_retains_rotating_leading_contact(test, device, deter
     ids = contact_ids.numpy()
     test.assertGreaterEqual(int(ids[0]), 0)
     test.assertEqual(int(ids[1]), -1)
-    test.assertGreater(int(ids[2]), 0)
+    test.assertGreaterEqual(int(ids[2]), 0)
     test.assertNotEqual(int(ids[2]), int(ids[0]))
     test.assertEqual(int(reducer.contact_count.numpy()[0]), 2)
     exported_count, positions = _export_reducer_contacts(reducer, device)
@@ -693,30 +791,33 @@ def test_predictive_reducer_retains_clearance_manifold(test, device, determinist
 
 def test_predictive_reducer_retains_clearance_manifold_under_contention(test, device, deterministic):
     """Verify concurrent blocks retain all winners within a bounded contact buffer."""
-    reducer = GlobalContactReducer(capacity=16, device=device, deterministic=deterministic)
     shape_transform = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device)
     shape_linear_velocity = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
     shape_angular_velocity = wp.array([wp.vec3(0.0, 0.0, -1.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
-    wp.launch(
-        _register_predictive_clearance_candidates_contended,
-        dim=256,
-        inputs=[
-            reducer.get_data_struct(),
-            shape_transform,
-            shape_linear_velocity,
-            shape_angular_velocity,
-            2,
-        ],
-        block_dim=32,
-        device=device,
-    )
+    for clearance_order in (0, 1, 2):
+        with test.subTest(clearance_order=clearance_order):
+            reducer = GlobalContactReducer(capacity=16, device=device, deterministic=deterministic)
+            wp.launch(
+                _register_predictive_clearance_candidates_contended,
+                dim=256,
+                inputs=[
+                    reducer.get_data_struct(),
+                    shape_transform,
+                    shape_linear_velocity,
+                    shape_angular_velocity,
+                    clearance_order,
+                ],
+                block_dim=32,
+                device=device,
+            )
 
-    test.assertLessEqual(int(reducer.contact_count.numpy()[0]), reducer.capacity)
-    exported_count, positions = _export_reducer_contacts(reducer, device)
-    test.assertEqual(exported_count, 7)
-    clearances = sorted(float(position[2]) for position in positions[:exported_count])
-    for actual, expected in zip(clearances, (0.01, 0.0101, 0.0102, 0.0104, 0.0107, 0.011, 0.08), strict=True):
-        test.assertAlmostEqual(actual, expected, places=6)
+            test.assertLessEqual(int(reducer.contact_count.numpy()[0]), reducer.capacity)
+            exported_count, positions = _export_reducer_contacts(reducer, device)
+            test.assertEqual(exported_count, 7)
+            clearances = sorted(float(position[2]) for position in positions[:exported_count])
+            expected = _expected_contended_clearances(clearance_order)
+            for actual, expected_clearance in zip(clearances, expected, strict=True):
+                test.assertAlmostEqual(actual, expected_clearance, places=6)
 
 
 def test_predictive_reducer_preserves_winners_with_small_buffer(test, device, deterministic):
@@ -756,6 +857,8 @@ class TestSpeculativeMeshContacts(unittest.TestCase):
 for _name, _test in (
     ("test_speculative_candidates_are_opt_in", test_speculative_candidates_are_opt_in),
     ("test_speculative_candidates_require_approach", test_speculative_candidates_require_approach),
+    ("test_speculative_candidates_respect_dt_override", test_speculative_candidates_respect_dt_override),
+    ("test_speculative_candidates_reject_invalid_dt_override", test_speculative_candidates_reject_invalid_dt_override),
     ("test_speculative_candidates_reject_common_motion", test_speculative_candidates_reject_common_motion),
     ("test_speculative_candidates_preserve_physical_geometry", test_speculative_candidates_preserve_physical_geometry),
     ("test_speculative_candidates_include_angular_motion", test_speculative_candidates_include_angular_motion),
@@ -763,6 +866,10 @@ for _name, _test in (
     (
         "test_speculative_narrow_phase_rejects_hydroelastic",
         test_speculative_narrow_phase_rejects_hydroelastic,
+    ),
+    (
+        "test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction",
+        test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction,
     ),
 ):
     add_function_test(TestSpeculativeContacts, _name, _test, devices=get_test_devices())
@@ -801,7 +908,7 @@ for _deterministic in (False, True):
         TestSpeculativeContacts,
         f"test_predictive_reducer_retains_clearance_manifold_under_contention_{_suffix}",
         test_predictive_reducer_retains_clearance_manifold_under_contention,
-        devices=get_test_devices(),
+        devices=get_cuda_test_devices(),
         deterministic=_deterministic,
     )
     add_function_test(

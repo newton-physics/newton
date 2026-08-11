@@ -175,6 +175,23 @@ def contact_passes_gap_check(
 
 
 @wp.func
+def prepare_speculative_contact(contact_data: ContactData) -> tuple[wp.vec3, wp.vec3, wp.vec3, float]:
+    """Return the normalized contact geometry used for speculative admission and storage."""
+    normal = wp.normalize(contact_data.contact_normal_a_to_b)
+    point_a = contact_data.contact_point_center - normal * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
+    )
+    point_b = contact_data.contact_point_center + normal * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
+    )
+    total_separation_needed = (
+        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
+    )
+    separation = wp.dot(point_b - point_a, normal) - total_separation_needed
+    return normal, point_a, point_b, separation
+
+
+@wp.func
 def contact_passes_speculative_gap_check(
     contact_data: ContactData,
     shape_transform: wp.array[wp.transform],
@@ -184,17 +201,7 @@ def contact_passes_speculative_gap_check(
     max_speculative_extension: float,
 ) -> bool:
     """Return whether a contact is present now or predicted before the next collision pass."""
-    total_separation_needed = (
-        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
-    )
-    normal = wp.normalize(contact_data.contact_normal_a_to_b)
-    point_a = contact_data.contact_point_center - normal * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
-    )
-    point_b = contact_data.contact_point_center + normal * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
-    )
-    physical_separation = wp.dot(point_b - point_a, normal) - total_separation_needed
+    normal, point_a, point_b, physical_separation = prepare_speculative_contact(contact_data)
     if physical_separation <= contact_data.gap_sum:
         return True
     return (

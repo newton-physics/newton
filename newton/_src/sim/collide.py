@@ -14,7 +14,12 @@ from ..core.reset import normalize_reset_world_mask
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
-from ..geometry.contact_data import ContactData, contact_passes_speculative_gap_check, make_contact_sort_key
+from ..geometry.contact_data import (
+    ContactData,
+    contact_passes_speculative_gap_check,
+    make_contact_sort_key,
+    prepare_speculative_contact,
+)
 from ..geometry.contact_match import ContactMatcher
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
@@ -181,13 +186,7 @@ def write_contact_speculative(
 ):
     """Write a present or exactly predicted contact to the output arrays."""
     contact_data.gap_sum = writer_data.shape_gap[contact_data.shape_a] + writer_data.shape_gap[contact_data.shape_b]
-    normal = wp.normalize(contact_data.contact_normal_a_to_b)
-    point_a_world = contact_data.contact_point_center - normal * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
-    )
-    point_b_world = contact_data.contact_point_center + normal * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
-    )
+    normal, point_a_world, point_b_world, _separation = prepare_speculative_contact(contact_data)
 
     index = output_index
     if index < 0:
@@ -354,7 +353,11 @@ def compute_shape_velocities(
     shape_aabb_lower: wp.array[wp.vec3],
     shape_aabb_upper: wp.array[wp.vec3],
 ):
-    """Compute shape motion and expand its AABB over the prediction horizon."""
+    """Compute shape motion and expand its AABB over the prediction horizon.
+
+    ``angular_speed_bound`` is the resulting conservative linear speed [m/s]
+    at the shape bound, not an angular speed [rad/s].
+    """
     shape_id = wp.tid()
     body_id = shape_body[shape_id]
     if body_id == -1:
@@ -1179,6 +1182,15 @@ class CollisionPipeline:
             else:
                 raise ValueError(f"Unsupported broad phase mode: {self.broad_phase_mode}")
 
+            if self._speculative_enabled:
+                shape_flags_np = model.shape_flags.numpy()
+                is_hydroelastic = (shape_flags_np & int(ShapeFlags.HYDROELASTIC)) != 0
+                shape_pairs_np = model.shape_contact_pairs.numpy().reshape(-1, 2)
+                if np.any(is_hydroelastic[shape_pairs_np[:, 0]] & is_hydroelastic[shape_pairs_np[:, 1]]):
+                    raise NotImplementedError(
+                        "Speculative contact generation does not yet support hydroelastic SDF contacts"
+                    )
+
             # Initialize SDF hydroelastic (returns None if no hydroelastic shape pairs in the model)
             hydroelastic_sdf = HydroelasticSDF._from_model(
                 model,
@@ -1295,7 +1307,7 @@ class CollisionPipeline:
             else:
                 self._shape_linear_velocity = wp.empty(0, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.empty(0, dtype=wp.vec3, device=device)
-                self._shape_search_gap = model.shape_gap
+                self._shape_search_gap = wp.empty(0, dtype=wp.float32, device=device)
                 self._shape_sweep = wp.empty(0, dtype=wp.vec3, device=device)
 
         if (
@@ -1531,12 +1543,12 @@ class CollisionPipeline:
                 raise ValueError(f"dt must be a non-negative finite number, got {collision_update_dt!r}")
             max_speculative_extension = config.max_speculative_extension
             speculative_active = collision_update_dt > 0.0 and max_speculative_extension > 0.0
-            shape_search_gap = self._shape_search_gap if speculative_active else model.shape_gap
+            search_gap = self._shape_search_gap if speculative_active else model.shape_gap
         else:
             collision_update_dt = 0.0
             max_speculative_extension = 0.0
             speculative_active = False
-            shape_search_gap = model.shape_gap
+            search_gap = model.shape_gap
 
         # Rigid contact detection -- broad phase + narrow phase.
         # These kernels hardcode record_tape=False internally so they are
@@ -1708,7 +1720,7 @@ class CollisionPipeline:
             shape_mesh_properties=model._shape_mesh_properties,
             shape_sdf_index=model._shape_sdf_index,
             texture_sdf_data=model._texture_sdf_data,
-            shape_gap=shape_search_gap,
+            shape_gap=search_gap,
             shape_base_gap=model.shape_gap,
             shape_collision_radius=model.shape_collision_radius,
             shape_flags=model.shape_flags,

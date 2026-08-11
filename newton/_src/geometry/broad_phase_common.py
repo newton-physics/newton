@@ -60,7 +60,7 @@ def check_aabb_overlap_moving(
     lower_box2 = box_lower[shape2]
     upper_box2 = box_upper[shape2]
     enter = float(0.0)
-    exit = float(1.0)
+    exit_time = float(1.0)
     for axis in range(3):
         lower1 = lower_box1[axis]
         upper1 = upper_box1[axis]
@@ -78,8 +78,8 @@ def check_aabb_overlap_moving(
                 axis_enter = axis_exit
                 axis_exit = tmp
             enter = wp.max(enter, axis_enter)
-            exit = wp.min(exit, axis_exit)
-            if enter > exit:
+            exit_time = wp.min(exit_time, axis_exit)
+            if enter > exit_time:
                 return False
     return True
 

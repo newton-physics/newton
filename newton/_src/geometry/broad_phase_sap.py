@@ -196,7 +196,7 @@ def _sap_project_kernel(
     shape_id = world_index_map[world_slice_start + local_shape_id]
 
     # Project AABB onto direction
-    range = _sap_project_aabb(
+    projection_range = _sap_project_aabb(
         shape_id,
         direction,
         shape_bounding_box_lower,
@@ -206,8 +206,8 @@ def _sap_project_kernel(
         shape_sweep_projection_limit,
     )
 
-    sap_projection_lower_out[idx] = range[0]
-    sap_projection_upper_out[idx] = range[1]
+    sap_projection_lower_out[idx] = projection_range[0]
+    sap_projection_upper_out[idx] = projection_range[1]
     sap_sort_index_out[idx] = local_shape_id
 
 

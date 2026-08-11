@@ -461,7 +461,7 @@ def get_edge_from_mesh(
 
 
 @wp.func
-def get_edge_from_mesh_precomputed(
+def get_mesh_edge_precomputed(
     mesh_edge_halves: wp.array[wp.vec4],
     edge_range: wp.vec2i,
     X_mesh_ws: wp.transform,
@@ -480,7 +480,7 @@ def get_edge_from_mesh_precomputed(
     return center - half, center + half, int(packed_half[3])
 
 
-def _create_get_edge_from_mesh_func(use_precomputed_edge_data: bool):
+def _create_mesh_edge_accessor_func(use_precomputed_edge_data: bool):
     """Create a mesh-edge accessor with its storage path compiled in."""
 
     @wp.func
@@ -496,7 +496,7 @@ def _create_get_edge_from_mesh_func(use_precomputed_edge_data: bool):
         center_scaled: wp.vec3,
     ) -> tuple[wp.vec3, wp.vec3, int]:
         if wp.static(use_precomputed_edge_data):
-            return get_edge_from_mesh_precomputed(mesh_edge_halves, edge_range, X_mesh_ws, edge_idx, center_scaled)
+            return get_mesh_edge_precomputed(mesh_edge_halves, edge_range, X_mesh_ws, edge_idx, center_scaled)
         v0, v1 = get_edge_from_mesh(mesh_id, mesh_edge_indices, edge_range, mesh_scale, X_mesh_ws, edge_idx)
         return v0, v1, 0
 
@@ -1075,7 +1075,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     if use_identity_sdf_scale and not use_texture_sdf_only:
         raise ValueError("identity SDF scale specialization requires texture-only SDFs")
     do_edge_sdf_collision = _create_sdf_contact_funcs(enable_heightfields, use_texture_sdf_only)
-    get_edge_from_mesh_specialized = _create_get_edge_from_mesh_func(use_precomputed_edge_data)
+    get_mesh_edge_specialized = _create_mesh_edge_accessor_func(use_precomputed_edge_data)
     get_mesh_edge_bounding_sphere_specialized = _create_get_mesh_edge_bounding_sphere_func(use_precomputed_edge_data)
 
     # Derive a stable module name from the factory arguments so that
@@ -1373,7 +1373,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         my_edge_idx,
                                     )
                                 else:
-                                    v0s, v1s, corner_ownership = get_edge_from_mesh_specialized(
+                                    v0s, v1s, corner_ownership = get_mesh_edge_specialized(
                                         mesh_id_tri,
                                         mesh_edge_indices,
                                         mesh_edge_centers,
@@ -1385,7 +1385,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         cached_center_scaled,
                                     )
                             else:
-                                v0s, v1s, corner_ownership = get_edge_from_mesh_specialized(
+                                v0s, v1s, corner_ownership = get_mesh_edge_specialized(
                                     mesh_id_tri,
                                     mesh_edge_indices,
                                     mesh_edge_centers,
@@ -1823,7 +1823,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         my_edge_idx,
                                     )
                                 else:
-                                    v0s, v1s, corner_ownership = get_edge_from_mesh_specialized(
+                                    v0s, v1s, corner_ownership = get_mesh_edge_specialized(
                                         mesh_id_tri,
                                         mesh_edge_indices,
                                         mesh_edge_centers,
@@ -1835,7 +1835,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         cached_center_scaled,
                                     )
                             else:
-                                v0s, v1s, corner_ownership = get_edge_from_mesh_specialized(
+                                v0s, v1s, corner_ownership = get_mesh_edge_specialized(
                                     mesh_id_tri,
                                     mesh_edge_indices,
                                     mesh_edge_centers,
@@ -1986,6 +1986,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             contact_normal,
                                             dist,
                                             margin_sum,
+                                            0.0,
+                                            0.0,
                                             (my_edge_idx << 2) | (mode << 1),
                                             shape_transform,
                                             shape_linear_velocity,

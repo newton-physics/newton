@@ -99,6 +99,15 @@ PAIRS_PER_KEY = VALUES_PER_KEY * (VALUES_PER_KEY - 1) // 2
 EXPORT_REDUCED_CONTACTS_BLOCK_DIM = 32
 EXPORT_REDUCED_CONTACTS_THREAD_BUDGET_MULTIPLIER = 4
 
+
+@wp.func_native("""
+#if defined(__CUDA_ARCH__)
+__syncthreads();
+#endif
+""")
+def _block_barrier(): ...
+
+
 # Open-addressed linear probing gets expensive at high load and failed inserts
 # scan the whole table.
 HASHTABLE_WARN_LOAD_PERCENT = 80
@@ -235,6 +244,19 @@ def reduction_try_update_slot(
     if values[value_idx] >= value:
         return False
     return wp.atomic_max(values, value_idx, value) < value
+
+
+@wp.func
+def reduction_rollback_slot(
+    entry_idx: int,
+    slot_id: int,
+    provisional_value: wp.uint64,
+    values: wp.array[wp.uint64],
+    capacity: int,
+):
+    """Clear a failed provisional claim without overwriting a newer winner."""
+    value_idx = slot_id * capacity + entry_idx
+    wp.atomic_cas(values, value_idx, provisional_value, wp.uint64(0))
 
 
 @wp.func
@@ -1540,6 +1562,29 @@ def export_and_reduce_contact_centered_two_spatial_depths(
         return -1
     contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, fingerprint, reducer_data)
     if contact_id < 0:
+        if entry_idx >= 0:
+            for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
+                if (won_mask & (1 << dir_i)) != 0:
+                    dir_2d = get_spatial_direction_2d(dir_i)
+                    score = wp.dot(pos_2d, dir_2d)
+                    provisional_value = make_spatial_contact_value(
+                        score, use_inner, fingerprint, 0, reducer_data.deterministic
+                    )
+                    reduction_rollback_slot(entry_idx, dir_i, provisional_value, reducer_data.ht_values, ht_capacity)
+            if use_inner and (won_mask & (1 << wp.static(NUM_SPATIAL_DIRECTIONS))) != 0:
+                provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
+                reduction_rollback_slot(
+                    entry_idx,
+                    wp.static(NUM_SPATIAL_DIRECTIONS),
+                    provisional_value,
+                    reducer_data.ht_values,
+                    ht_capacity,
+                )
+        if use_inner and voxel_entry_idx >= 0 and (won_mask & (1 << wp.static(NUM_SPATIAL_DIRECTIONS + 1))) != 0:
+            provisional_value = make_contact_value(-depth, fingerprint, 0, reducer_data.deterministic)
+            reduction_rollback_slot(
+                voxel_entry_idx, voxel_local_slot, provisional_value, reducer_data.ht_values, ht_capacity
+            )
         return -1
 
     if use_inner and entry_idx >= 0:
@@ -1580,6 +1625,8 @@ def export_and_reduce_predictive_contact(
     normal: wp.vec3,
     depth: float,
     surface_offset_sum: float,
+    radius_eff_a: float,
+    radius_eff_b: float,
     fingerprint: int,
     shape_transform: wp.array[wp.transform],
     shape_linear_velocity: wp.array[wp.vec3],
@@ -1589,14 +1636,34 @@ def export_and_reduce_predictive_contact(
     existing_contact_id: int,
     reducer_data: GlobalContactReducerData,
 ) -> int:
-    """Register an exact predictive candidate in a bounded shape-pair manifold."""
+    """Register an exact predictive candidate in a bounded shape-pair manifold.
+
+    Args:
+        shape_a: First shape index.
+        shape_b: Second shape index.
+        position: Contact midpoint in world space [m].
+        normal: Contact normal from the first shape to the second.
+        depth: Centerline contact distance [m].
+        surface_offset_sum: Combined effective radii and collision margins [m].
+        radius_eff_a: Effective radius of the first shape [m].
+        radius_eff_b: Effective radius of the second shape [m].
+        fingerprint: Deterministic contact identifier.
+        shape_transform: World-space shape transforms.
+        shape_linear_velocity: Shape-origin linear velocities [m/s].
+        shape_angular_velocity: Shape angular velocities [rad/s].
+        collision_update_dt: Collision prediction horizon [s].
+        max_speculative_extension: Maximum predictive clearance [m].
+        existing_contact_id: ``-1`` requests a provisional claim; a positive one-based ID updates an existing
+            buffered contact.
+        reducer_data: Global contact-reducer storage.
+    """
     clearance = depth - surface_offset_sum
     if clearance <= 0.0 or clearance > max_speculative_extension:
         return -1
 
     contact_normal = wp.normalize(normal)
-    point_a = position - contact_normal * (0.5 * depth)
-    point_b = position + contact_normal * (0.5 * depth)
+    point_a = position - contact_normal * (0.5 * depth + radius_eff_a)
+    point_b = position + contact_normal * (0.5 * depth + radius_eff_b)
     closing_speed = compute_contact_approach_speed(
         shape_a,
         shape_b,
@@ -1671,6 +1738,22 @@ def export_and_reduce_predictive_contact(
 
     contact_id = export_contact_to_buffer(shape_a, shape_b, position, contact_normal, depth, fingerprint, reducer_data)
     if contact_id < 0:
+        if clearance_won:
+            reduction_rollback_slot(
+                entry_idx,
+                clearance_slot,
+                provisional_clearance_value,
+                reducer_data.ht_values,
+                ht_capacity,
+            )
+        if impact_time_won:
+            reduction_rollback_slot(
+                entry_idx,
+                wp.static(NUM_SPATIAL_DIRECTIONS),
+                provisional_impact_time_value,
+                reducer_data.ht_values,
+                ht_capacity,
+            )
         return -1
 
     retained = bool(False)
@@ -1782,6 +1865,8 @@ def reduce_buffered_contacts_speculative_kernel(
                 decode_oct(reducer_data.normal[contact_id]),
                 pd[3],
                 surface_offset_sum,
+                radius_eff_a,
+                radius_eff_b,
                 reducer_data.contact_fingerprints[contact_id],
                 shape_transform,
                 shape_linear_velocity,
@@ -2014,7 +2099,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
                     writer_func(contact_data, writer_data, -1)
 
             # Keep lanes together before the shared tile is reused.
-            _sync = wp.tile_extract(duplicate_bits, lane)
+            _block_barrier()
 
     return export_reduced_contacts_kernel
 

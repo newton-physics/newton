@@ -38,6 +38,7 @@ from ..geometry.contact_data import (
     contact_passes_gap_check,
     contact_passes_speculative_gap_check,
     make_contact_sort_key,
+    prepare_speculative_contact,
 )
 from ..geometry.contact_reduction_global import (
     EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
@@ -169,17 +170,7 @@ def _write_contact_simple_speculative(
 ):
     """Write a present or exactly predicted contact through the simple API."""
     contact_data.gap_sum = writer_data.shape_gap[contact_data.shape_a] + writer_data.shape_gap[contact_data.shape_b]
-    normal = wp.normalize(contact_data.contact_normal_a_to_b)
-    point_a_world = contact_data.contact_point_center - normal * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
-    )
-    point_b_world = contact_data.contact_point_center + normal * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
-    )
-    total_separation_needed = (
-        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
-    )
-    separation = wp.dot(point_b_world - point_a_world, normal) - total_separation_needed
+    normal, _point_a_world, _point_b_world, separation = prepare_speculative_contact(contact_data)
 
     index = output_index
     if index < 0:
@@ -213,6 +204,30 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
         A warp kernel for primitive collision detection
     """
     _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}"
+
+    @wp.func(module=_module)
+    def _admit(
+        contact_data: ContactData,
+        position: wp.vec3,
+        distance: float,
+        shape_transform: wp.array[wp.transform],
+        shape_linear_velocity: wp.array[wp.vec3],
+        shape_angular_velocity: wp.array[wp.vec3],
+        collision_update_dt: float,
+        max_speculative_extension: float,
+    ) -> bool:
+        contact_data.contact_point_center = position
+        contact_data.contact_distance = distance
+        if wp.static(speculative):
+            return contact_passes_speculative_gap_check(
+                contact_data,
+                shape_transform,
+                shape_linear_velocity,
+                shape_angular_velocity,
+                collision_update_dt,
+                max_speculative_extension,
+            )
+        return contact_passes_gap_check(contact_data)
 
     @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_primitive_kernel(
@@ -612,67 +627,55 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                 # Check margin for all possible contacts
                 contact_0_valid = False
                 if contact_dist_0 < MAXVAL:
-                    contact_data.contact_point_center = contact_pos_0
-                    contact_data.contact_distance = contact_dist_0
-                    if wp.static(speculative):
-                        contact_0_valid = contact_passes_speculative_gap_check(
-                            contact_data,
-                            writer_data.shape_transform,
-                            writer_data.shape_linear_velocity,
-                            writer_data.shape_angular_velocity,
-                            writer_data.collision_update_dt,
-                            writer_data.max_speculative_extension,
-                        )
-                    else:
-                        contact_0_valid = contact_passes_gap_check(contact_data)
+                    contact_0_valid = _admit(
+                        contact_data,
+                        contact_pos_0,
+                        contact_dist_0,
+                        writer_data.shape_transform,
+                        writer_data.shape_linear_velocity,
+                        writer_data.shape_angular_velocity,
+                        writer_data.collision_update_dt,
+                        writer_data.max_speculative_extension,
+                    )
 
                 contact_1_valid = False
                 if contact_dist_1 < MAXVAL:
-                    contact_data.contact_point_center = contact_pos_1
-                    contact_data.contact_distance = contact_dist_1
-                    if wp.static(speculative):
-                        contact_1_valid = contact_passes_speculative_gap_check(
-                            contact_data,
-                            writer_data.shape_transform,
-                            writer_data.shape_linear_velocity,
-                            writer_data.shape_angular_velocity,
-                            writer_data.collision_update_dt,
-                            writer_data.max_speculative_extension,
-                        )
-                    else:
-                        contact_1_valid = contact_passes_gap_check(contact_data)
+                    contact_1_valid = _admit(
+                        contact_data,
+                        contact_pos_1,
+                        contact_dist_1,
+                        writer_data.shape_transform,
+                        writer_data.shape_linear_velocity,
+                        writer_data.shape_angular_velocity,
+                        writer_data.collision_update_dt,
+                        writer_data.max_speculative_extension,
+                    )
 
                 contact_2_valid = False
                 if contact_dist_2 < MAXVAL:
-                    contact_data.contact_point_center = contact_pos_2
-                    contact_data.contact_distance = contact_dist_2
-                    if wp.static(speculative):
-                        contact_2_valid = contact_passes_speculative_gap_check(
-                            contact_data,
-                            writer_data.shape_transform,
-                            writer_data.shape_linear_velocity,
-                            writer_data.shape_angular_velocity,
-                            writer_data.collision_update_dt,
-                            writer_data.max_speculative_extension,
-                        )
-                    else:
-                        contact_2_valid = contact_passes_gap_check(contact_data)
+                    contact_2_valid = _admit(
+                        contact_data,
+                        contact_pos_2,
+                        contact_dist_2,
+                        writer_data.shape_transform,
+                        writer_data.shape_linear_velocity,
+                        writer_data.shape_angular_velocity,
+                        writer_data.collision_update_dt,
+                        writer_data.max_speculative_extension,
+                    )
 
                 contact_3_valid = False
                 if contact_dist_3 < MAXVAL:
-                    contact_data.contact_point_center = contact_pos_3
-                    contact_data.contact_distance = contact_dist_3
-                    if wp.static(speculative):
-                        contact_3_valid = contact_passes_speculative_gap_check(
-                            contact_data,
-                            writer_data.shape_transform,
-                            writer_data.shape_linear_velocity,
-                            writer_data.shape_angular_velocity,
-                            writer_data.collision_update_dt,
-                            writer_data.max_speculative_extension,
-                        )
-                    else:
-                        contact_3_valid = contact_passes_gap_check(contact_data)
+                    contact_3_valid = _admit(
+                        contact_data,
+                        contact_pos_3,
+                        contact_dist_3,
+                        writer_data.shape_transform,
+                        writer_data.shape_linear_velocity,
+                        writer_data.shape_angular_velocity,
+                        writer_data.collision_update_dt,
+                        writer_data.max_speculative_extension,
+                    )
 
                 # Count valid contacts and allocate consecutive indices
                 num_valid = int(contact_0_valid) + int(contact_1_valid) + int(contact_2_valid) + int(contact_3_valid)
@@ -1986,7 +1989,13 @@ class NarrowPhase:
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
+            mesh_edge_centers: Packed precomputed mesh edge centers [m].
+            mesh_edge_halves: Packed precomputed mesh edge half-vectors [m].
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
+            shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.
+            shape_angular_velocity: Shape angular velocities [rad/s]. Required in speculative mode.
+            collision_update_dt: Collision prediction horizon [s].
+            max_speculative_extension: Maximum predictive clearance [m].
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
