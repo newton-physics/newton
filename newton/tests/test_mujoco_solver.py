@@ -8538,8 +8538,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             <option cone="elliptic"/>
             <default>
                 <geom condim="1" friction="0.2 0.01 0.001"
-                      solref="0.04 1" solreffriction="0.04 1.5"
-                      solimp="0.8 0.9 0.001 0.5 2"
+                      solref="0.04 1" solimp="0.8 0.9 0.001 0.5 2"
                       margin="{geom_margin}"/>
             </default>
             <worldbody>
@@ -8596,6 +8595,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         model.mujoco.solref_mode.fill_(SOLREF_MODE_FORCE_SPACE)
         model.shape_material_ke.fill_(1.0e6)
         model.shape_material_kd.fill_(1.0e4)
+        model.shape_material_kf.fill_(1000.0)
         solver = self._step_with_newton_contacts(model)
 
         contact_count = int(solver.mjw_data.nacon.numpy()[0])
@@ -8737,6 +8737,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
     def test_pair_solreffriction_default_matches_mujoco(self):
         """Use MuJoCo's zero solreffriction default when a pair omits it."""
         model = self._make_explicit_pair_contact_model(include_solreffriction=False)
+        model.shape_material_kf.fill_(1000.0)
         np.testing.assert_array_equal(model.mujoco.pair_solreffriction.numpy(), [[0.0, 0.0]])
         solver = self._step_with_newton_contacts(model)
         contact_count = int(solver.mjw_data.nacon.numpy()[0])

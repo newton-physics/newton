@@ -703,7 +703,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         # Match Newton's force-space friction slope using MuJoCo's inverse-weight
         # approximation; positive solref lets refsafe limit overly stiff damping.
-        if shape_material_kf and use_kf_mapping:
+        if pairid < 0 and shape_material_kf and use_kf_mapping:
             kf1 = shape_material_kf[shape_a]
             kf2 = shape_material_kf[shape_b]
             kf = mix * kf1 + (1.0 - mix) * kf2
