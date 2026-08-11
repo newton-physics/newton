@@ -635,6 +635,8 @@ def _detect_edge_edge_contacts(
         parameters = wp.closest_point_edge_edge(position_0, position_1, position_2, position_3, 1.0e-5)
         parameter_0 = parameters[0]
         parameter_1 = parameters[1]
+        if parameter_0 <= 0.0 or parameter_0 >= 1.0 or parameter_1 <= 0.0 or parameter_1 >= 1.0:
+            continue
 
         closest_0 = wp.lerp(position_0, position_1, parameter_0)
         closest_1 = wp.lerp(position_2, position_3, parameter_1)

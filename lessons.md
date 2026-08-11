@@ -6,6 +6,18 @@
 - Mistake: Claimed that current VF implicitly covers PE/PP from the unsigned closest-point branch without first checking that oriented surface collision uses projected barycentrics and rejects projections outside the triangle interior.
 - Rule: Before claiming VF covers boundary PE/PP features, identify the active `use_outward_normals` mode. Treat unsigned closest-point VF and oriented projected VF separately, and verify the exact scene configuration before reasoning about feature coverage or duplicate contacts.
 
+## 2026-08-11 — Prove EE-derived features by exact VF membership
+
+- Context: Experimenting whether endpoint EE contacts are redundant with VF-generated PE/PP contacts.
+- Mistake: Used aggregate counts and the existence of a VF contact against any triangle incident to the target edge as the coverage criterion, which does not prove that VF generated the same PP or PE feature as EE.
+- Rule: Classify both EE and VF contacts into canonical PP/PE keys and test the exact set inclusion `EE-derived PP/PE keys ⊆ VF-derived PP/PE keys`. Use counts only to summarize the result, never as the proof of equivalence.
+
+## 2026-08-11 — Keep LIMX EE contact interior-only
+
+- Context: Comparing the twist scene with and without endpoint-derived EE PE/PP contacts after confirming unsigned VF already evaluates triangle boundary features.
+- Mistake: Retained clamped EE endpoint responses alongside VF boundary responses, creating redundant PE/PP constraints and roughly tripling the twist scene's EE count without improving its RMS motion.
+- Rule: LIMX EE proximity contact must require both closest parameters strictly inside their segments. Delegate PE/PP response to unsigned VF, and keep a regression test that rejects endpoint EE while retaining strict interior EE.
+
 ## 2026-07-29 — Keep the primary checkout aligned with the user's daily branch
 
 - Context: Configuring this Newton fork as the editable source for Isaac Sim 6.0.1.

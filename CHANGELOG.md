@@ -110,6 +110,7 @@
 ### Fixed
 
 - Restrict LIMX vertex-face candidates to vertices referenced by the surface triangle mesh.
+- Delegate LIMX point-edge and point-point proximity response to vertex-face contact instead of duplicating it through endpoint edge-edge contacts.
 - Keep nonlocal near-parallel LIMX edge-edge contacts at full penalty strength so layered cloth does not cross before edge-face recovery.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.

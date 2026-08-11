@@ -2026,8 +2026,8 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(directions[contact], [0.0, 0.0, -1.0], atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
 
-    def test_edge_edge_detection_keeps_endpoint_feature(self):
-        """Keep an EE contact whose closest points include segment endpoints."""
+    def test_edge_edge_detection_excludes_endpoint_features(self):
+        """Delegate endpoint PE and PP features to vertex-face contact."""
         positions = [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -2043,7 +2043,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
             ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
 
         matches = [row for row in ids if {int(row[0]), int(row[1])} == {0, 1} and {int(row[2]), int(row[3])} == {3, 4}]
-        self.assertEqual(len(matches), 1)
+        self.assertEqual(len(matches), 0)
 
     def test_oriented_edge_edge_uses_incident_face_pseudo_normals_after_crossing(self):
         """Orient a crossed EE contact from its incident outward face normals."""
