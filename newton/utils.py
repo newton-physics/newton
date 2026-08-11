@@ -69,8 +69,11 @@ __all__ += [
 # cable utils
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
+    CableSplineShape,
     CableStiffness,
+    create_cable_body_transforms,
     create_cable_spline_points,
+    create_cable_spline_shape,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
     create_rotation_minimizing_cable_quaternions,
@@ -79,8 +82,11 @@ from ._src.utils.cable import (  # noqa: E402
 )
 
 __all__ += [
+    "CableSplineShape",
     "CableStiffness",
+    "create_cable_body_transforms",
     "create_cable_spline_points",
+    "create_cable_spline_shape",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
     "create_rotation_minimizing_cable_quaternions",

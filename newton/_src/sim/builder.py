@@ -53,7 +53,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from ..utils.cable import create_cable_spline_points, create_rotation_minimizing_cable_quaternions
+from ..utils.cable import create_cable_spline_shape
 from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .enums import (
@@ -8296,6 +8296,7 @@ class ModelBuilder:
         twist_total: float = 0.0,
         normal_hint: Vec3 | None = None,
         alpha: float = 0.5,
+        straight_rest_shape: bool = False,
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
@@ -8310,10 +8311,32 @@ class ModelBuilder:
         along the cable. The sampled polyline and frames are then assembled into capsule bodies
         connected by cable joints via :meth:`add_rod`.
 
-        The built configuration is the cable's rest shape: solvers that measure cable
-        stretch/bend relative to the rest configuration (e.g. :class:`newton.solvers.SolverVBD`)
-        keep the spline shape at equilibrium, so pre-shaped cables (coils, knots) hold their
-        shape.
+        The configuration conveyed by :attr:`Model.body_q` is the cable's rest shape: solvers
+        that measure cable stretch/bend relative to the rest configuration (e.g.
+        :class:`newton.solvers.SolverVBD`) keep it at equilibrium. By default the bodies are
+        built along the spline, so pre-shaped cables (coils, knots) hold their shape. With
+        ``straight_rest_shape=True`` the bodies are instead built at the cable's *natural*
+        (minimal bending, untwisted) configuration — a straight chain for open cables, a
+        circle of the same circumference for closed ones — and the spline only describes the
+        intended initial pose, which the caller writes into the simulation state:
+
+        .. code-block:: python
+
+            bodies, _ = builder.add_cable_spline(points, segment_length=0.04, straight_rest_shape=True)
+            model = builder.finalize()
+            solver = newton.solvers.SolverVBD(model)
+            state_0, state_1 = model.state(), model.state()
+
+            shape = newton.utils.create_cable_spline_shape(points, segment_length=0.04)
+            xforms = newton.utils.create_cable_body_transforms(shape.points, shape.quaternions)
+            body_q = state_0.body_q.numpy()
+            body_q[bodies] = [[*t.p, *t.q] for t in xforms]
+            state_0.body_q.assign(body_q)
+            state_1.body_q.assign(body_q)
+            solver.body_q_prev.assign(state_0.body_q)  # avoid a spurious first-step velocity
+
+        This is the routing workflow (cables tensioned around pulleys); see
+        ``newton/examples/cable/example_cable_cross_slide_table.py`` for a complete scene.
 
         Args:
             control_points: Control points the curve interpolates, in world space. At least 2
@@ -8351,6 +8374,9 @@ class ModelBuilder:
             alpha: Catmull-Rom parameterization exponent: 0.0 uniform, 0.5 centripetal
                 (default), 1.0 chordal. Centripetal avoids cusps and local self-intersections
                 within spans.
+            straight_rest_shape: If True, builds the bodies at the natural rest configuration
+                (straight chain, or a circle for closed cables) instead of along the spline;
+                see above and :func:`newton.utils.create_cable_spline_shape`.
             label: Optional label prefix for bodies, shapes, and joints.
             wrap_in_articulation: If True, wraps the created joints into a single articulation;
                 see :meth:`add_rod`.
@@ -8376,24 +8402,20 @@ class ModelBuilder:
                     "add_cable_spline: twist_total must be a multiple of 2*pi for closed cables "
                     f"(got {twist_total} rad = {turns:.4f} turns)"
                 )
-
-        positions = create_cable_spline_points(
+        shape = create_cable_spline_shape(
             control_points,
             num_segments=num_segments,
             segment_length=segment_length,
             closed=closed,
-            alpha=alpha,
-        )
-        quaternions = create_rotation_minimizing_cable_quaternions(
-            positions,
             twist_total=twist_total,
             normal_hint=normal_hint,
-            closed=closed,
+            alpha=alpha,
+            straight_rest_shape=straight_rest_shape,
         )
 
         return self.add_rod(
-            positions=positions,
-            quaternions=quaternions,
+            positions=shape.rest_points,
+            quaternions=shape.rest_quaternions,
             radius=radius,
             cfg=cfg,
             stretch_stiffness=stretch_stiffness,
