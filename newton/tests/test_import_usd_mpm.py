@@ -912,6 +912,27 @@ class TestImportUsdMPM(unittest.TestCase):
 
                 np.testing.assert_allclose(builder.particle_mass, expected, rtol=1.0e-6)
 
+    def test_uses_default_density_for_unbound_subset_with_total_mass(self):
+        """Use builder density for unbound points before total-mass normalization."""
+        from pxr import Gf
+
+        stage, _scene = self._stage()
+        points = self._points(
+            stage,
+            "/World/Sand",
+            [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)],
+            widths=[1.0],
+        )
+        self._author_float(points.GetPrim(), "physics:mass", 3.0)
+        dense_material = self._material(stage, "/World/Dense", **{"physics:density": 1000.0})
+        self._bind_subset(points, "Dense", [0], dense_material)
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.density = 500.0
+
+        builder.add_usd(stage, load_visual_shapes=False)
+
+        np.testing.assert_allclose(builder.particle_mass, [2.0, 1.0], rtol=1.0e-6)
+
     def test_validates_authored_particle_masses_before_mutation(self):
         """Reject malformed per-point masses before appending particles."""
         from pxr import Gf

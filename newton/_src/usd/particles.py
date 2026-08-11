@@ -534,15 +534,15 @@ def _read_particle_data(
             resolved_density = density.copy()
             needs_default = np.isnan(resolved_density)
             if np.any(needs_default):
-                if body_mass is not None:
+                if math.isfinite(default_density) and default_density > 0.0:
+                    resolved_density[needs_default] = default_density
+                elif body_mass is not None and np.all(needs_default):
                     resolved_density[needs_default] = 1.0
-                elif not math.isfinite(default_density) or default_density <= 0.0:
+                else:
                     raise ValueError(
                         f"{path}: particle mass requires a finite positive bound physics:density "
                         "or builder default density."
                     )
-                else:
-                    resolved_density[needs_default] = default_density
         else:
             resolved_density = density if density is not None else default_density
             if not math.isfinite(resolved_density) or resolved_density <= 0.0:
