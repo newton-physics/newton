@@ -37,17 +37,17 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
-Material Point Method Particles
--------------------------------
+Particle Simulation Geometry
+----------------------------
 
 .. experimental::
 
-   MPM import requires a ``newton-usd-schemas`` build that registers
+   Particle import currently requires a ``newton-usd-schemas`` build that registers
    ``NewtonPointsDeformableSimAPI``, ``NewtonMPMSceneAPI``, and
    ``NewtonMPMMaterialAPI``. These schemas may evolve while the AOUSD
    deformable-material proposal is being standardized.
 
-:meth:`newton.ModelBuilder.add_usd` imports a ``UsdGeom.Points`` prim as MPM
+:meth:`newton.ModelBuilder.add_usd` imports a ``UsdGeom.Points`` prim as
 particles when it applies ``NewtonPointsDeformableSimAPI`` and is governed by
 ``PhysicsDeformableBodyAPI`` on the Points prim or its direct parent. The body's
 ``physics:simulationOwner`` must select a ``PhysicsScene`` carrying
@@ -81,7 +81,7 @@ The importer uses standard point and material representations:
   twice that radius.
 
 One import call currently accepts one MPM owner scene. The result's
-``path_mpm_particle_map`` maps every imported Points path to its half-open
+``path_particle_map`` maps every imported Points path to its half-open
 particle range, and ``mpm_config`` contains the validated solver configuration
 read from that owner scene.
 
@@ -94,7 +94,7 @@ read from that owner scene.
     SolverImplicitMPM.register_custom_attributes(builder)
     result = builder.add_usd("sand.usda", load_visual_shapes=False)
     mpm_config = result["mpm_config"]
-    particle_range = result["path_mpm_particle_map"]["/World/Sand"]
+    particle_range = result["path_particle_map"]["/World/Sand"]
 
 The authored workflow is demonstrated by
 ``python -m newton.examples mpm_granular --from-usd`` and

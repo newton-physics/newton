@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""USD import helpers for authored implicit-MPM particles."""
+"""USD import helpers for authored particle simulation geometry."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..sim.builder import ModelBuilder
-from ..usd import utils as usd
+from . import utils as usd
 
 _MATERIAL_ATTRIBUTES = {
     "newton:mpm:youngsModulus": ("mpm:young_modulus", "pressure"),
@@ -48,8 +48,8 @@ _SIMULATOR_DEFAULT_ATTRIBUTES = {
 
 
 @dataclass
-class _MPMParticleData:
-    """Validated data for one authored MPM Points prim."""
+class _ParticleData:
+    """Validated data for one authored particle Points prim."""
 
     path: str
     positions: list[wp.vec3]
@@ -60,7 +60,7 @@ class _MPMParticleData:
 
 
 def _validate_units(linear_unit: float, mass_unit: float) -> None:
-    """Validate USD stage units used by the MPM conversion."""
+    """Validate USD stage units used by the particle conversion."""
     if not math.isfinite(linear_unit) or linear_unit <= 0.0:
         raise ValueError(f"metersPerUnit must be finite and positive, got {linear_unit!r}.")
     if not math.isfinite(mass_unit) or mass_unit <= 0.0:
@@ -471,8 +471,8 @@ def _read_particle_data(
     incoming_world_mat: wp.mat44,
     linear_unit: float,
     mass_unit: float,
-) -> _MPMParticleData:
-    """Validate and convert one MPM Points prim to Newton SI arrays."""
+) -> _ParticleData:
+    """Validate and convert one particle Points prim to Newton SI arrays."""
     from pxr import UsdGeom
 
     path = str(prim.GetPath())
@@ -497,7 +497,7 @@ def _read_particle_data(
         raise ValueError(f"{path}: world transform must have finite non-zero scale.")
     if not np.allclose(singular_values, scale, rtol=1.0e-5, atol=max(1.0e-9, scale * 1.0e-7)):
         raise ValueError(
-            f"{path}: MPM particle widths require a uniform, shear-free world transform; "
+            f"{path}: particle widths require a uniform, shear-free world transform; "
             f"got principal scales {singular_values.tolist()}."
         )
 
@@ -570,7 +570,7 @@ def _read_particle_data(
             if not np.isfinite(masses).all() or np.any(masses <= 0.0):
                 raise ValueError(f"{path}: physics:mass does not produce finite positive SI particle masses.")
 
-    return _MPMParticleData(
+    return _ParticleData(
         path=path,
         positions=[wp.vec3(*position) for position in positions_world],
         velocities=[wp.vec3(*velocity) for velocity in velocities_world],
@@ -616,7 +616,7 @@ def _resolve_simulation_owner(prim, default_scene):
     return owner
 
 
-def import_mpm_particles(
+def import_particles(
     builder: ModelBuilder,
     root_prim,
     *,
@@ -627,7 +627,7 @@ def import_mpm_particles(
     mass_unit: float,
     scene_preflight: Callable[[Any], None] | None = None,
 ) -> tuple[dict[str, tuple[int, int]], Any | None]:
-    """Import opted-in Points and return ranges plus their validated scene config.
+    """Import opted-in particle Points and return ranges plus their MPM config.
 
     ``NewtonPointsDeformableSimAPI`` marks a Points simulation geometry. The
     governing ``PhysicsDeformableBodyAPI`` prim's ``physics:simulationOwner``
@@ -681,7 +681,7 @@ def import_mpm_particles(
     if scene_preflight is not None:
         scene_preflight(scene_prim)
     SolverImplicitMPM.register_custom_attributes(builder)
-    payloads: list[_MPMParticleData] = []
+    payloads: list[_ParticleData] = []
     for prim in particle_prims:
         payloads.append(
             _read_particle_data(
@@ -708,4 +708,4 @@ def import_mpm_particles(
     return ranges, mpm_config
 
 
-__all__ = ["import_mpm_particles"]
+__all__ = ["import_particles"]

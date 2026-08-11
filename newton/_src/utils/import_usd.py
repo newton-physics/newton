@@ -51,6 +51,7 @@ from ..solvers.mujoco.utils import (
 )
 from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
+from ..usd.particles import import_particles
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .import_usd_deformable_attachments import (
@@ -66,7 +67,6 @@ from .import_usd_deformable_utils import (
     _scout_deformable_prims,
 )
 from .import_usd_deformable_volume import _deformable_import_volume
-from .import_usd_mpm import import_mpm_particles
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
@@ -266,7 +266,7 @@ def parse_usd(
     legacy_margin_gap: bool = False,
     return_deformable_results: bool = False,
 ) -> dict[str, Any]:
-    """Parses a Universal Scene Description (USD) stage and adds rigid bodies, MPM particles, soft bodies, shapes, and joints to the given ModelBuilder.
+    """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -424,7 +424,7 @@ def parse_usd(
         diagnostic text, not a stable code, and a prim absent from a realized map may still
         appear in the authored metadata.
 
-        ``path_mpm_particle_map`` is always returned. It maps each imported
+        ``path_particle_map`` is always returned. It maps each imported
         ``UsdGeom.Points`` prim carrying ``NewtonPointsDeformableSimAPI`` whose
         governing ``PhysicsDeformableBodyAPI`` resolves to a
         ``NewtonMPMSceneAPI`` owner to its half-open ``[start, end)`` builder
@@ -435,11 +435,11 @@ def parse_usd(
         ``PhysicsVolumeDeformableMaterialAPI``. MPM elasticity is read from
         ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. After
         unit conversion, Young's modulus is in Pa and density is in kg/m^3.
-        Unbound MPM Points use Newton's registered material defaults and
-        ``ModelBuilder.default_shape_cfg`` density. All MPM Points imported by
-        one call must resolve to the same MPM scene; unrelated PhysicsScenes
+        Unbound Points use Newton's registered material defaults and
+        ``ModelBuilder.default_shape_cfg`` density. All Points imported by one
+        call must resolve to the same MPM scene; unrelated PhysicsScenes
         and particle systems are ignored. ``mpm_config`` contains the owner's
-        validated :class:`SolverImplicitMPM.Config`. Without imported MPM
+        validated :class:`SolverImplicitMPM.Config`. Without imported
         Points, it contains the parser-selected PhysicsScene config only when
         that scene carries ``NewtonMPMSceneAPI``; otherwise it is ``None``.
 
@@ -473,8 +473,8 @@ def parse_usd(
               - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
-            * - ``"path_mpm_particle_map"``
-              - Mapping from an MPM ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
+            * - ``"path_particle_map"``
+              - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
             * - ``"path_cable_map"``
               - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
             * - ``"path_cloth_map"``
@@ -508,7 +508,7 @@ def parse_usd(
             * - ``"max_solver_iterations"``
               - The resolved maximum solver iterations (int or None)
             * - ``"mpm_config"``
-              - Validated :class:`SolverImplicitMPM.Config` for the resolved MPM owner scene; with no imported MPM Points, the parser-selected PhysicsScene config only when that scene carries ``NewtonMPMSceneAPI``, otherwise ``None``
+              - Validated :class:`SolverImplicitMPM.Config` for the resolved MPM owner scene; with no imported Points, the parser-selected PhysicsScene config only when that scene carries ``NewtonMPMSceneAPI``, otherwise ``None``
             * - ``"path_body_relative_transform"``
               - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
             * - ``"path_original_body_map"``
@@ -646,8 +646,8 @@ def parse_usd(
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
-    # MPM particle ranges are stable build-time snapshots, keyed by authored Points path.
-    path_mpm_particle_map: dict[str, tuple[int, int]] = {}
+    # Particle ranges are stable build-time snapshots, keyed by authored Points path.
+    path_particle_map: dict[str, tuple[int, int]] = {}
     # Import-internal deformable index maps (not returned): the attachment and collapse passes
     # look up a curve/cloth/soft prim's element indices by path while building. The equivalent
     # per-group index ranges are recorded on the builder/Model registries for callers.
@@ -2500,7 +2500,7 @@ def parse_usd(
             raise ValueError(f"{scene_path}: transformed gravity must contain only finite SI values.")
         resolved_mpm_gravity = gravity
 
-    path_mpm_particle_map, imported_mpm_config = import_mpm_particles(
+    path_particle_map, imported_mpm_config = import_particles(
         builder,
         root_prim,
         ignore_paths=ignore_paths,
@@ -2519,9 +2519,9 @@ def parse_usd(
         else:
             builder.gravity = resolved_mpm_gravity
     elif physics_scene_prim is not None and _has_api_schema(physics_scene_prim, "NewtonMPMSceneAPI"):
-        # Preserve the legacy config-only behavior when no opted-in MPM Points
+        # Preserve the legacy config-only behavior when no opted-in Points
         # are imported. Imported particles resolve their owner across the
-        # entire stage inside import_mpm_particles(), including when the
+        # entire stage inside import_particles(), including when the
         # selected root_path does not contain that PhysicsScene.
         from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
 
@@ -5134,27 +5134,27 @@ def parse_usd(
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
 
-    has_non_mpm_imported_content = bool(
+    has_non_particle_imported_content = bool(
         path_body_map or path_joint_map or path_shape_map or path_cable_map or path_cloth_map or path_soft_map
     )
-    if path_mpm_particle_map and has_legacy_rigid_objects and (has_nonunit_linear_units or has_nonunit_mass_units):
+    if path_particle_map and has_legacy_rigid_objects and (has_nonunit_linear_units or has_nonunit_mass_units):
         warnings.warn(
-            "Mixed rigid/collider and MPM stages with non-unit metersPerUnit or kilogramsPerUnit use different "
-            "conversion paths: MPM particles are converted to SI, while the legacy rigid/collider importer still "
-            "expects unit stage metadata. Author mixed stages with both units set to 1.0 until rigid import gains "
-            "complete unit conversion.",
+            "Mixed rigid/collider and particle USD content with non-unit metersPerUnit or kilogramsPerUnit uses "
+            "different conversion paths: particles are converted to SI, while the legacy rigid/collider importer "
+            "still expects unit stage metadata. Author mixed stages with both units set to 1.0 until rigid import "
+            "gains complete unit conversion.",
             stacklevel=_external_stacklevel(),
         )
     elif (
-        path_mpm_particle_map and has_non_mpm_imported_content and (has_nonunit_linear_units or has_nonunit_mass_units)
+        path_particle_map and has_non_particle_imported_content and (has_nonunit_linear_units or has_nonunit_mass_units)
     ):
         warnings.warn(
-            "Mixed MPM and other imported USD content with non-unit metersPerUnit or kilogramsPerUnit may use "
-            "different conversion paths: MPM particles are converted to SI, while other import paths may still "
+            "Mixed particles and other imported USD content with non-unit metersPerUnit or kilogramsPerUnit may "
+            "use different conversion paths: particles are converted to SI, while other import paths may still "
             "expect unit stage metadata. Author mixed stages with both units set to 1.0.",
             stacklevel=_external_stacklevel(),
         )
-    elif not path_mpm_particle_map:
+    elif not path_particle_map:
         if has_nonunit_mass_units:
             warnings.warn(
                 "USD stages with non-unit mass units are not supported. "
@@ -5176,7 +5176,7 @@ def parse_usd(
         "path_joint_map": path_joint_map,
         "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
-        "path_mpm_particle_map": path_mpm_particle_map,
+        "path_particle_map": path_particle_map,
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,
         "scene_attributes": scene_attributes,

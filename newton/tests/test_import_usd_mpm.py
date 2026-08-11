@@ -415,7 +415,7 @@ class TestImportUsdMPM(unittest.TestCase):
 
         result = newton.ModelBuilder().add_usd(stage, load_visual_shapes=False)
 
-        self.assertEqual(result["path_mpm_particle_map"], {"/World/MPM": (0, 1)})
+        self.assertEqual(result["path_particle_map"], {"/World/MPM": (0, 1)})
 
     def test_resolves_simulation_owner_from_parent_deformable_body(self):
         """Resolve simulation ownership from a Points prim's parent body."""
@@ -434,7 +434,7 @@ class TestImportUsdMPM(unittest.TestCase):
 
         result = newton.ModelBuilder().add_usd(stage, load_visual_shapes=False)
 
-        self.assertEqual(result["path_mpm_particle_map"], {"/World/SandBody/Particles": (0, 1)})
+        self.assertEqual(result["path_particle_map"], {"/World/SandBody/Particles": (0, 1)})
 
     def test_rejects_invalid_simulation_owner_before_particle_mutation(self):
         """Reject an explicit owner that does not resolve to one PhysicsScene."""
@@ -516,7 +516,7 @@ class TestImportUsdMPM(unittest.TestCase):
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, root_path="/World/Sand", load_visual_shapes=False)
 
-        self.assertEqual(result["path_mpm_particle_map"], {"/World/Sand": (0, 1)})
+        self.assertEqual(result["path_particle_map"], {"/World/Sand": (0, 1)})
         self.assertAlmostEqual(result["mpm_config"].tolerance, 2.5e-5)
         np.testing.assert_allclose(np.asarray(builder.gravity), [0.0, 0.0, -9.81], rtol=1.0e-6)
 
@@ -557,7 +557,7 @@ class TestImportUsdMPM(unittest.TestCase):
         self.assertEqual(builder.particle_count, 1)
 
     def test_preserves_multiple_scene_behavior_without_mpm_points(self):
-        """Keep legacy first-scene config handling when no MPM Points are imported."""
+        """Keep legacy first-scene config handling when no Points are imported."""
         from pxr import UsdPhysics
 
         stage, _scene = self._stage()
@@ -565,7 +565,7 @@ class TestImportUsdMPM(unittest.TestCase):
 
         result = newton.ModelBuilder().add_usd(stage, load_visual_shapes=False)
 
-        self.assertEqual(result["path_mpm_particle_map"], {})
+        self.assertEqual(result["path_particle_map"], {})
         self.assertIsInstance(result["mpm_config"], SolverImplicitMPM.Config)
 
     def test_imports_opted_in_points_materials_and_ranges(self):
@@ -618,7 +618,7 @@ class TestImportUsdMPM(unittest.TestCase):
             load_visual_shapes=False,
         )
 
-        self.assertEqual(result["path_mpm_particle_map"], {"/World/Sand": (1, 3), "/World/Snow": (3, 4)})
+        self.assertEqual(result["path_particle_map"], {"/World/Sand": (1, 3), "/World/Snow": (3, 4)})
         self.assertIsInstance(result["mpm_config"], SolverImplicitMPM.Config)
         self.assertEqual(builder.particle_count, 4)
         np.testing.assert_allclose(np.asarray(builder.particle_q[1]), [5.2, 0.0, 0.0], rtol=1.0e-6)
@@ -703,7 +703,7 @@ class TestImportUsdMPM(unittest.TestCase):
         result = builder.add_usd(fixture.as_posix(), load_visual_shapes=False)
 
         self.assertEqual(
-            result["path_mpm_particle_map"],
+            result["path_particle_map"],
             {"/World/TranslatedAndScaled/Sand": (0, 2), "/World/Snow": (2, 3)},
         )
         self.assertEqual(builder.particle_count, 3)
@@ -735,7 +735,7 @@ class TestImportUsdMPM(unittest.TestCase):
 
         result = builder.add_usd(fixture.as_posix(), load_visual_shapes=False)
 
-        self.assertEqual(result["path_mpm_particle_map"], {"/World/Mixed": (0, 4)})
+        self.assertEqual(result["path_particle_map"], {"/World/Mixed": (0, 4)})
         np.testing.assert_allclose(builder.particle_mass, [2000.0, 3000.0, 2000.0, 1000.0])
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.mpm.young_modulus.numpy(), [200.0, 300.0, 200.0, 100.0])
@@ -830,7 +830,7 @@ class TestImportUsdMPM(unittest.TestCase):
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, load_visual_shapes=False)
 
-        ranges = result["path_mpm_particle_map"]
+        ranges = result["path_particle_map"]
         np.testing.assert_allclose(builder.particle_radius[slice(*ranges["/World/Indexed"])], [0.2, 0.1])
         np.testing.assert_allclose(builder.particle_radius[slice(*ranges["/World/Scalar"])], [0.4, 0.4])
         np.testing.assert_allclose(
@@ -1091,7 +1091,7 @@ class TestImportUsdMPM(unittest.TestCase):
 
         result = builder.add_usd(stage, load_visual_shapes=False)
 
-        self.assertEqual(result["path_mpm_particle_map"], {"/World/Sand": (0, 1)})
+        self.assertEqual(result["path_particle_map"], {"/World/Sand": (0, 1)})
         self.assertAlmostEqual(builder.particle_mass[0], 1.0)
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(float(model.mpm.friction.numpy()[0]), 0.5)
@@ -1143,7 +1143,7 @@ class TestImportUsdMPM(unittest.TestCase):
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, load_visual_shapes=False)
 
-        self.assertEqual(result["path_mpm_particle_map"], {"/World/Mixed": (0, 4)})
+        self.assertEqual(result["path_particle_map"], {"/World/Mixed": (0, 4)})
         np.testing.assert_allclose(builder.particle_mass, [2000.0, 3000.0, 2000.0, 1000.0])
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.mpm.young_modulus.numpy(), [200.0, 300.0, 200.0, 100.0])
@@ -1296,7 +1296,7 @@ class TestImportUsdMPM(unittest.TestCase):
 
         result = builder.add_usd(stage, load_visual_shapes=False)
 
-        self.assertEqual(result["path_mpm_particle_map"], {"/World/Sand": (0, 1)})
+        self.assertEqual(result["path_particle_map"], {"/World/Sand": (0, 1)})
         self.assertEqual(builder.particle_count, 1)
 
     def test_validates_authored_material_ranges(self):
@@ -1338,7 +1338,7 @@ class TestImportUsdMPM(unittest.TestCase):
             SolverImplicitMPM.Config.create_from_usd(scene)
 
     def test_warns_for_mixed_nonunit_rigid_stage(self):
-        """Warn when SI-converted MPM particles share a non-unit legacy rigid stage."""
+        """Warn when SI-converted particles share a non-unit legacy rigid stage."""
         from pxr import Gf, UsdGeom, UsdPhysics
 
         stage, _scene = self._stage()
@@ -1352,12 +1352,12 @@ class TestImportUsdMPM(unittest.TestCase):
             newton.ModelBuilder().add_usd(stage, load_visual_shapes=False)
 
         messages = [str(item.message) for item in caught]
-        self.assertTrue(any("Mixed rigid/collider and MPM stages" in message for message in messages))
+        self.assertTrue(any("Mixed rigid/collider and particle USD content" in message for message in messages))
         self.assertFalse(any("non-unit linear units are not supported" in message for message in messages))
         self.assertFalse(any("non-unit mass units are not supported" in message for message in messages))
 
     def test_warns_for_nonunit_mpm_with_deformable(self):
-        """Warn when non-unit MPM particles share a stage with another import path."""
+        """Warn when non-unit particles share a stage with another import path."""
         from pxr import Gf, Sdf, UsdGeom
 
         stage, _scene = self._stage()
@@ -1379,8 +1379,8 @@ class TestImportUsdMPM(unittest.TestCase):
 
         messages = [str(item.message) for item in caught]
         self.assertIn("/World/SoftBody", result["path_soft_map"])
-        self.assertTrue(any("Mixed MPM and other imported USD content" in message for message in messages))
-        self.assertFalse(any("Mixed rigid/collider and MPM stages" in message for message in messages))
+        self.assertTrue(any("Mixed particles and other imported USD content" in message for message in messages))
+        self.assertFalse(any("Mixed rigid/collider and particle USD content" in message for message in messages))
 
 
 if __name__ == "__main__":

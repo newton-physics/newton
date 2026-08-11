@@ -3371,7 +3371,7 @@ class ModelBuilder:
         legacy_margin_gap: bool = False,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
-        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, MPM particles, soft bodies, shapes, and joints to the given ModelBuilder.
+        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -3528,7 +3528,7 @@ class ModelBuilder:
             diagnostic text, not a stable code, and a prim absent from a realized map may still
             appear in the authored metadata.
 
-            ``path_mpm_particle_map`` is always returned. It maps each imported
+            ``path_particle_map`` is always returned. It maps each imported
             ``UsdGeom.Points`` prim carrying ``NewtonPointsDeformableSimAPI`` whose
             governing ``PhysicsDeformableBodyAPI`` resolves to a
             ``NewtonMPMSceneAPI`` owner to its half-open ``[start, end)`` builder
@@ -3539,11 +3539,11 @@ class ModelBuilder:
             ``PhysicsVolumeDeformableMaterialAPI``. MPM elasticity is read from
             ``newton:mpm:youngsModulus`` and ``newton:mpm:poissonsRatio``. After
             unit conversion, Young's modulus is in Pa and density is in kg/m^3.
-            Unbound MPM Points use Newton's registered material defaults and
-            ``ModelBuilder.default_shape_cfg`` density. All MPM Points imported by
-            one call must resolve to the same MPM scene; unrelated PhysicsScenes
+            Unbound Points use Newton's registered material defaults and
+            ``ModelBuilder.default_shape_cfg`` density. All Points imported by one
+            call must resolve to the same MPM scene; unrelated PhysicsScenes
             and particle systems are ignored. ``mpm_config`` contains the owner's
-            validated :class:`SolverImplicitMPM.Config`. Without imported MPM
+            validated :class:`SolverImplicitMPM.Config`. Without imported
             Points, it contains the parser-selected PhysicsScene config only when
             that scene carries ``NewtonMPMSceneAPI``; otherwise it is ``None``.
 
@@ -3577,8 +3577,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
-                * - ``"path_mpm_particle_map"``
-                  - Mapping from an MPM ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
+                * - ``"path_particle_map"``
+                  - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
                 * - ``"path_cable_map"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_map"``
@@ -3612,7 +3612,7 @@ class ModelBuilder:
                 * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
                 * - ``"mpm_config"``
-                  - Validated :class:`SolverImplicitMPM.Config` for the resolved MPM owner scene; with no imported MPM Points, the parser-selected PhysicsScene config only when that scene carries ``NewtonMPMSceneAPI``, otherwise ``None``
+                  - Validated :class:`SolverImplicitMPM.Config` for the resolved MPM owner scene; with no imported Points, the parser-selected PhysicsScene config only when that scene carries ``NewtonMPMSceneAPI``, otherwise ``None``
                 * - ``"path_body_relative_transform"``
                   - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
                 * - ``"path_original_body_map"``
