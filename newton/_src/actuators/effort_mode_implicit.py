@@ -368,7 +368,14 @@ class _EffortModeImplicit:
             col += width
         self._clamp_params = wp.zeros((self._num_actuators, max(col, 1)), dtype=float, device=self._device)
         for clamp, (_func, base), width in zip(clamping or [], entries, widths, strict=True):
+            owner = getattr(clamp, "_bound_owner", None)
+            if owner is not None and owner is not clamping:
+                raise ValueError(
+                    f"{type(clamp).__name__} is already bound to another actuator: binding it again "
+                    "would detach the first actuator's parameters. Give each actuator its own instance."
+                )
             clamp.bind_params(self._clamp_params[:, base : base + width])
+            clamp._bound_owner = clamping
         return _compose_clamps(tuple(entries)), tuple(entries)
 
     def _init_solver(self, controller, clamping) -> None:
@@ -493,7 +500,6 @@ class _EffortModeImplicit:
             raise ValueError(f"Implicit actuation requires dt > 0, got {dt}")
         if applied_forces is None:
             raise RuntimeError("Implicit actuation requires an applied-effort buffer")
-        # Update state-dependent controller parameters before solving.
         if not self._groups_built:
             self._build_groups(vel_indices)
         wp.launch(

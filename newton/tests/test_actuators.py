@@ -633,6 +633,54 @@ class TestControllerNeuralMLP(unittest.TestCase):
         )
         np.testing.assert_allclose(forces.numpy(), np.array([3.0, 5.0, 7.0], dtype=np.float32), rtol=1e-5)
 
+    def test_implicit_neural_step_is_graph_capturable(self):
+        """is_graphable() must hold for the implicit neural path, not just explicit.
+
+        The implicit path runs a network forward and a ``wp.Tape`` backward every
+        step, and sets up its gradient buffers on first use. Captures with no
+        warm-up so that setup has to be capture-safe too, then checks the replayed
+        effort against the analytic Stable-PD solution.
+        """
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("graph capture requires CUDA")
+
+        h = 0.01
+        w0, w1, b = 400.0, 8.0, 2.5
+        q0, target = 0.2, 1.0
+
+        model = _build_pendulum(device)
+        state = model.state()
+        state.joint_q.assign(np.array([q0], dtype=np.float32))
+        control = model.control()
+        control.joint_target_q.assign(np.array([target], dtype=np.float32))
+
+        path = self._save_mlp(
+            np.array([[w0, w1]], dtype=np.float32), np.array([b], dtype=np.float32), filename="capture_linear.onnx"
+        )
+        controller = ControllerNeuralMLP(model_path=path)
+        oracle = ResponseOracle(model)
+        actuator = Actuator(
+            indices=wp.array([0], dtype=wp.uint32, device=device),
+            controller=controller,
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        self.assertTrue(actuator.is_graphable())
+        oracle.refresh(state)
+        state_a, state_b = actuator.state(), actuator.state()
+
+        with wp.ScopedCapture(device) as capture:
+            actuator.step(state, control, state_a, state_b, dt=h)
+        control.joint_f.zero_()
+        wp.capture_launch(capture.graph)
+
+        alpha = _response_at_state(model, state)[0, 0]
+        e_q = target - q0
+        expected = (w0 * e_q + b) / (1.0 - alpha * h * w1 + alpha * h * h * w0)
+        self.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
+
     def test_neural_mlp_implicit_linear_net(self):
         """A 1-layer (linear) neural controller solves implicitly, exact.
 
@@ -2289,9 +2337,9 @@ class TestActuatorImplicit(unittest.TestCase):
 
         ``derivative_floor`` bounds the pivot used by the elimination; the same
         floored value has to reach the back-substitution divide, otherwise a
-        vanishing diagonal produces a non-finite impulse. Driving kp/kd to zero
-        makes the residual flat in the clamped region, so the solve leans on
-        that floor.
+        vanishing diagonal produces a non-finite impulse. With kp = kd = 0 the
+        force law is identically zero, so the residual is flat and the solve
+        leans on that floor.
         """
         device = wp.get_device()
         h = 0.01
@@ -2561,13 +2609,47 @@ class TestResponseOracle(unittest.TestCase):
             sparse = wp.zeros((model.world_count, 1, n * (n + 1) // 2), dtype=float, device=device)
             oracle.refresh_from_mass_matrix(sparse)
 
+    def test_refresh_from_inertia_captures_without_warmup(self):
+        """refresh_from_inertia captures and replays, with no warm-up call first.
+
+        Deliberately captures straight after constructing the oracle, so the whole
+        path -- scratch setup, the per-column solves and the scatter -- has to be
+        capture-safe. Where the device has no memory pool, allocating on a
+        capturing stream would fail here.
+        """
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("graph capture requires CUDA")
+
+        model = _build_two_link(device)
+        n = model.joint_dof_count
+        state = model.state()
+        state.joint_q.assign(np.array([0.3, -0.8], dtype=np.float32))
+        solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+        solver.step(state, model.state(), model.control(), None, 0.01)
+        solve_inverse = _mujoco_solve(solver)
+
+        oracle = ResponseOracle(model)  # fresh: nothing allocated by a prior call
+        with wp.ScopedCapture(device) as capture:
+            oracle.refresh_from_inertia(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+        wp.capture_launch(capture.graph)
+
+        reference = ResponseOracle(model)
+        reference.refresh(state)
+        np.testing.assert_allclose(
+            oracle.inverse_blocks.numpy()[0, :n, :n],
+            reference.inverse_blocks.numpy()[0, :n, :n],
+            rtol=2e-3,
+            atol=1e-6,
+        )
+
     def test_response_from_mujoco_mass_matrix(self):
         """Fill the oracle response from MuJoCo's per-step factorized inertia.
 
         MuJoCo rebuilds ``qM`` at the step-start pose every step, so — unlike the
         compile-time ``dof_invweight0`` — its complete inverse tracks inertial
         coupling at the current configuration. Checks
-        :meth:`ResponseOracle.refresh_from_mass_matrix` against a host-side
+        :meth:`ResponseOracle.refresh_from_inertia` against a host-side
         inverse-and-remap of that matrix, against the built-in oracle, and by
         driving the coupled implicit solve with it.
         """

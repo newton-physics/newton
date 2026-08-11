@@ -222,8 +222,6 @@ class ResponseOracle:
         # Scratch so refresh() never writes to the caller's state.
         self._fk_state = model.state()
 
-        self._rhs = None
-        self._sol = None
         self._uniform_dofs_per_world = None
         if model.world_count == 1:
             self._uniform_dofs_per_world = model.joint_dof_count
@@ -233,6 +231,12 @@ class ResponseOracle:
             n_global = int(bounds[-1] - bounds[-2])
             if len(counts) == 1 and n_global == 0 and sum(counts) * model.world_count == model.joint_dof_count:
                 self._uniform_dofs_per_world = counts.pop()
+
+        # Sized for the model's own layout so refresh_from_inertia() can be captured
+        # straight away; a dof_map of a different width resizes it on first use.
+        width = self._uniform_dofs_per_world or model.joint_dof_count
+        self._rhs = wp.zeros((model.world_count, width), dtype=float, device=device)
+        self._sol = wp.zeros_like(self._rhs)
 
     @property
     def inverse_blocks(self) -> wp.array3d[float]:
@@ -289,7 +293,9 @@ class ResponseOracle:
         to be materialized, so solvers that keep it factorized work too; the
         inverse is recovered a column at a time by back-substituting the unit
         vectors. That is one solve per DOF, all on device, so this stays
-        CUDA-graph capturable.
+        CUDA-graph capturable -- provided *solve_inverse* is too, and that a
+        *dof_map* wider than the model's own DOF layout has been seen once
+        before capture, since that resizes the scratch buffers.
 
         With :class:`~newton.solvers.SolverMuJoCo`, which factorizes its inertia
         each step::

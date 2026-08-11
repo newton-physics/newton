@@ -6,7 +6,6 @@
 
 ### Added
 
-- Add experimental implicit effort mode to `newton.actuators.Actuator` (`actuator.set_effort_mode_implicit(...)`, tuned via `newton.actuators.ActuatorImplicitOptions`, with `newton.actuators.ResponseOracle` providing articulation impulse responses): it solves actuator impulses jointly for each articulation before the solver step to support stable, stiff controllers. Use `ResponseOracle.refresh(state)` for a response assembled from the model, or `ResponseOracle.refresh_from_mass_matrix(mass_matrix, dof_map=...)` to invert a solver's own joint-space inertia, such as `SolverMuJoCo`'s `mjw_data.qM`.
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
 - Import MJCF mesh assets authored with inline vertex, face, normal, and texture-coordinate data.
 - Break the viewer's shape count down into visual and collision shapes. The two are listed under `Shapes` in the stats overlay and need not sum to the total, since a shape can be both.
