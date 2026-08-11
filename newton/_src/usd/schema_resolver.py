@@ -511,6 +511,21 @@ class SchemaResolverManager:
     def _uses_composed_fallbacks(self) -> bool:
         return self._use_applied_schema_fallbacks
 
+    @staticmethod
+    def _cached_value_reader(
+        prim: Usd.Prim,
+        prim_type: PrimType,
+    ) -> Callable[[SchemaResolver, str], _ResolverValue]:
+        value_cache: dict[tuple[int, str], _ResolverValue] = {}
+
+        def read_value(resolver: SchemaResolver, key: str) -> _ResolverValue:
+            cache_key = (id(resolver), key)
+            if cache_key not in value_cache:
+                value_cache[cache_key] = resolver._get_value_state(prim, prim_type, key)
+            return value_cache[cache_key]
+
+        return read_value
+
     def _get_value_with_policy(
         self,
         prim: Usd.Prim,
@@ -522,13 +537,7 @@ class SchemaResolverManager:
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None,
         legacy_value_transformer: Callable[[Any, SchemaResolver | None], Any] | None,
     ) -> tuple[Any, SchemaResolver | None]:
-        value_cache: dict[tuple[int, str], _ResolverValue] = {}
-
-        def read_value(resolver: SchemaResolver, key: str) -> _ResolverValue:
-            cache_key = (id(resolver), key)
-            if cache_key not in value_cache:
-                value_cache[cache_key] = resolver._get_value_state(prim, prim_type, key)
-            return value_cache[cache_key]
+        read_value = self._cached_value_reader(prim, prim_type)
 
         if self._uses_composed_fallbacks:
             resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
@@ -567,13 +576,7 @@ class SchemaResolverManager:
         ],
     ) -> _ResolvedValue:
         """Resolve a specialized consumer value under the shared policy and audit."""
-        value_cache: dict[tuple[int, str], _ResolverValue] = {}
-
-        def read_value(resolver: SchemaResolver, key: str) -> _ResolverValue:
-            cache_key = (id(resolver), key)
-            if cache_key not in value_cache:
-                value_cache[cache_key] = resolver._get_value_state(prim, prim_type, key)
-            return value_cache[cache_key]
+        read_value = self._cached_value_reader(prim, prim_type)
 
         if self._uses_composed_fallbacks:
             resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
