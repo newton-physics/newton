@@ -1077,9 +1077,6 @@ class RendererGL:
         else:
             self.headless = headless
         self.app = pyglet.app
-        # Closing the last pyglet window sets this global flag; new renderer
-        # instances must not inherit the prior viewer's exit request.
-        self.app.event_loop.has_exit = False
 
         # making window current opengl rendering context
         self._make_current()

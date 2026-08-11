@@ -55,8 +55,15 @@ def _is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> 
     }
 
 
-def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64, height: int = 48):
+def _reset_pyglet_event_loop_exit(test: unittest.TestCase) -> None:
     _viewer_gl_unavailable_error_types(test)
+    pyglet = sys.modules.get("pyglet")
+    if pyglet is not None:
+        pyglet.app.event_loop.has_exit = False
+
+
+def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64, height: int = 48):
+    _reset_pyglet_event_loop_exit(test)
 
     try:
         return newton.viewer.ViewerGL(width=width, height=height, headless=True)
