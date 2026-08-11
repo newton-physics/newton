@@ -67,7 +67,7 @@ SIM_HZ = 120
 # Number of simulation worlds (environments). The whole scene (arm + boxes + pallets + gripper) is
 # replicated NUM_WORLDS times, all overlapping at the origin -- Newton's broad phase does not collide
 # across worlds, so the copies don't interact. WORLD_RENDER_SPACING lays them out for display.
-NUM_WORLDS = 9
+NUM_WORLDS = 1
 
 # Visual grid spacing [m] between worlds in the viewer. The worlds still simulate overlapped at the
 # origin (they never collide); this only separates them for rendering. Set to None to overlap them.
