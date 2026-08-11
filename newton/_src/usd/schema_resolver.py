@@ -104,8 +104,6 @@ class SchemaResolver:
 
     # Applied or typed schema that owns each mapping entry.
     _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {}
-    # Raw fallbacks for schemas unavailable to USD's registry.
-    _schema_fallbacks: ClassVar[dict[str, dict[str, Any]]] = {}
     _use_legacy_unowned_defaults: ClassVar[bool] = True
 
     # extra_attr_namespaces is a list of additional USD attribute namespaces in which the schema attributes may be authored.
@@ -710,7 +708,7 @@ class SchemaResolverManager:
 
         fallbacks = self._registered_schema_fallbacks[cache_key]
         if fallbacks is None:
-            fallbacks = resolver._schema_fallbacks.get(schema_name, {})
+            return _MISSING_FALLBACK
         value = resolver._get_fallback_with_reader(
             lambda name: fallbacks.get(name, _MISSING_FALLBACK),
             prim_type,
