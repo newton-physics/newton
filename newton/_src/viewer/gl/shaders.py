@@ -66,6 +66,7 @@ out vec4 FragPosLightSpace;
 out vec4 Material;
 #ifdef ENABLE_TRANSPARENCY
 out float Opacity;
+out float ViewDepth;
 #endif
 
 void main()
@@ -92,6 +93,7 @@ void main()
     Material = aMaterial;
 #ifdef ENABLE_TRANSPARENCY
     Opacity = clamp(aOpacity, 0.0, 1.0);
+    ViewDepth = max(-(view * worldPos).z, 0.0);
 #endif
 }
 """
@@ -114,6 +116,11 @@ in vec4 FragPosLightSpace;
 in vec4 Material;
 #ifdef ENABLE_TRANSPARENCY
 in float Opacity;
+in float ViewDepth;
+
+// Reciprocal of the reference distance to the transparent content. Normalizing
+// view depth by it keeps the OIT weight curve below independent of scene scale.
+uniform float oit_inv_depth_reference;
 #endif
 
 uniform vec3 view_pos;
@@ -403,13 +410,15 @@ void main()
 
 #ifdef ENABLE_TRANSPARENCY
     float alpha = clamp(Opacity, 0.0, 1.0);
-    float weight = clamp(
-        pow(min(1.0, alpha * 10.0) + 0.01, 3.0)
-            * 1e8
-            * pow(1.0 - gl_FragCoord.z * 0.9, 3.0),
-        1e-2,
-        3e3
-    );
+    // Weighted-blended OIT (McGuire & Bavoil 2013, eq. 9). The published curve
+    // is tuned for meter-scale view depth; evaluating it on depth normalized by
+    // the transparent content's reference distance keeps the weight spread
+    // across its clamp range for any scene scale. Feeding it the raw
+    // window-space depth instead pins every fragment to the clamp ceiling,
+    // collapsing the resolve to a plain alpha-weighted average.
+    float d = ViewDepth * oit_inv_depth_reference;
+    float depth_weight = clamp(10.0 / (1e-5 + pow(2.0 * d, 2.0) + pow(0.6 * d, 6.0)), 1e-2, 3e3);
+    float weight = alpha * depth_weight;
     FragColor = vec4(color * alpha, alpha) * weight;
     Revealage = vec4(alpha);
 #else
@@ -605,6 +614,9 @@ class ShaderShape(ShaderGL):
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
+            self.loc_oit_inv_depth_reference = (
+                self._get_uniform_location("oit_inv_depth_reference") if enable_transparency else None
+            )
 
     def update(
         self,
@@ -628,8 +640,15 @@ class ShaderShape(ShaderGL):
         spotlight_enabled: bool = True,
         shadow_extents: float = 10.0,
         exposure: float = 1.6,
+        oit_depth_reference: float = 1.0,
     ):
-        """Update all shader uniforms."""
+        """Update all shader uniforms.
+
+        Args:
+            oit_depth_reference: Reference distance [m] to the transparent
+                content, used to normalize the weighted-OIT depth weight.
+                Ignored unless this shader was built with transparency enabled.
+        """
         with self:
             # Basic matrices
             self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
@@ -648,6 +667,8 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
+            if self.loc_oit_inv_depth_reference is not None:
+                self._gl.glUniform1f(self.loc_oit_inv_depth_reference, 1.0 / max(float(oit_depth_reference), 1e-6))
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)

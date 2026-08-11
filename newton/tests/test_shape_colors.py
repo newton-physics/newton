@@ -9,6 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.viewer.gl.opengl import RendererGL
+from newton._src.viewer.gl.shaders import _with_shader_define, shape_fragment_shader
 from newton._src.viewer.viewer import MAX_TRIANGLE_OPACITY_GROUPS, Layer
 from newton._src.viewer.viewer_gl import ViewerGL, _compute_shape_vbo_xforms
 from newton.viewer import ViewerNull
@@ -500,6 +501,46 @@ class TestShapeColors(unittest.TestCase):
         shape_shader.assert_called_once_with(RendererGL.gl, enable_transparency=True)
         oit_shader.assert_called_once_with(RendererGL.gl)
         renderer._setup_oit_buffer.assert_called_once_with()
+
+    def test_oit_depth_weight_discriminates_depth(self):
+        """Weight nearer transparent fragments above farther ones.
+
+        Mirrors the weight computed by ``shape_fragment_shader`` in
+        ``newton/_src/viewer/gl/shaders.py``. The previous weight saturated its
+        clamp ceiling at every depth, which reduced the resolve to a plain
+        alpha-weighted average with no depth ordering.
+        """
+
+        def oit_weight(alpha: float, normalized_depth: float) -> float:
+            depth_weight = float(
+                np.clip(
+                    10.0 / (1e-5 + (2.0 * normalized_depth) ** 2 + (0.6 * normalized_depth) ** 6),
+                    1e-2,
+                    3e3,
+                )
+            )
+            return alpha * depth_weight
+
+        for alpha in (0.35, 0.5, 0.55):
+            with self.subTest(alpha=alpha):
+                near = oit_weight(alpha, 0.2)
+                far = oit_weight(alpha, 0.9)
+                self.assertGreater(near, far)
+                # Neither sample may sit on a clamp bound, or ordering is lost again.
+                self.assertLess(near, 3e3 * alpha)
+                self.assertGreater(far, 1e-2 * alpha)
+
+    def test_transparency_shader_normalizes_depth_by_reference_distance(self):
+        """Build the OIT weight from the scene-scale-independent depth uniform."""
+        transparent_source = _with_shader_define(shape_fragment_shader, "ENABLE_TRANSPARENCY")
+
+        self.assertIn("uniform float oit_inv_depth_reference;", transparent_source)
+        self.assertIn("ViewDepth * oit_inv_depth_reference", transparent_source)
+        # The window-space depth weight that saturated its clamp must not come back.
+        self.assertNotIn("1e8", transparent_source)
+        self.assertNotIn("gl_FragCoord.z * 0.9", transparent_source)
+        # The opaque variant compiles the same source without the transparency block.
+        self.assertNotIn("#define ENABLE_TRANSPARENCY", shape_fragment_shader)
 
     def test_ground_plane_keeps_checkerboard_material_with_resolved_shape_colors(self):
         """Verify the ground plane keeps its checkerboard material after color resolution."""

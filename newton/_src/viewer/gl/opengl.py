@@ -2071,6 +2071,7 @@ class RendererGL:
             spotlight_enabled=self.spotlight_enabled,
             shadow_extents=self.shadow_extents,
             exposure=self.exposure,
+            oit_depth_reference=self.camera.pivot_distance,
         )
 
     def _render_scene(
