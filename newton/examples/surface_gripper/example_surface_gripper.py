@@ -193,6 +193,14 @@ BREAK_THRESHOLD_SEAL_RMS = 0.005  # [m]
 # round(BREAK_HOLD_TIME / sim_dt), floored at 1.
 BREAK_HOLD_TIME = 0.033  # [s]
 
+# Grace period after a pad engages, during which the break metric is not checked at all. A fresh seal
+# starts with the gripped surface still standing off the pads, and the seal spends the first moments
+# pulling that gap closed -- a transient that both metrics read as a large overload (the RMS peaks
+# around 20 mm before settling under 4 mm). Without this window a seal would fracture immediately
+# after forming. Expressed as a time so it is independent of the sim rate; the sub-step count is
+# round(BREAK_SETTLE_TIME / sim_dt).
+BREAK_SETTLE_TIME = 0.5  # [s]
+
 
 @wp.kernel
 def update_seal_break_kernel(
@@ -203,9 +211,12 @@ def update_seal_break_kernel(
     pad_engaged_bs_prev: wp.array[wp.vec2i],  # [pads] gripped body/shape last sub-step (``[0] < 0`` = was released)
     break_threshold: float,  # metric above this counts as over-capacity (units depend on the mode)
     break_hold_steps: int,  # sub-steps a pad must stay over threshold before the gripper fractures
+    break_settle_steps: int,  # sub-steps after engaging during which the metric is not checked
     pad_offsets: wp.array[int],  # [grippers+1] start indices: gripper g owns pads [pad_offsets[g] : pad_offsets[g+1]]
-    pad_seal_break_count_prev: wp.array[int],  # [pads] consecutive over-threshold sub-steps from the previous sub-step (read)
-    pad_seal_break_count_curr: wp.array[int],  # [pads] consecutive over-threshold sub-steps for the current sub-step (written)
+    # Both counters are updated in place: one thread per gripper, and a gripper owns its pads outright,
+    # so no other thread reads or writes these slots and no double buffering is needed.
+    pad_seal_break_count: wp.array[int],  # [pads] consecutive over-threshold sub-steps
+    pad_settle_count: wp.array[int],  # [pads] sub-steps engaged so far (see BREAK_SETTLE_TIME)
     # in/out: initialised by update_engagement_signals_kernel; overwritten with the break-logic result
     pad_engaged_bs_curr: wp.array[wp.vec2i],  # [pads] gripper_state_input_curr.pad_engaged_bs
 ):
@@ -223,6 +234,10 @@ def update_seal_break_kernel(
     Geometry-based (True): the pad's RMS perimeter-gap deviation [m] from the pose the seal formed at, i.e.
     how far the gripped surface has pulled away from the contact perimeter since engagement. A pad that is not
     engaged or preparing reports -1, which never exceeds a positive threshold.
+
+    Neither metric is checked for the first break_settle_steps sub-steps after a pad engages: a fresh
+    seal is still pulling the gripped surface onto the pads, and that transient reads as a large
+    overload under both metrics (see BREAK_SETTLE_TIME).
     """
     g = wp.tid()
     lo = pad_offsets[g]  # this gripper's pads are [lo, hi)
@@ -231,8 +246,13 @@ def update_seal_break_kernel(
     any_broken = wp.bool(False)
     for p in range(lo, hi):
         if not engaged:
-            pad_seal_break_count_curr[p] = 0
+            pad_seal_break_count[p] = 0
+            pad_settle_count[p] = 0
         elif pad_engaged_bs_prev[p][0] >= 0:
+            pad_settle_count[p] = pad_settle_count[p] + 1
+            if pad_settle_count[p] < break_settle_steps:
+                pad_seal_break_count[p] = 0  # still settling: the metric is not meaningful yet
+                continue
             if break_on_seal_quality:
                 metric = pad_seal_quality_rms[p]  # [m]; -1 when the pad is neither engaged nor preparing
             else:
@@ -248,13 +268,14 @@ def update_seal_break_kernel(
                             metric = ratio
 
             if metric > break_threshold:
-                pad_seal_break_count_curr[p] = pad_seal_break_count_prev[p] + 1
-                if pad_seal_break_count_curr[p] >= break_hold_steps:
+                pad_seal_break_count[p] = pad_seal_break_count[p] + 1
+                if pad_seal_break_count[p] >= break_hold_steps:
                     any_broken = True
             else:
-                pad_seal_break_count_curr[p] = 0
+                pad_seal_break_count[p] = 0
         else:
-            pad_seal_break_count_curr[p] = 0
+            pad_seal_break_count[p] = 0
+            pad_settle_count[p] = 0  # just engaged this sub-step: start the settle window
     hold = engaged and not any_broken
     for p in range(lo, hi):
         if not hold:
@@ -613,13 +634,16 @@ def update_engagement_signals(
 
 
 class ExampleState:
-    """Per-gripper recording signals and counters, double-buffered as example_state_prev / example_state_curr."""
+    """Per-gripper recording signals, double-buffered as example_state_prev / example_state_curr.
 
-    def __init__(self, n_grippers: int, n_pads: int):
+    Only signals whose rising or falling edge matters live here -- the break-logic counters do not,
+    because each pad is written by exactly one thread and so can be updated in place.
+    """
+
+    def __init__(self, n_grippers: int):
         self.gripper_command_engaged_wp = wp.zeros(n_grippers, dtype=wp.bool)    # engagement command (ro[0])
         self.gripper_command_preparing_wp = wp.zeros(n_grippers, dtype=wp.bool)  # preparing-to-engage flag (ro[2])
         self.gripper_curr_box_wp = wp.zeros(n_grippers, dtype=wp.int32)          # current box index
-        self.pad_seal_break_count_wp = wp.zeros(n_pads, dtype=wp.int32)          # consecutive over-threshold sub-steps per pad
 
 
 class Example:
@@ -634,6 +658,7 @@ class Example:
         self.sim_substeps = max(1, round(self.frame_dt * SIM_HZ))
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.break_hold_steps = max(1, round(BREAK_HOLD_TIME / self.sim_dt))  # debounce span in sub-steps
+        self.break_settle_steps = round(BREAK_SETTLE_TIME / self.sim_dt)  # grace span in sub-steps (0 disables it)
         # The two break metrics have different units, so each carries its own threshold.
         if BREAK_ON_SEAL_QUALITY:
             self.break_threshold = BREAK_THRESHOLD_SEAL_RMS  # RMS perimeter-gap deviation [m]
@@ -784,8 +809,12 @@ class Example:
         # Create ExampleState instances.
         n_grippers = self.gripper_model.gripper_body_id.shape[0]
         n_pads = self.gripper_model.pad_xform.shape[0]
-        self.example_state_prev = ExampleState(n_grippers, n_pads)
-        self.example_state_curr = ExampleState(n_grippers, n_pads)
+        self.example_state_prev = ExampleState(n_grippers)
+        self.example_state_curr = ExampleState(n_grippers)
+        # Break-logic counters. Not in ExampleState: they are updated in place, so they must not be
+        # swapped between sub-steps.
+        self.pad_seal_break_count_wp = wp.zeros(n_pads, dtype=wp.int32)  # consecutive over-threshold sub-steps per pad
+        self.pad_settle_count_wp = wp.zeros(n_pads, dtype=wp.int32)  # sub-steps a pad has been engaged
 
         # Boxes (panel or crates) are picked in strict order.
         # For each world, compute the global body ids and global shape ids of the boxes.
@@ -957,9 +986,10 @@ class Example:
                     self.gripper_state_input_prev.pad_engaged_bs,
                     float(self.break_threshold),
                     int(self.break_hold_steps),
+                    int(self.break_settle_steps),
                     self.pad_offsets_wp,
-                    self.example_state_prev.pad_seal_break_count_wp,
-                    self.example_state_curr.pad_seal_break_count_wp,
+                    self.pad_seal_break_count_wp,
+                    self.pad_settle_count_wp,
                 ],
                 outputs=[self.gripper_state_input_curr.pad_engaged_bs],
             )
