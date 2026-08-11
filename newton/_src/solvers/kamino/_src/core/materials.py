@@ -39,7 +39,6 @@ from .types import Descriptor
 ###
 
 __all__ = [
-    "DEFAULT_DENSITY",
     "DEFAULT_FRICTION",
     "DEFAULT_RESTITUTION",
     "MaterialDescriptor",
@@ -53,12 +52,6 @@ __all__ = [
 ###
 # Constants
 ###
-
-DEFAULT_DENSITY = 1000.0
-"""
-The global default density for materials, in kg/m^3.
-Equals ``1000.0`` kg/m^3.
-"""
 
 DEFAULT_RESTITUTION = 0.0
 """
@@ -122,17 +115,13 @@ class MaterialDescriptor(Descriptor):
     """
     A container to represent a managed material.
 
-    This descriptor holds both intrinsic and extrinsic properties of a material. While the former
-    are truly dependent on the material itself (e.g., density), the latter are actually dependent
-    on the pairwise interactions of the material with others (e.g., friction, restitution). These
-    extrinsic properties are stored here to support model specifications such as USD which
-    currently do not support material-pair definitions.
+    To support model specifications such as USD (which currently do not support material-pair
+    definitions), this descriptor holds extrinsic properties of a material (e.g., friction, restitution),
+    which are actually dependent on the pairwise interactions of the material with others.
 
     Attributes:
         name: The name of the material.
         uid: The unique identifier (UUID) of the material.
-        density: The density of the material [kg/m³].
-            Defaults to the global default of ``1000.0`` kg/m³.
         restitution: The coefficient of restitution, according to the Newtonian impact model.
             Defaults to the global default of ``0.0``.
         static_friction: The coefficient of static friction, according to the Coulomb friction model.
@@ -148,12 +137,6 @@ class MaterialDescriptor(Descriptor):
     ###
     # Attributes
     ###
-
-    density: float = DEFAULT_DENSITY
-    """
-    The density of the material, in kg/m^3.
-    Defaults to the global default of ``1000.0`` kg/m^3.
-    """
 
     restitution: float = DEFAULT_RESTITUTION
     """
@@ -196,7 +179,6 @@ class MaterialDescriptor(Descriptor):
             f"MaterialDescriptor(\n"
             f"name: {self.name},\n"
             f"uid: {self.uid},\n"
-            f"density: {self.density},\n"
             f"restitution: {self.restitution},\n"
             f"static_friction: {self.static_friction},\n"
             f"dynamic_friction: {self.dynamic_friction}\n"
@@ -254,8 +236,6 @@ class MaterialsModel:
 
     Attributes:
         num_materials: Total number of materials represented in the model.
-        density: Array of material density values of each registered material.
-            Shape of ``(num_materials,)``.
         restitution: Array of restitution coefficients for each registered material.
             Shape of ``(num_materials,)``.
         static_friction: Array of static friction coefficients for each registered material.
@@ -266,12 +246,6 @@ class MaterialsModel:
 
     num_materials: int = 0
     """Total number of materials represented in the model."""
-
-    density: wp.array[wp.float32] | None = None
-    """
-    Array of material density values of each registered material.
-    Shape of ``(num_materials,)``.
-    """
 
     restitution: wp.array[wp.float32] | None = None
     """

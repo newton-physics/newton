@@ -240,10 +240,9 @@ class SolutionMetricsData:
     """
     The largest constraint violation residual across all contact constraints.
 
-    Computed as the maximum absolute value (i.e. infinity-norm) over contact constraint residuals.
-
-    Equivalent to `r_cts_contacts := || d_k ||_inf`, where `d_k` would be an array of
-    contact penetrations extracted from the `gapfunc` elements of :class:`ContactsKaminoData`.
+    Equivalent to `r_cts_contacts := max_k max(0, -d_k)`, where `d_k` is the
+    margin-shifted signed distance stored in the ``w`` component of the contact
+    `gapfunc`. Negative `d_k` denotes penetration.
 
     Shape of ``(num_worlds,)``.
     """
@@ -591,7 +590,7 @@ def compute_vector_difference_infnorm(
 def _compute_eom_residual(
     # Inputs
     model_time_dt: wp.array[wp.float32],
-    model_gravity: wp.array[wp.vec4f],
+    model_gravity: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     state_bodies_I_i: wp.array[wp.mat33f],
@@ -615,8 +614,7 @@ def _compute_eom_residual(
 
     # Retrieve the time step
     dt = model_time_dt[wid]
-    gravity = model_gravity[wid]
-    g = gravity.w * wp.vec3f(gravity.x, gravity.y, gravity.z)
+    g = model_gravity[wid]
 
     # Decompose into linear and angular parts
     f_i = wp.spatial_top(w_i)
@@ -872,12 +870,12 @@ def _compute_cts_contacts_residual(
     wcid = contact_cid[cid]
     gapfunc = contact_gapfunc[cid]
 
-    # Compute the per-contact constraint residual (infinity-norm)
-    r_cts_contacts_k = wp.abs(gapfunc[3])
+    # Compute unilateral penetration depth from the margin-shifted signed distance.
+    r_cts_contacts_k = wp.max(0.0, -gapfunc[3])
 
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_cts_contacts, wid, r_cts_contacts_k)
-    if r_cts_contacts_k >= previous_max:
+    if r_cts_contacts_k > 0.0 and r_cts_contacts_k >= previous_max:
         wp.atomic_exch(metric_r_cts_contacts_argmax, wid, wcid)
 
 

@@ -9,6 +9,12 @@
 # orientations (X/Y axis) and sinusoidal waviness. Tests multi-body contact
 # resolution, stacking stability, and friction in dense cable assemblies.
 #
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_pile
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_pile --test --viewer null
+#
 ###########################################################################
 
 import math
@@ -159,8 +165,8 @@ class Example:
         builder.color()
 
         self.model = builder.finalize()
-        # Size persistent contact history before CUDA graph capture.
-        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        # Size persistent contact history before graph capture.
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="sticky")
         self.contacts = self.collision_pipeline.contacts()
 
         self.solver = newton.solvers.SolverVBD(
@@ -175,6 +181,8 @@ class Example:
         self.control = self.model.control()
 
         self.viewer.set_model(self.model)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.fov = 40.0
 
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:

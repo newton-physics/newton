@@ -106,107 +106,41 @@ class TestModelAttributeSpecs(unittest.TestCase):
         )
 
 
-class TestModelBuilderDeprecations(unittest.TestCase):
-    def test_joint_target_pos_vel_aliases_warn(self):
-        """Legacy ``joint_target_pos`` / ``joint_target_vel`` warn under the
-        default flag and raise under ``use_coord_layout_targets=True``;
-        ``joint_target_q`` / ``joint_target_qd`` are always silent. The Model
-        snapshot freezes the flag at construction, so each branch builds its
-        own model under the corresponding flag value."""
+class TestParallelJointWarning(unittest.TestCase):
+    """Warn on parallel joints between the same pair of bodies."""
 
-        def _build_revolute_model():
-            builder = ModelBuilder()
-            base = builder.add_link(mass=1.0)
-            j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
-            builder.add_articulation([j])
-            return builder.finalize()
+    def test_free_parallel_warns(self):
+        """Warn when an explicit joint parallels an implicit FREE joint."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0, label="Sun")
 
-        prev_flag = newton.use_coord_layout_targets
-        try:
-            newton.use_coord_layout_targets = False
-            model = _build_revolute_model()
-            control = newton.Control()
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                _ = control.joint_target_pos
-                _ = control.joint_target_vel
-                _ = model.joint_target_pos
-                _ = model.joint_target_vel
-            deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-            self.assertEqual(len(deprecations), 4)
-            self.assertTrue(any("Control.joint_target_pos" in str(w.message) for w in deprecations))
-            self.assertTrue(any("Control.joint_target_vel" in str(w.message) for w in deprecations))
-            self.assertTrue(any("Model.joint_target_pos" in str(w.message) for w in deprecations))
-            self.assertTrue(any("Model.joint_target_vel" in str(w.message) for w in deprecations))
+        expected_warning_line = inspect.currentframe().f_lineno + 2
+        with self.assertWarnsRegex(UserWarning, r"Sun.*FREE.*inconsistent") as warning:
+            builder.add_joint_revolute(parent=-1, child=body)
+        self.assertEqual(warning.filename, __file__)
+        self.assertEqual(warning.lineno, expected_warning_line)
 
-            newton.use_coord_layout_targets = True
-            model = _build_revolute_model()
-            control = newton.Control()
-            with self.assertRaises(AttributeError):
-                _ = control.joint_target_pos
-            with self.assertRaises(AttributeError):
-                _ = control.joint_target_vel
-            with self.assertRaises(AttributeError):
-                _ = model.joint_target_pos
-            with self.assertRaises(AttributeError):
-                _ = model.joint_target_vel
-        finally:
-            newton.use_coord_layout_targets = prev_flag
+    def test_non_free_parallel_warns_undefined(self):
+        """Warn when two non-FREE joints connect the same bodies."""
+        builder = ModelBuilder()
+        link = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=link)
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            _ = control.joint_target_q
-            _ = control.joint_target_qd
-            _ = model.joint_target_q
-            _ = model.joint_target_qd
-        self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
+        expected_warning_line = inspect.currentframe().f_lineno + 2
+        with self.assertWarnsRegex(UserWarning, "undefined semantics") as warning:
+            builder.add_joint_prismatic(parent=-1, child=link)
+        self.assertEqual(warning.filename, __file__)
+        self.assertEqual(warning.lineno, expected_warning_line)
 
-    def test_model_builder_joint_target_pos_vel_setters_warn_and_forward(self):
-        prev_flag = newton.use_coord_layout_targets
-        try:
-            newton.use_coord_layout_targets = False
+    def test_reversed_parent_child_warns_undefined(self):
+        """Warn when reversed joints connect the same bodies."""
+        builder = ModelBuilder()
+        body_a = builder.add_link(mass=1.0, label="A")
+        body_b = builder.add_link(mass=1.0, label="B")
+        builder.add_joint_revolute(parent=body_a, child=body_b)
 
-            builder = ModelBuilder()
-            inertia = np.eye(3, dtype=np.float32)
-            b0 = builder.add_link(mass=1.0, inertia=inertia)
-            j_free = builder.add_joint_free(child=b0)
-            b1 = builder.add_link(mass=1.0, inertia=inertia)
-            j_ball = builder.add_joint_ball(parent=-1, child=b1)
-            b2 = builder.add_link(mass=1.0, inertia=inertia)
-            j_revolute = builder.add_joint_revolute(parent=b1, child=b2, axis=newton.Axis.Z)
-            builder.add_articulation([j_free])
-            builder.add_articulation([j_ball, j_revolute])
-
-            target_pos = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3, -0.4, 0.5, 0.6, 0.7]
-            target_vel = [10.0 + i for i in range(builder.joint_dof_count)]
-
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                builder.joint_target_pos = target_pos
-                builder.joint_target_vel = target_vel
-
-            deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-            self.assertEqual(len(deprecations), 2)
-            self.assertTrue(any("ModelBuilder.joint_target_pos" in str(w.message) for w in deprecations))
-            self.assertTrue(any("ModelBuilder.joint_target_vel" in str(w.message) for w in deprecations))
-
-            free_q_start = builder.joint_q_start[j_free]
-            ball_q_start = builder.joint_q_start[j_ball]
-            self.assertEqual(builder.joint_target_q[free_q_start + 6], 1.0)
-            self.assertEqual(builder.joint_target_q[ball_q_start + 3], 1.0)
-
-            model = builder.finalize(skip_all_validations=True)
-            np.testing.assert_allclose(model.joint_target_q.numpy(), target_pos, rtol=0.0, atol=1e-6)
-            np.testing.assert_allclose(model.joint_target_qd.numpy(), target_vel, rtol=0.0, atol=1e-6)
-
-            newton.use_coord_layout_targets = True
-            coord_builder = ModelBuilder()
-            with self.assertRaises(AttributeError):
-                coord_builder.joint_target_pos = []
-            with self.assertRaises(AttributeError):
-                coord_builder.joint_target_vel = []
-        finally:
-            newton.use_coord_layout_targets = prev_flag
+        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+            builder.add_joint_prismatic(parent=body_b, child=body_a)
 
 
 class TestModelBuilderBvhConstructor(unittest.TestCase):
@@ -215,6 +149,7 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         builder.default_bvh_cfg.mesh_constructor = "cubql"
         builder.default_bvh_cfg.gaussian_constructor = "sah"
         builder.default_bvh_cfg.shape_constructor = "lbvh"
+        builder.default_bvh_cfg.shape_flags = newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES
 
         mesh = newton.Mesh(
             vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
@@ -239,7 +174,12 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         wp_mesh.assert_called_once()
         self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], "cubql")
         finalize.assert_called_once_with(gaussian, device="cpu", bvh_constructor="sah")
-        build_shapes.assert_called_once_with(model, model, bvh_constructor="lbvh")
+        build_shapes.assert_called_once_with(
+            model,
+            model,
+            bvh_constructor="lbvh",
+            shape_flags=newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES,
+        )
 
     def test_gaussian_finalize_forwards_bvh_constructor_to_warp_bvh(self):
         gaussian = newton.Gaussian(
@@ -978,6 +918,235 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[extra_shape], shape_attr, places=6)
 
+    def test_mesh_approximation_convex_decomposition_splits_disconnected_components(self):
+        """Split disconnected components before convex decomposition."""
+
+        def cube(offset=(0.0, 0.0, 0.0), start=0):
+            vertices = np.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [1.0, 0.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                    [0.0, 1.0, 1.0],
+                ],
+                dtype=np.float32,
+            )
+            vertices += np.asarray(offset, dtype=np.float32)
+            faces = np.array(
+                [
+                    [0, 1, 2],
+                    [0, 2, 3],
+                    [4, 6, 5],
+                    [4, 7, 6],
+                    [1, 5, 6],
+                    [1, 6, 2],
+                    [0, 3, 7],
+                    [0, 7, 4],
+                    [3, 2, 6],
+                    [3, 6, 7],
+                    [0, 4, 5],
+                    [0, 5, 1],
+                ],
+                dtype=np.int32,
+            )
+            return vertices, faces + start
+
+        vertices_a, faces_a = cube()
+        vertices_b, faces_b = cube(offset=(3.0, 0.0, 0.0), start=len(vertices_a))
+        vertices = np.concatenate((vertices_a, vertices_b), axis=0)
+        mesh = newton.Mesh(
+            vertices,
+            np.concatenate((faces_a, faces_b), axis=0).flatten(),
+            normals=np.ones_like(vertices),
+            uvs=np.ones((len(vertices), 2), dtype=np.float32),
+            compute_inertia=False,
+        )
+
+        class FakeBackendMesh:
+            def __init__(self, vertices, faces):
+                self.vertices = vertices
+                self.faces = faces
+
+        for method in ("coacd", "vhacd"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                shape = builder.add_shape_mesh(body=-1, mesh=mesh, label="disconnected")
+                calls = []
+
+                def fake_decompose(backend_mesh, _backend_method=method, _calls=calls, **_kwargs):
+                    _calls.append((len(backend_mesh.vertices), len(backend_mesh.faces)))
+                    vertices = np.asarray(backend_mesh.vertices).copy()
+                    faces = np.asarray(backend_mesh.faces).copy()
+                    if _backend_method == "coacd":
+                        return [(vertices, faces)]
+                    return [{"vertices": vertices, "faces": faces}]
+
+                if method == "coacd":
+                    fake_backend = SimpleNamespace(Mesh=FakeBackendMesh, run_coacd=fake_decompose)
+                else:
+                    fake_backend = SimpleNamespace(
+                        Trimesh=FakeBackendMesh,
+                        decomposition=SimpleNamespace(convex_decomposition=fake_decompose),
+                    )
+
+                module_name = "coacd" if method == "coacd" else "trimesh"
+                with patch_sys_module(module_name, fake_backend):
+                    builder.approximate_meshes(method=method, shape_indices=[shape], raise_on_failure=True)
+
+                self.assertEqual(calls, [(8, 12), (8, 12)])
+                self.assertEqual(builder.shape_count, 2)
+                self.assertEqual(builder.shape_type[0], newton.GeoType.CONVEX_MESH)
+                self.assertEqual(builder.shape_type[1], newton.GeoType.CONVEX_MESH)
+                centers_x = sorted(float(np.mean(source.vertices[:, 0])) for source in builder.shape_source)
+                np.testing.assert_allclose(centers_x, [0.5, 3.5], atol=1e-6, rtol=1e-6)
+                for source in builder.shape_source:
+                    self.assertIsNone(source.normals)
+                    self.assertIsNone(source.uvs)
+
+    def test_mesh_approximation_convex_decomposition_keeps_coincident_vertices_connected(self):
+        """Keep duplicated seam vertices in one decomposition component."""
+
+        mesh = newton.Mesh.create_box(1.0)
+        self.assertEqual(len(mesh.vertices), 24)
+
+        class FakeBackendMesh:
+            def __init__(self, vertices, faces):
+                self.vertices = vertices
+                self.faces = faces
+
+        for method in ("coacd", "vhacd"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+                calls = []
+
+                def fake_decompose(backend_mesh, _backend_method=method, _calls=calls, **_kwargs):
+                    _calls.append((len(backend_mesh.vertices), len(backend_mesh.faces)))
+                    vertices = np.asarray(backend_mesh.vertices).copy()
+                    faces = np.asarray(backend_mesh.faces).copy()
+                    if _backend_method == "coacd":
+                        return [(vertices, faces)]
+                    return [{"vertices": vertices, "faces": faces}]
+
+                if method == "coacd":
+                    fake_backend = SimpleNamespace(Mesh=FakeBackendMesh, run_coacd=fake_decompose)
+                    module_name = "coacd"
+                else:
+                    fake_backend = SimpleNamespace(
+                        Trimesh=FakeBackendMesh,
+                        decomposition=SimpleNamespace(convex_decomposition=fake_decompose),
+                    )
+                    module_name = "trimesh"
+
+                with patch_sys_module(module_name, fake_backend):
+                    builder.approximate_meshes(method=method, shape_indices=[shape], raise_on_failure=True)
+
+                self.assertEqual(calls, [(8, 12)])
+                self.assertEqual(builder.shape_count, 1)
+
+    def test_mesh_approximation_convex_decomposition_preserves_shape_settings(self):
+        """Preserve source settings without adding mass to extra convex parts."""
+
+        class FakeCoacdMesh:
+            def __init__(self, vertices, faces):
+                self.vertices = vertices
+                self.faces = faces
+
+        def fake_decompose(backend_mesh, **_kwargs):
+            vertices = np.asarray(backend_mesh.vertices)
+            faces = np.asarray(backend_mesh.faces)
+            return [(vertices.copy(), faces.copy()), (vertices.copy(), faces.copy())]
+
+        fake_coacd = SimpleNamespace(Mesh=FakeCoacdMesh, run_coacd=fake_decompose)
+        mesh = newton.Mesh.create_box(
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+        )
+
+        for collision_filter_parent in (False, True):
+            with self.subTest(collision_filter_parent=collision_filter_parent):
+                builder = ModelBuilder()
+                parent = builder.add_link()
+                child = builder.add_link()
+                joint_free = builder.add_joint_free(parent=-1, child=parent)
+                joint_child = builder.add_joint_revolute(parent=parent, child=child, axis=(0.0, 0.0, 1.0))
+                builder.add_articulation([joint_free, joint_child])
+                parent_shape = builder.add_shape_sphere(body=parent, radius=0.1)
+                cfg = ModelBuilder.ShapeConfig(
+                    density=4.0,
+                    ke=321.0,
+                    kd=32.0,
+                    mu=0.4,
+                    gap=0.123,
+                    collision_group=7,
+                    collision_filter_parent=collision_filter_parent,
+                    force_sdf=True,
+                )
+                shape = builder.add_shape_mesh(body=child, mesh=mesh, cfg=cfg)
+                body_mass = builder.body_mass[child]
+
+                with patch_sys_module("coacd", fake_coacd):
+                    builder.approximate_meshes(method="coacd", shape_indices=[shape], raise_on_failure=True)
+
+                extra_shape = shape + 1
+                self.assertAlmostEqual(builder.body_mass[child], body_mass)
+                self.assertEqual(builder.shape_flags[extra_shape], builder.shape_flags[shape])
+                self.assertEqual(builder.shape_gap[extra_shape], builder.shape_gap[shape])
+                self.assertEqual(builder.shape_collision_group[extra_shape], builder.shape_collision_group[shape])
+                self.assertEqual(builder.shape_material_ke[extra_shape], builder.shape_material_ke[shape])
+                self.assertEqual(builder.shape_material_kd[extra_shape], builder.shape_material_kd[shape])
+                self.assertEqual(builder.shape_material_mu[extra_shape], builder.shape_material_mu[shape])
+                self.assertEqual(builder.shape_force_sdf[extra_shape], builder.shape_force_sdf[shape])
+                self.assertNotIsInstance(builder._shape_collision_filter_pairs, list)  # pyright: ignore[reportPrivateUsage]
+
+                filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
+                self.assertIn(tuple(sorted((shape, extra_shape))), filter_pairs)
+                parent_pair = tuple(sorted((parent_shape, extra_shape)))
+                self.assertEqual(parent_pair in filter_pairs, collision_filter_parent)
+
+    def test_mesh_approximation_convex_decomposition_preserves_filters_between_generated_parts(self):
+        """Preserve source filters between every generated convex part."""
+
+        class FakeCoacdMesh:
+            def __init__(self, vertices, faces):
+                self.vertices = vertices
+                self.faces = faces
+
+        def fake_decompose(backend_mesh, **_kwargs):
+            vertices = np.asarray(backend_mesh.vertices)
+            faces = np.asarray(backend_mesh.faces)
+            return [(vertices.copy(), faces.copy()), (vertices.copy(), faces.copy())]
+
+        fake_coacd = SimpleNamespace(Mesh=FakeCoacdMesh, run_coacd=fake_decompose)
+        mesh = newton.Mesh.create_box(
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+        )
+        builder = ModelBuilder()
+        body_a = builder.add_body()
+        body_b = builder.add_body()
+        shape_a = builder.add_shape_mesh(body=body_a, mesh=mesh, label="mesh_a")
+        shape_b = builder.add_shape_mesh(body=body_b, mesh=mesh, label="mesh_b")
+        builder.add_shape_collision_filter_pair(shape_a, shape_b)
+
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape_a, shape_b], raise_on_failure=True)
+
+        parts_a = (shape_a, builder.shape_label.index("mesh_a_convex_1"))
+        parts_b = (shape_b, builder.shape_label.index("mesh_b_convex_1"))
+        filter_pairs = {tuple(sorted(pair)) for pair in builder.shape_collision_filter_pairs}
+        for part_a in parts_a:
+            for part_b in parts_b:
+                self.assertIn(tuple(sorted((part_a, part_b))), filter_pairs)
+
     def test_approximate_meshes_collision_filter_child_bodies(self):
         def normalize_pair(a, b):
             return (min(a, b), max(a, b))
@@ -1627,6 +1796,72 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn("999", error_msg)
 
 
+class TestShapeConfigValidation(unittest.TestCase):
+    def test_shape_config_rejects_invalid_density(self):
+        """Reject negative and non-finite density values."""
+        for density in (-1.0, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(density=density):
+                cfg = newton.ModelBuilder.ShapeConfig(density=density)
+
+                with self.assertRaisesRegex(ValueError, "density must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
+        """Reject non-positive and non-finite target voxel sizes."""
+        for target_voxel_size in (0.0, -0.01, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(target_voxel_size=target_voxel_size):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_target_voxel_size=target_voxel_size)
+
+                with self.assertRaisesRegex(ValueError, "sdf_target_voxel_size must be finite and > 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_padding(self):
+        """Reject negative and non-finite SDF padding values."""
+        for padding in (-0.1, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(padding=padding):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_padding=padding)
+
+                with self.assertRaisesRegex(ValueError, "sdf_padding must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_narrow_band_range(self):
+        """Reject malformed and non-finite SDF narrow-band ranges."""
+        cases = [
+            (0.1, 0.2),
+            (-0.1, -0.01),
+            (0.1, -0.1),
+            (-0.1,),
+            (float("nan"), 0.1),
+            (-0.1, float("nan")),
+            (float("-inf"), 0.1),
+            (-0.1, float("inf")),
+        ]
+
+        for narrow_band_range in cases:
+            with self.subTest(narrow_band_range=narrow_band_range):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=narrow_band_range)
+
+                with self.assertRaisesRegex(ValueError, "sdf_narrow_band_range"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_accepts_list_sdf_narrow_band_range(self):
+        """Accept list-based SDF narrow-band ranges."""
+        cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=[-0.1, 0.1])
+
+        cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_max_resolution(self):
+        """Reject invalid SDF maximum resolutions."""
+        cases = [0, -8, 10, 1 << 16]
+
+        for max_resolution in cases:
+            with self.subTest(max_resolution=max_resolution):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=max_resolution)
+
+                with self.assertRaisesRegex(ValueError, "sdf_max_resolution"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+
 class TestModelJoints(unittest.TestCase):
     def test_add_builder_xform_updates_root_free_joint_coordinates(self):
         parent_xform = wp.transform(wp.vec3(0.4, -0.2, 0.1), wp.quat_rpy(0.3, -0.4, 0.2))
@@ -1734,60 +1969,88 @@ class TestModelJoints(unittest.TestCase):
         ``joint_qd`` (DOF). Free and ball joints are where the two layouts
         diverge. Multi-articulation builder also exercises the per-env start
         arrays."""
-        for use_coord in (False, True):
-            prev = newton.use_coord_layout_targets
-            newton.use_coord_layout_targets = use_coord
-            try:
-                builder = ModelBuilder()
-                # env 0: free + revolute (7 coords / 6 DOFs from free)
-                b0 = builder.add_link(mass=1.0)
-                j0_free = builder.add_joint_free(child=b0)
-                b1 = builder.add_link(mass=1.0)
-                j0_rev = builder.add_joint_revolute(parent=b0, child=b1, axis=newton.Axis.Z)
-                builder.add_articulation([j0_free, j0_rev])
-                # env 1: ball + revolute (4 coords / 3 DOFs from ball)
-                b2 = builder.add_link(mass=1.0)
-                j1_ball = builder.add_joint_ball(parent=-1, child=b2)
-                b3 = builder.add_link(mass=1.0)
-                j1_rev = builder.add_joint_revolute(parent=b2, child=b3, axis=newton.Axis.Z)
-                builder.add_articulation([j1_ball, j1_rev])
-                model = builder.finalize()
+        builder = ModelBuilder()
+        # env 0: free + revolute (7 coords / 6 DOFs from free)
+        b0 = builder.add_link(mass=1.0)
+        j0_free = builder.add_joint_free(child=b0)
+        b1 = builder.add_link(mass=1.0)
+        j0_rev = builder.add_joint_revolute(parent=b0, child=b1, axis=newton.Axis.Z)
+        builder.add_articulation([j0_free, j0_rev])
+        # env 1: ball + revolute (4 coords / 3 DOFs from ball)
+        b2 = builder.add_link(mass=1.0)
+        j1_ball = builder.add_joint_ball(parent=-1, child=b2)
+        b3 = builder.add_link(mass=1.0)
+        j1_rev = builder.add_joint_revolute(parent=b2, child=b3, axis=newton.Axis.Z)
+        builder.add_articulation([j1_ball, j1_rev])
+        model = builder.finalize()
 
-                self.assertEqual(model.joint_dof_count, 7 + 4)
-                self.assertEqual(model.joint_coord_count, 8 + 5)
+        self.assertEqual(model.joint_dof_count, 7 + 4)
+        self.assertEqual(model.joint_coord_count, 8 + 5)
 
-                target_q_size = model.joint_coord_count if use_coord else model.joint_dof_count
-                self.assertEqual(model.joint_target_q.shape[0], target_q_size)
-                self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
+        self.assertEqual(model.joint_target_q.shape[0], model.joint_coord_count)
+        self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
 
-                control = model.control()
-                self.assertEqual(control.joint_target_q.shape[0], target_q_size)
-                self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
+        control = model.control()
+        self.assertEqual(control.joint_target_q.shape[0], model.joint_coord_count)
+        self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
 
-                expected_start = model.joint_q_start.numpy() if use_coord else model.joint_qd_start.numpy()
-                np.testing.assert_array_equal(model.joint_target_q_start.numpy(), expected_start)
+        np.testing.assert_array_equal(model.joint_target_q_start.numpy(), model.joint_q_start.numpy())
 
-                if use_coord:
-                    target_q = model.joint_target_q.numpy()
-                    q_starts = model.joint_q_start.numpy()
-                    # env 0 free joint: w-component at offset 6 (3 lin + 3 quat-xyz)
-                    self.assertAlmostEqual(float(target_q[int(q_starts[0]) + 6]), 1.0)
-                    # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
-                    self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
-            finally:
-                newton.use_coord_layout_targets = prev
+        target_q = model.joint_target_q.numpy()
+        q_starts = model.joint_q_start.numpy()
+        # env 0 free joint: w-component at offset 6 (3 lin + 3 quat-xyz)
+        self.assertAlmostEqual(float(target_q[int(q_starts[0]) + 6]), 1.0)
+        # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
+        self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
+
+    def test_legacy_target_layout_warning_uses_finalize_call_site(self):
+        """Verify the legacy target-layout warning and its call-site attribution."""
+        previous_flag = newton.use_coord_layout_targets
+        newton.use_coord_layout_targets = False
+        try:
+            unaffected_builder = ModelBuilder()
+            child = unaffected_builder.add_link(mass=1.0)
+            joint = unaffected_builder.add_joint_revolute(parent=-1, child=child, axis=newton.Axis.Z)
+            unaffected_builder.add_articulation([joint])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                unaffected_builder.finalize()
+            layout_warnings = [
+                warning
+                for warning in caught
+                if issubclass(warning.category, DeprecationWarning)
+                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
+            ]
+            self.assertEqual(layout_warnings, [])
+
+            affected_builder = ModelBuilder()
+            child = affected_builder.add_link(mass=1.0)
+            joint = affected_builder.add_joint_free(child=child)
+            affected_builder.add_articulation([joint])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                warning_line = inspect.currentframe().f_lineno + 1
+                affected_builder.finalize()
+
+            layout_warnings = [
+                warning
+                for warning in caught
+                if issubclass(warning.category, DeprecationWarning)
+                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
+            ]
+            self.assertEqual(len(layout_warnings), 1)
+            self.assertEqual(layout_warnings[0].filename, __file__)
+            self.assertEqual(layout_warnings[0].lineno, warning_line)
+        finally:
+            newton.use_coord_layout_targets = previous_flag
 
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
-        into ``joint_target_q`` under both flag values.
-
-        - Flag=False (legacy DOF): the 3 angular scalars are projected verbatim
-          into the DOF slice (matching the pre-coord-layout behavior).
-        - Flag=True (coord): the 3 angular scalars are interpreted as extrinsic
-          ZYX Euler angles and converted to a unit quaternion via
-          :meth:`ModelBuilder._quat_from_euler_zyx`, matching kamino's
-          DOF→coord conversion.
-        """
+        into the ``joint_target_q`` coord slice: the 3 angular scalars are
+        interpreted as extrinsic ZYX Euler angles and converted to a unit
+        quaternion via :meth:`ModelBuilder._quat_from_euler_zyx`, matching
+        kamino's DOF→coord conversion. FREE linear targets fill the position
+        slice verbatim."""
         ang_targets = (0.1, 0.2, -0.3)
 
         def _make_axes():
@@ -1808,56 +2071,41 @@ class TestModelJoints(unittest.TestCase):
 
         expected_quat = ModelBuilder._quat_from_axis_targets(*ang_targets)
 
-        for use_coord in (False, True):
-            prev = newton.use_coord_layout_targets
-            newton.use_coord_layout_targets = use_coord
-            try:
-                builder = ModelBuilder()
-                # BALL via low-level add_joint with per-axis targets
-                b_ball = builder.add_link(mass=1.0)
-                j_ball = builder.add_joint(
-                    newton.JointType.BALL,
-                    parent=-1,
-                    child=b_ball,
-                    angular_axes=_make_axes(),
-                )
-                # FREE via low-level add_joint with per-axis linear+angular targets
-                b_free = builder.add_link(mass=1.0)
-                j_free = builder.add_joint(
-                    newton.JointType.FREE,
-                    parent=-1,
-                    child=b_free,
-                    linear_axes=_make_linear_axes(),
-                    angular_axes=_make_axes(),
-                )
-                builder.add_articulation([j_ball])
-                builder.add_articulation([j_free])
-                model = builder.finalize()
+        builder = ModelBuilder()
+        # BALL via low-level add_joint with per-axis targets
+        b_ball = builder.add_link(mass=1.0)
+        j_ball = builder.add_joint(
+            newton.JointType.BALL,
+            parent=-1,
+            child=b_ball,
+            angular_axes=_make_axes(),
+        )
+        # FREE via low-level add_joint with per-axis linear+angular targets
+        b_free = builder.add_link(mass=1.0)
+        j_free = builder.add_joint(
+            newton.JointType.FREE,
+            parent=-1,
+            child=b_free,
+            linear_axes=_make_linear_axes(),
+            angular_axes=_make_axes(),
+        )
+        builder.add_articulation([j_ball])
+        builder.add_articulation([j_free])
+        model = builder.finalize()
 
-                target_q = model.joint_target_q.numpy()
+        target_q = model.joint_target_q.numpy()
 
-                if use_coord:
-                    # BALL coord slice = (qx, qy, qz, qw) — full unit quaternion
-                    q_starts = model.joint_q_start.numpy()
-                    b = int(q_starts[j_ball])
-                    np.testing.assert_allclose(target_q[b : b + 4], expected_quat, rtol=0, atol=1e-6)
-                    # FREE coord slice = (px, py, pz, qx, qy, qz, qw)
-                    f = int(q_starts[j_free])
-                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
-                    np.testing.assert_allclose(target_q[f + 3 : f + 7], expected_quat, rtol=0, atol=1e-6)
-                    # Verify unit norm (would only hold post-conversion)
-                    self.assertAlmostEqual(float(np.linalg.norm(target_q[b : b + 4])), 1.0, places=5)
-                    self.assertAlmostEqual(float(np.linalg.norm(target_q[f + 3 : f + 7])), 1.0, places=5)
-                else:
-                    # DOF projection: BALL → 3 raw angular floats; FREE → 3 lin + 3 raw ang
-                    qd_starts = model.joint_qd_start.numpy()
-                    b = int(qd_starts[j_ball])
-                    np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
-                    f = int(qd_starts[j_free])
-                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
-                    np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
-            finally:
-                newton.use_coord_layout_targets = prev
+        # BALL coord slice = (qx, qy, qz, qw) — full unit quaternion
+        q_starts = model.joint_q_start.numpy()
+        b = int(q_starts[j_ball])
+        np.testing.assert_allclose(target_q[b : b + 4], expected_quat, rtol=0, atol=1e-6)
+        # FREE coord slice = (px, py, pz, qx, qy, qz, qw)
+        f = int(q_starts[j_free])
+        np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
+        np.testing.assert_allclose(target_q[f + 3 : f + 7], expected_quat, rtol=0, atol=1e-6)
+        # Verify unit norm (would only hold post-conversion)
+        self.assertAlmostEqual(float(np.linalg.norm(target_q[b : b + 4])), 1.0, places=5)
+        self.assertAlmostEqual(float(np.linalg.norm(target_q[f + 3 : f + 7])), 1.0, places=5)
 
     def test_collapse_keeps_attachment_anchored_rod_joints(self):
         """collapse_fixed_joints must not delete non-fixed joints: a rod anchored
@@ -1887,7 +2135,8 @@ class TestModelJoints(unittest.TestCase):
             positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
         )
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
-        builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
+        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+            builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
         count_before = builder.joint_count
         builder.collapse_fixed_joints()
         self.assertEqual(builder.joint_count, count_before)
@@ -1905,10 +2154,12 @@ class TestModelJoints(unittest.TestCase):
                 builder.add_shape_sphere(c, radius=0.1)
                 if order == "fixed_second":
                     builder.add_joint_ball(parent=p, child=c, label="ball")
-                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                    with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+                        builder.add_joint_fixed(parent=p, child=c, label="fix")
                 else:
                     builder.add_joint_fixed(parent=p, child=c, label="fix")
-                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                    with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+                        builder.add_joint_ball(parent=p, child=c, label="ball")
                 keep = ["fix"] if order == "fixed_kept_first" else []
                 builder.collapse_fixed_joints(joints_to_keep=keep)
                 labels = list(builder.joint_label)
@@ -1930,8 +2181,8 @@ class TestModelJoints(unittest.TestCase):
         anchor joint reaching a rod mid-chain cannot scramble recorded body ranges."""
         builder = newton.ModelBuilder()
         # A rigid pair joined by a fixed joint: something real to collapse.
-        b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="base")
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), label="tool")
+        b0 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="base")
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), label="tool")
         builder.add_shape_sphere(b0, radius=0.1)
         builder.add_shape_sphere(b1, radius=0.1)
         builder.add_joint_free(b0)
@@ -2879,10 +3130,10 @@ class TestModelJoints(unittest.TestCase):
         """Test programmatic creation of mimic constraints."""
         builder = newton.ModelBuilder()
 
-        # Create two joints
-        b0 = builder.add_body()
-        b1 = builder.add_body()
-        b2 = builder.add_body()
+        # Create three links without implicit FREE joints.
+        b0 = builder.add_link()
+        b1 = builder.add_link()
+        b2 = builder.add_link()
 
         j1 = builder.add_joint_revolute(
             parent=-1,
@@ -2902,6 +3153,9 @@ class TestModelJoints(unittest.TestCase):
             axis=(0, 0, 1),
             label="j3",
         )
+        builder.add_articulation([j1])
+        builder.add_articulation([j2])
+        builder.add_articulation([j3])
 
         # Add mimic constraints
         _c1 = builder.add_constraint_mimic(
@@ -2943,11 +3197,11 @@ class TestModelJoints(unittest.TestCase):
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""
         builder = ModelBuilder()
-        parent_body = builder.add_body(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
+        parent_body = builder.add_link(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
         parent_joint = builder.add_joint_fixed(parent=-1, child=parent_body)
         builder.add_articulation([parent_joint])  # Register parent body into an articulation
 
-        child_body = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
+        child_body = builder.add_link(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
         joint_id = builder._add_base_joint(child_body, parent=parent_body, floating=False)
 
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
@@ -3389,6 +3643,111 @@ class TestModelWorld(unittest.TestCase):
 
 
 class TestModelValidation(unittest.TestCase):
+    def test_add_particles_rejects_mismatched_lengths(self):
+        valid = {
+            "pos": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
+            "vel": [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
+            "mass": [1.0, 1.0],
+            "radius": [0.1, 0.1],
+            "flags": [newton.ParticleFlags.ACTIVE, newton.ParticleFlags.ACTIVE],
+        }
+
+        for name in ("vel", "mass", "radius", "flags"):
+            with self.subTest(name=name):
+                builder = ModelBuilder()
+                values = dict(valid)
+                values[name] = values[name][:-1]
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*2.*1"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        for name in ("vel", "mass"):
+            with self.subTest(name=name, value=None):
+                builder = ModelBuilder()
+                values = dict(valid)
+                values[name] = None
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*2.*None"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        for name, value in (("vel", (0.0, 0.0, 0.0)), ("mass", 1.0)):
+            with self.subTest(name=name, empty_pos=True):
+                builder = ModelBuilder()
+                values = {"pos": [], "vel": [], "mass": []}
+                values[name] = [value]
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*0.*1"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        builder = ModelBuilder()
+        builder.add_particle((2.0, 0.0, 0.0), (0.0, 0.0, 0.0), 2.0)
+        expected_arrays = (
+            list(builder.particle_q),
+            list(builder.particle_qd),
+            list(builder.particle_mass),
+            list(builder.particle_radius),
+            list(builder.particle_flags),
+            list(builder.particle_world),
+        )
+        with self.assertRaisesRegex(ValueError, r"vel.*2.*1"):
+            builder.add_particles(
+                pos=valid["pos"],
+                vel=valid["vel"][:-1],
+                mass=valid["mass"],
+            )
+        actual_arrays = (
+            builder.particle_q,
+            builder.particle_qd,
+            builder.particle_mass,
+            builder.particle_radius,
+            builder.particle_flags,
+            builder.particle_world,
+        )
+        for actual, expected in zip(actual_arrays, expected_arrays, strict=True):
+            self.assertEqual(actual, expected)
+
+        builder.add_particles(pos=valid["pos"], vel=valid["vel"], mass=valid["mass"])
+        self.assertEqual(len(builder.particle_radius), 3)
+        self.assertEqual(len(builder.particle_flags), 3)
+
+    def test_finalize_rejects_mismatched_particle_arrays(self):
+        for name in ("particle_qd", "particle_mass", "particle_radius", "particle_flags", "particle_world"):
+            with self.subTest(name=name):
+                builder = ModelBuilder()
+                builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+                getattr(builder, name).clear()
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*particle_count"):
+                    builder.finalize(device="cpu")
+
+        builder = ModelBuilder()
+        builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+        builder.particle_qd.clear()
+        model = builder.finalize(device="cpu", skip_validation_structure=True)
+        self.assertEqual(model.particle_count, 1)
+        self.assertEqual(model.particle_qd.shape, (0,))
+
     def test_lock_inertia_on_shape_addition(self):
         builder = ModelBuilder()
         shape_cfg = ModelBuilder.ShapeConfig(density=1000.0)
@@ -3538,7 +3897,7 @@ class TestModelValidation(unittest.TestCase):
     def test_control_clear(self):
         """Test that Control.clear() works without errors."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_link()
         joint = builder.add_joint_free(child=body)
         builder.add_articulation([joint])
 
@@ -3548,6 +3907,54 @@ class TestModelValidation(unittest.TestCase):
             control.clear()
         except Exception as e:
             self.fail(f"control.clear() raised {type(e).__name__}: {e}")
+
+
+class TestRemovedJointTargetAliases(unittest.TestCase):
+    """The 1.3-era ``joint_target_pos`` / ``joint_target_vel`` aliases are gone.
+
+    They are shadowed by tombstone descriptors rather than simply deleted so
+    that code written against the old API fails loudly. A plain deletion would
+    let ``obj.joint_target_pos = targets`` succeed as a fresh instance
+    attribute while ``joint_target_q`` stayed untouched, silently dropping the
+    requested targets.
+    """
+
+    ALIASES = (("joint_target_pos", "joint_target_q"), ("joint_target_vel", "joint_target_qd"))
+
+    def _owners(self):
+        builder = ModelBuilder()
+        base = builder.add_link(mass=1.0)
+        j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
+        builder.add_articulation([j])
+        model = builder.finalize()
+        return (("Model", model), ("Control", model.control()), ("ModelBuilder", ModelBuilder()))
+
+    def test_assignment_raises_and_leaves_no_shadow_attribute(self):
+        """Verify assignment to a removed alias raises without shadowing."""
+        for label, obj in self._owners():
+            for alias, replacement in self.ALIASES:
+                with self.subTest(owner=label, alias=alias):
+                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
+                        setattr(obj, alias, [1.0, 2.0])
+                    self.assertNotIn(alias, vars(obj))
+
+    def test_read_raises(self):
+        """Verify reading a removed alias raises and names its replacement."""
+        for label, obj in self._owners():
+            for alias, replacement in self.ALIASES:
+                with self.subTest(owner=label, alias=alias):
+                    with self.assertRaisesRegex(AttributeError, rf"{label}\.{alias}.*{replacement}"):
+                        getattr(obj, alias)
+                    # Raising AttributeError on read keeps the usual probes well behaved.
+                    self.assertFalse(hasattr(obj, alias))
+                    self.assertEqual(getattr(obj, alias, "default"), "default")
+
+    def test_canonical_names_still_work(self):
+        """Verify replacement attributes remain readable."""
+        for label, obj in self._owners():
+            with self.subTest(owner=label):
+                self.assertIsNotNone(obj.joint_target_q)
+                self.assertIsNotNone(obj.joint_target_qd)
 
 
 if __name__ == "__main__":

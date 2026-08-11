@@ -415,7 +415,9 @@ def jcalc_tau(
             # w = joint_qd[dof_start + i]
             # r = joint_q[coord_start + i]
 
-            tau[dof_start + i] = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
+            j = dof_start + i
+            passive_f = -joint_damping[j] * joint_qd[j]
+            tau[j] = -wp.dot(S_s, body_f_s) + joint_f[j] + passive_f
             # tau -= w * target_kd - r * target_ke
 
         return
@@ -844,7 +846,7 @@ def compute_link_velocity(
     m = I_m[0, 0]
 
     world_idx = body_world[child]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
     f_g = m * world_g
     f_g_s = wp.spatial_vector(f_g, wp.cross(x_com_s, f_g))
 

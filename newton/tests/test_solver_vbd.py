@@ -36,6 +36,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     update_duals_body_body_contacts,
     update_duals_joint,
 )
+from newton.solvers.experimental.coupled import SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, configure_sdf_for_collision_shapes, get_test_devices
 
 devices = get_test_devices()
@@ -297,8 +298,6 @@ def _eval_directional_joint_projection_kernel(
         True,
         2.0,
         P,
-        wp.vec3(0.0),
-        wp.vec3(0.0),
         wp.vec3(5.0, 7.0, 11.0),
         wp.vec3(0.0),
         0.0,
@@ -829,35 +828,11 @@ def test_self_contact_barrier_c2_at_d_min(test, device):
 
 
 def _rigid_contact_history_restore_from_match_index(test, device):
-    """VBD warm-start restores from explicit match_index rows."""
+    """VBD warm-start restores numeric state from explicit match_index rows."""
     with wp.ScopedDevice(device):
         contact_count = wp.array([4], dtype=int, device=device)
         shape0 = wp.array([0, 0, 0, 0], dtype=int, device=device)
         shape1 = wp.array([1, 1, 1, 1], dtype=int, device=device)
-        point0_in = np.array(
-            [
-                [10.0, 0.0, 0.0],
-                [11.0, 0.0, 0.0],
-                [12.0, 0.0, 0.0],
-                [13.0, 0.0, 0.0],
-            ],
-            dtype=np.float32,
-        )
-        point1_in = point0_in + np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        offset0_in = np.array(
-            [
-                [0.0, 0.0, 0.1],
-                [0.0, 0.0, 0.2],
-                [0.0, 0.0, 0.3],
-                [0.0, 0.0, 0.4],
-            ],
-            dtype=np.float32,
-        )
-        offset1_in = -offset0_in
-        point0 = wp.array(point0_in, dtype=wp.vec3, device=device)
-        point1 = wp.array(point1_in, dtype=wp.vec3, device=device)
-        offset0 = wp.array(offset0_in, dtype=wp.vec3, device=device)
-        offset1 = wp.array(offset1_in, dtype=wp.vec3, device=device)
         normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
 
         shape_ke = wp.array([100.0, 200.0], dtype=float, device=device)
@@ -867,12 +842,7 @@ def _rigid_contact_history_restore_from_match_index(test, device):
 
         history = RigidContactHistory()
         history.lambda_ = wp.array([[0.5, 0.0, 1.0], [4.0, 5.0, 6.0], [0.0, 0.0, 7.0]], dtype=wp.vec3, device=device)
-        history.stick_flag = wp.array([0, 1, 2], dtype=wp.int32, device=device)
         history.penalty_k = wp.array([20.0, 30.0, 40.0], dtype=float, device=device)
-        history.point0 = wp.array([[20.0, 0.0, 0.0], [21.0, 0.0, 0.0], [22.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
-        history.point1 = wp.array([[20.0, 0.0, 1.0], [21.0, 0.0, 1.0], [22.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
-        history.offset0 = wp.array([[0.0, 0.0, 0.5], [0.0, 0.0, 0.6], [0.0, 0.0, 0.7]], dtype=wp.vec3, device=device)
-        history.offset1 = wp.array([[0.0, 0.0, -0.5], [0.0, 0.0, -0.6], [0.0, 0.0, -0.7]], dtype=wp.vec3, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3, device=device)
 
         penalty_k = wp.zeros(4, dtype=float, device=device)
@@ -903,10 +873,6 @@ def _rigid_contact_history_restore_from_match_index(test, device):
                 10.0,
             ],
             outputs=[
-                point0,
-                point1,
-                offset0,
-                offset1,
                 penalty_k,
                 lam,
                 material_kd,
@@ -922,50 +888,18 @@ def _rigid_contact_history_restore_from_match_index(test, device):
         np.testing.assert_allclose(material_kd.numpy(), [2.0] * 4)
         np.testing.assert_allclose(material_mu.numpy(), [0.5] * 4)
 
-        point0_out = point0.numpy()
-        point1_out = point1.numpy()
-        offset0_out = offset0.numpy()
-        offset1_out = offset1.numpy()
-        np.testing.assert_allclose(point0_out[0], [22.0, 0.0, 0.0])
-        np.testing.assert_allclose(point1_out[0], [22.0, 0.0, 1.0])
-        np.testing.assert_allclose(offset0_out[0], [0.0, 0.0, 0.7])
-        np.testing.assert_allclose(offset1_out[0], [0.0, 0.0, -0.7])
-        np.testing.assert_allclose(point0_out[2], point0_in[2])
-        np.testing.assert_allclose(point1_out[2], point1_in[2])
-        np.testing.assert_allclose(point0_out[1], point0_in[1])
-        np.testing.assert_allclose(point0_out[3], point0_in[3])
-        np.testing.assert_allclose(offset0_out[1], offset0_in[1])
-        np.testing.assert_allclose(offset0_out[2], offset0_in[2])
-        np.testing.assert_allclose(offset0_out[3], offset0_in[3])
-        np.testing.assert_allclose(offset1_out[1], offset1_in[1])
-        np.testing.assert_allclose(offset1_out[2], offset1_in[2])
-        np.testing.assert_allclose(offset1_out[3], offset1_in[3])
-
 
 def _rigid_contact_history_soft_restores_penalty_only(test, device):
-    """Soft contacts restore penalty state only; saved lambda, points, and offsets stay unused."""
+    """Soft contacts restore penalty state only; saved lambda stays unused."""
     with wp.ScopedDevice(device):
         contact_count = wp.array([1], dtype=int, device=device)
         shape0 = wp.array([0], dtype=int, device=device)
         shape1 = wp.array([1], dtype=int, device=device)
-        point0_in = np.array([[10.0, 0.0, 0.0]], dtype=np.float32)
-        point1_in = np.array([[10.0, 0.0, 1.0]], dtype=np.float32)
-        offset0_in = np.array([[0.0, 0.0, 0.1]], dtype=np.float32)
-        offset1_in = np.array([[0.0, 0.0, -0.1]], dtype=np.float32)
-        point0 = wp.array(point0_in, dtype=wp.vec3, device=device)
-        point1 = wp.array(point1_in, dtype=wp.vec3, device=device)
-        offset0 = wp.array(offset0_in, dtype=wp.vec3, device=device)
-        offset1 = wp.array(offset1_in, dtype=wp.vec3, device=device)
         normal = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
 
         history = RigidContactHistory()
         history.lambda_ = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3, device=device)
-        history.stick_flag = wp.array([1], dtype=wp.int32, device=device)
         history.penalty_k = wp.array([40.0], dtype=float, device=device)
-        history.point0 = wp.array([[20.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
-        history.point1 = wp.array([[20.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
-        history.offset0 = wp.array([[0.0, 0.0, 0.5]], dtype=wp.vec3, device=device)
-        history.offset1 = wp.array([[0.0, 0.0, -0.5]], dtype=wp.vec3, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
 
         penalty_k = wp.zeros(1, dtype=float, device=device)
@@ -996,10 +930,6 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
                 10.0,
             ],
             outputs=[
-                point0,
-                point1,
-                offset0,
-                offset1,
                 penalty_k,
                 lam,
                 material_kd,
@@ -1011,10 +941,6 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
 
         np.testing.assert_allclose(penalty_k.numpy(), [40.0])
         np.testing.assert_allclose(lam.numpy(), [[0.0, 0.0, 0.0]])
-        np.testing.assert_allclose(point0.numpy(), point0_in)
-        np.testing.assert_allclose(point1.numpy(), point1_in)
-        np.testing.assert_allclose(offset0.numpy(), offset0_in)
-        np.testing.assert_allclose(offset1.numpy(), offset1_in)
 
 
 def _rigid_contact_history_capture_requires_preallocation(test, device):
@@ -1047,7 +973,7 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
         return pipeline, solver, contacts, state_in, state_out, control
 
     pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
-    with test.assertRaisesRegex(RuntimeError, "contact history must be allocated before CUDA graph capture"):
+    with test.assertRaisesRegex(RuntimeError, "contact history must be allocated before graph capture"):
         with wp.ScopedCapture(device=device):
             solver.step(state_in, state_out, control, contacts, 1.0e-3)
 
@@ -1070,6 +996,101 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
     test.assertIsNotNone(capture.graph)
 
 
+def _rigid_contact_stick_eps_are_deprecated(test, device):
+    """Verify deprecated stick options warn and are ignored."""
+    builder = newton.ModelBuilder()
+    model = builder.finalize(device=device)
+
+    with test.assertWarnsRegex(DeprecationWarning, "deprecated and ignored") as warning:
+        solver = newton.solvers.SolverVBD(
+            model,
+            rigid_contact_stick_motion_eps=1.0e-4,
+            rigid_contact_stick_freeze_translation_eps=1.0e-5,
+            rigid_contact_stick_freeze_angular_eps=1.0e-5,
+        )
+
+    test.assertEqual(warning.filename, __file__)
+
+    # "and ignored": the solver retains no state derived from the deprecated epsilons.
+    test.assertFalse(hasattr(solver, "rigid_contact_stick_motion_eps"))
+    test.assertFalse(hasattr(solver, "rigid_contact_stick_freeze_translation_eps"))
+    test.assertFalse(hasattr(solver, "rigid_contact_stick_freeze_angular_eps"))
+
+
+def _rigid_contact_dual_update_computes_lambda(test, device):
+    """Verify dual updates compute normal and cone-clamped tangential lambda."""
+    with wp.ScopedDevice(device):
+        contact_count = wp.array([4], dtype=int, device=device)
+        shape0 = wp.array([0, 0, 0, 0], dtype=int, device=device)
+        shape1 = wp.array([1, 2, 3, 4], dtype=int, device=device)
+        point0 = wp.zeros(4, dtype=wp.vec3, device=device)
+        point1 = wp.zeros(4, dtype=wp.vec3, device=device)
+        offset0 = wp.zeros(4, dtype=wp.vec3, device=device)
+        offset1 = wp.zeros(4, dtype=wp.vec3, device=device)
+        normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
+        margin0 = wp.array([0.05, 0.05, 0.05, 0.05], dtype=float, device=device)
+        margin1 = wp.array([0.05, 0.05, 0.05, 0.05], dtype=float, device=device)
+        shape_body = wp.array([0, 1, 2, 3, 4], dtype=int, device=device)
+
+        q = wp.quat_identity()
+        body_q = wp.array(
+            [
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), q),
+                wp.transform(wp.vec3(1.0, 0.0, 0.0), q),
+                wp.transform(wp.vec3(0.03, 0.0, 0.0), q),
+                wp.transform(wp.vec3(0.01, 0.0, 0.0), q),
+                wp.transform(wp.vec3(0.01, 0.0, 0.0), q),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        body_q_prev = wp.array([wp.transform_identity()] * 5, dtype=wp.transform, device=device)
+        contact_mu = wp.array([0.5, 0.5, 0.5, 0.5], dtype=float, device=device)
+        contact_c0 = wp.zeros(4, dtype=wp.vec3, device=device)
+        contact_ke = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        penalty_k = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        contact_lambda = wp.zeros(4, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            update_duals_body_body_contacts,
+            dim=4,
+            inputs=[
+                contact_count,
+                shape0,
+                shape1,
+                point0,
+                point1,
+                offset0,
+                offset1,
+                normal,
+                margin0,
+                margin1,
+                shape_body,
+                body_q,
+                body_q_prev,
+                contact_mu,
+                contact_c0,
+                0.0,  # avbd_alpha
+                1,  # hard_contacts
+                contact_ke,
+                0.0,  # beta
+                penalty_k,  # input/output
+                contact_lambda,  # input/output
+            ],
+            device=device,
+        )
+
+        np.testing.assert_allclose(
+            contact_lambda.numpy(),
+            [
+                [-0.5, 0.0, 1.0],
+                [-0.3, 0.0, 1.0],
+                [-0.1, 0.0, 1.0],
+                [-0.1, 0.0, 1.0],
+            ],
+        )
+
+
 def _rigid_contact_reset_ownership(test, device):
     """Contact invalidation covers both endpoints and survives nonidentity slots."""
     with wp.ScopedDevice(device):
@@ -1086,27 +1107,12 @@ def _rigid_contact_reset_ownership(test, device):
         reset_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
 
         contact_count = wp.array([3], dtype=int, device=device)
-        # Distinct fresh anchors per row; equal current/saved normals so a warm
-        # restore reproduces the saved dual exactly.
-        point0_in = np.array([[10.0, 0.0, 0.0], [11.0, 0.0, 0.0], [12.0, 0.0, 0.0]], dtype=np.float32)
-        point1_in = np.array([[10.0, 0.0, 1.0], [11.0, 0.0, 1.0], [12.0, 0.0, 1.0]], dtype=np.float32)
-        offset0_in = np.array([[0.0, 0.0, 0.1], [0.0, 0.0, 0.2], [0.0, 0.0, 0.3]], dtype=np.float32)
-        offset1_in = np.array([[0.0, 0.0, -0.1], [0.0, 0.0, -0.2], [0.0, 0.0, -0.3]], dtype=np.float32)
-        point0 = wp.array(point0_in, dtype=wp.vec3, device=device)
-        point1 = wp.array(point1_in, dtype=wp.vec3, device=device)
-        offset0 = wp.array(offset0_in, dtype=wp.vec3, device=device)
-        offset1 = wp.array(offset1_in, dtype=wp.vec3, device=device)
+        # Equal current/saved normals make a warm restore reproduce the saved dual exactly.
         normal = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3, device=device)
 
-        # Distinct sticky saved anchors per slot so the warm restore is observable.
         history = RigidContactHistory()
         history.lambda_ = wp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=wp.vec3, device=device)
-        history.stick_flag = wp.array([1, 1, 1], dtype=wp.int32, device=device)
         history.penalty_k = wp.array([40.0, 50.0, 60.0], dtype=float, device=device)
-        history.point0 = wp.array([[20.0, 0.0, 0.0], [21.0, 0.0, 0.0], [22.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
-        history.point1 = wp.array([[20.0, 0.0, 1.0], [21.0, 0.0, 1.0], [22.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
-        history.offset0 = wp.array([[0.0, 0.0, 0.5], [0.0, 0.0, 0.6], [0.0, 0.0, 0.7]], dtype=wp.vec3, device=device)
-        history.offset1 = wp.array([[0.0, 0.0, -0.5], [0.0, 0.0, -0.6], [0.0, 0.0, -0.7]], dtype=wp.vec3, device=device)
         history.normal = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3, device=device)
 
         penalty_k = wp.zeros(3, dtype=float, device=device)
@@ -1137,10 +1143,6 @@ def _rigid_contact_reset_ownership(test, device):
                 -1.0,  # fixed-k sentinel
             ],
             outputs=[
-                point0,
-                point1,
-                offset0,
-                offset1,
                 penalty_k,
                 contact_lambda,
                 material_kd,
@@ -1152,21 +1154,12 @@ def _rigid_contact_reset_ownership(test, device):
 
         lam = contact_lambda.numpy()
         # Rows 0 and 1 own the selected world (via endpoint-0 body and endpoint-1
-        # shape respectively): both cold-start with a zero dual and keep their
-        # fresh anchors instead of the saved ones.
+        # shape respectively): both cold-start with a zero dual.
         for row in (0, 1):
             np.testing.assert_allclose(lam[row], 0.0)
-            np.testing.assert_allclose(point0.numpy()[row], point0_in[row])
-            np.testing.assert_allclose(point1.numpy()[row], point1_in[row])
-            np.testing.assert_allclose(offset0.numpy()[row], offset0_in[row])
-            np.testing.assert_allclose(offset1.numpy()[row], offset1_in[row])
         # Row 2 owns unselected world 1 and warm-restores its saved slot (1):
-        # dual and all four anchors come from history through the nonidentity slot.
+        # the dual comes from history through the nonidentity slot.
         np.testing.assert_allclose(lam[2], [4.0, 5.0, 6.0])
-        np.testing.assert_allclose(point0.numpy()[2], [21.0, 0.0, 0.0])
-        np.testing.assert_allclose(point1.numpy()[2], [21.0, 0.0, 1.0])
-        np.testing.assert_allclose(offset0.numpy()[2], [0.0, 0.0, 0.6])
-        np.testing.assert_allclose(offset1.numpy()[2], [0.0, 0.0, -0.6])
         # The kernel must not mutate the pipeline-owned correspondence.
         np.testing.assert_array_equal(match_index.numpy(), [2, 0, 1])
 
@@ -1181,6 +1174,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         joint_x_p = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_x_c = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_axis = wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+        joint_cable_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_cable_rest_twist = wp.zeros(1, dtype=float, device=device)
         joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
         joint_target_q_start = wp.array([0], dtype=wp.int32, device=device)
         joint_constraint_start = wp.array([0], dtype=wp.int32, device=device)
@@ -1212,6 +1207,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_x_p,
                 joint_x_c,
                 joint_axis,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
                 joint_qd_start,
                 joint_target_q_start,
                 joint_constraint_start,
@@ -1237,6 +1234,83 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         )
 
         np.testing.assert_allclose(lambda_ang.numpy(), [[0.0, 2.0, 3.0]])
+
+
+def _cable_soft_dual_slots_clear_preserved_lambda(test, device):
+    """Soft cable slots should not preserve stale lambda components when recombined."""
+    with wp.ScopedDevice(device):
+        joint_type = wp.array([int(newton.JointType.CABLE)], dtype=wp.int32, device=device)
+        joint_enabled = wp.array([True], dtype=bool, device=device)
+        joint_parent = wp.array([-1], dtype=wp.int32, device=device)
+        joint_child = wp.array([0], dtype=wp.int32, device=device)
+        joint_x_p = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        joint_x_c = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        joint_axis = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
+        joint_cable_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_cable_rest_twist = wp.zeros(1, dtype=float, device=device)
+        joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
+        joint_target_q_start = wp.array([0], dtype=wp.int32, device=device)
+        joint_constraint_start = wp.array([0], dtype=wp.int32, device=device)
+        body_q = wp.array(
+            [wp.transform(wp.vec3(0.2, 0.3, 0.4), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3))],
+            dtype=wp.transform,
+            device=device,
+        )
+        body_q_rest = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        joint_dof_dim = wp.array([[0, 0]], dtype=wp.int32, device=device)
+        joint_c0_lin = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_c0_ang = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_is_hard = wp.array([0, 0, 0, 0], dtype=wp.int32, device=device)
+        joint_penalty_k_max = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        joint_target_ke = wp.array([0.0], dtype=float, device=device)
+        joint_target_pos = wp.array([0.0], dtype=float, device=device)
+        joint_limit_lower = wp.array([-1.0], dtype=float, device=device)
+        joint_limit_upper = wp.array([1.0], dtype=float, device=device)
+        joint_limit_ke = wp.array([0.0], dtype=float, device=device)
+        joint_rest_angle = wp.array([0.0], dtype=float, device=device)
+        joint_penalty_k = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        lambda_lin = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3, device=device)
+        lambda_ang = wp.array([[4.0, 5.0, 6.0]], dtype=wp.vec3, device=device)
+
+        wp.launch(
+            update_duals_joint,
+            dim=1,
+            inputs=[
+                joint_type,
+                joint_enabled,
+                joint_parent,
+                joint_child,
+                joint_x_p,
+                joint_x_c,
+                joint_axis,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
+                joint_qd_start,
+                joint_target_q_start,
+                joint_constraint_start,
+                body_q,
+                body_q_rest,
+                joint_dof_dim,
+                joint_c0_lin,
+                joint_c0_ang,
+                joint_is_hard,
+                0.0,
+                joint_penalty_k_max,
+                0.0,
+                0.0,
+                joint_target_ke,
+                joint_target_pos,
+                joint_limit_lower,
+                joint_limit_upper,
+                joint_limit_ke,
+                joint_rest_angle,
+            ],
+            outputs=[joint_penalty_k, lambda_lin, lambda_ang],
+            device=device,
+        )
+
+        np.testing.assert_allclose(lambda_lin.numpy(), [[0.0, 0.0, 0.0]])
+        np.testing.assert_allclose(lambda_ang.numpy(), [[0.0, 0.0, 0.0]])
 
 
 def _joint_force_projection_filters_free_direction(test, device):
@@ -1755,7 +1829,7 @@ def _rigid_reset_state_and_history(test, device):
     selected_joints = joint_world == 0
     global_bodies = body_world < 0
     global_joints = joint_world < 0
-    world_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=0)
     # A history-disabled solver (the default) allocates no contact-reset state.
@@ -1784,9 +1858,9 @@ def _rigid_reset_state_and_history(test, device):
     solver.joint_lambda_lin.fill_(5.0)
     with test.assertRaisesRegex(ValueError, "argument is required"):
         solver.reset(None)
-    with test.assertRaisesRegex(ValueError, "one-dimensional Warp boolean array"):
-        solver.reset(state, world_mask=wp.array([1, 0], dtype=wp.int32, device=device))
-    with test.assertRaisesRegex(ValueError, "world_mask has length 1, expected 2 or 3"):
+    with test.assertRaisesRegex(TypeError, "dtype bool"):
+        solver.reset(state, world_mask=wp.array([1, 0, 0], dtype=wp.int32, device=device))
+    with test.assertRaisesRegex(ValueError, "world_mask has size 1, expected 2 or 3"):
         solver.reset(state, world_mask=wp.array([True], dtype=wp.bool, device=device))
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 5.0)
 
@@ -1842,7 +1916,8 @@ def _rigid_reset_state_and_history(test, device):
 
     # Phase 4: an all-false reset arms nothing, so the next step finite-differences
     # a known delta for every body (a leaked pose baseline would zero some world).
-    solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
+    with test.assertWarnsRegex(DeprecationWarning, "world_count \\+ 1"):
+        solver.reset(state, world_mask=wp.array([False, False], dtype=wp.bool, device=device))
     all_false_delta = 2.0
     moved_q = base_q.copy()
     moved_q[:, 0] += all_false_delta
@@ -1941,6 +2016,364 @@ def _rigid_reset_state_and_history(test, device):
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 0.0)
 
 
+def _reset_masked_rigid_and_soft(test, device):
+    """Verify one masked reset restores rigid bodies and deformables together per world.
+
+    ``reset()`` is one entry point for both maximal body state and particle state.
+    With fixed bodies, a cloth grid, and a tetrahedral soft grid sharing the same
+    worlds and global (world -1) range, one ``world_mask`` selects both sides:
+    ``BODY_Q`` / ``PARTICLE_Q`` restore positions and ``BODY_QD`` / ``PARTICLE_QD``
+    velocities in lockstep, ``world_mask=None`` includes globals, and an explicit
+    mask's final entry selects only globals. Companion to
+    :func:`_rigid_reset_state_and_history`, which covers the rigid history and
+    pose-deferral semantics in depth.
+    """
+
+    def add_content(builder, x):
+        body = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_fixed(parent=-1, child=body)
+        builder.add_articulation([joint])
+        builder.add_cloth_grid(
+            pos=(x, 0.5, 0.0),
+            rot=wp.quat_identity(),
+            vel=(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=1.0,
+        )
+        builder.add_soft_grid(
+            pos=wp.vec3(x, 0.5, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=100.0,
+            k_mu=1.0e3,
+            k_lambda=1.0e3,
+            k_damp=0.0,
+        )
+
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    add_content(template, 0.0)
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    add_content(builder, -3.0)  # Global head range (world -1).
+    builder.add_world(template)  # World 0.
+    builder.add_world(template, xform=wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity()))  # World 1.
+    add_content(builder, 6.0)  # Global tail range (world -1).
+    builder.color()
+    model = builder.finalize(device=device)
+
+    body_world = model.body_world.numpy()
+    particle_world = model.particle_world.numpy()
+    np.testing.assert_array_equal(body_world, [-1, 0, 1, -1])
+    # Cloth and tet particles populate both local worlds and the global range.
+    test.assertTrue((particle_world == 0).any())
+    test.assertTrue((particle_world == 1).any())
+    test.assertTrue((particle_world < 0).any())
+
+    model_bq = model.body_q.numpy()
+    model_bqd = model.body_qd.numpy()
+    model_pq = model.particle_q.numpy()
+    model_pqd = model.particle_qd.numpy()
+    body_selected = body_world == 0
+    body_global = body_world < 0
+    part_selected = particle_world == 0
+    part_global = particle_world < 0
+
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    state = model.state()
+
+    def perturb():
+        bq = model_bq.copy()
+        bq[:, 0] += 10.0
+        bqd = np.full_like(model_bqd, 3.0)
+        pq = model_pq.copy()
+        pq[:, 0] += 10.0
+        pqd = np.full_like(model_pqd, 5.0)
+        state.body_q.assign(bq)
+        state.body_qd.assign(bqd)
+        state.particle_q.assign(pq)
+        state.particle_qd.assign(pqd)
+        return bq, bqd, pq, pqd
+
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
+
+    # World-0 mask, positions only: bodies and particles restore together; velocities untouched.
+    bq, bqd, pq, pqd = perturb()
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.BODY_Q | newton.StateFlags.PARTICLE_Q)
+    result_bq = state.body_q.numpy()
+    result_pq = state.particle_q.numpy()
+    np.testing.assert_allclose(result_bq[body_selected], model_bq[body_selected])
+    np.testing.assert_allclose(result_bq[~body_selected], bq[~body_selected])
+    np.testing.assert_allclose(result_pq[part_selected], model_pq[part_selected])
+    np.testing.assert_allclose(result_pq[~part_selected], pq[~part_selected])
+    np.testing.assert_allclose(state.body_qd.numpy(), bqd)
+    np.testing.assert_allclose(state.particle_qd.numpy(), pqd)
+
+    # World-0 mask, velocities only: symmetric, positions untouched.
+    bq, bqd, pq, pqd = perturb()
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.BODY_QD | newton.StateFlags.PARTICLE_QD)
+    np.testing.assert_allclose(state.body_q.numpy(), bq)
+    np.testing.assert_allclose(state.particle_q.numpy(), pq)
+    result_bqd = state.body_qd.numpy()
+    result_pqd = state.particle_qd.numpy()
+    np.testing.assert_allclose(result_bqd[body_selected], model_bqd[body_selected])
+    np.testing.assert_allclose(result_bqd[~body_selected], bqd[~body_selected])
+    np.testing.assert_allclose(result_pqd[part_selected], model_pqd[part_selected])
+    np.testing.assert_allclose(result_pqd[~part_selected], pqd[~part_selected])
+
+    # world_mask=None restores every body and particle, the global range included.
+    perturb()
+    solver.reset(state)
+    np.testing.assert_allclose(state.body_q.numpy(), model_bq)
+    np.testing.assert_allclose(state.body_qd.numpy(), model_bqd)
+    np.testing.assert_allclose(state.particle_q.numpy(), model_pq)
+    np.testing.assert_allclose(state.particle_qd.numpy(), model_pqd)
+
+    # The extended mask's final entry selects only the global range, both sides.
+    global_mask = wp.array([False, False, True], dtype=wp.bool, device=device)
+    bq, bqd, pq, pqd = perturb()
+    solver.reset(state, world_mask=global_mask)
+    result_bq = state.body_q.numpy()
+    result_bqd = state.body_qd.numpy()
+    result_pq = state.particle_q.numpy()
+    result_pqd = state.particle_qd.numpy()
+    np.testing.assert_allclose(result_bq[body_global], model_bq[body_global])
+    np.testing.assert_allclose(result_bq[~body_global], bq[~body_global])
+    np.testing.assert_allclose(result_bqd[body_global], model_bqd[body_global])
+    np.testing.assert_allclose(result_bqd[~body_global], bqd[~body_global])
+    np.testing.assert_allclose(result_pq[part_global], model_pq[part_global])
+    np.testing.assert_allclose(result_pq[~part_global], pq[~part_global])
+    np.testing.assert_allclose(result_pqd[part_global], model_pqd[part_global])
+    np.testing.assert_allclose(result_pqd[~part_global], pqd[~part_global])
+
+    if device.is_cuda:
+        # A requested particle array on the wrong device fails; an unrequested one
+        # never binds and is preserved.
+        perturb()
+        good_pqd = state.particle_qd
+        state.particle_qd = wp.clone(good_pqd, device="cpu")
+        with test.assertRaisesRegex(ValueError, "state.particle_qd is on device cpu"):
+            solver.reset(state, flags=newton.StateFlags.PARTICLE_QD)
+        solver.reset(state, flags=newton.StateFlags.PARTICLE_Q)
+        np.testing.assert_allclose(state.particle_q.numpy(), model_pq)
+        test.assertEqual(str(state.particle_qd.device), "cpu")
+        state.particle_qd = good_pqd
+
+        # The symmetric particle_q guard rejects before any field is written.
+        _, _, pq, _ = perturb()
+        good_pq = state.particle_q
+        state.particle_q = wp.clone(good_pq, device="cpu")
+        with test.assertRaisesRegex(ValueError, "state.particle_q is on device cpu"):
+            solver.reset(state, flags=newton.StateFlags.PARTICLE_Q)
+        np.testing.assert_allclose(state.particle_q.numpy(), pq)
+        state.particle_q = good_pq
+
+
+def _soft_reset_particle_only_and_external(test, device):
+    """Verify deformable reset runs when SolverVBD performs no internal rigid integration.
+
+    Covers a particle-only model (no bodies) and a model whose bodies are
+    integrated by an external rigid solver; both take the reset path that
+    early-returns before any rigid mutation, so particle restoration must happen
+    beforehand.
+    """
+    # Particle-only model: no bodies, so internal_body_reset is False.
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_cloth_grid(
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=1.0,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    test.assertEqual(model.body_count, 0)
+
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    state = model.state()
+    model_q = model.particle_q.numpy()
+    model_qd = model.particle_qd.numpy()
+    moved_q = model_q.copy()
+    moved_q[:, 0] += 4.0
+    state.particle_q.assign(moved_q)
+    state.particle_qd.assign(np.full_like(model_qd, 2.0))
+    solver.reset(state)
+    np.testing.assert_allclose(state.particle_q.numpy(), model_q)
+    np.testing.assert_allclose(state.particle_qd.numpy(), model_qd)
+
+    # External-rigid coupling: bodies exist but are integrated elsewhere, so the
+    # rigid reset path early-returns while masked particle reset still applies.
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = template.add_body(mass=1.0)
+    template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    template.add_cloth_grid(
+        pos=(0.0, 0.0, 0.5),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=1.0,
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_world(template)
+    builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    model = builder.finalize(device=device)
+    test.assertGreater(model.body_count, 0)
+
+    solver = newton.solvers.SolverVBD(model, iterations=0, integrate_with_external_rigid_solver=True)
+    state = model.state()
+    model_q = model.particle_q.numpy()
+    particle_world = model.particle_world.numpy()
+    selected = particle_world == 0
+    moved_q = model_q.copy()
+    moved_q[:, 0] += 7.0
+    state.particle_q.assign(moved_q)
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_Q)
+    result_q = state.particle_q.numpy()
+    np.testing.assert_allclose(result_q[selected], model_q[selected])
+    np.testing.assert_allclose(result_q[~selected], moved_q[~selected])
+
+
+def _soft_reset_captured_graph_restores_particles(test, device):
+    """Verify a captured masked particle reset restores selected-world defaults on replay.
+
+    ``reset()`` launches ``reset_particle_state`` without allocation, so it is
+    capturable, and the ``world_mask`` is read device-side, so a replay honors the
+    same per-world selection.
+    """
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    template.add_cloth_grid(
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=1.0,
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_world(template)
+    builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    model = builder.finalize(device=device)
+    test.assertEqual(model.body_count, 0)
+
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    state = model.state()
+    model_q = model.particle_q.numpy()
+    particle_world = model.particle_world.numpy()
+    selected = particle_world == 0
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
+
+    with wp.ScopedCapture(device=device) as capture:
+        solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_Q)
+    graph = capture.graph
+    test.assertIsNotNone(graph)
+
+    # In-place edits keep the captured buffer pointers valid; replay must restore
+    # only the selected world from the model defaults.
+    moved_q = model_q.copy()
+    moved_q[:, 0] += 5.0
+    state.particle_q.assign(moved_q)
+    wp.capture_launch(graph)
+    result_q = state.particle_q.numpy()
+    np.testing.assert_allclose(result_q[selected], model_q[selected])
+    np.testing.assert_allclose(result_q[~selected], moved_q[~selected])
+
+
+def _soft_reset_then_step_advances_cloth_and_tet(test, device):
+    """Verify a finite step after reset advances cloth and tet from the restored state.
+
+    Issue #3400 requires a real solver step after a deformable reset for both cloth
+    and volumetric (tet) soft bodies. The step rebaselines from the restored
+    positions, so reset-then-step must reproduce a fresh step from the model
+    defaults: the pre-reset perturbation must not leak through particle history.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
+    builder.add_cloth_grid(
+        pos=(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=3,
+        dim_y=3,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=1.0,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=1.0e-1,
+    )
+    cloth_count = len(builder.particle_q)
+    builder.add_soft_grid(
+        pos=wp.vec3(1.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        dim_z=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        cell_z=0.1,
+        density=100.0,
+        k_mu=1.0e4,
+        k_lambda=1.0e4,
+        k_damp=1.0e-2,
+    )
+    builder.color()
+    model = builder.finalize(device=device)
+    test.assertGreater(cloth_count, 0)
+    test.assertGreater(model.particle_count - cloth_count, 0)
+
+    dt = 5.0e-3
+    solver = newton.solvers.SolverVBD(model, iterations=5)
+    model_q = model.particle_q.numpy()
+
+    # Reference: one step from the model defaults.
+    ref_in = model.state()
+    ref_out = model.state()
+    solver.step(ref_in, ref_out, None, None, dt)
+    ref_q = ref_out.particle_q.numpy()
+    test.assertTrue(np.all(np.isfinite(ref_q)))
+
+    # Trial: perturb far away, reset back to the defaults, then step. Reusing the
+    # same solver means its particle history holds the reference step; matching it
+    # proves the reset-then-step rebaselines from the restored state.
+    trial_in = model.state()
+    trial_out = model.state()
+    moved = model_q.copy()
+    moved[:, 0] += 3.0
+    trial_in.particle_q.assign(moved)
+    trial_in.particle_qd.assign(np.full_like(model.particle_qd.numpy(), 1.0))
+    solver.reset(trial_in)
+    np.testing.assert_allclose(trial_in.particle_q.numpy(), model_q)
+    solver.step(trial_in, trial_out, None, None, dt)
+    trial_q = trial_out.particle_q.numpy()
+
+    test.assertTrue(np.all(np.isfinite(trial_q)))
+    np.testing.assert_allclose(trial_q, ref_q, rtol=1.0e-5, atol=1.0e-6)
+    # Both deformable types advanced under gravity (not a trivial no-op).
+    test.assertTrue(np.any(np.abs(ref_q[:cloth_count] - model_q[:cloth_count]) > 1.0e-8))
+    test.assertTrue(np.any(np.abs(ref_q[cloth_count:] - model_q[cloth_count:]) > 1.0e-8))
+
+
 def _rigid_reset_replays_captured_step(test, device):
     """A reset issued after capture is consumed by the existing step graph."""
     template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -1973,7 +2406,7 @@ def _rigid_reset_replays_captured_step(test, device):
 
     # reset() runs after capture. Its device-side mask write must be visible when
     # replaying the graph, while post-reset pose preparation remains authoritative.
-    world_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    world_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
     solver.reset(state_in, world_mask=world_mask, flags=0)
     reset_q = model.body_q.numpy()
     reset_q[:, 0] += 1.0
@@ -2019,7 +2452,7 @@ def _rigid_contact_reset_lifecycle(test, device):
     builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
     model = builder.finalize(device=device)
-    reset_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    reset_mask = wp.array([True, False, False], dtype=wp.bool, device=device)
     dt = 1.0e-2
 
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
@@ -2031,7 +2464,6 @@ def _rigid_contact_reset_lifecycle(test, device):
         model,
         iterations=0,
         rigid_contact_history=True,
-        rigid_contact_stick_motion_eps=0.0,
         rigid_avbd_contact_alpha=1.0,
         rigid_avbd_gamma=1.0,
     )
@@ -2085,7 +2517,6 @@ def _rigid_contact_reset_lifecycle(test, device):
             saved_normal[slot] = normal[i]
         solver._prev_contact_lambda.assign(saved_lambda)
         solver._prev_contact_normal.assign(saved_normal)
-        solver._prev_contact_stick_flag.zero_()
         return n, rw, normal
 
     # Frame 1: a cold warm-up populates history from the step's snapshot.
@@ -2121,19 +2552,7 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     del device
 
     builder = newton.ModelBuilder()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        newton.solvers.SolverVBD.register_custom_attributes(builder)
-    test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
-    test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
-    test.assertIn("vbd:dahl_tau", builder.custom_attributes)
-    test.assertEqual(builder.custom_attributes["vbd:joint_is_hard"].default, 1)
-    test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.5)
-    test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 1.0)
-    test.assertTrue(any(issubclass(w.category, DeprecationWarning) for w in caught))
-
-    builder = newton.ModelBuilder()
-    newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+    newton.solvers.SolverVBD.register_custom_attributes(builder)
     test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
     test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
     test.assertIn("vbd:dahl_tau", builder.custom_attributes)
@@ -2142,11 +2561,11 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 0.0)
 
 
-def _make_vbd_dahl_detection_model(device, *, dahl_defaults_enabled, dahl_eps_max=None, dahl_tau=None):
+def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=dahl_defaults_enabled)
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
 
     parent = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
     child = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
@@ -2170,35 +2589,28 @@ def _make_vbd_dahl_detection_model(device, *, dahl_defaults_enabled, dahl_eps_ma
 
 
 def _vbd_dahl_detection_requires_positive_values(test, device):
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False)
+    model = _make_vbd_dahl_detection_model(device)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         solver = newton.solvers.SolverVBD(model)
     test.assertFalse(solver.enable_dahl_friction)
 
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_eps_max=0.5)
+    model = _make_vbd_dahl_detection_model(device, dahl_eps_max=0.5)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         solver = newton.solvers.SolverVBD(model)
     test.assertFalse(solver.enable_dahl_friction)
 
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_tau=1.0)
+    model = _make_vbd_dahl_detection_model(device, dahl_tau=1.0)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         solver = newton.solvers.SolverVBD(model)
     test.assertFalse(solver.enable_dahl_friction)
 
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=True)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        solver = newton.solvers.SolverVBD(model)
-    test.assertTrue(solver.enable_dahl_friction)
-
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_eps_max=0.5, dahl_tau=1.0)
+    model = _make_vbd_dahl_detection_model(device, dahl_eps_max=0.5, dahl_tau=1.0)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -2208,7 +2620,7 @@ def _vbd_dahl_detection_requires_positive_values(test, device):
 
 def _rigid_reset_cable_history(test, device):
     """Reset defers the cable tuple, then rebaselines it from the post-reset pose."""
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_eps_max=0.5, dahl_tau=1.0)
+    model = _make_vbd_dahl_detection_model(device, dahl_eps_max=0.5, dahl_tau=1.0)
     solver = newton.solvers.SolverVBD(model, iterations=0)
 
     state_in = model.state()
@@ -2261,168 +2673,31 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
     """Snapshot writes solved state by active contact row and leaves inactive rows untouched."""
     with wp.ScopedDevice(device):
         contact_count = wp.array([2], dtype=int, device=device)
-        point0 = wp.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
-        point1 = wp.array([[1.0, 0.0, 1.0], [2.0, 0.0, 1.0], [3.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
-        offset0 = wp.array([[0.0, 0.0, 0.1], [0.0, 0.0, 0.2], [0.0, 0.0, 0.3]], dtype=wp.vec3, device=device)
-        offset1 = wp.array([[0.0, 0.0, -0.1], [0.0, 0.0, -0.2], [0.0, 0.0, -0.3]], dtype=wp.vec3, device=device)
         normal = wp.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
         lam = wp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=wp.vec3, device=device)
-        stick = wp.array([1, 2, 3], dtype=wp.int32, device=device)
         penalty = wp.array([10.0, 20.0, 30.0], dtype=float, device=device)
 
         prev_lambda = wp.zeros(3, dtype=wp.vec3, device=device)
-        prev_stick = wp.zeros(3, dtype=wp.int32, device=device)
         prev_penalty = wp.zeros(3, dtype=float, device=device)
-        prev_point0 = wp.zeros(3, dtype=wp.vec3, device=device)
-        prev_point1 = wp.zeros(3, dtype=wp.vec3, device=device)
-        prev_offset0 = wp.zeros(3, dtype=wp.vec3, device=device)
-        prev_offset1 = wp.zeros(3, dtype=wp.vec3, device=device)
         prev_normal = wp.zeros(3, dtype=wp.vec3, device=device)
 
         wp.launch(
             snapshot_body_body_contact_history,
             dim=3,
-            inputs=[contact_count, point0, point1, offset0, offset1, normal, lam, stick, penalty],
+            inputs=[contact_count, normal, lam, penalty],
             outputs=[
                 prev_lambda,
-                prev_stick,
                 prev_penalty,
-                prev_point0,
-                prev_point1,
-                prev_offset0,
-                prev_offset1,
                 prev_normal,
             ],
             device=device,
         )
 
         np.testing.assert_allclose(prev_lambda.numpy()[:2], lam.numpy()[:2])
-        np.testing.assert_allclose(prev_stick.numpy()[:2], [1, 2])
         np.testing.assert_allclose(prev_penalty.numpy()[:2], [10.0, 20.0])
-        np.testing.assert_allclose(prev_point0.numpy()[:2], point0.numpy()[:2])
-        np.testing.assert_allclose(prev_point1.numpy()[:2], point1.numpy()[:2])
-        np.testing.assert_allclose(prev_offset0.numpy()[:2], offset0.numpy()[:2])
-        np.testing.assert_allclose(prev_offset1.numpy()[:2], offset1.numpy()[:2])
         np.testing.assert_allclose(prev_normal.numpy()[:2], normal.numpy()[:2])
         np.testing.assert_allclose(prev_lambda.numpy()[2], [0.0, 0.0, 0.0])
-        np.testing.assert_allclose(prev_offset0.numpy()[2], [0.0, 0.0, 0.0])
-        np.testing.assert_allclose(prev_offset1.numpy()[2], [0.0, 0.0, 0.0])
-        test.assertEqual(prev_stick.numpy()[2], 0)
         test.assertEqual(prev_penalty.numpy()[2], 0.0)
-
-
-def _rigid_contact_stick_flags_require_cone_and_small_residual(test, device):
-    """Contact stick flags require normal load, cone feasibility, and small tangential residual."""
-    with wp.ScopedDevice(device):
-        contact_count = wp.array([4], dtype=int, device=device)
-        shape0 = wp.array([0, 0, 0, 0], dtype=int, device=device)
-        shape1 = wp.array([1, 2, 3, 4], dtype=int, device=device)
-        point0 = wp.zeros(4, dtype=wp.vec3, device=device)
-        point1 = wp.zeros(4, dtype=wp.vec3, device=device)
-        offset0 = wp.zeros(4, dtype=wp.vec3, device=device)
-        offset1 = wp.zeros(4, dtype=wp.vec3, device=device)
-        normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
-        margin0 = wp.array([0.05, 0.05, 0.05, 0.05], dtype=float, device=device)
-        margin1 = wp.array([0.05, 0.05, 0.05, 0.05], dtype=float, device=device)
-        shape_body = wp.array([0, 1, 2, 3, 4], dtype=int, device=device)
-
-        q = wp.quat_identity()
-        body_q = wp.array(
-            [
-                wp.transform(wp.vec3(0.0, 0.0, 0.0), q),
-                wp.transform(wp.vec3(1.0, 0.0, 0.0), q),
-                wp.transform(wp.vec3(0.03, 0.0, 0.0), q),
-                wp.transform(wp.vec3(0.01, 0.0, 0.0), q),
-                wp.transform(wp.vec3(0.01, 0.0, 0.0), q),
-            ],
-            dtype=wp.transform,
-            device=device,
-        )
-        body_q_prev = wp.array([wp.transform_identity()] * 5, dtype=wp.transform, device=device)
-        contact_mu = wp.array([0.5, 0.5, 0.5, 0.5], dtype=float, device=device)
-        contact_c0 = wp.zeros(4, dtype=wp.vec3, device=device)
-        body_inv_mass = wp.array([1.0, 0.0, 0.0, 0.0, 1.0], dtype=float, device=device)
-        contact_ke = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
-        penalty_k = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
-        contact_lambda = wp.zeros(4, dtype=wp.vec3, device=device)
-        stick_flag = wp.zeros(4, dtype=wp.int32, device=device)
-
-        wp.launch(
-            update_duals_body_body_contacts,
-            dim=4,
-            inputs=[
-                contact_count,
-                shape0,
-                shape1,
-                point0,
-                point1,
-                offset0,
-                offset1,
-                normal,
-                margin0,
-                margin1,
-                shape_body,
-                body_q,
-                body_q_prev,
-                contact_mu,
-                contact_c0,
-                0.0,
-                0.02,
-                1,
-                body_inv_mass,
-                contact_ke,
-                0.0,
-            ],
-            outputs=[penalty_k, contact_lambda, stick_flag],
-            device=device,
-        )
-
-        np.testing.assert_allclose(
-            contact_lambda.numpy(),
-            [
-                [-0.5, 0.0, 1.0],
-                [-0.3, 0.0, 1.0],
-                [-0.1, 0.0, 1.0],
-                [-0.1, 0.0, 1.0],
-            ],
-        )
-        np.testing.assert_array_equal(stick_flag.numpy(), [0, 0, 1, 2])
-
-        contact_lambda.zero_()
-        stick_flag.zero_()
-        penalty_k = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
-
-        wp.launch(
-            update_duals_body_body_contacts,
-            dim=4,
-            inputs=[
-                contact_count,
-                shape0,
-                shape1,
-                point0,
-                point1,
-                offset0,
-                offset1,
-                normal,
-                margin0,
-                margin1,
-                shape_body,
-                body_q,
-                body_q_prev,
-                contact_mu,
-                contact_c0,
-                0.0,
-                0.0,
-                1,
-                body_inv_mass,
-                contact_ke,
-                0.0,
-            ],
-            outputs=[penalty_k, contact_lambda, stick_flag],
-            device=device,
-        )
-
-        np.testing.assert_array_equal(stick_flag.numpy(), [0, 0, 0, 0])
 
 
 def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True):
@@ -2703,6 +2978,57 @@ def _body_particle_contact_lists_skip_static_kinematic(test, device):
     test.assertEqual(int(overflow_max.numpy()[0]), 0)
 
 
+def _build_multi_world_particle_shape_scene(world_count, device, globals_kind="none"):
+    """Build ``world_count`` replicas of a sub-world holding one shape and several free particles.
+
+    ``globals_kind`` puts a global entity in both the head and the tail range: ``"shapes"`` adds
+    global shapes, ``"particles"`` adds global particles, ``"none"`` adds neither. The two are never
+    mixed: global particles times global shapes contributes a world-count-independent constant, which
+    would break the exact 4x scaling the caller checks.
+    """
+    sub = newton.ModelBuilder()
+    sub.add_shape_sphere(body=-1, radius=0.5)
+    for i in range(8):
+        sub.add_particle(pos=wp.vec3(0.1 * i, 0.0, 2.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+    def add_global(builder, z):
+        if globals_kind == "shapes":
+            builder.add_shape_sphere(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()), radius=0.25)
+        elif globals_kind == "particles":
+            builder.add_particle(pos=wp.vec3(0.0, 0.0, z), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+    builder = newton.ModelBuilder()
+    add_global(builder, 5.0)  # Global head range.
+    for _ in range(world_count):
+        builder.add_world(sub)
+    add_global(builder, 6.0)  # Global tail range.
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def _soft_contact_presize_is_world_aware(test, device):
+    """Verify SolverVBD pre-sizes body-particle buffers from world-compatible pairs, not every particle-shape pair."""
+    for globals_kind in ("none", "shapes", "particles"):
+        sizes = {}
+        for world_count in (1, 4):
+            model = _build_multi_world_particle_shape_scene(world_count, device, globals_kind=globals_kind)
+            if globals_kind != "none":
+                # Guard the scene: an empty head or tail range would silently weaken the check below.
+                array = model.particle_world_start if globals_kind == "particles" else model.shape_world_start
+                start = array.numpy()
+                test.assertGreater(start[0], 0, f"{globals_kind=} {world_count=}")
+                test.assertGreater(start[-1], start[-2], f"{globals_kind=} {world_count=}")
+            # Constructed before any CollisionPipeline exists, as downstream users (Isaac Lab) do.
+            solver = newton.solvers.SolverVBD(model)
+            sizes[world_count] = solver.body_particle_contact_penalty_k.shape[0]
+            test.assertEqual(
+                sizes[world_count],
+                newton.CollisionPipeline(model, broad_phase="nxn").soft_rigid_contact_pair_count,
+                f"{globals_kind=} {world_count=}",
+            )
+        test.assertEqual(sizes[4], 4 * sizes[1], f"{globals_kind=}")
+
+
 class TestSolverVBD(unittest.TestCase):
     pass
 
@@ -2745,6 +3071,18 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
+    "test_rigid_contact_stick_eps_are_deprecated",
+    _rigid_contact_stick_eps_are_deprecated,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_rigid_contact_dual_update_computes_lambda",
+    _rigid_contact_dual_update_computes_lambda,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
     "test_rigid_contact_reset_ownership",
     _rigid_contact_reset_ownership,
     devices=devices,
@@ -2753,6 +3091,12 @@ add_function_test(
     TestSolverVBD,
     "test_joint_angular_dual_projects_free_axis_lambda",
     _joint_angular_dual_projects_free_axis_lambda,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_soft_dual_slots_clear_preserved_lambda",
+    _cable_soft_dual_slots_clear_preserved_lambda,
     devices=devices,
 )
 add_function_test(
@@ -2823,6 +3167,30 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
+    "test_reset_masked_rigid_and_soft",
+    _reset_masked_rigid_and_soft,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_reset_particle_only_and_external",
+    _soft_reset_particle_only_and_external,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_reset_captured_graph_restores_particles",
+    _soft_reset_captured_graph_restores_particles,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_reset_then_step_advances_cloth_and_tet",
+    _soft_reset_then_step_advances_cloth_and_tet,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
     "test_rigid_reset_replays_captured_step",
     _rigid_reset_replays_captured_step,
     devices=cuda_devices,
@@ -2859,12 +3227,6 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_rigid_contact_stick_flags_require_cone_and_small_residual",
-    _rigid_contact_stick_flags_require_cone_and_small_residual,
-    devices=devices,
-)
-add_function_test(
-    TestSolverVBD,
     "test_capsule_axial_spin_dissipates_via_friction_hard",
     _capsule_axial_spin_dissipates_via_friction,
     devices=devices,
@@ -2895,6 +3257,12 @@ add_function_test(
     TestSolverVBD,
     "test_collect_rigid_contact_forces_reports_surface_points",
     _collect_rigid_contact_forces_reports_surface_points,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_soft_contact_presize_is_world_aware",
+    _soft_contact_presize_is_world_aware,
     devices=devices,
 )
 
@@ -3032,6 +3400,44 @@ def test_edge_face_reacts_on_rigid_body(test, device):
 
     z_after = float(state_in.body_q.numpy()[body, 2])
     test.assertGreater(z_after, z_before - 0.05, "box should be supported by the soft contact, not free-fall")
+
+
+def test_edge_face_reacts_through_coupled_proxy(test, device):
+    """Verify a detected face contact propagates through proxy coupling."""
+    model, body = _build_sphere_on_fixed_soft_triangle(device)
+    model.gravity.zero_()
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupledProxy.Entry(name="body", solver=newton.solvers.SolverSemiImplicit, bodies=[body]),
+            SolverCoupledProxy.Entry(
+                name="soft",
+                solver=lambda view: newton.solvers.SolverVBD(view, iterations=1),
+                particles=list(range(model.particle_count)),
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[SolverCoupledProxy.Proxy(source="body", destination="soft", bodies=[body])],
+            iterations=1,
+        ),
+    )
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+
+    for step in range(2):
+        pipeline.collide(state_in, contacts)
+        if step == 0:
+            total = int(contacts.soft_contact_count.numpy()[0])
+            indices = contacts.soft_contact_indices.numpy()[:total]
+            test.assertGreater(total, 0)
+            test.assertTrue(np.all(indices[:, 1] >= 0), "only edge/face contacts should be detected")
+        coupled.step(state_in, state_out, None, contacts, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+
+    test.assertGreater(float(state_in.body_qd.numpy()[body, 2]), 0.0)
 
 
 def _set_slot(arr, idx, value):
@@ -3229,10 +3635,8 @@ def test_flag_off_is_inert(test, device):
     np.testing.assert_allclose(q_after, q_before, atol=1.0e-6, err_msg="flag off must not move the soft body")
 
 
-def test_full_surface_rejected_by_vbd_proxy_coupling(test, device):
-    """SolverVBD's proxy-coupling hook fails loud on full-surface contacts, which its proxy harvest
-    cannot yet consume, instead of silently dropping edge/face force feedback (E5). Standalone
-    SolverVBD is unaffected -- this only guards the SolverCoupledProxy path (coupling_* hooks)."""
+def test_full_surface_rejected_for_vbd_proxy_particles(test, device):
+    """Reject full-surface contacts during VBD proxy-particle harvesting."""
     builder = newton.ModelBuilder()
     b = builder.add_body()
     builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
@@ -3248,8 +3652,20 @@ def test_full_surface_rejected_by_vbd_proxy_coupling(test, device):
     )
     contacts = pipeline.contacts()  # capability marker set True
     solver = newton.solvers.SolverVBD(model)
-    with test.assertRaises(NotImplementedError):
-        solver.coupling_prepare_proxy_contacts(model.state(), contacts)
+
+    harvest_kwargs = {
+        "particle_qd_before": wp.zeros(model.particle_count, dtype=wp.vec3, device=device),
+        "state": model.state(),
+        "state_out": model.state(),
+        "dt": 1.0 / 60.0,
+    }
+    with test.assertRaisesRegex(NotImplementedError, "proxy-particle"):
+        solver.coupling_harvest_proxy_particle_forces(
+            wp.array([0], dtype=int, device=device),
+            wp.zeros(1, dtype=wp.vec3, device=device),
+            contacts=contacts,
+            **harvest_kwargs,
+        )
 
 
 class TestVBDFullSurfaceContact(unittest.TestCase):
@@ -3266,6 +3682,12 @@ add_function_test(
     TestVBDFullSurfaceContact,
     "test_edge_face_reacts_on_rigid_body",
     test_edge_face_reacts_on_rigid_body,
+    devices=devices,
+)
+add_function_test(
+    TestVBDFullSurfaceContact,
+    "test_edge_face_reacts_through_coupled_proxy",
+    test_edge_face_reacts_through_coupled_proxy,
     devices=devices,
 )
 add_function_test(
@@ -3294,8 +3716,8 @@ add_function_test(
 )
 add_function_test(
     TestVBDFullSurfaceContact,
-    "test_full_surface_rejected_by_vbd_proxy_coupling",
-    test_full_surface_rejected_by_vbd_proxy_coupling,
+    "test_full_surface_rejected_for_vbd_proxy_particles",
+    test_full_surface_rejected_for_vbd_proxy_particles,
     devices=devices,
 )
 

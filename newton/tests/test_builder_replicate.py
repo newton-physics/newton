@@ -1,14 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import unittest
 from unittest import mock
 
 import numpy as np
 import warp as wp
 
-from newton import Model, ModelBuilder
+from newton import Mesh, Model, ModelBuilder
 from newton.actuators import ControllerPD
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
 
@@ -169,12 +171,49 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
                         self.assert_builder_merge_state_equal(expected, actual)
 
+    def test_replicate_matches_add_world_loop_with_explicit_transforms(self):
+        source = self._make_source()
+        xforms = [
+            wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.1, 0.2, 0.3)),
+            wp.transform((-2.0, 1.0, 0.5), wp.quat_rpy(-0.2, 0.4, 0.1)),
+        ]
+
+        expected = self._make_destination()
+        for xform in xforms:
+            expected.add_world(source, xform)
+
+        actual = self._make_destination()
+        actual.replicate(source, len(xforms), xforms=xforms)
+
+        self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_replicate_rejects_mismatched_explicit_transforms(self):
+        with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):
+            ModelBuilder().replicate(self._make_source(), 2, xforms=[wp.transform_identity()])
+
     def test_replicate_does_not_call_add_world(self):
         source = self._make_source()
         builder = self._make_destination()
 
         with mock.patch.object(builder, "add_world", side_effect=AssertionError("unexpected scalar merge")):
             builder.replicate(source, 2)
+
+    def test_replicated_worlds_cache_contact_pairs_without_filters(self):
+        """Reuse one contact-pair template when replicated worlds have no filters."""
+        source = ModelBuilder()
+        for _ in range(4):
+            body = source.add_body()
+            source.add_shape_sphere(body, radius=0.1)
+
+        builder = ModelBuilder()
+        builder.replicate(source, 4)
+        self.assertEqual(len(builder._shape_collision_filter_pairs), 0)
+
+        with mock.patch.object(builder, "_test_group_pair", wraps=builder._test_group_pair) as test_group_pair:
+            model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.shape_contact_pair_count, 4 * 6)
+        self.assertEqual(test_group_pair.call_count, 6)
 
     def test_add_world_uses_public_composition(self):
         class TrackingBuilder(ModelBuilder):
@@ -297,7 +336,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
     def test_zero_spacing_replication_copies_joint_q_exactly(self):
         source = ModelBuilder()
-        body = source.add_body()
+        body = source.add_link()
         source.add_joint_free(
             parent=-1, child=body, parent_xform=wp.transform((0.2, 0.3, 0.4), wp.quat_rpy(0.123, 0.456, 0.789))
         )
@@ -503,6 +542,69 @@ class TestModelBuilderReplicate(unittest.TestCase):
         with mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed):
             with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
                 ModelBuilder._build_builder_merge_attribute_specs(False)
+
+
+@wp.kernel
+def count_mesh_aabb_hits_kernel(mesh_ids: wp.array[wp.uint64], hits: wp.array[wp.int32]):
+    query = wp.mesh_query_aabb(mesh_ids[0], wp.vec3(-2.0, -2.0, -2.0), wp.vec3(2.0, 2.0, 2.0))
+    face = wp.int32(0)
+    while wp.mesh_query_aabb_next(query, face):
+        wp.atomic_add(hits, 0, 1)
+
+
+class TestReplicateMeshLifetime(unittest.TestCase):
+    pass
+
+
+def test_replicate_shared_mesh_survives_second_finalize(test: TestReplicateMeshLifetime, device):
+    """Verify that finalizing a second model sharing mesh geometry keeps the first model's meshes alive.
+
+    replicate() shares Mesh geometry objects by reference, so finalizing a second
+    model built from the same source must not release the wp.Mesh whose id the
+    first model stores in shape_source_ptr (regression test for a use-after-free).
+    """
+    # procedural grid mesh so no asset download is required
+    n = 8
+    gx, gy = np.meshgrid(np.linspace(-1.0, 1.0, n), np.linspace(-1.0, 1.0, n))
+    vertices = np.stack([gx, gy, np.zeros_like(gx)], axis=-1).reshape(-1, 3)
+    quad = np.arange(n * n).reshape(n, n)
+    a, b, c, d = quad[:-1, :-1].ravel(), quad[:-1, 1:].ravel(), quad[1:, :-1].ravel(), quad[1:, 1:].ravel()
+    indices = np.concatenate([np.stack([a, b, c], -1), np.stack([b, d, c], -1)]).ravel()
+    face_count = len(indices) // 3
+
+    source = ModelBuilder()
+    source.add_shape_mesh(body=source.add_body(), mesh=Mesh(vertices, indices, compute_inertia=False))
+
+    builder_1 = ModelBuilder()
+    builder_1.replicate(source, 1)
+    builder_2 = ModelBuilder()
+    builder_2.replicate(source, 1)
+
+    model_1 = builder_1.finalize(device=device)
+    mesh_id = int(model_1.shape_source_ptr.numpy()[0])
+
+    # finalizing a second model from the shared geometry must not invalidate model_1
+    model_2 = builder_2.finalize(device=device)
+    gc.collect()
+
+    live_ids = {geo.mesh.id for geo in model_1.shape_source if getattr(geo, "mesh", None) is not None}
+    test.assertIn(mesh_id, live_ids)
+
+    hits = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(count_mesh_aabb_hits_kernel, dim=1, inputs=[model_1.shape_source_ptr, hits], device=device)
+    test.assertEqual(hits.numpy()[0], face_count)
+
+    # both models share the same finalized wp.Mesh for the shared geometry
+    test.assertEqual(int(model_2.shape_source_ptr.numpy()[0]), mesh_id)
+
+
+devices = get_test_devices()
+add_function_test(
+    TestReplicateMeshLifetime,
+    "test_replicate_shared_mesh_survives_second_finalize",
+    test_replicate_shared_mesh_survives_second_finalize,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":

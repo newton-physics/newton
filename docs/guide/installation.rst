@@ -45,8 +45,16 @@ Platform-Specific Requirements
 
 **Linux aarch64 (ARM64)**
 
-On ARM64 Linux systems (such as NVIDIA Jetson Thor and DGX Spark), installing the ``examples`` extras currently requires
-X11 development libraries to build ``imgui_bundle`` from source:
+On ARM64 Linux, the ``importers`` extra requires GLIBC 2.35 or newer because
+`usd-exchange <https://pypi.org/project/usd-exchange/>`__ publishes its Linux
+ARM64 wheels for ``manylinux_2_35``. This also applies to extras that include
+``importers``, such as ``examples`` and ``dev``. Distributions with an older
+GLIBC, including RHEL 9 with GLIBC 2.34, can install the base Newton package but
+cannot install these extras from the published wheels.
+
+Installing the ``examples`` extra on ARM64 Linux systems such as NVIDIA Jetson
+Thor and DGX Spark also requires X11 development libraries to build
+``imgui_bundle`` from source:
 
 .. code-block:: console
 

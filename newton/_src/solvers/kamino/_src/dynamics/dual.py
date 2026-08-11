@@ -370,7 +370,7 @@ def gravity_plus_coriolis_wrench_split(
 def _build_nonlinear_generalized_force(
     # Inputs:
     model_time_dt: wp.array[wp.float32],
-    model_gravity_vector: wp.array[wp.vec4f],
+    model_gravity_vector: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     state_bodies_u_i: wp.array[wp.spatial_vectorf],
@@ -393,10 +393,7 @@ def _build_nonlinear_generalized_force(
 
     # Get world data
     dt = model_time_dt[wid]
-    gv = model_gravity_vector[wid]
-
-    # Extract the effective gravity vector
-    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
+    g = model_gravity_vector[wid]
 
     # Extract the linear and angular components of the generalized velocity
     omega_i = wp.spatial_bottom(u_i)
@@ -412,7 +409,7 @@ def _build_nonlinear_generalized_force(
 def _build_generalized_free_velocity(
     # Inputs:
     model_time_dt: wp.array[wp.float32],
-    model_gravity_vector: wp.array[wp.vec4f],
+    model_gravity_vector: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     model_bodies_inv_m_i: wp.array[wp.float32],
@@ -439,10 +436,7 @@ def _build_generalized_free_velocity(
 
     # Get world data
     dt = model_time_dt[wid]
-    gv = model_gravity_vector[wid]
-
-    # Extract the effective gravity vector
-    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
+    g = model_gravity_vector[wid]
 
     # Extract the linear and angular components of the generalized velocity
     v_i = wp.spatial_top(u_i)

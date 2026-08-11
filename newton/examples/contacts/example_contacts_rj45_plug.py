@@ -241,7 +241,7 @@ class Example:
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        SolverVBD.register_custom_attributes(builder)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
@@ -408,7 +408,7 @@ class Example:
 
         self._pick_body = wp.array([-1], dtype=int, device=self.model.device)
         self._pick_target = wp.zeros(1, dtype=wp.vec3, device=self.model.device)
-        self._gravity = wp.vec3(*self.model.gravity.numpy()[0])
+        self._gravity = wp.vec3(*self.model.gravity.numpy()[-1])
 
         self.capture()
 

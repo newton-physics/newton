@@ -49,7 +49,8 @@ class TestSetup:
         self.builder: ModelBuilderKamino = builder_fn(**kwargs)
 
         # Set ad-hoc configurations
-        self.builder.gravity[0].enabled = gravity
+        if not gravity:
+            self.builder.set_gravity(wp.vec3f(0.0))
         if perturb:
             u_0 = wp.spatial_vectorf(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             for body in self.builder.all_bodies:
@@ -504,6 +505,9 @@ class TestPADMMSolver(unittest.TestCase):
         # Second solve with warm-starting from previous solution
         test.build()
         solver.warmstart(test.problem, test.model, test.data)
+        expected_forces = solver.data.solution.lambdas.numpy() * config.warmstart_scale
+        np.testing.assert_allclose(solver.data.state.x_p.numpy(), expected_forces)
+        np.testing.assert_allclose(solver.data.state.y_p.numpy(), expected_forces)
         solver.solve(problem=test.problem)
         check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
 

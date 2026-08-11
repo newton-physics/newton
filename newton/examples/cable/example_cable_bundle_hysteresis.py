@@ -10,6 +10,12 @@
 # plastic deformation and hysteresis loops in cable bending behavior,
 # showing realistic memory effects in cable dynamics.
 #
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis --test --viewer null
+#
 ###########################################################################
 
 import numpy as np
@@ -144,6 +150,7 @@ class Example:
         return positions
 
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
@@ -178,7 +185,7 @@ class Example:
 
         # Dahl plasticity parameters live on the Model as VBD custom attributes.
         if with_dahl:
-            newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+            newton.solvers.SolverVBD.register_custom_attributes(builder)
         builder.gravity = (0.0, 0.0, -9.81)
 
         # Set default material properties for cables (cable-to-cable contact)
@@ -284,6 +291,7 @@ class Example:
             self.model.vbd.dahl_eps_max.fill_(float(eps_max))
             self.model.vbd.dahl_tau.fill_(float(tau))
 
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
@@ -294,7 +302,6 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
         self.viewer.set_model(self.model)
 
