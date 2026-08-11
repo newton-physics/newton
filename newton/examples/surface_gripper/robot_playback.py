@@ -17,7 +17,7 @@
 
 Simulator-agnostic: this module only loads the recording and steps through it. It has no Newton (or
 any other framework) dependency -- callers read each :class:`Frame` and apply it to their own robot
-(joint targets, gripper) via callbacks. Used by ``example_surface_gripper_repro``.
+(joint targets, gripper) via callbacks. Used by ``example_surface_gripper``.
 
 Recording format -- JSON Lines, one object per frame (~24 Hz)::
 

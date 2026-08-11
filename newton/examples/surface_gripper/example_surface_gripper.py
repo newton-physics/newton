@@ -56,7 +56,7 @@
 # true speed. Everything runs on device and is CUDA-graph capturable, and the whole scene can be
 # replicated across NUM_WORLDS parallel environments.
 
-# Command: python -m newton.examples surface_gripper_repro
+# Command: uv run -m newton.examples surface_gripper
 ###########################################################################
 
 from pathlib import Path
@@ -66,9 +66,9 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.surface_gripper_repro.robot_playback import RobotPlayback
+from newton.examples.surface_gripper.robot_playback import RobotPlayback
 from newton.selection import ArticulationView
-from newton.examples.surface_gripper_repro.surface_gripper import (
+from newton.examples.surface_gripper.surface_gripper import (
     SurfaceGripper,
     SurfaceGripperBuilder,
     SurfaceGripperStateOutput,
@@ -1018,7 +1018,8 @@ class Example:
         # attach_seal) -- the two differ if a seal fractured or failed to grab.
         commanded = bool(self.example_state_prev.gripper_command_engaged_wp.numpy()[0])
         preparing = bool(self.example_state_prev.gripper_command_preparing_wp.numpy()[0])
-        held = int((self.gripper_state_input_prev.pad_engaged_bs.numpy()[:, 0] >= 0).sum())
+        pad_engaged_bs = self.gripper_state_input_prev.pad_engaged_bs.numpy()
+        held = int((pad_engaged_bs[:, 0] >= 0).sum())
         ui.text(f"Grip cmd:  {'On' if commanded else 'Off'}  (recording)")
         ui.text(f"Preparing: {'On' if preparing else 'Off'}  (lead-in before engage)")
         ui.text(f"Seal engaged: {held}/{len(PAD_PRIMS)} pads  (actual)")
@@ -1039,14 +1040,15 @@ class Example:
         # ratio depend on that box's mass/inertia and its pose relative to the seal. Zero when nothing
         # is gripped (no pad engaged).
         ui.text("Picked-box seal modes:")
-        modes = picked_box_seal_modes(
-            self.gripper_model, self.state_0, self.model, int(self.gripper_state_input_prev.pad_preparing_bs.numpy()[0, 0])
-        )
-        if held == 0:
-            zeroed_modes = []
-            for name, _, _ in modes:
-                zeroed_modes.append((name, 0.0, 0.0))
-            modes = zeroed_modes
+        body_b = -1
+        if held > 0:
+            valid_body_ids = pad_engaged_bs[(pad_engaged_bs[:, 0] >= 0) & (pad_engaged_bs[:, 0] < self.model.body_count), 0]
+            if len(valid_body_ids) > 0:
+                body_b = int(valid_body_ids[0])
+        if 0 <= body_b < self.model.body_count:
+            modes = picked_box_seal_modes(self.gripper_model, self.state_0, self.model, body_b)
+        else:
+            modes = [(name, 0.0, 0.0) for name in ("normal", "shear_x", "shear_y", "peel_x", "peel_y", "twist")]
         for name, mu, zeta in modes:
             ui.text(f"  {name:7s} wn={mu:6.1f} rad/s  zeta={zeta:.3f}")
 
