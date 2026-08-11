@@ -92,8 +92,6 @@ __all__ = ["SolverVBD"]
 
 
 class SolverVBD(SolverBase, CouplingInterface):
-    supports_collision_pipeline = True
-
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
     .. experimental::
@@ -202,6 +200,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
     """
+
+    supports_collision_pipeline = True
 
     class JointSlot:
         """Named constraint slot indices for :meth:`set_joint_constraint_mode`.
@@ -482,7 +482,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "query radius = margin + gap) instead. With radius set, "
                 "particle_self_contact_margin keeps its legacy meaning (detection query radius).",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
         else:
             _sc_margin = particle_self_contact_margin if particle_self_contact_margin is not None else 0.2
@@ -505,7 +505,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "collision_frequency / collision_frequency_type instead (PRE_INIT ~ interval < 0, "
                 "PRE_POST_INIT ~ interval == 0, ITERATIONS ~ interval >= 1).",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
         self._deprecated_particle_interval = particle_collision_detection_interval
         # Set before super().__init__: _default_collision_frequency_type (AUTO
@@ -1949,8 +1949,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 # re-detections start at the first k-th iteration.
                 self._run_rigid_collision(state_in)
                 update_rigid = True
-            elif rigid_mode == _Frequency.NONE:
-                update_rigid = False
 
         if control is None:
             control = self.model.control(clone_variables=False)

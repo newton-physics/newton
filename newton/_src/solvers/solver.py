@@ -244,6 +244,8 @@ class SolverBase:
                 f"{type(self).__name__} cannot own a collision pipeline; "
                 "drive detection externally via model.collide()."
             )
+        if pipeline is not None and pipeline.model is not model:
+            raise ValueError("pipeline and solver must use the same model")
         self.pipeline = pipeline
         """The solver-owned collision pipeline, or ``None`` when detection is driven externally."""
         self._pipeline_contacts = pipeline.contacts() if pipeline is not None else None

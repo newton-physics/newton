@@ -35,6 +35,7 @@ def _build_model(device):
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.45), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
     builder.add_ground_plane()
+    builder.color()
     return builder.finalize(device=device)
 
 
@@ -69,6 +70,7 @@ def test_frequency_validation_and_ownership(test, device):
     """Verify constructor/setter validation and pipeline-ownership error paths."""
     model = _build_model(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    test.assertIsNotNone(SolverVBD.__doc__)
 
     class _NonOwning(SolverBase):
         def step(self, state_in, state_out, control, contacts, dt):
@@ -77,6 +79,11 @@ def test_frequency_validation_and_ownership(test, device):
     # Pipeline passed to a solver that does not opt in.
     with test.assertRaises(ValueError):
         _NonOwning(model, pipeline=pipeline)
+
+    other_model = _build_model(device)
+    other_pipeline = newton.CollisionPipeline(other_model, broad_phase="nxn")
+    with test.assertRaisesRegex(ValueError, "same model"):
+        _StubSolver(model, pipeline=other_pipeline)
 
     # Non-owning solver: contacts property is None, external contacts pass through.
     plain = _NonOwning(model)
@@ -109,6 +116,48 @@ def test_frequency_validation_and_ownership(test, device):
     # With an owned pipeline, step() must receive contacts=None.
     with test.assertRaises(ValueError):
         solver.step(model.state(), model.state(), None, pipeline.contacts(), 1e-3)
+
+
+def test_vbd_rigid_none_refreshes_external_contacts(test, device):
+    """Refresh externally populated owned contacts while rigid detection is disabled."""
+    model = _build_model(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    solver = SolverVBD(
+        model,
+        iterations=1,
+        pipeline=pipeline,
+        rigid_contact_history=False,
+        collision_frequency_type=[Frequency.NONE, Frequency.NONE],
+    )
+    state_a, state_b = model.state(), model.state()
+
+    pipeline.collide(state_a, solver.contacts)
+    solver.step(state_a, state_b, None, None, 1e-3)
+    test.assertGreater(int(solver.body_body_contact_counts.numpy().sum()), 0)
+
+    solver.contacts.clear()
+    solver.step(state_b, state_a, None, None, 1e-3)
+    test.assertEqual(int(solver.body_body_contact_counts.numpy().sum()), 0)
+
+
+def test_vbd_self_contact_none_starts_empty(test, device):
+    """Keep first-step self-contact inactive when its schedule is NONE."""
+    model = _build_cloth_model(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    solver = SolverVBD(
+        model,
+        iterations=1,
+        pipeline=pipeline,
+        particle_enable_self_contact=True,
+        collision_frequency_type=[Frequency.NONE, Frequency.NONE],
+    )
+    data = solver.contacts.soft_self_contact_data
+    test.assertEqual(int(data.vertex_colliding_triangles_count.numpy().sum()), 0)
+    test.assertEqual(int(data.edge_colliding_edges_count.numpy().sum()), 0)
+
+    state_a, state_b = model.state(), model.state()
+    solver.step(state_a, state_b, None, None, 1e-3)
+    test.assertTrue(np.isfinite(state_b.particle_q.numpy()).all())
 
 
 def test_vbd_rigid_iterations_mode(test, device):
@@ -248,6 +297,18 @@ add_function_test(
     TestSolverCollisionFrequency,
     "test_frequency_validation_and_ownership",
     test_frequency_validation_and_ownership,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_rigid_none_refreshes_external_contacts",
+    test_vbd_rigid_none_refreshes_external_contacts,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_self_contact_none_starts_empty",
+    test_vbd_self_contact_none_starts_empty,
     devices=devices,
 )
 add_function_test(

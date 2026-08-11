@@ -1656,6 +1656,83 @@ def test_pipeline_soft_self_contact(test, device):
     test.assertEqual(unconfigured.soft_contact_gap, 0.05)
 
 
+def test_soft_self_contact_buffer_validation(test, device):
+    """Reject invalid self-contact mesh sizes and incompatible result buffers."""
+    for particle_count, tri_count, edge_count in ((0, 1, 1), (1, 0, 1), (1, 1, 0)):
+        with test.assertRaisesRegex(ValueError, "requires positive mesh counts"):
+            newton.Contacts(
+                0,
+                0,
+                soft_self_contact=True,
+                particle_count=particle_count,
+                tri_count=tri_count,
+                edge_count=edge_count,
+                device=device,
+            )
+
+    info = build_tri_mesh_collision_info(3, 1, 3, device=device)
+    assert_np_equal(info.vertex_colliding_triangles_count.numpy(), np.zeros(3, dtype=np.int32))
+    assert_np_equal(info.vertex_colliding_triangles_min_dist.numpy(), np.zeros(3, dtype=np.float32))
+    assert_np_equal(info.triangle_colliding_vertices_min_dist.numpy(), np.zeros(1, dtype=np.float32))
+    assert_np_equal(info.edge_colliding_edges_min_dist.numpy(), np.zeros(3, dtype=np.float32))
+
+    vertices, faces = get_data()
+    model, _ = init_model(vertices, faces, device, record_triangle_contacting_vertices=False)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    pipeline.init_soft_self_contact(topological_filter_threshold=0)
+    detector = pipeline._soft_self_contact_detector
+
+    wrong_shape = newton.Contacts(
+        0,
+        0,
+        soft_self_contact=True,
+        particle_count=model.particle_count + 1,
+        tri_count=model.tri_count,
+        edge_count=model.edge_count,
+        soft_self_contact_vertex_buffer_pre_alloc=detector.vertex_collision_buffer_pre_alloc,
+        soft_self_contact_edge_buffer_pre_alloc=detector.edge_collision_buffer_pre_alloc,
+        device=device,
+    )
+    with test.assertRaisesRegex(ValueError, "vertex_colliding_triangles"):
+        pipeline._get_soft_self_contact_detector(wrong_shape)
+
+    pipeline_with_triangle_records = newton.CollisionPipeline(model, broad_phase="nxn")
+    pipeline_with_triangle_records.init_soft_self_contact(
+        record_triangle_contacting_vertices=True, topological_filter_threshold=0
+    )
+    detector_with_triangle_records = pipeline_with_triangle_records._soft_self_contact_detector
+    missing_triangle_records = newton.Contacts(
+        0,
+        0,
+        soft_self_contact=True,
+        particle_count=model.particle_count,
+        tri_count=model.tri_count,
+        edge_count=model.edge_count,
+        soft_self_contact_vertex_buffer_pre_alloc=detector_with_triangle_records.vertex_collision_buffer_pre_alloc,
+        soft_self_contact_edge_buffer_pre_alloc=detector_with_triangle_records.edge_collision_buffer_pre_alloc,
+        device=device,
+    )
+    with test.assertRaisesRegex(ValueError, "triangle_colliding_vertices"):
+        pipeline_with_triangle_records._get_soft_self_contact_detector(missing_triangle_records)
+
+    current_device = wp.get_device(device)
+    other_device = wp.get_device("cpu") if current_device.is_cuda else None
+    if other_device is not None:
+        wrong_device = newton.Contacts(
+            0,
+            0,
+            soft_self_contact=True,
+            particle_count=model.particle_count,
+            tri_count=model.tri_count,
+            edge_count=model.edge_count,
+            soft_self_contact_vertex_buffer_pre_alloc=detector.vertex_collision_buffer_pre_alloc,
+            soft_self_contact_edge_buffer_pre_alloc=detector.edge_collision_buffer_pre_alloc,
+            device=other_device,
+        )
+        with test.assertRaisesRegex(ValueError, "detector is on"):
+            pipeline._get_soft_self_contact_detector(wrong_device)
+
+
 devices = get_test_devices()
 
 
@@ -1739,6 +1816,12 @@ add_function_test(
     TestCollision,
     "test_pipeline_soft_self_contact",
     test_pipeline_soft_self_contact,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_soft_self_contact_buffer_validation",
+    test_soft_self_contact_buffer_validation,
     devices=devices,
 )
 
