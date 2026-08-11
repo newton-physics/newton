@@ -66,8 +66,12 @@ SIM_HZ = 120
 
 # Number of simulation worlds (environments). The whole scene (arm + boxes + pallets + gripper) is
 # replicated NUM_WORLDS times, all overlapping at the origin -- Newton's broad phase does not collide
-# across worlds, so the copies don't interact, and only world 0 is rendered (see set_visible_worlds).
-NUM_WORLDS = 1
+# across worlds, so the copies don't interact. WORLD_RENDER_SPACING lays them out for display.
+NUM_WORLDS = 9
+
+# Visual grid spacing [m] between worlds in the viewer. The worlds still simulate overlapped at the
+# origin (they never collide); this only separates them for rendering. Set to None to overlap them.
+WORLD_RENDER_SPACING = (7.0, 7.0, 0.0)
 
 # Gaussian smoothing of the recorded drive targets [s]. The recording is a coarse waypoint staircase
 # (values held, then stepped ~17 deg), so smoothing recovers a continuous motion. 0 = raw recording;
@@ -803,8 +807,10 @@ class Example:
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.viewer.set_model(self.model)
-        # All worlds overlap at the origin; render only world 0 (the others still simulate).
-        self.viewer.set_visible_worlds([0])
+        # The worlds all simulate overlapped at the origin (the broad phase never collides across
+        # worlds); lay them out on a visual grid so every world can be seen side by side.
+        if WORLD_RENDER_SPACING is not None:
+            self.viewer.set_world_offsets(WORLD_RENDER_SPACING)
 
 
     def capture(self):
