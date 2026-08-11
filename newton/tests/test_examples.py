@@ -1112,13 +1112,12 @@ class TestSurfaceGripperExamples(unittest.TestCase):
 
 
 # 120 frames reaches the first engagement (~1.0 s) and holds the panel well past the seal settling,
-# so a broken seat fit or seal shows up as the panel falling.
+# so test_final can assert that the pads latched, the body lifted, and the seal quality stayed healthy.
 add_example_test(
     TestSurfaceGripperExamples,
     name="surface_gripper.example_surface_gripper",
     devices=test_devices,
     test_options={"usd_required": True, "num-frames": 120},
-    test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
 

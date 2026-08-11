@@ -1133,6 +1133,33 @@ class Example:
             lambda q, qd: q[2] > -0.05,
         )
 
+        if not self.robot_arm_playback.rising:
+            raise ValueError("surface gripper recording has no engagement event")
+
+        sim_time = int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt
+        first_engage_time = float(self.robot_arm_playback.rec_times_wp.numpy()[self.robot_arm_playback.rising[0]])
+        if sim_time < first_engage_time + BREAK_SETTLE_TIME:
+            return
+
+        pad_engaged_bs = self.gripper_state_input_prev.pad_engaged_bs.numpy()[: len(PAD_PRIMS)]
+        body_ids = pad_engaged_bs[:, 0]
+        if not np.all(body_ids >= 0):
+            raise ValueError(f"expected all surface-gripper pads engaged after settling, got {body_ids.tolist()}")
+
+        unique_body_ids = set(body_ids.tolist())
+        if len(unique_body_ids) != 1:
+            raise ValueError(f"expected all surface-gripper pads on one body, got {body_ids.tolist()}")
+
+        body_id = int(body_ids[0])
+        body_z = float(self.state_0.body_q.numpy()[body_id][2])
+        if body_z < 1.2:
+            raise ValueError(f"expected gripped body to be lifted after settling, got z={body_z}")
+
+        seal_rms = self.gripper_state_output.pad_seal_quality_rms.numpy()[: len(PAD_PRIMS)]
+        seal_rms_valid = np.isfinite(seal_rms) & (seal_rms >= 0.0) & (seal_rms < BREAK_THRESHOLD_SEAL_RMS)
+        if not np.all(seal_rms_valid):
+            raise ValueError(f"expected settled seal RMS below threshold, got {seal_rms.tolist()}")
+
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
