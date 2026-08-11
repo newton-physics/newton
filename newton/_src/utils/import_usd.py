@@ -1670,27 +1670,55 @@ def parse_usd(
         damping_authored = _damping_usd is not None
         damping = _damping_usd if damping_authored else default_joint_damping
         velocity_limit = _resolve_joint_velocity_limit(jp_prim)
-        newton_limit_ke = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
-        newton_limit_kd = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
         limit_key = "limit_angular" if is_revolute else "limit_linear"
-        fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+        fallback_limit_ke, fallback_limit_ke_source = _resolve_joint_limit_gain(
             jp_prim,
             f"{limit_key}_ke",
             default_joint_limit_ke * limit_gains_scaling,
         )
-        fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
+        fallback_limit_kd, fallback_limit_kd_source = _resolve_joint_limit_gain(
             jp_prim,
             f"{limit_key}_kd",
             default_joint_limit_kd * limit_gains_scaling,
         )
+        newton_limit_ke = R.get_value(
+            jp_prim,
+            prim_type=PrimType.JOINT,
+            key="limit_ke",
+            default=None,
+            verbose=verbose,
+            comparison_key=lambda value, _resolver: _resolve_newton_limit_ke(
+                value,
+                fallback_limit_ke,
+                fallback_limit_ke_source,
+                default_joint_limit_ke * limit_gains_scaling,
+            )[0],
+        )
+        newton_limit_kd = R.get_value(
+            jp_prim,
+            prim_type=PrimType.JOINT,
+            key="limit_kd",
+            default=None,
+            verbose=verbose,
+            comparison_key=lambda value, _resolver: _resolve_newton_limit_kd(
+                newton_limit_ke,
+                value,
+                fallback_limit_kd,
+                fallback_limit_kd_source,
+                default_joint_limit_kd * limit_gains_scaling,
+            )[0],
+        )
         limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-            newton_limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke * limit_gains_scaling
+            newton_limit_ke,
+            fallback_limit_ke,
+            fallback_limit_ke_source,
+            default_joint_limit_ke * limit_gains_scaling,
         )
         limit_kd, limit_kd_source = _resolve_newton_limit_kd(
             newton_limit_ke,
             newton_limit_kd,
             fallback_limit_kd,
-            limit_kd_source,
+            fallback_limit_kd_source,
             default_joint_limit_kd * limit_gains_scaling,
         )
         limit_lower = jd.limit.lower
@@ -1838,8 +1866,6 @@ def parse_usd(
             joint_damping_authored = _joint_damping_usd is not None
             joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
             joint_velocity_limit = _resolve_joint_velocity_limit(joint_prim)
-            limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
-            limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
             linear_axes = []
             angular_axes = []
             num_dofs = 0
@@ -1850,6 +1876,78 @@ def parse_usd(
             d6_dof_axes = []
             linear_solref_modes: list[int] = []
             angular_solref_modes: list[int] = []
+            _trans_axes = {
+                UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
+                UsdPhysics.JointDOF.TransY: (0.0, 1.0, 0.0),
+                UsdPhysics.JointDOF.TransZ: (0.0, 0.0, 1.0),
+            }
+            _trans_names = {
+                UsdPhysics.JointDOF.TransX: "transX",
+                UsdPhysics.JointDOF.TransY: "transY",
+                UsdPhysics.JointDOF.TransZ: "transZ",
+            }
+            _rot_axes = {
+                UsdPhysics.JointDOF.RotX: (1.0, 0.0, 0.0),
+                UsdPhysics.JointDOF.RotY: (0.0, 1.0, 0.0),
+                UsdPhysics.JointDOF.RotZ: (0.0, 0.0, 1.0),
+            }
+            _rot_names = {
+                UsdPhysics.JointDOF.RotX: "rotX",
+                UsdPhysics.JointDOF.RotY: "rotY",
+                UsdPhysics.JointDOF.RotZ: "rotZ",
+            }
+            d6_free_dofs = []
+            for limit in joint_desc.jointLimits:
+                limit_lower = limit.second.lower if limit.second.enabled else builder.default_joint_cfg.limit_lower
+                limit_upper = limit.second.upper if limit.second.enabled else builder.default_joint_cfg.limit_upper
+                if limit_lower < limit_upper and (limit.first in _trans_axes or limit.first in _rot_axes):
+                    d6_free_dofs.append(limit.first)
+
+            d6_limit_gain_cache: dict[tuple[Any, str], tuple[float, str, float]] = {}
+
+            def _d6_limit_gain(dof, gain):
+                cache_key = (dof, gain)
+                if cache_key not in d6_limit_gain_cache:
+                    if dof in _trans_names:
+                        name = _trans_names[dof]
+                        scale = 1.0
+                    else:
+                        name = _rot_names[dof]
+                        scale = DegreesToRadian
+                    builder_default = (default_joint_limit_ke if gain == "ke" else default_joint_limit_kd) * scale
+                    fallback, source = _resolve_joint_limit_gain(
+                        joint_prim,
+                        f"limit_{name}_{gain}",
+                        builder_default,
+                    )
+                    d6_limit_gain_cache[cache_key] = fallback, source, builder_default
+                return d6_limit_gain_cache[cache_key]
+
+            def _effective_d6_limit_ke(value, _resolver):
+                return tuple(_resolve_newton_limit_ke(value, *_d6_limit_gain(dof, "ke"))[0] for dof in d6_free_dofs)
+
+            limit_ke = R.get_value(
+                joint_prim,
+                prim_type=PrimType.JOINT,
+                key="limit_ke",
+                default=None,
+                verbose=verbose,
+                comparison_key=_effective_d6_limit_ke,
+            )
+
+            def _effective_d6_limit_kd(value, _resolver):
+                return tuple(
+                    _resolve_newton_limit_kd(limit_ke, value, *_d6_limit_gain(dof, "kd"))[0] for dof in d6_free_dofs
+                )
+
+            limit_kd = R.get_value(
+                joint_prim,
+                prim_type=PrimType.JOINT,
+                key="limit_kd",
+                default=None,
+                verbose=verbose,
+                comparison_key=_effective_d6_limit_kd,
+            )
             # print(joint_desc.jointLimits, joint_desc.jointDrives)
             # print(joint_desc.body0)
             # print(joint_desc.body1)
@@ -1898,28 +1996,9 @@ def parse_usd(
                     dof, joint_desc
                 )
 
-                _trans_axes = {
-                    UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
-                    UsdPhysics.JointDOF.TransY: (0.0, 1.0, 0.0),
-                    UsdPhysics.JointDOF.TransZ: (0.0, 0.0, 1.0),
-                }
-                _rot_axes = {
-                    UsdPhysics.JointDOF.RotX: (1.0, 0.0, 0.0),
-                    UsdPhysics.JointDOF.RotY: (0.0, 1.0, 0.0),
-                    UsdPhysics.JointDOF.RotZ: (0.0, 0.0, 1.0),
-                }
-                _rot_names = {
-                    UsdPhysics.JointDOF.RotX: "rotX",
-                    UsdPhysics.JointDOF.RotY: "rotY",
-                    UsdPhysics.JointDOF.RotZ: "rotZ",
-                }
                 if free_axis and dof in _trans_axes:
                     # Per-axis translation names: transX/transY/transZ
-                    trans_name = {
-                        UsdPhysics.JointDOF.TransX: "transX",
-                        UsdPhysics.JointDOF.TransY: "transY",
-                        UsdPhysics.JointDOF.TransZ: "transZ",
-                    }[dof]
+                    trans_name = _trans_names[dof]
                     # Store initial state for this axis
                     d6_initial_positions[trans_name] = R.get_value(
                         joint_prim,
@@ -1935,16 +2014,8 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
-                        joint_prim,
-                        f"limit_{trans_name}_ke",
-                        default_joint_limit_ke,
-                    )
-                    fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
-                        joint_prim,
-                        f"limit_{trans_name}_kd",
-                        default_joint_limit_kd,
-                    )
+                    fallback_limit_ke, limit_ke_source, _ = _d6_limit_gain(dof, "ke")
+                    fallback_limit_kd, limit_kd_source, _ = _d6_limit_gain(dof, "kd")
                     current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
                         limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke
                     )
@@ -1993,16 +2064,8 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
-                        joint_prim,
-                        f"limit_{rot_name}_ke",
-                        default_joint_limit_ke * DegreesToRadian,
-                    )
-                    fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
-                        joint_prim,
-                        f"limit_{rot_name}_kd",
-                        default_joint_limit_kd * DegreesToRadian,
-                    )
+                    fallback_limit_ke, limit_ke_source, _ = _d6_limit_gain(dof, "ke")
+                    fallback_limit_kd, limit_kd_source, _ = _d6_limit_gain(dof, "kd")
                     current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
                         limit_ke,
                         fallback_limit_ke,

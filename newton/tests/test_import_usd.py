@@ -1865,6 +1865,44 @@ def Xform "Articulation" (
         self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_limit_sentinels_do_not_warn_when_results_match(self):
+        """Suppress migration warnings when joint-limit sentinels preserve results."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        for joint_type in ("revolute", "d6"):
+            with self.subTest(joint_type=joint_type):
+                stage = Usd.Stage.CreateInMemory()
+                root = UsdGeom.Xform.Define(stage, "/World")
+                UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                body = UsdGeom.Xform.Define(stage, "/World/Body")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                if joint_type == "revolute":
+                    joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+                    joint.CreateAxisAttr().Set("Z")
+                    joint.CreateLowerLimitAttr().Set(-45.0)
+                    joint.CreateUpperLimitAttr().Set(45.0)
+                else:
+                    joint = UsdPhysics.Joint.Define(stage, "/World/Joint")
+                    limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "transX")
+                    limit.CreateLowAttr().Set(-1.0)
+                    limit.CreateHighAttr().Set(1.0)
+                joint.GetPrim().AddAppliedSchema("NewtonJointAPI")
+                joint.CreateBody1Rel().SetTargets([body.GetPath()])
+
+                builder = newton.ModelBuilder()
+                joint.GetPrim().GetAttribute("newton:armature").Set(builder.default_joint_cfg.armature)
+                joint.GetPrim().GetAttribute("newton:damping").Set(builder.default_joint_cfg.damping)
+                joint.GetPrim().GetAttribute("newton:friction").Set(builder.default_joint_cfg.friction)
+                joint.GetPrim().GetAttribute("newton:velocityLimit").Set(builder.default_joint_cfg.velocity_limit)
+
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    builder.add_usd(stage)
+
+                migration_warnings = [warning for warning in caught if "schema fallbacks" in str(warning.message)]
+                self.assertEqual(migration_warnings, [])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_composed_fallback_policy_covers_joint_special_cases(self):
         """Apply registered joint fallbacks to specialized properties."""
         from pxr import Usd, UsdGeom, UsdPhysics
