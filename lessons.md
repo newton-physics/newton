@@ -1,5 +1,11 @@
 # Project Lessons
 
+## 2026-08-11 — Distinguish unsigned closest-point VF from oriented projected VF
+
+- Context: Designing an experiment for VF/EE feature-boundary continuity and possible PE/PP coverage.
+- Mistake: Claimed that current VF implicitly covers PE/PP from the unsigned closest-point branch without first checking that oriented surface collision uses projected barycentrics and rejects projections outside the triangle interior.
+- Rule: Before claiming VF covers boundary PE/PP features, identify the active `use_outward_normals` mode. Treat unsigned closest-point VF and oriented projected VF separately, and verify the exact scene configuration before reasoning about feature coverage or duplicate contacts.
+
 ## 2026-07-29 — Keep the primary checkout aligned with the user's daily branch
 
 - Context: Configuring this Newton fork as the editable source for Isaac Sim 6.0.1.
