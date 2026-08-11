@@ -785,7 +785,11 @@ class SurfaceGripper:
     def __init__(self, body_id: int, xform: wp.transform, world: int = 0, n_perimeter_samples: int = 0):
         self.body_id = body_id
         self.xform = xform
-        self.world = world  # world (environment) this gripper lives in; -1 for a global gripper
+        if world < 0:
+            raise ValueError(f"world must be >= 0, got {world}: a gripper follows the body it is attached to")
+        # Replicated environment this gripper belongs to. Pads are laid out grouped by world, so the
+        # joint seat fit only ever scans pads from the same environment.
+        self.world = world
         self.n_perimeter_samples = n_perimeter_samples  # perimeter sample points per pad for this gripper's seat fit / seal metric
         self.pads: list[wp.transform] = []  # pad poses in the gripper frame
         self.pad_radii: list[float] = []  # per-pad perimeter circle radius [m], parallel to self.pads
@@ -952,15 +956,15 @@ class SurfaceGripperBuilder:
         m.gripper_d_torsion = wp.array([x.d_torsion for x in g], dtype=wp.float32, device=device)
         m.gripper_f_torsion_max = wp.array([x.f_torsion_max for x in g], dtype=wp.float32, device=device)
         m.gripper_world = wp.array([x.world for x in g], dtype=wp.int32, device=device)
-        # world_count = highest world index + 1 (the global world -1 does not count)
+        # world_count = highest world index + 1 (SurfaceGripper rejects a negative world)
         m.world_count = 0
         for gi in range(len(g)):
             w = g[gi].world
-            if w >= 0 and w + 1 > m.world_count:
+            if w + 1 > m.world_count:
                 m.world_count = w + 1
 
         # Flatten every gripper's pads into per-pad arrays, ordered by world: world 0's pads first, then
-        # world 1's, ..., then the global world (-1) last. So each world's pads are one contiguous range,
+        # world 1's, and so on. So each world's pads are one contiguous range,
         # whose first index is recorded in pad_world_start. For each pad we also lay its perimeter sample points
         # (constant, pad frame) into pad_perimeter_local; pad_perimeter_start[p] marks where pad p's points start (a
         # gripper's n_perimeter_samples can differ, hence a start-index array, not a fixed stride). pad_perimeter_sdf0 shares pad_perimeter_start.
@@ -969,20 +973,10 @@ class SurfaceGripperBuilder:
         pad_world = []
         pad_perimeter_local = []
         pad_perimeter_start = [0]  # [n_pads + 1]: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
-        pad_world_start = [0] * (m.world_count + 2)  # per-world starts, then the global start, then the total
+        pad_world_start = [0] * (m.world_count + 1)  # per-world starts, then the total
 
-        # the order of worlds to visit: 0, 1, ..., world_count-1, then -1 (global)
-        world_order = []
         for w in range(m.world_count):
-            world_order.append(w)
-        world_order.append(-1)
-
-        for oi in range(len(world_order)):
-            w = world_order[oi]
-            if w >= 0:
-                pad_world_start[w] = len(pad_gripper)  # first pad of world w
-            else:
-                pad_world_start[m.world_count] = len(pad_gripper)  # first global (world -1) pad
+            pad_world_start[w] = len(pad_gripper)  # first pad of world w
             for gi in range(len(g)):
                 gripper = g[gi]
                 if gripper.world != w:
@@ -995,7 +989,7 @@ class SurfaceGripperBuilder:
                     for li in range(len(perimeter)):
                         pad_perimeter_local.append(perimeter[li])
                     pad_perimeter_start.append(len(pad_perimeter_local))  # end of this pad's perimeter points
-        pad_world_start[m.world_count + 1] = len(pad_gripper)  # total pad count
+        pad_world_start[m.world_count] = len(pad_gripper)  # total pad count
 
         gripper_n_perimeter_samples = []
         for gi in range(len(g)):
@@ -1134,6 +1128,7 @@ def attach_seal(
             state.body_q,  # hold pose = the body's raw pose
             gripper_state_output.pad_anchor_b,
         ],
+        device=gripper_model.pad_xform.device,
     )
 
 
@@ -1282,6 +1277,7 @@ def evaluate_gripper_force(
             gripper_state_output.pad_seal_load_unclamped,
             state.body_f,
         ],
+        device=gripper_model.pad_xform.device,
     )
 
 
