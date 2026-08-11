@@ -763,8 +763,10 @@ class TestControllerNeuralMLP(unittest.TestCase):
         control.joint_target_q.assign(np.array([target], dtype=np.float32))
         alpha = _response_at_state(model, state)[0, 0]
 
-        # Linearize tau(q, qd) = net(target - q, -qd) about (q0, qd0):
-        #   a = d(tau)/dq = -d(net)/d(e_q),  b = d(tau)/dqd = -d(net)/d(e_qd).
+        # Linearize tau(q, qd) = net(target - q, qd) about (q0, qd0). The first
+        # feature is a position error, so the chain rule negates its slope; the
+        # second is the raw velocity, so its slope carries through unchanged:
+        #   a = d(tau)/dq = -d(net)/d(feat_pos),  b = d(tau)/dqd = +d(net)/d(feat_vel).
         tau0 = net_np(target - q0, qd0)
         dneq, dneqd = dnet_np(target - q0, qd0)
         a, b = -dneq, dneqd
@@ -2702,13 +2704,13 @@ class TestResponseOracle(unittest.TestCase):
         np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
 
     def test_full_loop_response_from_mujoco_matches_refresh(self):
-        """Closed-loop run with the coupled response from MuJoCo's qM.
+        """Closed-loop run with the coupled response from MuJoCo's inertia.
 
         Runs the same simulation twice, updating the oracle response every step
-        either from the solver's own mass matrix (``refresh_from_mass_matrix`` on
-        its factorization — the "solver-owned oracle" path) or with the built-in
-        ``oracle.refresh()``. The refresh is scheduled at the same one-step-stale
-        phase as the qM data, so the trajectories must coincide. On CUDA the
+        either from the solver's own factorization (``refresh_from_inertia`` --
+        the "solver-owned oracle" path) or with the built-in ``oracle.refresh()``.
+        The refresh is scheduled at the same one-step-stale phase as the
+        factorization, so the trajectories must coincide. On CUDA the
         whole step (actuator + solver + response update) is graph-captured, which
         is what requires both update paths to be kernel-only.
         """
