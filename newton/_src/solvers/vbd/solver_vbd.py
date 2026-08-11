@@ -22,6 +22,8 @@ from ...sim import (
     State,
     StateFlags,
 )
+from ...sim.collide import _count_soft_particle_rigid_contact_pairs
+from ...utils import is_graph_capture_allocation_enabled
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
@@ -40,6 +42,7 @@ from .particle_vbd_kernels import (
     apply_truncation_ts,
     # Solver kernels (particle VBD)
     forward_step,
+    reset_particle_state,
     solve_elasticity,
     solve_elasticity_tile,
     update_velocity,
@@ -132,15 +135,22 @@ class SolverVBD(SolverBase, CouplingInterface):
         See :ref:`Joint feature support` for the full comparison across solvers.
 
     Buffer sizing:
-        SolverVBD pre-allocates contact state from capacities populated by
-        :class:`~newton.CollisionPipeline` when available; otherwise, the first
-        :meth:`step` lazily sizes buffers from ``Contacts``. During CUDA graph
-        recording, ordinary lazy resizing is supported only when Warp's memory pool
-        is enabled; otherwise, the solver raises with guidance to pre-size before
-        capture. Rigid contact history must be allocated before capture regardless
-        of memory-pool support. With ``rigid_contact_history=True``, construct
-        :class:`~newton.CollisionPipeline` before ``SolverVBD``, or run one
-        uncaptured solver step before capture.
+        Body-body contact state is pre-allocated from ``model.rigid_contact_max`` when a
+        :class:`~newton.CollisionPipeline` has already published it and this solver owns the
+        rigid system. Body-particle contact state is pre-sized from a world-aware
+        particle-shape pair count, which excludes the
+        ``enable_rigid_soft_full_surface_contact`` edge/face headroom. Both grow from
+        ``Contacts`` on the first :meth:`step`, and the rigid contact force outputs grow in
+        :meth:`collect_rigid_contact_forces`. During graph capture,
+        ordinary lazy resizing is supported on CPU and on CUDA with Warp's
+        stream-ordered memory pool enabled; otherwise the solver raises with
+        guidance to pre-size before capture. Rigid contact history is
+        cross-replay-persistent state, so it must always be allocated before
+        capture regardless of the device's allocation-during-capture support --
+        allocating it inside a graph records a `wp.zeros` fill that wipes the
+        warm-start buffers on every replay. With ``rigid_contact_history=True``,
+        construct :class:`~newton.CollisionPipeline` before ``SolverVBD``, or run
+        one uncaptured solver step before capture.
 
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
@@ -247,10 +257,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_avbd_gamma: float = 0.999,  # Per-step decay for penalty k and persisted hard-mode lambda
         # Rigid body - contacts
         rigid_contact_hard: bool = True,  # Body-body contacts: hard=AL duals+C0, soft=penalty only
-        rigid_contact_history: bool = False,  # Body-body contact warm-start (hard: k+duals+anchors; soft: k)
-        rigid_contact_stick_motion_eps: float = 1.0e-4,  # Sticky contact residual threshold; 0 disables point replay
-        rigid_contact_stick_freeze_translation_eps: float = 1.0e-4,  # Deadzone snap translation threshold; 0 disables snap
-        rigid_contact_stick_freeze_angular_eps: float = 1.0e-4,  # Deadzone snap angular threshold; 0 disables snap
+        rigid_contact_history: bool = False,  # Body-body contact numeric warm-start (hard: k+duals; soft: k)
+        rigid_contact_stick_motion_eps: float | None = None,  # Deprecated and ignored
+        rigid_contact_stick_freeze_translation_eps: float | None = None,  # Deprecated and ignored
+        rigid_contact_stick_freeze_angular_eps: float | None = None,  # Deprecated and ignored
         rigid_contact_k_start: float = 1.0e2,  # Body-body/body-particle penalty seed when ramping is enabled
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
         rigid_body_particle_contact_buffer_size: int = 256,  # Per-body soft-contact list capacity (particle + edge/face)
@@ -334,27 +344,29 @@ class SolverVBD(SolverBase, CouplingInterface):
                 reference scheme. Lower values decay faster, improving stability at the cost of slower convergence.
             rigid_contact_hard: Whether body-body rigid contacts use hard mode (augmented Lagrangian with
                 persistent lambda and C0 stabilization) or soft mode (penalty only).
-            rigid_contact_history: Whether to persist body-body contact state across steps using
-                ``Contacts.rigid_contact_match_index`` from the collision pipeline. For hard contacts,
-                restores lambda, penalty k, and sticky contact anchors; C0 is recomputed each step.
-                For soft contacts, only restored penalty k affects the solve (useful with ramping).
-                Requires contacts with ``rigid_contact_match_index`` populated; use
-                ``CollisionPipeline(contact_matching="latest")`` for VBD warm-starting. Ignored
-                when ``integrate_with_external_rigid_solver=True`` or ``model.body_count == 0``.
-                For CUDA graph capture, construct :class:`~newton.CollisionPipeline` before
-                ``SolverVBD`` so history is pre-allocated, or run one uncaptured solver step
-                before capture.
-            rigid_contact_stick_motion_eps: Tangential contact residual threshold for marking hard
-                body-body contacts as sticking. Sticking contacts may replay contact points when
-                ``rigid_contact_history=True``; dynamic-dynamic sticking contacts may also use the
-                body-level deadzone snap. Set to ``0.0`` to disable sticky flags while preserving
-                lambda and penalty warm-starting.
-            rigid_contact_stick_freeze_translation_eps: World-space translation threshold for the
-                body-level deadzone snap on dynamic-dynamic sticking contacts. Set to ``0.0`` to
-                disable translation snapping.
-            rigid_contact_stick_freeze_angular_eps: Angular threshold [rad] for the body-level
-                deadzone snap on dynamic-dynamic sticking contacts. Set to ``0.0`` to disable
-                angular snapping.
+            rigid_contact_history: Whether to persist body-body numeric contact state
+                across steps using ``Contacts.rigid_contact_match_index``. Hard contacts
+                restore lambda and penalty k; soft contacts restore penalty k only.
+                Contact geometry remains owned by the collision pipeline. Requires
+                ``CollisionPipeline(contact_matching="latest")`` or ``"sticky"``.
+                Ignored when ``integrate_with_external_rigid_solver=True`` or
+                ``model.body_count == 0``. During graph capture, construct the
+                collision pipeline before ``SolverVBD`` so history is pre-allocated,
+                or run one uncaptured solver step before capture.
+            rigid_contact_stick_motion_eps: Deprecated and ignored. SolverVBD no longer
+                classifies contacts as sticking. Use
+                ``CollisionPipeline(contact_matching="sticky",
+                contact_matching_pos_threshold=...)`` for persistent contact geometry.
+
+                .. deprecated:: 1.5
+            rigid_contact_stick_freeze_translation_eps: Deprecated and ignored. The
+                SolverVBD body-level contact deadzone was removed.
+
+                .. deprecated:: 1.5
+            rigid_contact_stick_freeze_angular_eps: Deprecated and ignored. The
+                SolverVBD body-level contact deadzone was removed.
+
+                .. deprecated:: 1.5
             rigid_contact_k_start: Body-body and body-particle contact penalty seed for AVBD ramping. Used when
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the contact stiffness regardless of this value.
@@ -398,6 +410,23 @@ class SolverVBD(SolverBase, CouplingInterface):
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
+        if (
+            rigid_contact_stick_motion_eps is not None
+            or rigid_contact_stick_freeze_translation_eps is not None
+            or rigid_contact_stick_freeze_angular_eps is not None
+        ):
+            warnings.warn(
+                "SolverVBD rigid_contact_stick_motion_eps, "
+                "rigid_contact_stick_freeze_translation_eps, and "
+                "rigid_contact_stick_freeze_angular_eps are deprecated and ignored, "
+                "and will be removed in a future release. "
+                "Use CollisionPipeline(contact_matching='sticky', "
+                "contact_matching_pos_threshold=...) for persistent contact geometry. "
+                "The SolverVBD body-level contact deadzone was removed.",
+                DeprecationWarning,
+                # __init__ is wrapped by @deprecate_nonkeyword_arguments.
+                stacklevel=3,
+            )
 
         super().__init__(model)
 
@@ -480,9 +509,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_avbd_contact_alpha,
             rigid_contact_hard,
             rigid_contact_history,
-            rigid_contact_stick_motion_eps,
-            rigid_contact_stick_freeze_translation_eps,
-            rigid_contact_stick_freeze_angular_eps,
             rigid_contact_k_start,
             rigid_body_contact_buffer_size,
             rigid_body_particle_contact_buffer_size,
@@ -608,9 +634,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_avbd_contact_alpha: float | None,
         rigid_contact_hard: bool,
         rigid_contact_history: bool,
-        rigid_contact_stick_motion_eps: float,
-        rigid_contact_stick_freeze_translation_eps: float,
-        rigid_contact_stick_freeze_angular_eps: float,
         rigid_contact_k_start: float,
         rigid_body_contact_buffer_size: int,
         rigid_body_particle_contact_buffer_size: int,
@@ -642,17 +665,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             raise ValueError(f"rigid_avbd_gamma must be in [0, 1], got {rigid_avbd_gamma}")
         if rigid_contact_k_start < 0:
             raise ValueError(f"rigid_contact_k_start must be >= 0, got {rigid_contact_k_start}")
-        if rigid_contact_stick_motion_eps < 0:
-            raise ValueError(f"rigid_contact_stick_motion_eps must be >= 0, got {rigid_contact_stick_motion_eps}")
-        if rigid_contact_stick_freeze_translation_eps < 0:
-            raise ValueError(
-                "rigid_contact_stick_freeze_translation_eps must be >= 0, "
-                f"got {rigid_contact_stick_freeze_translation_eps}"
-            )
-        if rigid_contact_stick_freeze_angular_eps < 0:
-            raise ValueError(
-                f"rigid_contact_stick_freeze_angular_eps must be >= 0, got {rigid_contact_stick_freeze_angular_eps}"
-            )
         if rigid_joint_linear_k_start < 0:
             raise ValueError(f"rigid_joint_linear_k_start must be >= 0, got {rigid_joint_linear_k_start}")
         if rigid_joint_angular_k_start < 0:
@@ -675,11 +687,6 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.rigid_contact_alpha = rigid_avbd_contact_alpha
         else:
             self.rigid_contact_alpha = rigid_avbd_alpha
-
-        self.rigid_contact_stick_motion_eps = rigid_contact_stick_motion_eps
-        # DEADZONE body-snap thresholds; suppressed by _STICK_FLAG_ANCHOR.
-        self.rigid_contact_stick_freeze_translation_eps = rigid_contact_stick_freeze_translation_eps
-        self.rigid_contact_stick_freeze_angular_eps = rigid_contact_stick_freeze_angular_eps
 
         # Joint constraint stiffness and damping for non-cable structural joints
         self.rigid_joint_linear_ke = rigid_joint_linear_ke
@@ -756,16 +763,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.body_body_contact_material_mu = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_lambda = wp.zeros(0, dtype=wp.vec3, device=self.device)
             self.body_body_contact_C0 = wp.zeros(0, dtype=wp.vec3, device=self.device)
-            self.body_body_contact_stick_flag = wp.zeros(0, dtype=wp.int32, device=self.device)
 
             # Rigid contact warm-start buffers.
             self._prev_contact_lambda = None
-            self._prev_contact_stick_flag = None
             self._prev_contact_penalty_k = None
-            self._prev_contact_point0 = None
-            self._prev_contact_point1 = None
-            self._prev_contact_offset0 = None
-            self._prev_contact_offset1 = None
             self._prev_contact_normal = None
 
             # Joint augmented-Lagrangian state (vec3, per-joint, bilateral)
@@ -820,7 +821,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Zero-length body poses for static-shape contact kernels when State.body_q is absent.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
         if model.particle_count > 0 and model.shape_count > 0:
-            self._init_body_particle_contact_state(model.shape_count * model.particle_count)
+            # Not shape_count * particle_count: that counts cross-world pairs, so it is quadratic in
+            # world count and can exceed Warp's int32 array shape limit. A hint only -- the first step
+            # grows this to contacts.soft_contact_max, raising if capture cannot allocate.
+            self._init_body_particle_contact_state(_count_soft_particle_rigid_contact_pairs(model))
 
         # Kinematic body support: create effective inv_mass / inv_inertia arrays
         # with kinematic bodies zeroed out.
@@ -862,6 +866,10 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
+        return True
+
+    @override
+    def coupling_supports_full_surface_soft_contacts(self) -> bool:
         return True
 
     def coupling_notify_input_state_update(
@@ -922,19 +930,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts_freshly_detected: bool = False,
     ) -> Contacts | None:
         """Update rigid history cadence for proxy contacts."""
-        # Full-surface (edge/face) rigid-soft contacts are not yet harvested onto proxy particles:
-        # the proxy contact-force kernels consume only per-particle records (particle >= 0), so a soft
-        # edge/face contact's reaction on a proxy-coupled rigid body would be silently dropped. Fail
-        # loud until proxy harvesting consumes the unified records. Standalone SolverVBD (no proxy
-        # coupling) never reaches this hook and does support full-surface via the per-body path.
-        if contacts is not None and getattr(contacts, "_enable_rigid_soft_full_surface_contact", False):
-            raise NotImplementedError(
-                "Full-surface (edge/face) rigid-soft contacts are not yet supported with VBD proxy-particle "
-                "coupling (SolverCoupledProxy): the proxy contact-force harvest consumes only per-particle "
-                "records, so edge/face force feedback to proxy-coupled rigid bodies would be silently dropped. "
-                "Set enable_rigid_soft_full_surface_contact=False for the coupled proxy solve, or drive the "
-                "rigid bodies with standalone SolverVBD (which supports full-surface via the per-body path)."
-            )
         # Do not call super(); we can keep proxy-proxy collisions as we
         # are using a custom force harvesting hook
         self.set_rigid_history_update(bool(contacts_freshly_detected))
@@ -1028,7 +1023,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_particle_contact_material_kd,
                     self.body_particle_contact_material_mu,
                     contacts.soft_contact_count,
-                    contacts.soft_contact_particle,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_barycentric,
                     contacts.soft_contact_shape,
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_body_vel,
@@ -1063,6 +1059,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         out_particle_f.zero_()
         if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0:
             return
+
+        if contacts is not None:
+            contacts._assert_particle_only_soft_contacts("SolverVBD proxy-particle coupling")
 
         if (
             contacts is not None
@@ -1158,7 +1157,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_body_contact_material_mu = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_lambda = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
         self.body_body_contact_C0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
-        self.body_body_contact_stick_flag = wp.zeros(rigid_contact_max, dtype=wp.int32, device=self.device)
 
     def _init_body_particle_contact_state(self, soft_contact_max: int) -> None:
         """Allocate body-particle material arrays sized to the given soft contact capacity."""
@@ -1171,24 +1169,18 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Allocate rigid contact warm-start buffers."""
         cap = max(1, rigid_contact_max)
         self._prev_contact_lambda = wp.zeros(cap, dtype=wp.vec3, device=self.device)
-        self._prev_contact_stick_flag = wp.zeros(cap, dtype=wp.int32, device=self.device)
         self._prev_contact_penalty_k = wp.zeros(cap, dtype=float, device=self.device)
-        self._prev_contact_point0 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
-        self._prev_contact_point1 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
-        self._prev_contact_offset0 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
-        self._prev_contact_offset1 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
     def _raise_if_capturing_resize(self, name: str, current: int, required: int) -> None:
-        from ...utils import is_graph_capture_allocation_enabled  # noqa: PLC0415
-
         if self.device.is_capturing and not is_graph_capture_allocation_enabled(self.device):
             raise RuntimeError(
                 f"SolverVBD {name} buffer needs to grow from {current} to {required} "
                 "during graph capture, but allocation during capture is not enabled on this device. "
-                "Pre-size before capture by constructing CollisionPipeline before SolverVBD, "
-                "passing explicit rigid_contact_max/soft_contact_max to CollisionPipeline, or running one "
-                "uncaptured step/force-collection pass."
+                "Run one uncaptured step (or force-collection pass) before capture so the contact "
+                "buffers are sized for the scene, or enable Warp's stream-ordered memory pool on this device. "
+                "Rigid buffers can also be pre-sized by constructing CollisionPipeline before SolverVBD, "
+                "which publishes model.rigid_contact_max; there is no equivalent for body-particle contacts."
             )
 
     def _refresh_cable_rest_bend_twist_cache(self) -> None:
@@ -1544,7 +1536,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     @override
     @classmethod
-    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = True) -> None:
+    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = False) -> None:
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
@@ -1554,19 +1546,26 @@ class SolverVBD(SolverBase, CouplingInterface):
         Attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes and in USD as ``newton:vbd:<attr>``.
 
+        Dahl cable friction is enabled per joint only where both
+        ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
+        positive; the attributes default to zero.
+
         Args:
             builder: Model builder to register attributes on.
             dahl_defaults_enabled: Deprecated compatibility mode. When True, Dahl parameters
-                default to positive values. Prefer passing ``False`` and explicitly authoring
-                positive Dahl values only when Dahl cable friction is desired.
+                default to positive values instead of zero.
+
+                .. deprecated:: 1.5
+                    The compatibility mode will be removed; author positive Dahl
+                    values explicitly when Dahl cable friction is desired.
         """
         dahl_eps_default = 0.5 if dahl_defaults_enabled else 0.0
         dahl_tau_default = 1.0 if dahl_defaults_enabled else 0.0
         if dahl_defaults_enabled:
             warnings.warn(
-                "Implicit positive Dahl defaults in SolverVBD.register_custom_attributes() are deprecated "
-                "and will be disabled by default in a future release. Pass dahl_defaults_enabled=False and "
-                "explicitly author positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
+                "SolverVBD.register_custom_attributes(dahl_defaults_enabled=True) is deprecated "
+                "and the compatibility mode will be removed in a future release. Explicitly author "
+                "positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
                 "Dahl cable friction.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -1720,7 +1719,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         build time via the ``vbd:joint_is_hard`` custom attribute, avoiding a
         runtime :meth:`set_joint_constraint_mode` call::
 
-            SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)  # before adding joints
+            SolverVBD.register_custom_attributes(builder)  # before adding joints
             builder.add_joint_fixed(..., custom_attributes={"vbd:joint_is_hard": 0})
             model = builder.finalize()
             solver = SolverVBD(model, ...)
@@ -1809,7 +1808,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Raises:
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
-                need to be allocated or grown during CUDA graph capture.
+                need to be allocated or grown during graph capture.
         """
         self._apply_module_options()
         update_rigid = self._update_rigid_history
@@ -1827,9 +1826,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Snapshot solved rigid contact state for next-frame warm-start.
         self._snapshot_rigid_contact_history(contacts)
-        self._finalize_rigid_bodies(
-            state_in, state_out, dt, apply_stick_deadzone=contacts is not None and self.rigid_contact_hard
-        )
+        self._finalize_rigid_bodies(state_in, state_out, dt)
         self._finalize_particles(state_out, dt)
 
     @override
@@ -1839,7 +1836,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
-        """Reset rigid solver history and optional body state for selected worlds.
+        """Reset rigid solver history and optional body and particle state for selected worlds.
 
         Body fields selected by *flags* are copied from the model defaults.
         Joint penalty is restored to its minimum; joint C0 and AVBD dual history
@@ -1849,7 +1846,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         Selected-world contact warm-start is cold-started when fresh rigid contacts
         are next processed. Internal rigid history is reset regardless of *flags*.
         When an external solver integrates the bodies, reset performs no rigid
-        mutation; ``state`` and ``world_mask`` validation and particle warnings still
+        mutation; ``state`` and ``world_mask`` validation and particle reset still
         apply, but body State arrays are not accessed or validated.
 
         ``BODY_Q`` / ``BODY_QD`` copy ``model.body_q`` / ``model.body_qd`` into
@@ -1860,47 +1857,64 @@ class SolverVBD(SolverBase, CouplingInterface):
         ``JOINT_Q`` / ``JOINT_QD`` are ignored (VBD uses maximal ``body_q`` /
         ``body_qd``); to reset from joint coordinates, run :func:`~newton.eval_fk`
         after reset so the resulting ``body_q`` supersedes reset's model copy.
-        Particle flags are unsupported and warn only if the model contains
-        particles (``flags=None`` means ``ALL``); particle and body-particle history
-        is unchanged.
 
-        Reset does not run collision detection: after moving bodies, regenerate
-        contacts and let the next :meth:`step` refresh rigid contact state. The next
+        ``PARTICLE_Q`` / ``PARTICLE_QD`` likewise copy ``model.particle_q`` /
+        ``model.particle_qd`` into *state* for particles in the selected worlds,
+        using the same masking as the body fields (``world_mask=None`` also
+        restores global ``world == -1`` particles; an explicit mask restores
+        globals only through its final entry). One path covers both cloth and
+        volumetric (tet) soft bodies, and it runs even when an external solver
+        integrates the bodies or the model has none. A requested particle field is
+        skipped if its *state* array is ``None``. Particle and body-particle solver
+        history is intentionally left untouched: ``particle_q_prev`` is rebaselined
+        from the incoming state at the start of the next :meth:`step`, self-contact
+        and body-particle contacts rebuild per step, and tet/cloth elasticity is
+        stateless, so no particle history cold-start is required. Reset does not
+        refresh the particle self-contact BVH; the next :meth:`step` refits it from
+        the incoming positions. After a large reset displacement, call
+        :meth:`rebuild_bvh` to restore acceleration-structure quality. Both reset
+        and :meth:`rebuild_bvh` are graph-capturable, so either may run inside a
+        captured episode-reset graph.
+
+        Reset does not run collision detection, and :meth:`step` consumes the
+        supplied contacts rather than rerunning
+        :meth:`~newton.CollisionPipeline.collide`. After moving bodies or
+        particles, regenerate contacts so stale soft contacts are not reused, and
+        let the next :meth:`step` refresh rigid contact state. The next
         rigid :meth:`step` consumes the pose and cable rebaseline even when
         ``contacts=None``, so author the final pose (or run :func:`~newton.eval_fk`)
         before stepping; contact invalidation instead waits for a fresh refresh.
-        With ``rigid_contact_history=True``, only ``contact_matching="latest"``
-        is supported; VBD cannot invalidate sticky matcher state owned by the
-        collision pipeline. Reset does not change ``set_rigid_history_update()``;
-        leave rigid-history refresh enabled for the next contact-bearing step.
-        Reusing contacts (``set_rigid_history_update(False)``) is unsupported
-        only while contact invalidation is still pending.
+        VBD cold-starts its numeric contact state for reset-selected worlds.
+        Frame-to-frame correspondence and sticky contact geometry remain owned by
+        :class:`~newton.CollisionPipeline`; construct a new pipeline to discard
+        that history after a discontinuous episode reset. Reset does not change
+        ``set_rigid_history_update()``; leave rigid history refresh enabled for the
+        next contact-bearing step. Reusing contacts
+        (``set_rigid_history_update(False)``) is unsupported only while contact
+        invalidation is still pending.
 
         Args:
             state: The simulation state to reset (modified in place).
             world_mask: One-dimensional Warp boolean mask on the solver device.
-                Shape ``(world_count,)`` selects local worlds only. Shape
-                ``(world_count + 1,)`` additionally uses the final entry for
-                entities not assigned to a world (``world == -1``). ``None``
-                selects all local and unassigned entities.
+                Shape ``(world_count + 1,)``, with the final entry selecting
+                entities in global world ``-1``. ``None`` selects all local and
+                global entities.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
             flags: :class:`~newton.StateFlags` (or ``int``) selecting which body
-                fields to copy from the model defaults. VBD honors
-                :attr:`~newton.StateFlags.BODY_Q` and
-                :attr:`~newton.StateFlags.BODY_QD`; ``None`` requests all flags.
+                and particle fields to copy from the model defaults. VBD honors
+                :attr:`~newton.StateFlags.BODY_Q`,
+                :attr:`~newton.StateFlags.BODY_QD`,
+                :attr:`~newton.StateFlags.PARTICLE_Q`, and
+                :attr:`~newton.StateFlags.PARTICLE_QD`; ``None`` requests all flags.
         """
         if state is None:
             raise ValueError("'state' argument is required.")
         model = self.model
-        if world_mask is not None:
-            if not isinstance(world_mask, wp.array) or world_mask.ndim != 1 or world_mask.dtype != wp.bool:
-                raise ValueError("world_mask must be a one-dimensional Warp boolean array.")
-            mask_length = world_mask.shape[0]
-            if mask_length not in (model.world_count, model.world_count + 1):
-                raise ValueError(
-                    f"world_mask has length {mask_length}, expected {model.world_count} or {model.world_count + 1}."
-                )
-            if world_mask.device != self.device:
-                raise ValueError(f"world_mask is on device {world_mask.device}, expected solver device {self.device}.")
+        world_mask = self._normalize_reset_world_mask(world_mask)
 
         flags_value = int(StateFlags.ALL if flags is None else flags)
 
@@ -1924,12 +1938,42 @@ class SolverVBD(SolverBase, CouplingInterface):
                     )
                 body_qd = state.body_qd
 
-        if model.particle_count > 0 and (flags_value & (int(StateFlags.PARTICLE_Q) | int(StateFlags.PARTICLE_QD))):
-            warnings.warn(
-                "SolverVBD.reset() does not yet support particle resets; StateFlags.PARTICLE_Q and "
-                "StateFlags.PARTICLE_QD are ignored; particle and body-particle solver history is unchanged.",
-                stacklevel=2,
-            )
+        # Particle state reset mirrors the rigid path: only a requested, on-device
+        # State array binds, and a bound array is itself the kernel's per-field
+        # reset signal. This runs before the rigid early-return so particle-only
+        # models and external-rigid coupling still restore deformables.
+        if model.particle_count > 0:
+            particle_q = None
+            particle_qd = None
+            if flags_value & int(StateFlags.PARTICLE_Q) and state.particle_q is not None:
+                if state.particle_q.device != self.device:
+                    raise ValueError(
+                        f"state.particle_q is on device {state.particle_q.device}, "
+                        f"expected solver device {self.device}."
+                    )
+                particle_q = state.particle_q
+            if flags_value & int(StateFlags.PARTICLE_QD) and state.particle_qd is not None:
+                if state.particle_qd.device != self.device:
+                    raise ValueError(
+                        f"state.particle_qd is on device {state.particle_qd.device}, "
+                        f"expected solver device {self.device}."
+                    )
+                particle_qd = state.particle_qd
+            if particle_q is not None or particle_qd is not None:
+                wp.launch(
+                    kernel=reset_particle_state,
+                    dim=model.particle_count,
+                    inputs=[
+                        world_mask,
+                        world_mask is None,
+                        model.world_count,
+                        model.particle_world,
+                        model.particle_q,
+                        model.particle_qd,
+                    ],
+                    outputs=[particle_q, particle_qd],
+                    device=self.device,
+                )
 
         if not internal_body_reset:
             return
@@ -1994,23 +2038,13 @@ class SolverVBD(SolverBase, CouplingInterface):
             dim=contact_launch_dim,
             inputs=[
                 contacts.rigid_contact_count,
-                contacts.rigid_contact_point0,
-                contacts.rigid_contact_point1,
-                contacts.rigid_contact_offset0,
-                contacts.rigid_contact_offset1,
                 contacts.rigid_contact_normal,
                 self.body_body_contact_lambda,
-                self.body_body_contact_stick_flag,
                 self.body_body_contact_penalty_k,
             ],
             outputs=[
                 self._prev_contact_lambda,
-                self._prev_contact_stick_flag,
                 self._prev_contact_penalty_k,
-                self._prev_contact_point0,
-                self._prev_contact_point1,
-                self._prev_contact_offset0,
-                self._prev_contact_offset1,
                 self._prev_contact_normal,
             ],
             device=self.device,
@@ -2098,6 +2132,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             inputs=[
                 dt,
                 model.gravity,
+                model.particle_world,
                 self.particle_q_prev,
                 state_in.particle_q,
                 state_in.particle_qd,
@@ -2141,11 +2176,17 @@ class SolverVBD(SolverBase, CouplingInterface):
         internal_rigid = model.body_count > 0 and not self.integrate_with_external_rigid_solver
         rigid_capacity = contacts.rigid_contact_max if contacts is not None else 0
 
+        # Rigid contact history is cross-replay-persistent state: allocating it
+        # during capture records a `wp.zeros` fill into the graph, which then
+        # re-zeros the warm-start buffers on every replay -- silently
+        # equivalent to `rigid_contact_history=False`. So this guard fires
+        # unconditionally when capturing, regardless of the device's
+        # allocation-during-capture support.
         if self.device.is_capturing and internal_rigid and self.rigid_contact_history:
             history_capacity = 0 if self._prev_contact_lambda is None else self._prev_contact_lambda.shape[0]
             if history_capacity < rigid_capacity:
                 raise RuntimeError(
-                    "SolverVBD contact history must be allocated before CUDA graph capture. "
+                    "SolverVBD contact history must be allocated before graph capture. "
                     "Construct CollisionPipeline before SolverVBD, or run one uncaptured solver step before capture."
                 )
 
@@ -2211,9 +2252,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                         if contacts.rigid_contact_match_index is None:
                             raise RuntimeError(
                                 "SolverVBD(rigid_contact_history=True) requires Contacts with "
-                                "rigid_contact_match_index populated. Create contacts through "
-                                'CollisionPipeline(contact_matching="latest") for VBD warm-starting, '
-                                "or set rigid_contact_history=False."
+                                "rigid_contact_match_index populated. Use "
+                                'CollisionPipeline(contact_matching="latest") or '
+                                'CollisionPipeline(contact_matching="sticky"), or set rigid_contact_history=False.'
                             )
 
                         history_required = contact_launch_dim
@@ -2224,12 +2265,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
                         history = RigidContactHistory()
                         history.lambda_ = self._prev_contact_lambda
-                        history.stick_flag = self._prev_contact_stick_flag
                         history.penalty_k = self._prev_contact_penalty_k
-                        history.point0 = self._prev_contact_point0
-                        history.point1 = self._prev_contact_point1
-                        history.offset0 = self._prev_contact_offset0
-                        history.offset1 = self._prev_contact_offset1
                         history.normal = self._prev_contact_normal
 
                         wp.launch(
@@ -2254,10 +2290,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                                 self.rigid_contact_k_start_value,
                             ],
                             outputs=[
-                                contacts.rigid_contact_point0,
-                                contacts.rigid_contact_point1,
-                                contacts.rigid_contact_offset0,
-                                contacts.rigid_contact_offset1,
                                 self.body_body_contact_penalty_k,
                                 self.body_body_contact_lambda,
                                 self.body_body_contact_material_kd,
@@ -2332,7 +2364,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                     ],
                     device=self.device,
                 )
-                self.body_body_contact_stick_flag.zero_()
 
             # Accumulate joint_f into body wrenches (scratch buffer avoids mutating user state).
             body_f_for_integration = state_in.body_f
@@ -2954,16 +2985,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_body_contact_material_mu,
                     self.body_body_contact_C0,
                     self.rigid_contact_alpha,
-                    self.rigid_contact_stick_motion_eps,
                     self.rigid_contact_hard,
-                    self.body_inv_mass_effective,
                     self.body_body_contact_material_ke,
                     self.rigid_linear_beta,
                     self.body_body_contact_penalty_k,  # input/output
                     self.body_body_contact_lambda,  # input/output
-                ],
-                outputs=[
-                    self.body_body_contact_stick_flag,
                 ],
                 device=self.device,
             )
@@ -3193,13 +3219,11 @@ class SolverVBD(SolverBase, CouplingInterface):
             device=self.device,
         )
 
-    def _finalize_rigid_bodies(self, state_in: State, state_out: State, dt: float, apply_stick_deadzone: bool):
+    def _finalize_rigid_bodies(self, state_in: State, state_out: State, dt: float):
         """Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).
 
         Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for cable bend/twist.
-        Also transfers the final body poses from state_in to state_out. When requested,
-        the fused finalize kernel first applies the body-level stick-contact deadzone
-        before computing velocity from the accepted pose.
+        Also transfers the final body poses from state_in to state_out.
         """
         model = self.model
 
@@ -3213,13 +3237,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 dt,
                 state_in.body_q,
                 model.body_com,
-                self.body_body_contact_buffer_pre_alloc,
-                self.body_body_contact_counts,
-                self.body_body_contact_indices,
-                self.body_body_contact_stick_flag,
-                int(apply_stick_deadzone),
-                self.rigid_contact_stick_freeze_translation_eps,
-                self.rigid_contact_stick_freeze_angular_eps,
             ],
             outputs=[self.body_q_prev, state_out.body_qd, state_in.body_qd, state_out.body_q],
             dim=model.body_count,

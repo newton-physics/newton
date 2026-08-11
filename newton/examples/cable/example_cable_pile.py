@@ -165,8 +165,8 @@ class Example:
         builder.color()
 
         self.model = builder.finalize()
-        # Size persistent contact history before CUDA graph capture.
-        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        # Size persistent contact history before graph capture.
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="sticky")
         self.contacts = self.collision_pipeline.contacts()
 
         self.solver = newton.solvers.SolverVBD(

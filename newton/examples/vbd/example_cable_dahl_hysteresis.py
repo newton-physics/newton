@@ -98,7 +98,7 @@ class Example:
         self.cycle_duration = self.NUM_PHASES * self.PHASE_DURATION
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
 
         self.cases: list[dict] = []
         for name, mode, has_dahl in (

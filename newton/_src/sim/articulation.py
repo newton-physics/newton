@@ -631,8 +631,7 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
         qd: The joint velocity coordinate.
     """
     axis_p = wp.transform_vector(X_wp, axis)
-    twist = wp.quat_twist(axis, q_pc)
-    q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
+    q = wp.quat_twist_angle_signed(axis, q_pc)
     qd = wp.dot(w_err, axis_p)
     return q, qd
 

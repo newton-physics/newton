@@ -56,7 +56,7 @@ from .kinematics.resets import (
     set_body_q,
     set_floating_base,
 )
-from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
+from .linalg import ConjugateResidualSolver, ConjugateResidualSolverFused, IterativeSolver, LinearSolverNameToType
 from .solvers.common import WarmStartMode
 from .solvers.dvi import DVISolver
 from .solvers.fk import ForwardKinematicsSolver
@@ -183,6 +183,20 @@ class SolverKaminoImpl(SolverBase):
                 " Defaulting to 'ConjugateResidualSolver' as the PADMM linear solver."
             )
             linear_solver_type = ConjugateResidualSolver
+
+        # ConjugateResidualSolverFused requires a BlockSparseMatrixFreeDelassusOperator,
+        # which is only built when both sparse_dynamics and sparse_jacobian are enabled.
+        if issubclass(linear_solver_type, ConjugateResidualSolverFused):
+            if not self._config.sparse_dynamics:
+                msg.warning(
+                    "ConjugateResidualSolverFused requires sparse dynamics. Enabling sparse_dynamics automatically."
+                )
+                self._config.sparse_dynamics = True
+            if not self._config.sparse_jacobian:
+                msg.warning(
+                    "ConjugateResidualSolverFused requires sparse Jacobians. Enabling sparse_jacobian automatically."
+                )
+                self._config.sparse_jacobian = True
 
         # If graph conditionals are disabled in the PADMM solver, ensure that they
         # are also disabled in the linear solver if it is an iterative solver.
@@ -485,6 +499,22 @@ class SolverKaminoImpl(SolverBase):
             )
         if isinstance(config.base_velocity, SolverKamino.ResetConfig.FromBaseU):
             _check_length(config.base_velocity.base_u, "config.base_velocity.base_u", self._model.size.num_worlds)
+
+        # Warn if any world does not have an assigned base body when base attributes are provided.
+        if (
+            not (
+                isinstance(config.base_pose, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_pose, SolverKamino.ResetConfig.Preserve)
+            )
+            or not (
+                isinstance(config.base_velocity, SolverKamino.ResetConfig.ToDefault)
+                or isinstance(config.base_velocity, SolverKamino.ResetConfig.Preserve)
+            )
+        ) and self._model.info.has_world_without_base_body:
+            msg.warning(
+                "Some worlds have no free-floating base body assigned, possibly due to a non-free articulation root (fixed-base system). "
+                "Base pose/velocity resets will have no effect for those worlds."
+            )
 
         # Run the pre-reset callback if it has been set
         self._run_pre_reset_callback(state_out=state)

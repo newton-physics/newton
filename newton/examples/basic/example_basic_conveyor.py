@@ -152,6 +152,7 @@ def advance_time(sim_time: wp.array[wp.float32], dt: float):
 
 class Example:
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0

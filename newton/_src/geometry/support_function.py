@@ -174,7 +174,7 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Suppo
                 result = result + wp.vec3(0.0, 0.0, -1.0)
     elif geom.shape_type == GeoType.BOX:
         # Use a relative deadband so near-zero direction components
-        # (from quaternion rotation noise ~1e-14) cannot flip the sign
+        # (from solver rotation drift ~1e-7) cannot flip the sign
         # and select a different box vertex.  For face-aligned queries
         # the non-primary components are zero; any vertex on that face
         # is an equally valid support point, so biasing toward +1 is

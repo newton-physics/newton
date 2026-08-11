@@ -79,6 +79,16 @@ Pre-release planning
        public PyPI: warp-lang, mujoco, mujoco-warp, newton-usd-schemas.  Land
        release-ready versions on ``main`` before the branch cut when possible.
    * - ☐
+     - When the stable Warp version for the upcoming Newton release is
+       published before the branch cut, stabilize it on ``main``: replace the
+       dev or RC requirement in ``pyproject.toml`` and the pin in
+       ``asv.conf.json`` with the stable version and regenerate ``uv.lock``.
+       Keep both the NVIDIA ``warp-lang`` package-index override and the ASV
+       ``--extra-index-url=https://pypi.nvidia.com/`` option on ``main`` so it
+       is ready for the next dev-nightly update.  Cut the upcoming release
+       branch after this change; do not apply the new Warp minor version to
+       previously released Newton branches.
+   * - ☐
      - Set timeline: code freeze → RC1 → testing window → GA.
    * - ☐
      - Conduct public API audit:
@@ -166,8 +176,17 @@ Prefer sequential cherry-picks in ``main`` order with ``git cherry-pick -x``
 and keep the backport PR unsquashed.  Keep change/revert pairs together.  A bulk
 merge is appropriate only when every intervening commit belongs in the release.
 
-Finalize the changelog on ``release-X.Y`` and reconcile it to ``main`` after
-release, as described in :ref:`post-release`.
+After the initial release scope audit, build the Towncrier fragments on
+``release-X.Y`` early enough during RC stabilization for maintainer review.
+Run the ``release-changelog`` skill against the assembled section for
+completeness, grouping, deduplication, wording, category, and migration-guidance
+cleanup.
+
+Treat the assembled section as a rolling document.  For later cherry-picks,
+render their fragments with ``--draft``, fold the entries into the existing
+section, delete the consumed fragments, and rerun the changelog cleanup and
+``release-audit`` checks.  Synchronize every changelog-management commit to
+``main`` after release, as described in :ref:`post-release`.
 
 For each new RC, repeat the version, generated-file, validation, and tag steps
 used for RC1.
@@ -236,10 +255,11 @@ otherwise.
    * - ☐
      - Go/no-go approval obtained from maintainers.
    * - ☐
-     - Finalize ``CHANGELOG.md`` on ``release-X.Y`` using the previous release
-       tag and latest audit as references.  Date the section with the GA date
-       and merge it before preparing the final version.  The
-       ``release-changelog`` skill can assist.
+     - Verify the rolling ``X.Y.Z`` changelog section is complete and has
+       passed the ``release-changelog`` and ``release-audit`` checks.  Confirm
+       no release fragments remain under ``changelog/``.  For the first
+       Towncrier release, also confirm duplicate category headings were merged
+       while every legacy ``[Unreleased]`` entry was retained.
    * - ☐
      - Update ``README.md`` documentation links to point to versioned URLs
        (e.g. ``/X.Y.Z/guide.html`` instead of ``/latest/``).
@@ -314,9 +334,12 @@ Post-release
    :header-rows: 0
 
    * - ☐
-     - Merge the ``vX.Y.Z`` changelog section back to ``main`` in a
-       changelog-only PR, preserving ``[Unreleased]`` and all post-cut entries.
-       The ``release-changelog`` skill can assist.
+     - Inspect and cherry-pick, in order, every changelog-management commit
+       from ``release-X.Y`` onto a changelog-only branch from ``main``: the
+       initial Towncrier build, editorial cleanup, and later cherry-pick
+       additions.  Review the resulting diff before merging it in a pull
+       request with the ``release-management`` label.  Confirm that post-cut
+       fragments remain pending under ``changelog/``.
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐
