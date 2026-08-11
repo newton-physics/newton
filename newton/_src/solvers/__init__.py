@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from .implicit_mpm import SolverImplicitMPM
     from .kamino import SolverKamino
     from .limx import (
+        AffineBodyModel,
         ConstraintAnchor,
         ConstraintDihedralBending,
         ConstraintDistance,
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
         ConstraintTetrahedronARAP,
         ConstraintTriangleElastic,
         SolverLIMX,
+        SolverLIMXAffine,
     )
     from .mujoco import SolverMuJoCo
     from .semi_implicit import SolverSemiImplicit
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
     from .xpbd import SolverXPBD
 
 __all__ = [
+    "AffineBodyModel",
     "ConstraintAnchor",
     "ConstraintDihedralBending",
     "ConstraintDistance",
@@ -41,6 +44,7 @@ __all__ = [
     "SolverImplicitMPM",
     "SolverKamino",
     "SolverLIMX",
+    "SolverLIMXAffine",
     "SolverMuJoCo",
     "SolverSemiImplicit",
     "SolverStyle3D",
@@ -54,6 +58,7 @@ __all__ = [
 # resolved on first attribute access (PEP 562) so that importing Newton does
 # not pay the import cost of every solver backend.
 _LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
+    "AffineBodyModel": (".limx", "AffineBodyModel"),
     "ConstraintAnchor": (".limx", "ConstraintAnchor"),
     "ConstraintDihedralBending": (".limx", "ConstraintDihedralBending"),
     "ConstraintDistance": (".limx", "ConstraintDistance"),
@@ -67,6 +72,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
     "SolverImplicitMPM": (".implicit_mpm", "SolverImplicitMPM"),
     "SolverKamino": (".kamino", "SolverKamino"),
     "SolverLIMX": (".limx", "SolverLIMX"),
+    "SolverLIMXAffine": (".limx", "SolverLIMXAffine"),
     "SolverMuJoCo": (".mujoco", "SolverMuJoCo"),
     "SolverSemiImplicit": (".semi_implicit", "SolverSemiImplicit"),
     "SolverStyle3D": (".style3d.solver_style3d", "SolverStyle3D"),

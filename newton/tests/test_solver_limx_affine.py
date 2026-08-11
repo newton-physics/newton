@@ -6,7 +6,6 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.limx.affine_body import AffineBodyModel
 from newton._src.solvers.limx.affine_types import mat1212, vec12
 from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.block_csr_12 import BlockCsrBuilder12
@@ -23,6 +22,7 @@ from newton._src.solvers.limx.mixed_linear_solver import (
 )
 from newton._src.solvers.limx.mixed_operator import EmptyMixedDynamicOperator, MixedLinearOperator, MixedVector3x12
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
+from newton.solvers import AffineBodyModel, SolverLIMXAffine
 
 
 @wp.kernel
@@ -875,3 +875,124 @@ class TestAffineBodyModel(unittest.TestCase):
         for overrides in cases:
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 AffineBodyModel(**(defaults | overrides))
+
+
+class TestSolverLIMXAffine(unittest.TestCase):
+    @staticmethod
+    def _make_model(device: str, rigidity: float) -> AffineBodyModel:
+        vertices = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        tetrahedra = np.asarray([[0, 1, 2, 3]], dtype=np.int32)
+        surface_triangles = np.asarray(
+            [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+            dtype=np.int32,
+        )
+        return AffineBodyModel(
+            vertices,
+            tetrahedra,
+            surface_triangles,
+            density=6.0,
+            rigidity=rigidity,
+            initial_transform=wp.transform_identity(),
+            device=device,
+        )
+
+    @classmethod
+    def _make_solver(
+        cls,
+        device: str,
+        rigidity: float,
+        matrix: np.ndarray | None = None,
+        nonlinear_iterations: int = 2,
+        linear_iterations: int = 8,
+    ) -> SolverLIMXAffine:
+        solver = SolverLIMXAffine(
+            cls._make_model(device, rigidity),
+            nonlinear_iterations=nonlinear_iterations,
+            linear_iterations=linear_iterations,
+        )
+        if matrix is not None:
+            state = _affine_state(np.zeros(3), matrix).astype(np.float32)
+            wp.copy(solver.q, wp.array([state], dtype=vec12, device=device))
+        return solver
+
+    def test_matches_first_order_free_fall_without_affine_deformation(self):
+        """Match analytic free fall to first-order accuracy and preserve identity."""
+        solver = self._make_solver("cpu", rigidity=0.0, nonlinear_iterations=1, linear_iterations=4)
+        dt = 0.01
+        step_count = 100
+
+        for _ in range(step_count):
+            solver.step(dt)
+
+        state = solver.q.numpy()[0]
+        elapsed = step_count * dt
+        expected_height = 0.5 * -9.81 * elapsed * elapsed
+        first_order_tolerance = 0.5 * 9.81 * elapsed * dt + 5.0e-4
+        self.assertAlmostEqual(float(state[2]), expected_height, delta=first_order_tolerance)
+        np.testing.assert_allclose(state[:2], 0.0, rtol=0.0, atol=2.0e-5)
+        np.testing.assert_allclose(state[3:].reshape(3, 3), np.eye(3), rtol=0.0, atol=2.0e-5)
+
+    def test_reduces_affine_singular_value_error_with_rigidity(self):
+        """Reduce stretch error from a perturbed positive affine matrix."""
+        initial_matrix = np.diag([1.1, 0.9, 1.05]).astype(np.float32)
+        solver = self._make_solver("cpu", rigidity=100.0, matrix=initial_matrix)
+        initial_error = float(np.max(np.abs(np.linalg.svd(initial_matrix, compute_uv=False) - 1.0)))
+
+        for _ in range(100):
+            solver.step(0.01)
+
+        final_matrix = solver.q.numpy()[0, 3:].reshape(3, 3)
+        final_error = float(np.max(np.abs(np.linalg.svd(final_matrix, compute_uv=False) - 1.0)))
+        self.assertLess(final_error, initial_error)
+
+    def test_keeps_rigidifying_state_finite_with_positive_determinant(self):
+        """Keep the recovered affine state finite and orientation preserving."""
+        initial_matrix = np.diag([1.1, 0.9, 1.05]).astype(np.float32)
+        solver = self._make_solver("cpu", rigidity=100.0, matrix=initial_matrix)
+
+        for _ in range(100):
+            solver.step(0.01)
+
+        state = solver.q.numpy()[0]
+        velocity = solver.qd.numpy()[0]
+        self.assertTrue(np.isfinite(state).all())
+        self.assertTrue(np.isfinite(velocity).all())
+        self.assertGreater(float(np.linalg.det(state[3:].reshape(3, 3))), 0.0)
+
+    def test_executes_exact_fixed_linear_iteration_count(self):
+        """Execute the configured fixed PCG count without host convergence checks."""
+        solver = self._make_solver(
+            "cpu",
+            rigidity=20.0,
+            nonlinear_iterations=3,
+            linear_iterations=7,
+        )
+
+        solver.step(0.01)
+
+        self.assertEqual(solver.last_linear_iterations, 7)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_captures_and_replays_one_complete_step_on_cuda(self):
+        """Capture and replay one complete affine Newton step on CUDA."""
+        device = wp.get_device("cuda:0")
+        if not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture requires the Warp memory pool")
+        solver = self._make_solver("cuda:0", rigidity=25.0, nonlinear_iterations=2, linear_iterations=4)
+        solver.step(0.01)
+
+        with wp.ScopedCapture(device=device) as capture:
+            solver.step(0.01)
+        wp.capture_launch(capture.graph)
+
+        self.assertIsNotNone(capture.graph)
+        self.assertTrue(np.isfinite(solver.q.numpy()).all())
+        self.assertTrue(np.isfinite(solver.qd.numpy()).all())

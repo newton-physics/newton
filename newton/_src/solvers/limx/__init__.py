@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""LIMX constraint-based particle solver."""
+"""LIMX constraint-based particle and affine solvers."""
 
+from .affine_body import AffineBodyModel
 from .constraints import (
     ConstraintAnchor,
     ConstraintDihedralBending,
@@ -15,9 +16,11 @@ from .constraints import (
 )
 from .linear_solver import PcgSolver
 from .operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
+from .solver_affine import SolverLIMXAffine
 from .solver_newton import SolverLIMX
 
 __all__ = [
+    "AffineBodyModel",
     "CompositeLinearOperator",
     "ConstraintAnchor",
     "ConstraintDihedralBending",
@@ -30,4 +33,5 @@ __all__ = [
     "EmptyDynamicConstraintOperator",
     "PcgSolver",
     "SolverLIMX",
+    "SolverLIMXAffine",
 ]
