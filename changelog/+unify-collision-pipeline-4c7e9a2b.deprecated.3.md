@@ -1,1 +1,0 @@
-Deprecate `CollisionPipeline`'s `soft_contact_margin` constructor parameter and attribute in favor of `soft_contact_gap`: the value is detection-only slack added to the per-particle radius — a gap under the margin/gap convention, matching `ShapeConfig.margin`/`ShapeConfig.gap`.

@@ -85,6 +85,9 @@ def test_frequency_validation_and_ownership(test, device):
     with test.assertRaisesRegex(ValueError, "same model"):
         _StubSolver(model, pipeline=other_pipeline)
 
+    with test.assertRaisesRegex(ValueError, "requires contact matching"):
+        SolverVBD(model, pipeline=pipeline, rigid_contact_history=True)
+
     # Non-owning solver: contacts property is None, external contacts pass through.
     plain = _NonOwning(model)
     test.assertIsNone(plain.contacts)
@@ -197,6 +200,43 @@ def test_vbd_rigid_iterations_mode(test, device):
     test.assertTrue(np.isfinite(q_k1).all())
 
 
+def test_vbd_rigid_iterations_refreshes_body_particle_contacts(test, device):
+    """Refresh body-particle contact state after each mid-solve collision pass."""
+
+    class _TrackingSolver(SolverVBD):
+        def __init__(self, *args, **kwargs):
+            self.body_particle_refreshes = 0
+            super().__init__(*args, **kwargs)
+
+        def _refresh_body_particle_contact_state(self, contacts, refresh):
+            self.body_particle_refreshes += 1
+            super()._refresh_body_particle_contact_state(contacts, refresh)
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(xform=wp.transform_identity())
+    builder.add_shape_sphere(body, radius=0.5)
+    builder.add_particle(pos=(0.55, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=0.1, radius=0.1)
+    builder.color()
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1)
+    solver = _TrackingSolver(
+        model,
+        iterations=3,
+        pipeline=pipeline,
+        rigid_contact_history=False,
+        collision_frequency=[1, 1],
+        collision_frequency_type=[Frequency.ITERATIONS, Frequency.NONE],
+    )
+
+    state_a, state_b = model.state(), model.state()
+    solver.step(state_a, state_b, None, None, 1e-3)
+
+    test.assertEqual(solver.body_particle_refreshes, 3)
+    test.assertGreater(int(solver.contacts.soft_contact_count.numpy()[0]), 0)
+    test.assertGreater(int(solver.body_particle_contact_counts.numpy().sum()), 0)
+    test.assertTrue(np.isfinite(state_b.particle_q.numpy()).all())
+
+
 def _build_cloth_model(device):
     builder = newton.ModelBuilder()
     builder.add_cloth_grid(
@@ -259,6 +299,16 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
             particle_self_contact_radius=0.02,
             particle_self_contact_margin=0.04,
         )
+    # Margin-only calls retain their old query-radius meaning during deprecation.
+    with test.assertWarns(DeprecationWarning):
+        legacy_margin = SolverVBD(
+            _build_cloth_model(device),
+            iterations=1,
+            particle_enable_self_contact=True,
+            particle_self_contact_margin=0.4,
+        )
+    test.assertEqual(legacy_margin.particle_self_contact_margin, 0.2)
+    test.assertEqual(legacy_margin.particle_self_contact_gap, 0.2)
     # Deprecated interval warns; combining it with an explicit slot raises.
     with test.assertWarns(DeprecationWarning):
         SolverVBD(_build_cloth_model(device), iterations=1, particle_collision_detection_interval=2)
@@ -315,6 +365,12 @@ add_function_test(
     TestSolverCollisionFrequency,
     "test_vbd_rigid_iterations_mode",
     test_vbd_rigid_iterations_mode,
+    devices=devices,
+)
+add_function_test(
+    TestSolverCollisionFrequency,
+    "test_vbd_rigid_iterations_refreshes_body_particle_contacts",
+    test_vbd_rigid_iterations_refreshes_body_particle_contacts,
     devices=devices,
 )
 add_function_test(

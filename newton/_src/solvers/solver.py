@@ -291,7 +291,8 @@ class SolverBase:
         The solver keeps no hidden cross-step scheduling state, so detecting
         every N steps is expressed by toggling a slot between
         ``CollisionFrequencyType.NONE`` and an active type from the calling
-        loop. ``None`` keeps the corresponding current setting.
+        loop. ``None`` keeps the corresponding current setting. Recapture an
+        existing CUDA graph after changing the schedule.
 
         Args:
             collision_frequency: ``[rigid, soft_self_contact]`` frequency

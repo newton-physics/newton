@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 @wp.struct
 class TriMeshCollisionInfo:
+    """Store bounded triangle-mesh self-collision query results."""
+
     # size: 2 x sum(vertex_colliding_triangles_buffer_sizes)
     # every two elements records the vertex index and a triangle index it collides to
     vertex_colliding_triangles: wp.array[wp.int32]

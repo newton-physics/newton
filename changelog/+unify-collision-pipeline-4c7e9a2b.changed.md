@@ -1,1 +1,1 @@
-Change `SolverVBD`'s `particle_self_contact_margin` to mean the self-contact interaction distance (previously the detection query radius); pair it with the new `particle_self_contact_gap` (detection queries use margin + gap). The legacy meaning still applies while the deprecated `particle_self_contact_radius` is set.
+Adopt margin-plus-gap collision ranges in `CollisionPipeline` and `SolverVBD`, separating interaction distance from detection slack while preserving deprecated call patterns.
