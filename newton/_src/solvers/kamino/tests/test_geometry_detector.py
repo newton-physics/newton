@@ -235,10 +235,10 @@ class TestCollisionDetectorContactCapacity(unittest.TestCase):
         self.assertEqual(world_max[0], world_max[1])
 
     def test_02_resolve_contact_capacity_uses_pair_metadata(self):
-        """Verify resolved budgets match pair-based metadata when available."""
+        """Verify the default resolved budget matches pair-based metadata."""
         builder = basics.build_boxes_nunchaku()
         model = builder.finalize(self.default_device)
-        config = CollisionDetector.Config(max_contacts=10_000)
+        config = CollisionDetector.Config()
 
         model_max, world_max = _resolve_contact_capacity(model, config)
         self.assertEqual(world_max, model.geoms.world_minimum_contacts)

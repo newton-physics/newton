@@ -220,7 +220,7 @@ def _resolve_contact_capacity(
         world_max_contacts = _estimate_fallback_world_max_contacts(model, config)
 
     model_max_contacts = sum(world_max_contacts)
-    if model_max_contacts > config.max_contacts:
+    if config.max_contacts is not None and model_max_contacts > config.max_contacts:
         world_max_contacts = _cap_world_contacts_at_total(world_max_contacts, config.max_contacts)
         model_max_contacts = sum(world_max_contacts)
 
