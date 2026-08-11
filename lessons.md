@@ -1,5 +1,11 @@
 # Project Lessons
 
+## 2026-08-11 — Keep affine and particle solver blocks distinct
+
+- Context: Designing pure-Newton affine-body dynamics integration with deformable LIMX particles.
+- Mistake: Proposed storing each 12-DOF affine body as four ordinary 3-DOF CSR rows, forcing the preconditioner to reconstruct a logical 12x12 body block from sixteen 3x3 blocks.
+- Rule: Represent deformable particles with native 3x3 blocks and affine bodies with native 12x12 blocks. Couple the two spaces through explicit mixed or matrix-free contact operators, and apply native 3x3 and 12x12 block preconditioners within one global conjugate-gradient solve.
+
 ## 2026-08-11 — Distinguish unsigned closest-point VF from oriented projected VF
 
 - Context: Designing an experiment for VF/EE feature-boundary continuity and possible PE/PP coverage.
