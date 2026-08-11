@@ -822,77 +822,48 @@ def parse_usd(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
-        value_cache: dict[int, Any] = {}
+        legacy_source: Literal["force", "mjc_authored", "mjc_default"] = "force"
 
-        def read_value(resolver: SchemaResolver, _key: str) -> Any:
-            resolver_id = id(resolver)
-            if resolver_id not in value_cache:
-                value_cache[resolver_id] = resolver._get_value_state(prim, PrimType.JOINT, key)
-            return value_cache[resolver_id]
-
-        if R._uses_composed_fallbacks:
-            resolved = R._resolve_value(
-                prim,
-                PrimType.JOINT,
-                key,
-                default=builder_default,
-                read_value=read_value,
-            )
-            if resolved.resolver is None or resolved.resolver.name != "mjc":
-                return resolved.value, "force"
-            R._collect_on_first_use(resolved.resolver, prim)
-            if resolved.authored:
-                value = resolved.value
+        def resolve_legacy(resolvers, read_value):
+            nonlocal legacy_source
+            for resolver in resolvers:
+                if key not in resolver.mapping.get(PrimType.JOINT, {}):
+                    continue
+                state = read_value(resolver, key)
+                if not state.authored:
+                    continue
+                if resolver.name != "mjc":
+                    return state.value, resolver, True
+                legacy_source = "mjc_authored"
+                value = state.value
                 if value is None:
                     value = _get_mjc_joint_limit_default(prim, key)
-                return builder_default if value is None else value, "mjc_authored"
-            return builder_default if resolved.value is None else resolved.value, "mjc_default"
+                return builder_default if value is None else value, resolver, True
 
-        def finish(
-            value: float,
-            source: Literal["force", "mjc_authored", "mjc_default"],
-            resolver: SchemaResolver | None = None,
-        ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
-            R._record_legacy_fallback(
-                prim,
-                PrimType.JOINT,
-                key,
-                builder_default,
-                value,
-                resolver,
-                compare_resolver=False,
-                read_value=read_value,
-            )
-            return value, source
+            if mjc_resolver is not None:
+                value = _get_mjc_joint_limit_default(prim, key)
+                if value is not None:
+                    legacy_source = "mjc_default"
+                    return value, None, False
+            return builder_default, None, False
 
-        for resolver in R.resolvers:
-            spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
-            if spec is None:
-                continue
-
-            if resolver.name == "mjc":
-                raw_value = usd.get_attribute(prim, spec.name)
-                if raw_value is None:
-                    continue
-                R._collect_on_first_use(resolver, prim)
-                authored_value = read_value(resolver, key).value
-                if authored_value is not None:
-                    return finish(authored_value, "mjc_authored", resolver)
-                mjc_default = _get_mjc_joint_limit_default(prim, key)
-                if mjc_default is not None:
-                    return finish(mjc_default, "mjc_authored", resolver)
-                return finish(builder_default, "mjc_authored", resolver)
-
-            authored_value = read_value(resolver, key).value
-            if authored_value is not None:
-                R._collect_on_first_use(resolver, prim)
-                return finish(authored_value, "force", resolver)
-
-        if mjc_resolver is not None:
-            mjc_default = _get_mjc_joint_limit_default(prim, key)
-            if mjc_default is not None:
-                return finish(mjc_default, "mjc_default")
-        return finish(builder_default, "force")
+        resolved = R._resolve_specialized_value(
+            prim,
+            PrimType.JOINT,
+            key,
+            builder_default,
+            resolve_legacy,
+        )
+        if legacy_source != "force":
+            return resolved.value, legacy_source
+        if resolved.resolver is None or resolved.resolver.name != "mjc":
+            return resolved.value, "force"
+        if resolved.authored:
+            value = resolved.value
+            if value is None:
+                value = _get_mjc_joint_limit_default(prim, key)
+            return builder_default if value is None else value, "mjc_authored"
+        return builder_default if resolved.value is None else resolved.value, "mjc_default"
 
     def _resolve_joint_velocity_limit(prim: Usd.Prim) -> float | None:
         return R.get_value(

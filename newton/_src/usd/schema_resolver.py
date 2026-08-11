@@ -545,6 +545,46 @@ class SchemaResolverManager:
         )
         return value, resolver
 
+    def _resolve_specialized_value(
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        default: Any,
+        resolve_legacy: Callable[
+            [Sequence[SchemaResolver], Callable[[SchemaResolver, str], _ResolverValue]],
+            tuple[Any, SchemaResolver | None, bool],
+        ],
+    ) -> _ResolvedValue:
+        """Resolve a specialized consumer value under the shared policy and audit."""
+        value_cache: dict[tuple[int, str], _ResolverValue] = {}
+
+        def read_value(resolver: SchemaResolver, key: str) -> _ResolverValue:
+            cache_key = (id(resolver), key)
+            if cache_key not in value_cache:
+                value_cache[cache_key] = resolver._get_value_state(prim, prim_type, key)
+            return value_cache[cache_key]
+
+        if self._uses_composed_fallbacks:
+            resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
+        else:
+            value, resolver, authored = resolve_legacy(tuple(self.resolvers), read_value)
+            resolved = _ResolvedValue(value, resolver, authored)
+            self._record_legacy_fallback(
+                prim,
+                prim_type,
+                key,
+                default,
+                resolved.value,
+                resolved.resolver,
+                compare_resolver=False,
+                read_value=read_value,
+            )
+
+        if resolved.resolver is not None:
+            self._collect_on_first_use(resolved.resolver, prim)
+        return resolved
+
     def _get_legacy_value(
         self,
         prim: Usd.Prim,

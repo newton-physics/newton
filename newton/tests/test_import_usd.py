@@ -3629,10 +3629,10 @@ def Xform "Articulation" (
 
         from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
 
-        # Joint1 authors mjc:solreflimit = [0.08, 1]. Joint2 applies MjcJointAPI but omits
-        # solreflimit, so it should use MuJoCo's schema default [0.02, 1]. Joint3 has no
-        # MjcJointAPI and should preserve the customized ModelBuilder defaults. Joint4
-        # authors [0, 0], which is invalid for gain conversion but must remain raw.
+        # Joint1 authors mjc:solreflimit = [0.08, 1]. Joint2 applies the unregistered
+        # MjcJointAPI but omits solreflimit, so importer defaults retain precedence.
+        # Joint3 has no MjcJointAPI and also preserves the ModelBuilder defaults.
+        # Joint4 authors [0, 0], which is invalid for gain conversion but remains raw.
         usd_content = """#usda 1.0
 (
     upAxis = "Z"
@@ -3779,11 +3779,11 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(limit_kd[dof1]), 25.0, places=4)
         self.assertEqual(int(solreflimit_mode[dof1]), SOLREF_MODE_RAW)
 
-        # Joint2: no solreflimit authored -> MuJoCo default [0.02, 1]
+        # Joint2: no authored value or registered schema fallback -> builder defaults.
         dof2 = joint_qd_start[joint2_idx]
-        self.assertAlmostEqual(float(limit_ke[dof2]), 2500.0, places=4)
-        self.assertAlmostEqual(float(limit_kd[dof2]), 100.0, places=4)
-        self.assertEqual(int(solreflimit_mode[dof2]), SOLREF_MODE_MJCF_DEFAULT)
+        self.assertAlmostEqual(float(limit_ke[dof2]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof2]), builder.default_joint_cfg.limit_kd, places=4)
+        self.assertEqual(int(solreflimit_mode[dof2]), SOLREF_MODE_FORCE_SPACE)
 
         # Joint3: no MjcJointAPI -> customized ModelBuilder defaults
         dof3 = joint_qd_start[joint3_idx]
@@ -3799,17 +3799,24 @@ def Xform "Articulation" (
         self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_unregistered_physx_limit_api_uses_schema_defaults(self):
+    def test_unregistered_physx_limit_api_uses_importer_defaults(self):
+        """Keep importer limit gains ahead of unregistered PhysX defaults."""
         from pxr import Usd
 
-        from newton._src.usd.schemas import SchemaResolverPhysx  # noqa: PLC0415
+        class UnregisteredPhysxResolver(usd.SchemaResolverPhysx):
+            _schema_names = {
+                usd.PrimType.JOINT: {
+                    "limit_linear_ke": "UnregisteredPhysxLimitAPI:linear",
+                    "limit_linear_kd": "UnregisteredPhysxLimitAPI:linear",
+                }
+            }
 
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(
             """#usda 1.0
 def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
     def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
-    def PhysicsPrismaticJoint "Joint" (prepend apiSchemas = ["PhysxLimitAPI:linear"]) {
+    def PhysicsPrismaticJoint "Joint" (prepend apiSchemas = ["UnregisteredPhysxLimitAPI:linear"]) {
         rel physics:body1 = </World/Body>
         token physics:axis = "X"
         float physics:lowerLimit = -1
@@ -3824,27 +3831,29 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         builder.default_joint_cfg.limit_kd = 43.0
         builder.add_usd(
             stage,
-            schema_resolvers=[SchemaResolverPhysx()],
+            schema_resolvers=[UnregisteredPhysxResolver()],
             use_applied_schema_fallbacks=True,
         )
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 
-        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 0.0)
-        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 0.0)
+        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 4321.0)
+        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 43.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_unregistered_physx_joint_api_uses_velocity_default(self):
+    def test_unregistered_physx_joint_api_uses_importer_velocity_default(self):
+        """Keep the importer velocity limit ahead of an unregistered PhysX default."""
         from pxr import Usd
 
-        from newton._src.usd.schemas import SchemaResolverPhysx  # noqa: PLC0415
+        class UnregisteredPhysxResolver(usd.SchemaResolverPhysx):
+            _schema_names = {usd.PrimType.JOINT: {"velocity_limit": "UnregisteredPhysxJointAPI"}}
 
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(
             """#usda 1.0
 def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
     def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
-    def PhysicsPrismaticJoint "Joint" (prepend apiSchemas = ["PhysxJointAPI"]) {
+    def PhysicsPrismaticJoint "Joint" (prepend apiSchemas = ["UnregisteredPhysxJointAPI"]) {
         rel physics:body1 = </World/Body>
         token physics:axis = "X"
         float physics:lowerLimit = -1
@@ -3858,13 +3867,13 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         builder.default_joint_cfg.velocity_limit = 123.0
         builder.add_usd(
             stage,
-            schema_resolvers=[SchemaResolverPhysx()],
+            schema_resolvers=[UnregisteredPhysxResolver()],
             use_applied_schema_fallbacks=True,
         )
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 
-        self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), float("inf"))
+        self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), 123.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_mode_respects_resolver_priority(self):
