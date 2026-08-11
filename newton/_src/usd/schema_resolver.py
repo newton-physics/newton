@@ -421,8 +421,8 @@ class SchemaResolverManager:
         self._use_applied_schema_fallbacks = use_applied_schema_fallbacks
         self._resolution = _SchemaResolution(self.resolvers)
         self._registered_schema_fallbacks: dict[tuple[str, str], dict[str, Any] | None] = {}
-        self._legacy_fallback_properties: set[str] = set()
-        self._legacy_fallback_failures: set[str] = set()
+        self._legacy_fallback_properties: dict[str, set[str]] = {}
+        self._legacy_fallback_failures: dict[str, set[str]] = {}
 
         # Dictionary to accumulate schema attributes as prims are encountered
         # Pre-initialize maps for each configured resolver
@@ -667,7 +667,7 @@ class SchemaResolverManager:
         try:
             resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
         except _SchemaFallbackError as error:
-            self._legacy_fallback_failures.add(error.label)
+            self._record_fallback_location(self._legacy_fallback_failures, error.label, prim)
             return
         if resolved.resolver is None or resolved.authored:
             return
@@ -686,16 +686,54 @@ class SchemaResolverManager:
         spec = resolved.resolver.mapping[prim_type][key]
         schema_name = resolved.resolver._schema_name(prim_type, key)
         names = ", ".join(spec.attribute_names or (spec.name,))
-        self._legacy_fallback_properties.add(f"{schema_name} ({names})")
+        self._record_fallback_location(self._legacy_fallback_properties, f"{schema_name} ({names})", prim)
+
+    @staticmethod
+    def _prim_path(prim: Usd.Prim) -> str:
+        try:
+            return str(prim.GetPath()) if prim is not None else "<None>"
+        except (AttributeError, RuntimeError):
+            return "<invalid>"
+
+    @classmethod
+    def _record_fallback_location(cls, entries: dict[str, set[str]], label: str, prim: Usd.Prim) -> None:
+        entries.setdefault(label, set()).add(cls._prim_path(prim))
+
+    @staticmethod
+    def _format_fallback_locations(entries: dict[str, set[str]], max_paths: int = 3) -> str:
+        details = []
+        for label, all_paths in sorted(entries.items()):
+            paths = sorted(all_paths)
+            shown_paths = ", ".join(paths[:max_paths])
+            omitted = len(paths) - max_paths
+            if omitted > 0:
+                shown_paths = f"{shown_paths}, and {omitted} more"
+            details.append(f"{label} on {shown_paths}")
+        return "; ".join(details)
+
+    def _fallback_migration_warning(self) -> str | None:
+        """Build one actionable warning for audited registered-schema changes."""
+        details = []
+        if self._legacy_fallback_properties:
+            properties = self._format_fallback_locations(self._legacy_fallback_properties)
+            details.append(f"schema fallbacks will take precedence for {properties}")
+        if self._legacy_fallback_failures:
+            failures = self._format_fallback_locations(self._legacy_fallback_failures)
+            details.append(f"schema fallbacks could not be audited for {failures}")
+        if not details:
+            return None
+        return (
+            "This import retained legacy values for applied but unauthored USD schema properties; "
+            f"{' and '.join(details)}. In a future release, applied-schema fallbacks will take precedence; "
+            "pass use_applied_schema_fallbacks=True to adopt that behavior now, or author the intended values "
+            "explicitly to preserve them."
+        )
 
     @staticmethod
     def _report_missing(prim: Usd.Prim, prim_type: PrimType, key: str, value: Any, verbose: bool) -> None:
         if value is not None or not verbose:
             return
-        try:
-            prim_path = str(prim.GetPath()) if prim is not None else "<None>"
-        except (AttributeError, RuntimeError):
-            prim_path = "<invalid>"
+        prim_path = SchemaResolverManager._prim_path(prim)
         print(
             f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
             "no authored value, explicit default, or applicable resolver fallback."

@@ -1849,6 +1849,7 @@ def Xform "Articulation" (
         with self.assertWarnsRegex(DeprecationWarning, "NewtonJointAPI") as warning:
             builder.add_usd(stage)
         self.assertEqual(warning.filename, __file__)
+        self.assertIn("/World/Joint", str(warning.warning))
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 

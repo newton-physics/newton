@@ -114,7 +114,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(resolver._resolve_value(joint, PrimType.JOINT, "armature", default=12.0).value, 0.0)
         self.assertEqual(
             resolver._legacy_fallback_properties,
-            {"NewtonJointAPI (newton:armature)"},
+            {"NewtonJointAPI (newton:armature)": {"/joint"}},
         )
 
         armature = joint.GetAttribute("newton:armature")
@@ -123,6 +123,22 @@ class TestSchemaResolver(unittest.TestCase):
 
         armature.Set(7.0)
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0), 7.0)
+
+    def test_fallback_migration_warning_bounds_prim_paths(self):
+        """Bound the prim paths listed for each fallback migration."""
+        stage = Usd.Stage.CreateInMemory()
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        for index in range(5):
+            joint = UsdPhysics.RevoluteJoint.Define(stage, f"/joint{index}").GetPrim()
+            joint.AddAppliedSchema("NewtonJointAPI")
+            resolver.get_value(joint, PrimType.JOINT, "armature", default=12.0)
+
+        message = resolver._fallback_migration_warning()
+
+        self.assertIsNotNone(message)
+        self.assertIn("/joint0, /joint1, /joint2, and 2 more", message)
+        self.assertNotIn("/joint3", message)
+        self.assertNotIn("/joint4", message)
 
     def test_composed_fallback_policy_selects_schema_default(self):
         stage = Usd.Stage.CreateInMemory()
@@ -161,7 +177,10 @@ class TestSchemaResolver(unittest.TestCase):
         resolver = SchemaResolverManager([LegacyResolver()])
 
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature"), 0.25)
-        self.assertEqual(resolver._legacy_fallback_failures, {"NewtonJointAPI (newton:armature)"})
+        self.assertEqual(
+            resolver._legacy_fallback_failures,
+            {"NewtonJointAPI (newton:armature)": {"/joint"}},
+        )
 
     def test_unexpected_fallback_getter_error_is_not_suppressed(self):
         def fail_on_fallback(read_attribute):
@@ -357,6 +376,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature"), 9.0)
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "lower_limit", default=4.0), 4.0)
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "lower_limit"), 8.0)
+        self.assertIsNone(resolver._fallback_migration_warning())
 
         unapplied = UsdPhysics.RevoluteJoint.Define(stage, "/unapplied").GetPrim()
         self.assertIsNone(resolver.get_value(unapplied, PrimType.JOINT, "armature"))
