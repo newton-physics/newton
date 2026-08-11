@@ -735,7 +735,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         if config is None:
             config = self.Config.from_model(model)
         else:
-            # Validate the user-provided config. Protects against motifying the config after initialization.
+            # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
         self._config = config
 
