@@ -7,11 +7,91 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.limx.affine_types import mat1212, vec12
+from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.block_csr_12 import BlockCsrBuilder12
 from newton._src.solvers.limx.mixed_linear_solver import (
+    MixedPcgSolver,
     _apply_affine_preconditioner,
     _factor_affine_diagonal,
 )
+from newton._src.solvers.limx.mixed_operator import EmptyMixedDynamicOperator, MixedLinearOperator, MixedVector3x12
+from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
+
+
+@wp.kernel
+def _apply_rank_one_mixed_operator(
+    particle_input: wp.array[wp.vec3],
+    affine_input: wp.array[vec12],
+    particle_jacobian: wp.vec3,
+    affine_jacobian: vec12,
+    stiffness: float,
+    particle_output: wp.array[wp.vec3],
+    affine_output: wp.array[vec12],
+):
+    value = wp.dot(particle_jacobian, particle_input[0])
+    for component in range(12):
+        value += affine_jacobian[component] * affine_input[0][component]
+    particle_output[0] += stiffness * value * particle_jacobian
+    affine_output[0] += stiffness * value * affine_jacobian
+
+
+@wp.kernel
+def _accumulate_rank_one_mixed_diagonal(
+    particle_jacobian: wp.vec3,
+    affine_jacobian: vec12,
+    stiffness: float,
+    particle_diagonal: wp.array[wp.mat33],
+    affine_diagonal: wp.array[mat1212],
+):
+    for row in range(3):
+        particle_diagonal[0][row, row] += stiffness * particle_jacobian[row] * particle_jacobian[row]
+    for row in range(12):
+        affine_diagonal[0][row, row] += stiffness * affine_jacobian[row] * affine_jacobian[row]
+
+
+class _RankOneMixedOperator:
+    """Apply a literal one-row mixed Jacobian without storing 3-by-12 blocks."""
+
+    def __init__(self, particle_jacobian: wp.vec3, affine_jacobian: vec12, stiffness: float):
+        self.particle_jacobian = particle_jacobian
+        self.affine_jacobian = affine_jacobian
+        self.stiffness = stiffness
+
+    def multiply(
+        self,
+        particle_input: wp.array[wp.vec3],
+        affine_input: wp.array[vec12],
+        particle_output: wp.array[wp.vec3],
+        affine_output: wp.array[vec12],
+    ) -> None:
+        """Accumulate ``k J.T J`` into the split output vectors."""
+        wp.launch(
+            _apply_rank_one_mixed_operator,
+            dim=1,
+            inputs=[
+                particle_input,
+                affine_input,
+                self.particle_jacobian,
+                self.affine_jacobian,
+                self.stiffness,
+            ],
+            outputs=[particle_output, affine_output],
+            device=particle_input.device,
+        )
+
+    def accumulate_diagonal(
+        self,
+        particle_diagonal: wp.array[wp.mat33],
+        affine_diagonal: wp.array[mat1212],
+    ) -> None:
+        """Accumulate the block-Jacobi diagonal of ``k J.T J``."""
+        wp.launch(
+            _accumulate_rank_one_mixed_diagonal,
+            dim=1,
+            inputs=[self.particle_jacobian, self.affine_jacobian, self.stiffness],
+            outputs=[particle_diagonal, affine_diagonal],
+            device=particle_diagonal.device,
+        )
 
 
 class TestAffineBlockCsr(unittest.TestCase):
@@ -228,3 +308,107 @@ class TestAffinePreconditioner(unittest.TestCase):
         if wp.is_cuda_available():
             devices.append("cuda:0")
         return devices
+
+
+class TestMixedPcg(unittest.TestCase):
+    def test_solves_rank_one_coupled_particle_affine_system_against_dense_reference(self):
+        """Solve a coupled particle-affine system against a dense reference."""
+        particle_static = np.diag([2.0, 3.0, 4.0]).astype(np.float32)
+        affine_static = np.diag(np.linspace(2.5, 4.7, 12, dtype=np.float32))
+        particle_jacobian = np.asarray([1.0, -2.0, 0.5], dtype=np.float32)
+        affine_jacobian = np.asarray(
+            [0.25, -0.5, 0.75, -1.0, 1.25, -1.5, 1.75, -2.0, 0.5, -0.25, 1.0, -0.75],
+            dtype=np.float32,
+        )
+        stiffness = 0.75
+        rhs_values = np.asarray(
+            [1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0, 9.0, -10.0, 11.0, -12.0, 13.0, -14.0, 15.0],
+            dtype=np.float32,
+        )
+
+        particle_builder = BlockCsrBuilder(1)
+        particle_builder.add_block(0, 0, particle_static)
+        particle_matrix = particle_builder.finalize("cpu")
+        affine_builder = BlockCsrBuilder12(1)
+        affine_builder.add_block(0, 0, affine_static)
+        affine_matrix = affine_builder.finalize("cpu")
+        particle_operator = CompositeLinearOperator(
+            wp.array([1.0], dtype=float, device="cpu"),
+            particle_matrix,
+            EmptyDynamicConstraintOperator(),
+            "cpu",
+        )
+        mixed_dynamic_operator = _RankOneMixedOperator(
+            wp.vec3(*particle_jacobian),
+            vec12(*affine_jacobian),
+            stiffness,
+        )
+        operator = MixedLinearOperator(particle_operator, affine_matrix, mixed_dynamic_operator, "cpu")
+        operator.prepare(wp.zeros(1, dtype=wp.vec3, device="cpu"), dt=1.0)
+        solver = MixedPcgSolver(particle_count=1, affine_count=1, device="cpu")
+        rhs = MixedVector3x12(
+            wp.array([wp.vec3(*rhs_values[:3])], dtype=wp.vec3, device="cpu"),
+            wp.array([vec12(*rhs_values[3:])], dtype=vec12, device="cpu"),
+        )
+        solution = MixedVector3x12(
+            wp.empty_like(rhs.particle),
+            wp.empty_like(rhs.affine),
+        )
+
+        solver.solve(operator, rhs, solution, iterations=32)
+
+        jacobian = np.concatenate((particle_jacobian, affine_jacobian))
+        dense_matrix = np.zeros((15, 15), dtype=np.float32)
+        dense_matrix[:3, :3] = particle_static + np.eye(3, dtype=np.float32)
+        dense_matrix[3:, 3:] = affine_static
+        dense_matrix += stiffness * np.outer(jacobian, jacobian)
+        expected = np.linalg.solve(dense_matrix, rhs_values)
+        np.testing.assert_allclose(solution.particle.numpy().reshape(-1), expected[:3], rtol=2.0e-4, atol=2.0e-5)
+        np.testing.assert_allclose(solution.affine.numpy().reshape(-1), expected[3:], rtol=2.0e-4, atol=2.0e-5)
+
+    def test_solves_particle_only_system_with_empty_affine_vectors(self):
+        """Solve a particle system while the affine side has zero rows."""
+        particle_builder = BlockCsrBuilder(1)
+        particle_builder.add_block(0, 0, np.eye(3, dtype=np.float32) * 2.0)
+        particle_operator = CompositeLinearOperator(
+            wp.array([1.0], dtype=float, device="cpu"),
+            particle_builder.finalize("cpu"),
+            EmptyDynamicConstraintOperator(),
+            "cpu",
+        )
+        operator = MixedLinearOperator(particle_operator, None, EmptyMixedDynamicOperator(), "cpu")
+        operator.prepare(wp.zeros(1, dtype=wp.vec3, device="cpu"), dt=1.0)
+        rhs = MixedVector3x12(
+            wp.array([wp.vec3(3.0, -6.0, 9.0)], dtype=wp.vec3, device="cpu"),
+            wp.empty(0, dtype=vec12, device="cpu"),
+        )
+        solution = MixedVector3x12(wp.empty_like(rhs.particle), wp.empty_like(rhs.affine))
+
+        MixedPcgSolver(1, 0, "cpu").solve(operator, rhs, solution, iterations=4)
+
+        np.testing.assert_allclose(solution.particle.numpy(), [[1.0, -2.0, 3.0]], rtol=2.0e-5, atol=2.0e-6)
+        self.assertEqual(len(solution.affine), 0)
+
+    def test_solves_affine_only_system_with_empty_particle_vectors(self):
+        """Solve an affine system while the particle side has zero rows."""
+        affine_static = np.diag(np.linspace(2.0, 4.2, 12, dtype=np.float32))
+        affine_builder = BlockCsrBuilder12(1)
+        affine_builder.add_block(0, 0, affine_static)
+        operator = MixedLinearOperator(None, affine_builder.finalize("cpu"), EmptyMixedDynamicOperator(), "cpu")
+        operator.prepare(None, dt=1.0)
+        rhs_values = np.arange(1.0, 13.0, dtype=np.float32)
+        rhs = MixedVector3x12(
+            wp.empty(0, dtype=wp.vec3, device="cpu"),
+            wp.array([vec12(*rhs_values)], dtype=vec12, device="cpu"),
+        )
+        solution = MixedVector3x12(wp.empty_like(rhs.particle), wp.empty_like(rhs.affine))
+
+        MixedPcgSolver(0, 1, "cpu").solve(operator, rhs, solution, iterations=16)
+
+        np.testing.assert_allclose(
+            solution.affine.numpy().reshape(-1),
+            np.linalg.solve(affine_static, rhs_values),
+            rtol=2.0e-4,
+            atol=2.0e-5,
+        )
+        self.assertEqual(len(solution.particle), 0)
