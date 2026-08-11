@@ -149,6 +149,7 @@ def find_overlapping_pairs_np(
 
 class TestBroadPhase(unittest.TestCase):
     def test_public_launch_previous_positional_layout(self):
+        """Preserve the previous positional layout of public launch methods."""
         device = wp.get_device()
         shape_lower = wp.array([wp.vec3(-1.0), wp.vec3(-0.5)], dtype=wp.vec3, device=device)
         shape_upper = wp.array([wp.vec3(1.0), wp.vec3(0.5)], dtype=wp.vec3, device=device)

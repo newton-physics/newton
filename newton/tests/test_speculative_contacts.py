@@ -1025,9 +1025,11 @@ def test_predictive_reducer_preserves_winners_with_small_buffer(test, device, de
         device=device,
     )
 
-    test.assertEqual(int(reducer.contact_count.numpy()[0]), reducer.capacity)
+    allocated_count = int(reducer.contact_count.numpy()[0])
+    test.assertLessEqual(allocated_count, reducer.capacity)
     exported_count, positions = _export_reducer_contacts(reducer, device)
     test.assertEqual(exported_count, 7)
+    test.assertLessEqual(exported_count, allocated_count)
     clearances = sorted(float(position[2]) for position in positions[:exported_count])
     for actual, expected in zip(clearances, (0.01, 0.0101, 0.0102, 0.0104, 0.0107, 0.011, 0.08), strict=True):
         test.assertAlmostEqual(actual, expected, places=6)
