@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Sequence
-from typing import NamedTuple, overload
+from typing import Literal, NamedTuple, overload
 
 import numpy as np
 import warp as wp
@@ -584,6 +585,196 @@ def create_rotation_minimizing_cable_quaternions(
         quats.append(wp.normalize(q))
 
     return quats
+
+
+class CableSplineShape(NamedTuple):
+    """Initial and rest geometry of a spline cable, as produced by :func:`create_cable_spline_shape`.
+
+    ``points``/``quaternions`` describe the cable posed along the spline (the intended
+    simulation *initial* configuration); ``rest_points``/``rest_quaternions`` describe the
+    *rest* (zero-strain) configuration. When the rest shape is the spline itself, the rest
+    fields alias the posed fields.
+    """
+
+    points: list[wp.vec3]
+    """Polyline points along the spline [m], ``num_segments + 1`` entries."""
+    quaternions: list[wp.quat]
+    """Per-segment rotation-minimizing frames along the spline, ``num_segments`` entries."""
+    rest_points: list[wp.vec3]
+    """Rest-configuration polyline points [m], ``num_segments + 1`` entries."""
+    rest_quaternions: list[wp.quat]
+    """Per-segment rest-configuration frames, ``num_segments`` entries."""
+
+
+def _fit_plane(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Least-squares plane fit; returns (centroid, in-plane basis u, in-plane basis v)."""
+    centroid = points.mean(axis=0)
+    # Right singular vectors of the centered cloud: first two span the plane.
+    _, _, vt = np.linalg.svd(points - centroid, full_matrices=False)
+    return centroid, vt[0], vt[1]
+
+
+def create_cable_spline_shape(
+    control_points: Sequence[wp.vec3],
+    num_segments: int | None = None,
+    segment_length: float | None = None,
+    *,
+    closed: bool = False,
+    twist_total: float = 0.0,
+    normal_hint: wp.vec3 | None = None,
+    alpha: float = 0.5,
+    straight_rest_shape: bool = False,
+) -> CableSplineShape:
+    """Generate the posed and rest geometry of a cable that follows a Catmull-Rom spline.
+
+    The posed geometry samples the spline uniformly in arc length and generates per-segment
+    rotation-minimizing frames (see :func:`create_cable_spline_points` and
+    :func:`create_rotation_minimizing_cable_quaternions`). By default the rest geometry is the
+    spline itself, so a cable built from it holds the spline shape at equilibrium.
+
+    With ``straight_rest_shape=True`` the rest geometry is instead the *natural* (minimal
+    bending, untwisted) configuration of the same cable:
+
+    - **Open** cables: a straight, untwisted chain of the same per-segment lengths, laid out
+      from the spline's first point along its first segment direction.
+    - **Closed** cables: a straight rest pose cannot close the loop, so the rest shape is a
+      regular polygon ("circle") of the same circumference, centered at the spline loop's
+      centroid in its least-squares best-fit plane. This placement minimizes the per-joint
+      rotation between the rest and posed configurations.
+
+    Build the cable at the rest geometry (``rest_points``/``rest_quaternions``) so
+    :attr:`Model.body_q` conveys the rest configuration, then write the posed configuration
+    into the simulation state — see ``rest_shape`` in :meth:`ModelBuilder.add_cable_spline`
+    and :func:`create_cable_body_transforms`.
+
+    Args:
+        control_points: Control points the spline interpolates. See
+            :func:`create_cable_spline_points`.
+        num_segments: Number of segments (>= 2). Exactly one of ``num_segments`` and
+            ``segment_length`` must be provided.
+        segment_length: Target segment length [m].
+        closed: If True, the spline is a closed loop.
+        twist_total: Total twist [rad] distributed uniformly along the *posed* cable. The rest
+            configuration is always untwisted, so with ``straight_rest_shape=True`` any twist
+            becomes live strain.
+        normal_hint: Optional direction seeding the first cross-section normal, shared by the
+            posed and rest frames so their rolls match at the first segment.
+        alpha: Catmull-Rom parameterization exponent (0.5 = centripetal).
+        straight_rest_shape: If True, the rest geometry is the natural configuration described
+            above instead of the spline.
+
+    Returns:
+        A :class:`CableSplineShape`. When ``straight_rest_shape=False`` the rest fields alias
+        the posed fields.
+    """
+    points = create_cable_spline_points(
+        control_points,
+        num_segments=num_segments,
+        segment_length=segment_length,
+        closed=closed,
+        alpha=alpha,
+    )
+    quaternions = create_rotation_minimizing_cable_quaternions(
+        points,
+        twist_total=twist_total,
+        normal_hint=normal_hint,
+        closed=closed,
+    )
+
+    if not straight_rest_shape:
+        return CableSplineShape(points, quaternions, points, quaternions)
+
+    pts = np.array([[p[0], p[1], p[2]] for p in points], dtype=np.float64)
+    seg_lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    n = seg_lengths.shape[0]
+
+    if closed:
+        # Regular n-gon with the same circumference, in the loop's best-fit plane. The
+        # inscribed polygon side is uniform; the posed segments match it to within the
+        # arc-length sampling tolerance.
+        side = float(seg_lengths.sum()) / n
+        circumradius = side / (2.0 * math.sin(math.pi / n))
+        centroid, u, v = _fit_plane(pts[:-1])
+        angles = 2.0 * math.pi * np.arange(n + 1) / n
+        rest_pts = centroid + circumradius * (np.cos(angles)[:, None] * u + np.sin(angles)[:, None] * v)
+        rest_pts[-1] = rest_pts[0]
+        rest_points = [wp.vec3(*p) for p in rest_pts]
+        rest_quaternions = create_rotation_minimizing_cable_quaternions(
+            rest_points, normal_hint=normal_hint, closed=True
+        )
+    else:
+        # Straight chain preserving the exact per-segment lengths, from the spline start
+        # along the first segment direction.
+        direction = (pts[1] - pts[0]) / seg_lengths[0]
+        offsets = np.concatenate(([0.0], np.cumsum(seg_lengths)))
+        rest_pts = pts[0] + offsets[:, None] * direction
+        rest_points = [wp.vec3(*p) for p in rest_pts]
+        rest_quaternions = create_rotation_minimizing_cable_quaternions(rest_points, normal_hint=normal_hint)
+
+    # Per-joint relative rotation between the rest and posed configurations must stay clearly
+    # below pi: the quaternion strain measure snaps to the antipode beyond that.
+    max_deviation = 0.0
+    joint_pairs = list(zip(range(n - 1), range(1, n), strict=True))
+    if closed:
+        joint_pairs.append((n - 1, 0))
+    for a, b in joint_pairs:
+        rel_posed = wp.mul(wp.quat_inverse(quaternions[a]), quaternions[b])
+        rel_rest = wp.mul(wp.quat_inverse(rest_quaternions[a]), rest_quaternions[b])
+        deviation = wp.mul(wp.quat_inverse(rel_rest), rel_posed)
+        angle = 2.0 * math.acos(min(1.0, abs(float(deviation[3]))))
+        max_deviation = max(max_deviation, angle)
+    if max_deviation > 0.9 * math.pi:
+        warnings.warn(
+            f"create_cable_spline_shape: maximum per-joint rotation between the rest and posed "
+            f"configurations is {max_deviation:.2f} rad, close to the pi limit of the joint "
+            f"strain measure; increase the segment count or smooth the spline.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    return CableSplineShape(points, quaternions, rest_points, rest_quaternions)
+
+
+def create_cable_body_transforms(
+    points: Sequence[wp.vec3],
+    quaternions: Sequence[wp.quat],
+    *,
+    body_frame_origin: Literal["start", "com"] = "com",
+) -> list[wp.transform]:
+    """Convert cable polyline points and per-segment frames to per-body transforms.
+
+    Useful for writing a posed cable configuration into ``State.body_q`` for rods built with
+    :meth:`ModelBuilder.add_rod` or :meth:`ModelBuilder.add_cable_spline` — e.g. to start a
+    straight-rest cable from a routed pose (see ``rest_shape`` in
+    :meth:`ModelBuilder.add_cable_spline`).
+
+    Args:
+        points: Polyline points [m], one more than the number of segments.
+        quaternions: Per-segment orientations (local +Z along each segment).
+        body_frame_origin: Body-frame placement matching the one used to build the rod:
+            ``"com"`` places the body origin at the segment midpoint, ``"start"`` at the
+            segment's first point.
+
+    Returns:
+        List of ``wp.transform``, one per segment body.
+    """
+    num_segments = len(points) - 1
+    if len(quaternions) != num_segments:
+        raise ValueError(
+            f"create_cable_body_transforms: expected {num_segments} quaternions for "
+            f"{num_segments} segments, got {len(quaternions)}"
+        )
+    if body_frame_origin not in ("start", "com"):
+        raise ValueError("create_cable_body_transforms: body_frame_origin must be 'start' or 'com'")
+
+    transforms = []
+    for i in range(num_segments):
+        if body_frame_origin == "com":
+            origin = 0.5 * (points[i] + points[i + 1])
+        else:
+            origin = points[i]
+        transforms.append(wp.transform(origin, quaternions[i]))
+    return transforms
 
 
 def create_straight_cable_points_and_quaternions(
