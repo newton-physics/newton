@@ -89,6 +89,23 @@ def _build_revolute(
     return builder.finalize()
 
 
+def _build_gimbal() -> tuple[newton.Model, int]:
+    """Build a minimal articulated three-axis D6 model for notify tests."""
+    builder = newton.ModelBuilder()
+    parent = builder.add_link()
+    child = builder.add_link()
+    root = builder.add_joint_fixed(-1, parent)
+    gimbal = builder.add_joint_d6(
+        parent,
+        child,
+        angular_axes=[
+            newton.ModelBuilder.JointDofConfig(axis=axis) for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
+        ],
+    )
+    builder.add_articulation([root, gimbal])
+    return builder.finalize(device="cpu"), gimbal
+
+
 def _build_free_body() -> newton.Model:
     """Build one free body so FK creates a synthetic base joint."""
     builder = newton.ModelBuilder()
@@ -417,7 +434,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
     def test_shape_without_material_is_ignored(self):
         """Shapes without a Kamino material mapping do not modify material tables."""
         model = _build_revolute(shape_materials=((0.2, 0.1),), has_shape_collision=False)
-        solver = SolverKamino(model)
+        solver = SolverKamino(model, SolverKamino.Config(use_collision_detector=True))
         materials = solver._model_kamino.materials
         before = (
             materials.restitution.numpy().copy(),
@@ -534,6 +551,30 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         model.joint_limit_lower.assign([np.float32(-0.5)])
 
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_nonorthogonal_gimbal_axes_raise(self):
+        """Reject nonorthogonal gimbal axes when DoF properties are updated."""
+        model, gimbal = _build_gimbal()
+        solver = SolverKamino(model)
+        qd_start = model.joint_qd_start.numpy()[gimbal]
+        axes = model.joint_axis.numpy()
+        axes[qd_start + 1] = [1.0, 0.0, 0.0]
+        model.joint_axis.assign(axes)
+
+        with self.assertRaisesRegex(ValueError, "gimbal axes must be unit length and orthogonal"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_gimbal_handedness_change_raises(self):
+        """Reject reflected gimbal axes that flip handedness while staying orthonormal."""
+        model, gimbal = _build_gimbal()
+        solver = SolverKamino(model)
+        qd_start = model.joint_qd_start.numpy()[gimbal]
+        axes = model.joint_axis.numpy()
+        axes[qd_start + 2] = -axes[qd_start + 2]
+        model.joint_axis.assign(axes)
+
+        with self.assertRaisesRegex(ValueError, "gimbal axes must preserve the solver's original handedness"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
     def test_actuation_mode_change_raises(self):
         """Actuation type changes between active and passive raise under either relevant model flag."""

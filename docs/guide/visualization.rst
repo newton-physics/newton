@@ -3,10 +3,84 @@
 
 .. currentmodule:: newton
 
-Visualization
-=============
+Viewers and Debugging
+=====================
 
-Newton provides multiple viewer backends for different visualization needs, from real-time rendering to offline recording and external integrations.
+Newton provides multiple viewer backends for live visualization, debugging,
+historical inspection, persistent recording, and external integrations.
+
+.. _choosing-a-viewer:
+
+Choosing a Viewer
+-----------------
+
+Choose a viewer based on whether you need a live display, history within the
+current viewer session, or a persistent artifact:
+
+.. list-table:: Viewer Comparison
+    :header-rows: 1
+
+    * - Viewer
+      - Best for
+      - Inspection or output
+      - Dependencies
+    * - :class:`~newton.viewer.ViewerGL`
+      - Interactive development and live debugging
+      - Real-time display; frame capture in headless mode
+      - pyglet, imgui_bundle
+    * - :class:`~newton.viewer.ViewerRTX`
+      - Path-traced visualization on NVIDIA GPUs
+      - Real-time display
+      - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
+    * - :class:`~newton.viewer.ViewerFile`
+      - Persistent state-snapshot recording and visual playback
+      - ``.json`` or ``.bin`` file
+      - None for JSON; cbor2 for binary
+    * - :class:`~newton.viewer.ViewerUSD`
+      - Persistent scene export for 3D pipelines
+      - Time-sampled ``.usd`` file
+      - usd-core
+    * - :class:`~newton.viewer.ViewerRerun`
+      - Live visualization and optional session timeline inspection
+      - Web interface
+      - rerun-sdk
+    * - :class:`~newton.viewer.ViewerViser`
+      - Browser or notebook visualization and visual recording
+      - Web interface; ``.viser`` file
+      - viser
+    * - :class:`~newton.viewer.ViewerNull`
+      - Headless or automated execution without visualization
+      - None
+      - None
+
+.. _debugging-with-viewers:
+
+Debugging with Viewers
+----------------------
+
+Newton's viewers use cooperative, explicit logging rather than automatically
+inspecting every part of a simulation. Call
+:meth:`~newton.viewer.ViewerBase.set_model` to provide the scene structure and
+:meth:`~newton.viewer.ViewerBase.log_state` each frame to provide its motion.
+Contacts appear only when the application calls
+:meth:`~newton.viewer.ViewerBase.log_contacts`. Forces, targets, normals,
+metrics, and other diagnostics similarly require explicit ``log_*()`` calls.
+The way these diagnostics are presented and whether their history is retained
+depends on the viewer backend.
+
+Use a live viewer such as :class:`~newton.viewer.ViewerGL` to inspect the
+current scene and add :ref:`custom overlays <viewer-custom-visualization>` for
+contacts or other diagnostic data. For historical inspection, enable
+``keep_historical_data`` in :class:`~newton.viewer.ViewerRerun` to retain a
+timeline for the current viewer session, or use
+:ref:`ViewerFile <viewer-file-recording>` to create a persistent state-snapshot
+recording for later visual playback. :class:`~newton.viewer.ViewerViser` and
+:class:`~newton.viewer.ViewerUSD` instead create persistent visual or scene
+artifacts for sharing and external tools.
+
+Current viewers do not automatically capture solver internals or all the inputs
+needed to reproduce a simulation. Recording and diagnostic capture will be
+expanded in the future.
 
 Common Interface
 ----------------
@@ -212,11 +286,29 @@ This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in additio
 Recording and Offline Viewers
 -----------------------------
 
+.. _viewer-file-recording:
+
 Recording to File (ViewerFile)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The :class:`~newton.viewer.ViewerFile` backend records simulation data to JSON or binary files for later replay or analysis. 
-This is useful for capturing simulations for debugging, sharing results, or post-processing.
+The :class:`~newton.viewer.ViewerFile` backend records model and state
+snapshots to JSON or binary files for later visual playback or programmatic
+inspection. This is useful for capturing simulation motion for debugging or
+sharing.
+
+A ``ViewerFile`` recording contains:
+
+- the :class:`~newton.Model` passed to
+  :meth:`~newton.viewer.ViewerBase.set_model`;
+- every Warp array stored directly on each :class:`~newton.State` passed to
+  :meth:`~newton.viewer.ViewerBase.log_state`.
+
+It does not currently contain contacts, custom primitives, scalar or array
+diagnostics, solver internals, or the simulation timestamps passed to
+:meth:`~newton.viewer.ViewerBase.begin_frame`. Loading a recording restores the
+captured model and state snapshots; it does not re-execute the simulation.
+Solver configuration, controls, contacts, and other simulation inputs must be
+captured separately if they are needed to reproduce a run.
 
 **File formats:**
 
@@ -229,7 +321,7 @@ To use binary format, install the optional dependency:
 
     pip install cbor2
 
-**Recording a simulation:**
+**Recording static state snapshots:**
 
 .. testcode:: viewer-file
 
@@ -247,6 +339,7 @@ To use binary format, install the optional dependency:
     viewer.set_model(model)
 
     sim_time = 0.0
+    # Record five snapshots of the current static state
     for _ in range(5):
         viewer.begin_frame(sim_time)
         viewer.log_state(state)
@@ -260,6 +353,9 @@ To use binary format, install the optional dependency:
    :options: +NORMALIZE_WHITESPACE, +ELLIPSIS
 
     ...
+
+This minimal snippet records a static state to demonstrate the ``ViewerFile``
+API. Use the built-in recording example below to capture simulation motion.
 
 **Loading and playing back recordings:**
 
@@ -283,7 +379,23 @@ Use :class:`~newton.viewer.ViewerFile` to load a recording, then restore the mod
 
     Frames: 5
 
-For a complete example with UI controls for scrubbing and playback, see ``newton/examples/basic/example_replay_viewer.py``.
+To try the complete workflow with the built-in examples:
+
+.. code-block:: bash
+
+    uv run --extra examples -m newton.examples recording
+    uv run --extra examples -m newton.examples replay_viewer
+
+``example_recording.py`` simulates humanoids across multiple worlds and writes
+the model and state snapshots to ``humanoid_recording.bin``. In the replay
+viewer, select that file to scrub through the captured state snapshots.
+
+``ViewerFile`` captures all direct Warp-array attributes of the logged
+``State``, regardless of which worlds are selected with
+:meth:`~newton.viewer.ViewerBase.set_visible_worlds`. Large states and long
+runs can therefore use substantial memory and disk space. Set
+``max_history_size`` when constructing ``ViewerFile`` to retain only the latest
+bounded number of snapshots. Per-world capture is not currently supported.
 
 Rendering to USD
 ~~~~~~~~~~~~~~~~
@@ -517,6 +629,8 @@ This is particularly useful for:
 - Running simulations on headless servers
 - Batch processing of simulations
 
+.. _viewer-custom-visualization:
+
 Custom Visualization
 --------------------
 
@@ -623,42 +737,3 @@ When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world
 .. code-block:: python
 
     viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))
-
-Choosing the Right Viewer
--------------------------
-
-.. list-table:: Viewer Comparison
-    :header-rows: 1
-
-    * - Viewer
-      - Use Case
-      - Output
-      - Dependencies
-    * - :class:`~newton.viewer.ViewerGL`
-      - Interactive development and debugging
-      - Real-time display
-      - pyglet, imgui_bundle
-    * - :class:`~newton.viewer.ViewerRTX`
-      - Path-traced real-time visualization on NVIDIA GPUs
-      - Real-time display
-      - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
-    * - :class:`~newton.viewer.ViewerFile`
-      - Recording for replay/sharing
-      - .json or .bin files
-      - None
-    * - :class:`~newton.viewer.ViewerUSD`
-      - Integration with 3D pipelines
-      - .usd files
-      - usd-core
-    * - :class:`~newton.viewer.ViewerRerun`
-      - Advanced visualization and analysis
-      - Web interface
-      - rerun-sdk
-    * - :class:`~newton.viewer.ViewerViser`
-      - Browser-based visualization and Jupyter notebooks
-      - Web interface, .viser files
-      - viser
-    * - :class:`~newton.viewer.ViewerNull`
-      - Headless/automated environments
-      - None
-      - None

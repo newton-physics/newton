@@ -433,7 +433,7 @@ class ViewerKamino(ViewerGL):
         # ======================================================================
 
         # Allocate buffers for force arrows
-        if not hasattr(self, "_contact_force_starts"):
+        if not hasattr(self, "_contact_force_colors"):
             self._contact_force_starts = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
             self._contact_force_ends = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
             self._contact_force_colors = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
