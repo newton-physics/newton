@@ -20,6 +20,7 @@ from newton.tests.utils import basics
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        newton.use_coord_layout_targets = True
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.0025
@@ -67,6 +68,7 @@ class Example:
             basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
 
         # Create the model from the builder
+        builder.request_contact_attributes("force")  # For contact visualization
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Create and configure settings for SolverKamino and the collision detector
@@ -92,7 +94,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -116,7 +119,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

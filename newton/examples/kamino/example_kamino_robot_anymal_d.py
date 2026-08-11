@@ -18,6 +18,7 @@ import newton.examples
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        newton.use_coord_layout_targets = True
         # Set simulation run-time configurations
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
@@ -34,6 +35,7 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
+        robot_builder.request_contact_attributes("force")  # For contact visualization
 
         # Load the Anymal D USD and add it to the builder
         asset_path = newton.utils.download_asset("anybotics_anymal_d")
@@ -72,10 +74,10 @@ class Example:
         # internal contact solver or Newton's collision pipeline
         if not self.use_kamino_contacts:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
-            self.contacts = self.model.contacts(collision_pipeline=self.collision_pipeline)
+            self.contacts = self.collision_pipeline.contacts()
         else:
             self.collision_pipeline = None
-            self.contacts = self.model.contacts()
+            self.contacts = newton.CollisionPipeline(self.model).contacts()
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -110,7 +112,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -149,8 +151,8 @@ class Example:
             "all bodies are above the ground",
             lambda q, qd: q[2] > -0.006,
         )
-        # Only check velocities on CUDA where we run 500 frames (enough time to settle)
-        # On CPU we only run 10 frames and the robot is still falling (~0.65 m/s)
+        # Only check velocities on CUDA, where example tests run enough frames to settle.
+        # Short CPU smoke runs may still be falling when they finish.
         if self.device.is_cuda:
             newton.examples.test_body_state(
                 self.model,

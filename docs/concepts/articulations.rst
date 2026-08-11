@@ -43,18 +43,20 @@ For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.S
 use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 :class:`~newton.solvers.SolverSemiImplicit`, and :class:`~newton.solvers.SolverVBD`
 use maximal coordinates.
-Note that collision detection, e.g., via :meth:`newton.Model.collide` requires the maximal coordinates to be current in the state.
+Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
 Cable joints
 ^^^^^^^^^^^^
 
 :attr:`newton.JointType.CABLE` is represented in Newton's joint data model, but
-it is not a conventional generalized-coordinate joint. Its two entries are
-VBD constraint/material slots: one linear slot for stretch and one angular slot
-for bend/twist. These slots store per-cable stiffness and damping through
-:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`;
-they are not ``joint_q`` coordinates that uniquely reconstruct the child body
-pose.
+it is not a conventional generalized-coordinate joint. Its four entries are
+VBD constraint/material slots: stretch (slot 0, ``JointSlot.STRETCH``), shear
+(slot 1, ``JointSlot.SHEAR``), bend (slot 2, ``JointSlot.BEND``), and twist
+(slot 3, ``JointSlot.TWIST``). These slots store independent per-cable stiffness
+and damping through :attr:`newton.Model.joint_target_ke` and
+:attr:`newton.Model.joint_target_kd`. Generic joint storage allocates matching
+``joint_q`` / ``joint_qd`` entries, but they are not generalized coordinates or
+velocities that reconstruct the child body pose.
 
 Cable body poses and velocities are maximal-coordinate state stored in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
@@ -321,18 +323,21 @@ Joint types
      - up to 6
      - up to 6
    * - ``JointType.CABLE``
-     - Cable joint with 1 linear (stretch/shear) and 1 angular (bend/twist) degree of freedom
-     - 2
-     - 2
+     - Cable joint with 2 linear material slots (stretch/shear) and 2 angular
+       material slots (bend/twist)
+     - 4
+     - 4
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
+For ``JointType.CABLE``, both counts represent allocated material slots, not
+generalized coordinates or velocity DOFs; see `Cable joints`_.
 
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The :attr:`newton.Model.joint_q` array stores the default generalized joint positions
-for all joints in the model and is used to initialize :attr:`newton.State.joint_q`.
+for generalized-coordinate joints and is used to initialize :attr:`newton.State.joint_q`.
 Both arrays share the same per-joint layout.
 For scalar-coordinate joints (for example this D6 joint), the positional coordinates can be queried as follows:
 
@@ -378,7 +383,7 @@ Definition of ``joint_qd``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The :attr:`newton.Model.joint_qd` array stores the default generalized joint velocities
-for all joints in the model and is used to initialize :attr:`newton.State.joint_qd`.
+for generalized-coordinate joints and is used to initialize :attr:`newton.State.joint_qd`.
 The generalized joint forces at :attr:`newton.Control.joint_f` use the same DOF order.
 
 Several other arrays also use this same DOF-ordered layout, indexed from
@@ -395,9 +400,9 @@ The position targets at :attr:`newton.Control.joint_target_q` instead match
 indexed via :attr:`newton.Model.joint_qd_start` — see the
 :ref:`migration guide <joint-target-layout>` for details.
 
-For every joint, these per-DOF arrays are stored consecutively, with linear DOFs
-first and angular DOFs second. Use :attr:`newton.Model.joint_dof_dim` to query
-how many of each a joint has.
+For every generalized-coordinate joint, these per-DOF arrays are stored
+consecutively, with linear DOFs first and angular DOFs second. Use
+:attr:`newton.Model.joint_dof_dim` to query how many of each a joint has.
 
 The velocity DOFs for each joint can be queried as follows:
 
@@ -707,6 +712,150 @@ recovered generalized velocities are rotated back into the joint parent frame.
 .. autofunction:: newton.eval_ik
    :noindex:
 
+
+.. _Inverse Dynamics:
+
+Inverse Dynamics
+----------------
+
+.. experimental::
+
+Newton can evaluate the **manipulator equation** for an articulated rigid-body system:
+
+.. math::
+
+   \tau = M(q)\, \ddot{q} + C(q, \dot{q})\, \dot{q} + g(q)
+
+.. list-table:: Manipulator-equation terms
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Symbol
+     - Description
+   * - :math:`q`
+     - Generalized joint coordinates (:attr:`State.joint_q`).
+   * - :math:`\dot{q}`
+     - Generalized joint velocities (:attr:`State.joint_qd`).
+   * - :math:`\ddot{q}`
+     - Generalized joint accelerations (user-supplied ``joint_qdd``).
+   * - :math:`\tau`
+     - Generalized joint forces / torques, same layout as :attr:`Control.joint_f`.
+   * - :math:`M(q)`
+     - Joint-space mass matrix, shape ``(articulation_count, max_dofs_per_articulation, max_dofs_per_articulation)``.
+   * - :math:`g(q) = \partial U / \partial q`
+     - Gravity force, where :math:`U(q) = \sum_i -m_i\, \mathbf{g} \cdot \mathbf{x}_{\text{com},i}` is the system's gravitational potential energy (sum over bodies of mass × gravity-vector · CoM position). Equivalently, the feed-forward joint-space force a controller must apply to hold the articulation static under gravity.
+   * - :math:`C(q, \dot{q})\, \dot{q}`
+     - Coriolis + centrifugal force.
+
+:func:`newton.eval_inverse_dynamics_passive` populates any requested
+combination of :math:`M(q)`, :math:`g(q)`, and
+:math:`C(q, \dot{q})\, \dot{q}` into caller-allocated arrays. An output set to
+``None`` is not computed.
+:func:`newton.eval_inverse_dynamics_force` then combines them with a
+user-supplied :math:`\ddot{q}` to produce :math:`\tau`.
+
+Both functions require ``state.body_q`` to be consistent with
+``state.joint_q``: callers must invoke :func:`newton.eval_fk` (or
+otherwise update ``state.body_q``) first.
+
+.. testcode:: articulation-view
+
+    # bring state.body_q in sync with state.joint_q (precondition of
+    # eval_inverse_dynamics_passive)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    # allocate the requested outputs
+    mass_matrix = wp.empty(
+        (
+            model.articulation_count,
+            model.max_dofs_per_articulation,
+            model.max_dofs_per_articulation,
+        ),
+        dtype=wp.float32,
+        device=model.device,
+    )
+    gravity_force = wp.empty_like(state.joint_qd)
+    coriolis_force = wp.empty_like(state.joint_qd)
+    joint_f = wp.empty_like(state.joint_qd)
+
+    # populate M(q), g(q), and C(q, q_dot)*q_dot in one call
+    newton.eval_inverse_dynamics_passive(
+        model,
+        state,
+        mass_matrix=mass_matrix,
+        gravity_force=gravity_force,
+        coriolis_force=coriolis_force,
+    )
+
+    # combine into the generalized joint force tau = M*joint_qdd + C*qdot + g
+    joint_qdd = wp.zeros_like(state.joint_qd)
+    newton.eval_inverse_dynamics_force(
+        model,
+        state,
+        mass_matrix=mass_matrix,
+        joint_qdd=joint_qdd,
+        coriolis_force=coriolis_force,
+        gravity_force=gravity_force,
+        joint_f=joint_f,
+    )
+
+Pass only the output arrays you need. For example, supplying
+``gravity_force=`` and ``coriolis_force=`` while leaving ``mass_matrix=None``
+skips the mass-matrix Jacobian pass.
+
+Restricting evaluation with the selection API
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`newton.selection.ArticulationView` exposes
+:meth:`~newton.selection.ArticulationView.eval_inverse_dynamics_passive`, which
+masks the computation to a label-matched (and optionally per-world)
+subset of articulations. Output buffers stay sized for the whole model;
+slots belonging to unselected articulations and DOFs come back as zero,
+mirroring the convention :func:`newton.eval_mass_matrix` uses for its
+own ``mask=`` argument.
+
+.. testcode:: articulation-view
+
+    # only compute M(q), g(q), and C*q_dot for selected articulations
+    view = newton.selection.ArticulationView(model, pattern="robot*")
+    view.eval_inverse_dynamics_passive(
+        state,
+        mass_matrix=mass_matrix,
+        gravity_force=gravity_force,
+        coriolis_force=coriolis_force,
+    )
+
+    # optionally narrow further with a per-world submask (shape [world_count])
+    per_world_mask = wp.array([True], dtype=bool, device=model.device)
+    view.eval_inverse_dynamics_passive(
+        state,
+        mass_matrix=mass_matrix,
+        gravity_force=gravity_force,
+        coriolis_force=coriolis_force,
+        mask=per_world_mask,
+    )
+
+The view also applies the same selection when combining the populated arrays
+with a desired acceleration:
+
+.. testcode:: articulation-view
+
+    view.eval_inverse_dynamics_force(
+        state,
+        mass_matrix=mass_matrix,
+        joint_qdd=joint_qdd,
+        coriolis_force=coriolis_force,
+        gravity_force=gravity_force,
+        joint_f=joint_f,
+        mask=per_world_mask,
+    )
+
+
+.. autofunction:: newton.eval_inverse_dynamics_passive
+   :noindex:
+
+.. autofunction:: newton.eval_inverse_dynamics_force
+   :noindex:
 
 .. _Orphan joints:
 

@@ -36,6 +36,7 @@ def acc_to_color(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 200
         self.frame_dt = 1.0 / self.fps
@@ -123,12 +124,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -165,7 +163,7 @@ class Example:
 
     def test_final(self):
         acc = self.imu.accelerometer.numpy()
-        gravity_mag = np.linalg.norm(self.model.gravity.numpy()[0])
+        gravity_mag = np.linalg.norm(self.model.gravity.numpy()[-1])
 
         # Cubes settle with different faces up: cube 0 → Y, cube 1 → X, cube 2 → Z
         expected_axes = [1, 0, 2]

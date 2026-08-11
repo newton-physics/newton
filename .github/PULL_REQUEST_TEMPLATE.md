@@ -7,7 +7,8 @@
 
 - [ ] New or existing tests cover these changes
 - [ ] The documentation is up to date with these changes
-- [ ] `CHANGELOG.md` has been updated (if user-facing change)
+- [ ] For user-facing changes, a fragment has been added by following the
+      [changelog fragment instructions](https://github.com/newton-physics/newton/blob/main/changelog/README.md)
 
 ## Test plan
 

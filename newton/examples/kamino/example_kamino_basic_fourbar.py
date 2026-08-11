@@ -38,6 +38,7 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
+        robot_builder.request_contact_attributes("force")  # For contact visualization
 
         # Load the basic four-bar mechanism either from USD or by manually building it
         # with the builder API, depending on the command-line argument `--from-usd`
@@ -93,7 +94,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -130,7 +132,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

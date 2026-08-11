@@ -38,6 +38,7 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    get_float
    get_gprim_axis
    get_mesh
+   get_physics_scenes
    get_quat
    get_scale
    get_tetmesh
@@ -46,3 +47,13 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    has_attribute
    type_to_warp
    value_to_warp
+
+.. rubric:: Constants
+
+.. list-table::
+   :header-rows: 1
+
+   * - Name
+     - Value
+   * - ``DEFORMABLE_LEGACY_NAMESPACES``
+     - ``('omniphysics', 'physxDeformableBody')``

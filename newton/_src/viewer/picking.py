@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import math
 
 import numpy as np
 import warp as wp
@@ -39,10 +39,17 @@ class Picking:
             pick_stiffness: The stiffness that will be used to compute the force applied to the picked body.
             pick_damping: The damping that will be used to compute the force applied to the picked body.
             pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
-                Clamps the picking force to prevent runaway divergence on light objects
-                near stiff contacts.
+                Clamps both linear and equivalent rotational acceleration to prevent
+                runaway divergence on light or low-inertia objects.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
+
+        Raises:
+            ValueError: If ``pick_max_acceleration`` is negative or non-finite.
         """
+        pick_max_acceleration = float(pick_max_acceleration)
+        if not math.isfinite(pick_max_acceleration) or pick_max_acceleration < 0.0:
+            raise ValueError("Picking maximum acceleration must be finite and nonnegative.")
+
         self.model = model
         self.pick_stiffness = pick_stiffness
         self.pick_damping = pick_damping
@@ -73,10 +80,6 @@ class Picking:
         self.picking_active = False
 
         self._default_on_mouse_drag = None
-
-        body_count = model.body_count if model else 0
-        device = model.device if model else "cpu"
-        self._linear_only_body_mask = wp.zeros(body_count, dtype=wp.int32, device=device)
 
         # Pre-compute effective mass per body for picking force clamping.
         # For articulated bodies, use the total articulation mass so that
@@ -113,55 +116,11 @@ class Picking:
                 self.model.body_flags,
                 self.model.body_com,
                 self.model.body_mass,
+                self.model.body_inv_inertia,
                 self._pick_effective_mass,
-                self._linear_only_body_mask,
             ],
             device=self.model.device,
         )
-
-    def set_linear_only_bodies(self, body_ids: Iterable[int] | None) -> None:
-        """Configure bodies that should receive no torque from mouse picking.
-
-        Mouse picking normally applies an offset-induced torque whenever the
-        click point is off-center relative to the body's COM. Bodies listed
-        here only receive the linear (translation) component, which is useful
-        for cables and other low-inertia articulated chains where spurious
-        picking torques would destabilize the solver.
-
-        Args:
-            body_ids: Iterable of body indices into ``model.body_q``. Pass
-                ``None`` (or call :meth:`clear_linear_only_bodies`) to
-                restore normal picking torque for every body.
-
-        Raises:
-            ValueError: If any ``body_id`` falls outside
-                ``[0, model.body_count)``.
-        """
-        if self.model is None:
-            return
-        if body_ids is None:
-            self.clear_linear_only_bodies()
-            return
-
-        mask = np.zeros(self.model.body_count, dtype=np.int32)
-        for raw_body_id in body_ids:
-            body_id = int(raw_body_id)
-            if body_id < 0 or body_id >= self.model.body_count:
-                raise ValueError(f"Body id {body_id} is outside the model body range [0, {self.model.body_count}).")
-            mask[body_id] = 1
-
-        self._linear_only_body_mask.assign(mask)
-
-    def clear_linear_only_bodies(self) -> None:
-        """Restore normal mouse picking torque for all bodies.
-
-        Reverts any previous :meth:`set_linear_only_bodies` configuration so
-        every picked body once again receives both linear force and the
-        offset-induced torque.
-        """
-        if self.model is None:
-            return
-        self._linear_only_body_mask.fill_(0)
 
     @staticmethod
     def _compute_effective_mass(model: newton.Model) -> wp.array[float]:

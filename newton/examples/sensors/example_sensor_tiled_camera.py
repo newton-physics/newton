@@ -80,6 +80,7 @@ def animate_franka(
 
 class Example:
     def __init__(self, viewer: ViewerGL, args):
+        newton.use_coord_layout_targets = True
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
@@ -88,6 +89,7 @@ class Example:
         self.time_delta = 0.005
 
         self.viewer = viewer
+        self.sensor_color_as_main_view = False
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
         bunny_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
@@ -199,6 +201,8 @@ class Example:
 
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
+        self.tiled_camera_sensor.default_render_config.enable_shadows = True
+        self.tiled_camera_sensor.default_render_config.enable_textures = True
         self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
         self.tiled_camera_sensor.utils.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
 
@@ -206,8 +210,8 @@ class Example:
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
 
-        self.camera_rays = self.tiled_camera_sensor.utils.compute_pinhole_camera_rays(
-            self.sensor_render_width, self.sensor_render_height, math.radians(fov)
+        self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+            self.sensor_render_width, self.sensor_render_height, camera_fovs=math.radians(fov)
         )
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.utils.create_color_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
@@ -241,6 +245,9 @@ class Example:
         n = self.world_count_total * self.camera_count
         H = self.sensor_render_height
         W = self.sensor_render_width
+        self.color_main_rgba = wp.empty(
+            (self.worlds_per_col * H, self.worlds_per_row * W, 4), dtype=wp.uint8, device=device
+        )
         self.depth_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.normal_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.shape_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
@@ -265,13 +272,14 @@ class Example:
         self.time += self.time_delta
 
     def render(self):
-        self.render_sensors()
+        sensor_image_is_main_view = self.render_sensors()
 
         self.viewer.begin_frame(0.0)
-        self.viewer.log_state(self.state)
+        if not sensor_image_is_main_view:
+            self.viewer.log_state(self.state)
         self.viewer.end_frame()
 
-    def render_sensors(self):
+    def render_sensors(self) -> bool:
         self.model.bvh_refit_shapes(self.state)
         self.model.bvh_refit_particles(self.state)
         self.tiled_camera_sensor.update(
@@ -297,12 +305,22 @@ class Example:
             self.tiled_camera_sensor_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
         )
 
+        sensor_image_is_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
         self.viewer.log_image("color", color_rgba)
+        if sensor_image_is_main_view:
+            color_main_rgba = utils.flatten_color_image_to_rgba(
+                self.tiled_camera_sensor_color_image,
+                out_buffer=self.color_main_rgba,
+                worlds_per_row=self.worlds_per_row,
+            )
+            self.viewer.log_image("color", color_main_rgba, fullscreen=True)
+
         self.viewer.log_image("albedo", albedo_rgba)
         self.viewer.log_image("depth", self.depth_rgba)
         self.viewer.log_image("normal", self.normal_rgba)
         self.viewer.log_image("shape_index", self.shape_rgba)
         self.viewer.log_image("semantic", self.semantic_rgba)
+        return sensor_image_is_main_view
 
     def get_camera_transforms(self) -> wp.array[wp.transformf]:
         if isinstance(self.viewer, ViewerGL):
@@ -324,7 +342,14 @@ class Example:
         )
 
     def test_final(self):
-        self.render_sensors()
+        """Verify tiled camera outputs and main-view fallback behavior."""
+        sensor_image_is_main_view = self.render_sensors()
+        expected_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        assert sensor_image_is_main_view is expected_main_view
+
+        if not isinstance(self.viewer, ViewerGL):
+            self.sensor_color_as_main_view = True
+            assert self.render_sensors() is False
 
         expected_shape = (24, 1, self.sensor_render_height, self.sensor_render_width)
 
@@ -368,42 +393,58 @@ class Example:
     def gui(self, ui):
         show_compile_kernel_info = False
 
+        if isinstance(self.viewer, ViewerGL):
+            _changed, self.sensor_color_as_main_view = ui.checkbox(
+                "Sensor Color as Main View", self.sensor_color_as_main_view
+            )
+
         if ui.radio_button(
             "Gaussians: Fast",
-            self.tiled_camera_sensor.render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
+            self.tiled_camera_sensor.default_render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
         ):
-            if self.tiled_camera_sensor.render_config.gaussians_mode != SensorTiledCamera.GaussianRenderMode.FAST:
-                self.tiled_camera_sensor.render_config.gaussians_mode = SensorTiledCamera.GaussianRenderMode.FAST
+            if (
+                self.tiled_camera_sensor.default_render_config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.FAST
+            ):
+                self.tiled_camera_sensor.default_render_config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.FAST
+                )
                 show_compile_kernel_info = True
 
         if ui.radio_button(
             "Gaussians: Quality",
-            self.tiled_camera_sensor.render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.QUALITY,
+            self.tiled_camera_sensor.default_render_config.gaussians_mode
+            == SensorTiledCamera.GaussianRenderMode.QUALITY,
         ):
-            if self.tiled_camera_sensor.render_config.gaussians_mode != SensorTiledCamera.GaussianRenderMode.QUALITY:
-                self.tiled_camera_sensor.render_config.gaussians_mode = SensorTiledCamera.GaussianRenderMode.QUALITY
+            if (
+                self.tiled_camera_sensor.default_render_config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.QUALITY
+            ):
+                self.tiled_camera_sensor.default_render_config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.QUALITY
+                )
                 show_compile_kernel_info = True
 
         changed, value = ui.slider_float(
             "Min Transmittance",
-            self.tiled_camera_sensor.render_config.gaussians_min_transmittance,
+            self.tiled_camera_sensor.default_render_config.gaussians_min_transmittance,
             0.0,
             1.0,
             "%.2f",
         )
         if changed:
-            self.tiled_camera_sensor.render_config.gaussians_min_transmittance = value
+            self.tiled_camera_sensor.default_render_config.gaussians_min_transmittance = value
             show_compile_kernel_info = True
 
         changed, value = ui.slider_int(
             "Max Num Hits",
-            self.tiled_camera_sensor.render_config.gaussians_max_num_hits,
+            self.tiled_camera_sensor.default_render_config.gaussians_max_num_hits,
             1,
             40,
             "%d",
         )
         if changed:
-            self.tiled_camera_sensor.render_config.gaussians_max_num_hits = value
+            self.tiled_camera_sensor.default_render_config.gaussians_max_num_hits = value
             show_compile_kernel_info = True
 
         if show_compile_kernel_info:

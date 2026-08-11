@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import ClassVar
 
 import warp as wp
+
+_BODY_Q_PREV_DEPRECATION_MSG = (
+    "State.body_q_prev is deprecated and will be removed in a future release. "
+    "Solvers now manage previous body transforms internally. Applications that "
+    "need pose history should clone State.body_q explicitly."
+)
 
 
 def _copy_arrays(dst: object, src: object, prefix: str = "") -> None:
@@ -127,8 +134,7 @@ class State:
         last three: angular velocity [rad/s] in world frame.
         See :ref:`Twist conventions in Newton <Twist conventions>` for more information."""
 
-        self.body_q_prev: wp.array | None = None
-        """Previous rigid body transforms [m, unitless quaternion] for finite-difference velocity computation."""
+        self._deprecated_body_q_prev: wp.array | None = None
 
         self.body_qdd: wp.array | None = None
         """Rigid body accelerations (spatial) [m/s², rad/s²], shape (body_count,), dtype :class:`spatial_vector`.
@@ -163,6 +169,22 @@ class State:
         self.joint_qd: wp.array | None = None
         """Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float.
         For FREE and DISTANCE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
+
+    @property
+    def body_q_prev(self) -> wp.array | None:
+        """Previous rigid body transforms [m, unitless quaternion].
+
+        .. deprecated:: 1.4
+            Solvers now manage previous body transforms internally. Applications
+            that need pose history should clone :attr:`body_q` explicitly.
+        """
+        warnings.warn(_BODY_Q_PREV_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self._deprecated_body_q_prev
+
+    @body_q_prev.setter
+    def body_q_prev(self, value: wp.array | None) -> None:
+        warnings.warn(_BODY_Q_PREV_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self._deprecated_body_q_prev = value
 
     def clear_forces(self) -> None:
         """

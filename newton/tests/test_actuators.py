@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
@@ -48,6 +49,26 @@ except ImportError:
 _HAS_ONNX = importlib.util.find_spec("onnx") is not None
 _HAS_TORCH = importlib.util.find_spec("torch") is not None
 _HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
+
+
+if _HAS_TORCH:
+    import torch as _torch
+
+    class _LSTMNet(_torch.nn.Module):
+        """Minimal LSTM network for exercising the Torch checkpoint path."""
+
+        def __init__(self, hidden: int = 8, layers: int = 1, bidirectional: bool = False):
+            super().__init__()
+            self.lstm = _torch.nn.LSTM(2, hidden, layers, batch_first=True, bidirectional=bidirectional)
+            self.dec = _torch.nn.Linear(hidden, 1)
+
+        def forward(
+            self,
+            x: _torch.Tensor,
+            hc: tuple[_torch.Tensor, _torch.Tensor],
+        ) -> tuple[_torch.Tensor, tuple[_torch.Tensor, _torch.Tensor]]:
+            out, (h, c) = self.lstm(x, hc)
+            return self.dec(out[:, -1, :]), (h, c)
 
 
 def _onnx_modules():
@@ -289,6 +310,11 @@ def _ignore_torchscript_deprecation(test_case):
         message=r".*torch\.jit\..* is deprecated",
         category=DeprecationWarning,
     )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Loading (TorchScript|dict) checkpoints .* is deprecated",
+        category=DeprecationWarning,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +478,48 @@ class TestControllerNeuralMLP(unittest.TestCase):
             1.0,
             places=4,
             msg="history should contain pos error from current step",
+        )
+
+    def test_velocity_input_is_raw_joint_velocity(self):
+        """Network receives raw joint velocity, not velocity error (target_vel must not affect it)."""
+        weights = np.array([[0.0, 1.0]], dtype=np.float32)  # output = velocity feature
+        bias = np.zeros((1,), dtype=np.float32)
+        path = self._save_mlp(weights, bias)
+        n = 1
+        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+        state_b = ctrl.state(n, self.device)
+
+        q, qd = 0.5, 2.0
+        target_q, target_qd = q, 5.0  # zero pos error; target_qd must not enter the network input
+        expected = weights[0, 0] * (target_q - q) + weights[0, 1] * qd + bias[0]
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+        ctrl.compute(
+            wp.array([q], dtype=wp.float32, device=self.device),
+            wp.array([qd], dtype=wp.float32, device=self.device),
+            wp.array([target_q], dtype=wp.float32, device=self.device),
+            wp.array([target_qd], dtype=wp.float32, device=self.device),
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        self.assertAlmostEqual(forces.numpy()[0], expected, places=3, msg="input must be joint velocity, not vel error")
+
+        ctrl.update_state(state_a, state_b)
+        self.assertAlmostEqual(
+            float(state_b.vel_history.numpy()[0, 0]),
+            qd,
+            places=4,
+            msg="history should contain raw joint velocity from current step",
         )
 
     def test_metadata_scales(self):
@@ -805,6 +873,234 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         fd_dqd = (explicit_tau(q0, qd0 + eps) - explicit_tau(q0, qd0 - eps)) / (2.0 * eps)
         self.assertAlmostEqual(float(controller._dtau_dq.numpy()[0]), fd_dq, delta=abs(fd_dq) * 0.02 + 1e-3)
         self.assertAlmostEqual(float(controller._dtau_dqd.numpy()[0]), fd_dqd, delta=abs(fd_dqd) * 0.02 + 1e-3)
+
+
+class _TorchCheckpointTestMixin:
+    """Shared helpers for saving pt2 / TorchScript / dict torch checkpoints."""
+
+    def setUp(self):
+        import torch
+
+        self.device = wp.get_device()
+        if self.device.is_cuda and not torch.cuda.is_available():
+            self.skipTest("Torch not compiled with CUDA support")
+        self.torch = torch
+        _ignore_torchscript_deprecation(self)
+        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._tmp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def _save_torchscript(self, net, filename="model.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        scripted = self.torch.jit.script(net)
+        extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
+        self.torch.jit.save(scripted, path, _extra_files=extra)
+        return path
+
+    def _save_dict(self, net, filename="model_dict.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        self.torch.save({"model": net, "metadata": metadata or {}}, path)
+        return path
+
+    def _export_pt2(self, net, example_inputs, dynamic_shapes, filename, metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        net.eval()
+        exported = self.torch.export.export(net, example_inputs, dynamic_shapes=dynamic_shapes)
+        extra = {"metadata.json": json.dumps(metadata)} if metadata else None
+        self.torch.export.save(exported, path, extra_files=extra)
+        return path
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
+    """ControllerNeuralMLP loading from pt2, TorchScript, and dict checkpoints."""
+
+    def _make_mlp(self, bias=0.0):
+        net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
+        with self.torch.no_grad():
+            net[0].weight.fill_(0.0)
+            net[0].bias.fill_(bias)
+        return net
+
+    def _save_pt2(self, net, filename="mlp.pt2", metadata=None):
+        example = (self.torch.randn(2, 2, device=self._torch_dev),)
+        batch = self.torch.export.Dim("batch", min=1)
+        return self._export_pt2(net, example, ({0: batch},), filename, metadata=metadata)
+
+    def test_dict_checkpoint(self):
+        """Load MLP from a dict checkpoint with metadata."""
+        path = self._save_dict(self._make_mlp(bias=5.0), metadata={"effort_scale": 4.0})
+        ctrl = ControllerNeuralMLP(model_path=path)
+        self.assertAlmostEqual(ctrl.effort_scale, 4.0)
+
+    def test_pt2_checkpoint(self):
+        """Load MLP from a pt2 archive with metadata and run compute."""
+        path = self._save_pt2(self._make_mlp(bias=7.0), metadata={"effort_scale": 2.0})
+        n = 1
+        ctrl = ControllerNeuralMLP(model_path=path)
+        self.assertAlmostEqual(ctrl.effort_scale, 2.0)
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+        ctrl.compute(
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            wp.array([1.0], dtype=wp.float32, device=self.device),
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        self.assertAlmostEqual(forces.numpy()[0], 14.0, places=3, msg="bias=7 * effort_scale=2 -> 14")
+
+    def test_legacy_formats_warn(self):
+        """TorchScript and dict checkpoints emit a DeprecationWarning on load."""
+        ts_path = self._save_torchscript(self._make_mlp())
+        dict_path = self._save_dict(self._make_mlp())
+
+        with self.assertWarnsRegex(DeprecationWarning, "TorchScript checkpoints"):
+            ControllerNeuralMLP(model_path=ts_path)
+        with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
+            ControllerNeuralMLP(model_path=dict_path)
+
+    def test_deprecation_warning_points_at_caller(self):
+        """The legacy-format warning is attributed to the calling code, not newton internals."""
+        path = self._save_torchscript(self._make_mlp())
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            ControllerNeuralMLP(model_path=path)
+        hits = [w for w in caught if "TorchScript checkpoints" in str(w.message)]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].filename, __file__)
+
+    def test_load_metadata_reads_zip_entry_without_warning(self):
+        """Metadata-only reads do not deserialize the network or warn about legacy formats."""
+        path = self._save_torchscript(self._make_mlp(), metadata={"effort_scale": 3.0})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            metadata = load_metadata(path)
+        self.assertEqual(metadata, {"effort_scale": 3.0})
+        self.assertFalse([w for w in caught if "checkpoints" in str(w.message)])
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
+    """ControllerNeuralLSTM loading from pt2, TorchScript, and dict checkpoints."""
+
+    def _make_lstm(self, hidden=8, layers=1, bidirectional=False):
+        return _LSTMNet(hidden=hidden, layers=layers, bidirectional=bidirectional).to(self._torch_dev)
+
+    def _save_pt2(self, net, filename="lstm.pt2", metadata=None):
+        layers, hidden = net.lstm.num_layers, net.lstm.hidden_size
+        n = 2
+        x = self.torch.randn(n, 1, 2, device=self._torch_dev)
+        h = self.torch.zeros(layers, n, hidden, device=self._torch_dev)
+        c = self.torch.zeros(layers, n, hidden, device=self._torch_dev)
+        batch = self.torch.export.Dim("batch", min=1)
+        dynamic_shapes = ({0: batch}, ({1: batch}, {1: batch}))
+        return self._export_pt2(net, (x, (h, c)), dynamic_shapes, filename, metadata=metadata)
+
+    def _run_lstm_compute(self, ctrl):
+        n = 1
+        ctrl.finalize(self.device, n)
+
+        state_a = ctrl.state(n, self.device)
+        state_b = ctrl.state(n, self.device)
+        self.assertTrue(self.torch.all(state_a.hidden == 0.0).item())
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        positions = wp.zeros(n, dtype=wp.float32, device=self.device)
+        velocities = wp.array([1.0], dtype=wp.float32, device=self.device)
+        target_pos = wp.array([1.0], dtype=wp.float32, device=self.device)
+        target_vel = wp.zeros(n, dtype=wp.float32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+
+        ctrl.compute(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        ctrl.update_state(state_a, state_b)
+
+        self.assertNotAlmostEqual(forces.numpy()[0], 0.0, places=5, msg="LSTM should produce non-zero force")
+        self.assertFalse(self.torch.all(state_b.hidden == 0.0).item(), "hidden state should evolve")
+        return forces.numpy()[0]
+
+    def test_dict_checkpoint(self):
+        """Load LSTM from a dict checkpoint with metadata."""
+        path = self._save_dict(self._make_lstm(hidden=8, layers=1), metadata={"effort_scale": 5.0})
+        ctrl = ControllerNeuralLSTM(model_path=path)
+        self.assertAlmostEqual(ctrl.effort_scale, 5.0)
+        self._run_lstm_compute(ctrl)
+
+    def test_pt2_checkpoint(self):
+        """Load LSTM from a pt2 archive; layer config comes from metadata."""
+        metadata = {"effort_scale": 5.0, "num_layers": 2, "hidden_size": 8}
+        path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata=metadata)
+        ctrl = ControllerNeuralLSTM(model_path=path)
+        self.assertAlmostEqual(ctrl.effort_scale, 5.0)
+        self.assertEqual(ctrl._num_layers, 2)
+        self.assertEqual(ctrl._hidden_size, 8)
+        self._run_lstm_compute(ctrl)
+
+    def test_pt2_without_config_metadata_raises(self):
+        """A pt2 checkpoint lacking num_layers/hidden_size fails with clear guidance."""
+        path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata={"effort_scale": 5.0})
+        with self.assertRaisesRegex(ValueError, "num_layers.*hidden_size"):
+            ControllerNeuralLSTM(model_path=path)
+
+    def test_pt2_metadata_config_coerced_to_int(self):
+        """JSON floats for num_layers/hidden_size are coerced to int."""
+        metadata = {"num_layers": 2.0, "hidden_size": 8.0}
+        path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata=metadata)
+        ctrl = ControllerNeuralLSTM(model_path=path)
+        self.assertIsInstance(ctrl._num_layers, int)
+        self.assertIsInstance(ctrl._hidden_size, int)
+        self.assertEqual(ctrl._num_layers, 2)
+        self.assertEqual(ctrl._hidden_size, 8)
+
+    def test_metadata_config_mismatch_raises(self):
+        """Metadata that contradicts the network's actual LSTM fails at load."""
+        path = self._save_dict(self._make_lstm(hidden=8, layers=1), metadata={"num_layers": 2, "hidden_size": 8})
+        with self.assertRaisesRegex(ValueError, "num_layers"):
+            ControllerNeuralLSTM(model_path=path)
+
+    def test_invalid_lstm_not_masked_by_config_metadata(self):
+        """Structural validation still runs when metadata provides the LSTM config."""
+        net = self._make_lstm(hidden=8, layers=1, bidirectional=True)
+        path = self._save_dict(net, metadata={"num_layers": 1, "hidden_size": 8})
+        with self.assertRaisesRegex(ValueError, "bidirectional"):
+            ControllerNeuralLSTM(model_path=path)
+
+    def test_legacy_formats_warn(self):
+        """TorchScript and dict checkpoints emit a DeprecationWarning on load."""
+        ts_path = self._save_torchscript(self._make_lstm(hidden=8, layers=1))
+        dict_path = self._save_dict(self._make_lstm(hidden=8, layers=1))
+
+        with self.assertWarnsRegex(DeprecationWarning, "TorchScript checkpoints"):
+            ControllerNeuralLSTM(model_path=ts_path)
+        with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
+            ControllerNeuralLSTM(model_path=dict_path)
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
@@ -2620,6 +2916,23 @@ class TestActuatorBuilder(unittest.TestCase):
 class TestActuatorSelectionAPI(unittest.TestCase):
     """Tests for actuator parameter access via ArticulationView."""
 
+    def build_actuator_view(self):
+        single_world_builder = newton.ModelBuilder()
+        body = single_world_builder.add_link()
+        joint = single_world_builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        single_world_builder.add_articulation([joint], label="robot")
+        single_world_builder.add_actuator(
+            ControllerPD,
+            index=single_world_builder.joint_qd_start[joint],
+            kp=100.0,
+        )
+
+        builder = newton.ModelBuilder()
+        builder.replicate(single_world_builder, 2)
+        model = builder.finalize()
+        view = ArticulationView(model, "robot")
+        return model.actuators[0], view
+
     def run_test_actuator_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="myart">
@@ -2812,6 +3125,25 @@ class TestActuatorSelectionAPI(unittest.TestCase):
     def test_actuator_selection_two_per_view_with_mask(self):
         self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
 
+    def test_set_actuator_parameter_rejects_invalid_masks_before_launch(self):
+        actuator, view = self.build_actuator_view()
+        values = wp.ones((view.world_count, 1), dtype=wp.float32, device=view.device)
+
+        invalid_masks = (
+            (wp.ones((view.world_count, 1), dtype=wp.bool, device=view.device), "mask shape"),
+            (wp.ones(view.world_count, dtype=wp.int32, device=view.device), "Boolean mask"),
+        )
+        if wp.is_cuda_available():
+            other_device = "cpu" if view.device.is_cuda else "cuda:0"
+            invalid_masks += ((wp.ones(view.world_count, dtype=wp.bool, device=other_device), "device"),)
+
+        for mask, message in invalid_masks:
+            with self.subTest(shape=mask.shape, dtype=mask.dtype, device=mask.device):
+                with patch.object(wp, "launch") as launch:
+                    with self.assertRaisesRegex(ValueError, message):
+                        view.set_actuator_parameter(actuator, actuator.controller, "kp", values, mask=mask)
+                    launch.assert_not_called()
+
     def test_selection_api_updates_implicit_solve(self):
         """Writing a gain through the selection API reaches the installed implicit solve.
 
@@ -2994,12 +3326,34 @@ class TestStateReset(unittest.TestCase):
         self.assertTrue(all(v > 0 for v in integral_before), "integrals should have accumulated")
 
         mask = wp.array([True, False, True], dtype=wp.bool, device=device)
-        state_0.reset(mask)
+        with patch("newton._src.actuators.controllers.controller_pid.wp.launch", wraps=wp.launch) as launch:
+            state_0.reset(mask)
+
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.kwargs["device"], state_0.integral.device)
 
         integral_after = state_0.integral.numpy()
         self.assertAlmostEqual(integral_after[0], 0.0, places=6, msg="DOF 0 should be reset")
         self.assertAlmostEqual(integral_after[1], integral_before[1], places=6, msg="DOF 1 should be untouched")
         self.assertAlmostEqual(integral_after[2], 0.0, places=6, msg="DOF 2 should be reset")
+
+    def test_pid_masked_reset_rejects_invalid_mask(self):
+        state = ControllerPID.State(integral=wp.zeros(3, dtype=wp.float32, device="cpu"))
+
+        with self.assertRaisesRegex(ValueError, "one-dimensional Boolean array"):
+            state.reset(wp.zeros(3, dtype=wp.int32, device="cpu"))
+        with self.assertRaisesRegex(ValueError, "one-dimensional Boolean array"):
+            state.reset(wp.zeros((1, 3), dtype=wp.bool, device="cpu"))
+        with self.assertRaisesRegex(ValueError, r"mask length \(2\) must match integral length \(3\)"):
+            state.reset(wp.zeros(2, dtype=wp.bool, device="cpu"))
+
+    @unittest.skipUnless(wp.get_cuda_device_count() > 0, "CUDA device required")
+    def test_pid_masked_reset_rejects_wrong_device(self):
+        state = ControllerPID.State(integral=wp.zeros(3, dtype=wp.float32, device="cuda:0"))
+        mask = wp.zeros(3, dtype=wp.bool, device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "mask device .* must match integral device"):
+            state.reset(mask)
 
     def test_actuator_composed_reset(self):
         """Actuator.State.reset delegates to both delay and controller sub-states."""
@@ -3287,7 +3641,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
 
 class TestTargetPosIndicesSeparation(unittest.TestCase):
-    """Actuator must read joint_target_pos via target_pos_indices, not pos_indices."""
+    """Actuator must read joint_target_q via target_pos_indices, not pos_indices."""
 
     def test_target_pos_read_from_dof_index_not_coord_index(self):
         device = wp.get_device()
@@ -3302,32 +3656,29 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (legacy DOF target layout)
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
-        # This test deliberately exercises the legacy DOF-shaped target layout via
-        # the default attr resolution, which is deprecated and warns.
-        with self.assertWarns(DeprecationWarning):
-            actuator = Actuator(
-                indices=indices,
-                controller=ctrl,
-                pos_indices=pos_indices,
-                target_pos_indices=target_pos_indices,
-            )
+        actuator = Actuator(
+            indices=indices,
+            controller=ctrl,
+            pos_indices=pos_indices,
+            target_pos_indices=target_pos_indices,
+        )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])
         joint_qd = _a([0.0, 0.0])
-        # joint_target_pos padded to size 4 so both index 1 (correct) and
+        # joint_target_q padded to size 4 so both index 1 (correct) and
         # index 3 (sentinel) are reachable — lets us distinguish the two code paths
-        joint_target_pos = _a([0.0, correct_target, 0.0, sentinel])
-        joint_target_vel = _a([0.0, 0.0, 0.0, 0.0])
+        joint_target_q = _a([0.0, correct_target, 0.0, sentinel])
+        joint_target_qd = _a([0.0, 0.0, 0.0, 0.0])
         joint_f = wp.zeros(4, dtype=wp.float32, device=device)
 
         sim_state = types.SimpleNamespace(joint_q=joint_q, joint_qd=joint_qd)
         sim_control = types.SimpleNamespace(
-            joint_target_pos=joint_target_pos,
-            joint_target_vel=joint_target_vel,
+            joint_target_q=joint_target_q,
+            joint_target_qd=joint_target_qd,
             joint_act=None,
             joint_f=joint_f,
         )
@@ -3346,6 +3697,62 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
                 f"got {got}. If {wrong}, pos_indices was wrongly used for target lookup."
             ),
         )
+
+
+class TestControlTargetAttrDefaults(unittest.TestCase):
+    """``control_target_pos_attr`` / ``control_target_vel_attr`` accept ``None``.
+
+    Both parameters used to default to ``None``, meaning "resolve against the
+    active target layout". The layout switch removed that resolution step, but
+    callers may still pass ``None`` explicitly; it must keep selecting the
+    canonical names instead of reaching ``getattr()`` with a non-string.
+    """
+
+    def _actuator(self, **kwargs):
+        device = wp.get_device()
+        indices = wp.array([0], dtype=wp.uint32, device=device)
+        controller = ControllerPD(
+            kp=wp.array([10.0], dtype=wp.float32, device=device),
+            kd=wp.array([0.0], dtype=wp.float32, device=device),
+        )
+        return Actuator(indices=indices, controller=controller, **kwargs)
+
+    def test_omitted_attrs_default_to_canonical_names(self):
+        """Verify omitted attributes select canonical names."""
+        actuator = self._actuator()
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_normalizes_to_canonical_names(self):
+        """Verify explicit None normalizes to canonical names."""
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+        self.assertEqual(actuator.control_target_pos_attr, "joint_target_q")
+        self.assertEqual(actuator.control_target_vel_attr, "joint_target_qd")
+
+    def test_explicit_none_still_steps(self):
+        """Verify stepping succeeds after passing explicit None."""
+        device = wp.get_device()
+        actuator = self._actuator(control_target_pos_attr=None, control_target_vel_attr=None)
+
+        def _a(vals):
+            return wp.array(vals, dtype=wp.float32, device=device)
+
+        sim_state = types.SimpleNamespace(joint_q=_a([0.0]), joint_qd=_a([0.0]))
+        sim_control = types.SimpleNamespace(
+            joint_target_q=_a([1.0]),
+            joint_target_qd=_a([0.0]),
+            joint_act=None,
+            joint_f=wp.zeros(1, dtype=wp.float32, device=device),
+        )
+        actuator.step(sim_state, sim_control, dt=0.01)
+        # kp * (target - pos) = 10 * (1.0 - 0.0)
+        self.assertAlmostEqual(float(sim_control.joint_f.numpy()[0]), 10.0, places=4)
+
+    def test_custom_attr_names_are_preserved(self):
+        """Verify caller-supplied attribute names remain unchanged."""
+        actuator = self._actuator(control_target_pos_attr="my_pos", control_target_vel_attr="my_vel")
+        self.assertEqual(actuator.control_target_pos_attr, "my_pos")
+        self.assertEqual(actuator.control_target_vel_attr, "my_vel")
 
 
 if __name__ == "__main__":

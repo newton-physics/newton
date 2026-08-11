@@ -17,6 +17,25 @@ Generated: {{REPORT_DATE}}
      Retrospective: "Retrospective audit of shipped release v<version>; calibration
                      pass cross-references Claude's flags against post-target history" -->
 
+## Document Version Control
+
+{{DOCUMENT_VERSION_CONTROL}}
+
+<!-- Keep this section short and reviewer-oriented.
+
+     For a first publication, state that this is the initial report and name the
+     audited head and commit count.
+
+     For a revised gist, compare the prior report's audited head and commit count
+     with the current values, then list only the report sections whose conclusions
+     materially changed. Tell prior reviewers where to focus. End by stating that
+     every other finding was revalidated and that the report body contains only
+     current conclusions rather than retaining superseded text.
+
+     Do not use this section as a historical changelog. Gist history preserves old
+     revisions; this section is a compact review map for the immediately preceding
+     revision. -->
+
 
 **Headline counts**
 
@@ -53,25 +72,29 @@ Generated: {{REPORT_DATE}}
      release manager can see at a glance whether the real release notes will
      match expectations and spot items that need a keep/defer decision.
 
-     Shape: one short intro paragraph (2-3 sentences) followed by 4-8 bulleted
+     Shape: one short intro paragraph (2-3 sentences) followed by 3-6 bulleted
      highlight items. Each bullet starts with a bold 2-6 word headline, then a
      colon and a one-sentence rationale (what it is and why it matters).
 
-     Include risk flags inline when they apply:
+     Include status/risk markers inline only when they apply:
        - 🟠 `N days` bake (if the headline item's minimum bake is < 7 days)
-       - ⚠️ Experimental (if the CHANGELOG entry carries an "Experimental" marker)
-       - ⚠️ Breaking (if the headline item is a breaking change)
+       - Experimental (neutral label, no warning emoji, and only when the item
+         independently clears the significance bar)
+       - ⚠️ Stable change (a non-experimental API or behavior change that needs
+         a deeper release-manager acceptability decision)
 
      Do NOT include counts ("4 new APIs were added"): that's already in the
      headline counts block above. Highlights are qualitative.
+     Do NOT promote an item only because it is breaking or experimental. Routine
+     compatibility removals after a valid deprecation window, narrow signature
+     shifts, and dependency metadata follow-ups belong in the detailed sections.
 
      Example shape (do NOT copy verbatim; pick items that are actually headline
      material in THIS release):
 
      Newton 1.2 lands Gaussian splat geometry, deterministic contact ordering, and
      a new texture-based SDF pipeline that replaces NanoVDB for mesh-mesh collision.
-     Two migration-required changes (add_shape_ellipsoid parameter rename and
-     add_shape_gaussian parameter reorder) need migration notes in the release post.
+     One stable default change needs an explicit acceptability decision before cut.
 
      - **Gaussian splat geometry** ([GH-NNN](...)): `Gaussian`, `ModelBuilder.add_shape_gaussian()`,
        and USD import unlock radiance-field-style rendering as a first-class shape.
@@ -84,13 +107,10 @@ Generated: {{REPORT_DATE}}
        volumes in the mesh-mesh collision pipeline; faster and CPU-compatible. Every
        GH ref is an individual hyperlink; never collapse to "(multiple GHs)" or a
        plain-text comma list.
-     - **⚠️ Breaking: `ModelBuilder.add_shape_ellipsoid` parameters renamed** ([GH-NNN](...)):
-       `a`, `b`, `c` → `rx`, `ry`, `rz`. Old names accepted as keyword arguments with
-       `DeprecationWarning`. Needs a migration snippet.
-     - **⚠️ Breaking: `add_shape_gaussian()` parameter order** ([GH-NNN](...)): `xform`
-       now precedes `gaussian`, matching other `add_shape_*` methods. Positional callers
-       must switch to keyword form.
-     - **⚠️ Experimental: differentiable rigid contacts** ([GH-NNN](...)): gradients
+     - **⚠️ Stable change: particle contacts enabled by default** ([GH-NNN](...)):
+       existing scenes can change trajectories, so the release manager should confirm
+       the new default and preservation path are acceptable.
+     - **Experimental: differentiable rigid contacts** ([GH-NNN](...)): gradients
        with respect to body poses via `CollisionPipeline` when `requires_grad=True`;
        contact-pipeline API may change in 1.3.
      - **RJ45 plug-socket insertion example**: demonstrates SDF contacts, latch joint,
@@ -109,6 +129,7 @@ just the `##` top-level sections. List each per-symbol / per-topic heading
 as a sub-bullet under its parent section. Example shape (replace with the
 real symbols / topics present in this specific report):
 
+- [Document Version Control](#document-version-control)
 - [New API](#new-api)
   - [`newton.<symbol>`](#newtonsymbol)
   - [`newton.<submodule>.<symbol>`](#newtonsubmodulesymbol)
@@ -264,7 +285,7 @@ what the user will see, any dependencies like MuJoCo assets).
 
 ---
 
-## ⚠️ Breaking Changes
+## Breaking Changes
 
 {{BREAKING_ENTRIES}}
 
@@ -274,14 +295,25 @@ what the user will see, any dependencies like MuJoCo assets).
      (1) CHANGELOG Changed entries whose prose describes a rename / parameter
          reorder / signature shift (Newton does not use a **Breaking:** marker;
          recognition is prose-based),
-     (2) CHANGELOG Removed entries (implicitly breaking; flag as 🚨 Policy if
-         no prior Deprecated entry is found),
+     (2) CHANGELOG Removed entries (implicitly breaking; flag as 🚨 Policy only
+         if neither a prior Deprecated entry nor a matching runtime warning at
+         the base ref is found),
      (3) public-surface AST diffs between base and HEAD that aren't covered by
          a CHANGELOG Changed / Removed entry,
      (4) solver / integrator / math / geometry commits whose diff Claude reads
          as clearly semantic-shifting (a numerical-output shift that a user
          would observe). Ambiguous candidates go to "Semantic-Change Review
          Candidates" in the review notes, NOT here.
+
+     Warning semantics:
+     - Prefix a non-experimental entry heading with `⚠️` when the stable API or
+       behavior change needs a deeper acceptability decision (for example, a
+       changed default, output semantics, or unshimmed signature shift).
+     - Prefix experimental entry headings with `Experimental:` and no warning
+       emoji. Their looser compatibility contract is context, not an alarm.
+     - Planned removals after a valid shipped deprecation window need no warning
+       emoji unless their breadth or remaining migration risk warrants review.
+     - Keep `🚨 Policy` for removals with no prior deprecation evidence.
 
      Per-entry render format:
 
@@ -297,9 +329,12 @@ what the user will see, any dependencies like MuJoCo assets).
 
      [Full CHANGELOG text blockquoted, if the entry came from CHANGELOG.]
 
+     [For removals backed only by a runtime warning at the base ref: a one-line
+      deprecation-window note plus a non-blocking CHANGELOG documentation flag.]
+
      [For 🚨 Policy: removed without prior deprecation entries: a one-line
-      callout naming the missing deprecation window and what the release
-      manager should do about it.]
+      callout stating that neither released CHANGELOG nor base-ref code contains
+      deprecation evidence and what the release manager should do about it.]
 
      Illustrative example (do not copy verbatim):
 
@@ -471,9 +506,13 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
 <!-- Render the markdown emitted by scripts/license_audit.py. This section is
      always present. It compares direct dependencies, resolved lockfile package
      names, version changes, and declared license-file pathspecs across the
-     release range. Preserve "not checked", "not evaluated (--skip-pypi)", and
-     "not declared" license metadata exactly when package-index lookup was
-     unavailable, deferred, or inconclusive. -->
+     release range. Use one complete helper result; never combine a
+     `--skip-pypi` table with prose from a separate live query. Preserve "not
+     checked", "not evaluated (--skip-pypi)", and "not declared" license
+     metadata exactly when package-index lookup was unavailable, deferred, or
+     inconclusive. Keep the helper's Existing Resolved Package Version-Set
+     Changes table inside its closed `<details>` block so the long table is
+     collapsed by default. -->
 
 ---
 
@@ -505,7 +544,7 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
 
      | Flag subject | Outcome | Evidence |
      |---|---|---|
-     | `Model.foo` | Validated | No prior Deprecated entry in 1.0.0 or earlier; symbol stayed removed through 1.1.2. |
+     | `Model.foo` | Validated | No prior Deprecated entry or matching runtime warning at the base ref; symbol stayed removed through 1.1.2. |
      | `Model.bar` | Invalidated | Deprecated in 1.0.0 under `### Deprecated` — Claude's search missed it (lowercase `model.bar` in the entry). |
 
      ### 🕵️ Private-only
@@ -596,8 +635,10 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
                   🕵️ (private-only symbol not re-exported through a public module),
                   📐 (Deprecated / Removed / rename entry missing migration guidance),
                   🏷️ (new public symbol violates Newton's prefix-first naming),
-                  🚨 (removed without prior deprecation — policy violation, surfaced
-                      in Breaking Changes but also listed here for auditability).
+                  🧾 (runtime deprecation shipped but the released CHANGELOG omitted it),
+                  🚨 (removed without prior CHANGELOG or runtime deprecation evidence;
+                      policy violation surfaced in Breaking Changes and listed here
+                      for auditability).
      An entry with multiple flags appears once per flag. -->
 
 <!-- Report ends here. Do NOT append "end of report", a closing quote, a thanks

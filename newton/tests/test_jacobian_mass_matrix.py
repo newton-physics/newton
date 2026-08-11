@@ -23,7 +23,7 @@ def _build_translated_prismatic_chain(device):
     Returns:
         Tuple containing the finalized model, base body index, and slider body index.
     """
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link(mass=1.5)
     slider = builder.add_link(mass=0.9)
@@ -62,7 +62,7 @@ def _build_free_body_with_com(device):
     Returns:
         Tuple containing the finalized model and body index.
     """
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     body = builder.add_body(
         xform=wp.transform(
@@ -86,7 +86,7 @@ def _build_descendant_free_with_rotated_parent(device):
     Returns:
         Tuple containing the finalized model, base body index, and child body index.
     """
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link(is_kinematic=True, mass=1.0)
     child = builder.add_link(mass=1.8)
@@ -118,7 +118,7 @@ def _build_descendant_free_with_rotated_parent(device):
 
 
 def _build_d6_three_angular(device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
     child = builder.add_link(mass=1.0)
@@ -416,7 +416,7 @@ def test_fixed_base_simple_pendulum_mass_matrix_matches_analytical(test, device)
     length = 0.75
     inertia_zz = 0.2
 
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
     body = builder.add_link(mass=mass, inertia=_diagonal_inertia(0.1, 0.15, inertia_zz))
     joint = builder.add_joint_revolute(
         parent=-1,
@@ -445,7 +445,7 @@ def test_floating_base_simple_pendulum_mass_matrix_matches_analytical(test, devi
     base_inertia = (0.4, 0.5, 0.6)
     child_inertia = (0.2, 0.25, 0.3)
 
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
     base = builder.add_link(mass=base_mass, inertia=_diagonal_inertia(*base_inertia))
     child = builder.add_link(mass=child_mass, inertia=_diagonal_inertia(*child_inertia))
 

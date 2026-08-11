@@ -22,7 +22,7 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 def _build_d6_three_angular_model(device):
     """Single body attached to world by a D6 joint with three orthogonal hinge axes."""
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
     child = builder.add_link(
         mass=1.0,
         com=wp.vec3(0.0, 0.0, 0.0),

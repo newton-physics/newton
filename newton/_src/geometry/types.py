@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
+import hashlib
 import math
 import os
 import warnings
@@ -17,7 +18,7 @@ from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
     from ..sim.model import Model
-    from .sdf_utils import SDF
+    from .sdf_utils import SDF, SignMethod
 
 
 def _resolve_relative_or_absolute(
@@ -218,6 +219,11 @@ class Mesh:
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
+        # Finalized wp.Mesh cache keyed by (device, requires_grad, bvh_constructor).
+        # Geometry objects may be shared across builders (e.g. via
+        # :meth:`ModelBuilder.replicate`), so re-finalizing must not release
+        # wp.Mesh objects whose ids earlier models still reference.
+        self._finalized_meshes: dict = {}
         if maxhullvert is None:
             maxhullvert = Mesh.MAX_HULL_VERTICES
         self.maxhullvert = maxhullvert
@@ -770,9 +776,11 @@ class Mesh:
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
+        sign_method: "SignMethod" = "auto",
         cache_dir: str | os.PathLike[str] | None = None,
         edge_lower_angle_threshold_rad: float = math.radians(0.1),
         edge_upper_angle_threshold_rad: float = math.radians(10.0),
+        edge_inward_filter: bool = True,
         edge_box_absorption: bool = False,
         edge_box_half_normal: float | None = None,
         edge_box_half_normal_rel: float | None = None,
@@ -804,6 +812,12 @@ class Mesh:
             texture_format: Subgrid texture storage: ``"uint16"`` (default,
                 half the memory of float32), ``"float32"`` (full precision),
                 or ``"uint8"`` (minimum memory, lower precision).
+            sign_method: Inside/outside sign strategy for the bake.
+                ``"auto"`` (default) uses parity rays if
+                :attr:`is_watertight` else winding numbers; ``"parity"``,
+                ``"winding"``, and ``"normal"`` (angle-weighted
+                pseudo-normal, for open sheets) force the respective
+                method.
             cache_dir: Optional directory for on-disk caching of the cooked
                 sparse SDF. Keyed by mesh content and build parameters
                 (``shape_margin`` is applied at sample time and is *not*
@@ -817,6 +831,8 @@ class Mesh:
             edge_upper_angle_threshold_rad: Maximum dihedral angle [rad] for
                 an absorbed edge to be removed. Only consulted when
                 ``edge_box_absorption`` is ``True``.
+            edge_inward_filter: Drop concave edges whose endpoints both have
+                fully inward manifold one-rings. Defaults to ``True``.
             edge_box_absorption: Drop manifold edges fully covered by
                 another edge's oriented box.
             edge_box_half_normal: Absolute box half-extent [m] along the
@@ -875,6 +891,7 @@ class Mesh:
             shape_margin=shape_margin,
             scale=scale,
             texture_format=texture_format,
+            sign_method=sign_method,
             cache_dir=cache_dir,
         )
 
@@ -883,6 +900,8 @@ class Mesh:
                 lower_angle_threshold_rad=edge_lower_angle_threshold_rad,
                 upper_angle_threshold_rad=edge_upper_angle_threshold_rad,
                 enable_box_absorption=edge_box_absorption,
+                enable_inward_filter=edge_inward_filter,
+                sign_method=sign_method,
                 half_normal=edge_half_normal,
                 half_lateral=edge_half_lateral,
             )
@@ -950,6 +969,8 @@ class Mesh:
         lower_angle_threshold_rad: float,
         upper_angle_threshold_rad: float,
         enable_box_absorption: bool,
+        enable_inward_filter: bool = True,
+        sign_method: "SignMethod" = "auto",
         half_normal: float,
         half_lateral: float,
     ) -> None:
@@ -981,44 +1002,36 @@ class Mesh:
             lower_angle_threshold_rad, return_diagnostics=True
         )
 
-        if not enable_box_absorption or len(full_edges) == 0:
-            self._collision_edges = np.ascontiguousarray(full_edges, dtype=np.int32)
-            return
+        if enable_box_absorption and len(full_edges) > 0:
+            from .edge_redundancy import find_redundant_edges, resolve_edge_removals  # noqa: PLC0415
 
-        from .edge_redundancy import find_redundant_edges, resolve_edge_removals  # noqa: PLC0415
+            # Reuse the diagnostics already computed above instead of forcing
+            # ``find_redundant_edges`` to repeat the dihedral-filter pass.
+            result = find_redundant_edges(
+                self,
+                enable_box_absorption=True,
+                half_normal=half_normal,
+                half_lateral=half_lateral,
+                lower_angle_threshold_rad=lower_angle_threshold_rad,
+                upper_angle_threshold_rad=upper_angle_threshold_rad,
+                precomputed_filter=(full_edges, full_angles, full_avg_normals, full_area_sums),
+            )
+            resolution = resolve_edge_removals(result)
+            if np.any(resolution.to_remove):
+                # Both arrays preserve the same first-occurrence edge orientation.
+                to_remove_pairs = result.edge_indices[resolution.to_remove]
+                full_keys = (full_edges[:, 0].astype(np.int64) << 32) | full_edges[:, 1].astype(np.int64)
+                remove_keys = (to_remove_pairs[:, 0].astype(np.int64) << 32) | to_remove_pairs[:, 1].astype(np.int64)
+                full_edges = full_edges[~np.isin(full_keys, remove_keys)]
 
-        # Reuse the diagnostics already computed above instead of forcing
-        # ``find_redundant_edges`` to repeat the dihedral-filter pass.
-        result = find_redundant_edges(
-            self,
-            enable_box_absorption=True,
-            half_normal=half_normal,
-            half_lateral=half_lateral,
-            lower_angle_threshold_rad=lower_angle_threshold_rad,
-            upper_angle_threshold_rad=upper_angle_threshold_rad,
-            precomputed_filter=(full_edges, full_angles, full_avg_normals, full_area_sums),
-        )
-        resolution = resolve_edge_removals(result)
-        if not np.any(resolution.to_remove):
-            self._collision_edges = np.ascontiguousarray(full_edges, dtype=np.int32)
-            return
+        # Pseudo-normal SDFs define a sided sheet rather than a closed solid,
+        # so they have no unambiguous fully inward features to remove.
+        if enable_inward_filter and sign_method != "normal" and len(full_edges) > 0:
+            from .edge_inward_filter import filter_fully_inward_edges  # noqa: PLC0415
 
-        # Project absorption removals back into the full edge set. Both
-        # ``full_edges`` and ``result.edge_indices`` come from the same
-        # :meth:`_filter_edges_by_dihedral_angle` pass and inherit its
-        # ``orig_edges`` slot encoding, so the (a, b) ordering of each row
-        # is preserved bit-for-bit: ``result.edge_indices`` is exactly the
-        # manifold-only subset of ``full_edges`` with the same orientation
-        # per row. Packing each row into a single int64 key therefore lets
-        # ``np.isin`` recover the removal mask in ``full_edges`` space with
-        # a cheap O(N log N) hash join. If a future refactor changes either
-        # array's row ordering (e.g. by canonicalising ``(min, max)`` here),
-        # this projection must be updated to canonicalise both sides.
-        to_remove_pairs = result.edge_indices[resolution.to_remove]
-        full_keys = (full_edges[:, 0].astype(np.int64) << 32) | full_edges[:, 1].astype(np.int64)
-        remove_keys = (to_remove_pairs[:, 0].astype(np.int64) << 32) | to_remove_pairs[:, 1].astype(np.int64)
-        keep_mask = ~np.isin(full_keys, remove_keys)
-        self._collision_edges = np.ascontiguousarray(full_edges[keep_mask], dtype=np.int32)
+            full_edges = filter_fully_inward_edges(self, full_edges)
+
+        self._collision_edges = np.ascontiguousarray(full_edges, dtype=np.int32)
 
     def clear_sdf(self) -> None:
         """Detach and release the currently attached SDF.
@@ -1034,6 +1047,25 @@ class Mesh:
         self.sdf = None
         self._collision_edges = None
 
+    def invalidate_cache(self) -> None:
+        """Invalidate all cached data derived from the mesh geometry.
+
+        Drops the cached mesh hash, edge data, watertightness flag, and the
+        finalized Warp meshes returned by :meth:`finalize`, so they are
+        recomputed from the current :attr:`vertices` and :attr:`indices` on
+        next access.
+
+        Assigning new arrays to :attr:`vertices` or :attr:`indices` calls this
+        method automatically. Call it explicitly after modifying those arrays
+        in place (e.g. ``mesh.vertices[0] = ...``), which bypasses the
+        property setters and would otherwise leave stale cached data.
+        """
+        self._cached_hash = None
+        self._edges = None
+        self._collision_edges = None
+        self._is_watertight = None
+        self._finalized_meshes = {}
+
     @property
     def vertices(self):
         return self._vertices
@@ -1041,10 +1073,7 @@ class Mesh:
     @vertices.setter
     def vertices(self, value):
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
-        self._cached_hash = None
-        self._edges = None
-        self._collision_edges = None
-        self._is_watertight = None
+        self.invalidate_cache()
 
     @property
     def indices(self):
@@ -1053,10 +1082,7 @@ class Mesh:
     @indices.setter
     def indices(self, value):
         self._indices = np.array(value, dtype=np.int32).flatten()
-        self._cached_hash = None
-        self._edges = None
-        self._collision_edges = None
-        self._is_watertight = None
+        self.invalidate_cache()
 
     def _canonical_vertex_ids(self) -> np.ndarray:
         """Per-vertex canonical IDs that fold geometrically coincident vertices
@@ -1445,6 +1471,14 @@ class Mesh:
         """
         Construct a simulation-ready Warp Mesh object from the mesh data and return its ID.
 
+        The Warp Mesh is cached per device, so repeated calls (e.g. when the same
+        geometry object is shared by several builders through
+        :meth:`ModelBuilder.replicate` or :meth:`ModelBuilder.add_builder`) return
+        the same Warp Mesh instead of releasing the one referenced by previously
+        finalized models. The cache is invalidated when ``vertices`` or
+        ``indices`` are reassigned; after modifying those arrays in place, call
+        :meth:`invalidate_cache` to avoid finalizing stale geometry.
+
         Args:
             device: Device on which to allocate mesh buffers.
             requires_grad: If True, mesh points and velocities are allocated with gradient tracking.
@@ -1453,13 +1487,20 @@ class Mesh:
         Returns:
             The ID of the simulation-ready Warp Mesh.
         """
-        with wp.ScopedDevice(device):
-            pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
-            vel = wp.zeros_like(pos)
-            indices = wp.array(self.indices, dtype=wp.int32)
+        device = wp.get_device(device)
+        # wp.Device is not hashable, key on its alias instead
+        cache_key = (device.alias, requires_grad, bvh_constructor)
+        mesh = self._finalized_meshes.get(cache_key)
+        if mesh is None:
+            with wp.ScopedDevice(device):
+                pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
+                vel = wp.zeros_like(pos)
+                indices = wp.array(self.indices, dtype=wp.int32)
+                mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor=bvh_constructor)
+            self._finalized_meshes[cache_key] = mesh
 
-            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor=bvh_constructor)
-            return self.mesh.id
+        self.mesh = mesh
+        return mesh.id
 
     def compute_convex_hull(self, replace: bool = False) -> "Mesh":
         """
@@ -1502,38 +1543,55 @@ class Mesh:
             The hash value for the mesh.
         """
         if self._cached_hash is None:
-            self._cached_hash = hash(
-                (
-                    tuple(np.array(self.vertices).flatten()),
-                    tuple(np.array(self.indices).flatten()),
-                    self.is_solid,
-                    self._compute_texture_hash(),
-                    self._roughness,
-                    self._metallic,
-                )
+            digest = hashlib.sha256()
+            material = np.array(
+                [
+                    np.nan if self._roughness is None else float(self._roughness),
+                    np.nan if self._metallic is None else float(self._metallic),
+                ],
+                dtype=np.float64,
             )
+            for name, values in ((b"vertices", self._vertices), (b"indices", self._indices), (b"material", material)):
+                dtype = values.dtype.str.encode("ascii")
+                digest.update(len(name).to_bytes(1, "big"))
+                digest.update(name)
+                digest.update(len(dtype).to_bytes(1, "big"))
+                digest.update(dtype)
+                digest.update(values.ndim.to_bytes(1, "big"))
+                for dimension in values.shape:
+                    digest.update(int(dimension).to_bytes(8, "big"))
+                digest.update(values.tobytes())
+            digest.update(bytes([bool(self.is_solid)]))
+            self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(self._compute_texture_hash())
         return self._cached_hash
 
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
-    def create_from_usd(prim, **kwargs) -> "Mesh":
-        """Load a Mesh from a USD prim with the ``UsdGeom.Mesh`` schema.
+    def create_from_usd(source=None, *, prim=None, **kwargs) -> "Mesh":
+        """Load a Mesh from a USD mesh prim, stage, file path, or URL.
 
         This is a convenience wrapper around :func:`newton.usd.get_mesh`.
         See that function for full documentation.
 
         Args:
-            prim: The USD prim to load the mesh from.
+            source: USD mesh prim, stage, file path, or URL to load the mesh
+                from.
+            prim: Legacy keyword alias for ``source`` when loading a USD prim.
             **kwargs: Additional arguments passed to :func:`newton.usd.get_mesh`
-                (e.g. ``load_normals``, ``load_uvs``).
+                (e.g. ``root_path``, ``load_normals``, ``load_uvs``).
 
         Returns:
             Mesh: A new Mesh instance.
         """
         from ..usd.utils import get_mesh  # noqa: PLC0415
 
-        result = get_mesh(prim, **kwargs)
+        if prim is not None:
+            if source is not None:
+                raise TypeError("Mesh.create_from_usd() received both 'source' and legacy 'prim'; pass only one.")
+            source = prim
+
+        result = get_mesh(source, **kwargs)
         if isinstance(result, tuple):
             return result[0]
         return result
@@ -1700,11 +1758,15 @@ class TetMesh:
         first_dim = arr.shape[0] if arr.ndim >= 1 else 1
         counts = {"vertex_count": vertex_count, "tet_count": tet_count, "tri_count": tri_count}
         matches = [label for label, c in counts.items() if first_dim == c and c > 0]
+        if first_dim == 1:
+            matches.append("ONCE")
         if len(matches) > 1:
             raise ValueError(
                 f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches "
                 f"{', '.join(matches)}. Pass an explicit (array, frequency) tuple instead."
             )
+        if "ONCE" in matches:
+            return Model.AttributeFrequency.ONCE
         if first_dim == vertex_count and vertex_count > 0:
             return Model.AttributeFrequency.PARTICLE
         if first_dim == tet_count and tet_count > 0:
@@ -1821,17 +1883,35 @@ class TetMesh:
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
-    def create_from_usd(prim) -> "TetMesh":
+    def create_from_usd(prim, *, compat_namespaces: Sequence[str] | None = None) -> "TetMesh":
         """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
         Reads vertex positions from the ``points`` attribute and tetrahedral
         connectivity from ``tetVertexIndices``. If a physics material is bound
         to the prim (via ``material:binding:physics``) and contains
-        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
-        (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
+        ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
         those values are read and converted to Lame parameters (``k_mu``,
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
+
+        Custom primvars use their resolved interpolation to determine attribute
+        frequency. Other custom arrays use length-based inference; arrays whose
+        frequency is ambiguous or cannot be inferred emit a warning and are
+        omitted without preventing the TetMesh from loading.
+
+        Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
+        (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
+        are read off any bound material, matching the pre-canonical behavior. That default is
+        deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
+        authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
+        without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
+        materials do not warn); a future
+        release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
+        the canonical-only behavior now -- moduli are then read only from a material that applies
+        ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
+        ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
+        warning.
 
         Example:
 
@@ -1849,13 +1929,17 @@ class TetMesh:
 
         Args:
             prim: The USD prim to load the tetrahedral mesh from.
+            compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
+                ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
+                gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
+                canonical-only.
 
         Returns:
             TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
         """
         from ..usd.utils import get_tetmesh  # noqa: PLC0415
 
-        return get_tetmesh(prim)
+        return get_tetmesh(prim, compat_namespaces=compat_namespaces)
 
     @staticmethod
     def create_from_file(filename: str) -> "TetMesh":
@@ -2158,6 +2242,52 @@ class Heightfield:
         self.inertia = wp.mat33()
         self.mass = 0.0
         self.com = wp.vec3()
+
+    @staticmethod
+    def create_from_mesh(
+        mesh: "wp.Mesh",
+        resolution: float,
+        *,
+        max_cells_per_axis: int = 4096,
+    ) -> tuple["Heightfield", wp.transform]:
+        """Create a heightfield by rasterizing a triangle mesh.
+
+        Rays are cast straight down onto the mesh on a regular grid to sample its
+        elevation (see :func:`~newton.utils.rasterize_mesh_to_heightfield`). This
+        method supports terrain that is single-valued in Z, including sloped planes.
+
+        Args:
+            mesh: Triangle mesh to rasterize, with vertex coordinates [m] in the
+                frame where it should be placed.
+            resolution: Horizontal grid spacing [m]. Smaller values preserve more
+                detail at the cost of a larger grid.
+            max_cells_per_axis: Upper bound on grid rows/columns. If the mesh extent
+                would exceed this, the effective resolution is coarsened to fit.
+
+        Returns:
+            A tuple ``(heightfield, xform)`` where ``heightfield`` is the sampled
+            :class:`Heightfield` and ``xform`` has a translation [m] that places its
+            (origin-centered) grid at the mesh's XY center. Pass both to
+            :meth:`~newton.ModelBuilder.add_shape_heightfield`.
+        """
+        from ..utils.heightfield import rasterize_mesh_to_heightfield  # noqa: PLC0415
+
+        heights, (x_min, y_min, x_max, y_max) = rasterize_mesh_to_heightfield(
+            mesh, resolution, max_cells_per_axis=max_cells_per_axis
+        )
+        nrow, ncol = heights.shape
+        heightfield = Heightfield(
+            data=heights,
+            nrow=nrow,
+            ncol=ncol,
+            hx=0.5 * (x_max - x_min),
+            hy=0.5 * (y_max - y_min),
+        )
+        xform = wp.transform(
+            wp.vec3(0.5 * (x_min + x_max), 0.5 * (y_min + y_max), 0.0),
+            wp.quat_identity(),
+        )
+        return heightfield, xform
 
     @property
     def data(self):

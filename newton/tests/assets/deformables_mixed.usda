@@ -1,0 +1,118 @@
+#usda 1.0
+(
+    doc = "Minimal mixed-deformable scene shaped like Isaac Lab generated assets: two cables, one cloth, two volumes, each under a PhysicsDeformableBodyAPI Xform with a bound family material. No external references."
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "PhysicsScene"
+{
+}
+
+def Xform "World"
+{
+    def Xform "CableA" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def BasisCurves "sim" (
+            prepend apiSchemas = ["PhysicsCurvesDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token type = "linear"
+            int[] curveVertexCounts = [4]
+            point3f[] points = [(0.0, 0.0, 0.5), (0.1, 0.0, 0.5), (0.2, 0.0, 0.5), (0.3, 0.0, 0.5)]
+            rel material:binding:physics = </World/Materials/CableMat>
+        }
+    }
+
+    def Xform "CableB" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def BasisCurves "sim" (
+            prepend apiSchemas = ["PhysicsCurvesDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token type = "linear"
+            int[] curveVertexCounts = [4]
+            point3f[] points = [(0.0, 0.4, 0.5), (0.1, 0.4, 0.5), (0.2, 0.4, 0.5), (0.3, 0.4, 0.5)]
+            rel material:binding:physics = </World/Materials/CableMat>
+        }
+    }
+
+    def Xform "Cloth" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def Mesh "sim" (
+            prepend apiSchemas = ["PhysicsSurfaceDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            point3f[] points = [(0.0, 1.0, 0.5), (0.2, 1.0, 0.5), (0.2, 1.2, 0.5), (0.0, 1.2, 0.5)]
+            int[] faceVertexCounts = [3, 3]
+            int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+            rel material:binding:physics = </World/Materials/ClothMat>
+        }
+    }
+
+    def Xform "SoftA" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def TetMesh "sim" (
+            prepend apiSchemas = ["PhysicsVolumeDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            point3f[] points = [(0.0, 2.0, 0.5), (0.2, 2.0, 0.5), (0.0, 2.2, 0.5), (0.0, 2.0, 0.7)]
+            int4[] tetVertexIndices = [(0, 1, 2, 3)]
+            rel material:binding:physics = </World/Materials/SoftMat>
+        }
+    }
+
+    def Xform "SoftB" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def TetMesh "sim" (
+            prepend apiSchemas = ["PhysicsVolumeDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            point3f[] points = [(0.0, 3.0, 0.5), (0.2, 3.0, 0.5), (0.0, 3.2, 0.5), (0.0, 3.0, 0.7)]
+            int4[] tetVertexIndices = [(0, 1, 2, 3)]
+            rel material:binding:physics = </World/Materials/SoftMat>
+        }
+    }
+
+    def Scope "Materials"
+    {
+        def Material "CableMat" (
+            prepend apiSchemas = ["PhysicsCurvesDeformableMaterialAPI"]
+        )
+        {
+            float physics:thickness = 0.02
+            float physics:stretchStiffness = 2000000
+            float physics:bendStiffness = 300000
+            float physics:density = 1200
+        }
+
+        def Material "ClothMat" (
+            prepend apiSchemas = ["PhysicsSurfaceDeformableMaterialAPI"]
+        )
+        {
+            float physics:thickness = 0.001
+            float physics:stretchStiffness = 100000
+            float physics:bendStiffness = 10
+            float physics:density = 400
+        }
+
+        def Material "SoftMat" (
+            prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+        )
+        {
+            float physics:youngsModulus = 100000
+            float physics:poissonsRatio = 0.45
+            float physics:density = 1000
+        }
+    }
+}

@@ -438,6 +438,7 @@ class Drone:
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.args = args
 
         # setup simulation parameters first
@@ -467,7 +468,7 @@ class Example:
         # We start with -1 since it'll be incremented on the first frame.
         self.target_idx = -1
         # use a Warp array to store the current target so that we can assign
-        # a new target to it while retaining the original CUDA graph.
+        # a new target to it while retaining the original graph.
         self.current_target = wp.array([self.targets[self.target_idx + 1]], dtype=wp.vec3)
 
         # Number of steps to run at each frame for the optimisation pass.
@@ -531,12 +532,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.forward_backward()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.forward_backward()
+        self.graph = capture.graph
 
     def forward_backward(self):
         self.tape = wp.Tape()

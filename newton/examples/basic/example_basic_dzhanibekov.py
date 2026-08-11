@@ -32,6 +32,7 @@ _BAR_DENSITY = 100.0
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -98,10 +99,12 @@ class Example:
 
         if self.solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(self.model, iterations=4)
-            self.contacts = self.model.contacts()
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
         elif self.solver_type == "xpbd":
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
-            self.contacts = self.model.contacts()
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
         elif self.solver_type == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
@@ -110,6 +113,7 @@ class Example:
                 integrator="implicitfast",
                 iterations=10,
             )
+            self.collision_pipeline = None
             self.contacts = None
         else:
             raise ValueError(f"Unknown solver type: {self.solver_type}. Choose from 'vbd', 'xpbd', or 'mujoco'.")

@@ -13,7 +13,7 @@ from .particle_vbd_kernels import (
     evaluate_edge_edge_contact_2_vertices,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
-from .rigid_vbd_kernels import _eval_body_particle_contact
+from .rigid_vbd_kernels import _eval_body_particle_contact, _eval_soft_ef_contact
 from .tri_mesh_collision import TriMeshCollisionInfo
 
 wp.set_module_options({"enable_backward": False})
@@ -24,11 +24,22 @@ def _update_vbd_body_input_state_kernel(
     dt: float,
     body_flags: wp.array[wp.int32],
     kinematic_flag: int,
+    body_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
 ):
     local_body = wp.tid()
+
+    world = body_world[local_body]
+    if world < 0:
+        world = pose_rebaseline_mask.shape[0] - 1
+    if pose_rebaseline_mask[world]:
+        # Accept first/reset poses before teleport conversion or the kinematic early exit.
+        body_q_prev[local_body] = body_q[local_body]
+        return
+
     if (body_flags[local_body] & kinematic_flag) != 0:
         return
 
@@ -131,7 +142,8 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     body_particle_contact_count: wp.array[int],
-    body_particle_contact_particle: wp.array[int],
+    soft_contact_indices: wp.array[wp.vec3i],
+    soft_contact_barycentric: wp.array[wp.vec3],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
     body_particle_contact_body_vel: wp.array[wp.vec3],
@@ -156,20 +168,23 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     if proxy_global < 0 or proxy_global >= out_body_f.shape[0]:
         return
 
-    particle_idx = body_particle_contact_particle[contact_idx]
-    if particle_idx < 0 or particle_idx >= particle_q.shape[0]:
+    corners = soft_contact_indices[contact_idx]
+    if corners[0] < 0 or corners[0] >= particle_q.shape[0]:
         return
 
-    force_on_particle, _ = _eval_body_particle_contact(
-        particle_idx,
-        particle_q[particle_idx],
-        particle_q_prev[particle_idx],
+    bary = soft_contact_barycentric[contact_idx]
+
+    force_on_particle, _hess, cp_world = _eval_soft_ef_contact(
         contact_idx,
+        corners,
+        bary,
+        particle_q,
+        particle_q_prev,
+        particle_radius,
         body_particle_contact_penalty_k[contact_idx],
         body_particle_contact_material_kd[contact_idx],
         body_particle_contact_material_mu[contact_idx],
         friction_epsilon,
-        particle_radius,
         shape_body,
         body_q,
         body_q_prev,
@@ -184,7 +199,6 @@ def _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel(
     )
 
     force_on_body = -force_on_particle
-    cp_world = wp.transform_point(body_q[body_idx], body_particle_contact_body_pos[contact_idx])
     com_world = wp.transform_point(body_q[body_idx], body_com[body_idx])
     torque_on_body = wp.cross(cp_world - com_world, force_on_body)
     wp.atomic_add(out_body_f, proxy_global, wp.spatial_vector(force_on_body, torque_on_body))
@@ -291,6 +305,8 @@ def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
         return
 
     particle_idx = body_particle_contact_particle[contact_idx]
+    if particle_idx < 0:  # edge/face record: no single particle id (harvested via the per-body path)
+        return
     if not _vbd_particle_is_mapped_proxy(
         particle_idx, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
     ):

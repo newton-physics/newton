@@ -19,7 +19,7 @@ import warp as wp
 from ......core.types import Axis
 from ...core import ModelBuilderKamino
 from ...core.joints import JointActuationType, JointDoFType
-from ...core.math import I_3, axis_to_mat33, quat_from_euler_xyz
+from ...core.math import I_3, axis_to_mat33
 from ...core.shapes import (
     BoxShape,
     CapsuleShape,
@@ -1331,7 +1331,6 @@ def build_all_joints_test_model(
     actuated: bool = False,
     damped: bool = True,
     floating_base: bool = False,
-    exclude_universal: bool = False,
 ) -> ModelBuilderKamino:
     """
     Constructs a model builder containing a world for each joint type.
@@ -1342,7 +1341,6 @@ def build_all_joints_test_model(
         actuated: Whether to make the joints actuated (passive otherwise).
         damped: Whether to add slight damping to the joints to increase realism.
         floating_base: Whether to replace the fixed with a free base joint for binary examples.
-        exclude_universal: Whether to skip universal joints.
 
     Returns:
         The populated model builder.
@@ -1365,6 +1363,7 @@ def build_all_joints_test_model(
         base_joint = copy.deepcopy(builder.joints[0][0])
         if make_floating_base:
             base_joint.dof_type = JointDoFType.FREE
+            base_joint.__post_init__()  # Will correctly populate joint dynamics etc.
         builder_alt.add_joint_descriptor(base_joint)
         joint = copy.deepcopy(builder.joints[0][1])
         if make_actuated:
@@ -1394,10 +1393,7 @@ def build_all_joints_test_model(
             geom_.shape = builder.shapes[geom.uid]
             geom_.body = geom.body - 1
             if geom_.body == -1:
-                # wp.transform_set_translation(geom_.offset, body_0_offset)
-                geom_.offset[0] = body_0_offset[0]
-                geom_.offset[1] = body_0_offset[1]
-                geom_.offset[2] = body_0_offset[2]
+                wp.transform_set_translation(geom_.offset, body_0_offset)
             builder_unary.add_geometry_descriptor(geom_)
         return builder_unary
 
@@ -1406,9 +1402,7 @@ def build_all_joints_test_model(
 
     # Add a new world for each joint type
     folder_path = os.path.join(utils.get_testing_usd_assets_path(), "joints")
-    joint_names = ["cartesian", "cylindrical", "fixed", "prismatic", "revolute", "spherical"]
-    if not exclude_universal:
-        joint_names.append("universal")
+    joint_names = ["cartesian", "cylindrical", "fixed", "prismatic", "revolute", "spherical", "universal"]
     need_alteration = actuated or damped or floating_base
     for name in joint_names:
         builder_in = USDImporter().import_from(source=os.path.join(folder_path, f"test_{name}/test_{name}.usda"))
@@ -1635,11 +1629,11 @@ def make_single_shape_pair_builder(
 
     # Compute bottom box position and orientation
     r_b = wp.vec3f(bottom_xyz) - r_dz
-    q_b = quat_from_euler_xyz(wp.vec3f(*bottom_rpy))
+    q_b = wp.quat_from_euler(wp.vec3f(*bottom_rpy), 0, 1, 2)
 
     # Compute top sphere position and orientation
     r_t = wp.vec3f(top_xyz) + r_dz
-    q_t = quat_from_euler_xyz(wp.vec3f(*top_rpy))
+    q_t = wp.quat_from_euler(wp.vec3f(*top_rpy), 0, 1, 2)
 
     # Create the shape descriptors for bottom and top shapes
     # with special handling for PlaneShape

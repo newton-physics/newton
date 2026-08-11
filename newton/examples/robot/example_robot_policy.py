@@ -185,6 +185,7 @@ def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         if args.robot not in ROBOT_CONFIGS:
             raise ValueError(f"Unknown robot: {args.robot}. Available: {list(ROBOT_CONFIGS.keys())}")
         robot_config = ROBOT_CONFIGS[args.robot]
@@ -253,6 +254,7 @@ class Example:
         builder.default_shape_cfg.kd = 5.0e2
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
+        builder.rigid_gap = 0.0
 
         builder.add_usd(
             newton.examples.get_asset(asset_directory + "/" + robot_config.asset_path),
@@ -323,17 +325,18 @@ class Example:
 
     def capture(self):
         self.graph = None
-        self.use_cuda_graph = False
-        if wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()):
-            print("[INFO] Using CUDA graph")
-            self.use_cuda_graph = True
-            self.control.joint_target_q = wp.zeros(self.config["num_dofs"] + 6, dtype=wp.float32, device=self.device)
+        self.use_graph = False
+        if self.device.is_cpu or self.device.is_mempool_enabled:
+            print("[INFO] Using graph capture")
+            self.use_graph = True
+            # Coord layout: 7 slots for the free base (3 position + 4 quaternion).
+            self.control.joint_target_q = wp.zeros(self.config["num_dofs"] + 7, dtype=wp.float32, device=self.device)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
 
     def simulate(self):
-        need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
+        need_state_copy = self.use_graph and self.sim_substeps % 2 == 1
 
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -392,13 +395,13 @@ class Example:
 
         wp.launch(
             _build_joint_target_q_kernel,
-            dim=6 + self._num_dofs,
+            dim=7 + self._num_dofs,
             inputs=[
                 act_wp,
                 self._joint_pos_initial_wp,
                 self._mjc_to_physx_wp,
                 float(self.config["action_scale"]),
-                6,
+                7,
                 self.control.joint_target_q,
             ],
             device=self.device,

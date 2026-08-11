@@ -36,6 +36,7 @@ Newton Physics
    Custom Attributes <concepts/custom_attributes>
    Extended Attributes <concepts/extended_attributes>
    Collisions and Contacts <concepts/collisions>
+   Simulation Tuning <concepts/simulation_tuning>
    Coupled Solvers <concepts/coupling>
    Actuators <concepts/actuators>
 

@@ -96,7 +96,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -642,8 +642,8 @@ def _scale_row_vector_kernel(
     # Vector block offsets:
     row_start: wp.array[wp.int32],
     # Inputs:
-    x: wp.array[Any],
-    beta: Any,
+    x: wp.array[wp.float32],
+    beta: float,
     # Mask:
     matrix_mask: wp.array[wp.bool],
 ):
@@ -779,7 +779,7 @@ class DelassusOperator:
         self._size: SizeKamino | None = None
 
         # Initialize the Delassus data container
-        self._operator: DenseLinearOperatorData | None = None
+        self._operator: DenseLinearOperatorData[wp.float32, wp.int32] | None = None
 
         # Declare the optional Cholesky factorization
         self._solver: LinearSolverType | None = None
@@ -820,7 +820,7 @@ class DelassusOperator:
         return self._model_maxsize
 
     @property
-    def operator(self) -> DenseLinearOperatorData:
+    def operator(self) -> DenseLinearOperatorData[wp.float32, wp.int32]:
         """
         Returns a reference to the flat Delassus matrix array.
         """
@@ -835,7 +835,7 @@ class DelassusOperator:
         return self._solver
 
     @property
-    def info(self) -> DenseSquareMultiLinearInfo:
+    def info(self) -> DenseSquareMultiLinearInfo[wp.float32, wp.int32]:
         """
         Returns a reference to the flat Delassus matrix array.
         """
@@ -913,8 +913,8 @@ class DelassusOperator:
         self._device = model.device
 
         # Construct the Delassus operator data structure
-        self._operator = DenseLinearOperatorData()
-        self._operator.info = DenseSquareMultiLinearInfo()
+        self._operator = DenseLinearOperatorData[wp.float32, wp.int32]()
+        self._operator.info = DenseSquareMultiLinearInfo[wp.float32, wp.int32]()
         self._operator.mat = wp.zeros(shape=(self._model_maxsize,), dtype=wp.float32, device=self._device)
         if (model.info is not None) and (data.info is not None):
             mat_offsets = [0] + [sum(self._world_maxsize[:i]) for i in range(1, self._num_worlds + 1)]
@@ -1141,7 +1141,7 @@ class DelassusOperator:
         return self._solver.solve_inplace(x=x)
 
 
-class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
+class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float32, wp.int32]):
     """
     A matrix-free Delassus operator for representing and operating on multiple independent sparse
     linear systems.
@@ -1240,7 +1240,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
 
         # Problem info object
         # TODO: Create more general info object independent of dense matrix representation
-        self._info: DenseSquareMultiLinearInfo | None = None
+        self._info: DenseSquareMultiLinearInfo[wp.float32, wp.int32] | None = None
 
         # Declare the device cache
         self._device: wp.DeviceLike = None
@@ -1251,11 +1251,26 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         # Flag to indicate that the operator needs an update to its data structure
         self._needs_update: bool = False
 
+        # Flag indicating whether the row-major (P·J·M⁻¹) and column-major (P·J)ᵀ Jacobian copies
+        # are required. Set automatically in ``finalize()`` based on solver choice.
+        self._assemble_preconditioned_jacobians: bool = True
+
+        # Dirty flags for raw-Jacobian solvers (e.g. the fused CR), cleared by the solver once it
+        # has acted on them. ``_raw_jacobian_needs_update`` means the Jacobian *structure* changed
+        # and the per-step index structures (row index + segmented transpose sort) must be rebuilt.
+        # ``_regularization_needs_update`` means only the diagonal regularization (eta) changed --
+        # the sparsity is unchanged, so the solver refreshes its combined-regularization copy but
+        # skips the index rebuild. Keeping these separate avoids re-sorting on eta-only updates
+        # (adaptive penalty, or the transient set_regularization(None)/restore around info
+        # collection).
+        self._raw_jacobian_needs_update: bool = True
+        self._regularization_needs_update: bool = True
+
         # Temporary vector to store results, sized to the number of body dofs in a model.
         self._vec_temp_body_space: wp.array[wp.float32] | None = None
 
         self._col_major_jacobian: ColMajorSparseConstraintJacobians | None = None
-        self._transpose_op_matrix: BlockSparseMatrices | None = None
+        self._transpose_op_matrix: BlockSparseMatrices[wp.float32, wp.int32, Any] | None = None
 
         # Combined regularization vector for implicit joint dynamics
         self._combined_regularization: wp.array[wp.float32] | None = None
@@ -1327,7 +1342,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         # Use the model's device
         self._device = model.device
 
-        self._info = DenseSquareMultiLinearInfo()
+        self._info = DenseSquareMultiLinearInfo[wp.float32, wp.int32]()
         if model.info is not None and data.info is not None:
             self._info.assign(
                 maxdim=model.info.max_total_cts,
@@ -1369,36 +1384,42 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
                 (self._model.size.sum_of_max_total_cts,), dtype=wp.float32, device=self._device
             )
 
-        # Check whether any of the maximum row dimensions of the Jacobians is smaller than six.
-        # If so, we avoid building the column-major Jacobian due to potential memory access issues.
-        min_of_max_rows = np.min(self._model.info.max_total_cts.numpy())
-
-        if min_of_max_rows >= 6:
-            self._col_major_jacobian = ColMajorSparseConstraintJacobians(
-                model=self._model,
-                limits=self._limits,
-                contacts=self._contacts,
-                jacobians=self._jacobians,
-            )
-            self._transpose_op_matrix = self._col_major_jacobian.bsm
-        else:
-            self._col_major_jacobian = None
-
         # Assign Jacobian
         self._jacobians = jacobians
 
-        # Create copy of constraint Jacobian with separate non-zero block values, so we can apply
-        # preconditioning directly to the Jacobian.
-        if self._col_major_jacobian is None and self._transpose_op_matrix is None:
-            self._transpose_op_matrix = copy.copy(jacobians._J_cts.bsm)
-            self._transpose_op_matrix.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
+        # Solvers that read the raw constraint Jacobian directly (e.g. the fused single-kernel CR)
+        # set ``uses_raw_jacobian = True``; for those we skip assembling the row-major P·J·M⁻¹ copy
+        # and the column-major transpose copy entirely, avoiding the matrix-value duplication.
+        self._assemble_preconditioned_jacobians = not bool(getattr(solver, "uses_raw_jacobian", False))
 
-        # Create a shallow copy of the constraint Jacobian, but with a separate array for non-zero block values.
-        # The resulting sparse matrix will reference the structure of the original Jacobian, but we can apply
-        # preconditioning and the inverse mass matrix to the non-zero blocks without affecting the original Jacobian.
-        if self.bsm is None:
-            self.bsm = copy.copy(jacobians._J_cts.bsm)
-            self.bsm.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
+        if self._assemble_preconditioned_jacobians:
+            # Check whether any of the maximum row dimensions of the Jacobians is smaller than six.
+            # If so, we avoid building the column-major Jacobian due to potential memory access issues.
+            min_of_max_rows = np.min(self._model.info.max_total_cts.numpy())
+
+            if min_of_max_rows >= 6:
+                self._col_major_jacobian = ColMajorSparseConstraintJacobians(
+                    model=self._model,
+                    limits=self._limits,
+                    contacts=self._contacts,
+                    jacobians=self._jacobians,
+                )
+                self._transpose_op_matrix = self._col_major_jacobian.bsm
+            else:
+                self._col_major_jacobian = None
+
+            # Create copy of constraint Jacobian with separate non-zero block values, so we can apply
+            # preconditioning directly to the Jacobian.
+            if self._col_major_jacobian is None and self._transpose_op_matrix is None:
+                self._transpose_op_matrix = copy.copy(jacobians._J_cts.bsm)
+                self._transpose_op_matrix.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
+
+            # Create a shallow copy of the constraint Jacobian, but with a separate array for non-zero block values.
+            # The resulting sparse matrix will reference the structure of the original Jacobian, but we can apply
+            # preconditioning and the inverse mass matrix to the non-zero blocks without affecting the original Jacobian.
+            if self.bsm is None:
+                self.bsm = copy.copy(jacobians._J_cts.bsm)
+                self.bsm.nzb_values = wp.empty_like(self.constraint_jacobian.nzb_values)
 
         # Optionally initialize the iterative linear system solver if one is specified
         if solver is not None:
@@ -1412,12 +1433,28 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         Flags the operator as needing to update its data structure.
         """
         self._needs_update = True
+        self._raw_jacobian_needs_update = True
+
+    def set_regularization_needs_update(self):
+        """Flag that the diagonal regularization (eta) changed, but not the Jacobian structure.
+
+        Used by the PADMM proximal/adaptive-penalty update: with sparsity unchanged, a raw-Jacobian
+        solver can avoid rebuilding its index structures + segmented sort.
+        """
+        # ``_needs_update`` is still set so the multi-launch assembled operator re-applies eta to its block diagonal.
+        self._needs_update = True
+        self._regularization_needs_update = True
 
     def update(self):
         """
         Updates any internal data structures that depend on the model, limits, contacts, or system Jacobians.
         """
         if self._jacobians is None:
+            return
+
+        # When assembly is disabled (raw-Jacobian solver), there are no derived copies to refresh.
+        if not self._assemble_preconditioned_jacobians:
+            self._needs_update = False
             return
 
         # Update column-major constraint Jacobian based on current system Jacobian
@@ -1547,7 +1584,10 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
                 Shape of ``(sum_of_max_total_cts,)``.
         """
         self._eta = eta
-        self.set_needs_update()
+        # Flag required update for solvers that use preconditioned Jacobians
+        self._needs_update = True
+        # Flag sparsity-preserving update for solvers that use raw Jacobians
+        self._regularization_needs_update = True
 
     def set_preconditioner(self, preconditioner: wp.array[wp.float32] | None):
         """
@@ -1578,15 +1618,16 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         """
         if self._model is None or self._data is None:
             raise RuntimeError("ModelKamino and data must be assigned before computing diagonal.")
-        if self.bsm is None:
+        if self._jacobians is None:
             raise RuntimeError("Jacobian must be assigned before computing diagonal.")
 
         diag.zero_()
 
-        # Launch kernel over all non-zero blocks
+        # Launch kernel over all non-zero blocks (read from the raw constraint Jacobian, which is
+        # always present even when the assembled ``bsm`` copy is skipped).
         wp.launch(
             kernel=_compute_block_sparse_delassus_diagonal,
-            dim=(self._model.size.num_worlds, self.bsm.max_of_num_nzb),
+            dim=(self._model.size.num_worlds, self.constraint_jacobian.max_of_num_nzb),
             inputs=[
                 self._model.info.bodies_offset,
                 self._model.bodies.inv_m_i,
@@ -1609,7 +1650,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
                 # Inputs:
                 self._model.info.num_joint_dynamic_cts,
                 self._model.info.joint_dynamic_cts_offset,
-                self.bsm.row_start,
+                self.constraint_jacobian.row_start,
                 self._data.joints.inv_m_j,
                 # Outputs:
                 diag,
@@ -1632,7 +1673,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
             raise ValueError("Data structure is not allocated. Call finalize() first.")
 
         # Ensure the Jacobian is set
-        if self.bsm is None:
+        if self._jacobians is None:
             raise ValueError("Jacobian matrix is not set. Call assign() first.")
 
         # Ensure the solver is available if pre-computation is requested
@@ -1666,7 +1707,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
             raise ValueError("Data structure is not allocated. Call finalize() first.")
 
         # Ensure the Jacobian is set
-        if self.bsm is None:
+        if self._jacobians is None:
             raise ValueError("Jacobian matrix is not set. Call assign() first.")
 
         # Ensure the solver is available
@@ -1696,7 +1737,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
             raise ValueError("Data structure is not allocated. Call finalize() first.")
 
         # Ensure the Jacobian is set
-        if self.bsm is None:
+        if self._jacobians is None:
             raise ValueError("Jacobian matrix is not set. Call assign() first.")
 
         # Ensure the solver is available if pre-computation is requested
@@ -1715,7 +1756,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
     ###
 
     @property
-    def info(self) -> DenseSquareMultiLinearInfo | None:
+    def info(self) -> DenseSquareMultiLinearInfo[wp.float32, wp.int32] | None:
         """
         Returns the info object for the Delassus problem dimensions and sizes.
         """
@@ -1752,18 +1793,50 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         return self._model.device
 
     @property
-    def constraint_jacobian(self) -> BlockSparseMatrices:
+    def constraint_jacobian(self) -> BlockSparseMatrices[wp.float32, wp.int32, vec6f]:
         return self._jacobians._J_cts.bsm
+
+    @property
+    def regularization(self) -> wp.array[wp.float32]:
+        """Active diagonal regularization used by sparse matrix-vector products."""
+        regularization = self._combined_regularization
+        if regularization is None:
+            regularization = self._eta
+        if regularization is None:
+            raise RuntimeError("Sparse Delassus regularization has not been configured.")
+        return regularization
 
     ###
     # Operations
     ###
+
+    def _require_assembled(self, op_name: str):
+        # Matrix-free (uses_raw_jacobian) operators skip assembly -> bsm/_transpose_op_matrix are None.
+        if not self._assemble_preconditioned_jacobians:
+            raise RuntimeError(
+                f"{op_name} is unavailable on a matrix-free Delassus operator (uses_raw_jacobian "
+                "solver such as CRF): no assembled matrices were allocated."
+            )
+
+    def apply_jacobian_transpose(
+        self,
+        x: wp.array[wp.float32],
+        y: wp.array[wp.float32],
+        world_mask: wp.array[wp.bool],
+    ) -> None:
+        """Apply the current transposed constraint Jacobian to a vector."""
+        if self.ATy_op is None or self._transpose_op_matrix is None:
+            raise RuntimeError("Sparse Delassus transpose operator has not been assigned.")
+        if self._needs_update:
+            self.update()
+        self.ATy_op(self._transpose_op_matrix, x, y, world_mask)
 
     def matvec(self, x: wp.array[wp.float32], y: wp.array[wp.float32], world_mask: wp.array[wp.bool]):
         """
         Performs the sparse matrix-vector product `y = D @ x`, applying regularization and
         preconditioning if configured.
         """
+        self._require_assembled("matvec")
         if self.Ax_op is None:
             raise RuntimeError("No `A@x` operator has been assigned.")
         if self.ATy_op is None:
@@ -1830,6 +1903,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         Performs a BLAS-like generalized sparse matrix-vector product `y = alpha * D @ x + beta * y`,
         applying regularization and preconditioning if configured.
         """
+        self._require_assembled("gemv")
         if self.gemv_op is None:
             raise RuntimeError("No BLAS-like `GEMV` operator has been assigned.")
         if self.ATy_op is None:
