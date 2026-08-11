@@ -50,13 +50,15 @@ Cable joints
 
 :attr:`newton.JointType.CABLE` is represented in Newton's joint data model, but
 it is not a conventional generalized-coordinate joint. Its four entries are
-VBD constraint/material slots: stretch (slot 0, ``JointSlot.STRETCH``), shear
-(slot 1, ``JointSlot.SHEAR``), bend (slot 2, ``JointSlot.BEND``), and twist
-(slot 3, ``JointSlot.TWIST``). These slots store independent per-cable stiffness
-and damping through :attr:`newton.Model.joint_target_ke` and
-:attr:`newton.Model.joint_target_kd`. Generic joint storage allocates matching
-``joint_q`` / ``joint_qd`` entries, but they are not generalized coordinates or
-velocities that reconstruct the child body pose.
+VBD constraint/material slots defined by
+:class:`~newton.solvers.SolverVBD.JointSlot`: stretch (``STRETCH``, slot 0),
+shear (``SHEAR``, slot 1), bend (``BEND``, slot 2), and
+twist (``TWIST``, slot 3). These slots store independent per-cable stiffness
+and damping through
+:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`.
+Generic joint storage allocates matching ``joint_q`` / ``joint_qd`` entries, but
+they are not generalized coordinates or velocities that reconstruct the child
+body pose.
 
 Cable body poses and velocities are maximal-coordinate state stored in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
