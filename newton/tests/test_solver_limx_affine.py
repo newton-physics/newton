@@ -6,6 +6,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.solvers.limx.affine_body import AffineBodyModel
 from newton._src.solvers.limx.affine_types import mat1212, vec12
 from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.block_csr_12 import BlockCsrBuilder12
@@ -429,3 +430,170 @@ class TestMixedPcg(unittest.TestCase):
             atol=2.0e-5,
         )
         self.assertEqual(len(solution.particle), 0)
+
+
+class TestAffineBodyModel(unittest.TestCase):
+    @staticmethod
+    def _unit_tetrahedron() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        vertices = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        tetrahedra = np.asarray([[0, 1, 2, 3]], dtype=np.int32)
+        surface_triangles = np.asarray(
+            [
+                [0, 2, 1],
+                [0, 1, 3],
+                [0, 3, 2],
+                [1, 2, 3],
+            ],
+            dtype=np.int32,
+        )
+        return vertices, tetrahedra, surface_triangles
+
+    def test_integrates_exact_unit_tetrahedron_mass_and_gravity(self):
+        """Integrate exact affine mass and lift gravity through the same Jacobian."""
+        vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()
+        density = 6.0
+
+        model = AffineBodyModel(
+            vertices,
+            tetrahedra,
+            surface_triangles,
+            density=density,
+            rigidity=2.5,
+            initial_transform=wp.transform_identity(),
+            device="cpu",
+        )
+
+        expected_mass = np.zeros((12, 12), dtype=np.float64)
+        spatial_blocks = ([0, 3, 4, 5], [1, 6, 7, 8], [2, 9, 10, 11])
+        unit_tetrahedron_moment = np.asarray(
+            [
+                [1.0, 0.25, 0.25, 0.25],
+                [0.25, 0.10, 0.05, 0.05],
+                [0.25, 0.05, 0.10, 0.05],
+                [0.25, 0.05, 0.05, 0.10],
+            ]
+        )
+        for indices in spatial_blocks:
+            expected_mass[np.ix_(indices, indices)] = unit_tetrahedron_moment
+
+        actual_mass = model.mass_matrices.numpy()[0]
+        self.assertAlmostEqual(model.volumes.numpy()[0], 1.0 / 6.0, places=7)
+        self.assertAlmostEqual(actual_mass[0, 0], density / 6.0, places=7)
+        np.testing.assert_allclose(actual_mass, expected_mass, rtol=2.0e-6, atol=2.0e-7)
+        np.testing.assert_allclose(actual_mass, actual_mass.T, rtol=0.0, atol=0.0)
+        self.assertGreater(np.linalg.eigvalsh(actual_mass).min(), 0.0)
+        np.testing.assert_allclose(
+            model.gravity.numpy()[0],
+            [0.0, 0.0, -9.81, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            rtol=2.0e-6,
+            atol=2.0e-7,
+        )
+        np.testing.assert_allclose(model.rigidities.numpy(), [2.5])
+
+    def test_maps_unit_tetrahedron_surface_with_affine_states(self):
+        """Map every surface vertex with identity and a literal affine state."""
+        vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()
+        devices = ["cpu"]
+        if wp.is_cuda_available():
+            devices.append("cuda:0")
+
+        for device in devices:
+            with self.subTest(device=device):
+                model = AffineBodyModel(
+                    vertices,
+                    tetrahedra,
+                    surface_triangles,
+                    density=6.0,
+                    rigidity=0.0,
+                    initial_transform=wp.transform_identity(),
+                    device=device,
+                )
+                output = wp.empty(4, dtype=wp.vec3, device=device)
+
+                model.update_surface_positions(model.q, output)
+
+                np.testing.assert_allclose(output.numpy(), vertices, rtol=0.0, atol=0.0)
+                np.testing.assert_array_equal(model.surface_ownership.numpy(), [0, 0, 0, 0])
+                np.testing.assert_array_equal(model.surface_triangle_indices.numpy(), surface_triangles)
+                np.testing.assert_array_equal(model.qd.numpy(), np.zeros((1, 12)))
+
+                affine_state = wp.array(
+                    [vec12(2.0, -1.0, 0.5, 2.0, 0.5, -1.0, 0.0, -1.0, 3.0, 0.25, 2.0, 0.5)],
+                    dtype=vec12,
+                    device=device,
+                )
+                model.update_surface_positions(affine_state, output)
+
+                np.testing.assert_allclose(
+                    output.numpy(),
+                    [
+                        [2.0, -1.0, 0.5],
+                        [4.0, -1.0, 0.75],
+                        [2.5, -2.0, 2.5],
+                        [1.0, 2.0, 1.0],
+                    ],
+                    rtol=0.0,
+                    atol=0.0,
+                )
+
+    def test_initializes_state_from_rigid_transform(self):
+        """Initialize translation and affine rows from a rigid transform."""
+        vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()
+        transform = wp.transform(
+            wp.vec3(1.5, -2.0, 0.25),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0),
+        )
+
+        model = AffineBodyModel(
+            vertices,
+            tetrahedra,
+            surface_triangles,
+            density=1.0,
+            rigidity=0.0,
+            initial_transform=transform,
+            device="cpu",
+        )
+
+        np.testing.assert_allclose(
+            model.q.numpy()[0],
+            [1.5, -2.0, 0.25, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            rtol=0.0,
+            atol=1.0e-6,
+        )
+
+    def test_rejects_invalid_body_data(self):
+        """Reject malformed, non-finite, non-positive, and inverted body data."""
+        vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()
+        cases = [
+            {"rest_vertices": vertices[:, :2]},
+            {"rest_vertices": np.where(vertices == 1.0, np.nan, vertices)},
+            {"tetrahedron_indices": tetrahedra[:, :3]},
+            {"tetrahedron_indices": np.asarray([[0, 1, 2, 4]], dtype=np.int32)},
+            {"tetrahedron_indices": np.asarray([[0, 2, 1, 3]], dtype=np.int32)},
+            {"surface_triangle_indices": surface_triangles[:, :2]},
+            {"surface_triangle_indices": np.asarray([[0, 1, 4]], dtype=np.int32)},
+            {"density": 0.0},
+            {"rigidity": -1.0},
+            {"initial_transform": wp.transform(np.nan, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)},
+        ]
+        defaults = {
+            "rest_vertices": vertices,
+            "tetrahedron_indices": tetrahedra,
+            "surface_triangle_indices": surface_triangles,
+            "density": 1.0,
+            "rigidity": 0.0,
+            "initial_transform": wp.transform_identity(),
+            "device": "cpu",
+        }
+
+        for overrides in cases:
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                AffineBodyModel(**(defaults | overrides))
