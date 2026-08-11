@@ -1883,24 +1883,45 @@ def Xform "Articulation" (
                     joint.CreateUpperLimitAttr().Set(45.0)
                 else:
                     joint = UsdPhysics.Joint.Define(stage, "/World/Joint")
-                    limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "transX")
-                    limit.CreateLowAttr().Set(-1.0)
-                    limit.CreateHighAttr().Set(1.0)
+                    linear_limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "transX")
+                    linear_limit.CreateLowAttr().Set(-1.0)
+                    linear_limit.CreateHighAttr().Set(1.0)
+                    angular_limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "rotZ")
+                    angular_limit.CreateLowAttr().Set(-45.0)
+                    angular_limit.CreateHighAttr().Set(45.0)
                 joint.GetPrim().AddAppliedSchema("NewtonJointAPI")
                 joint.CreateBody1Rel().SetTargets([body.GetPath()])
 
-                builder = newton.ModelBuilder()
-                joint.GetPrim().GetAttribute("newton:armature").Set(builder.default_joint_cfg.armature)
-                joint.GetPrim().GetAttribute("newton:damping").Set(builder.default_joint_cfg.damping)
-                joint.GetPrim().GetAttribute("newton:friction").Set(builder.default_joint_cfg.friction)
-                joint.GetPrim().GetAttribute("newton:velocityLimit").Set(builder.default_joint_cfg.velocity_limit)
+                policy_gains = []
+                for use_applied_schema_fallbacks in (False, True):
+                    builder = newton.ModelBuilder()
+                    joint.GetPrim().GetAttribute("newton:armature").Set(builder.default_joint_cfg.armature)
+                    joint.GetPrim().GetAttribute("newton:damping").Set(builder.default_joint_cfg.damping)
+                    joint.GetPrim().GetAttribute("newton:friction").Set(builder.default_joint_cfg.friction)
+                    joint.GetPrim().GetAttribute("newton:velocityLimit").Set(builder.default_joint_cfg.velocity_limit)
 
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always", DeprecationWarning)
-                    builder.add_usd(stage)
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        builder.add_usd(
+                            stage,
+                            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                        )
 
-                migration_warnings = [warning for warning in caught if "schema fallbacks" in str(warning.message)]
-                self.assertEqual(migration_warnings, [])
+                    migration_warnings = [warning for warning in caught if "schema fallbacks" in str(warning.message)]
+                    self.assertEqual(migration_warnings, [])
+
+                    model = builder.finalize()
+                    dof_start = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
+                    dof_count = 1 if joint_type == "revolute" else 2
+                    policy_gains.append(
+                        (
+                            model.joint_limit_ke.numpy()[dof_start : dof_start + dof_count],
+                            model.joint_limit_kd.numpy()[dof_start : dof_start + dof_count],
+                        )
+                    )
+
+                np.testing.assert_allclose(policy_gains[0][0], policy_gains[1][0])
+                np.testing.assert_allclose(policy_gains[0][1], policy_gains[1][1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_composed_fallback_policy_covers_joint_special_cases(self):
