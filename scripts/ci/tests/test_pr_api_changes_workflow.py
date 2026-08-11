@@ -63,6 +63,14 @@ class TestPrApiChangesWorkflow(unittest.TestCase):
         self.assertIn("github.rest.issues.updateComment", block)
         self.assertIn("github.rest.issues.createComment", block)
 
+    def test_api_review_can_update_pull_request_metadata(self):
+        """Grant write access for pull request labels and comments."""
+        self.assertIn(
+            "    permissions:\n      contents: read\n      pull-requests: write",
+            self.workflow,
+        )
+        self.assertNotIn("      issues: write", self.workflow)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
