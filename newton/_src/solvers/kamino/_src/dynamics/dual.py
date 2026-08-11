@@ -391,18 +391,22 @@ def _build_dual_preconditioner_entry(
 ):
     """Build one scalar or three-dimensional contact preconditioner entries."""
     diagonal_idx = diagonal_offset + diagonal_stride * tid
+    # First handle joint and limit constraints, then contact constraints
     if tid < njlc:
         problem_P[vio + tid] = precondition_scalar(diagonal[diagonal_idx])
     else:
         ccid = tid - njlc
+         # Only the thread of the first contact constraint dimension computes the preconditioner
         if ccid % 3 == 0:
-            d_kk = wp.max(
-                wp.vec3f(
-                    diagonal[diagonal_idx],
-                    diagonal[diagonal_idx + diagonal_stride],
-                    diagonal[diagonal_idx + 2 * diagonal_stride],
-                )
-            )
+            # Retrieve the diagonal entries of the Delassus matrix for the contact constraint set
+            d_kk_0 = diagonal[diagonal_idx]
+            d_kk_1 = diagonal[diagonal_idx + diagonal_stride]
+            d_kk_2 = diagonal[diagonal_idx + 2 * diagonal_stride]
+            # Compute the effective diagonal entry
+            # Possible options are mean, min, max
+            # d_kk = (d_kk_0 + d_kk_1 + d_kk_2) / 3.0
+            # d_kk = wp.min(wp.vec3f(d_kk_0, d_kk_1, d_kk_2))
+            d_kk = wp.max(wp.vec3f(d_kk_0, d_kk_1, d_kk_2))
             p_k = precondition_scalar(d_kk)
             problem_P[vio + tid] = p_k
             problem_P[vio + tid + 1] = p_k
