@@ -10,6 +10,12 @@ from newton._src.solvers.limx.affine_body import AffineBodyModel
 from newton._src.solvers.limx.affine_types import mat1212, vec12
 from newton._src.solvers.limx.block_csr import BlockCsrBuilder
 from newton._src.solvers.limx.block_csr_12 import BlockCsrBuilder12
+from newton._src.solvers.limx.constraints.affine_arap import (
+    ConstraintAffineARAP,
+    _affine_arap_energy,
+    _affine_arap_hessian_unscaled,
+    mat99,
+)
 from newton._src.solvers.limx.mixed_linear_solver import (
     MixedPcgSolver,
     _apply_affine_preconditioner,
@@ -17,6 +23,64 @@ from newton._src.solvers.limx.mixed_linear_solver import (
 )
 from newton._src.solvers.limx.mixed_operator import EmptyMixedDynamicOperator, MixedLinearOperator, MixedVector3x12
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
+
+
+@wp.kernel
+def _evaluate_affine_arap_energy(
+    states: wp.array[vec12],
+    rigidities: wp.array[float],
+    volumes: wp.array[float],
+    energies: wp.array[float],
+):
+    body = wp.tid()
+    energies[body] = _affine_arap_energy(states[body], rigidities[body], volumes[body])
+
+
+@wp.kernel
+def _evaluate_affine_arap_hessian(
+    states: wp.array[vec12],
+    hessians: wp.array[mat99],
+):
+    body = wp.tid()
+    hessians[body] = _affine_arap_hessian_unscaled(states[body])
+
+
+def _proper_rotation_svd(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute an SVD with proper left and right rotation bases."""
+    left, singular_values, right_transpose = np.linalg.svd(matrix)
+    if np.linalg.det(left) < 0.0:
+        left[:, -1] *= -1.0
+        singular_values[-1] *= -1.0
+    if np.linalg.det(right_transpose) < 0.0:
+        right_transpose[-1, :] *= -1.0
+        singular_values[-1] *= -1.0
+    return left, singular_values, right_transpose
+
+
+def _affine_arap_energy_reference(matrix: np.ndarray, rigidity: float, volume: float) -> float:
+    """Evaluate direct affine ARAP energy with an independent NumPy SVD."""
+    left, _singular_values, right_transpose = _proper_rotation_svd(matrix)
+    return float(rigidity * volume * np.sum((matrix - left @ right_transpose) ** 2))
+
+
+def _affine_arap_gradient_reference(matrix: np.ndarray) -> np.ndarray:
+    """Evaluate the unscaled direct affine ARAP gradient with NumPy."""
+    left, _singular_values, right_transpose = _proper_rotation_svd(matrix)
+    return 2.0 * (matrix - left @ right_transpose)
+
+
+def _rotation_matrix(axis: np.ndarray, angle: float) -> np.ndarray:
+    """Build a proper non-axis-aligned rotation matrix."""
+    direction = np.asarray(axis, dtype=np.float64)
+    direction /= np.linalg.norm(direction)
+    x, y, z = direction
+    cross = np.asarray([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+    return np.eye(3) + np.sin(angle) * cross + (1.0 - np.cos(angle)) * (cross @ cross)
+
+
+def _affine_state(translation: np.ndarray, matrix: np.ndarray) -> np.ndarray:
+    """Pack translation and row-major affine rows into one generalized state."""
+    return np.concatenate((np.asarray(translation), np.asarray(matrix).reshape(-1)))
 
 
 @wp.kernel
@@ -430,6 +494,187 @@ class TestMixedPcg(unittest.TestCase):
             atol=2.0e-5,
         )
         self.assertEqual(len(solution.particle), 0)
+
+
+class TestAffineArap(unittest.TestCase):
+    RIGIDITY = 3.25
+    VOLUME = 0.7
+
+    @staticmethod
+    def _devices() -> list[str]:
+        devices = ["cpu"]
+        if wp.is_cuda_available():
+            devices.append("cuda:0")
+        return devices
+
+    @classmethod
+    def _evaluate_energy(cls, state: np.ndarray, device: str) -> float:
+        energies = wp.empty(1, dtype=float, device=device)
+        wp.launch(
+            _evaluate_affine_arap_energy,
+            dim=1,
+            inputs=[
+                wp.array([state], dtype=vec12, device=device),
+                wp.array([cls.RIGIDITY], dtype=float, device=device),
+                wp.array([cls.VOLUME], dtype=float, device=device),
+            ],
+            outputs=[energies],
+            device=device,
+        )
+        return float(energies.numpy()[0])
+
+    @classmethod
+    def _assemble(
+        cls,
+        states: np.ndarray,
+        rigidities: np.ndarray,
+        volumes: np.ndarray,
+        device: str,
+    ) -> tuple[np.ndarray, object]:
+        constraint = ConstraintAffineARAP(rigidities, volumes, len(states), device)
+        builder = BlockCsrBuilder12(len(states))
+        constraint.append_hessian_structure(builder)
+        matrix = builder.finalize(device)
+        constraint.bind_hessian(matrix)
+        forces = wp.zeros(len(states), dtype=vec12, device=device)
+        constraint.accumulate_force_and_hessian(
+            wp.array(states, dtype=vec12, device=device),
+            forces,
+            matrix.values,
+        )
+        return forces.numpy(), matrix
+
+    def test_preserves_identity_and_non_axis_rotation(self):
+        """Keep direct affine ARAP energy and force zero for proper rotations."""
+        rotation = _rotation_matrix(np.asarray([1.0, 2.0, -0.5]), 0.73)
+        states = np.asarray(
+            [
+                _affine_state(np.asarray([0.4, -0.7, 1.2]), np.eye(3)),
+                _affine_state(np.asarray([-3.0, 0.25, 4.5]), rotation),
+            ],
+            dtype=np.float32,
+        )
+
+        for device in self._devices():
+            with self.subTest(device=device):
+                for state in states:
+                    self.assertAlmostEqual(self._evaluate_energy(state, device), 0.0, delta=2.0e-6)
+                forces, _matrix = self._assemble(
+                    states,
+                    np.full(2, self.RIGIDITY),
+                    np.full(2, self.VOLUME),
+                    device,
+                )
+                np.testing.assert_allclose(forces, 0.0, rtol=0.0, atol=5.0e-6)
+
+    def test_force_matches_centered_energy_difference(self):
+        """Match physical affine force to a centered finite-difference energy gradient."""
+        matrix = np.asarray(
+            [[1.18, 0.17, -0.06], [0.09, 0.83, 0.21], [-0.04, 0.12, 1.07]],
+            dtype=np.float64,
+        )
+        state = _affine_state(np.asarray([2.5, -1.25, 0.75]), matrix)
+        epsilon = 1.0e-4
+        energy_gradient = np.zeros(12)
+        for component in range(12):
+            state_plus = state.copy()
+            state_minus = state.copy()
+            state_plus[component] += epsilon
+            state_minus[component] -= epsilon
+            energy_gradient[component] = (
+                _affine_arap_energy_reference(state_plus[3:].reshape(3, 3), self.RIGIDITY, self.VOLUME)
+                - _affine_arap_energy_reference(state_minus[3:].reshape(3, 3), self.RIGIDITY, self.VOLUME)
+            ) / (2.0 * epsilon)
+
+        for device in self._devices():
+            with self.subTest(device=device):
+                forces, _matrix = self._assemble(
+                    state[np.newaxis],
+                    np.asarray([self.RIGIDITY]),
+                    np.asarray([self.VOLUME]),
+                    device,
+                )
+                np.testing.assert_array_equal(forces[0, :3], np.zeros(3, dtype=np.float32))
+                np.testing.assert_allclose(forces[0], -energy_gradient, rtol=3.0e-3, atol=3.0e-3)
+
+    def test_unprojected_hessian_matches_gradient_difference(self):
+        """Match the analytic row-major Hessian to centered gradient differences."""
+        matrix = np.asarray(
+            [[1.31, 0.14, -0.07], [0.05, 0.93, 0.19], [-0.02, 0.11, 0.72]],
+            dtype=np.float64,
+        )
+        state = _affine_state(np.zeros(3), matrix)
+        epsilon = 1.0e-4
+        finite_difference = np.empty((9, 9))
+        for column in range(9):
+            matrix_plus = matrix.copy().reshape(-1)
+            matrix_minus = matrix.copy().reshape(-1)
+            matrix_plus[column] += epsilon
+            matrix_minus[column] -= epsilon
+            gradient_plus = _affine_arap_gradient_reference(matrix_plus.reshape(3, 3)).reshape(-1)
+            gradient_minus = _affine_arap_gradient_reference(matrix_minus.reshape(3, 3)).reshape(-1)
+            finite_difference[:, column] = (gradient_plus - gradient_minus) / (2.0 * epsilon)
+
+        for device in self._devices():
+            with self.subTest(device=device):
+                hessians = wp.empty(1, dtype=mat99, device=device)
+                wp.launch(
+                    _evaluate_affine_arap_hessian,
+                    dim=1,
+                    inputs=[wp.array([state], dtype=vec12, device=device)],
+                    outputs=[hessians],
+                    device=device,
+                )
+                np.testing.assert_allclose(hessians.numpy()[0], finite_difference, rtol=4.0e-3, atol=4.0e-3)
+
+    def test_assembles_projected_diagonal_blocks(self):
+        """Assemble one symmetric PSD affine-only diagonal block per body."""
+        matrices = np.asarray(
+            [
+                [[0.65, 0.08, 0.0], [0.02, 0.7, -0.04], [0.0, 0.03, 0.8]],
+                [[1.2, -0.1, 0.04], [0.07, 0.9, 0.16], [-0.03, 0.05, 1.05]],
+            ],
+            dtype=np.float64,
+        )
+        states = np.asarray(
+            [
+                _affine_state(np.asarray([1.0, 2.0, 3.0]), matrices[0]),
+                _affine_state(np.asarray([-4.0, 5.0, -6.0]), matrices[1]),
+            ]
+        )
+        rigidities = np.asarray([2.0, 4.5])
+        volumes = np.asarray([0.6, 0.35])
+        epsilon = 1.0e-5
+
+        expected_blocks = []
+        for matrix, rigidity, volume in zip(matrices, rigidities, volumes, strict=True):
+            raw_hessian = np.empty((9, 9))
+            for column in range(9):
+                matrix_plus = matrix.copy().reshape(-1)
+                matrix_minus = matrix.copy().reshape(-1)
+                matrix_plus[column] += epsilon
+                matrix_minus[column] -= epsilon
+                raw_hessian[:, column] = (
+                    _affine_arap_gradient_reference(matrix_plus.reshape(3, 3)).reshape(-1)
+                    - _affine_arap_gradient_reference(matrix_minus.reshape(3, 3)).reshape(-1)
+                ) / (2.0 * epsilon)
+            eigenvalues, eigenvectors = np.linalg.eigh(0.5 * (raw_hessian + raw_hessian.T))
+            expected_blocks.append(
+                rigidity * volume * (eigenvectors @ np.diag(np.maximum(eigenvalues, 0.0)) @ eigenvectors.T)
+            )
+
+        for device in self._devices():
+            with self.subTest(device=device):
+                _forces, matrix = self._assemble(states, rigidities, volumes, device)
+                np.testing.assert_array_equal(matrix.row_offsets.numpy(), [0, 1, 2])
+                np.testing.assert_array_equal(matrix.column_indices.numpy(), [0, 1])
+                for body, expected in enumerate(expected_blocks):
+                    block = matrix.values.numpy()[matrix.block_index(body, body)]
+                    np.testing.assert_array_equal(block[:3], np.zeros((3, 12), dtype=np.float32))
+                    np.testing.assert_array_equal(block[:, :3], np.zeros((12, 3), dtype=np.float32))
+                    np.testing.assert_allclose(block, block.T, rtol=0.0, atol=2.0e-5)
+                    np.testing.assert_allclose(block[3:, 3:], expected, rtol=4.0e-3, atol=4.0e-3)
+                    self.assertGreaterEqual(float(np.linalg.eigvalsh(block)[0]), -2.0e-3)
 
 
 class TestAffineBodyModel(unittest.TestCase):
