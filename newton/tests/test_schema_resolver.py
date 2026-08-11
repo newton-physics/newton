@@ -43,6 +43,7 @@ import warp as wp
 from newton import Model, ModelBuilder, ShapeFlags
 from newton._src.usd.schema_resolver import (
     SchemaResolverManager,
+    _reader_schema_attribute,
     _registered_attribute_fallbacks,
     _SchemaResolution,
 )
@@ -287,11 +288,14 @@ class TestSchemaResolver(unittest.TestCase):
             _schema_names: ClassVar = {PrimType.JOINT: "NewtonJointAPI"}
             mapping: ClassVar = {
                 PrimType.JOINT: {
-                    "armature": SchemaResolver.SchemaAttribute("newton:armature", 0.25),
+                    "armature": _reader_schema_attribute(
+                        "newton:armature",
+                        0.25,
+                        _reader_value_getter=fail_on_fallback,
+                    ),
                 }
             }
 
-        BrokenResolver.mapping[PrimType.JOINT]["armature"]._reader_value_getter = fail_on_fallback
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")

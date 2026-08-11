@@ -1903,15 +1903,16 @@ def Xform "Articulation" (
                     joint.GetPrim().GetAttribute("newton:friction").Set(builder.default_joint_cfg.friction)
                     joint.GetPrim().GetAttribute("newton:velocityLimit").Set(builder.default_joint_cfg.velocity_limit)
 
-                    with warnings.catch_warnings(record=True) as caught:
-                        warnings.simplefilter("always", DeprecationWarning)
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "error",
+                            message=r".*schema fallbacks.*",
+                            category=DeprecationWarning,
+                        )
                         builder.add_usd(
                             stage,
                             use_applied_schema_fallbacks=use_applied_schema_fallbacks,
                         )
-
-                    migration_warnings = [warning for warning in caught if "schema fallbacks" in str(warning.message)]
-                    self.assertEqual(migration_warnings, [])
 
                     model = builder.finalize()
                     dof_start = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
@@ -1925,6 +1926,40 @@ def Xform "Articulation" (
 
                 np.testing.assert_allclose(policy_gains[0][0], policy_gains[1][0])
                 np.testing.assert_allclose(policy_gains[0][1], policy_gains[1][1])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_missing_joint_state_is_zero_in_both_fallback_policies(self):
+        """Keep missing joint state zero under both fallback policies."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+        joint.CreateAxisAttr().Set("Z")
+
+        policy_states = []
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            builder.add_usd(
+                stage,
+                use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+            )
+            model = builder.finalize()
+            joint_index = model.joint_label.index("/World/Joint")
+            q_start = int(model.joint_q_start.numpy()[joint_index])
+            qd_start = int(model.joint_qd_start.numpy()[joint_index])
+            policy_states.append(
+                (
+                    float(model.joint_q.numpy()[q_start]),
+                    float(model.joint_qd.numpy()[qd_start]),
+                )
+            )
+
+        self.assertEqual(policy_states, [(0.0, 0.0), (0.0, 0.0)])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_composed_fallback_policy_covers_joint_special_cases(self):
@@ -3860,7 +3895,8 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(limit_kd[dof3]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(solreflimit_mode[dof3]), SOLREF_MODE_FORCE_SPACE)
 
-        # Joint4: authored raw [0, 0] remains raw even though it cannot be converted to gains.
+        # Joint4: authored raw [0, 0] remains raw but cannot be converted to gains,
+        # so the MuJoCo [0.02, 1] default supplies ke=1/0.02^2 and kd=2/0.02.
         dof4 = joint_qd_start[joint4_idx]
         self.assertAlmostEqual(float(limit_ke[dof4]), 2500.0, places=4)
         self.assertAlmostEqual(float(limit_kd[dof4]), 100.0, places=4)
