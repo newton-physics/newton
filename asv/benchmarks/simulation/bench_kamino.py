@@ -14,9 +14,8 @@ wp.config.log_level = wp.LOG_WARNING
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
+from benchmark_metric_tracks import _SimulationMetricTracks, _SimulationMetricTracksUnparameterized
 from benchmark_metrics import (
-    _SimulationMetricTracks,
-    _SimulationMetricTracksUnparameterized,
     collect_simulation_metrics,
 )
 

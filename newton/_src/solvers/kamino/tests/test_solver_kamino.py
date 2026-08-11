@@ -371,17 +371,25 @@ class TestSolverKaminoConfig(unittest.TestCase):
         self.assertEqual(config.rotation_correction, "twopi")
         self.assertEqual(config.dynamics.linear_solver_type, "LLTB")
         self.assertEqual(config.padmm.warmstart_mode, "containers")
+        self.assertEqual(config.padmm.warmstart_scale, 0.9)
 
     def test_01_make_explicit(self):
         config = SolverKaminoImpl.Config(
             dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type="CR"),
-            padmm=kamino_config.PADMMSolverConfig(warmstart_mode="internal"),
+            padmm=kamino_config.PADMMSolverConfig(warmstart_mode="internal", warmstart_scale=0.5),
             rotation_correction="continuous",
         )
         assert_solver_config(self, config)
         self.assertEqual(config.rotation_correction, "continuous")
         self.assertEqual(config.dynamics.linear_solver_type, "CR")
         self.assertEqual(config.padmm.warmstart_mode, "internal")
+        self.assertEqual(config.padmm.warmstart_scale, 0.5)
+
+    def test_02_validate_warmstart_scale(self):
+        """Reject PADMM warmstart scales outside the supported range."""
+        for scale in (-0.1, 1.1):
+            with self.assertRaises(ValueError):
+                kamino_config.PADMMSolverConfig(warmstart_scale=scale)
 
 
 class TestCollisionCapacityInitialization(unittest.TestCase):
