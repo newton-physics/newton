@@ -4820,6 +4820,35 @@ def PhysicsRevoluteJoint "Joint2"
         self.assertAlmostEqual(builder.shape_margin[shape_idx], 0.7)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_margin_gap_warns_for_negative_margin(self):
+        """Warn when legacy MuJoCo margin conversion becomes negative."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        body = stage.DefinePrim("/Body", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        UsdPhysics.ArticulationRootAPI.Apply(body)
+        collider = stage.DefinePrim("/Body/Collision", "Cube")
+        UsdPhysics.CollisionAPI.Apply(collider)
+        collider.GetAttribute("size").Set(0.2)
+        collider.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double).Set(0.1)
+        collider.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Double).Set(0.2)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        with self.assertWarnsRegex(UserWarning, r"negative margin \(mjc_margin=0.1, mjc_gap=0.2\)"):
+            builder.add_usd(
+                stage,
+                schema_resolvers=[SchemaResolverMjc()],
+                legacy_margin_gap=True,
+            )
+
+        shape_idx = builder.shape_label.index("/Body/Collision")
+        self.assertAlmostEqual(builder.shape_margin[shape_idx], -0.1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_margin_gap_identity_import(self):
         """USD import of mjc:margin and mjc:gap is identity under MuJoCo 3.9
         semantics (margin/gap mean the same as Newton's shape_margin/shape_gap)."""

@@ -3570,11 +3570,18 @@ def parse_usd(
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
-                def _effective_margin(value, resolver, prim=prim):
+                legacy_mjc_gap: list[float] = []
+
+                def _get_legacy_mjc_gap(prim=prim, cache=legacy_mjc_gap):
+                    if not cache:
+                        value = usd.get_attribute(prim, "mjc:gap")
+                        cache.append(0.0 if value is None else float(value))
+                    return cache[0]
+
+                def _effective_margin(value, resolver):
                     value = builder.default_shape_cfg.margin if value is None else value
                     if legacy_margin_gap and resolver is not None and resolver.name == "mjc":
-                        mjc_gap = usd.get_attribute(prim, "mjc:gap")
-                        value = float(value) - (0.0 if mjc_gap is None else float(mjc_gap))
+                        value = float(value) - _get_legacy_mjc_gap()
                     return value
 
                 margin_val, margin_resolver = R.get_value_with_resolver(
@@ -3600,18 +3607,16 @@ def parse_usd(
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
+                raw_margin_val = margin_val
+                margin_val = _effective_margin(raw_margin_val, margin_resolver)
                 if legacy_margin_gap and margin_resolver is not None and margin_resolver.name == "mjc":
                     # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
-                    mjc_gap = usd.get_attribute(prim, "mjc:gap")
-                    mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
-                    newton_margin = float(margin_val) - mjc_gap
-                    if newton_margin < 0.0:
+                    if margin_val < 0.0:
                         warnings.warn(
                             f"Prim '{prim.GetPath()}': legacy translation yields "
-                            f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
+                            f"negative margin (mjc_margin={raw_margin_val}, mjc_gap={_get_legacy_mjc_gap()}).",
                             stacklevel=2,
                         )
-                margin_val = _effective_margin(margin_val, margin_resolver)
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
