@@ -1713,7 +1713,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_velocity_limit_unlimited(self):
-        """newton:velocityLimit=inf falls back to the builder default rather than storing inf."""
+        """Preserve the builder default for authored infinite velocity limits."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -1773,15 +1773,17 @@ def Xform "Articulation" (
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
 
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage)
-        model = builder.finalize()
+        for use_applied_schema_fallbacks in (False, True):
+            with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage, use_applied_schema_fallbacks=use_applied_schema_fallbacks)
+                model = builder.finalize()
 
-        d = int(model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint1")])
-        velocity_limit = float(model.joint_velocity_limit.numpy()[d])
+                d = int(model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint1")])
+                velocity_limit = float(model.joint_velocity_limit.numpy()[d])
 
-        self.assertNotEqual(velocity_limit, float("inf"))
-        self.assertAlmostEqual(velocity_limit, builder.default_joint_cfg.velocity_limit, places=5)
+                self.assertNotEqual(velocity_limit, float("inf"))
+                self.assertAlmostEqual(velocity_limit, builder.default_joint_cfg.velocity_limit, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_velocity_fallback_audit_reuses_authored_read(self):

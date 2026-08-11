@@ -463,8 +463,9 @@ class SchemaResolverManager:
             default: Default value if not found
             comparison_key: Convert a raw value and resolver into its
                 consumer-observable form for the compatibility audit.
-            legacy_value_transformer: Convert the value returned by the legacy
-                policy without changing composed-fallback behavior.
+            legacy_value_transformer: Convert values returned by the legacy
+                policy and authored values returned by the composed policy
+                without changing registered schema fallbacks.
 
         Returns:
             Resolved value according to the precedence above.
@@ -530,9 +531,12 @@ class SchemaResolverManager:
 
         if self._uses_composed_fallbacks:
             resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
+            value = resolved.value
+            if resolved.authored and legacy_value_transformer is not None:
+                value = legacy_value_transformer(value, resolved.resolver)
             if resolved.resolver is not None:
                 self._collect_on_first_use(resolved.resolver, prim)
-            return resolved.value, resolved.resolver
+            return value, resolved.resolver
 
         value, resolver = self._get_legacy_value(prim, prim_type, key, default, read_value=read_value)
         if legacy_value_transformer is not None:
