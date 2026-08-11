@@ -14297,6 +14297,11 @@ def Xform "World"
 
         try:
             tm.save(path)
+            with np.load(path) as data:
+                self.assertIn("opacity", data.files)
+                self.assertNotIn("__newton_opacity__", data.files)
+                self.assertNotIn("__opacity__", data.files)
+
             tm2 = newton.TetMesh.create_from_file(path)
 
             assert_np_equal(tm2.vertices, tm.vertices)
@@ -14379,7 +14384,7 @@ def Xform "World"
             "k_lambda",
             "k_damp",
             "density",
-            "__newton_opacity__",
+            "opacity",
             "__custom_names__",
             "__custom_freqs__",
         ):
@@ -14443,22 +14448,6 @@ def Xform "World"
                 tet_indices,
                 custom_attributes={"ambig": np.array([1.0], dtype=np.float32)},
             )
-
-    def test_tetmesh_allows_custom_opacity_attribute(self):
-        """Keep third-party opacity arrays as ordinary custom data."""
-        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
-        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
-        opacity_data = np.array([0.4], dtype=np.float32)
-
-        tm = newton.TetMesh(
-            vertices,
-            tet_indices,
-            opacity=0.75,
-            custom_attributes={"opacity": (opacity_data, newton.Model.AttributeFrequency.ONCE)},
-        )
-
-        self.assertAlmostEqual(tm.opacity, 0.75)
-        assert_np_equal(tm.custom_attributes["opacity"][0], opacity_data)
 
     def test_tetmesh_custom_attributes_empty_by_default(self):
         """Test TetMesh has empty custom_attributes when none are provided."""

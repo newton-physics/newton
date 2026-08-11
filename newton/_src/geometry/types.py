@@ -1663,7 +1663,6 @@ class TetMesh:
             tet_mesh = newton.TetMesh(vertices, tet_indices)
     """
 
-    _OPACITY_IO_KEY = "__newton_opacity__"
     _RESERVED_ATTR_KEYS = frozenset(
         {
             "vertices",
@@ -1672,7 +1671,7 @@ class TetMesh:
             "k_lambda",
             "k_damp",
             "density",
-            _OPACITY_IO_KEY,
+            "opacity",
             "__custom_names__",
             "__custom_freqs__",
         }
@@ -2006,13 +2005,9 @@ class TetMesh:
             for key in ("k_mu", "k_lambda", "k_damp"):
                 if key in data:
                     kwargs[key] = data[key]
-            if "density" in data:
-                kwargs["density"] = float(data["density"])
-            if TetMesh._OPACITY_IO_KEY in data:
-                kwargs["opacity"] = float(data[TetMesh._OPACITY_IO_KEY])
-            elif "__opacity__" in data:
-                # Accept files produced by pre-release opacity builds.
-                kwargs["opacity"] = float(data["__opacity__"])
+            for key in ("density", "opacity"):
+                if key in data:
+                    kwargs[key] = float(data[key])
             known_keys = {
                 "vertices",
                 "tet_indices",
@@ -2020,8 +2015,7 @@ class TetMesh:
                 "k_lambda",
                 "k_damp",
                 "density",
-                TetMesh._OPACITY_IO_KEY,
-                "__opacity__",
+                "opacity",
                 "__custom_names__",
                 "__custom_freqs__",
             }
@@ -2071,18 +2065,18 @@ class TetMesh:
 
         # Read material arrays from cell data
         kwargs: dict = {}
-        material_keys = {"k_mu", "k_lambda", "k_damp", "density", TetMesh._OPACITY_IO_KEY}
+        material_keys = {"k_mu", "k_lambda", "k_damp", "density", "opacity"}
         if m.cell_data and tet_cell_idx is not None:
             for key in material_keys:
                 if key in m.cell_data:
                     arr = np.asarray(m.cell_data[key][tet_cell_idx], dtype=np.float32)
-                    if key in ("density", TetMesh._OPACITY_IO_KEY):
+                    if key in ("density", "opacity"):
                         if arr.size > 1 and not np.allclose(arr, arr[0]):
                             raise ValueError(
                                 f"Non-uniform per-element {key} found in '{filename}'. "
                                 f"TetMesh only supports a single uniform {key} value."
                             )
-                        kwargs["opacity" if key == TetMesh._OPACITY_IO_KEY else "density"] = float(arr[0])
+                        kwargs[key] = float(arr[0])
                     else:
                         kwargs[key] = arr
 
@@ -2128,7 +2122,7 @@ class TetMesh:
             if self._density is not None:
                 save_dict["density"] = np.array(self._density)
             if self._opacity is not None:
-                save_dict[self._OPACITY_IO_KEY] = np.array(self._opacity)
+                save_dict["opacity"] = np.array(self._opacity)
             custom_names = []
             custom_freqs = []
             for k, (arr, freq) in self.custom_attributes.items():
@@ -2154,7 +2148,7 @@ class TetMesh:
         if self._density is not None:
             cell_data["density"] = [np.full(self.tet_count, self._density, dtype=np.float32)]
         if self._opacity is not None:
-            cell_data[self._OPACITY_IO_KEY] = [np.full(self.tet_count, self._opacity, dtype=np.float32)]
+            cell_data["opacity"] = [np.full(self.tet_count, self._opacity, dtype=np.float32)]
 
         # Save custom attributes as point or cell data based on frequency
         from ..sim.model import Model as _Model  # noqa: PLC0415
