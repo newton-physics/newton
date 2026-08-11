@@ -190,7 +190,7 @@ class SchemaResolver:
         if spec._reader_value_getter is not None:
             authored = all(authored for authored, _ in states.values())
         else:
-            authored = states[spec.name][0]
+            authored = states.get(spec.name, (False, False))[0]
         return _ResolverValue(None, authored)
 
     def _schema_name(self, prim_type: PrimType, key: str) -> str | None:

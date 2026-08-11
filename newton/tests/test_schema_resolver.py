@@ -240,6 +240,31 @@ class TestSchemaResolver(unittest.TestCase):
             {"NewtonJointAPI (newton:armature)": {"/joint"}},
         )
 
+    def test_custom_getter_may_omit_primary_attribute_name(self):
+        """Treat an omitted primary getter attribute as unauthored."""
+
+        def read_alternate(prim):
+            return prim.GetAttribute("custom:alternate").Get()
+
+        class AlternateResolver(SchemaResolver):
+            name = "alternate"
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute(
+                        "custom:primary",
+                        0.25,
+                        usd_value_getter=read_alternate,
+                        attribute_names=("custom:alternate",),
+                    )
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        resolver = SchemaResolverManager([AlternateResolver()])
+
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=1.0), 1.0)
+
     def test_unexpected_fallback_getter_error_is_not_suppressed(self):
         """Propagate unexpected errors from fallback getters."""
 
