@@ -1783,6 +1783,47 @@ def Xform "Articulation" (
         self.assertAlmostEqual(velocity_limit, builder.default_joint_cfg.velocity_limit, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_velocity_fallback_audit_reuses_authored_read(self):
+        """Reuse the velocity-limit authored read during fallback auditing."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        class CountingResolver(usd.SchemaResolver):
+            name = "counting"
+            _schema_names = {usd.PrimType.JOINT: "NewtonJointAPI"}
+            mapping = {
+                usd.PrimType.JOINT: {
+                    "velocity_limit": usd.SchemaResolver.SchemaAttribute("newton:velocityLimit", float("inf"))
+                }
+            }
+
+            def __init__(self):
+                super().__init__()
+                self.velocity_read_count = 0
+
+            def get_value(self, prim, prim_type, key):
+                if prim_type == usd.PrimType.JOINT and key == "velocity_limit":
+                    self.velocity_read_count += 1
+                return super().get_value(prim, prim_type, key)
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.GetPrim().AddAppliedSchema("NewtonJointAPI")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+        joint.CreateAxisAttr().Set("Z")
+
+        resolver = CountingResolver()
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.velocity_limit = 123.0
+        with self.assertWarns(DeprecationWarning):
+            builder.add_usd(stage, schema_resolvers=[resolver])
+
+        self.assertEqual(resolver.velocity_read_count, 1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_applied_newton_joint_api_warns_before_fallback_change(self):
         from pxr import Usd, UsdGeom, UsdPhysics
 

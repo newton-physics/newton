@@ -895,25 +895,15 @@ def parse_usd(
         return finish(builder_default, "force")
 
     def _resolve_joint_velocity_limit(prim: Usd.Prim) -> float | None:
-        value = R.get_value(
+        return R.get_value(
             prim,
             prim_type=PrimType.JOINT,
             key="velocity_limit",
             default=None,
             verbose=verbose,
+            legacy_value_transformer=lambda value, _resolver: None if value == float("inf") else value,
+            comparison_key=lambda value, _resolver: default_joint_velocity_limit if value is None else value,
         )
-        if value != float("inf") or R._uses_composed_fallbacks:
-            return value
-        R._record_legacy_fallback(
-            prim,
-            PrimType.JOINT,
-            "velocity_limit",
-            None,
-            default_joint_velocity_limit,
-            None,
-            compare_resolver=False,
-        )
-        return None
 
     def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
         """Choose MuJoCo limit-solref semantics from the resolved gain sources."""

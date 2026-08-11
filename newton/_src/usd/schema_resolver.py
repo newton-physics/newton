@@ -446,6 +446,7 @@ class SchemaResolverManager:
         verbose: bool = False,
         *,
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
+        legacy_value_transformer: Callable[[Any, SchemaResolver | None], Any] | None = None,
     ) -> Any:
         """
         Resolve a value using the configured resolver policy.
@@ -457,6 +458,8 @@ class SchemaResolverManager:
             default: Default value if not found
             comparison_key: Convert a raw value and resolver into its
                 consumer-observable form for the compatibility audit.
+            legacy_value_transformer: Convert the value returned by the legacy
+                policy without changing composed-fallback behavior.
 
         Returns:
             Resolved value according to the precedence above.
@@ -468,6 +471,7 @@ class SchemaResolverManager:
             default,
             compare_resolver=False,
             comparison_key=comparison_key,
+            legacy_value_transformer=legacy_value_transformer,
         )
         self._report_missing(prim, prim_type, key, value, verbose)
         return value
@@ -481,6 +485,7 @@ class SchemaResolverManager:
         verbose: bool = False,
         *,
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
+        legacy_value_transformer: Callable[[Any, SchemaResolver | None], Any] | None = None,
     ) -> tuple[Any, SchemaResolver | None]:
         """Resolve a value and return the resolver that supplied it."""
         value, resolver = self._get_value_with_policy(
@@ -490,6 +495,7 @@ class SchemaResolverManager:
             default,
             compare_resolver=True,
             comparison_key=comparison_key,
+            legacy_value_transformer=legacy_value_transformer,
         )
         self._report_missing(prim, prim_type, key, value, verbose)
         return value, resolver
@@ -507,6 +513,7 @@ class SchemaResolverManager:
         *,
         compare_resolver: bool,
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None,
+        legacy_value_transformer: Callable[[Any, SchemaResolver | None], Any] | None,
     ) -> tuple[Any, SchemaResolver | None]:
         value_cache: dict[tuple[int, str], _ResolverValue] = {}
 
@@ -523,6 +530,8 @@ class SchemaResolverManager:
             return resolved.value, resolved.resolver
 
         value, resolver = self._get_legacy_value(prim, prim_type, key, default, read_value=read_value)
+        if legacy_value_transformer is not None:
+            value = legacy_value_transformer(value, resolver)
         self._record_legacy_fallback(
             prim,
             prim_type,
