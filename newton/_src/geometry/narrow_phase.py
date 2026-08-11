@@ -236,6 +236,10 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
         shape_types: wp.array[int],
         shape_data: wp.array[wp.vec4],
         shape_transform: wp.array[wp.transform],
+        shape_linear_velocity: wp.array[wp.vec3],
+        shape_angular_velocity: wp.array[wp.vec3],
+        collision_update_dt: float,
+        max_speculative_extension: float,
         shape_source: wp.array[wp.uint64],
         shape_gap: wp.array[float],
         shape_flags: wp.array[wp.int32],
@@ -631,11 +635,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                         contact_data,
                         contact_pos_0,
                         contact_dist_0,
-                        writer_data.shape_transform,
-                        writer_data.shape_linear_velocity,
-                        writer_data.shape_angular_velocity,
-                        writer_data.collision_update_dt,
-                        writer_data.max_speculative_extension,
+                        shape_transform,
+                        shape_linear_velocity,
+                        shape_angular_velocity,
+                        collision_update_dt,
+                        max_speculative_extension,
                     )
 
                 contact_1_valid = False
@@ -644,11 +648,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                         contact_data,
                         contact_pos_1,
                         contact_dist_1,
-                        writer_data.shape_transform,
-                        writer_data.shape_linear_velocity,
-                        writer_data.shape_angular_velocity,
-                        writer_data.collision_update_dt,
-                        writer_data.max_speculative_extension,
+                        shape_transform,
+                        shape_linear_velocity,
+                        shape_angular_velocity,
+                        collision_update_dt,
+                        max_speculative_extension,
                     )
 
                 contact_2_valid = False
@@ -657,11 +661,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                         contact_data,
                         contact_pos_2,
                         contact_dist_2,
-                        writer_data.shape_transform,
-                        writer_data.shape_linear_velocity,
-                        writer_data.shape_angular_velocity,
-                        writer_data.collision_update_dt,
-                        writer_data.max_speculative_extension,
+                        shape_transform,
+                        shape_linear_velocity,
+                        shape_angular_velocity,
+                        collision_update_dt,
+                        max_speculative_extension,
                     )
 
                 contact_3_valid = False
@@ -670,11 +674,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
                         contact_data,
                         contact_pos_3,
                         contact_dist_3,
-                        writer_data.shape_transform,
-                        writer_data.shape_linear_velocity,
-                        writer_data.shape_angular_velocity,
-                        writer_data.collision_update_dt,
-                        writer_data.max_speculative_extension,
+                        shape_transform,
+                        shape_linear_velocity,
+                        shape_angular_velocity,
+                        collision_update_dt,
+                        max_speculative_extension,
                     )
 
                 # Count valid contacts and allocate consecutive indices
@@ -2036,6 +2040,10 @@ class NarrowPhase:
                 shape_types,
                 shape_data,
                 shape_transform,
+                shape_linear_velocity,
+                shape_angular_velocity,
+                collision_update_dt,
+                max_speculative_extension,
                 shape_source,
                 shape_gap,
                 shape_flags,

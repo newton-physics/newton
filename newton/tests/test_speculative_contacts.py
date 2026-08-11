@@ -16,7 +16,10 @@ from newton._src.geometry.contact_reduction_global import (
     export_and_reduce_contact_centered_two_spatial_depths,
     export_and_reduce_predictive_contact,
     export_contact_to_buffer,
+    make_contact_value,
+    reclaim_contact_id,
     reduce_buffered_contacts_speculative_kernel,
+    reduction_finalize_slot,
 )
 from newton._src.geometry.narrow_phase import ContactWriterData, NarrowPhase, write_contact_simple
 from newton._src.geometry.types import GeoType
@@ -259,6 +262,69 @@ def _buffer_one_contact(reducer_data: GlobalContactReducerData):
         7,
         reducer_data,
     )
+
+
+@wp.kernel
+def _replace_validated_predictive_claims(
+    reducer_data: GlobalContactReducerData,
+    allocated_ids: wp.array[wp.int32],
+):
+    entry_idx = int(0)
+    clearance_slot = int(0)
+    impact_slot = int(6)
+    fingerprint = int(7)
+    provisional_clearance = make_contact_value(-0.1, fingerprint, 0, reducer_data.deterministic)
+    provisional_impact = make_contact_value(0.1, fingerprint, 0, reducer_data.deterministic)
+    clearance_idx = clearance_slot * reducer_data.ht_capacity + entry_idx
+    impact_idx = impact_slot * reducer_data.ht_capacity + entry_idx
+    reducer_data.ht_values[clearance_idx] = provisional_clearance
+    reducer_data.ht_values[impact_idx] = provisional_impact
+
+    contact_id = export_contact_to_buffer(
+        0,
+        1,
+        wp.vec3(0.0),
+        wp.vec3(1.0, 0.0, 0.0),
+        0.1,
+        fingerprint,
+        reducer_data,
+    )
+
+    # Reproduce two stronger contenders replacing both claims after validation.
+    reducer_data.ht_values[clearance_idx] = make_contact_value(0.0, fingerprint + 1, 0, reducer_data.deterministic)
+    reducer_data.ht_values[impact_idx] = make_contact_value(0.2, fingerprint + 1, 0, reducer_data.deterministic)
+    clearance_final = make_contact_value(-0.1, fingerprint, contact_id, reducer_data.deterministic)
+    impact_final = make_contact_value(0.1, fingerprint, contact_id, reducer_data.deterministic)
+    retained = reduction_finalize_slot(
+        entry_idx,
+        clearance_slot,
+        provisional_clearance,
+        clearance_final,
+        reducer_data.ht_values,
+        reducer_data.ht_capacity,
+    )
+    if reduction_finalize_slot(
+        entry_idx,
+        impact_slot,
+        provisional_impact,
+        impact_final,
+        reducer_data.ht_values,
+        reducer_data.ht_capacity,
+    ):
+        retained = True
+    if not retained:
+        reclaim_contact_id(contact_id, reducer_data)
+
+    for i in range(reducer_data.capacity):
+        allocated_ids[i] = export_contact_to_buffer(
+            0,
+            1,
+            wp.vec3(float(i), 0.0, 0.0),
+            wp.vec3(1.0, 0.0, 0.0),
+            0.0,
+            i,
+            reducer_data,
+        )
 
 
 @wp.kernel
@@ -629,6 +695,43 @@ def test_speculative_mesh_sdf_candidates(test, device):
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def test_speculative_mesh_sdf_manifold_is_bounded(test, device):
+    """Limit a separated mesh-SDF shape pair to seven predictive contacts."""
+    projectile = newton.Mesh.create_sphere(
+        0.2,
+        num_latitudes=32,
+        num_longitudes=32,
+        compute_normals=False,
+        compute_uvs=False,
+    )
+    projectile.build_sdf(device=device, max_resolution=64)
+    wall = newton.Mesh.create_box(0.02, 0.5, 0.5, compute_normals=False, compute_uvs=False)
+    wall.build_sdf(device=device, max_resolution=64)
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.rigid_gap = 0.0
+    body = builder.add_body(xform=wp.transform(wp.vec3(-0.35, 0.0, 0.0)))
+    builder.add_shape_mesh(body, mesh=projectile)
+    builder.body_qd[body] = (10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    builder.add_shape_mesh(-1, mesh=wall)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
+            collision_update_dt=0.03,
+            max_speculative_extension=0.25,
+        ),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    test.assertLessEqual(count, 7)
+
+
 def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device):
     """Verify an inner SDF contact cannot hide the rod end rotating toward the board."""
     rod = newton.Mesh.create_box(0.5, 0.04, 0.04, compute_normals=False, compute_uvs=False)
@@ -728,6 +831,22 @@ def test_speculative_buffered_reducer_uses_one_based_ids(test, device, determini
     test.assertEqual(exported_count, 1)
     for actual, expected in zip(positions[0], (0.25, -0.5, 0.75), strict=True):
         test.assertAlmostEqual(float(actual), expected, places=6)
+
+
+def test_predictive_reducer_reclaims_replaced_reservation(test, device, deterministic):
+    """Reclaim capacity when both validated predictive claims are replaced."""
+    capacity = 8
+    reducer = GlobalContactReducer(capacity=capacity, device=device, deterministic=deterministic)
+    allocated_ids = wp.full(capacity, -1, dtype=wp.int32, device=device)
+    wp.launch(
+        _replace_validated_predictive_claims,
+        dim=1,
+        inputs=[reducer.get_data_struct(), allocated_ids],
+        device=device,
+    )
+
+    test.assertEqual(sorted(int(contact_id) for contact_id in allocated_ids.numpy()), list(range(1, capacity + 1)))
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), capacity)
 
 
 def test_predictive_reducer_retains_rotating_leading_contact(test, device, deterministic):
@@ -892,6 +1011,13 @@ for _deterministic in (False, True):
     )
     add_function_test(
         TestSpeculativeContacts,
+        f"test_predictive_reducer_reclaims_replaced_reservation_{_suffix}",
+        test_predictive_reducer_reclaims_replaced_reservation,
+        devices=get_test_devices(),
+        deterministic=_deterministic,
+    )
+    add_function_test(
+        TestSpeculativeContacts,
         f"test_predictive_reducer_retains_rotating_leading_contact_{_suffix}",
         test_predictive_reducer_retains_rotating_leading_contact,
         devices=get_test_devices(),
@@ -923,6 +1049,12 @@ add_function_test(
     TestSpeculativeMeshContacts,
     "test_speculative_mesh_sdf_candidates",
     test_speculative_mesh_sdf_candidates,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSpeculativeMeshContacts,
+    "test_speculative_mesh_sdf_manifold_is_bounded",
+    test_speculative_mesh_sdf_manifold_is_bounded,
     devices=get_cuda_test_devices(),
 )
 add_function_test(

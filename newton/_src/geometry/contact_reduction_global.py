@@ -260,6 +260,20 @@ def reduction_rollback_slot(
 
 
 @wp.func
+def reduction_finalize_slot(
+    entry_idx: int,
+    slot_id: int,
+    provisional_value: wp.uint64,
+    final_value: wp.uint64,
+    values: wp.array[wp.uint64],
+    capacity: int,
+) -> bool:
+    """Atomically transfer a provisional slot claim to its materialized contact."""
+    value_idx = slot_id * capacity + entry_idx
+    return wp.atomic_cas(values, value_idx, provisional_value, final_value) == provisional_value
+
+
+@wp.func
 def reduction_insert_slot(
     key: wp.uint64,
     slot_id: int,
@@ -683,6 +697,8 @@ class GlobalContactReducerData:
     normal: wp.array[wp.vec2]  # Octahedral-encoded unit normal (see encode_oct/decode_oct)
     shape_pairs: wp.array[wp.vec2i]
     contact_count: wp.array[wp.int32]
+    reclaimed_contact_head: wp.array[wp.uint64]
+    reclaimed_contact_next: wp.array[wp.int32]
     capacity: int
 
     # Deterministic fingerprint per contact (triangle/edge/vertex index).
@@ -761,6 +777,7 @@ def _clear_active_kernel(
     agg_moment2_reduced: wp.array[wp.float32],
     # Counter arrays to zero (merged from _zero_count_and_contacts_kernel)
     contact_count: wp.array[wp.int32],
+    reclaimed_contact_head: wp.array[wp.uint64],
     ht_insert_failures: wp.array[wp.int32],
     ht_capacity: int,
     values_per_key: int,
@@ -783,6 +800,7 @@ def _clear_active_kernel(
 
     if tid == 0:
         contact_count[0] = 0
+        reclaimed_contact_head[0] = wp.uint64(0)
         ht_insert_failures[0] = 0
 
     # Read count from GPU - stored at active_slots[capacity].
@@ -953,6 +971,9 @@ class GlobalContactReducer:
 
         # Atomic counter for contact allocation
         self.contact_count = wp.zeros(1, dtype=wp.int32, device=device)
+        # ABA-tagged Treiber stack for reservations superseded before finalization.
+        self.reclaimed_contact_head = wp.zeros(1, dtype=wp.uint64, device=device)
+        self.reclaimed_contact_next = wp.zeros(buffer_size, dtype=wp.int32, device=device)
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
 
@@ -1003,6 +1024,7 @@ class GlobalContactReducer:
     def clear(self):
         """Clear all contacts and reset the reducer (full clear)."""
         self.contact_count.zero_()
+        self.reclaimed_contact_head.zero_()
         self.ht_insert_failures.zero_()
         self.hashtable.clear()
         self.ht_values.zero_()
@@ -1045,6 +1067,7 @@ class GlobalContactReducer:
                 self.agg_moment_reduced,
                 self.agg_moment2_reduced,
                 self.contact_count,
+                self.reclaimed_contact_head,
                 self.ht_insert_failures,
                 self.hashtable.capacity,
                 self.values_per_key,
@@ -1073,6 +1096,8 @@ class GlobalContactReducer:
         data.normal = self.normal
         data.shape_pairs = self.shape_pairs
         data.contact_count = self.contact_count
+        data.reclaimed_contact_head = self.reclaimed_contact_head
+        data.reclaimed_contact_next = self.reclaimed_contact_next
         data.capacity = self.capacity
         data.contact_fingerprints = self.contact_fingerprints
         data.contact_area = self.contact_area
@@ -1092,6 +1117,48 @@ class GlobalContactReducer:
         data.ht_values_per_key = self.values_per_key
         data.deterministic = 1 if self.deterministic else 0
         return data
+
+
+@wp.func
+def reclaim_contact_id(contact_id: int, reducer_data: GlobalContactReducerData):
+    """Return an unreferenced materialized contact ID to the reservation stack."""
+    head_value = reducer_data.reclaimed_contact_head[0]
+    while True:
+        head_id = int(head_value & wp.uint64(0xFFFFFFFF))
+        reducer_data.reclaimed_contact_next[contact_id] = head_id
+        version = (head_value >> wp.uint64(32)) + wp.uint64(1)
+        new_head_value = (version << wp.uint64(32)) | wp.uint64(contact_id)
+        old_head_value = wp.atomic_cas(
+            reducer_data.reclaimed_contact_head,
+            0,
+            head_value,
+            new_head_value,
+        )
+        if old_head_value == head_value:
+            return
+        head_value = old_head_value
+
+
+@wp.func
+def _pop_reclaimed_contact_id(reducer_data: GlobalContactReducerData) -> int:
+    """Pop a reclaimed contact ID, returning zero when the stack is empty."""
+    head_value = reducer_data.reclaimed_contact_head[0]
+    while True:
+        contact_id = int(head_value & wp.uint64(0xFFFFFFFF))
+        if contact_id == 0:
+            return 0
+        next_id = reducer_data.reclaimed_contact_next[contact_id]
+        version = (head_value >> wp.uint64(32)) + wp.uint64(1)
+        new_head_value = (version << wp.uint64(32)) | wp.uint64(next_id)
+        old_head_value = wp.atomic_cas(
+            reducer_data.reclaimed_contact_head,
+            0,
+            head_value,
+            new_head_value,
+        )
+        if old_head_value == head_value:
+            return contact_id
+        head_value = old_head_value
 
 
 @wp.func
@@ -1118,12 +1185,14 @@ def export_contact_to_buffer(
     Returns:
         Contact ID if successfully stored, -1 if buffer full
     """
-    # Allocate contact slot.  On overflow, contact_count keeps incrementing
-    # past capacity so (contact_count - capacity) gives the drop count.
-    buffer_idx = wp.atomic_add(reducer_data.contact_count, 0, 1)
-    if buffer_idx >= reducer_data.capacity:
-        return -1
-    contact_id = buffer_idx + 1  # ID zero is reserved for provisional winners.
+    contact_id = _pop_reclaimed_contact_id(reducer_data)
+    if contact_id == 0:
+        # On overflow, contact_count keeps incrementing past capacity so
+        # (contact_count - capacity) gives the drop count.
+        buffer_idx = wp.atomic_add(reducer_data.contact_count, 0, 1)
+        if buffer_idx >= reducer_data.capacity:
+            return -1
+        contact_id = buffer_idx + 1  # ID zero is reserved for provisional winners.
 
     # Store contact data (packed into vec4, normal octahedral-encoded into vec2)
     reducer_data.position_depth[contact_id] = wp.vec4(position[0], position[1], position[2], depth)
@@ -1759,22 +1828,29 @@ def export_and_reduce_predictive_contact(
     retained = bool(False)
     if clearance_won:
         clearance_value = make_contact_value(clearance_score, fingerprint, contact_id, reducer_data.deterministic)
-        reduction_update_slot(entry_idx, clearance_slot, clearance_value, reducer_data.ht_values, ht_capacity)
-        if reducer_data.ht_values[clearance_idx] == clearance_value:
+        if reduction_finalize_slot(
+            entry_idx,
+            clearance_slot,
+            provisional_clearance_value,
+            clearance_value,
+            reducer_data.ht_values,
+            ht_capacity,
+        ):
             retained = True
     if impact_time_won:
         impact_time_value = make_contact_value(impact_time_score, fingerprint, contact_id, reducer_data.deterministic)
-        reduction_update_slot(
+        if reduction_finalize_slot(
             entry_idx,
             wp.static(NUM_SPATIAL_DIRECTIONS),
+            provisional_impact_time_value,
             impact_time_value,
             reducer_data.ht_values,
             ht_capacity,
-        )
-        if reducer_data.ht_values[impact_time_idx] == impact_time_value:
+        ):
             retained = True
     if retained:
         return contact_id
+    reclaim_contact_id(contact_id, reducer_data)
     return -1
 
 
