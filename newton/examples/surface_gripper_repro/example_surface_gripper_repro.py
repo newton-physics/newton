@@ -41,6 +41,7 @@ from newton.selection import ArticulationView
 from newton.examples.surface_gripper_repro.surface_gripper import (
     SurfaceGripper,
     SurfaceGripperBuilder,
+    SurfaceGripperStateOutput,
     attach_seal,
     attach_seal_seated,
     evaluate_gripper_force,
@@ -100,7 +101,9 @@ CRATE_GRIP_POSES = (
     wp.transform(wp.vec3(-1.538907527923584, -1.33991277217865, 0.7989855408668518), wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
 )
 
-# Each pad is represented with a thin cylinder in ROBOT_USD
+# Each pad is represented with a thin cylinder in ROBOT_USD.
+# The paths to the pads are used to extract the geometry of 
+# each pad from USD.
 PAD_PRIMS = (
     "/Robot/J6_link/GripperPads/pad_0",
     "/Robot/J6_link/GripperPads/pad_1",
@@ -134,12 +137,11 @@ TWIST_MODE = (2.79962, 0.0)
 # graph-captures and runs on CPU and graphed CUDA alike.
 SEAL_SEAT_ON_ENGAGE = True
 
-# Seal fractures (releases) once its brittle break metric exceeds this. 1.0 = nominal capacity; a
-# value > 1 is a capacity safety factor (the seal tolerates sqrt(threshold)x the nominal elastic peel
-# before breaking). Set to 5 (~2.2x): the wide panel (box 1) overhangs the pads, so the arm's
-# reorientations spike its peel to ~2x nominal -- the holding force still carries it, so a strict 1.0
-# would drop it ~60 frames before the recorded release. The crate (box 0) stays far below either way.
-BREAK_THRESHOLD = 5.0
+# Seal fractures (releases) once its break metric exceeds this. The metric is the largest ratio of
+# demanded (unclamped) to supplied (clamped) load across the four DOF groups, so 1.0 means no group
+# hit its cap and > 1 means a group is being driven that many times past its limit. A value > 1 is a
+# tolerance: the seal survives being over-driven by up to this factor before it lets go.
+BREAK_THRESHOLD = 2.0
 
 # The break metric must stay over BREAK_THRESHOLD for at least this long before the seal fractures.
 # Debounces lone transient spikes (a genuine overload is sustained), so a held box is not dropped by a
@@ -150,9 +152,10 @@ BREAK_HOLD_TIME = 0.033  # [s]
 
 @wp.kernel
 def update_seal_break_kernel(
-    pad_break_metric: wp.array[float],  # [pads] brittle break envelope from the previous force eval
+    pad_seal_load: wp.array[wp.vec4],            # [pads] (normal, shear, peel, torsion) after the caps
+    pad_seal_load_unclamped: wp.array[wp.vec4],  # [pads] the same four groups before the caps
     pad_engaged_bs_prev: wp.array[wp.vec2i],  # [pads] gripped body/shape last sub-step (``[0] < 0`` = was released)
-    break_threshold: float,  # break metric above this counts as over-capacity (1.0 = nominal capacity)
+    break_threshold: float,  # demanded/supplied ratio above this counts as over-capacity (1.0 = at the cap)
     break_hold_steps: int,  # sub-steps a pad must stay over threshold before the gripper fractures
     pad_offsets: wp.array[int],  # [grippers+1] start indices: gripper g owns pads [pad_offsets[g] : pad_offsets[g+1]]
     pad_seal_break_count_prev: wp.array[int],  # [pads] consecutive over-threshold sub-steps from the previous sub-step (read)
@@ -160,26 +163,44 @@ def update_seal_break_kernel(
     # in/out: initialised by update_engagement_signals_kernel; overwritten with the break-logic result
     pad_engaged_bs_curr: wp.array[wp.vec2i],  # [pads] gripper_state_input_curr.pad_engaged_bs
 ):
-    """One thread per gripper. Reads the engagement state from pad_engaged_bs_curr (set by
-    update_engagement_signals_kernel), checks whether any pad's break metric has been over threshold for
-    break_hold_steps consecutive sub-steps, and clears pad_engaged_bs_curr to (-1, -1) for the whole
-    gripper if any pad sustained an overload.
+    """One thread per gripper. For each of its pads, forms the break metric as the largest ratio of
+    demanded (unclamped) to supplied (clamped) load across the four DOF groups, and counts how many
+    consecutive sub-steps that ratio has exceeded break_threshold. If any pad stays over for
+    break_hold_steps, the whole gripper releases: pad_engaged_bs_curr is cleared to (-1, -1).
+
+    Comparing the two loads needs no capacity parameters: a group whose cap was not reached has
+    demanded == supplied (ratio 1), while a group driven past its cap has demanded > supplied. The
+    ratio therefore measures directly how far past its limit the seal is being pushed.
     """
     g = wp.tid()
     lo = pad_offsets[g]  # this gripper's pads are [lo, hi)
     hi = pad_offsets[g + 1]
-    cmd = pad_engaged_bs_curr[lo][0] >= 0
+    engaged = pad_engaged_bs_curr[lo][0] >= 0  # this gripper's engagement state entering the break check
     any_broken = wp.bool(False)
     for p in range(lo, hi):
-        if not cmd:
+        if not engaged:
             pad_seal_break_count_curr[p] = 0
-        elif pad_engaged_bs_prev[p][0] >= 0 and pad_break_metric[p] > break_threshold:
-            pad_seal_break_count_curr[p] = pad_seal_break_count_prev[p] + 1
-            if pad_seal_break_count_curr[p] >= break_hold_steps:
-                any_broken = True
+        elif pad_engaged_bs_prev[p][0] >= 0:
+            supplied = pad_seal_load[p]  # (normal, shear, peel, torsion)
+            demanded = pad_seal_load_unclamped[p]
+            metric = float(1.0)  # 1 = nothing was clamped; > 1 = a group was driven past its cap
+            for i in range(SurfaceGripperStateOutput.SEAL_LOAD_COUNT):  # normal, shear, peel, torsion
+                s = wp.abs(supplied[i])
+                d = wp.abs(demanded[i])
+                if s > 0.0:
+                    ratio = d / s
+                    if ratio > metric:
+                        metric = ratio
+
+            if metric > break_threshold:
+                pad_seal_break_count_curr[p] = pad_seal_break_count_prev[p] + 1
+                if pad_seal_break_count_curr[p] >= break_hold_steps:
+                    any_broken = True
+            else:
+                pad_seal_break_count_curr[p] = 0
         else:
             pad_seal_break_count_curr[p] = 0
-    hold = cmd and not any_broken
+    hold = engaged and not any_broken
     for p in range(lo, hi):
         if not hold:
             pad_engaged_bs_curr[p] = wp.vec2i(-1, -1)
@@ -823,13 +844,13 @@ class Example:
             )
             self.state_0.clear_forces()  # zero body_f each sub-step (the surface gripper accumulates into it)
 
-            # Break the gripper (and per pad) seal based on pad_break_metric and a threshold time for
-            # pad_break_metric being continuously True.
+            # Release the gripper when any pad's unclamped load stays over capacity for long enough.
             wp.launch(
                 update_seal_break_kernel,
                 dim=self.example_state_curr.gripper_command_engaged_wp.shape[0],  # one thread per gripper
                 inputs=[
-                    self.gripper_state_output.pad_break_metric,
+                    self.gripper_state_output.pad_seal_load,
+                    self.gripper_state_output.pad_seal_load_unclamped,
                     self.gripper_state_input_prev.pad_engaged_bs,
                     float(BREAK_THRESHOLD),
                     int(self.break_hold_steps),

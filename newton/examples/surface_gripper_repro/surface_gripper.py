@@ -59,6 +59,11 @@ import newton
 from newton.geometry import sdf_mesh
 
 
+# 6-vector / 6x6 matrix types: seal DOF wrenches (fx, fy, fz, mx, my, mz) and the Gauss-Newton normal equations.
+_mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
+_vec6 = wp.types.vector(length=6, dtype=wp.float32)
+
+
 # --------------- internal helpers and kernels ---------------
 
 
@@ -283,21 +288,6 @@ def _eval_effective_damping(
     return d_trans_eff[2], d_trans_eff[0], d_trans_eff[1], d_rot_eff[0], d_rot_eff[1], d_rot_eff[2]
 
 
-# --------------------------------------------------------------------------------------------------
-# Simple linear seal model (SurfaceGripper)
-#
-# Every DOF is an independent linear spring-damper, F = k*delta + d*deltadot, with the normal DOF
-# adding a controllable preload F += control * f_grip_max. Each axis has its own stiffness and damping.
-# Four caps limit the result: normal to +/-f_normal_max, the two shear components together to
-# f_shear_max (combined magnitude), the two peel moments together to f_peel_max, and the twist to
-# +/-f_torsion_max (0 => uncapped). Stiffness/damping are set directly (no shape/geometry factors,
-# friction cones or stick-slip). Damping uses an implicit (backward-Euler) rescale
-# (:func:`_effective_damping`). The brittle break metric is not evaluated (left at 0, so the seal never
-# fractures) -- to add later. Mirrors the Builder -> Model -> State/Control layout; the state/control are
-# the shared :class:`SurfaceGripperStateInput` / :class:`SurfaceGripperStateOutput` / :class:`SurfaceGripperControl`,
-# so the engagement helper (:func:`attach_seal`) works unchanged.
-# --------------------------------------------------------------------------------------------------
-
 
 @wp.func
 def _clamp_symmetric(f: float, f_max: float) -> float:
@@ -346,10 +336,9 @@ def _attach_seal_kernel(
 def _eval_pad_force_linear_kernel(
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
-    gripper_f_grip_max: wp.array[float],
     gripper_k_normal: wp.array[float],
     gripper_d_normal: wp.array[float],
-    gripper_f_normal_max: wp.array[float],
+    gripper_f_grip_max: wp.array[float],
     gripper_k_shear_x: wp.array[float],
     gripper_d_shear_x: wp.array[float],
     gripper_k_shear_y: wp.array[float],
@@ -375,8 +364,8 @@ def _eval_pad_force_linear_kernel(
     body_inertia: wp.array[wp.mat33],
     dt: float,
     # outputs (mutated in place)
-    pad_break_metric: wp.array[float],
-    pad_dof_force: wp.array[wp.vec4],
+    pad_seal_load: wp.array[wp.vec4],            # out: (normal, shear, peel, torsion) after the caps
+    pad_seal_load_unclamped: wp.array[wp.vec4],  # out: same four groups before the caps
     body_f: wp.array[wp.spatial_vector],
 ):
     """Per-pad linear spring-damper seal wrench with fixed magnitude caps (see the section header).
@@ -432,25 +421,26 @@ def _eval_pad_force_linear_kernel(
     # pull-off limit (pull harder than the vacuum and the pad lets go). Compression (push) is left
     # uncapped (contact-like). Damping is applied on top of the cap.
     f_vac = pad_grip_control[pad] * gripper_f_grip_max[gripper_id]
-    fz_elastic = gripper_k_normal[gripper_id] * pz
+    fz_elastic_raw = gripper_k_normal[gripper_id] * pz
+    fz_elastic = fz_elastic_raw
     if fz_elastic > f_vac:
         fz_elastic = f_vac
     fz = fz_elastic + d_normal_eff * vz
+    fz_unclamped = fz_elastic_raw + d_normal_eff * vz
 
     # shear (x, y): spring-damper per axis, combined magnitude capped at f_shear_max
-    fx = gripper_k_shear_x[gripper_id] * px + d_shear_x_eff * vx
-    fy = gripper_k_shear_y[gripper_id] * py + d_shear_y_eff * vy
-    fx, fy = _clamp_magnitude_2d(fx, fy, gripper_f_shear_max[gripper_id])
+    fx_raw = gripper_k_shear_x[gripper_id] * px + d_shear_x_eff * vx
+    fy_raw = gripper_k_shear_y[gripper_id] * py + d_shear_y_eff * vy
+    fx, fy = _clamp_magnitude_2d(fx_raw, fy_raw, gripper_f_shear_max[gripper_id])
 
     # peel (about x, y): spring-damper per axis, combined magnitude capped at f_peel_max
-    m_peel_x = gripper_k_peel_x[gripper_id] * theta_x + d_peel_x_eff * omega_x
-    m_peel_y = gripper_k_peel_y[gripper_id] * theta_y + d_peel_y_eff * omega_y
-    m_peel_x, m_peel_y = _clamp_magnitude_2d(m_peel_x, m_peel_y, gripper_f_peel_max[gripper_id])
+    m_peel_x_raw = gripper_k_peel_x[gripper_id] * theta_x + d_peel_x_eff * omega_x
+    m_peel_y_raw = gripper_k_peel_y[gripper_id] * theta_y + d_peel_y_eff * omega_y
+    m_peel_x, m_peel_y = _clamp_magnitude_2d(m_peel_x_raw, m_peel_y_raw, gripper_f_peel_max[gripper_id])
 
     # twist (about z): linear spring-damper, clamped to +/-f_torsion_max
-    m_twist = _clamp_symmetric(
-        gripper_k_torsion[gripper_id] * theta_z + d_torsion_eff * omega_z, gripper_f_torsion_max[gripper_id]
-    )
+    m_twist_raw = gripper_k_torsion[gripper_id] * theta_z + d_torsion_eff * omega_z
+    m_twist = _clamp_symmetric(m_twist_raw, gripper_f_torsion_max[gripper_id])
 
     # assemble the seal-frame wrench, rotate to world, and accumulate equal-and-opposite on A and B
     force = wp.quat_rotate(q_a_seal, wp.vec3(fx, fy, fz))
@@ -458,17 +448,18 @@ def _eval_pad_force_linear_kernel(
     wp.atomic_add(body_f, body_a, wp.spatial_vector(force, torque + wp.cross(r_a, force)))
     wp.atomic_add(body_f, engaged_body_b, wp.spatial_vector(-force, -torque + wp.cross(r_b, -force)))
 
-    # per-DOF magnitudes for telemetry: (normal fz, shear |(fx,fy)|, peel |(mx,my)|, twist mz) -- for
-    # shear and peel this is the combined magnitude compared against the cap (sqrt(x^2 + y^2)).
-    pad_dof_force[pad] = wp.vec4(
-        fz, wp.sqrt(fx * fx + fy * fy), wp.sqrt(m_peel_x * m_peel_x + m_peel_y * m_peel_y), m_twist
-    )
+    # Group the six seal-frame components into the four DOF loads the caps act on.
+    # Shear and peel become magnitudes because their caps are direction-independent disks.
+    shear_mag = wp.sqrt(fx * fx + fy * fy)
+    peel_mag = wp.sqrt(m_peel_x * m_peel_x + m_peel_y * m_peel_y)
+    shear_mag_raw = wp.sqrt(fx_raw * fx_raw + fy_raw * fy_raw)
+    peel_mag_raw = wp.sqrt(m_peel_x_raw * m_peel_x_raw + m_peel_y_raw * m_peel_y_raw)
 
-    pad_break_metric[pad] = 0.0  # break not evaluated on this path yet
+    pad_seal_load[pad] = wp.vec4(fz, shear_mag, peel_mag, m_twist)
+    pad_seal_load_unclamped[pad] = wp.vec4(fz_unclamped, shear_mag_raw, peel_mag_raw, m_twist_raw)
 
 
-_mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
-_vec6 = wp.types.vector(length=6, dtype=wp.float32)
+
 
 
 @wp.func
@@ -767,8 +758,21 @@ def _seal_quality_kernel(
 # --------------- public API ---------------
 
 
+# --------------------------------------------------------------------------------------------------
+# Simple linear seal model (SurfaceGripper)
+#
+# Every DOF is an independent linear spring-damper, F = k*delta + d*deltadot, with its own stiffness
+# and damping. Four caps limit the result, one per DOF group: the normal pull at control * f_grip_max
+# (the vacuum), the two shear components together at f_shear_max (combined magnitude), the two peel
+# moments together at f_peel_max, and the twist at +/-f_torsion_max (0 => uncapped). Stiffness/damping
+# are set directly -- no shape/geometry factors, friction cones or stick-slip. Damping uses an
+# implicit (backward-Euler) rescale (_effective_damping). Both the capped and uncapped loads are
+# reported (pad_seal_load / pad_seal_load_unclamped); deciding when a seal fractures is left to the caller.
+# --------------------------------------------------------------------------------------------------
+
+
 class SurfaceGripper:
-    """An individual linear surface gripper (authoring object); see the section header.
+    """An individual linear surface gripper (authoring object); see the section comment above.
 
     Construct with the target ``body_id`` and gripper ``xform`` only, then set the seal parameters with
     exactly one of :meth:`set_stiffness_damping` (per-axis stiffness/damping directly) or
@@ -785,10 +789,9 @@ class SurfaceGripper:
         self.pad_radii: list[float] = []  # per-pad lip circle radius [m], parallel to self.pads
         self.pad_half_heights: list[float] = []  # per-pad lip plane offset along the grip axis [m], parallel to self.pads
         # Seal parameters -- zero (no seal force) until set via one of the two setters below.
-        self.f_grip_max = 0.0
         self.k_normal = 0.0
         self.d_normal = 0.0
-        self.f_normal_max = 0.0
+        self.f_grip_max = 0.0
         self.k_shear_x = 0.0
         self.d_shear_x = 0.0
         self.k_shear_y = 0.0
@@ -805,10 +808,9 @@ class SurfaceGripper:
 
     def set_stiffness_damping(
         self,
-        f_grip_max: float,
         k_normal: float,
         d_normal: float,
-        f_normal_max: float,
+        f_grip_max: float,
         k_shear_x: float,
         d_shear_x: float,
         k_shear_y: float,
@@ -828,10 +830,9 @@ class SurfaceGripper:
         ``f_grip_max`` is the vacuum grip [N] (the normal pull cap = ``control * f_grip_max``); the
         ``f_*_max`` are the per DOF-group force caps (0 => uncapped).
         """
-        self.f_grip_max = f_grip_max
         self.k_normal = k_normal
         self.d_normal = d_normal
-        self.f_normal_max = f_normal_max
+        self.f_grip_max = f_grip_max
         self.k_shear_x = k_shear_x
         self.d_shear_x = d_shear_x
         self.k_shear_y = k_shear_y
@@ -858,7 +859,6 @@ class SurfaceGripper:
         peel_x_mode: tuple[float, float],
         peel_y_mode: tuple[float, float],
         torsion_mode: tuple[float, float],
-        f_normal_max: float = 0.0,
         f_shear_max: float = 0.0,
         f_peel_max: float = 0.0,
         f_torsion_max: float = 0.0,
@@ -880,10 +880,9 @@ class SurfaceGripper:
         k_peel_y, d_peel_y = to(*peel_y_mode, iyy)
         k_torsion, d_torsion = to(*torsion_mode, izz)
         return self.set_stiffness_damping(
-            f_grip_max,
             k_normal,
             d_normal,
-            f_normal_max,
+            f_grip_max,
             k_shear_x,
             d_shear_x,
             k_shear_y,
@@ -934,10 +933,9 @@ class SurfaceGripperBuilder:
         # per-gripper arrays (indexed by gripper id)
         m.gripper_body_id = wp.array([x.body_id for x in g], dtype=wp.int32, device=device)
         m.gripper_xform = wp.array([x.xform for x in g], dtype=wp.transform, device=device)
-        m.gripper_f_grip_max = wp.array([x.f_grip_max for x in g], dtype=wp.float32, device=device)
         m.gripper_k_normal = wp.array([x.k_normal for x in g], dtype=wp.float32, device=device)
         m.gripper_d_normal = wp.array([x.d_normal for x in g], dtype=wp.float32, device=device)
-        m.gripper_f_normal_max = wp.array([x.f_normal_max for x in g], dtype=wp.float32, device=device)
+        m.gripper_f_grip_max = wp.array([x.f_grip_max for x in g], dtype=wp.float32, device=device)
         m.gripper_k_shear_x = wp.array([x.k_shear_x for x in g], dtype=wp.float32, device=device)
         m.gripper_d_shear_x = wp.array([x.d_shear_x for x in g], dtype=wp.float32, device=device)
         m.gripper_k_shear_y = wp.array([x.k_shear_y for x in g], dtype=wp.float32, device=device)
@@ -1032,8 +1030,22 @@ class SurfaceGripperStateOutput:
     break detection, and GUI, but should not write them.
     """
 
-    pad_break_metric: wp.array[wp.float32]      # brittle break envelope; > 1 => seal exceeded capacity
-    pad_dof_force: wp.array[wp.vec4]            # per-DOF force telemetry (normal, shear mag, peel mag, twist), per pad
+    # Component indices into the seal-load vec4 fields below. Usable from Warp kernels as
+    # compile-time constants, e.g. ``load[SurfaceGripperStateOutput.SEAL_LOAD_PEEL]``.
+    SEAL_LOAD_NORMAL = wp.constant(0)
+    SEAL_LOAD_SHEAR = wp.constant(1)
+    SEAL_LOAD_PEEL = wp.constant(2)
+    SEAL_LOAD_TORSION = wp.constant(3)
+    SEAL_LOAD_COUNT = wp.constant(4)
+
+    # Per-pad seal loads grouped by DOF, as (normal, shear, peel, torsion):
+    #   normal  = fz, the pull along the seal axis [N] (signed; > 0 pulls the body onto the pad)
+    #   shear   = |(fx, fy)|, the in-plane force magnitude [N]
+    #   peel    = |(mx, my)|, the out-of-plane moment magnitude [N.m]
+    #   torsion = mz, the twist about the seal axis [N.m] (signed)
+    # Shear and peel are magnitudes because their caps are direction-independent disks.
+    pad_seal_load: wp.array[wp.vec4]            # after the per-group caps: what was applied to the bodies
+    pad_seal_load_unclamped: wp.array[wp.vec4]  # before the caps; feeds the break metric (clamped values can never exceed their cap)
     pad_anchor_b: wp.array[wp.transform]        # SB — see Frame nomenclature
     pad_lip_sdf0: wp.array[wp.float32]          # seated lip signed distances cached at engagement (indexed by model.pad_lip_start)
     pad_seal_quality_rms: wp.array[wp.float32]  # RMS lip-gap deviation from seated pose per pad [m]; -1 if not engaged or preparing
@@ -1065,8 +1077,8 @@ class SurfaceGripperModel:
         the start-index scheme of ``pad_lip_local`` (one entry per lip sample point across all pads)."""
         so = SurfaceGripperStateOutput()
         n = self.pad_xform.shape[0]
-        so.pad_break_metric = wp.zeros(n, dtype=wp.float32, device=self.pad_xform.device)
-        so.pad_dof_force = wp.zeros(n, dtype=wp.vec4, device=self.pad_xform.device)
+        so.pad_seal_load = wp.zeros(n, dtype=wp.vec4, device=self.pad_xform.device)
+        so.pad_seal_load_unclamped = wp.zeros(n, dtype=wp.vec4, device=self.pad_xform.device)
         so.pad_anchor_b = wp.zeros(n, dtype=wp.transform, device=self.pad_xform.device)
         so.pad_lip_sdf0 = wp.zeros(self.pad_lip_local.shape[0], dtype=wp.float32, device=self.pad_xform.device)
         so.pad_seal_quality_rms = wp.zeros(n, dtype=wp.float32, device=self.pad_xform.device)
@@ -1225,7 +1237,8 @@ def evaluate_gripper_force(
         gripper_model: Finalized gripper holding pad/gripper layout and seal stiffness/damping arrays.
         gripper_state_input: Per-pad input state; ``pad_engaged_bs[..][0]`` selects engaged pads and
             ``pad_anchor_b`` (SB) provides the cached seal reference frame.
-        gripper_state_output: Per-pad output state; ``pad_break_metric`` and ``pad_dof_force`` are written.
+        gripper_state_output: Per-pad output state; ``pad_seal_load`` and
+            ``pad_seal_load_unclamped`` are written.
         gripper_control: Per-pad control; ``pad_grip_control`` scales the normal pull cap.
         dt: Physics sub-step duration [s]; used for implicit damping rescaling.
     """
@@ -1238,10 +1251,9 @@ def evaluate_gripper_force(
         inputs=[
             gripper_model.gripper_body_id,
             gripper_model.gripper_xform,
-            gripper_model.gripper_f_grip_max,
             gripper_model.gripper_k_normal,
             gripper_model.gripper_d_normal,
-            gripper_model.gripper_f_normal_max,
+            gripper_model.gripper_f_grip_max,
             gripper_model.gripper_k_shear_x,
             gripper_model.gripper_d_shear_x,
             gripper_model.gripper_k_shear_y,
@@ -1267,8 +1279,8 @@ def evaluate_gripper_force(
             model.body_inertia,
             dt,
             # outputs (mutated in place)
-            gripper_state_output.pad_break_metric,
-            gripper_state_output.pad_dof_force,
+            gripper_state_output.pad_seal_load,
+            gripper_state_output.pad_seal_load_unclamped,
             state.body_f,
         ],
     )
