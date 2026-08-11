@@ -720,10 +720,10 @@ class TestAffineBodyModel(unittest.TestCase):
         spatial_blocks = ([0, 3, 4, 5], [1, 6, 7, 8], [2, 9, 10, 11])
         unit_tetrahedron_moment = np.asarray(
             [
-                [1.0, 0.25, 0.25, 0.25],
-                [0.25, 0.10, 0.05, 0.05],
-                [0.25, 0.05, 0.10, 0.05],
-                [0.25, 0.05, 0.05, 0.10],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0375, -0.0125, -0.0125],
+                [0.0, -0.0125, 0.0375, -0.0125],
+                [0.0, -0.0125, -0.0125, 0.0375],
             ]
         )
         for indices in spatial_blocks:
@@ -804,7 +804,7 @@ class TestAffineBodyModel(unittest.TestCase):
                 np.testing.assert_array_equal(model.qd.numpy(), np.zeros((1, 12)))
 
                 affine_state = wp.array(
-                    [vec12(2.0, -1.0, 0.5, 2.0, 0.5, -1.0, 0.0, -1.0, 3.0, 0.25, 2.0, 0.5)],
+                    [vec12(2.375, -0.5, 1.1875, 2.0, 0.5, -1.0, 0.0, -1.0, 3.0, 0.25, 2.0, 0.5)],
                     dtype=vec12,
                     device=device,
                 )
@@ -823,7 +823,7 @@ class TestAffineBodyModel(unittest.TestCase):
                 )
 
     def test_initializes_state_from_rigid_transform(self):
-        """Initialize translation and affine rows from a rigid transform."""
+        """Initialize centered translation and affine rows from a rigid transform."""
         vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()
         transform = wp.transform(
             wp.vec3(1.5, -2.0, 0.25),
@@ -842,7 +842,7 @@ class TestAffineBodyModel(unittest.TestCase):
 
         np.testing.assert_allclose(
             model.q.numpy()[0],
-            [1.5, -2.0, 0.25, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            [1.25, -1.75, 0.5, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
             rtol=0.0,
             atol=1.0e-6,
         )
@@ -926,6 +926,7 @@ class TestSolverLIMXAffine(unittest.TestCase):
     def test_matches_first_order_free_fall_without_affine_deformation(self):
         """Match analytic free fall to first-order accuracy and preserve identity."""
         solver = self._make_solver("cpu", rigidity=0.0, nonlinear_iterations=1, linear_iterations=4)
+        initial_state = solver.q.numpy()[0].copy()
         dt = 0.01
         step_count = 100
 
@@ -934,11 +935,77 @@ class TestSolverLIMXAffine(unittest.TestCase):
 
         state = solver.q.numpy()[0]
         elapsed = step_count * dt
-        expected_height = 0.5 * -9.81 * elapsed * elapsed
+        expected_height = initial_state[2] + 0.5 * -9.81 * elapsed * elapsed
         first_order_tolerance = 0.5 * 9.81 * elapsed * dt + 5.0e-4
         self.assertAlmostEqual(float(state[2]), expected_height, delta=first_order_tolerance)
-        np.testing.assert_allclose(state[:2], 0.0, rtol=0.0, atol=2.0e-5)
+        np.testing.assert_allclose(state[:2], initial_state[:2], rtol=0.0, atol=2.0e-5)
         np.testing.assert_allclose(state[3:].reshape(3, 3), np.eye(3), rtol=0.0, atol=2.0e-5)
+
+    def test_preserves_translated_small_body_during_free_fall(self):
+        """Preserve small offset body geometry through uniform free fall."""
+        local_vertices = 1.0e-3 * np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        tetrahedra = np.asarray([[0, 1, 2, 3]], dtype=np.int32)
+        surface_triangles = np.asarray(
+            [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+            dtype=np.int32,
+        )
+        dt = 0.01
+        step_count = 10
+        expected_displacement = np.asarray(
+            [0.0, 0.0, -9.81 * dt * dt * step_count * (step_count + 1) / 2.0],
+            dtype=np.float32,
+        )
+
+        for rest_offset in (0.2, 0.5):
+            with self.subTest(rest_offset=rest_offset):
+                vertices = local_vertices + rest_offset
+                try:
+                    model = AffineBodyModel(
+                        vertices,
+                        tetrahedra,
+                        surface_triangles,
+                        density=1.0,
+                        rigidity=0.0,
+                        initial_transform=wp.transform_identity(),
+                        device="cpu",
+                    )
+                except ValueError as error:
+                    self.fail(f"valid body construction failed at {rest_offset} m offset: {error}")
+                solver = SolverLIMXAffine(
+                    model,
+                    nonlinear_iterations=1,
+                    linear_iterations=8,
+                )
+                surface_positions = wp.empty(model.surface_vertex_count, dtype=wp.vec3, device="cpu")
+                solver.update_surface_positions(surface_positions)
+                initial_surface_positions = surface_positions.numpy().copy()
+
+                for _ in range(step_count):
+                    solver.step(dt)
+
+                solver.update_surface_positions(surface_positions)
+                final_surface_positions = surface_positions.numpy()
+                displacement = final_surface_positions - initial_surface_positions
+                state = solver.q.numpy()[0]
+
+                self.assertTrue(np.isfinite(state).all())
+                self.assertTrue(np.isfinite(solver.qd.numpy()).all())
+                np.testing.assert_allclose(initial_surface_positions, vertices, rtol=0.0, atol=6.0e-8)
+                np.testing.assert_allclose(
+                    displacement,
+                    np.broadcast_to(expected_displacement, displacement.shape),
+                    rtol=0.0,
+                    atol=2.0e-6,
+                )
+                np.testing.assert_allclose(state[3:].reshape(3, 3), np.eye(3), rtol=0.0, atol=2.0e-5)
 
     def test_reduces_affine_singular_value_error_with_rigidity(self):
         """Reduce stretch error from a perturbed positive affine matrix."""
@@ -979,6 +1046,29 @@ class TestSolverLIMXAffine(unittest.TestCase):
         solver.step(0.01)
 
         self.assertEqual(solver.last_linear_iterations, 7)
+
+    def test_warm_starts_only_first_newton_solve_of_each_frame(self):
+        """Warm-start only the first Newton solve of each frame."""
+        solver = self._make_solver(
+            "cpu",
+            rigidity=20.0,
+            matrix=np.diag([1.05, 0.95, 1.02]),
+            nonlinear_iterations=3,
+            linear_iterations=2,
+        )
+        zero_initial_guess_sequence: list[bool] = []
+        solve = solver.linear_solver.solve
+
+        def record_initial_guess_policy(*args, **kwargs):
+            zero_initial_guess_sequence.append(kwargs["zero_initial_guess"])
+            return solve(*args, **kwargs)
+
+        solver.linear_solver.solve = record_initial_guess_policy
+
+        solver.step(0.01)
+        solver.step(0.01)
+
+        self.assertEqual(zero_initial_guess_sequence, [False, True, True, False, True, True])
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_captures_and_replays_one_complete_step_on_cuda(self):

@@ -60,7 +60,7 @@ def _validate_scalar(value: float, name: str, *, allow_zero: bool) -> float:
     return value
 
 
-def _initial_affine_state(initial_transform: Any) -> np.ndarray:
+def _initial_affine_state(initial_transform: Any, rest_centroid: np.ndarray) -> np.ndarray:
     transform_values = np.asarray(initial_transform, dtype=np.float64)
     if transform_values.shape != (7,) or not np.isfinite(transform_values).all():
         raise ValueError("initial_transform must be a finite Warp transform")
@@ -71,14 +71,15 @@ def _initial_affine_state(initial_transform: Any) -> np.ndarray:
     transform = wp.transform(*transform_values.tolist())
     translation = np.asarray(wp.transform_get_translation(transform), dtype=np.float64)
     rotation = np.asarray(wp.quat_to_matrix(wp.transform_get_rotation(transform)), dtype=np.float64).reshape(3, 3)
-    return np.concatenate((translation, rotation.reshape(-1)))
+    centered_translation = translation + rotation @ rest_centroid
+    return np.concatenate((centered_translation, rotation.reshape(-1)))
 
 
 def _integrate_mass_moments(vertices: np.ndarray, tetrahedra: np.ndarray, density: float):
+    reference_position = vertices[tetrahedra[0, 0]]
+    tetrahedron_volumes = np.empty(len(tetrahedra), dtype=np.float64)
     volume = 0.0
-    mass = 0.0
-    first_moment = np.zeros(3, dtype=np.float64)
-    second_moment = np.zeros((3, 3), dtype=np.float64)
+    relative_first_volume_moment = np.zeros(3, dtype=np.float64)
 
     for tetrahedron_index, indices in enumerate(tetrahedra):
         tetrahedron = vertices[indices]
@@ -93,14 +94,25 @@ def _integrate_mass_moments(vertices: np.ndarray, tetrahedra: np.ndarray, densit
         if not np.isfinite(tetrahedron_volume) or tetrahedron_volume <= 0.0:
             raise ValueError(f"tetrahedron {tetrahedron_index} must have finite positive volume")
 
+        tetrahedron_volumes[tetrahedron_index] = tetrahedron_volume
+        volume += tetrahedron_volume
+        relative_vertex_sum = np.sum(tetrahedron - reference_position, axis=0)
+        relative_first_volume_moment += tetrahedron_volume * relative_vertex_sum / 4.0
+
+    rest_centroid = reference_position + relative_first_volume_moment / volume
+    centered_vertices = vertices - rest_centroid
+    mass = density * volume
+    # The centroid-relative basis has an analytically zero first mass moment.
+    first_moment = np.zeros(3, dtype=np.float64)
+    second_moment = np.zeros((3, 3), dtype=np.float64)
+
+    for tetrahedron_volume, indices in zip(tetrahedron_volumes, tetrahedra, strict=True):
+        tetrahedron = centered_vertices[indices]
         vertex_sum = np.sum(tetrahedron, axis=0)
         vertex_dyad_sum = tetrahedron.T @ tetrahedron
-        volume += tetrahedron_volume
-        mass += density * tetrahedron_volume
-        first_moment += density * tetrahedron_volume * vertex_sum / 4.0
         second_moment += density * tetrahedron_volume * (vertex_dyad_sum + np.outer(vertex_sum, vertex_sum)) / 20.0
 
-    return volume, mass, first_moment, second_moment
+    return centered_vertices, rest_centroid, volume, mass, first_moment, second_moment
 
 
 def _build_mass_matrix(mass: float, first_moment: np.ndarray, second_moment: np.ndarray) -> np.ndarray:
@@ -135,9 +147,7 @@ def _lift_gravity(
     if not np.isfinite(acceleration).all() or np.linalg.norm(residual, ord=np.inf) > residual_tolerance:
         raise ValueError("integrated gravity solve must have a finite scaled residual")
 
-    expected = np.zeros(12, dtype=np.float64)
-    expected[:3] = gravity
-    return expected
+    return acceleration
 
 
 class AffineBodyModel:
@@ -161,7 +171,7 @@ class AffineBodyModel:
             surface_triangle_indices: Surface triangles into ``rest_vertices``, shape
                 ``(triangle_count, 3)``.
             density: Uniform mass density [kg/m^3].
-            rigidity: ARAP rigidity coefficient.
+            rigidity: ARAP rigidity coefficient [Pa].
             initial_transform: Initial rigid transform applied to the rest body.
             device: Warp device that owns the model arrays.
         """
@@ -175,10 +185,12 @@ class AffineBodyModel:
         )
         density = _validate_scalar(density, "density", allow_zero=False)
         rigidity = _validate_scalar(rigidity, "rigidity", allow_zero=True)
-        initial_state = _initial_affine_state(initial_transform)
         device = wp.get_device(device)
 
-        volume, mass, first_moment, second_moment = _integrate_mass_moments(vertices, tetrahedra, density)
+        centered_vertices, rest_centroid, volume, mass, first_moment, second_moment = _integrate_mass_moments(
+            vertices, tetrahedra, density
+        )
+        initial_state = _initial_affine_state(initial_transform, rest_centroid)
         integrated_mass_matrix = _build_mass_matrix(mass, first_moment, second_moment)
         mass_matrix = integrated_mass_matrix.astype(np.float32)
         if not np.isfinite(mass_matrix).all():
@@ -193,13 +205,13 @@ class AffineBodyModel:
         surface_vertex_remap = np.full(len(vertices), -1, dtype=np.int32)
         surface_vertex_remap[surface_vertex_indices] = np.arange(len(surface_vertex_indices), dtype=np.int32)
         compact_surface_triangles = surface_vertex_remap[surface_triangles]
-        rest_surface_vertices = vertices[surface_vertex_indices]
+        rest_surface_vertices = centered_vertices[surface_vertex_indices]
 
         self.device = device
         self.body_count = 1
         self.surface_vertex_count = len(rest_surface_vertices)
         self.surface_triangle_count = len(compact_surface_triangles)
-        self.rest_vertices = wp.array(vertices, dtype=wp.vec3, device=device)
+        self.rest_vertices = wp.array(centered_vertices, dtype=wp.vec3, device=device)
         self.tetrahedron_indices = wp.array(tetrahedra, dtype=int, device=device)
         self.rest_surface_vertices = wp.array(rest_surface_vertices, dtype=wp.vec3, device=device)
         self.surface_vertex_indices = wp.array(surface_vertex_indices, dtype=int, device=device)

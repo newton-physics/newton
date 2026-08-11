@@ -152,7 +152,7 @@ class SolverLIMXAffine:
         )
 
         inv_dt_squared = 1.0 / (dt * dt)
-        for _ in range(self.nonlinear_iterations):
+        for nonlinear_iteration in range(self.nonlinear_iterations):
             self.static_matrix.clear_values()
             wp.launch(
                 _initialize_affine_system,
@@ -179,7 +179,7 @@ class SolverLIMXAffine:
                 self._mixed_rhs,
                 self._mixed_increment,
                 iterations=self.linear_iterations,
-                zero_initial_guess=True,
+                zero_initial_guess=nonlinear_iteration > 0,
             )
             wp.launch(
                 _apply_affine_increment,
