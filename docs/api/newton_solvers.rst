@@ -34,6 +34,7 @@ https://newton-physics.github.io/newton/stable/solvers/index.html.
    :toctree: _generated
    :nosignatures:
 
+   AffineBodyModel
    ConstraintAnchor
    ConstraintDihedralBending
    ConstraintDistance
@@ -47,6 +48,7 @@ https://newton-physics.github.io/newton/stable/solvers/index.html.
    SolverImplicitMPM
    SolverKamino
    SolverLIMX
+   SolverLIMXAffine
    SolverMuJoCo
    SolverSemiImplicit
    SolverStyle3D
