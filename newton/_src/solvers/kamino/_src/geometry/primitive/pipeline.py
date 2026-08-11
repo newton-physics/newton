@@ -73,6 +73,7 @@ class CollisionPipelinePrimitive:
         self._cmodel: CollisionCandidatesModel | None = None
         self._cdata: CollisionCandidatesData | None = None
         self._bvdata: BoundingVolumesData | None = None
+        self._contact_overflow_warning_emitted: wp.array[wp.int32] | None = None
 
         # If a builder is provided, proceed to finalize all data allocations
         if model is not None:
@@ -159,6 +160,7 @@ class CollisionPipelinePrimitive:
                 wid=wp.zeros(shape=(self._model.geoms.num_collidable_pairs,), dtype=wp.int32),
                 geom_pair=wp.zeros_like(self._model.geoms.collidable_pairs),
             )
+            self._contact_overflow_warning_emitted = wp.zeros(shape=(1,), dtype=wp.int32)
 
     def collide(self, data: DataKamino, state: StateKamino, contacts: ContactsKamino):
         """
@@ -176,6 +178,7 @@ class CollisionPipelinePrimitive:
         # Clear all active collision candidates and contacts
         self._cdata.clear()
         contacts.clear()
+        self._contact_overflow_warning_emitted.zero_()
 
         # Perform the broad-phase collision detection to generate candidate pairs
         primitive_broadphase_explicit(
@@ -190,7 +193,14 @@ class CollisionPipelinePrimitive:
         )
 
         # Perform the narrow-phase collision detection to generate active contacts
-        primitive_narrowphase(self._model, data, self._cdata, contacts, default_gap=self._default_gap)
+        primitive_narrowphase(
+            self._model,
+            data,
+            self._cdata,
+            contacts,
+            self._contact_overflow_warning_emitted,
+            default_gap=self._default_gap,
+        )
 
     ###
     # Internals
@@ -203,7 +213,12 @@ class CollisionPipelinePrimitive:
         Raises:
             RuntimeError: If the pipeline has not been finalized.
         """
-        if self._cmodel is None or self._cdata is None or self._bvdata is None:
+        if (
+            self._cmodel is None
+            or self._cdata is None
+            or self._bvdata is None
+            or self._contact_overflow_warning_emitted is None
+        ):
             raise RuntimeError(
                 "CollisionPipelinePrimitive has not been finalized. "
                 "Please call `finalize(builder, device)` before using the pipeline."

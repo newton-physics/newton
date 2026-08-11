@@ -213,12 +213,12 @@ def _run_newton_cd_and_convert(newton_model, device):
 
     state = newton_model.state()
     newton.eval_fk(newton_model, newton_model.joint_q, newton_model.joint_qd, state)
-    newton_collision_pipeline = newton.CollisionPipeline(newton_model)
+    newton_collision_pipeline = newton.CollisionPipeline(newton_model, rigid_contact_max=256)
     newton_contacts = newton_collision_pipeline.contacts()
     newton_collision_pipeline.collide(state, newton_contacts)
 
     nc = int(newton_contacts.rigid_contact_count.numpy()[0])
-    kamino_contacts = ContactsKamino(capacity=[max(nc + 64, 256)], device=device)
+    kamino_contacts = ContactsKamino(capacity=[newton_contacts.rigid_contact_max], device=device)
     convert_contacts_newton_to_kamino(newton_model, state, newton_contacts, kamino_contacts)
     wp.synchronize()
 
@@ -253,7 +253,10 @@ def _step_with_newton_cd(builder, device, num_steps=200, dt=0.005):
     state_p.copy_from(state_n)
 
     newton_state = newton_model.state()
-    newton_collision_pipeline = newton.CollisionPipeline(newton_model)
+    newton_collision_pipeline = newton.CollisionPipeline(
+        newton_model,
+        rigid_contact_max=contacts.model_max_contacts_host,
+    )
     newton_contacts = newton_collision_pipeline.contacts()
 
     for _ in range(num_steps):

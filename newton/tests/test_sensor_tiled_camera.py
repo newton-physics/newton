@@ -3,6 +3,7 @@
 
 import math
 import os
+import tempfile
 import unittest
 import warnings
 
@@ -630,6 +631,122 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         with self.assertWarnsRegex(DeprecationWarning, "assign_checkerboard_material"):
             tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
+
+    def _render_checkerboard_projection(self, shape_kind: str, texture_projection_mode: int) -> np.ndarray:
+        builder = newton.ModelBuilder()
+        if shape_kind == "primitive":
+            builder.add_shape_sphere(-1, radius=1.0, color=(1.0, 1.0, 1.0))
+        else:
+            vertices = np.array(
+                [
+                    [0.0, -0.9, -0.8],
+                    [0.0, 0.9, -0.8],
+                    [0.6, 0.9, 0.8],
+                    [0.6, -0.9, 0.8],
+                ],
+                dtype=np.float32,
+            )
+            indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+            mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+            builder.add_shape_mesh(-1, mesh=mesh, color=(1.0, 1.0, 1.0))
+        model = builder.finalize()
+
+        width = 64
+        height = 64
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(3.0, 0.0, 0.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
+        )
+
+        render_config = SensorTiledCamera.RenderConfig(
+            enable_textures=True,
+            texture_projection_mode=texture_projection_mode,
+        )
+        sensor = SensorTiledCamera(model=model, default_render_config=render_config)
+        sensor.utils.assign_checkerboard_material(
+            shape_indices=np.arange(model.shape_count, dtype=np.int32),
+            resolution=16,
+            checker_size=4,
+        )
+
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(
+            width,
+            height,
+            camera_fovs=math.radians(45.0),
+        )
+        albedo_image = sensor.utils.create_albedo_image_output(width, height, camera_count=1)
+        sensor.update(model.state(), camera_transforms, camera_rays, albedo_image=albedo_image)
+        return albedo_image.numpy()
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_texture_projection_golden_images(self):
+        """Verify cubic and triplanar projection against golden images.
+
+        Set ``NEWTON_UPDATE_TEXTURE_PROJECTION_GOLDENS=1`` and run
+        ``uv run --extra dev -m newton.tests -k test_texture_projection_golden_images``
+        to regenerate the fixtures and write PNG previews to the platform's
+        ``newton_texture_projection_previews`` temporary directory.
+        """
+        golden_dir = os.path.join(os.path.dirname(__file__), "golden_data", "test_sensor_tiled_camera")
+        update_goldens = os.environ.get("NEWTON_UPDATE_TEXTURE_PROJECTION_GOLDENS") == "1"
+        previews = []
+        if update_goldens:
+            from PIL import Image
+
+            preview_dir = os.path.join(tempfile.gettempdir(), "newton_texture_projection_previews")
+            os.makedirs(preview_dir, exist_ok=True)
+
+        cases = (
+            ("primitive", SensorTiledCamera.TextureProjectionMode.CUBIC),
+            ("primitive", SensorTiledCamera.TextureProjectionMode.TRIPLANAR),
+            ("uvless_mesh", SensorTiledCamera.TextureProjectionMode.CUBIC),
+            ("uvless_mesh", SensorTiledCamera.TextureProjectionMode.TRIPLANAR),
+        )
+
+        for shape_kind, projection_mode in cases:
+            with self.subTest(shape_kind=shape_kind, projection_mode=projection_mode.name):
+                actual = self._render_checkerboard_projection(shape_kind, projection_mode)
+                fixture_name = f"projection_{shape_kind}_{projection_mode.name.lower()}"
+                golden_path = os.path.join(golden_dir, f"{fixture_name}.npy")
+                if update_goldens:
+                    np.save(golden_path, actual)
+                    packed_rgba = actual[0, 0]
+                    rgba = packed_rgba.view(np.uint8).reshape(*packed_rgba.shape, 4)
+                    preview = Image.fromarray(rgba, mode="RGBA")
+                    preview.save(os.path.join(preview_dir, f"{fixture_name}.png"))
+                    previews.append((f"{shape_kind}: {projection_mode.name.lower()}", preview))
+
+                golden = np.load(golden_path)
+                self.__compare_images(actual, golden, allowed_difference=0.1)
+
+        if update_goldens:
+            from PIL import ImageDraw, ImageFont
+
+            scale = 4
+            label_height = 24
+            image_width, image_height = previews[0][1].size
+            cell_width = image_width * scale
+            cell_height = image_height * scale + label_height
+            contact_sheet = Image.new(
+                "RGB",
+                (cell_width * 2, cell_height * 2),
+                (28, 28, 28),
+            )
+            draw = ImageDraw.Draw(contact_sheet)
+            font = ImageFont.load_default()
+            for index, (label, preview) in enumerate(previews):
+                x = (index % 2) * cell_width
+                y = (index // 2) * cell_height
+                draw.text((x + 8, y + 6), label, fill=(235, 235, 235), font=font)
+                contact_sheet.paste(
+                    preview.convert("RGB").resize(
+                        (image_width * scale, image_height * scale),
+                        resample=Image.Resampling.NEAREST,
+                    ),
+                    (x, y + label_height),
+                )
+            contact_sheet_path = os.path.join(preview_dir, "projection_modes_contact_sheet.png")
+            contact_sheet.save(contact_sheet_path)
+            print(f"Updated texture projection goldens and wrote previews to {preview_dir}")
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_output_image_parameters(self):

@@ -1757,7 +1757,7 @@ class ModelBuilderKamino:
                 else:
                     world_max_contacts[geom1.wid] += num_contacts
 
-        # Override the per-world maximum contacts if specified in the settings
+        # Cap per-world totals when a per-world maximum is specified
         if max_contacts_per_world is not None:
             for w in range(self.num_worlds):
                 world_max_contacts[w] = min(world_max_contacts[w], max_contacts_per_world)

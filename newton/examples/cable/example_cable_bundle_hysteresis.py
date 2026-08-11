@@ -150,6 +150,7 @@ class Example:
         return positions
 
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
@@ -184,7 +185,7 @@ class Example:
 
         # Dahl plasticity parameters live on the Model as VBD custom attributes.
         if with_dahl:
-            newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+            newton.solvers.SolverVBD.register_custom_attributes(builder)
         builder.gravity = (0.0, 0.0, -9.81)
 
         # Set default material properties for cables (cable-to-cable contact)
