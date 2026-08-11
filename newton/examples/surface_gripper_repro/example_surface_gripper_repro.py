@@ -14,17 +14,47 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Surface Gripper Isaac Sim Repro
+# Example Surface Gripper
 #
-# Reproduction scene for the surface-gripper on a robot arm. Loads the robot arm from a USD stage
-# (assets/fanuc_arm.usda) with a fixed base on a ground plane, then plays back a
-# recorded FANUC palletizer cycle (assets/fanuc_recording.jsonl). Playback is time-accurate:
-# the six arm joint position targets are interpolated from the recorded timestamps at the current simulation
-# time (J3 coupled to J2, degrees -> radians) and updated before every physics sub-step, so the arm
-# follows the recording at its true speed. The recording's surface-gripper engagement and disengagement
-# commands are extracted per frame. Objects are placed in the scene so that they may be gripped
-# and manipulated by the the surface gripper as required by the motion of the robot arm and the
-# engagement/disengagement commands.
+# An illustration of how to develop a surface gripper (a vacuum/suction end-effector) in Newton.
+#
+# The gripper physics lives in surface_gripper.py and is deliberately kept free of policy: it models
+# the seal, reports what the seal is carrying, and leaves every decision about when to grab and when
+# to let go to the caller. This file is that caller -- it shows one way to drive the gripper, and the
+# decisions it makes are the ones a real application would have to make too.
+#
+# What the gripper models (surface_gripper.py)
+#   Each pad is a six-DOF linear spring-damper seal between the tool and the gripped body: normal
+#   pull along the pad axis, shear in the pad plane, peel about the two in-plane axes, and twist.
+#   On engagement the gripped body's pose is fitted so each pad's contact perimeter sits flush on its
+#   surface (an inline Gauss-Newton fit against the body's signed distance field), and that seated
+#   pose is cached as the seal's rest state. From then on the seal resists any drift away from it.
+#   Each step the gripper reports the four DOF-group loads it is carrying, both before and after its
+#   force caps, plus a geometric measure of how far the contact perimeter has pulled off the surface.
+#
+# What this example decides (this file)
+#   - Which mode each pad is in. A pad is always in exactly one of three modes:
+#       preparing  - approaching a target body, not yet sealed. The seat fit runs live each step, so
+#                    the seal-quality metric reports the error that engaging right now would produce.
+#       engaged    - sealed to a body. The seal carries load and resists drift from the pose it
+#                    formed at; the seal-quality metric reports how far the surface has since pulled off.
+#       disengaged - neither of the above. No seal force, and the quality metric reports -1.
+#     The drive targets and the mode of each pad are read from assets/fanuc_recording.jsonl.
+#   - Which body and shape to grab: a fixed pick order -- one wide panel, then six crates -- advanced
+#     on each release.
+#   - When the seal fractures under load, via one of two interchangeable criteria (BREAK_ON_SEAL_QUALITY):
+#       force-based    - the seal is demanding more force than its caps can supply
+#       geometry-based - the gripped surface has pulled too far off the pad contact perimeters
+#     Either way the overload must persist for BREAK_HOLD_TIME before the gripper lets go, so a
+#     transient spike does not drop the load.
+#
+# The scene: a fixed-base FANUC arm (assets/fanuc_arm.usda) with four suction pads on its flange,
+# two pallets, and the pick boxes -- one wide panel and six crates (assets/fanuc_pick_scene.usda).
+# The panel is picked first, then each crate in turn; every crate waits out of reach until its turn
+# comes, when it is teleported onto the pick pallet. Arm joint targets are interpolated from the
+# recorded timestamps before every physics sub-step, so the arm follows the recorded motion at its
+# true speed. Everything runs on device and is CUDA-graph capturable, and the whole scene can be
+# replicated across NUM_WORLDS parallel environments.
 
 # Command: python -m newton.examples surface_gripper_repro
 ###########################################################################
@@ -115,9 +145,9 @@ PAD_PRIMS = (
     "/Robot/J6_link/GripperPads/pad_3",
 )
 
-# A pad's lip is the circle of the pad radius on its bottom face (toward the box, +half-height along the
-# grip axis); PAD_LIP_SAMPLES points are sampled around that lip for the on-device seating fit (attach_seal_seated).
-PAD_LIP_SAMPLES = 16
+# A pad's contact perimeter is the circle of the pad radius on its bottom face (toward the box, +half-height along the
+# grip axis); PAD_PERIMETER_SAMPLES points are sampled around it for the on-device seating fit (attach_seal_seated).
+PAD_PERIMETER_SAMPLES = 16
 # Gauss-Newton iterations for the on-engagement seat fit. 1 is exact for a planar (box) face; raise it for
 # curved gripped objects, where each iteration re-samples the SDF at the updated pose to converge.
 SEAT_ITERS = 4
@@ -135,9 +165,9 @@ PEEL_Y_MODE = (8.35631, 0.096717)
 TWIST_MODE = (2.79962, 0.0)
 
 
-# On engagement, fit the gripped box's pose to the pad lips (surface_gripper.attach_seal_seated,
+# On engagement, fit the gripped box's pose to the pad contact perimeters (surface_gripper.attach_seal_seated,
 # an on-device Gauss-Newton fit) and anchor the seal to that fitted pose, so the seal seats the box flush
-# on the pads (the lip-SDF standoff becomes a bias the seal pulls closed). Fully kernel-driven, so it
+# on the pads (the perimeter-SDF standoff becomes a bias the seal pulls closed). Fully kernel-driven, so it
 # graph-captures and runs on CPU and graphed CUDA alike.
 SEAL_SEAT_ON_ENGAGE = True
 
@@ -145,8 +175,8 @@ SEAL_SEAT_ON_ENGAGE = True
 #   False -> force-based:    the largest ratio of demanded (unclamped) to supplied (clamped) load
 #                            across the four DOF groups. 1.0 = no group hit its cap; > 1 = a group is
 #                            being driven that many times past its limit.
-#   True  -> geometry-based: the pad's RMS lip-gap deviation [m] from the pose the seal formed at,
-#                            i.e. how far the gripped surface has pulled away from the lip.
+#   True  -> geometry-based: the pad's RMS perimeter-gap deviation [m] from the pose the seal formed at,
+#                            i.e. how far the gripped surface has pulled away from the contact perimeter.
 # Each uses its own threshold below; the hold-time debounce is shared.
 BREAK_ON_SEAL_QUALITY = False
 
@@ -154,7 +184,7 @@ BREAK_ON_SEAL_QUALITY = False
 # over-driven by up to this factor before it lets go.
 BREAK_THRESHOLD_LOAD_RATIO = 2.0
 
-# Geometry-based threshold: RMS lip-gap deviation [m] from the seated pose at engagement.
+# Geometry-based threshold: RMS perimeter-gap deviation [m] from the seated pose at engagement.
 BREAK_THRESHOLD_SEAL_RMS = 0.005  # [m]
 
 # The break metric must stay over its threshold for at least this long before the seal fractures.
@@ -168,7 +198,7 @@ BREAK_HOLD_TIME = 0.033  # [s]
 def update_seal_break_kernel(
     pad_seal_load: wp.array[wp.vec4],            # [pads] (normal, shear, peel, torsion) after the caps
     pad_seal_load_unclamped: wp.array[wp.vec4],  # [pads] the same four groups before the caps
-    pad_seal_quality_rms: wp.array[float],       # [pads] RMS lip-gap deviation from the seated pose [m]
+    pad_seal_quality_rms: wp.array[float],       # [pads] RMS perimeter-gap deviation from the seated pose [m]
     break_on_seal_quality: wp.bool,  # False = force-based metric, True = geometry-based (RMS) metric
     pad_engaged_bs_prev: wp.array[wp.vec2i],  # [pads] gripped body/shape last sub-step (``[0] < 0`` = was released)
     break_threshold: float,  # metric above this counts as over-capacity (units depend on the mode)
@@ -190,8 +220,8 @@ def update_seal_break_kernel(
     demanded == supplied (ratio 1), while a group driven past its cap has demanded > supplied, so the
     ratio measures directly how far past its limit the seal is being pushed.
 
-    Geometry-based (True): the pad's RMS lip-gap deviation [m] from the pose the seal formed at, i.e.
-    how far the gripped surface has pulled away from the lip since engagement. A pad that is not
+    Geometry-based (True): the pad's RMS perimeter-gap deviation [m] from the pose the seal formed at, i.e.
+    how far the gripped surface has pulled away from the contact perimeter since engagement. A pad that is not
     engaged or preparing reports -1, which never exceeds a positive threshold.
     """
     g = wp.tid()
@@ -606,7 +636,7 @@ class Example:
         self.break_hold_steps = max(1, round(BREAK_HOLD_TIME / self.sim_dt))  # debounce span in sub-steps
         # The two break metrics have different units, so each carries its own threshold.
         if BREAK_ON_SEAL_QUALITY:
-            self.break_threshold = BREAK_THRESHOLD_SEAL_RMS  # RMS lip-gap deviation [m]
+            self.break_threshold = BREAK_THRESHOLD_SEAL_RMS  # RMS perimeter-gap deviation [m]
         else:
             self.break_threshold = BREAK_THRESHOLD_LOAD_RATIO  # demanded/supplied load ratio
 
@@ -724,7 +754,7 @@ class Example:
         gripper_builder = SurfaceGripperBuilder()
         for w in range(NUM_WORLDS):
             gripper = SurfaceGripper(
-                w * env.body_count + ee_body_local, wp.transform_identity(), world=w, n_lip_samples=PAD_LIP_SAMPLES
+                w * env.body_count + ee_body_local, wp.transform_identity(), world=w, n_perimeter_samples=PAD_PERIMETER_SAMPLES
             )
             gripper.set_natural_frequency_damping_ratio(
                 self.crate_masses[0],
@@ -902,7 +932,7 @@ class Example:
             )
             self.state_0.clear_forces()  # zero body_f each sub-step (the surface gripper accumulates into it)
 
-            # Per-pad seal quality (RMS lip-gap deviation from the seated pose) at this sub-step's pose.
+            # Per-pad seal quality (RMS perimeter-gap deviation from the seated pose) at this sub-step's pose.
             # Engaged pads measure against the sdf0 cached at engagement; preparing pads recompute the
             # seated pose + sdf0 live. Feeds the break check below and is read back by the GUI.
             evaluate_seal_quality(
@@ -992,7 +1022,7 @@ class Example:
         ui.text(f"Grip cmd:  {'On' if commanded else 'Off'}  (recording)")
         ui.text(f"Preparing: {'On' if preparing else 'Off'}  (lead-in before engage)")
         ui.text(f"Seal engaged: {held}/{len(PAD_PRIMS)} pads  (actual)")
-        # Seal quality, per pad: each pad's RMS deviation of its current lip signed distances from their
+        # Seal quality, per pad: each pad's RMS deviation of its current perimeter signed distances from their
         # seated (engagement) values [mm]. 0 = that pad holds the box at its seated pose; grows as the box
         # shifts. A pad that is neither gripping nor preparing reads -1 (shown as "--"). World 0's pads shown.
         pad_rms_mm = self.gripper_state_output.pad_seal_quality_rms.numpy()[: len(PAD_PRIMS)] * 1000.0
@@ -1002,7 +1032,7 @@ class Example:
                 parts.append("--")
             else:
                 parts.append(f"{pad_rms_mm[i]:.3f}")
-        ui.text(f"RMS lip gap [mm]: {', '.join(parts)}")
+        ui.text(f"RMS perimeter gap [mm]: {', '.join(parts)}")
         # Pick-box masses read from the USD; the seal is tuned against the first crate.
         ui.text(f"Pick boxes: panel {self.panel_mass:.0f} kg, crate[0] {self.crate_masses[0]:.0f} kg")
         # Seal modes for the box currently gripped: same tool k/d, but natural frequency and damping
