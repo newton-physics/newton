@@ -172,9 +172,6 @@ class Example:
             iterations=self.sim_iterations,
             rigid_contact_hard=True,
             rigid_contact_history=True,
-            rigid_contact_stick_motion_eps=0.0,
-            rigid_contact_stick_freeze_translation_eps=0.0,
-            rigid_contact_stick_freeze_angular_eps=0.0,
             rigid_body_contact_buffer_size=1024,
         )
 

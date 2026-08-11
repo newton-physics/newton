@@ -17,6 +17,7 @@ from .warp_raytrace import (
     RenderContext,
     RenderLightType,
     RenderOrder,
+    TextureProjectionMode,
     Utils,
 )
 
@@ -84,6 +85,7 @@ class SensorTiledCamera:
 
     RenderLightType = RenderLightType
     RenderOrder = RenderOrder
+    TextureProjectionMode = TextureProjectionMode
     GaussianRenderMode = GaussianRenderMode
     RenderConfig = RenderConfig
     ClearData = ClearData

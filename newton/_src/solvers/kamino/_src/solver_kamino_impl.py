@@ -56,7 +56,7 @@ from .kinematics.resets import (
     set_body_q,
     set_floating_base,
 )
-from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
+from .linalg import ConjugateResidualSolver, ConjugateResidualSolverFused, IterativeSolver, LinearSolverNameToType
 from .solvers.common import WarmStartMode
 from .solvers.dvi import DVISolver
 from .solvers.fk import ForwardKinematicsSolver
@@ -184,6 +184,20 @@ class SolverKaminoImpl(SolverBase):
             )
             linear_solver_type = ConjugateResidualSolver
 
+        # ConjugateResidualSolverFused requires a BlockSparseMatrixFreeDelassusOperator,
+        # which is only built when both sparse_dynamics and sparse_jacobian are enabled.
+        if issubclass(linear_solver_type, ConjugateResidualSolverFused):
+            if not self._config.sparse_dynamics:
+                msg.warning(
+                    "ConjugateResidualSolverFused requires sparse dynamics. Enabling sparse_dynamics automatically."
+                )
+                self._config.sparse_dynamics = True
+            if not self._config.sparse_jacobian:
+                msg.warning(
+                    "ConjugateResidualSolverFused requires sparse Jacobians. Enabling sparse_jacobian automatically."
+                )
+                self._config.sparse_jacobian = True
+
         # If graph conditionals are disabled in the PADMM solver, ensure that they
         # are also disabled in the linear solver if it is an iterative solver.
         linear_solver_kwargs = dict(self._config.dynamics.linear_solver_kwargs)
@@ -282,7 +296,6 @@ class SolverKaminoImpl(SolverBase):
 
         # Allocate additional internal data for reset operations
         with wp.ScopedDevice(self._model.device):
-            self._all_worlds_mask = wp.ones(shape=(self._model.size.num_worlds,), dtype=wp.bool)
             self._base_q = wp.zeros(shape=(self._model.size.num_worlds,), dtype=wp.transformf)
             self._base_u = wp.zeros(shape=(self._model.size.num_worlds,), dtype=wp.spatial_vectorf)
             self._bodies_u_zeros = wp.zeros(shape=(self._model.size.sum_of_num_bodies,), dtype=wp.spatial_vectorf)
@@ -441,8 +454,7 @@ class SolverKaminoImpl(SolverBase):
             if data is not None and data.shape[0] != expected:
                 raise ValueError(f"Invalid shape for {name}: Expected ({expected},), but got {data.shape}.")
 
-        # Resolve and validate world mask
-        world_mask = self._all_worlds_mask if world_mask is None else world_mask
+        # Validate world mask
         _check_length(world_mask, "world_mask", self._model.size.num_worlds)
 
         # Resolve and validate reset config
@@ -520,11 +532,11 @@ class SolverKaminoImpl(SolverBase):
             # Extract joint state into pre-allocated actuator state buffers
             extract_actuators_state_from_joints(
                 model=self._model,
-                world_mask=world_mask,
                 joint_q=joint_q if joint_q is not None else state.q_j,
                 joint_u=joint_u if joint_u is not None else state.dq_j,
                 actuator_q=self._actuators_q,
                 actuator_u=self._actuators_u,
+                world_mask=world_mask,
             )
             actuator_q = self._actuators_q if joint_q is not None else actuator_q
             actuator_u = self._actuators_u if joint_u is not None else actuator_u
@@ -658,8 +670,10 @@ class SolverKaminoImpl(SolverBase):
             # Currently, only the position-level (iterative) FK solve can fail
             if actuator_q is not None:
                 wp.copy(success_mask, self._solver_fk.newton_success)
-            else:
+            elif world_mask is not None:
                 wp.copy(success_mask, world_mask)
+            else:
+                success_mask.fill_(True)
 
         # Run the post-reset callback if it has been set
         self._run_post_reset_callback(state_out=state)
