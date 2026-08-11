@@ -67,7 +67,6 @@ import warp as wp
 import newton
 import newton.examples
 from newton.examples.surface_gripper.robot_playback import RobotPlayback
-from newton.selection import ArticulationView
 from newton.examples.surface_gripper.surface_gripper import (
     SurfaceGripper,
     SurfaceGripperBuilder,
@@ -77,6 +76,7 @@ from newton.examples.surface_gripper.surface_gripper import (
     evaluate_gripper_force,
     evaluate_seal_quality,
 )
+from newton.selection import ArticulationView
 
 # Asset paths (global constants). All assets live in the shared newton/examples/assets/ directory.
 ASSETS = Path(__file__).parent.parent / "assets"
@@ -127,16 +127,34 @@ CRATE_PRIMS = (
 # to a grip pose (wp.transform, position [m] + quat), where it can be reached. At each disengagement signal in
 # RECORDING_JSONL, the next crate to be gripped is teleported from the waiting pose to the grip pose.
 CRATE_GRIP_POSES = (
-    wp.transform(wp.vec3(-1.53891122341156, -1.339923620223999, 0.7991625070571899), wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
-    wp.transform(wp.vec3(-1.5389012098312378, -1.339895486831665, 0.7957268357276917), wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
-    wp.transform(wp.vec3(-1.5389126539230347, -1.3399271965026855, 0.8007364869117737), wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
-    wp.transform(wp.vec3(-1.538902759552002, -1.3398996591567993, 0.7959489226341248), wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
-    wp.transform(wp.vec3(-1.5389012098312378, -1.3398951292037964, 0.7962862849235535), wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
-    wp.transform(wp.vec3(-1.538907527923584, -1.33991277217865, 0.7989855408668518), wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304)),
+    wp.transform(
+        wp.vec3(-1.53891122341156, -1.339923620223999, 0.7991625070571899),
+        wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304),
+    ),
+    wp.transform(
+        wp.vec3(-1.5389012098312378, -1.339895486831665, 0.7957268357276917),
+        wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304),
+    ),
+    wp.transform(
+        wp.vec3(-1.5389126539230347, -1.3399271965026855, 0.8007364869117737),
+        wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304),
+    ),
+    wp.transform(
+        wp.vec3(-1.538902759552002, -1.3398996591567993, 0.7959489226341248),
+        wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304),
+    ),
+    wp.transform(
+        wp.vec3(-1.5389012098312378, -1.3398951292037964, 0.7962862849235535),
+        wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304),
+    ),
+    wp.transform(
+        wp.vec3(-1.538907527923584, -1.33991277217865, 0.7989855408668518),
+        wp.quat(0.0, 0.0, 0.7071067690849304, 0.7071067690849304),
+    ),
 )
 
 # Each pad is represented with a thin cylinder in ROBOT_USD.
-# The paths to the pads are used to extract the geometry of 
+# The paths to the pads are used to extract the geometry of
 # each pad from USD.
 PAD_PRIMS = (
     "/Robot/J6_link/GripperPads/pad_0",
@@ -204,9 +222,9 @@ BREAK_SETTLE_TIME = 0.5  # [s]
 
 @wp.kernel
 def update_seal_break_kernel(
-    pad_seal_load: wp.array[wp.vec4],            # [pads] (normal, shear, peel, torsion) after the caps
+    pad_seal_load: wp.array[wp.vec4],  # [pads] (normal, shear, peel, torsion) after the caps
     pad_seal_load_unclamped: wp.array[wp.vec4],  # [pads] the same four groups before the caps
-    pad_seal_quality_rms: wp.array[float],       # [pads] RMS perimeter-gap deviation from the seated pose [m]
+    pad_seal_quality_rms: wp.array[float],  # [pads] RMS perimeter-gap deviation from the seated pose [m]
     break_on_seal_quality: wp.bool,  # False = force-based metric, True = geometry-based (RMS) metric
     pad_engaged_bs_prev: wp.array[wp.vec2i],  # [pads] gripped body/shape last sub-step (``[0] < 0`` = was released)
     break_threshold: float,  # metric above this counts as over-capacity (units depend on the mode)
@@ -442,11 +460,10 @@ def filter_pick_boxes_against_arm(builder, pick, ee_body_id) -> None:
                 builder.add_shape_collision_filter_pair(bs, shape)
 
 
-
 @wp.kernel
 def broadcast_arm_targets_kernel(
     num_arm_dofs: int,
-    arm_offset: int,    # start of world 0's arm DOFs in joint_target_q
+    arm_offset: int,  # start of world 0's arm DOFs in joint_target_q
     world_stride: int,  # per-world stride in joint_target_q
     joint_target_q: wp.array[float],
 ):
@@ -460,7 +477,7 @@ def broadcast_arm_targets_kernel(
 
 @wp.kernel
 def broadcast_gripper_command_kernel(
-    gripper_command_engaged: wp.array[wp.bool],    # in/out: index 0 written by the playback, copied to 1..n-1
+    gripper_command_engaged: wp.array[wp.bool],  # in/out: index 0 written by the playback, copied to 1..n-1
     gripper_command_preparing: wp.array[wp.bool],  # in/out: same
 ):
     """Copy world 0's sampled engaged/preparing commands to every other gripper. The playback only
@@ -472,14 +489,14 @@ def broadcast_gripper_command_kernel(
 
 @wp.kernel
 def teleport_crate_kernel(
-    gripper_curr_box_prev: wp.array[int],   # [grippers] box index before this sub-step
-    gripper_curr_box_curr: wp.array[int],   # [grippers] box index after this sub-step
+    gripper_curr_box_prev: wp.array[int],  # [grippers] box index before this sub-step
+    gripper_curr_box_curr: wp.array[int],  # [grippers] box index after this sub-step
     n_crates_per_world: int,
-    crate_joint_q_start: wp.array[int],     # [n_grippers * n_crates_per_world] joint_q start per gripper per crate
-    crate_joint_qd_start: wp.array[int],    # [n_grippers * n_crates_per_world] joint_qd start per gripper per crate
-    crate_grip_q: wp.array[float],          # [n_grippers * n_crates_per_world * 7] grip-pose DOFs (pos+quat xyzw)
-    joint_q: wp.array[float],               # in/out: simulation joint positions
-    joint_qd: wp.array[float],              # in/out: simulation joint velocities
+    crate_joint_q_start: wp.array[int],  # [n_grippers * n_crates_per_world] joint_q start per gripper per crate
+    crate_joint_qd_start: wp.array[int],  # [n_grippers * n_crates_per_world] joint_qd start per gripper per crate
+    crate_grip_q: wp.array[float],  # [n_grippers * n_crates_per_world * 7] grip-pose DOFs (pos+quat xyzw)
+    joint_q: wp.array[float],  # in/out: simulation joint positions
+    joint_qd: wp.array[float],  # in/out: simulation joint velocities
 ):
     """One thread per gripper. When curr_box advances and the new box is a crate (index >= 1),
     teleport it to its grip pose by writing directly into the free-joint DOFs."""
@@ -534,17 +551,17 @@ def teleport_crate(
 
 @wp.kernel
 def update_engagement_signals_kernel(
-    gripper_engaged_curr: wp.array[wp.bool],     # [grippers] current step's engaged command
-    gripper_engaged_prev: wp.array[wp.bool],     # [grippers] previous step's engaged command
-    gripper_preparing_curr: wp.array[wp.bool],   # [grippers] current step's preparing flag
-    gripper_preparing_prev: wp.array[wp.bool],   # [grippers] previous step's preparing flag
-    gripper_curr_box_prev: wp.array[int],        # [grippers] previous box index (read)
-    gripper_curr_box_curr: wp.array[int],        # [grippers] current box index (written: carry or advance)
-    gripper_box_body_ids: wp.array[int],         # [n_grippers * n_boxes_per_world] body ids in pick order per gripper
-    gripper_box_shape_ids: wp.array[int],        # [n_grippers * n_boxes_per_world] shape ids in pick order per gripper
+    gripper_engaged_curr: wp.array[wp.bool],  # [grippers] current step's engaged command
+    gripper_engaged_prev: wp.array[wp.bool],  # [grippers] previous step's engaged command
+    gripper_preparing_curr: wp.array[wp.bool],  # [grippers] current step's preparing flag
+    gripper_preparing_prev: wp.array[wp.bool],  # [grippers] previous step's preparing flag
+    gripper_curr_box_prev: wp.array[int],  # [grippers] previous box index (read)
+    gripper_curr_box_curr: wp.array[int],  # [grippers] current box index (written: carry or advance)
+    gripper_box_body_ids: wp.array[int],  # [n_grippers * n_boxes_per_world] body ids in pick order per gripper
+    gripper_box_shape_ids: wp.array[int],  # [n_grippers * n_boxes_per_world] shape ids in pick order per gripper
     n_boxes_per_world: int,
-    pad_gripper: wp.array[int],                  # [pads] pad -> gripper
-    pad_offsets: wp.array[int],                  # [grippers+1] first pad index per gripper
+    pad_gripper: wp.array[int],  # [pads] pad -> gripper
+    pad_offsets: wp.array[int],  # [grippers+1] first pad index per gripper
     # _prev state: read for carry-forward
     pad_engaged_bs_prev: wp.array[wp.vec2i],
     pad_preparing_bs_prev: wp.array[wp.vec2i],
@@ -567,25 +584,25 @@ def update_engagement_signals_kernel(
     body_id = gripper_box_body_ids[box_slot]
     shape_id = gripper_box_shape_ids[box_slot]
 
-    if eng_curr and not eng_prev:       # rising edge: latch
+    if eng_curr and not eng_prev:  # rising edge: latch
         pad_engaged_bs_curr[pad] = wp.vec2i(body_id, shape_id)
-    elif eng_curr:                       # sustained: carry from previous sub-step
+    elif eng_curr:  # sustained: carry from previous sub-step
         pad_engaged_bs_curr[pad] = pad_engaged_bs_prev[pad]
-    else:                                # command off: clear
+    else:  # command off: clear
         pad_engaged_bs_curr[pad] = wp.vec2i(-1, -1)
 
-    if prep_curr and not prep_prev:     # rising edge: latch
+    if prep_curr and not prep_prev:  # rising edge: latch
         pad_preparing_bs_curr[pad] = wp.vec2i(body_id, shape_id)
-    elif prep_curr:                      # sustained: carry
+    elif prep_curr:  # sustained: carry
         pad_preparing_bs_curr[pad] = pad_preparing_bs_prev[pad]
-    else:                                # off: clear
+    else:  # off: clear
         pad_preparing_bs_curr[pad] = wp.vec2i(-1, -1)
 
     # Carry or advance the box index. Only the first pad of each gripper writes.
     if pad == pad_offsets[g]:
-        if not eng_curr and eng_prev:   # falling edge: advance to next box
+        if not eng_curr and eng_prev:  # falling edge: advance to next box
             gripper_curr_box_curr[g] = (curr_box + 1) % n_boxes_per_world
-        else:                           # otherwise: carry
+        else:  # otherwise: carry
             gripper_curr_box_curr[g] = curr_box
 
 
@@ -641,9 +658,9 @@ class ExampleState:
     """
 
     def __init__(self, n_grippers: int):
-        self.gripper_command_engaged_wp = wp.zeros(n_grippers, dtype=wp.bool)    # engagement command (ro[0])
+        self.gripper_command_engaged_wp = wp.zeros(n_grippers, dtype=wp.bool)  # engagement command (ro[0])
         self.gripper_command_preparing_wp = wp.zeros(n_grippers, dtype=wp.bool)  # preparing-to-engage flag (ro[2])
-        self.gripper_curr_box_wp = wp.zeros(n_grippers, dtype=wp.int32)          # current box index
+        self.gripper_curr_box_wp = wp.zeros(n_grippers, dtype=wp.int32)  # current box index
 
 
 class Example:
@@ -693,11 +710,10 @@ class Example:
         pick = env.add_usd(str(PICK_SCENE_USD))
 
         # Get the local id of the panel body and the local ids of the crate bodies.
-        # These ids allow quick retrieval of panel and crate attributes after replicating 
+        # These ids allow quick retrieval of panel and crate attributes after replicating
         # the simulation configuration to multiple worlds.
         panel_body_local_id, panel_half_extents = read_panel_box(pick)
         crate_body_local_ids, crate_half_extents = read_crate_boxes(pick)
-
 
         # Get the half-extents of the panel and crates.
         # The half-extents are used later to create sdf meshes of the pick objects.
@@ -720,7 +736,7 @@ class Example:
             self.crate_inertias.append(env.body_inertia[crate_body_id])
 
         # Create sdf meshes of the panel and crates.
-        # sdf meshes are used to help compute the relative pose of pad and 
+        # sdf meshes are used to help compute the relative pose of pad and
         # picked object that minimises the distance between the two bodies.
         device = wp.get_device()
         self.sdf_meshes = {}  # env-local box body id -> its SDF mesh
@@ -730,7 +746,7 @@ class Example:
         # Filter every pick box against the whole arm: the seal owns the hold.
         filter_pick_boxes_against_arm(env, pick, ee_body_local)
 
-        # Create multiple identical worlds of the simulation configuration 
+        # Create multiple identical worlds of the simulation configuration
         # and add a shared ground plane.
         builder = newton.ModelBuilder()
         builder.add_ground_plane()  # global (world -1): adds no body, so per-world bodies stay contiguous
@@ -779,7 +795,10 @@ class Example:
         gripper_builder = SurfaceGripperBuilder()
         for w in range(NUM_WORLDS):
             gripper = SurfaceGripper(
-                w * env.body_count + ee_body_local, wp.transform_identity(), world=w, n_perimeter_samples=PAD_PERIMETER_SAMPLES
+                w * env.body_count + ee_body_local,
+                wp.transform_identity(),
+                world=w,
+                n_perimeter_samples=PAD_PERIMETER_SAMPLES,
             )
             gripper.set_natural_frequency_damping_ratio(
                 self.crate_masses[0],
@@ -795,7 +814,6 @@ class Example:
             for i in range(len(pad_transforms)):
                 gripper.add_pad(pad_transforms[i], self.pad_radii[i], self.pad_half_heights[i])
             gripper_builder.add_gripper(gripper)
-
 
         # Create gripper model, state and control.
         # These classes mirror Newton's model, state and control classes.
@@ -827,7 +845,9 @@ class Example:
             box_shape_ids.append(world_shape_offset + w * env_shape_count + env_body_to_shape_id[panel_body_local_id])
             for i in range(len(crate_body_local_ids)):
                 box_body_ids.append(w * env.body_count + crate_body_local_ids[i])
-                box_shape_ids.append(world_shape_offset + w * env_shape_count + env_body_to_shape_id[crate_body_local_ids[i]])
+                box_shape_ids.append(
+                    world_shape_offset + w * env_shape_count + env_body_to_shape_id[crate_body_local_ids[i]]
+                )
         self.gripper_box_body_ids_wp = wp.array(box_body_ids, dtype=wp.int32, device=self.model.device)
         # Parallel to gripper_box_body_ids_wp: global shape ID of each box's collision shape.
         self.gripper_box_shape_ids_wp = wp.array(box_shape_ids, dtype=wp.int32, device=self.model.device)
@@ -839,9 +859,9 @@ class Example:
         self.pad_offsets_wp = wp.array(pad_offsets, dtype=wp.int32, device=self.model.device)
 
         # The crates are teleported from their waiting pose to their grip pose.
-        # This requires knowledge of the indices of the array elements in 
+        # This requires knowledge of the indices of the array elements in
         # state.joint_q used to pose each crate.
-        # Use ArticulationView to compute the array elements in state.joint_q 
+        # Use ArticulationView to compute the array elements in state.joint_q
         # that correspond to each crate in each world.
         n_crates = len(CRATE_PRIMS)
         crate_joint_q_start = np.zeros((NUM_WORLDS, n_crates), dtype=np.int32)
@@ -860,7 +880,9 @@ class Example:
                 crate_joint_qd_start[w, crate_index] = dof_layout.offset + w * dof_layout.stride_between_worlds
                 crate_grip_q[w, crate_index] = [pos[0], pos[1], pos[2], quat[0], quat[1], quat[2], quat[3]]
         self.crate_joint_q_start_wp = wp.array(crate_joint_q_start.flatten(), dtype=wp.int32, device=self.model.device)
-        self.crate_joint_qd_start_wp = wp.array(crate_joint_qd_start.flatten(), dtype=wp.int32, device=self.model.device)
+        self.crate_joint_qd_start_wp = wp.array(
+            crate_joint_qd_start.flatten(), dtype=wp.int32, device=self.model.device
+        )
         self.crate_grip_q_wp = wp.array(crate_grip_q.flatten(), dtype=wp.float32, device=self.model.device)
 
         # Per-world offsets and strides for the arm's joint arrays. state.joint_q uses the coord
@@ -871,7 +893,7 @@ class Example:
         arm_dof_layout = arm_view.frequency_layouts[newton.Model.AttributeFrequency.JOINT_DOF]
         self.arm_coord_offset = arm_coord_layout.offset  # into state.joint_q (coord layout)
         self.arm_coord_stride = arm_coord_layout.stride_between_worlds
-        self.arm_dof_offset = arm_dof_layout.offset      # into control.joint_target_q (dof layout)
+        self.arm_dof_offset = arm_dof_layout.offset  # into control.joint_target_q (dof layout)
         self.arm_dof_stride = arm_dof_layout.stride_between_worlds
 
         # Start each world's arm at the first recorded pose.
@@ -897,7 +919,6 @@ class Example:
         if WORLD_RENDER_SPACING is not None:
             self.viewer.set_world_offsets(WORLD_RENDER_SPACING)
 
-
     def capture(self):
         # capturing runs one frame for real, which advances the device sub-step counter and search
         # index, so reset both to 0 afterwards.
@@ -920,7 +941,7 @@ class Example:
                 self.last_lo_wp,  # in/out: forward-search index, resumed and cached
                 self.sim_dt,
                 self.control.joint_target_q,
-                self.example_state_curr.gripper_command_engaged_wp,   # out: engagement command (ro[0]) for world 0
+                self.example_state_curr.gripper_command_engaged_wp,  # out: engagement command (ro[0]) for world 0
                 self.example_state_curr.gripper_command_preparing_wp,  # out: preparing flag (ro[2]) for world 0
             )
             # The playback only fills world 0; fan its arm targets and gripper commands out to the rest.
@@ -1016,14 +1037,23 @@ class Example:
                     self.gripper_state_input_curr,
                 )
             evaluate_gripper_force(
-                self.model, self.state_0, self.gripper_model, self.gripper_state_input_prev, self.gripper_state_output, self.gripper_control, self.sim_dt
+                self.model,
+                self.state_0,
+                self.gripper_model,
+                self.gripper_state_input_prev,
+                self.gripper_state_output,
+                self.gripper_control,
+                self.sim_dt,
             )
 
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             self.state_0, self.state_1 = self.state_1, self.state_0
-            self.gripper_state_input_prev, self.gripper_state_input_curr = self.gripper_state_input_curr, self.gripper_state_input_prev
+            self.gripper_state_input_prev, self.gripper_state_input_curr = (
+                self.gripper_state_input_curr,
+                self.gripper_state_input_prev,
+            )
             self.example_state_prev, self.example_state_curr = self.example_state_curr, self.example_state_prev
 
     def step(self):
@@ -1072,7 +1102,9 @@ class Example:
         ui.text("Picked-box seal modes:")
         body_b = -1
         if held > 0:
-            valid_body_ids = pad_engaged_bs[(pad_engaged_bs[:, 0] >= 0) & (pad_engaged_bs[:, 0] < self.model.body_count), 0]
+            valid_body_ids = pad_engaged_bs[
+                (pad_engaged_bs[:, 0] >= 0) & (pad_engaged_bs[:, 0] < self.model.body_count), 0
+            ]
             if len(valid_body_ids) > 0:
                 body_b = int(valid_body_ids[0])
         if 0 <= body_b < self.model.body_count:

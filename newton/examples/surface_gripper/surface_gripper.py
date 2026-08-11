@@ -58,7 +58,6 @@ import warp as wp
 import newton
 from newton.geometry import sdf_mesh
 
-
 # 6-vector / 6x6 matrix types: seal DOF wrenches (fx, fy, fz, mx, my, mz) and the Gauss-Newton normal equations.
 _mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 _vec6 = wp.types.vector(length=6, dtype=wp.float32)
@@ -288,7 +287,6 @@ def _eval_effective_damping(
     return d_trans_eff[2], d_trans_eff[0], d_trans_eff[1], d_rot_eff[0], d_rot_eff[1], d_rot_eff[2]
 
 
-
 @wp.func
 def _clamp_symmetric(f: float, f_max: float) -> float:
     """Clamp ``f`` to ``[-f_max, f_max]``. ``f_max <= 0`` means no cap (``f`` returned unchanged)."""
@@ -312,14 +310,18 @@ def _clamp_magnitude_2d(fx: float, fy: float, f_max: float) -> tuple[float, floa
 
 @wp.kernel
 def _attach_seal_kernel(
-    pad_engaged_bs_curr: wp.array[wp.vec2i],   # [pads] current step's gripped body/shape (``[0] < 0`` = released)
-    pad_engaged_bs_prev: wp.array[wp.vec2i],   # [pads] previous step's gripped body/shape (``[0] < 0`` = was released, for rising-edge detection)
+    pad_engaged_bs_curr: wp.array[wp.vec2i],  # [pads] current step's gripped body/shape (``[0] < 0`` = released)
+    pad_engaged_bs_prev: wp.array[
+        wp.vec2i
+    ],  # [pads] previous step's gripped body/shape (``[0] < 0`` = was released, for rising-edge detection)
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
     pad_gripper: wp.array[int],
     pad_xform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],  # world pose of body A (the gripper body)
-    hold_pose_body_b: wp.array[wp.transform],  # GB0 per body: raw body_q (attach_seal) or the fitted seated pose (attach_seal_seated)
+    hold_pose_body_b: wp.array[
+        wp.transform
+    ],  # GB0 per body: raw body_q (attach_seal) or the fitted seated pose (attach_seal_seated)
     # outputs
     pad_anchor_b: wp.array[wp.transform],
 ):
@@ -364,7 +366,7 @@ def _eval_pad_force_linear_kernel(
     body_inertia: wp.array[wp.mat33],
     dt: float,
     # outputs (mutated in place)
-    pad_seal_load: wp.array[wp.vec4],            # out: (normal, shear, peel, torsion) after the caps
+    pad_seal_load: wp.array[wp.vec4],  # out: (normal, shear, peel, torsion) after the caps
     pad_seal_load_unclamped: wp.array[wp.vec4],  # out: same four groups before the caps
     body_f: wp.array[wp.spatial_vector],
 ):
@@ -463,9 +465,6 @@ def _eval_pad_force_linear_kernel(
     pad_seal_load_unclamped[pad] = wp.vec4(fz_unclamped, shear_mag_raw, peel_mag_raw, m_twist_raw)
 
 
-
-
-
 @wp.func
 def _solve6(a: _mat66, b: _vec6) -> _vec6:
     """Solve the 6x6 system ``a x = b`` by Gaussian elimination with partial pivoting (``a`` assumed
@@ -524,8 +523,12 @@ def _seat_body_pose(
     shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
     shape_b: int,  # global shape ID of the gripped shape (indexes shape_transform)
     mesh_id: wp.uint64,
-    pad_perimeter_local: wp.array[wp.vec3],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
-    pad_perimeter_start: wp.array[int],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+    pad_perimeter_local: wp.array[
+        wp.vec3
+    ],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
+    pad_perimeter_start: wp.array[
+        int
+    ],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
     max_dist: float,
     grad_h: float,
     damping: float,
@@ -585,7 +588,9 @@ def _seat_body_pose(
                     x_body = wp.transform_point(T_bs, sample_point_in_mesh)
                     grad_body = wp.quat_rotate(R_bs, grad_mesh)
                     cr = wp.cross(x_body, grad_body)
-                    a = _vec6(grad_body[0], grad_body[1], grad_body[2], cr[0], cr[1], cr[2])  # Jacobian row (sdf grows as -a . xi)
+                    a = _vec6(
+                        grad_body[0], grad_body[1], grad_body[2], cr[0], cr[1], cr[2]
+                    )  # Jacobian row (sdf grows as -a . xi)
                     jtj = jtj + wp.outer(a, a)
                     rhs = rhs + a * sdf
         for k in range(6):
@@ -603,8 +608,10 @@ def _seat_body_pose(
 
 @wp.kernel
 def _attach_seal_seated_kernel(
-    pad_engaged_bs_curr: wp.array[wp.vec2i],   # [pads] current step's gripped body/shape (``[0] < 0`` = released)
-    pad_engaged_bs_prev: wp.array[wp.vec2i],   # [pads] previous step's gripped body/shape (``[0] < 0`` = was released, for rising-edge detection)
+    pad_engaged_bs_curr: wp.array[wp.vec2i],  # [pads] current step's gripped body/shape (``[0] < 0`` = released)
+    pad_engaged_bs_prev: wp.array[
+        wp.vec2i
+    ],  # [pads] previous step's gripped body/shape (``[0] < 0`` = was released, for rising-edge detection)
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
     pad_gripper: wp.array[int],
@@ -613,16 +620,24 @@ def _attach_seal_seated_kernel(
     shape_mesh_id: wp.array[wp.uint64],  # shape_id -> SDF mesh id (for the inline seat fit)
     shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
     pad_world: wp.array[int],  # world of each pad (see SurfaceGripperModel)
-    pad_world_start: wp.array[int],  # start indices: world w's pads are pad-ids [pad_world_start[w] : pad_world_start[w+1]]
-    pad_perimeter_local: wp.array[wp.vec3],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
-    pad_perimeter_start: wp.array[int],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+    pad_world_start: wp.array[
+        int
+    ],  # start indices: world w's pads are pad-ids [pad_world_start[w] : pad_world_start[w+1]]
+    pad_perimeter_local: wp.array[
+        wp.vec3
+    ],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
+    pad_perimeter_start: wp.array[
+        int
+    ],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
     max_dist: float,  # SDF search radius [m]
     grad_h: float,  # SDF central-difference step [m]
     damping: float,  # small stabiliser: steadies the fit when the pads don't fully pin the gripped object
     iters: int,  # Gauss-Newton iterations for the seat fit (1 for planar faces, more for curved objects)
     # outputs
     pad_anchor_b: wp.array[wp.transform],
-    pad_perimeter_sdf0: wp.array[float],  # seated perimeter signed distances cached at engagement (indexed by pad_perimeter_start)
+    pad_perimeter_sdf0: wp.array[
+        float
+    ],  # seated perimeter signed distances cached at engagement (indexed by pad_perimeter_start)
 ):
     """Seated variant of :func:`_attach_seal_kernel`: on each pad's rising edge, compute the gripped body's
     seated pose inline (:func:`_seat_body_pose`, scanning only this pad's world's pads), cache
@@ -666,11 +681,12 @@ def _attach_seal_seated_kernel(
             pad_perimeter_sdf0[k] = sdf_mesh(mesh_b, perimeter_mesh, max_dist)
 
 
-
 @wp.kernel
 def _seal_quality_kernel(
-    pad_engaged_bs: wp.array[wp.vec2i],    # [pads] latched gripped body/shape while engaged (``[0] < 0`` = released)
-    pad_preparing_bs: wp.array[wp.vec2i],  # [pads] body/shape a preparing pad is approaching (``[0] >= 0`` means preparing)
+    pad_engaged_bs: wp.array[wp.vec2i],  # [pads] latched gripped body/shape while engaged (``[0] < 0`` = released)
+    pad_preparing_bs: wp.array[
+        wp.vec2i
+    ],  # [pads] body/shape a preparing pad is approaching (``[0] >= 0`` means preparing)
     gripper_body_id: wp.array[int],
     gripper_xform: wp.array[wp.transform],
     pad_gripper: wp.array[int],
@@ -680,9 +696,13 @@ def _seal_quality_kernel(
     shape_transform: wp.array[wp.transform],  # shape_transform[shape_b] = T_bs for the gripped shape
     pad_world: wp.array[int],
     pad_world_start: wp.array[int],
-    pad_perimeter_local: wp.array[wp.vec3],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
+    pad_perimeter_local: wp.array[
+        wp.vec3
+    ],  # precomputed perimeter points in the pad frame, indexed by pad_perimeter_start (start indices per pad)
     pad_perimeter_sdf0: wp.array[float],  # seated perimeter SDFs cached at engagement (used only for engaged pads)
-    pad_perimeter_start: wp.array[int],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+    pad_perimeter_start: wp.array[
+        int
+    ],  # [n_pads+1] start indices: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
     max_dist: float,
     grad_h: float,  # seat-fit params (preparing case only)
     damping: float,
@@ -711,7 +731,9 @@ def _seal_quality_kernel(
     mesh_world = body_q[body_b] * shape_transform[shape_b]
     # seal frame in mesh-local coordinates: (GB * T_bs)^-1 * SA
     t_seal_mesh = wp.transform_inverse(mesh_world) * seal_world
-    preparing_anchor_mesh = wp.transform_identity()  # seated seal frame in mesh frame (preparing only; recomputed below)
+    preparing_anchor_mesh = (
+        wp.transform_identity()
+    )  # seated seal frame in mesh frame (preparing only; recomputed below)
     if preparing:
         w = pad_world[pad]
         seated = _seat_body_pose(  # recompute the seated pose of the approached crate
@@ -735,14 +757,18 @@ def _seal_quality_kernel(
             iters,
         )
         preparing_anchor_body = wp.transform_inverse(seated) * seal_world  # SB_preparing = GB0^-1 * SA (body frame)
-        preparing_anchor_mesh = wp.transform_inverse(shape_transform[shape_b]) * preparing_anchor_body  # T_bs^-1 * SB_preparing (mesh frame)
+        preparing_anchor_mesh = (
+            wp.transform_inverse(shape_transform[shape_b]) * preparing_anchor_body
+        )  # T_bs^-1 * SB_preparing (mesh frame)
     dev_sq = float(0.0)  # this pad's running totals (this thread owns pad_rms[pad], so no atomics needed)
     count = int(0)
     for k in range(pad_perimeter_start[pad], pad_perimeter_start[pad + 1]):
         perimeter_point = pad_perimeter_local[k]
         sdf0 = pad_perimeter_sdf0[k]  # engaged: cached seated sdf0
         if preparing:
-            sdf0 = sdf_mesh(mesh_b, wp.transform_point(preparing_anchor_mesh, perimeter_point), max_dist)  # preparing: recomputed live
+            sdf0 = sdf_mesh(
+                mesh_b, wp.transform_point(preparing_anchor_mesh, perimeter_point), max_dist
+            )  # preparing: recomputed live
         if sdf0 >= max_dist:
             pad_rms[pad] = -1.0  # perimeter point outside SDF search radius: result is unreliable
             return
@@ -790,10 +816,14 @@ class SurfaceGripper:
         # Replicated environment this gripper belongs to. Pads are laid out grouped by world, so the
         # joint seat fit only ever scans pads from the same environment.
         self.world = world
-        self.n_perimeter_samples = n_perimeter_samples  # perimeter sample points per pad for this gripper's seat fit / seal metric
+        self.n_perimeter_samples = (
+            n_perimeter_samples  # perimeter sample points per pad for this gripper's seat fit / seal metric
+        )
         self.pads: list[wp.transform] = []  # pad poses in the gripper frame
         self.pad_radii: list[float] = []  # per-pad perimeter circle radius [m], parallel to self.pads
-        self.pad_half_heights: list[float] = []  # per-pad perimeter plane offset along the grip axis [m], parallel to self.pads
+        self.pad_half_heights: list[
+            float
+        ] = []  # per-pad perimeter plane offset along the grip axis [m], parallel to self.pads
         # Seal parameters -- zero (no seal force) until set via one of the two setters below.
         self.k_normal = 0.0
         self.d_normal = 0.0
@@ -972,7 +1002,9 @@ class SurfaceGripperBuilder:
         pad_xform = []
         pad_world = []
         pad_perimeter_local = []
-        pad_perimeter_start = [0]  # [n_pads + 1]: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
+        pad_perimeter_start = [
+            0
+        ]  # [n_pads + 1]: pad p's perimeter points are pad_perimeter_local[pad_perimeter_start[p] : pad_perimeter_start[p+1]]
         pad_world_start = [0] * (m.world_count + 1)  # per-world starts, then the total
 
         for w in range(m.world_count):
@@ -985,7 +1017,9 @@ class SurfaceGripperBuilder:
                     pad_gripper.append(gi)
                     pad_xform.append(gripper.pads[pi])
                     pad_world.append(w)
-                    perimeter = _perimeter_circle(gripper.pad_radii[pi], gripper.pad_half_heights[pi], gripper.n_perimeter_samples)
+                    perimeter = _perimeter_circle(
+                        gripper.pad_radii[pi], gripper.pad_half_heights[pi], gripper.n_perimeter_samples
+                    )
                     for li in range(len(perimeter)):
                         pad_perimeter_local.append(perimeter[li])
                     pad_perimeter_start.append(len(pad_perimeter_local))  # end of this pad's perimeter points
@@ -998,8 +1032,12 @@ class SurfaceGripperBuilder:
         m.n_perimeter_samples = wp.array(gripper_n_perimeter_samples, dtype=wp.int32, device=device)  # [grippers]
         m.pad_gripper = wp.array(pad_gripper, dtype=wp.int32, device=device)
         m.pad_xform = wp.array(pad_xform, dtype=wp.transform, device=device)
-        m.pad_perimeter_local = wp.array(pad_perimeter_local, dtype=wp.vec3, device=device)  # indexed by pad_perimeter_start
-        m.pad_perimeter_start = wp.array(pad_perimeter_start, dtype=wp.int32, device=device)  # [n_pads+1] start indices into pad_perimeter_local
+        m.pad_perimeter_local = wp.array(
+            pad_perimeter_local, dtype=wp.vec3, device=device
+        )  # indexed by pad_perimeter_start
+        m.pad_perimeter_start = wp.array(
+            pad_perimeter_start, dtype=wp.int32, device=device
+        )  # [n_pads+1] start indices into pad_perimeter_local
         m.pad_world = wp.array(pad_world, dtype=wp.int32, device=device)
         m.pad_world_start = wp.array(pad_world_start, dtype=wp.int32, device=device)
         return m
@@ -1015,7 +1053,7 @@ class SurfaceGripperStateInput:
     access to ``model.shape_transform`` (T_bs) and the SDF mesh via ``shape_mesh_id``.
     """
 
-    pad_engaged_bs: wp.array[wp.vec2i]    # ``[0]`` = body id, ``[1]`` = shape id; ``[0] < 0`` = not engaged
+    pad_engaged_bs: wp.array[wp.vec2i]  # ``[0]`` = body id, ``[1]`` = shape id; ``[0] < 0`` = not engaged
     pad_preparing_bs: wp.array[wp.vec2i]  # ``[0]`` = body id, ``[1]`` = shape id; ``[0] < 0`` = not preparing
 
 
@@ -1040,11 +1078,17 @@ class SurfaceGripperStateOutput:
     #   peel    = |(mx, my)|, the out-of-plane moment magnitude [N.m]
     #   torsion = mz, the twist about the seal axis [N.m] (signed)
     # Shear and peel are magnitudes because their caps are direction-independent disks.
-    pad_seal_load: wp.array[wp.vec4]            # after the per-group caps: what was applied to the bodies
-    pad_seal_load_unclamped: wp.array[wp.vec4]  # before the caps; feeds the break metric (clamped values can never exceed their cap)
-    pad_anchor_b: wp.array[wp.transform]        # SB — see Frame nomenclature
-    pad_perimeter_sdf0: wp.array[wp.float32]          # seated perimeter signed distances cached at engagement (indexed by model.pad_perimeter_start)
-    pad_seal_quality_rms: wp.array[wp.float32]  # RMS perimeter-gap deviation from seated pose per pad [m]; -1 if not engaged or preparing
+    pad_seal_load: wp.array[wp.vec4]  # after the per-group caps: what was applied to the bodies
+    pad_seal_load_unclamped: wp.array[
+        wp.vec4
+    ]  # before the caps; feeds the break metric (clamped values can never exceed their cap)
+    pad_anchor_b: wp.array[wp.transform]  # SB — see Frame nomenclature
+    pad_perimeter_sdf0: wp.array[
+        wp.float32
+    ]  # seated perimeter signed distances cached at engagement (indexed by model.pad_perimeter_start)
+    pad_seal_quality_rms: wp.array[
+        wp.float32
+    ]  # RMS perimeter-gap deviation from seated pose per pad [m]; -1 if not engaged or preparing
 
 
 class SurfaceGripperControl:
@@ -1076,7 +1120,9 @@ class SurfaceGripperModel:
         so.pad_seal_load = wp.zeros(n, dtype=wp.vec4, device=self.pad_xform.device)
         so.pad_seal_load_unclamped = wp.zeros(n, dtype=wp.vec4, device=self.pad_xform.device)
         so.pad_anchor_b = wp.zeros(n, dtype=wp.transform, device=self.pad_xform.device)
-        so.pad_perimeter_sdf0 = wp.zeros(self.pad_perimeter_local.shape[0], dtype=wp.float32, device=self.pad_xform.device)
+        so.pad_perimeter_sdf0 = wp.zeros(
+            self.pad_perimeter_local.shape[0], dtype=wp.float32, device=self.pad_xform.device
+        )
         so.pad_seal_quality_rms = wp.zeros(n, dtype=wp.float32, device=self.pad_xform.device)
         return so
 
@@ -1357,5 +1403,3 @@ def evaluate_seal_quality(
         ],
         device=gm.pad_xform.device,
     )
-
-
