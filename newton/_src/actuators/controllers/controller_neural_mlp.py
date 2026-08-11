@@ -125,7 +125,7 @@ def _assemble_scaled_input_kernel(
     """Scaled (pos_error, vel_error) network input from per-slot state arrays."""
     i = wp.tid()
     e_q = (target_q[i] - q[i]) * pos_scale
-    e_qd = (target_qd[i] - qd[i]) * vel_scale
+    e_qd = qd[i] * vel_scale
     if pos_first != 0:
         net_input[i, 0] = e_q
         net_input[i, 1] = e_qd
@@ -149,14 +149,14 @@ def _output_and_state_grads_kernel(
 ):
     """Physical effort and its state derivatives from the net output and input gradients.
 
-    The net reads scaled errors (e_q = tq - q, e_qd = tqd - qd), so the chain
-    rule gives ``d(tau)/dq = -s_t s_p d(net)/d(in_pos)`` and
-    ``d(tau)/d(qd) = -s_t s_v d(net)/d(in_vel)``.
+    The net reads a scaled position error (e_q = tq - q) but a scaled raw
+    velocity, so the chain rule gives ``d(tau)/dq = -s_t s_p d(net)/d(in_pos)``
+    and ``d(tau)/d(qd) = +s_t s_v d(net)/d(in_vel)`` -- note the opposite signs.
     """
     i = wp.tid()
     tau[i] = net_output[i, 0] * effort_scale
     dtau_dq[i] = -in_grad[i, pos_col] * pos_scale * effort_scale
-    dtau_dqd[i] = -in_grad[i, vel_col] * vel_scale * effort_scale
+    dtau_dqd[i] = in_grad[i, vel_col] * vel_scale * effort_scale
 
 
 @wp.func
@@ -488,6 +488,8 @@ class ControllerNeuralMLP(Controller):
         into :meth:`bind_params`, which the general implicit kernel then reads
         through :func:`_mlp_linear_force`. Called once per step before the solve.
         """
+        if inv_mass is None:
+            raise ValueError("ControllerNeuralMLP.prepare_implicit requires inv_mass (the per-slot response)")
         device = device or self._device
         n = self._num_actuators
         self._ensure_grad_setup()

@@ -13,6 +13,8 @@ writable, so a response computed elsewhere can be assigned directly.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import warp as wp
 
 from ..sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
@@ -118,6 +120,45 @@ def _add_armature_kernel(
         H[a, j, j] = H[a, j, j] + armature[art_dof_start[a] + j]
 
 
+@wp.kernel(enable_backward=False)
+def _unit_rhs_kernel(column: int, rhs: wp.array2d[float]):
+    """Right-hand side ``e_column`` for every world."""
+    w, i = wp.tid()
+    rhs[w, i] = wp.where(i == column, 1.0, 0.0)
+
+
+@wp.kernel(enable_backward=False)
+def _scatter_inverse_column_kernel(
+    solution: wp.array2d[float],
+    column: int,
+    dof_map: wp.array2d[wp.int32],
+    dofs_per_world: int,
+    dof_articulation: wp.array[wp.int32],
+    dof_local_index: wp.array[wp.int32],
+    inv_block: wp.array3d[float],
+):
+    """Scatter one solved column of ``M^-1`` into the per-articulation blocks.
+
+    ``solution[w, i]`` is entry ``i`` of ``M^-1 e_column`` in world ``w``. Entries
+    coupling two articulations are dropped, as in :func:`_gather_mass_matrix_kernel`.
+    """
+    w, i = wp.tid()
+
+    ni = w * dofs_per_world + i
+    nj = w * dofs_per_world + column
+    if dof_map:
+        ni = dof_map[w, i]
+        nj = dof_map[w, column]
+    dof_count = dof_articulation.shape[0]
+    if ni < 0 or nj < 0 or ni >= dof_count or nj >= dof_count:
+        return
+
+    a = dof_articulation[ni]
+    if a < 0 or dof_articulation[nj] != a:
+        return
+    inv_block[a, dof_local_index[ni], dof_local_index[nj]] = solution[w, i]
+
+
 class ResponseOracle:
     """Effective inverse-mass response for each articulation.
 
@@ -179,7 +220,19 @@ class ResponseOracle:
         self._inv_block = wp.zeros_like(self._H)
 
         # Scratch so refresh() never writes to the caller's state.
-        self._fk_state = None
+        self._fk_state = model.state()
+
+        self._rhs = None
+        self._sol = None
+        self._uniform_dofs_per_world = None
+        if model.world_count == 1:
+            self._uniform_dofs_per_world = model.joint_dof_count
+        elif model.joint_dof_world_start is not None:
+            bounds = model.joint_dof_world_start.numpy()
+            counts = {int(bounds[w + 1] - bounds[w]) for w in range(model.world_count)}
+            n_global = int(bounds[-1] - bounds[-2])
+            if len(counts) == 1 and n_global == 0 and sum(counts) * model.world_count == model.joint_dof_count:
+                self._uniform_dofs_per_world = counts.pop()
 
     @property
     def inverse_blocks(self) -> wp.array3d[float]:
@@ -206,8 +259,6 @@ class ResponseOracle:
         """
         model = self.model
         # eval_fk overwrites body_q/body_qd, so keep it off the caller's state.
-        if self._fk_state is None:
-            self._fk_state = model.state()
         fk_state = self._fk_state
         wp.copy(fk_state.joint_q, state.joint_q)
         wp.copy(fk_state.joint_qd, state.joint_qd)
@@ -224,6 +275,82 @@ class ResponseOracle:
             )
         self._invert_blocks()
 
+    def refresh_from_inertia(
+        self,
+        solve_inverse: Callable[[wp.array2d[float], wp.array2d[float]], None],
+        dof_map: wp.array2d[wp.int32] | None = None,
+    ) -> None:
+        """Recompute :attr:`inverse_blocks` from a solver's own joint-space inertia.
+
+        Prefer this over :meth:`refresh` when the solver can apply its inertia:
+        the response then carries whatever the solver folds in (armature, tendon
+        armature) rather than only what :func:`~newton.eval_mass_matrix`
+        reproduces. Unlike :meth:`refresh_from_mass_matrix` the inertia never has
+        to be materialized, so solvers that keep it factorized work too; the
+        inverse is recovered a column at a time by back-substituting the unit
+        vectors. That is one solve per DOF, all on device, so this stays
+        CUDA-graph capturable.
+
+        With :class:`~newton.solvers.SolverMuJoCo`, which factorizes its inertia
+        each step::
+
+            def solve_inverse(x, y):
+                mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
+
+
+            # Simulation loop
+            oracle.refresh_from_inertia(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+
+        Args:
+            solve_inverse: Callable ``(x, y)`` writing ``x = M^-1 y``, both shaped
+                ``[world_count, dof_count]`` in the solver's own DOF order.
+            dof_map: Mapping from solver ``[world, dof]`` to Newton DOF index,
+                negative where a solver DOF has no Newton counterpart. If
+                ``None``, the solver is assumed to use Newton DOF order with the
+                same DOF count in every world.
+        """
+        model = self.model
+        if dof_map is None:
+            if self._uniform_dofs_per_world is None:
+                raise ValueError(
+                    "dof_map is required when worlds do not all have the same DOF count, "
+                    "or when the model has global joints"
+                )
+            dofs_per_world = self._uniform_dofs_per_world
+            world_count, dof_count = model.world_count, dofs_per_world
+        else:
+            dofs_per_world = 0
+            world_count, dof_count = dof_map.shape
+
+        if self._rhs is None or self._rhs.shape != (world_count, dof_count):
+            self._rhs = wp.zeros((world_count, dof_count), dtype=float, device=model.device)
+            self._sol = wp.zeros_like(self._rhs)
+
+        self._inv_block.zero_()
+        for column in range(dof_count):
+            wp.launch(
+                _unit_rhs_kernel,
+                dim=self._rhs.shape,
+                inputs=[column],
+                outputs=[self._rhs],
+                device=model.device,
+            )
+            solve_inverse(self._sol, self._rhs)
+            wp.launch(
+                _scatter_inverse_column_kernel,
+                dim=(world_count, dof_count),
+                inputs=[
+                    self._sol,
+                    column,
+                    dof_map,
+                    dofs_per_world,
+                    self._dof_articulation,
+                    self._dof_local_index,
+                ],
+                outputs=[self._inv_block],
+                device=model.device,
+            )
+
     def refresh_from_mass_matrix(
         self,
         mass_matrix: wp.array3d[float],
@@ -238,10 +365,9 @@ class ResponseOracle:
         :func:`~newton.eval_mass_matrix` reproduces. Like :meth:`refresh` it only
         launches kernels, so it is CUDA-graph capturable.
 
-        With :class:`~newton.solvers.SolverMuJoCo`, whose ``qM`` is rebuilt at the
-        step-start pose::
-
-            oracle.refresh_from_mass_matrix(solver.mjw_data.qM, dof_map=solver.mjc_dof_to_newton_dof)
+        For a solver that keeps its inertia factorized rather than dense, such
+        as :class:`~newton.solvers.SolverMuJoCo`, use
+        :meth:`refresh_from_inertia` instead.
 
         Args:
             mass_matrix: Dense per-world joint-space inertia [kg or kg·m²], shape
@@ -260,9 +386,12 @@ class ResponseOracle:
 
         dofs_per_world = 0
         if dof_map is None:
-            if model.joint_dof_count % model.world_count != 0:
-                raise ValueError("dof_map is required when worlds do not all have the same DOF count")
-            dofs_per_world = model.joint_dof_count // model.world_count
+            if self._uniform_dofs_per_world is None:
+                raise ValueError(
+                    "dof_map is required when worlds do not all have the same DOF count, "
+                    "or when the model has global joints"
+                )
+            dofs_per_world = self._uniform_dofs_per_world
             world_count, dof_count = model.world_count, dofs_per_world
         else:
             world_count, dof_count = dof_map.shape

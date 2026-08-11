@@ -254,6 +254,16 @@ def _response_at(model, q, qd):
     return np.linalg.inv(newton.eval_mass_matrix(model, scratch).numpy()[0, :n, :n])
 
 
+def _mujoco_solve(solver):
+    """``(x, y) -> x = M^-1 y`` backed by MuJoCo's per-step factorization."""
+    import mujoco_warp
+
+    def solve_inverse(x, y):
+        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
+
+    return solve_inverse
+
+
 def _response_at_state(model, state):
     """Coupled response A = inv(H) at the pose held by *state*."""
     return _response_at(model, state.joint_q.numpy(), state.joint_qd.numpy())
@@ -662,7 +672,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
 
         alpha = _response_at_state(model, state)[0, 0]
         e_q = target - q0
-        expected_tau = (w0 * e_q + b) / (1.0 + alpha * h * w1 + alpha * h * h * w0)
+        expected_tau = (w0 * e_q + b) / (1.0 - alpha * h * w1 + alpha * h * h * w0)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
 
     def test_neural_mlp_implicit_nonlinear_linearized(self):
@@ -707,9 +717,9 @@ class TestControllerNeuralMLP(unittest.TestCase):
 
         # Linearize tau(q, qd) = net(target - q, -qd) about (q0, qd0):
         #   a = d(tau)/dq = -d(net)/d(e_q),  b = d(tau)/dqd = -d(net)/d(e_qd).
-        tau0 = net_np(target - q0, 0.0 - qd0)
-        dneq, dneqd = dnet_np(target - q0, 0.0 - qd0)
-        a, b = -dneq, -dneqd
+        tau0 = net_np(target - q0, qd0)
+        dneq, dneqd = dnet_np(target - q0, qd0)
+        a, b = -dneq, dneqd
         # Solve p/h from p = h*(tau0 + a*(q(p)-q0) + b*(qd(p)-qd0)),
         #   qd(p) = qd0 + alpha*p, q(p) = q0 + h*qd(p).
         expected_tau = (tau0 + a * h * qd0) / (1.0 - alpha * h * (a * h + b))
@@ -2552,7 +2562,7 @@ class TestResponseOracle(unittest.TestCase):
             oracle.refresh_from_mass_matrix(sparse)
 
     def test_response_from_mujoco_mass_matrix(self):
-        """Fill the oracle response from MuJoCo's per-step mass matrix.
+        """Fill the oracle response from MuJoCo's per-step factorized inertia.
 
         MuJoCo rebuilds ``qM`` at the step-start pose every step, so — unlike the
         compile-time ``dof_invweight0`` — its complete inverse tracks inertial
@@ -2582,21 +2592,10 @@ class TestResponseOracle(unittest.TestCase):
         n = model.joint_dof_count
         nv = solver.mj_model.nv
         self.assertEqual(nv, n)
-        # dense layout for this small model; the allocation is padded, so slice to nv
-        qM = solver.mjw_data.qM.numpy()[0][:nv, :nv]
-        response_mjc = np.linalg.inv(qM)
 
-        # Remap MuJoCo DOF order to Newton DOF order.
-        response_newton = np.zeros((n, n), dtype=np.float32)
-        mapping = solver.mjc_dof_to_newton_dof
-        if mapping is not None:
-            mapping_np = mapping.numpy()[0]
-            for mjc_i, newton_i in enumerate(mapping_np):
-                for mjc_j, newton_j in enumerate(mapping_np):
-                    if 0 <= newton_i < n and 0 <= newton_j < n:
-                        response_newton[newton_i, newton_j] = response_mjc[mjc_i, mjc_j]
-        else:
-            response_newton[:] = response_mjc
+        mjc_oracle = ResponseOracle(model)
+        mjc_oracle.refresh_from_inertia(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
+        response_newton = mjc_oracle.inverse_blocks.numpy()[0, :n, :n]
 
         # The solver's mass matrix must agree with the oracle's own dense recompute.
         oracle_ref = ResponseOracle(model)
@@ -2610,8 +2609,7 @@ class TestResponseOracle(unittest.TestCase):
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
         )
-        oracle.refresh_from_mass_matrix(solver.mjw_data.qM, dof_map=solver.mjc_dof_to_newton_dof)
-        # The device-side invert-and-remap must reproduce the host computation.
+        oracle.refresh_from_inertia(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
         np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
         control.joint_f.zero_()
         actuator.step(state, control, dt=h)
@@ -2626,7 +2624,7 @@ class TestResponseOracle(unittest.TestCase):
 
         Runs the same simulation twice, updating the oracle response every step
         either from the solver's own mass matrix (``refresh_from_mass_matrix`` on
-        ``mjw_data.qM`` — the "solver-owned oracle" path) or with the built-in
+        its factorization — the "solver-owned oracle" path) or with the built-in
         ``oracle.refresh()``. The refresh is scheduled at the same one-step-stale
         phase as the qM data, so the trajectories must coincide. On CUDA the
         whole step (actuator + solver + response update) is graph-captured, which
@@ -2656,12 +2654,13 @@ class TestResponseOracle(unittest.TestCase):
             )
 
             self.assertEqual(solver.mj_model.nv, n)
+            solve_m = _mujoco_solve(solver)
 
             def update_response(state_prev):
                 if use_qm:
-                    # Full inverse response from the solver's matrix at the pose
-                    # of the step that just ran — same staleness as refresh(state_prev).
-                    oracle.refresh_from_mass_matrix(solver.mjw_data.qM, dof_map=solver.mjc_dof_to_newton_dof)
+                    # Full inverse response from the solver's factorization at the
+                    # pose of the step that just ran — same staleness as refresh().
+                    oracle.refresh_from_inertia(solve_m, dof_map=solver.mjc_dof_to_newton_dof)
                 else:
                     oracle.refresh(state_prev)
 

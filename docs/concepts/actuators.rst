@@ -251,22 +251,29 @@ per-articulation inverse mass rather than a per-DOF scalar.
 
 :meth:`~newton.actuators.ResponseOracle.refresh` assembles its own mass matrix,
 which omits joint damping, contacts and constraint regularization and so
-over-estimates the response. When the solver exposes the joint-space inertia it
-already builds, invert that instead for a response consistent with the dynamics
-the effort is applied to:
+over-estimates the response. Reuse the solver's own joint-space inertia instead
+for a response consistent with the dynamics the effort is applied to. MuJoCo
+keeps that inertia factorized rather than dense, so the response is recovered by
+back-substituting unit vectors through the factorization:
 
 .. code-block:: python
 
+   def solve_inverse(x, y):
+       # x = M^-1 y, using the factorization the solver already built
+       mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
+
    # Simulation loop, in place of oracle.refresh(state)
-   oracle.refresh_from_mass_matrix(solver.mjw_data.qM, dof_map=solver.mjc_dof_to_newton_dof)
+   oracle.refresh_from_inertia(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
 
 Both refresh paths are kernel-only, so the whole loop — actuator, solver step and
 response update — can be captured in a single CUDA graph. Call
 :meth:`~newton.actuators.Actuator.set_effort_mode_explicit` to switch back;
 tuning lives in :class:`~newton.actuators.ActuatorImplicitOptions`. Every
-controller except the Torch-backed neural checkpoints supports the implicit
-mode — neural controllers enter the solve through a per-step linearization of
-the network about the current state.
+controller supports the implicit mode except the neural ones, which enter the
+solve through a per-step linearization of the network about the current state
+and so need an ONNX checkpoint; :class:`~newton.actuators.ControllerNeuralMLP`
+additionally needs a single-step input history (``input_idx == [0]``).
+Torch-backed checkpoints must use the explicit mode.
 
 Differentiability and Graph Capture
 -----------------------------------

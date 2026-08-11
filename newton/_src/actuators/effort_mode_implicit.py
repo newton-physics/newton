@@ -44,11 +44,14 @@ class ActuatorImplicitOptions:
 
     Args:
         max_iters: Maximum Newton iterations per articulation group.
-        residual_tol: Stop when the residual vector norm falls below this.
-        update_tol: Stop when the impulse-update vector norm falls below this.
-        fd_epsilon: Relative forward finite-difference step in impulse space.
-        derivative_floor: Minimum absolute Jacobian pivot used during
-            elimination.
+        residual_tol: Stop when the residual vector norm falls below this
+            [N·s or N·m·s]. The residual is an impulse.
+        update_tol: Stop when the impulse-update vector norm falls below this
+            [N·s or N·m·s].
+        fd_epsilon: Relative forward finite-difference step in impulse space
+            (dimensionless; scaled by ``1 + |p|``).
+        derivative_floor: Smallest Jacobian pivot used during elimination and
+            back-substitution (dimensionless: the Jacobian is d(impulse)/d(impulse)).
         warm_start: Initial impulse guess: ``"explicit"`` starts from the
             explicit force impulse, ``"zero"`` starts from zero.
     """

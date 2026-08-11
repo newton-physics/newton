@@ -31,7 +31,9 @@ def _evaluate_dc_motor_clamp(
     # Derived, not stored: a cached corner goes stale when the user retunes.
     corner = vel_lim
     if sat > wp.float64(0.0):
-        corner = vel_lim * (wp.float64(1.0) + max_e / sat)
+        ratio = max_e / sat
+        if ratio == ratio:
+            corner = vel_lim * (wp.float64(1.0) + ratio)
 
     vel = wp.clamp(qd, -corner, corner)
     effort_max = wp.min(sat * (wp.float64(1.0) - vel / vel_lim), max_e)
@@ -63,7 +65,9 @@ def _clamp_dc_motor_kernel(
     # Derived, not stored: a cached corner goes stale when the user retunes.
     corner = vel_lim
     if sat > 0.0:
-        corner = vel_lim * (1.0 + max_e / sat)
+        ratio = max_e / sat
+        if ratio == ratio:
+            corner = vel_lim * (1.0 + ratio)
     vel = wp.clamp(current_vel[state_idx], -corner, corner)
 
     effort_max = wp.min(sat * (1.0 - vel / vel_lim), max_e)

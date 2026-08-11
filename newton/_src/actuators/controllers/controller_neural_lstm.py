@@ -84,7 +84,7 @@ def _assemble_scaled_input_3d_kernel(
     """Scaled (pos_error, vel_error) LSTM input ``(1, N, 2)`` from per-slot state."""
     i = wp.tid()
     net_input[0, i, 0] = (target_q[i] - q[i]) * pos_scale
-    net_input[0, i, 1] = (target_qd[i] - qd[i]) * vel_scale
+    net_input[0, i, 1] = qd[i] * vel_scale
 
 
 @wp.kernel(enable_backward=False)
@@ -100,14 +100,14 @@ def _lstm_output_grads_kernel(
 ):
     """Effort and its state derivatives from the net output and input gradients.
 
-    The net reads scaled errors (e_q = tq - q, e_qd = tqd - qd), so the chain
-    rule gives ``d(tau)/dq = -s_t s_p d(net)/d(in_pos)`` and
-    ``d(tau)/d(qd) = -s_t s_v d(net)/d(in_vel)``.
+    The net reads a scaled position error (e_q = tq - q) but a scaled raw
+    velocity, so the chain rule gives ``d(tau)/dq = -s_t s_p d(net)/d(in_pos)``
+    and ``d(tau)/d(qd) = +s_t s_v d(net)/d(in_vel)`` -- note the opposite signs.
     """
     i = wp.tid()
     tau[i] = net_output[i, 0] * effort_scale
     dtau_dq[i] = -in_grad[0, i, 0] * pos_scale * effort_scale
-    dtau_dqd[i] = -in_grad[0, i, 1] * vel_scale * effort_scale
+    dtau_dqd[i] = in_grad[0, i, 1] * vel_scale * effort_scale
 
 
 class ControllerNeuralLSTM(Controller):
