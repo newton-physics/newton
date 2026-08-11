@@ -419,6 +419,7 @@ def add_visual_bar(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # Store viewer and configure simulation cadence.
         self.viewer = viewer
 

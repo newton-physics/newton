@@ -75,6 +75,10 @@ def make_contact_sort_key(shape_a: int, shape_b: int, sort_sub_key: int) -> wp.i
     - SDF contacts: ``(edge_idx << 2) | (mode << 1)`` — 21 effective bits
       for ``edge_idx`` (~2M edges).  After multi-contact expansion
       (``<< 3``), 18 effective bits (~262K edges).
+    - Hydroelastic contacts: ``((voxel_idx * 5 + face_idx) << 1) | source``,
+      with bit 0 distinguishing normal-bin and voxel-bin winners and bit 22
+      reserved for reduction anchors — 21 effective fingerprint bits (~419K
+      iso voxels).
     """
     return (
         ((wp.int64(shape_a) & wp.int64(0xFFFFF)) << wp.int64(43))

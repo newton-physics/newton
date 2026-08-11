@@ -13,6 +13,7 @@ from .core.bodies import (
 )
 from .core.control import ControlKamino
 from .core.conversions import (
+    JointUpdateViolation,
     compute_material_first_shape,
     convert_model_joint_actuation,
     convert_model_joint_transforms,
@@ -42,6 +43,7 @@ __all__ = [
     "ContactsKamino",
     "ControlKamino",
     "JointActuationType",
+    "JointUpdateViolation",
     "ModelKamino",
     "SolverKaminoImpl",
     "StateKamino",

@@ -67,7 +67,9 @@ For contact-dominated rigid-body and articulation problems, use this order:
    isolation before tuning the full environment.
 2. **Validate the model.** Check SI units, shape dimensions, mass, inertia,
    joint axes, joint limits, and unintended self-collisions. Inspect collision
-   geometry in the viewer rather than assuming it matches the visual geometry.
+   geometry and contact normals with the :ref:`viewer debugging tools
+   <debugging-with-viewers>` rather than assuming collision geometry matches
+   visual geometry.
 3. **Choose the contact representation.** Prefer primitives for speed. Use SDF
    or hydroelastic contacts when contact patch quality, force distribution, or
    non-convex geometry matters.
