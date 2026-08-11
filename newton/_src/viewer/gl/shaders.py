@@ -461,9 +461,11 @@ in vec2 TexCoord;
 out vec4 FragColor;
 
 uniform sampler2D texture_sampler;
+uniform bool flip_y;
 
 void main() {
-    FragColor = texture(texture_sampler, TexCoord);
+    vec2 uv = vec2(TexCoord.x, flip_y ? 1.0 - TexCoord.y : TexCoord.y);
+    FragColor = texture(texture_sampler, uv);
 }
 """
 
@@ -696,11 +698,13 @@ class FrameShader(ShaderGL):
         # Get uniform locations
         with self:
             self.loc_texture = self._get_uniform_location("texture_sampler")
+            self.loc_flip_y = self._get_uniform_location("flip_y")
 
-    def update(self, texture_unit: int = 0):
-        """Update texture uniform."""
+    def update(self, texture_unit: int = 0, flip_y: bool = False):
+        """Update texture uniforms."""
         with self:
             self._gl.glUniform1i(self.loc_texture, texture_unit)
+            self._gl.glUniform1i(self.loc_flip_y, int(flip_y))
 
 
 wireframe_vertex_shader = """
