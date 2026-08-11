@@ -24,8 +24,19 @@ class TestAffineBlockCsr(unittest.TestCase):
         np.testing.assert_array_equal(matrix.column_indices.numpy(), [0, 1])
         np.testing.assert_allclose(matrix.values.numpy()[0], np.eye(12) * 3.0)
         np.testing.assert_allclose(matrix.values.numpy()[1], np.eye(12) * 1.5)
-        self.assertEqual(matrix.block_index(0, 0), 0)
-        self.assertEqual(matrix.block_index(0, 1), 1)
+
+    def test_resolves_block_indices_after_finalization(self):
+        """Resolve finalized coordinates and reject a coordinate absent from the pattern."""
+        builder = BlockCsrBuilder12(2)
+        builder.ensure_block(0, 1)
+        builder.ensure_block(1, 0)
+
+        matrix = builder.finalize("cpu")
+
+        self.assertEqual(matrix.block_index(0, 1), 0)
+        self.assertEqual(matrix.block_index(1, 0), 1)
+        with self.assertRaises(ValueError):
+            matrix.block_index(0, 0)
 
     def test_extracts_diagonal_and_clears_numerical_blocks(self):
         """Refresh cached diagonal blocks and clear all numerical values."""

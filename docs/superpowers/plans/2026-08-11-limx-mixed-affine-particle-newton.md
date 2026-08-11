@@ -51,11 +51,11 @@
 **Interfaces:**
 - Produces `vec12`, `mat1212`, `BlockCsrMatrix12`, and `BlockCsrBuilder12`.
 - `BlockCsrMatrix12.multiply(x: wp.array[vec12], output: wp.array[vec12]) -> None` mirrors the existing 3-by-3 API.
-- `BlockCsrBuilder12` provides `add_block()`, `ensure_block()`, `ensure_stencil_blocks()`, `finalize()`, and block lookup.
+- `BlockCsrBuilder12` provides `add_block()`, `ensure_block()`, `ensure_stencil_blocks()`, and `finalize()`. The finalized `BlockCsrMatrix12` provides stable `block_index()` and `stencil_block_indices()` lookup; the mutable builder intentionally exposes no indices because later pattern additions can reorder them.
 
 - [ ] **Step 1: Write failing type and CSR tests**
 
-Add `TestAffineBlockCsr` with literal two-row block data. Assert sorted columns, duplicate accumulation, diagonal extraction, clearing, and SpMV against a hand-built NumPy 24-by-24 matrix. Include constructor rejection tests for zero rows, out-of-range indices, wrong shapes, and non-finite values.
+Add `TestAffineBlockCsr` with literal two-row block data. Assert sorted columns, duplicate accumulation, diagonal extraction, clearing, and SpMV against a hand-built NumPy 24-by-24 matrix. Assert finalized-matrix block lookup and stencil lookup, including rejection of absent coordinates. Include constructor rejection tests for zero rows, out-of-range indices, wrong shapes, and non-finite values.
 
 ```python
 def test_multiplies_native_twelve_dof_blocks(self):
