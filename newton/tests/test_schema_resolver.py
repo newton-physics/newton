@@ -232,13 +232,21 @@ class TestSchemaResolver(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")
-        resolver = SchemaResolverManager([LegacyResolver()])
+        for use_applied_schema_fallbacks in (False, True):
+            with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
+                resolver = SchemaResolverManager(
+                    [LegacyResolver()],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
 
-        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature"), 0.25)
-        self.assertEqual(
-            resolver._legacy_fallback_failures,
-            {"NewtonJointAPI (newton:armature)": {"/joint"}},
-        )
+                value, source = resolver.get_value_with_resolver(joint, PrimType.JOINT, "armature")
+                self.assertEqual(value, 0.25)
+                self.assertIsNone(source)
+                if not use_applied_schema_fallbacks:
+                    self.assertEqual(
+                        resolver._legacy_fallback_failures,
+                        {"NewtonJointAPI (newton:armature)": {"/joint"}},
+                    )
 
     def test_custom_getter_may_omit_primary_attribute_name(self):
         """Treat an omitted primary getter attribute as unauthored."""

@@ -540,7 +540,13 @@ class SchemaResolverManager:
         read_value = self._cached_value_reader(prim, prim_type)
 
         if self._uses_composed_fallbacks:
-            resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
+            try:
+                resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
+            except _PXRValueGetterError:
+                value, resolver = self._get_legacy_value(prim, prim_type, key, default, read_value=read_value)
+                if legacy_value_transformer is not None:
+                    value = legacy_value_transformer(value, resolver)
+                return value, resolver
             value = resolved.value
             if resolved.authored and legacy_value_transformer is not None:
                 value = legacy_value_transformer(value, resolved.resolver)
