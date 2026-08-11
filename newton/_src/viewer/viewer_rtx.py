@@ -1291,8 +1291,21 @@ void main() {
         else:
             # Render phase: flat arrays (built at end of build phase) handle all shape
             # transform updates in a single kernel launch — no per-batch work needed here.
+            show_ground = self.show_ground
+            show_ground_changed = show_ground != self._last_show_ground
+            layer_hidden = self._layer_force_hidden() if show_ground_changed else False
             for shapes in self._shape_instances.values():
                 shapes.colors_changed = False
+                if show_ground_changed and int(shapes.geo_type) == int(newton.GeoType.PLANE):
+                    qualified = self._qualify(shapes.name)
+                    # Re-derive through the same predicate the build path uses, so
+                    # re-enabling the ground does not override show_visual,
+                    # show_collision, static-shape, or layer rules.
+                    self._pending_instance_visibility[qualified] = (
+                        self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+                    )
+            if show_ground_changed:
+                self._last_show_ground = show_ground
 
             self._log_gaussian_shapes(state)
             self._log_non_shape_state(state)
@@ -2063,6 +2076,7 @@ void main() {
 
         self._last_state = None
         self._last_control = None
+        self._last_show_ground = True
 
         # reset camera
         self.camera = Camera(width=self._render_width, height=self._render_height, up_axis=self._up_axis)

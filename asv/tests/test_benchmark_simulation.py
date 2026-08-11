@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import warp as wp
 
-BENCHMARK_DIR = Path(__file__).parents[2] / "asv" / "benchmarks"
+BENCHMARK_DIR = Path(__file__).parents[1] / "benchmarks"
 sys.path.insert(0, str(BENCHMARK_DIR))
 
 _WARP_CONFIG_FIELDS = ("enable_backward", "log_level")
