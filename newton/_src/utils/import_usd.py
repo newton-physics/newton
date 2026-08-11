@@ -1896,11 +1896,16 @@ def parse_usd(
                 UsdPhysics.JointDOF.RotY: "rotY",
                 UsdPhysics.JointDOF.RotZ: "rotZ",
             }
+
+            def _resolve_d6_limit_bounds(limit):
+                lower = limit.second.lower if limit.second.enabled else builder.default_joint_cfg.limit_lower
+                upper = limit.second.upper if limit.second.enabled else builder.default_joint_cfg.limit_upper
+                return lower, upper, lower < upper
+
             d6_free_dofs = []
             for limit in joint_desc.jointLimits:
-                limit_lower = limit.second.lower if limit.second.enabled else builder.default_joint_cfg.limit_lower
-                limit_upper = limit.second.upper if limit.second.enabled else builder.default_joint_cfg.limit_upper
-                if limit_lower < limit_upper and (limit.first in _trans_axes or limit.first in _rot_axes):
+                _, _, free_axis = _resolve_d6_limit_bounds(limit)
+                if free_axis and (limit.first in _trans_axes or limit.first in _rot_axes):
                     d6_free_dofs.append(limit.first)
 
             d6_limit_gain_cache: dict[tuple[Any, str], tuple[float, str, float]] = {}
@@ -1961,14 +1966,7 @@ def parse_usd(
 
             for limit in joint_desc.jointLimits:
                 dof = limit.first
-                if limit.second.enabled:
-                    limit_lower = limit.second.lower
-                    limit_upper = limit.second.upper
-                else:
-                    limit_lower = builder.default_joint_cfg.limit_lower
-                    limit_upper = builder.default_joint_cfg.limit_upper
-
-                free_axis = limit_lower < limit_upper
+                limit_lower, limit_upper, free_axis = _resolve_d6_limit_bounds(limit)
 
                 def define_joint_targets(dof, joint_desc):
                     target_pos = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
@@ -2014,13 +2012,13 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    fallback_limit_ke, limit_ke_source, _ = _d6_limit_gain(dof, "ke")
-                    fallback_limit_kd, limit_kd_source, _ = _d6_limit_gain(dof, "kd")
+                    fallback_limit_ke, limit_ke_source, builder_limit_ke = _d6_limit_gain(dof, "ke")
+                    fallback_limit_kd, limit_kd_source, builder_limit_kd = _d6_limit_gain(dof, "kd")
                     current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-                        limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke
+                        limit_ke, fallback_limit_ke, limit_ke_source, builder_limit_ke
                     )
                     current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
-                        limit_ke, limit_kd, fallback_limit_kd, limit_kd_source, default_joint_limit_kd
+                        limit_ke, limit_kd, fallback_limit_kd, limit_kd_source, builder_limit_kd
                     )
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -2064,20 +2062,20 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    fallback_limit_ke, limit_ke_source, _ = _d6_limit_gain(dof, "ke")
-                    fallback_limit_kd, limit_kd_source, _ = _d6_limit_gain(dof, "kd")
+                    fallback_limit_ke, limit_ke_source, builder_limit_ke = _d6_limit_gain(dof, "ke")
+                    fallback_limit_kd, limit_kd_source, builder_limit_kd = _d6_limit_gain(dof, "kd")
                     current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
                         limit_ke,
                         fallback_limit_ke,
                         limit_ke_source,
-                        default_joint_limit_ke * DegreesToRadian,
+                        builder_limit_ke,
                     )
                     current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
                         limit_ke,
                         limit_kd,
                         fallback_limit_kd,
                         limit_kd_source,
-                        default_joint_limit_kd * DegreesToRadian,
+                        builder_limit_kd,
                     )
 
                     angular_axes.append(

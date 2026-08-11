@@ -1889,6 +1889,9 @@ def Xform "Articulation" (
                     angular_limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "rotZ")
                     angular_limit.CreateLowAttr().Set(-45.0)
                     angular_limit.CreateHighAttr().Set(45.0)
+                    locked_limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "transY")
+                    locked_limit.CreateLowAttr().Set(0.0)
+                    locked_limit.CreateHighAttr().Set(0.0)
                 joint.GetPrim().AddAppliedSchema("NewtonJointAPI")
                 joint.CreateBody1Rel().SetTargets([body.GetPath()])
 
