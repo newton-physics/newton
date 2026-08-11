@@ -24,6 +24,231 @@
 - Mistake: Launched Newton's standalone OpenGL cloth example instead of checking for a demo inside the full Isaac Sim GUI.
 - Rule: When the active workflow is Isaac Sim and the user asks to run or show a demo, default to the Isaac Sim GUI context. Clearly distinguish standalone Newton examples from Isaac Sim-integrated examples before launching anything.
 
+## 2026-07-30 — Start the cloth solver with a Warp MVP, not a CUDA implementation
+
+- Context: Designing the user's first custom cloth solver in the Newton fork.
+- Mistake: Continued to frame the design around the earlier CUDA requirement after the user narrowed the goal to a minimal two-corner-pinned falling cloth and no longer wanted to start in CUDA.
+- Rule: Build the first cloth solver as the smallest testable Warp implementation using Newton's existing model/state interface. Treat handwritten PTX or another native backend only as a later, measured replacement for proven hotspot kernels.
+
+## 2026-07-30 — Use the exact example command named by the user as the scene source
+
+- Context: Selecting the baseline scene for the user's custom cloth solver.
+- Mistake: Inferred that the user meant an internal two-particle sagging test after inspecting pin indices, even though the intended runnable scene was Newton's `python -m newton.examples cloth_hanging` example.
+- Rule: When the user identifies a runnable example command, treat that exact example as the authoritative scene source. Preserve its scene construction and runtime behavior unless the user explicitly asks to simplify it.
+
+## 2026-07-30 — Validate the Newton cloth scene in Isaac Sim before developing a custom solver
+
+- Context: Planning the first custom cloth solver milestone and its visualization path.
+- Mistake: Continued designing a custom solver harness before establishing the requested Newton-to-Isaac-Lab-to-Isaac-Sim scene path.
+- Rule: For this cloth project, first reproduce Newton's `cloth_hanging` scene through the Isaac Lab Newton backend in the full Isaac Sim GUI. Do not start the custom solver until that integration baseline is working and visually verified.
+
+## 2026-08-03 — Place LIMX inside Newton's solver package
+
+- Context: Implementing the first constraint-based LIMX cloth solver.
+- Mistake: Interpreted the requested LIMX folder as a repository-root experimental package and started creating `limx/` outside Newton's solver hierarchy.
+- Rule: Implement LIMX alongside Newton's existing solvers under the solver package hierarchy, expose it through Newton's solver module as appropriate, and keep its examples and tests integrated with Newton rather than creating a repository-root package.
+
+## 2026-08-03 — Distinguish explicit damping from integrator dissipation
+
+- Context: Evaluating whether the LIMX hanging cloth should keep swinging after setting `velocity_damping=1.0`.
+- Mistake: Treated removal of the explicit velocity multiplier as if it made the full implicit-Euler/projective-dynamics update energy-conserving, without measuring total mechanical energy or accounting for stiff penalty-anchor modes.
+- Rule: When conservative motion is expected, measure kinetic, gravitational, elastic, and anchor energy over time. Distinguish explicit damping from algorithmic damping in the time integrator, and do not describe a solver as undamped or energy-preserving solely because its velocity multiplier is one.
+
+## 2026-08-03 — Zero bending stiffness permits folding
+
+- Context: Interpreting the curled free edge in the LIMX mass-spring cloth example, which contains only anchor and triangle-edge distance constraints.
+- Mistake: Did not make explicit that removing bending energy eliminates resistance to changes in adjacent-triangle dihedral angles; it does not preserve a flat sheet and can expose mesh-scale buckling under compression.
+- Rule: When diagnosing cloth shape, distinguish absence of bending force from absence of bending deformation. Verify the active constraint set, edge-length error, compression, and triangle-normal/dihedral variation before attributing curls to an unintended bending term.
+
+## 2026-08-03 — Audit PD algebra before tuning iteration counts
+
+- Context: The LIMX mass-spring scene appeared to require 64 nonlinear PD iterations before showing normal pendulum motion.
+- Mistake: Treated the high iteration count as a tuning issue before explicitly auditing the assembled Hessian, its stiffness-to-inertia scale, and the PCG initial guess against the standard local-global PD equations.
+- Rule: Before increasing PD iterations, write down the exact global matrix and right-hand side produced by the code, list every diagonal contribution, verify whether PCG is zero-started or warm-started, and compare convergence on a minimal mode against the reference formulation.
+
+## 2026-08-03 — Keep Newton and PD formulations conceptually separate
+
+- Context: The LIMX cloth solver was initially built around projective-dynamics local/global iterations, but the requested large-time-step solver was changed to full Newton assembly.
+- Mistake: Continued treating the constant PD surrogate Hessian as the core solver even after its transverse curvature was shown to dominate convergence.
+- Rule: Implement LIMX Newton iterations by evaluating elastic forces and exact Hessians at the current iterate, using the predicted position only in the inertial residual. Do not retain local projections or describe the Newton path as a variation of PD.
+
+## 2026-08-03 — Keep the LIMX demo physics and rendering one-to-one
+
+- Context: Choosing how often to render the LIMX cloth example after increasing its physics time step to 0.01 s.
+- Mistake: Proposed grouping two physics steps into one rendered frame after the user briefly considered rendering every other step.
+- Rule: For the LIMX visualization example, render after every physics step unless the user explicitly requests frame decimation. With a 0.01 s physics step, use one substep per 0.01 s frame so simulation and visualization remain one-to-one.
+
+## 2026-08-03 — Keep LIMX parameter-tuning loops immediate
+
+- Context: The user requested only changing the LIMX example time step and Newton/PCG iteration counts so they could inspect the motion.
+- Mistake: Turned a small parameter adjustment into a long design, planning, full-regression, and branch-finishing workflow before showing the requested dynamics.
+- Rule: For LIMX example-only parameter tuning, make the smallest requested edit and launch the visualization immediately after a focused smoke test. Do not run unrelated full-suite or branch-integration workflows unless the user requests them; keep deeper regression work separate from the interactive tuning loop.
+
+## 2026-08-03 — State the LIMX PCG initial guess explicitly during convergence diagnosis
+
+- Context: The one-Newton, 50-PCG LIMX cloth motion appeared unconverged and the user asked what PCG used as its initial solution.
+- Mistake: Discussed iteration tuning without keeping the exact PCG initialization visible in the convergence analysis.
+- Rule: When diagnosing LIMX convergence, first report whether PCG is zero-started or warm-started, identify the array used for `x0`, and distinguish the linear increment guess from the nonlinear position iterate. Test alternative initial guesses only after confirming the assembled residual and operator correspond to the same current Newton iterate.
+
+## 2026-08-03 — Warm-start LIMX PCG from the previous frame
+
+- Context: The user explicitly chose the prior frame's PCG solution as the next frame's initial solution after observing poor apparent convergence with a zero start.
+- Mistake: Kept resetting the Newton increment to zero on every linear solve even though the requested interactive cloth path advances through nearby frame-to-frame systems.
+- Rule: Preserve the final PCG increment from the preceding frame and use it as `x0` for the first linear solve of the next frame, recomputing `r0 = b - A*x0`. Initialize the persistent increment to zero for the first frame; if multiple Newton iterations are enabled, use zero-started corrections after the first solve within that frame.
+
+## 2026-08-03 — Use dihedral-angle bending for LIMX
+
+- Context: Extending the LIMX anisotropic membrane cloth with bending resistance.
+- Mistake: Assumed the new constraint should copy Style3D's quadratic Crouzeix-Raviart isometric bending energy before confirming the requested bending model.
+- Rule: Implement LIMX bending as a four-particle dihedral-angle energy, using `/home/limx/github/Ai-Phyiscs` as the reference for its force and Hessian treatment. Do not substitute Style3D's quadratic isometric bending model unless the user explicitly requests it.
+
+## 2026-08-03 — Verify LIMX bending on GPU first
+
+- Context: Defining the validation path for the LIMX dihedral-bending feature.
+- Mistake: Included routine CPU example runs even though the active solver workflow and target hardware are CUDA, adding avoidable turnaround time.
+- Rule: Run LIMX bending tests and example validation on CUDA by default. Use CPU only as a diagnostic fallback after a GPU failure or when isolating a kernel or numerical issue.
+
+## 2026-08-03 — Verify the LIMX viewer controls before handing off a window
+
+- Context: Launching the interactive CUDA cloth visualization for the user to inspect.
+- Mistake: Reported the window as ready after confirming only that the render process stayed alive, despite its log warning that the ImGui backend was unavailable and therefore the control buttons were missing.
+- Rule: Before handing off an interactive LIMX window, verify both rendering and GUI-control imports in the exact runtime environment, treat viewer dependency warnings as a failed launch, and restart only after the button panel is confirmed available.
+
+## 2026-08-03 — Verify proximity support before blaming EF contact chatter
+
+- Context: Diagnosing a localized oscillation in the LIMX cloth-twist self-collision scene.
+- Mistake: Attributed repeated edge-face crossings directly to EF untangle constraints appearing and disappearing without first proving why the surrounding vertex-face and edge-edge proximity contacts failed to support the separated surfaces.
+- Rule: When an untangled cloth pair intersects again, trace the exact primitive pair across frames. Verify current-versus-predicted detection timing, activation distance, VF/EE feature coverage, normal orientation, and the achieved EF separation before concluding that EF persistence is the root cause.
+
+## 2026-08-03 — Verify LIMX contact coefficients before expanding the model
+
+- Context: Discussing whether recurring twist-scene intersections required CCD/barrier contact instead of penalty contact.
+- Mistake: Proposed broadening the collision formulation before first answering the narrower question of whether EE stiffness matched VF stiffness.
+- Rule: When LIMX contact behavior is attributed to unequal VF/EE stiffness, inspect the actual force, Hessian-vector, diagonal, and example configuration first. Report an already-shared coefficient explicitly rather than proposing a wider collision redesign.
+
+## 2026-08-03 — Keep LIMX EF recovery stronger than proximity contact
+
+- Context: Tuning self-collision recovery after confirming VF and EE already share one stiffness.
+- Mistake: Left EF untangle stiffness equal to VF/EE even though crossing recovery must be materially stronger than proximity support in this solver.
+- Rule: Configure LIMX EF untangle stiffness to at least three times the VF/EE stiffness. Keep the relationship explicit in defaults and examples so later tuning does not silently collapse them back to one coefficient.
+
+## 2026-08-03 — Do not use the full LIMX test module for GPU-only checks
+
+- Context: Verifying the EF untangle stiffness default after the user required CUDA-first validation and no routine CPU runs.
+- Mistake: Ran the whole `test_solver_limx.py` module, whose mixed test classes compile and execute several CPU kernels even though the changed self-collision and twist tests were already covered on CUDA.
+- Rule: For GPU-only LIMX changes, select the exact CUDA-decorated tests with both `-p test_solver_limx.py` and narrow `-k` patterns. Do not run the complete module unless the user explicitly requests mixed CPU/GPU regression coverage or CUDA debugging requires it.
+
+## 2026-08-04 — Keep the LIMX T-shirt bending visually compliant
+
+- Context: Reviewing the first T-shirt-on-table visualization with rest-shape dihedral bending.
+- Mistake: Used bending stiffness `0.01`, which preserved too much of the garment's curved USD rest shape and made the cloth look overly rigid on impact.
+- Rule: Use dihedral bending stiffness `1.0e-4` in `cloth_limx_tshirt_table`. For visual parameter corrections, change the requested scene value, run the focused CUDA smoke test, and relaunch immediately before broader documentation or regression work.
+
+## 2026-08-04 — Audit collision support before tuning T-shirt contact
+
+- Context: The low-bending T-shirt-on-table scene visibly jittered under collision, raising questions about thickness, stiffness, and vertex-face feature coverage.
+- Mistake: Treated the earlier settling threshold as sufficient evidence that the collision parameters and activation geometry were appropriate for the more compliant garment.
+- Rule: Before tuning LIMX garment collision, compare its actual thickness/stiffness scaling and VF feature test against Style3D, measure active VF/EE/EF/table contacts and force support on the failing scene, and state explicitly whether projected points outside triangle interiors are delegated to EE rather than handled by VF.
+
+## 2026-08-04 — Do not equate mean settling with visual stillness
+
+- Context: The adaptive-contact T-shirt passed a 3000-frame regression based on mean particle speed, but the user still observed persistent local jitter in the interactive window.
+- Mistake: Treated a global mean-speed threshold as proof that the garment had visually settled, allowing a small set of continuously oscillating particles or churning contacts to be averaged away.
+- Rule: For LIMX cloth settling, measure final-window per-particle RMS/maximum speed, the count of persistently active particles, and frame-to-frame VF/EE/EF/table contact churn in addition to the global mean. Do not report visual stillness until those localized temporal metrics and the interactive scene agree.
+## 2026-08-04 — Prefer established IPC degeneracy handling before custom collision ramps
+
+- Context: LIMX EE self-collision stabilization for nearly parallel edges.
+- Mistake: Implemented and tuned a custom angle/depth response before verifying the standard IPC edge-edge mollifier and its reference implementation.
+- Rule: For established contact degeneracies, inspect the primary paper and authoritative source first, reproduce its invariant and threshold construction in tests, then justify any project-specific deviation explicitly.
+
+## 2026-08-04 — Keep EE distance classification unchanged for this mollifier
+
+- Context: Replacing LIMX's custom near-parallel EE response with the standard IPC mollifier.
+- Mistake: Included IPC's extreme-parallel PP/PE distance fallback in the proposed scope even though the requested change is only the EE mollifier.
+- Rule: Apply the IPC EE mollifier to the existing EE distance and closest-point formulation; do not add PP/PE degeneration unless the user explicitly requests it.
+
+## 2026-08-04 — Tune LIMX scene framing feedback immediately
+
+- Context: The first three-T-shirt box visualization was stable, but the user found the box visually too large relative to the garments.
+- Mistake: The initial box footprint prioritized generous containment over the requested compact pile-up stress test.
+- Rule: For visual scene-size feedback, update the contact planes, matching render geometry, and containment assertions together; run only the focused CUDA smoke test and relaunch the viewer promptly.
+
+## 2026-08-04 — Diagnose sleeve-local jitter before retuning cloth globally
+
+- Context: In the compact three-T-shirt box scene, the user observed overly strong bending and severe oscillation localized at sleeve openings despite the finite 300-frame rollout passing.
+- Mistake: The containment regression did not distinguish excessive bending response from local self-contact churn around open boundary loops.
+- Rule: For localized garment jitter, identify the affected mesh region and correlate its per-particle velocity with VF/EE/EF contact activation before changing global stiffness. Tune bending separately from the verified collision root cause, and validate localized temporal metrics on CUDA.
+
+## 2026-08-04 — Classify sleeve EE churn by topology before adding damping
+
+- Context: The settled three-T-shirt scene showed persistent sleeve-opening jitter, initially attributed broadly to undamped EE contact churn.
+- Mistake: Aggregated all sleeve EE contacts before distinguishing one-ring same-garment pairs from nonlocal self-contact and inter-garment contact.
+- Rule: Before adding global self-contact damping for localized garment jitter, classify active and churning EE pairs by topology locality and mollifier state. Treat dominant one-ring activation separately so a local thickness artifact does not cause broad physical-model changes.
+
+## 2026-08-04 — Ignore one-ring EE pairs in LIMX self-collision
+
+- Context: Settled sleeve jitter was traced to same-garment one-ring EE pairs grazing the collision-thickness threshold.
+- Mistake: Retained Style3D's local half-edge-length thickness clamp even though these intrinsic neighbors dominated contact churn in the target garment scene.
+- Rule: LIMX self-collision must skip topology-local one-ring EE pairs entirely. Continue handling nonlocal same-garment and inter-garment EE pairs, and keep the near-parallel mollifier only for those retained contacts.
+
+## 2026-08-04 — Preserve one-ring EE support while diagnosing its chatter
+
+- Context: Disabling topology-local one-ring EE pairs reduced contact churn numerically but made the compact three-T-shirt result visibly worse.
+- Mistake: Equated the dominant churning contact class with the contact class that should be removed, without testing the structural support those contacts provide against local foldover.
+- Rule: Keep Style3D's half-local-edge-length clamp for one-ring EE pairs. Diagnose chatter at persistent pair level—distance, activation threshold, closest parameters, normal continuity, adaptive stiffness, and force sign—before changing their response or topology filter.
+## 2026-08-04 — Keep contact-type test dimensions synchronized
+
+- Context: Adding experimental PE contacts to LIMX self-collision expanded overflow tracking from three buffers to four.
+- Mistake: Updated the accumulated overflow vector and samples but left the expected zero vector at length three, causing a shape-only test failure.
+- Rule: Whenever a contact type is added or removed, update buffer construction, runtime accumulation, and all expected count/overflow vector dimensions in the same patch before running the focused example test.
+## 2026-08-04 — Derive surface PE/PP from filtered 3D parent stencils
+
+- Context: An experimental LIMX kernel independently queried every cloth vertex against every nearby edge to fill EE endpoint regions.
+- Mistake: This created thousands of PE constraints, including topology-local pairs that were not admitted by a valid surface collision parent stencil.
+- Rule: For 3D triangle-surface self-collision, follow IPC's candidate structure: broad-phase FV and EE only, filter topology at the parent stencil, then evaluate PT/EE distance types that may reduce to PE or PP. Reserve independent EV/VV candidates for genuinely codimensional primitives.
+
+## 2026-08-04 — Reject PE/PP as the primary sleeve-jitter cause
+
+- Context: Filtered EE-parent PE/PP contacts with rest-distance clamping were tested in the settled three-T-shirt scene.
+- Mistake: Treated the observed EE-to-PE feature transition as the likely root cause before verifying that filling the feature region actually reduced late-time motion.
+- Rule: Keep the LIMX cloth experiment on strict VF/EE after the PE/PP variant failed to settle. Diagnose persistent jitter from contact-pair activation, normal continuity, adaptive stiffness, and force variation using matched CUDA rollouts before proposing another response change.
+
+## 2026-08-05 — Bound cloth collision thickness by geometry
+
+- Context: Reasoning about whether the 6 mm LIMX self-collision thickness should settle on the diagnosed sleeve patch.
+- Mistake: Suggested that an arbitrary thickness should settle whenever the solver is sufficiently robust, without first requiring the thickness to lie in a geometrically admissible range; the infinite-thickness counterexample shows that finite mesh features and anchors can make the resulting contact targets mutually incompatible.
+- Rule: Before judging solver stability, derive and enforce an admissible cloth collision-thickness range from physical thickness and local mesh feature size. Never assume every positive thickness admits a static equilibrium; treat an oversized thickness as an invalid geometric configuration rather than only a solver-convergence problem.
+
+## 2026-08-05 — Prefer visual cloth validation over the full suite
+
+- Context: The user asked to see whether the geometry-aware LIMX collision thickness fixes visible cloth jitter.
+- Mistake: Ran the entire 5,496-test project suite even though focused LIMX tests had already passed and a rendered example was the requested evidence.
+- Rule: For interactive cloth-stability work, first render and present one representative example plus its focused regression result. Run the full project suite only when the user requests release-level verification or before an integration action that requires it.
+
+## 2026-08-05 — Execute explicit visualization variants directly
+
+- Context: The user explicitly requested changing the three-T-shirt box scene to one T-shirt to isolate the source of visible jitter.
+- Mistake: Paused for another approval after the requested variant, preserved parameters, and intended visual comparison were already unambiguous.
+- Rule: When an interactive visualization request specifies the changed variable and comparison goal, make the minimal reversible configuration change and launch it directly. Do not ask for redundant approval; only stop for choices that materially change the experiment.
+
+## 2026-08-05 — Verify the intended collision mode in visual comparisons
+
+- Context: The one-T-shirt box variant still jittered after geometry-aware collision radii had stabilized the isolated EE patch.
+- Mistake: Presented the one-vs-three garment run as evidence about the new thickness scheme without first checking that the box example actually passed `geometry_radius_scale`; it was still using uniform 6 mm self-collision thickness.
+- Rule: Before launching a visual A/B collision experiment, inspect and report the exact active collision constructor parameters. Never attribute the result to a feature that the scene has not enabled.
+
+## 2026-08-05 — Preserve the requested VF/EE rigid-cloth direction
+
+- Context: Discussing how the Franka mesh should collide with LIMX cloth after the user explicitly chose vertex-face and edge-edge contact.
+- Mistake: Replaced the requested VF/EE design with Newton's existing SDF rigid-soft path instead of answering whether reusable open-source VF/EE code had been found.
+- Rule: Treat an explicitly selected collision representation as a fixed requirement. Investigate and cite its concrete implementation source before recommending a different representation; distinguish existing local code, externally reusable code, and a proposed extension.
+
+## 2026-08-06 — Keep the Franka gripper above the table throughout its trajectory
+
+- Context: The interactive cloth-grasp scene visibly drove the Franka gripper through the tabletop.
+- Mistake: Validated cloth CCD activation without validating the complete commanded gripper geometry against the table over the full approach, pinch, lift, and release trajectory.
+- Rule: Before presenting a robot-cloth trajectory, compute or test the minimum table clearance of every gripper collision primitive at every motion phase. Reject or clamp any target pose and interpolated segment that places the gripper at or below the tabletop, independently of cloth-contact behavior.
+
 ## 2026-08-09 — Treat tetrahedral ARAP as a Newton constraint
 
 - Context: Designing a traditional Newton FEM path with tetrahedral ARAP energy and future Affine Body Dynamics coupling.
@@ -131,3 +356,81 @@
 - Context: Finishing the automatic LIMX collision-thickness change in a hidden linked worktree.
 - Mistake: Continued using a feature worktree and offered local merge or agent-created PR flows, adding friction to the user's preferred daily workflow.
 - Rule: For Newton, keep only `main` and `dev` as the normal working branches. Develop, commit, and push from the canonical repository path on `dev`; the user opens the PR from `dev` into `main`. Do not create or use worktrees unless the user explicitly requests one.
+
+## 2026-08-10 — Treat visual twist behavior as the acceptance criterion
+
+- Context: Testing automatic LIMX collision thickness in the cloth twist scene against the user's more stable Chysx reference.
+- Mistake: Treated finite state and a passing 600-frame rollout as sufficient evidence even though the visible twist behavior was wrong and the scene had not been matched to the reference implementation.
+- Rule: For twist stability comparisons, visually validate the motion and first match the reference scene's mesh, material, boundary drive, contact parameters, timestep, and solver iterations. Do not attribute a difference to collision thickness while the compared scene configurations are unmatched.
+
+## 2026-08-10 — Preserve EF untangling when evaluating twist stability
+
+- Context: Comparing LIMX twist collision settings against the Chysx reference after observing severe motion with strong EF recovery.
+- Mistake: Recommended disabling EF because the velocity metrics settled, without checking whether the cloth had already self-intersected and remained topologically tangled.
+- Rule: A twist result is acceptable only if it both settles and remains penetration-free. Keep EF recovery available for already-crossed edge-face pairs; diagnose and tune its direction, persistence, depth, stiffness, and Hessian instead of declaring a penetrated but motionless state stable.
+
+## 2026-08-10 — Run the actual Chysx reference before tuning Newton twist
+
+- Context: Retuning LIMX twist from source comments and headless EF/velocity metrics while the user expected the visibly stable Ai-Physics Chysx result.
+- Mistake: Continued proposing Newton parameter combinations without first building and running the reference environment; the resulting scene still looked bad despite favorable aggregate metrics.
+- Rule: Stop Newton twist tuning until the Ai-Physics Chysx reference is built and visually reproduced. Use its actual executable scene, mesh, drive, material, collision, timestep, and solver configuration as the comparison baseline; do not substitute inferred settings or headless settling metrics for the reference animation.
+
+## 2026-08-11 — Attribute the twist difference to the scene before topology-local EE
+
+- Context: Comparing the stable `newton-ChysX` twist animation with the coarse LIMX twist scene.
+- Mistake: Continued presenting ChysX's explicitly enumerated adjacent EE candidates as a possible stability explanation after the measured scene mismatch was already dominant.
+- Rule: For this comparison, treat scene configuration as the working cause. First align mesh resolution and dimensions, boundary drive, mass, material, collision thickness and stiffness, timestep, and solver iterations. Do not change or attribute behavior to topology-local EE candidate generation unless a later matched-scene A/B test specifically isolates it.
+
+## 2026-08-11 — Validate the post-drive hold phase in twist scenes
+
+- Context: Declaring the aligned LIMX twist scene stable from a 1,000-frame rollout whose boundary targets were still rotating at the final frame.
+- Mistake: Reported final-frame EF and finite-state metrics as evidence for settling even though the simulation never entered a fixed-target hold phase; the visible violent jitter appeared only after rotation stopped.
+- Rule: Twist stability requires an explicit post-drive hold interval. Record VF, EE, EF, overflow, kinetic speed, and contact depth across both the driven and fixed-target phases; never infer settling from a rollout that ends while the anchors are still moving.
+
+## 2026-08-11 — Isolate collision handling before changing twist material energy
+
+- Context: Diagnosing post-drive LIMX twist jitter after confirming intermittent EF recovery contacts.
+- Mistake: Treated ChysX's rotated-axis material energy as a likely cause and combined a material replacement with an EF Hessian change in one A/B, so the observed improvement could not identify the collision-side cause the user wanted investigated.
+- Rule: Keep the existing LIMX material energy fixed for this diagnosis. Isolate collision variables one at a time—EF Hessian coupling, recovery thickness/target, contact persistence, direction, and stiffness—and attribute improvement only to a collision-only A/B.
+
+## 2026-08-11 — Do not present diagonal EF Hessians as inherently more stable
+
+- Context: Explaining the diagonal-only five-particle EF Hessian used during the LIMX twist investigation.
+- Mistake: Described dropping every cross-particle EF Hessian block as definitively more stable, even though the observed twist behavior did not establish that claim and the user wanted the physically stronger five-point coupling retained.
+- Rule: Treat diagonal-only EF assembly as an experimental approximation, not a stability guarantee. For the current Newton LIMX path, keep the full coupled rank-one EF Hessian unless a controlled A/B with the target scene demonstrates a reason to approximate it.
+
+## 2026-08-11 — Preserve the authored twist drive while changing collision
+
+- Context: Aligning and debugging the LIMX twist scene against the ChysX collision implementation.
+- Mistake: Changed the scene's rotation speed and total twist angle together with mesh and collision settings, making the visible motion differ independently of the collision algorithm.
+- Rule: Restore and preserve the twist example's authored drive duration and total angle when modifying self-collision. Collision experiments may change contact behavior, but must not change rotation speed, rotation duration, or final twist angle unless the user explicitly requests it.
+
+## 2026-08-11 — Use newton-ChysX as the complete twist-scene authority
+
+- Context: The user clarified the intended meaning of preserving the twist speed and angle after an attempted restoration of the old LIMX drive.
+- Mistake: Restored LIMX's former four-second smoothstep drive instead of treating `newton-ChysX/newton/examples/chysx/cloth/example_chysx_twist.py` as the requested scene reference.
+- Rule: For the current twist comparison, copy the newton-ChysX drive exactly: constant `1 rad/s`, `rot_end_time = 25 s`, and the reference default frame count. Keep any early-stop/hold schedule in diagnostic scripts only, not in the example.
+
+## 2026-08-11 — Reject automatic cloth thickness that activates the flat rest mesh
+
+- Context: Switching the aligned LIMX twist scene from its manual 1.212 mm thickness to the geometry-based automatic formula returned the 5 mm cap.
+- Mistake: Reported the estimated value without first checking that a flat, penetration-free rest mesh generated zero nonincident VF/EE contacts under the exact runtime topology filters.
+- Rule: Validate every automatic cloth thickness against the real VF/EE detector in the flat rest pose. Reject or reduce any estimate that activates topology-local rest pairs; the geometric bound and runtime candidate/filter definitions must cover the same primitive classes.
+
+## 2026-08-11 — Evaluate automatic thickness after one-ring special handling
+
+- Context: The 5 mm automatic twist thickness activated flat-rest VF pairs that should have been governed by the cloth's topology-local thickness rule.
+- Mistake: Evaluated the nominal automatic thickness independently of the one-ring VF/EE special thickness, so the estimator's exclusions and the runtime detector used different effective contact bands.
+- Rule: Compute and validate automatic cloth thickness with topology-local VF/EE special handling enabled. The final effective per-pair thickness—not the nominal scalar alone—must produce zero VF/EE contacts in the penetration-free rest state.
+
+## 2026-08-11 — Do not recompute automatic rest-geometry thickness on viewer reset
+
+- Context: Enabling automatic thickness in the 20,000-particle twist scene made the interactive Reset action visibly stall.
+- Mistake: Put the Python/CPU two-ring geometry scan directly in `ConstraintSelfCollision` construction, so every viewer reset recomputed a rest-topology quantity that is unchanged.
+- Rule: Measure constructor cost when enabling geometry-derived parameters in interactive examples. Cache or precompute rest-topology thickness data so Reset does not rerun an expensive invariant calculation.
+
+## 2026-08-11 — Compute automatic collision-thickness bounds in parallel on GPU
+
+- Context: The 20,000-particle twist mesh spent most of Reset in millions of serial Python VF/EE distance evaluations.
+- Mistake: Started optimizing scalar CPU arithmetic and caching instead of moving the naturally independent candidate-distance evaluations to the GPU.
+- Rule: Build fixed two-ring VF/EE candidate stencils once, evaluate their rest distances in parallel on the model device, and obtain the upper bound with a GPU minimum reduction/atomic reduction. Do not retain a serial Python distance loop as the production path for large meshes.

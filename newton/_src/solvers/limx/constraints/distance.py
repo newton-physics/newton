@@ -120,25 +120,13 @@ class ConstraintDistance:
         """Append block coordinates required by this constraint batch."""
         if builder.row_count != self.particle_count:
             raise ValueError("Constraint and block matrix particle counts differ")
-        for particle_i, particle_j in self.host_index_pairs:
-            builder.ensure_block(particle_i, particle_i)
-            builder.ensure_block(particle_i, particle_j)
-            builder.ensure_block(particle_j, particle_i)
-            builder.ensure_block(particle_j, particle_j)
+        builder.ensure_stencil_blocks(np.asarray(self.host_index_pairs, dtype=np.int32))
 
     def bind_hessian(self, matrix: BlockCsrMatrix) -> None:
         """Bind distance constraints to finalized block-CSR value indices."""
         if matrix.row_count != self.particle_count or matrix.device != self.device:
             raise ValueError("Constraint and block matrix must have matching particle counts and devices")
-        block_indices = [
-            (
-                matrix.block_index(particle_i, particle_i),
-                matrix.block_index(particle_i, particle_j),
-                matrix.block_index(particle_j, particle_i),
-                matrix.block_index(particle_j, particle_j),
-            )
-            for particle_i, particle_j in self.host_index_pairs
-        ]
+        block_indices = matrix.stencil_block_indices(np.asarray(self.host_index_pairs, dtype=np.int32))
         self.hessian_block_indices = wp.array2d(block_indices, dtype=int, device=self.device)
 
     def accumulate_force(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:

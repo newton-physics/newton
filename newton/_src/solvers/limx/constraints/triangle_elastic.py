@@ -208,19 +208,13 @@ class ConstraintTriangleElastic:
         """Append all nine ordered particle-pair blocks for every triangle."""
         if builder.row_count != self.particle_count:
             raise ValueError("Constraint and block matrix particle counts differ")
-        for triangle in self.host_triangle_indices:
-            for particle_i in triangle:
-                for particle_j in triangle:
-                    builder.ensure_block(particle_i, particle_j)
+        builder.ensure_stencil_blocks(np.asarray(self.host_triangle_indices, dtype=np.int32))
 
     def bind_hessian(self, matrix: BlockCsrMatrix) -> None:
         """Bind triangle blocks to finalized block-CSR value indices."""
         if matrix.row_count != self.particle_count or matrix.device != self.device:
             raise ValueError("Constraint and block matrix must have matching particle counts and devices")
-        block_indices = [
-            tuple(matrix.block_index(particle_i, particle_j) for particle_i in triangle for particle_j in triangle)
-            for triangle in self.host_triangle_indices
-        ]
+        block_indices = matrix.stencil_block_indices(np.asarray(self.host_triangle_indices, dtype=np.int32))
         self.hessian_block_indices = wp.array2d(block_indices, dtype=int, device=self.device)
         self.hessian_value_count = len(matrix.values)
 

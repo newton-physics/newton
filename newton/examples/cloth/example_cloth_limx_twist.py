@@ -21,58 +21,68 @@ class Example:
         self.sim_substeps = 1
         self.sim_dt = self.frame_dt
         self.sim_time = 0.0
-        self.drive_duration = 4.0
-        self.target_angle = 4.0 * math.pi
+        self.rot_angular_velocity = 1.0
+        self.rot_end_time = 25.0
 
-        length_cells = 32
-        width_cells = 12
-        length_side = length_cells + 1
-        width_side = width_cells + 1
-        particle_count = length_side * width_side
-        strip_length = 1.6
-        strip_width = 0.6
-        self.strip_center_z = 1.2
-
-        positions = [
-            wp.vec3(
-                -0.5 * strip_length + strip_length * x / length_cells,
-                -0.5 * strip_width + strip_width * y / width_cells,
-                self.strip_center_z,
-            )
-            for y in range(width_side)
-            for x in range(length_side)
-        ]
+        cloth_size_z = 200
+        cloth_size_y = 100
+        particle_count = cloth_size_z * cloth_size_y
+        edge_length = 0.5 / (cloth_size_y - 1)
+        positions_np = np.asarray(
+            [
+                (0.0, -0.25 + edge_length * y, -0.5 + z / (cloth_size_z - 1))
+                for z in range(cloth_size_z)
+                for y in range(cloth_size_y)
+            ],
+            dtype=np.float32,
+        )
         triangles = []
-        for y in range(width_cells):
-            for x in range(length_cells):
-                lower_left = y * length_side + x
-                lower_right = lower_left + 1
-                upper_left = lower_left + length_side
-                upper_right = upper_left + 1
-                if (x + y) % 2 == 0:
-                    triangles.extend([(lower_left, lower_right, upper_right), (lower_left, upper_right, upper_left)])
+        for z in range(cloth_size_z - 1):
+            for y in range(cloth_size_y - 1):
+                lower_left = z * cloth_size_y + y
+                upper_left = lower_left + 1
+                lower_right = lower_left + cloth_size_y
+                upper_right = lower_right + 1
+                if (z + y) % 2 == 0:
+                    triangles.extend([(lower_left, upper_right, upper_left), (lower_left, lower_right, upper_right)])
                 else:
-                    triangles.extend([(lower_left, lower_right, upper_left), (lower_right, upper_right, upper_left)])
+                    triangles.extend([(lower_left, lower_right, upper_left), (upper_left, lower_right, upper_right)])
+
+        triangle_indices = np.asarray(triangles, dtype=np.int32)
+        triangle_positions = positions_np[triangle_indices]
+        triangle_areas = 0.5 * np.linalg.norm(
+            np.cross(
+                triangle_positions[:, 1] - triangle_positions[:, 0],
+                triangle_positions[:, 2] - triangle_positions[:, 0],
+            ),
+            axis=1,
+        )
+        masses = np.zeros(particle_count, dtype=np.float32)
+        np.add.at(
+            masses,
+            triangle_indices.reshape(-1),
+            np.repeat(0.1 * triangle_areas / 3.0, 3),
+        )
+        positions = [wp.vec3(float(x), float(y), float(z)) for x, y, z in positions_np]
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.add_particles(
             pos=positions,
             vel=[wp.vec3(0.0)] * particle_count,
-            mass=[0.3 / particle_count] * particle_count,
-            radius=[0.006] * particle_count,
+            mass=masses.tolist(),
+            radius=[0.2 * edge_length] * particle_count,
         )
-        triangle_indices = np.asarray(triangles, dtype=np.int32)
         builder.add_triangles(triangle_indices[:, 0], triangle_indices[:, 1], triangle_indices[:, 2])
         self.model = builder.finalize()
-        self.model.set_gravity((0.0, 0.0, 0.0))
+        self.model.set_gravity((0.0, -9.8, 0.0))
 
-        positions_np = np.asarray(positions, dtype=np.float32)
         self.triangle_indices = triangle_indices
         self.inverse_rest_matrices = self.model.tri_poses.numpy()
-        self.left_boundary_indices = [y * length_side for y in range(width_side)]
-        self.right_boundary_indices = [y * length_side + length_cells for y in range(width_side)]
-        self.anchor_indices = self.left_boundary_indices + self.right_boundary_indices
-        self.boundary_particle_count = width_side
+        self.negative_z_boundary_indices = list(range(cloth_size_y))
+        positive_z_start = (cloth_size_z - 1) * cloth_size_y
+        self.positive_z_boundary_indices = list(range(positive_z_start, positive_z_start + cloth_size_y))
+        self.anchor_indices = self.negative_z_boundary_indices + self.positive_z_boundary_indices
+        self.boundary_particle_count = cloth_size_y
         self.anchor_rest_targets = positions_np[self.anchor_indices].copy()
 
         edge_rows = newton.utils.MeshAdjacency(triangle_indices).edge_indices
@@ -82,7 +92,7 @@ class Example:
         self.anchor_constraint = newton.solvers.ConstraintAnchor(
             self.anchor_indices,
             [positions[index] for index in self.anchor_indices],
-            [1.0e7] * len(self.anchor_indices),
+            [1.0e9] * len(self.anchor_indices),
             particle_count,
             self.model.device,
         )
@@ -92,24 +102,26 @@ class Example:
                 triangles,
                 self.inverse_rest_matrices,
                 self.model.tri_areas.numpy(),
-                [wp.vec3(1.0e4, 1.0e4, 1.0e3)] * len(triangles),
+                [wp.vec3(500.0, 500.0, 500.0)] * len(triangles),
                 particle_count,
                 self.model.device,
             ),
             newton.solvers.ConstraintDihedralBending(
                 self.dihedral_indices,
                 positions_np,
-                0.01,
+                5.0e-5,
                 particle_count,
                 self.model.device,
             ),
         ]
         self.self_collision = newton.solvers.ConstraintSelfCollision(
             self.model,
-            thickness=0.012,
-            stiffness=1.0e4,
-            untangle_stiffness=3.0e4,
-            max_contacts=32768,
+            thickness=None,
+            stiffness=1.0e3,
+            untangle_stiffness=2.0e3,
+            max_contacts=131072,
+            geometry_radius_scale=0.25,
+            geometry_radius_topology_local_only=True,
         )
         self.solver = newton.solvers.SolverLIMX(
             self.model,
@@ -124,23 +136,21 @@ class Example:
         self.control = self.model.control()
 
         self.viewer.set_model(self.model)
-        self.viewer.set_camera(wp.vec3(2.1, -2.2, 1.65), 8.0, 132.0)
+        self.viewer.set_camera(wp.vec3(2.25, 0.0, 0.0), 0.0, -180.0)
         self.capture()
 
     def _compute_anchor_targets(self, angle: float) -> np.ndarray:
         targets = self.anchor_rest_targets.copy()
         cosine = math.cos(angle)
         sine = math.sin(angle)
-        targets[:, 1] = cosine * self.anchor_rest_targets[:, 1]
         boundary_count = self.boundary_particle_count
-        targets[:boundary_count, 2] = self.strip_center_z + sine * self.anchor_rest_targets[:boundary_count, 1]
-        targets[boundary_count:, 2] = self.strip_center_z - sine * self.anchor_rest_targets[boundary_count:, 1]
+        targets[:boundary_count, 0] = sine * self.anchor_rest_targets[:boundary_count, 1]
+        targets[boundary_count:, 0] = -sine * self.anchor_rest_targets[boundary_count:, 1]
+        targets[:, 1] = cosine * self.anchor_rest_targets[:, 1]
         return targets
 
     def _drive_angle(self) -> float:
-        phase = min(self.sim_time / self.drive_duration, 1.0)
-        smooth_phase = phase * phase * (3.0 - 2.0 * phase)
-        return self.target_angle * smooth_phase
+        return self.rot_angular_velocity * min(self.sim_time, self.rot_end_time)
 
     def capture(self):
         if wp.get_device().is_cuda:
@@ -178,6 +188,6 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.set_defaults(num_frames=600)
+    parser.set_defaults(num_frames=1000)
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

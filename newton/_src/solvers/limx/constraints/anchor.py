@@ -96,14 +96,15 @@ class ConstraintAnchor:
         """Append block coordinates required by this constraint batch."""
         if builder.row_count != self.particle_count:
             raise ValueError("Constraint and block matrix particle counts differ")
-        for index in self.host_indices:
-            builder.ensure_block(index, index)
+        builder.ensure_stencil_blocks(np.asarray(self.host_indices, dtype=np.int32).reshape(-1, 1))
 
     def bind_hessian(self, matrix: BlockCsrMatrix) -> None:
         """Bind anchor constraints to finalized block-CSR value indices."""
         if matrix.row_count != self.particle_count or matrix.device != self.device:
             raise ValueError("Constraint and block matrix must have matching particle counts and devices")
-        block_indices = [matrix.block_index(index, index) for index in self.host_indices]
+        block_indices = matrix.stencil_block_indices(
+            np.asarray(self.host_indices, dtype=np.int32).reshape(-1, 1)
+        ).reshape(-1)
         self.hessian_block_indices = wp.array(block_indices, dtype=int, device=self.device)
 
     def accumulate_force(self, positions: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:

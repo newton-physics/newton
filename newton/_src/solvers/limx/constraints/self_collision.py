@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ....geometry.kernels import triangle_closest_point_barycentric
 from ....sim import Model
 from ....utils.mesh import MeshAdjacency
 
@@ -20,80 +21,27 @@ _MIN_STIFFNESS_DENOMINATOR = 1.0e-12
 _EE_MOLLIFIER_THRESHOLD_SCALE = 1.0e-3
 _AUTOMATIC_THICKNESS_ETA = 0.8
 _AUTOMATIC_THICKNESS_MAX = 5.0e-3
+_AUTOMATIC_THICKNESS_NO_BOUND = 1.0e30
 
 
-def _point_triangle_interior_distance(
-    point: np.ndarray,
-    position_0: np.ndarray,
-    position_1: np.ndarray,
-    position_2: np.ndarray,
-) -> float:
-    edge_0 = position_0 - position_2
-    edge_1 = position_1 - position_2
-    normal = np.cross(position_1 - position_0, position_2 - position_0)
-    normal_squared = float(np.dot(normal, normal))
-    if normal_squared <= _MIN_BARYCENTRIC_DENOMINATOR:
-        return np.inf
-
-    signed_scale = float(np.dot(point - position_0, normal)) / normal_squared
-    projected = point - signed_scale * normal
-    relative = projected - position_2
-    dot_00 = float(np.dot(edge_0, edge_0))
-    dot_01 = float(np.dot(edge_0, edge_1))
-    dot_02 = float(np.dot(edge_0, relative))
-    dot_11 = float(np.dot(edge_1, edge_1))
-    dot_12 = float(np.dot(edge_1, relative))
-    denominator = dot_00 * dot_11 - dot_01 * dot_01
-    if abs(denominator) <= _MIN_BARYCENTRIC_DENOMINATOR:
-        return np.inf
-
-    barycentric_0 = (dot_11 * dot_02 - dot_01 * dot_12) / denominator
-    barycentric_1 = (dot_00 * dot_12 - dot_01 * dot_02) / denominator
-    barycentric_2 = 1.0 - barycentric_0 - barycentric_1
-    if barycentric_0 < 0.0 or barycentric_1 < 0.0 or barycentric_2 < 0.0:
-        return np.inf
-    return abs(signed_scale) * np.sqrt(normal_squared)
-
-
-def _edge_edge_interior_distance(
-    position_0: np.ndarray,
-    position_1: np.ndarray,
-    position_2: np.ndarray,
-    position_3: np.ndarray,
-) -> float:
-    edge_0 = position_1 - position_0
-    edge_1 = position_3 - position_2
-    relative = position_0 - position_2
-    dot_00 = float(np.dot(edge_0, edge_0))
-    dot_01 = float(np.dot(edge_0, edge_1))
-    dot_11 = float(np.dot(edge_1, edge_1))
-    dot_0r = float(np.dot(edge_0, relative))
-    dot_1r = float(np.dot(edge_1, relative))
-    denominator = dot_00 * dot_11 - dot_01 * dot_01
-    if denominator <= _MIN_BARYCENTRIC_DENOMINATOR:
-        return np.inf
-
-    parameter_0 = (dot_01 * dot_1r - dot_11 * dot_0r) / denominator
-    parameter_1 = (dot_00 * dot_1r - dot_01 * dot_0r) / denominator
-    if (
-        parameter_0 <= _MIN_CONTACT_DISTANCE
-        or parameter_0 >= 1.0 - _MIN_CONTACT_DISTANCE
-        or parameter_1 <= _MIN_CONTACT_DISTANCE
-        or parameter_1 >= 1.0 - _MIN_CONTACT_DISTANCE
-    ):
-        return np.inf
-
-    closest_0 = position_0 + parameter_0 * edge_0
-    closest_1 = position_2 + parameter_1 * edge_1
-    return float(np.linalg.norm(closest_0 - closest_1))
+def _pack_index_sets(index_sets: list[set[int]]) -> tuple[np.ndarray, np.ndarray]:
+    offsets = np.zeros(len(index_sets) + 1, dtype=np.int32)
+    offsets[1:] = np.cumsum([len(indices) for indices in index_sets], dtype=np.int32)
+    values = np.fromiter(
+        (index for indices in index_sets for index in sorted(indices)),
+        dtype=np.int32,
+        count=int(offsets[-1]),
+    )
+    return offsets, values
 
 
 def _compute_two_ring_collision_upper_bound(
     rest_positions: np.ndarray,
     triangle_indices: np.ndarray,
     edge_indices: np.ndarray,
+    device: Any,
 ) -> float:
-    """Return the smallest exact-two-ring interior VF/EE rest distance."""
+    """Return the smallest exact-two-ring interior VF/EE rest distance on the device."""
     if rest_positions.ndim != 2 or rest_positions.shape[1] != 3:
         raise ValueError("rest positions must have shape [particle_count, 3]")
     if not np.isfinite(rest_positions).all():
@@ -114,64 +62,52 @@ def _compute_two_ring_collision_upper_bound(
         for vertex in indices:
             vertex_triangles[int(vertex)].add(triangle)
 
-    two_ring_neighbors = []
-    for vertex, neighbors in enumerate(one_ring_neighbors):
-        two_ring = set()
-        for neighbor in neighbors:
-            two_ring.update(one_ring_neighbors[neighbor])
-        two_ring.difference_update(neighbors)
-        two_ring.discard(vertex)
-        two_ring_neighbors.append(two_ring)
-
-    upper_bound = np.inf
-    for vertex, two_ring in enumerate(two_ring_neighbors):
-        candidate_triangles = set()
-        for neighbor in two_ring:
-            candidate_triangles.update(vertex_triangles[neighbor])
-        for triangle in candidate_triangles:
-            indices = triangle_indices[triangle]
-            if vertex in indices or any(int(index) in one_ring_neighbors[vertex] for index in indices):
-                continue
-            if not any(int(index) in two_ring for index in indices):
-                continue
-            distance = _point_triangle_interior_distance(
-                rest_positions[vertex],
-                rest_positions[indices[0]],
-                rest_positions[indices[1]],
-                rest_positions[indices[2]],
-            )
-            upper_bound = min(upper_bound, distance)
-
-    for edge, indices in enumerate(edge_vertices):
-        index_0, index_1 = (int(index) for index in indices)
-        two_ring = two_ring_neighbors[index_0] | two_ring_neighbors[index_1]
-        candidate_edges = set()
-        for neighbor in two_ring:
-            candidate_edges.update(vertex_edges[neighbor])
-        for other_edge in candidate_edges:
-            if other_edge <= edge:
-                continue
-            index_2, index_3 = (int(index) for index in edge_vertices[other_edge])
-            if index_2 in (index_0, index_1) or index_3 in (index_0, index_1):
-                continue
-            if (
-                index_2 in one_ring_neighbors[index_0]
-                or index_3 in one_ring_neighbors[index_0]
-                or index_2 in one_ring_neighbors[index_1]
-                or index_3 in one_ring_neighbors[index_1]
-            ):
-                continue
-            if index_2 not in two_ring and index_3 not in two_ring:
-                continue
-            distance = _edge_edge_interior_distance(
-                rest_positions[index_0],
-                rest_positions[index_1],
-                rest_positions[index_2],
-                rest_positions[index_3],
-            )
-            upper_bound = min(upper_bound, distance)
-
-    return float(upper_bound)
+    neighbor_offsets, neighbor_indices = _pack_index_sets(one_ring_neighbors)
+    vertex_triangle_offsets, vertex_triangle_indices = _pack_index_sets(vertex_triangles)
+    vertex_edge_offsets, vertex_edge_indices = _pack_index_sets(vertex_edges)
+    device = wp.get_device(device)
+    positions_device = wp.array(rest_positions, dtype=wp.vec3, device=device)
+    triangles_device = wp.array(triangle_indices, dtype=wp.int32, device=device)
+    edges_device = wp.array(edge_indices, dtype=wp.int32, device=device)
+    neighbor_offsets_device = wp.array(neighbor_offsets, dtype=wp.int32, device=device)
+    neighbor_indices_device = wp.array(neighbor_indices, dtype=wp.int32, device=device)
+    vertex_triangle_offsets_device = wp.array(vertex_triangle_offsets, dtype=wp.int32, device=device)
+    vertex_triangle_indices_device = wp.array(vertex_triangle_indices, dtype=wp.int32, device=device)
+    vertex_edge_offsets_device = wp.array(vertex_edge_offsets, dtype=wp.int32, device=device)
+    vertex_edge_indices_device = wp.array(vertex_edge_indices, dtype=wp.int32, device=device)
+    upper_bound = wp.array([np.inf], dtype=wp.float32, device=device)
+    wp.launch(
+        _reduce_two_ring_vertex_face_upper_bound,
+        dim=particle_count,
+        inputs=[
+            positions_device,
+            triangles_device,
+            neighbor_offsets_device,
+            neighbor_indices_device,
+            vertex_triangle_offsets_device,
+            vertex_triangle_indices_device,
+        ],
+        outputs=[upper_bound],
+        device=device,
+    )
+    wp.launch(
+        _reduce_two_ring_edge_edge_upper_bound,
+        dim=len(edge_indices),
+        inputs=[
+            positions_device,
+            edges_device,
+            neighbor_offsets_device,
+            neighbor_indices_device,
+            vertex_edge_offsets_device,
+            vertex_edge_indices_device,
+        ],
+        outputs=[upper_bound],
+        device=device,
+    )
+    result = float(upper_bound.numpy()[0])
+    if result >= _AUTOMATIC_THICKNESS_NO_BOUND:
+        return np.inf
+    return result
 
 
 def _compute_geometry_aware_particle_radii(
@@ -298,6 +234,161 @@ def _is_vertex_topology_neighbor(
         if vertex_neighbors[entry] == candidate:
             return True
     return False
+
+
+@wp.func
+def _point_triangle_interior_distance_device(
+    point: wp.vec3,
+    position_0: wp.vec3,
+    position_1: wp.vec3,
+    position_2: wp.vec3,
+):
+    normal = wp.cross(position_1 - position_0, position_2 - position_0)
+    normal_squared = wp.dot(normal, normal)
+    if normal_squared <= _MIN_BARYCENTRIC_DENOMINATOR:
+        return float(_AUTOMATIC_THICKNESS_NO_BOUND)
+    signed_scale = wp.dot(point - position_0, normal) / normal_squared
+    projected = point - signed_scale * normal
+    barycentric = _triangle_barycentric(position_0, position_1, position_2, projected)
+    if barycentric[0] < 0.0 or barycentric[1] < 0.0 or barycentric[2] < 0.0:
+        return float(_AUTOMATIC_THICKNESS_NO_BOUND)
+    return wp.abs(signed_scale) * wp.sqrt(normal_squared)
+
+
+@wp.func
+def _edge_edge_interior_distance_device(
+    position_0: wp.vec3,
+    position_1: wp.vec3,
+    position_2: wp.vec3,
+    position_3: wp.vec3,
+):
+    edge_0 = position_1 - position_0
+    edge_1 = position_3 - position_2
+    relative = position_0 - position_2
+    dot_00 = wp.dot(edge_0, edge_0)
+    dot_01 = wp.dot(edge_0, edge_1)
+    dot_11 = wp.dot(edge_1, edge_1)
+    dot_0r = wp.dot(edge_0, relative)
+    dot_1r = wp.dot(edge_1, relative)
+    denominator = dot_00 * dot_11 - dot_01 * dot_01
+    if denominator <= _MIN_BARYCENTRIC_DENOMINATOR:
+        return float(_AUTOMATIC_THICKNESS_NO_BOUND)
+    parameter_0 = (dot_01 * dot_1r - dot_11 * dot_0r) / denominator
+    parameter_1 = (dot_00 * dot_1r - dot_01 * dot_0r) / denominator
+    if (
+        parameter_0 <= _MIN_CONTACT_DISTANCE
+        or parameter_0 >= 1.0 - _MIN_CONTACT_DISTANCE
+        or parameter_1 <= _MIN_CONTACT_DISTANCE
+        or parameter_1 >= 1.0 - _MIN_CONTACT_DISTANCE
+    ):
+        return float(_AUTOMATIC_THICKNESS_NO_BOUND)
+    closest_0 = position_0 + parameter_0 * edge_0
+    closest_1 = position_2 + parameter_1 * edge_1
+    return wp.length(closest_0 - closest_1)
+
+
+@wp.kernel
+def _reduce_two_ring_vertex_face_upper_bound(
+    positions: wp.array[wp.vec3],
+    triangle_indices: wp.array2d[int],
+    neighbor_offsets: wp.array[int],
+    neighbor_indices: wp.array[int],
+    vertex_triangle_offsets: wp.array[int],
+    vertex_triangle_indices: wp.array[int],
+    upper_bound: wp.array[float],
+):
+    vertex = wp.tid()
+    for neighbor_entry in range(neighbor_offsets[vertex], neighbor_offsets[vertex + 1]):
+        neighbor = neighbor_indices[neighbor_entry]
+        for two_ring_entry in range(neighbor_offsets[neighbor], neighbor_offsets[neighbor + 1]):
+            two_ring_vertex = neighbor_indices[two_ring_entry]
+            if two_ring_vertex == vertex or _is_vertex_topology_neighbor(
+                vertex,
+                two_ring_vertex,
+                neighbor_offsets,
+                neighbor_indices,
+            ):
+                continue
+            for triangle_entry in range(
+                vertex_triangle_offsets[two_ring_vertex],
+                vertex_triangle_offsets[two_ring_vertex + 1],
+            ):
+                triangle = vertex_triangle_indices[triangle_entry]
+                index_0 = triangle_indices[triangle, 0]
+                index_1 = triangle_indices[triangle, 1]
+                index_2 = triangle_indices[triangle, 2]
+                if vertex == index_0 or vertex == index_1 or vertex == index_2:
+                    continue
+                if (
+                    _is_vertex_topology_neighbor(vertex, index_0, neighbor_offsets, neighbor_indices)
+                    or _is_vertex_topology_neighbor(vertex, index_1, neighbor_offsets, neighbor_indices)
+                    or _is_vertex_topology_neighbor(vertex, index_2, neighbor_offsets, neighbor_indices)
+                ):
+                    continue
+                distance = _point_triangle_interior_distance_device(
+                    positions[vertex],
+                    positions[index_0],
+                    positions[index_1],
+                    positions[index_2],
+                )
+                if distance < upper_bound[0]:
+                    wp.atomic_min(upper_bound, 0, distance)
+
+
+@wp.kernel
+def _reduce_two_ring_edge_edge_upper_bound(
+    positions: wp.array[wp.vec3],
+    edge_indices: wp.array2d[int],
+    neighbor_offsets: wp.array[int],
+    neighbor_indices: wp.array[int],
+    vertex_edge_offsets: wp.array[int],
+    vertex_edge_indices: wp.array[int],
+    upper_bound: wp.array[float],
+):
+    edge = wp.tid()
+    index_0 = edge_indices[edge, 2]
+    index_1 = edge_indices[edge, 3]
+    for local_endpoint in range(2):
+        endpoint = index_0
+        if local_endpoint == 1:
+            endpoint = index_1
+        for neighbor_entry in range(neighbor_offsets[endpoint], neighbor_offsets[endpoint + 1]):
+            neighbor = neighbor_indices[neighbor_entry]
+            for two_ring_entry in range(neighbor_offsets[neighbor], neighbor_offsets[neighbor + 1]):
+                two_ring_vertex = neighbor_indices[two_ring_entry]
+                if two_ring_vertex == endpoint or _is_vertex_topology_neighbor(
+                    endpoint,
+                    two_ring_vertex,
+                    neighbor_offsets,
+                    neighbor_indices,
+                ):
+                    continue
+                for other_edge_entry in range(
+                    vertex_edge_offsets[two_ring_vertex],
+                    vertex_edge_offsets[two_ring_vertex + 1],
+                ):
+                    other_edge = vertex_edge_indices[other_edge_entry]
+                    if other_edge <= edge:
+                        continue
+                    index_2 = edge_indices[other_edge, 2]
+                    index_3 = edge_indices[other_edge, 3]
+                    if index_2 == index_0 or index_2 == index_1 or index_3 == index_0 or index_3 == index_1:
+                        continue
+                    if (
+                        _is_vertex_topology_neighbor(index_0, index_2, neighbor_offsets, neighbor_indices)
+                        or _is_vertex_topology_neighbor(index_0, index_3, neighbor_offsets, neighbor_indices)
+                        or _is_vertex_topology_neighbor(index_1, index_2, neighbor_offsets, neighbor_indices)
+                        or _is_vertex_topology_neighbor(index_1, index_3, neighbor_offsets, neighbor_indices)
+                    ):
+                        continue
+                    distance = _edge_edge_interior_distance_device(
+                        positions[index_0],
+                        positions[index_1],
+                        positions[index_2],
+                        positions[index_3],
+                    )
+                    if distance < upper_bound[0]:
+                        wp.atomic_min(upper_bound, 0, distance)
 
 
 @wp.func
@@ -440,18 +531,26 @@ def _detect_vertex_face_contacts(
             continue
         triangle_normal = normal_raw / normal_length
         signed_distance = wp.dot(vertex_position - position_0, triangle_normal)
-        distance = wp.abs(signed_distance)
         if use_outward_normals != 0:
+            distance = wp.abs(signed_distance)
             if distance >= thickness:
                 continue
+            projected = vertex_position - signed_distance * triangle_normal
+            barycentric = _triangle_barycentric(position_0, position_1, position_2, projected)
+            if barycentric[0] < 0.0 or barycentric[1] < 0.0 or barycentric[2] < 0.0:
+                continue
         else:
+            barycentric = triangle_closest_point_barycentric(
+                position_0,
+                position_1,
+                position_2,
+                vertex_position,
+            )
+            closest_point = barycentric[0] * position_0 + barycentric[1] * position_1 + barycentric[2] * position_2
+            separation = vertex_position - closest_point
+            distance = wp.length(separation)
             if distance <= _MIN_CONTACT_DISTANCE or distance >= thickness:
                 continue
-
-        projected = vertex_position - signed_distance * triangle_normal
-        barycentric = _triangle_barycentric(position_0, position_1, position_2, projected)
-        if barycentric[0] < 0.0 or barycentric[1] < 0.0 or barycentric[2] < 0.0:
-            continue
 
         effective_thickness = thickness
         if use_geometry_radii != 0 and (geometry_radius_topology_local_only == 0 or topology_local):
@@ -469,11 +568,11 @@ def _detect_vertex_face_contacts(
             wp.atomic_add(overflow_count, 0, 1)
             continue
 
-        direction = triangle_normal
-        depth = effective_thickness - signed_distance
-        if use_outward_normals == 0 and signed_distance < 0.0:
-            direction = -direction
-        if use_outward_normals == 0:
+        if use_outward_normals != 0:
+            direction = triangle_normal
+            depth = effective_thickness - signed_distance
+        else:
+            direction = separation / distance
             depth = effective_thickness - distance
         contact_ids[contact, 0] = vertex
         contact_ids[contact, 1] = index_0
@@ -536,13 +635,6 @@ def _detect_edge_edge_contacts(
         parameters = wp.closest_point_edge_edge(position_0, position_1, position_2, position_3, 1.0e-5)
         parameter_0 = parameters[0]
         parameter_1 = parameters[1]
-        if (
-            parameter_0 <= _MIN_CONTACT_DISTANCE
-            or parameter_0 >= 1.0 - _MIN_CONTACT_DISTANCE
-            or parameter_1 <= _MIN_CONTACT_DISTANCE
-            or parameter_1 >= 1.0 - _MIN_CONTACT_DISTANCE
-        ):
-            continue
 
         closest_0 = wp.lerp(position_0, position_1, parameter_0)
         closest_1 = wp.lerp(position_2, position_3, parameter_1)
@@ -611,19 +703,21 @@ def _detect_edge_edge_contacts(
         contact_weights[contact, 3] = -parameter_1
         contact_directions[contact] = direction
         contact_depths[contact] = depth
-        rest_edge_0 = rest_positions[index_1] - rest_positions[index_0]
-        rest_edge_1 = rest_positions[index_3] - rest_positions[index_2]
-        contact_mollifier_thresholds[contact] = (
-            _EE_MOLLIFIER_THRESHOLD_SCALE
-            * wp.dot(
-                rest_edge_0,
-                rest_edge_0,
+        contact_mollifier_thresholds[contact] = 0.0
+        if topology_local:
+            rest_edge_0 = rest_positions[index_1] - rest_positions[index_0]
+            rest_edge_1 = rest_positions[index_3] - rest_positions[index_2]
+            contact_mollifier_thresholds[contact] = (
+                _EE_MOLLIFIER_THRESHOLD_SCALE
+                * wp.dot(
+                    rest_edge_0,
+                    rest_edge_0,
+                )
+                * wp.dot(
+                    rest_edge_1,
+                    rest_edge_1,
+                )
             )
-            * wp.dot(
-                rest_edge_1,
-                rest_edge_1,
-            )
-        )
 
 
 @wp.func
@@ -947,11 +1041,6 @@ def _contact_hessian_multiply_adaptive(
         return
 
     direction = directions[contact]
-    projected_sum = float(0.0)
-    for local_index in range(arity):
-        particle = ids[contact, local_index]
-        projected_sum += weights[contact, local_index] * wp.dot(direction, vector[particle])
-
     stiffness = _adaptive_contact_stiffness(
         ids,
         directions,
@@ -963,6 +1052,10 @@ def _contact_hessian_multiply_adaptive(
         masses,
         inv_dt_squared,
     )
+    projected_sum = float(0.0)
+    for local_index in range(arity):
+        particle = ids[contact, local_index]
+        projected_sum += weights[contact, local_index] * wp.dot(direction, vector[particle])
     scaled_direction = stiffness * projected_sum * direction
     for local_index in range(arity):
         particle = ids[contact, local_index]
@@ -2427,7 +2520,7 @@ class _ContactBuffer:
 
 
 class _EdgeEdgeContactBuffer(_ContactBuffer):
-    """Four-particle EE contacts with an IPC near-parallel mollifier."""
+    """Four-particle EE contacts with a topology-local IPC mollifier."""
 
     def __init__(self, capacity: int, device: Any):
         super().__init__(arity=4, capacity=capacity, device=device, feature_split=2)
@@ -2808,6 +2901,7 @@ class ConstraintSelfCollision:
                 rest_positions,
                 triangle_indices,
                 edge_indices,
+                self.device,
             )
             if np.isfinite(two_ring_upper_bound):
                 if two_ring_upper_bound <= 0.0:

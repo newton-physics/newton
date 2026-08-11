@@ -16,38 +16,6 @@ from ..block_csr import BlockCsrBuilder, BlockCsrMatrix
 _MIN_GEOMETRY_NORM = 1.0e-8
 
 
-def _host_signed_dihedral_angle(positions: np.ndarray, dihedral: tuple[int, int, int, int]) -> float:
-    edge_v0, edge_v1, left_opposite, right_opposite = dihedral
-    edge = positions[edge_v1] - positions[edge_v0]
-    left_edge = positions[left_opposite] - positions[edge_v0]
-    right_edge = positions[right_opposite] - positions[edge_v0]
-    edge_length = float(np.linalg.norm(edge))
-    left_normal_raw = np.cross(left_edge, edge)
-    right_normal_raw = np.cross(edge, right_edge)
-    left_normal_length = float(np.linalg.norm(left_normal_raw))
-    right_normal_length = float(np.linalg.norm(right_normal_raw))
-    if min(edge_length, left_normal_length, right_normal_length) <= _MIN_GEOMETRY_NORM:
-        raise ValueError(f"Rest dihedral {dihedral} is degenerate")
-
-    edge_direction = edge / edge_length
-    left_normal = left_normal_raw / left_normal_length
-    right_normal = right_normal_raw / right_normal_length
-    edge_length_squared = edge_length * edge_length
-    left_projection = float(np.dot(edge, left_edge) / edge_length_squared)
-    right_projection = float(np.dot(edge, right_edge) / edge_length_squared)
-    left_height = float(np.linalg.norm(left_edge - left_projection * edge))
-    right_height = float(np.linalg.norm(right_edge - right_projection * edge))
-    if min(left_height, right_height) <= _MIN_GEOMETRY_NORM:
-        raise ValueError(f"Rest dihedral {dihedral} is degenerate")
-
-    return float(
-        np.arctan2(
-            np.dot(np.cross(left_normal, right_normal), edge_direction),
-            np.dot(left_normal, right_normal),
-        )
-    )
-
-
 @wp.func
 def _dihedral_frame(
     edge_position_0: wp.vec3,
@@ -97,6 +65,30 @@ def _dihedral_frame(
     gradient_2 = inverse_left_height * left_normal
     gradient_3 = inverse_right_height * right_normal
     return True, angle, gradient_0, gradient_1, gradient_2, gradient_3
+
+
+@wp.kernel
+def _initialize_dihedral_rest_angles(
+    dihedral_indices: wp.array2d[int],
+    rest_positions: wp.array[wp.vec3],
+    rest_angles: wp.array[float],
+    first_invalid: wp.array[int],
+):
+    dihedral = wp.tid()
+    particle_0 = dihedral_indices[dihedral, 0]
+    particle_1 = dihedral_indices[dihedral, 1]
+    particle_2 = dihedral_indices[dihedral, 2]
+    particle_3 = dihedral_indices[dihedral, 3]
+    valid, angle, _, _, _, _ = _dihedral_frame(
+        rest_positions[particle_0],
+        rest_positions[particle_1],
+        rest_positions[particle_2],
+        rest_positions[particle_3],
+    )
+    if valid:
+        rest_angles[dihedral] = angle
+    else:
+        wp.atomic_min(first_invalid, 0, dihedral)
 
 
 @wp.kernel
@@ -206,6 +198,7 @@ class ConstraintDihedralBending:
         if not np.isfinite(stiffness) or stiffness <= 0.0:
             raise ValueError("stiffness must be finite and positive")
 
+        self.device = wp.get_device(device)
         self.host_dihedral_indices = tuple(tuple(int(index) for index in dihedral) for dihedral in dihedral_indices)
         if not self.host_dihedral_indices:
             raise ValueError("dihedral_indices must be nonempty")
@@ -220,15 +213,23 @@ class ConstraintDihedralBending:
             raise ValueError(f"Expected {particle_count} rest-position rows")
         if not np.isfinite(host_rest_positions).all():
             raise ValueError("rest_positions must be finite")
-        host_rest_angles = tuple(
-            _host_signed_dihedral_angle(host_rest_positions, dihedral) for dihedral in self.host_dihedral_indices
-        )
 
         self.particle_count = particle_count
         self.stiffness = float(stiffness)
-        self.device = wp.get_device(device)
         self.dihedral_indices = wp.array2d(self.host_dihedral_indices, dtype=int, device=self.device)
-        self.rest_angles = wp.array(host_rest_angles, dtype=float, device=self.device)
+        rest_positions_device = wp.array(host_rest_positions, dtype=wp.vec3, device=self.device)
+        self.rest_angles = wp.empty(len(self.host_dihedral_indices), dtype=float, device=self.device)
+        first_invalid = wp.array([len(self.host_dihedral_indices)], dtype=int, device=self.device)
+        wp.launch(
+            _initialize_dihedral_rest_angles,
+            dim=len(self.host_dihedral_indices),
+            inputs=[self.dihedral_indices, rest_positions_device],
+            outputs=[self.rest_angles, first_invalid],
+            device=self.device,
+        )
+        invalid_index = int(first_invalid.numpy()[0])
+        if invalid_index < len(self.host_dihedral_indices):
+            raise ValueError(f"Rest dihedral {self.host_dihedral_indices[invalid_index]} is degenerate")
         self.hessian_block_indices: wp.array2d[int] | None = None
         self.hessian_value_count: int | None = None
 
@@ -236,19 +237,13 @@ class ConstraintDihedralBending:
         """Append all sixteen ordered particle-pair blocks per dihedral."""
         if builder.row_count != self.particle_count:
             raise ValueError("Constraint and block matrix particle counts differ")
-        for dihedral in self.host_dihedral_indices:
-            for particle_i in dihedral:
-                for particle_j in dihedral:
-                    builder.ensure_block(particle_i, particle_j)
+        builder.ensure_stencil_blocks(np.asarray(self.host_dihedral_indices, dtype=np.int32))
 
     def bind_hessian(self, matrix: BlockCsrMatrix) -> None:
         """Bind dihedral blocks to finalized block-CSR value indices."""
         if matrix.row_count != self.particle_count or matrix.device != self.device:
             raise ValueError("Constraint and block matrix must have matching particle counts and devices")
-        block_indices = [
-            tuple(matrix.block_index(particle_i, particle_j) for particle_i in dihedral for particle_j in dihedral)
-            for dihedral in self.host_dihedral_indices
-        ]
+        block_indices = matrix.stencil_block_indices(np.asarray(self.host_dihedral_indices, dtype=np.int32))
         self.hessian_block_indices = wp.array2d(block_indices, dtype=int, device=self.device)
         self.hessian_value_count = len(matrix.values)
 

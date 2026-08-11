@@ -65,6 +65,8 @@
 - Make `CollisionPipeline` the sole owner of rigid-contact geometry for `SolverVBD`: `"latest"` supplies fresh geometry and `"sticky"` supplies replayed geometry. `SolverVBD(rigid_contact_history=True)` uses either mode's match indices only to warm-start its numeric lambda/penalty state.
 - Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).
 - Default LIMX edge-face untangling to three times the VF/EE contact stiffness; pass an explicit `untangle_stiffness` to retain a different recovery ratio.
+- Align the LIMX cloth-twist example with the ChysX reference mesh, drive, mass, material, and collision parameters.
+- Speed up LIMX construction and viewer reset by initializing dihedral rest angles on GPU and batching static block-CSR topology.
 - Allow geometry-aware LIMX self-collision radii on tetrahedral surface meshes by assigning zero radius to particles absent from the collision surface.
 - Change experimental `SolverVBD` cable constraint slots from `[STRETCH=0, BEND=1]` to `[STRETCH=0, SHEAR=1, BEND=2, TWIST=3]`, allowing each stiffness and constraint mode to be configured independently. Existing cable calls using raw `slot=1` or `JointSlot.ANGULAR` now select shear; use `JointSlot.BEND` (now slot 2) to select bending.
 - Load visual-only USD geometry outside rigid-body hierarchies as static shapes by default; pass `load_static_visual_shapes=False` to retain the previous body-associated-visuals-only behavior.
@@ -108,6 +110,7 @@
 ### Fixed
 
 - Restrict LIMX vertex-face candidates to vertices referenced by the surface triangle mesh.
+- Keep nonlocal near-parallel LIMX edge-edge contacts at full penalty strength so layered cloth does not cross before edge-face recovery.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
 - Fix `ModelBuilder.add_usd()` marking a `guide`-purpose collider visible when it has a bound render material. Such a collider is not viewport geometry, and the extra `VISIBLE` flag left it drawn by the viewer's visual toggle instead of its collision toggle. `force_show_colliders` still reveals it.

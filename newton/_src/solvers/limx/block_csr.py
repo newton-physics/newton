@@ -50,23 +50,47 @@ class BlockCsrMatrix:
         values: wp.array[wp.mat33],
         diagonal: wp.array[wp.mat33],
         diagonal_indices: wp.array[int],
-        block_indices: dict[tuple[int, int], int],
+        block_keys: np.ndarray,
     ):
         self.row_offsets = row_offsets
         self.column_indices = column_indices
         self.values = values
         self.diagonal = diagonal
         self.diagonal_indices = diagonal_indices
-        self._block_indices = block_indices
+        self._block_keys = block_keys
         self.row_count = len(diagonal)
         self.device = diagonal.device
 
     def block_index(self, row: int, column: int) -> int:
         """Return the value-array index for a block coordinate."""
-        try:
-            return self._block_indices[(row, column)]
-        except KeyError as error:
-            raise ValueError(f"Block coordinate ({row}, {column}) is not present") from error
+        if row < 0 or row >= self.row_count or column < 0 or column >= self.row_count:
+            raise ValueError(f"Block coordinate ({row}, {column}) is not present")
+        key = row * self.row_count + column
+        index = int(np.searchsorted(self._block_keys, key))
+        if index >= len(self._block_keys) or self._block_keys[index] != key:
+            raise ValueError(f"Block coordinate ({row}, {column}) is not present")
+        return index
+
+    def stencil_block_indices(self, stencils: np.ndarray) -> np.ndarray:
+        """Return flattened ordered-pair block indices for particle stencils."""
+        stencils = np.asarray(stencils, dtype=np.int64)
+        if stencils.ndim != 2 or stencils.shape[1] == 0:
+            raise ValueError("stencils must have shape [stencil_count, arity]")
+        if np.any(stencils < 0) or np.any(stencils >= self.row_count):
+            raise ValueError(f"stencils contain an index outside a {self.row_count}-row matrix")
+        arity = stencils.shape[1]
+        rows = np.repeat(stencils, arity, axis=1)
+        columns = np.tile(stencils, (1, arity))
+        keys = rows * self.row_count + columns
+        indices = np.searchsorted(self._block_keys, keys)
+        clipped = np.minimum(indices, max(len(self._block_keys) - 1, 0))
+        if (
+            len(self._block_keys) == 0
+            or np.any(indices >= len(self._block_keys))
+            or np.any(self._block_keys[clipped] != keys)
+        ):
+            raise ValueError("stencil references a block coordinate that is not present")
+        return indices.astype(np.int32)
 
     def clear_values(self) -> None:
         """Zero all numerical blocks and the cached diagonal."""
@@ -111,7 +135,9 @@ class BlockCsrBuilder:
         if row_count <= 0:
             raise ValueError("row_count must be positive")
         self.row_count = row_count
-        self._blocks: dict[tuple[int, int], np.ndarray] = {}
+        self._pattern_key_batches: list[np.ndarray] = []
+        self._value_keys: list[int] = []
+        self._value_blocks: list[np.ndarray] = []
 
     def add_block(self, row: int, column: int, value: wp.mat33) -> None:
         """Add a 3-by-3 block, accumulating duplicate coordinates."""
@@ -120,11 +146,8 @@ class BlockCsrBuilder:
         if not np.isfinite(block).all():
             raise ValueError("Block values must be finite")
 
-        key = (row, column)
-        if key in self._blocks:
-            self._blocks[key] += block
-        else:
-            self._blocks[key] = block.copy()
+        self._value_keys.append(row * self.row_count + column)
+        self._value_blocks.append(block.copy())
 
     def add_scaled_identity(self, row: int, column: int, scale: float) -> None:
         """Add ``scale * I3`` at a block coordinate."""
@@ -135,35 +158,55 @@ class BlockCsrBuilder:
     def ensure_block(self, row: int, column: int) -> None:
         """Ensure a block coordinate exists without adding a numerical value."""
         self._validate_index(row, column)
-        self._blocks.setdefault((row, column), np.zeros((3, 3), dtype=np.float32))
+        self._pattern_key_batches.append(np.asarray([row * self.row_count + column], dtype=np.int64))
+
+    def ensure_stencil_blocks(self, stencils: np.ndarray) -> None:
+        """Ensure every ordered particle pair for each stencil in one batch."""
+        stencils = np.asarray(stencils, dtype=np.int64)
+        if stencils.ndim != 2 or stencils.shape[1] == 0:
+            raise ValueError("stencils must have shape [stencil_count, arity]")
+        if np.any(stencils < 0) or np.any(stencils >= self.row_count):
+            raise ValueError(f"stencils contain an index outside a {self.row_count}-row matrix")
+        arity = stencils.shape[1]
+        rows = np.repeat(stencils, arity, axis=1)
+        columns = np.tile(stencils, (1, arity))
+        self._pattern_key_batches.append((rows * self.row_count + columns).reshape(-1))
 
     def finalize(self, device: Any) -> BlockCsrMatrix:
         """Build sorted CSR arrays on ``device``."""
-        sorted_blocks = sorted(self._blocks.items())
+        key_batches = list(self._pattern_key_batches)
+        if self._value_keys:
+            key_batches.append(np.asarray(self._value_keys, dtype=np.int64))
+        if key_batches:
+            block_keys = np.unique(np.concatenate(key_batches))
+        else:
+            block_keys = np.empty(0, dtype=np.int64)
+        rows = block_keys // self.row_count
+        columns = block_keys % self.row_count
         row_offsets = np.zeros(self.row_count + 1, dtype=np.int32)
-        column_indices = np.empty(len(sorted_blocks), dtype=np.int32)
-        values = np.empty((len(sorted_blocks), 3, 3), dtype=np.float32)
+        row_offsets[1:] = np.bincount(rows, minlength=self.row_count).astype(np.int32)
+        np.cumsum(row_offsets, out=row_offsets)
+        column_indices = columns.astype(np.int32)
+        values = np.zeros((len(block_keys), 3, 3), dtype=np.float32)
+        if self._value_keys:
+            value_indices = np.searchsorted(block_keys, np.asarray(self._value_keys, dtype=np.int64))
+            np.add.at(values, value_indices, np.asarray(self._value_blocks, dtype=np.float32))
         diagonal = np.zeros((self.row_count, 3, 3), dtype=np.float32)
         diagonal_indices = np.full(self.row_count, -1, dtype=np.int32)
-        block_indices: dict[tuple[int, int], int] = {}
-
-        for block_index, ((row, column), value) in enumerate(sorted_blocks):
-            row_offsets[row + 1] += 1
-            column_indices[block_index] = column
-            values[block_index] = value
-            block_indices[(row, column)] = block_index
-            if row == column:
-                diagonal[row] = value
-                diagonal_indices[row] = block_index
-
-        np.cumsum(row_offsets, out=row_offsets)
+        diagonal_keys = np.arange(self.row_count, dtype=np.int64) * (self.row_count + 1)
+        candidate_diagonal_indices = np.searchsorted(block_keys, diagonal_keys)
+        present = candidate_diagonal_indices < len(block_keys)
+        present_rows = np.flatnonzero(present)
+        present[present_rows] = block_keys[candidate_diagonal_indices[present_rows]] == diagonal_keys[present_rows]
+        diagonal_indices[present] = candidate_diagonal_indices[present].astype(np.int32)
+        diagonal[present] = values[candidate_diagonal_indices[present]]
         return BlockCsrMatrix(
             row_offsets=wp.array(row_offsets, dtype=int, device=device),
             column_indices=wp.array(column_indices, dtype=int, device=device),
             values=wp.array(values, dtype=wp.mat33, device=device),
             diagonal=wp.array(diagonal, dtype=wp.mat33, device=device),
             diagonal_indices=wp.array(diagonal_indices, dtype=int, device=device),
-            block_indices=block_indices,
+            block_keys=block_keys,
         )
 
     def _validate_index(self, row: int, column: int) -> None:

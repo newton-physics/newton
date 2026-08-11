@@ -26,6 +26,19 @@ from newton.viewer import ViewerNull
 
 
 class TestBlockCsr(unittest.TestCase):
+    def test_batched_stencils_build_unique_csr_and_indices(self):
+        """Build sorted unique CSR blocks and stencil mappings in one batch."""
+        builder = BlockCsrBuilder(3)
+        stencils = np.asarray([[2, 0], [1, 2], [2, 0]], dtype=np.int32)
+        builder.ensure_stencil_blocks(stencils)
+
+        matrix = builder.finalize("cpu")
+        block_indices = matrix.stencil_block_indices(stencils)
+
+        np.testing.assert_array_equal(matrix.row_offsets.numpy(), [0, 2, 4, 7])
+        np.testing.assert_array_equal(matrix.column_indices.numpy(), [0, 2, 1, 2, 0, 1, 2])
+        np.testing.assert_array_equal(block_indices, [[6, 4, 1, 0], [2, 3, 5, 6], [6, 4, 1, 0]])
+
     def test_zero_pattern_maps_sorted_block_indices(self):
         builder = BlockCsrBuilder(2)
         builder.ensure_block(1, 0)
@@ -1121,6 +1134,7 @@ class TestSelfCollisionContactBuffer(unittest.TestCase):
         np.testing.assert_allclose(diagonal_np, expected_diagonal, atol=1.0e-6)
 
     def test_four_particle_contact_matches_dense_rank_one_system(self):
+        """Keep VF contacts fully coupled across their four particles."""
         self._assert_contact_matches_dense_reference(
             weights=np.asarray([1.0, -0.2, -0.3, -0.5], dtype=np.float32),
             direction=np.asarray([0.0, 0.6, 0.8], dtype=np.float32),
@@ -1129,12 +1143,41 @@ class TestSelfCollisionContactBuffer(unittest.TestCase):
         )
 
     def test_five_particle_contact_matches_dense_rank_one_system(self):
+        """Keep EF contacts fully coupled across their five particles."""
         self._assert_contact_matches_dense_reference(
             weights=np.asarray([0.35, 0.65, -0.2, -0.3, -0.5], dtype=np.float32),
             direction=np.asarray([1.0, 0.0, 0.0], dtype=np.float32),
             depth=0.02,
             stiffness=11.0,
         )
+
+    def test_adaptive_five_particle_contact_keeps_cross_particle_blocks(self):
+        """Keep adaptive EF Hessians coupled across the edge and face features."""
+        weights = np.asarray([0.35, 0.65, -0.2, -0.3, -0.5], dtype=np.float32)
+        static_diagonal = np.zeros((5, 3, 3), dtype=np.float32)
+        static_diagonal[:, 0, 0] = [6.0, 16.0, 26.0, 36.0, 46.0]
+        directional_scales = static_diagonal[:, 0, 0] + 4.0
+        feature_0_scale = float(np.mean(directional_scales[:2]))
+        feature_1_scale = float(np.mean(directional_scales[2:]))
+        stiffness = 0.5 * feature_0_scale * feature_1_scale / (feature_0_scale + feature_1_scale)
+
+        with wp.ScopedDevice("cuda:0"):
+            contacts = _ContactBuffer(arity=5, feature_split=2, capacity=1, device="cuda:0")
+            contacts.ids.assign(np.arange(5, dtype=np.int32).reshape(1, 5))
+            contacts.weights.assign(weights.reshape(1, 5))
+            contacts.directions.assign(np.asarray([[1.0, 0.0, 0.0]], dtype=np.float32))
+            contacts.count.assign(np.asarray([1], dtype=np.int32))
+            diagonal_blocks = wp.array(static_diagonal, dtype=wp.mat33, device="cuda:0")
+            masses = wp.ones(5, dtype=float, device="cuda:0")
+            vector = wp.array([[1.0, 0.0, 0.0]] + [[0.0, 0.0, 0.0]] * 4, dtype=wp.vec3, device="cuda:0")
+            product = wp.zeros(5, dtype=wp.vec3, device="cuda:0")
+
+            contacts.hessian_multiply_adaptive(0.5, diagonal_blocks, masses, 4.0, vector, product)
+            product_np = product.numpy()
+
+        expected = np.zeros((5, 3), dtype=np.float32)
+        expected[:, 0] = stiffness * weights * weights[0]
+        np.testing.assert_allclose(product_np, expected, rtol=2.0e-6, atol=1.0e-7)
 
     def test_ipc_mollified_edge_force_and_gauss_newton_operator_match_residual_reference(self):
         """Match the IPC-mollified EE force and Gauss-Newton operator."""
@@ -1319,11 +1362,11 @@ class TestSelfCollisionContactBuffer(unittest.TestCase):
         dense_direction = np.concatenate([weight * direction for weight in weights])
         dense_hessian = stiffness * np.outer(dense_direction, dense_direction)
         expected_force = (stiffness * depth * dense_direction).reshape(particle_count, 3)
-        expected_hvp = (dense_hessian @ vectors.reshape(-1)).reshape(particle_count, 3)
         expected_diagonal = np.asarray(
             [stiffness * weight * weight * np.outer(direction, direction) for weight in weights],
             dtype=np.float32,
         )
+        expected_hvp = (dense_hessian @ vectors.reshape(-1)).reshape(particle_count, 3)
 
         with wp.ScopedDevice("cuda:0"):
             contacts = _ContactBuffer(arity=particle_count, capacity=2, device="cuda:0")
@@ -1445,6 +1488,26 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         self.assertEqual(collision.surface_vertex_count, 3)
         np.testing.assert_array_equal(collision.surface_vertex_indices.numpy(), [0, 1, 2])
         self.assertFalse(np.any(ids[:, 0] == 3))
+
+    def test_vertex_face_detection_keeps_closest_edge_feature(self):
+        """Keep a VF contact whose closest triangle point lies on an edge."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, -0.04, 0.02],
+            [5.0, 5.0, 5.0],
+            [6.0, 5.0, 5.0],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0)
+            collision.prepare(model.particle_q)
+            ids, weights, _, _ = self._stored_contacts(collision.vertex_face_contacts)
+
+        matches = np.flatnonzero(np.all(ids == [3, 0, 1, 2], axis=1))
+        self.assertEqual(len(matches), 1)
+        np.testing.assert_allclose(weights[matches[0]], [1.0, -0.5, -0.5, 0.0], atol=1.0e-6)
 
     def test_friction_parameters_validate_and_default_to_disabled(self):
         """Validate friction parameters and preserve a frictionless default."""
@@ -1963,6 +2026,25 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(directions[contact], [0.0, 0.0, -1.0], atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.05, places=6)
 
+    def test_edge_edge_detection_keeps_endpoint_feature(self):
+        """Keep an EE contact whose closest points include segment endpoints."""
+        positions = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, -2.0, 0.0],
+            [1.04, 0.03, 0.02],
+            [1.04, 1.0, 0.02],
+            [3.0, 1.0, 0.02],
+        ]
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_model(positions, [(0, 1, 2), (3, 4, 5)])
+            collision = ConstraintSelfCollision(model, thickness=0.1, stiffness=10.0)
+            collision.prepare(model.particle_q)
+            ids, _, _, _ = self._stored_contacts(collision.edge_edge_contacts)
+
+        matches = [row for row in ids if {int(row[0]), int(row[1])} == {0, 1} and {int(row[2]), int(row[3])} == {3, 4}]
+        self.assertEqual(len(matches), 1)
+
     def test_oriented_edge_edge_uses_incident_face_pseudo_normals_after_crossing(self):
         """Orient a crossed EE contact from its incident outward face normals."""
         positions = [
@@ -2207,8 +2289,8 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         self.assertEqual(len(nonlocal_matches), 1)
         self.assertAlmostEqual(float(nonlocal_depths[int(nonlocal_matches[0])]), 0.08, places=6)
 
-    def test_nonlocal_edge_pair_uses_rest_length_mollifier_threshold(self):
-        """Compute a nonlocal EE mollifier threshold from the two rest edge lengths."""
+    def test_nonlocal_edge_pair_skips_rest_length_mollifier(self):
+        """Keep nonlocal EE penalty active when the two edges are nearly parallel."""
         sine = 0.2
         direction = np.asarray([np.sqrt(1.0 - sine * sine), sine, 0.0], dtype=np.float32)
         center = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
@@ -2238,8 +2320,7 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
 
         matches = np.nonzero(np.all(ids == [0, 1, 2, 3], axis=1))[0]
         self.assertEqual(len(matches), 1)
-        expected = 1.0e-3 * 0.1**2 * 0.08**2
-        self.assertAlmostEqual(float(thresholds[int(matches[0])]), expected, places=12)
+        self.assertEqual(float(thresholds[int(matches[0])]), 0.0)
 
     def test_topology_local_edge_pair_uses_half_length_penalty_and_mollifier(self):
         """Combine local EE thickness clamping with the rest-length mollifier."""
@@ -2467,42 +2548,67 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
 class TestSolverLIMX(unittest.TestCase):
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_twist_example_drives_opposite_boundary_rotations(self):
+        """Match the ChysX mesh and rotate its end sections oppositely."""
         with wp.ScopedDevice("cuda:0"):
             example = ClothLimxTwistExample(ViewerNull(num_frames=1), None)
             targets = example._compute_anchor_targets(0.5 * np.pi)
 
+        positions = example.model.particle_q.numpy()
+        self.assertEqual(example.model.particle_count, 20_000)
+        self.assertEqual(example.model.tri_count, 39_402)
+        self.assertEqual(example.rot_angular_velocity, 1.0)
+        self.assertEqual(example.rot_end_time, 25.0)
+        example.sim_time = 2.0
+        self.assertAlmostEqual(example._drive_angle(), 2.0)
+        example.sim_time = 30.0
+        self.assertAlmostEqual(example._drive_angle(), 25.0)
+        np.testing.assert_allclose(positions.min(axis=0), [0.0, -0.25, -0.5], atol=1.0e-7)
+        np.testing.assert_allclose(positions.max(axis=0), [0.0, 0.25, 0.5], atol=1.0e-7)
+
         boundary_count = example.boundary_particle_count
         rest_targets = example.anchor_rest_targets
-        left = targets[:boundary_count]
-        right = targets[boundary_count:]
-        left_rest = rest_targets[:boundary_count]
-        right_rest = rest_targets[boundary_count:]
+        negative_z = targets[:boundary_count]
+        positive_z = targets[boundary_count:]
+        negative_z_rest = rest_targets[:boundary_count]
+        positive_z_rest = rest_targets[boundary_count:]
 
-        np.testing.assert_allclose(targets[:, 0], rest_targets[:, 0], atol=1.0e-7)
-        np.testing.assert_allclose(left[:, 1], np.zeros(boundary_count), atol=1.0e-6)
-        np.testing.assert_allclose(right[:, 1], np.zeros(boundary_count), atol=1.0e-6)
-        np.testing.assert_allclose(left[:, 2] - example.strip_center_z, left_rest[:, 1], atol=1.0e-6)
-        np.testing.assert_allclose(right[:, 2] - example.strip_center_z, -right_rest[:, 1], atol=1.0e-6)
-        left_radius = np.linalg.norm(left[:, 1:3] - [0.0, example.strip_center_z], axis=1)
-        right_radius = np.linalg.norm(right[:, 1:3] - [0.0, example.strip_center_z], axis=1)
-        np.testing.assert_allclose(left_radius, np.abs(left_rest[:, 1]), atol=1.0e-6)
-        np.testing.assert_allclose(right_radius, np.abs(right_rest[:, 1]), atol=1.0e-6)
+        np.testing.assert_allclose(negative_z[:, 0], negative_z_rest[:, 1], atol=1.0e-6)
+        np.testing.assert_allclose(positive_z[:, 0], -positive_z_rest[:, 1], atol=1.0e-6)
+        np.testing.assert_allclose(targets[:, 1], np.zeros(2 * boundary_count), atol=1.0e-6)
+        np.testing.assert_allclose(targets[:, 2], rest_targets[:, 2], atol=1.0e-7)
+        negative_z_radius = np.linalg.norm(negative_z[:, :2], axis=1)
+        positive_z_radius = np.linalg.norm(positive_z[:, :2], axis=1)
+        np.testing.assert_allclose(negative_z_radius, np.abs(negative_z_rest[:, 1]), atol=1.0e-6)
+        np.testing.assert_allclose(positive_z_radius, np.abs(positive_z_rest[:, 1]), atol=1.0e-6)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_twist_example_runs_limx_self_collision_cuda_graph(self):
+        """Keep the flat twist rest mesh contact-free with automatic thickness."""
         with wp.ScopedDevice("cuda:0"):
             example = ClothLimxTwistExample(ViewerNull(num_frames=1), None)
+            example.self_collision.prepare(example.model.particle_q)
+            rest_contact_counts = (
+                int(example.self_collision.vertex_face_contacts.count.numpy()[0]),
+                int(example.self_collision.edge_edge_contacts.count.numpy()[0]),
+                int(example.self_collision.edge_face_contacts.count.numpy()[0]),
+            )
             example.step()
             positions = example.state_0.particle_q.numpy()
             velocities = example.state_0.particle_qd.numpy()
 
         self.assertIsInstance(example.solver.dynamic_operator, ConstraintSelfCollision)
+        self.assertAlmostEqual(float(np.sum(example.model.particle_mass.numpy())), 0.05, places=6)
         self.assertAlmostEqual(example.sim_dt, 0.01)
         self.assertEqual(example.solver.nonlinear_iterations, 1)
         self.assertEqual(example.solver.linear_iterations, 50)
         self.assertEqual(example.solver.velocity_damping, 1.0)
-        self.assertEqual(example.self_collision.stiffness, 1.0e4)
-        self.assertEqual(example.self_collision.untangle_stiffness, 3.0e4)
+        self.assertEqual(len(example.solver.constraints), 3)
+        self.assertTrue(example.self_collision.thickness_was_estimated)
+        self.assertTrue(example.self_collision.geometry_radius_topology_local_only)
+        self.assertAlmostEqual(example.self_collision.geometry_radius_scale, 0.25)
+        self.assertEqual(rest_contact_counts, (0, 0, 0))
+        self.assertEqual(example.self_collision.stiffness, 1.0e3)
+        self.assertEqual(example.self_collision.untangle_stiffness, 2.0e3)
         self.assertTrue(np.isfinite(positions).all())
         self.assertTrue(np.isfinite(velocities).all())
 
