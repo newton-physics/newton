@@ -10246,6 +10246,23 @@ def Xform "Articulation" (
                 builder.add_usd(stage, joint_ordering="dfs", load_visual_shapes=False, load_sites=False)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_path(self):
+        """Return the selected scene path without parsing the physics range again."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/Scene")
+        scene.CreateGravityMagnitudeAttr(2.0)
+
+        load_physics = UsdPhysics.LoadUsdPhysicsFromRange
+        with mock.patch.object(UsdPhysics, "LoadUsdPhysicsFromRange", wraps=load_physics) as load_physics_mock:
+            result = newton.ModelBuilder().add_usd(stage)
+
+        load_physics_mock.assert_called_once()
+        self.assertEqual(result["physics_scene_path"], "/Scene")
+        self.assertEqual(result["scene_attributes"]["physics:gravityMagnitude"], 2.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_enabled_parsing(self):
         """Test that gravity_enabled is parsed correctly from USD scene."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -12221,6 +12238,40 @@ def Xform "Body" (
         self.assertFalse(flags & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_hide_collision_shapes_suppresses_approximated_visual_copy(self):
+        """Verify hide_collision_shapes=True also suppresses the visual split off by approximation.
+
+        Approximating a viewport-drawn collider preserves its authored topology as a
+        separate visual shape. That copy carries VISIBLE without COLLIDE_SHAPES, so the
+        viewer's collision toggle cannot reach it. ``hide_collision_shapes`` must
+        suppress it too, otherwise the flag silently does nothing for exactly those
+        colliders that carry ``physics:approximation``.
+        """
+        from pxr import UsdPhysics
+
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.9, 0.1, 0.2), roughness=0.55, metallic=0.25, add_visual_sphere=True
+        )
+        collision_prim = stage.GetPrimAtPath("/Body/CollisionMesh")
+        UsdPhysics.MeshCollisionAPI.Apply(collision_prim).GetApproximationAttr().Set("convexHull")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        path_shape_map = result["path_shape_map"]
+
+        collision_shape = path_shape_map["/Body/CollisionMesh"]
+        flags = builder.shape_flags[collision_shape]
+        self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
+
+        # The copy must not be produced at all, not merely produced and hidden: only the
+        # visual sphere and the collider itself remain, matching the same asset without
+        # ``physics:approximation``.
+        self.assertEqual(builder.shape_count, 2)
+        drawn = [s for s in range(builder.shape_count) if builder.shape_flags[s] & ShapeFlags.VISIBLE]
+        self.assertEqual(drawn, [path_shape_map["/Body/VisualSphere"]])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_fallback_with_material(self):
         """Colliders with material stay visible when the body has no other visual shapes."""
         stage = self._create_stage_with_pbr_collision_mesh(
@@ -12708,6 +12759,73 @@ def Sphere "AppendedSchema" (
 
         prim = stage.GetPrimAtPath("/AppendedSchema")
         self.assertTrue(usd.has_applied_api_schema(prim, "MjcSiteAPI"))
+
+
+class TestPhysicsSceneAccessor(unittest.TestCase):
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scenes(self):
+        """Return all physics scenes in parser order."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        first = UsdPhysics.Scene.Define(stage, "/World/FirstScene")
+        first.CreateGravityMagnitudeAttr(2.0)
+        second = UsdPhysics.Scene.Define(stage, "/World/SecondScene")
+
+        load_physics = UsdPhysics.LoadUsdPhysicsFromRange
+        with mock.patch.object(UsdPhysics, "LoadUsdPhysicsFromRange", wraps=load_physics) as load_physics_mock:
+            scenes = usd.get_physics_scenes(stage)
+
+        load_physics_mock.assert_called_once()
+        self.assertEqual([scene.GetPrim() for scene in scenes], [first.GetPrim(), second.GetPrim()])
+        self.assertEqual(scenes[0].GetGravityMagnitudeAttr().Get(), 2.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_no_scene(self):
+        """Return an empty list when no physics scenes exist."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim("/World", "Xform")
+
+        self.assertEqual(usd.get_physics_scenes(stage), [])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_range(self):
+        """Restrict physics scene discovery to requested ranges."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/Excluded/Scene")
+        included = UsdPhysics.Scene.Define(stage, "/Included/Scene")
+
+        scenes = usd.get_physics_scenes(stage, root_path="/Included")
+        self.assertEqual([scene.GetPrim() for scene in scenes], [included.GetPrim()])
+
+        scenes = usd.get_physics_scenes(stage, exclude_paths=["/Excluded"])
+        self.assertEqual([scene.GetPrim() for scene in scenes], [included.GetPrim()])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_instance_proxy(self):
+        """Find physics scenes beneath instanceable prims."""
+        from pxr import Usd, UsdPhysics
+
+        asset = Usd.Stage.CreateInMemory()
+        asset_root = asset.DefinePrim("/Asset", "Xform")
+        asset.SetDefaultPrim(asset_root)
+        UsdPhysics.Scene.Define(asset, "/Asset/Scene")
+
+        stage = Usd.Stage.CreateInMemory()
+        instance = stage.DefinePrim("/Instance", "Xform")
+        instance.GetReferences().AddReference(asset.GetRootLayer().identifier, "/Asset")
+        instance.SetInstanceable(True)
+
+        scenes = usd.get_physics_scenes(stage)
+
+        self.assertEqual(len(scenes), 1)
+        scene_prim = scenes[0].GetPrim()
+        self.assertEqual(str(scene_prim.GetPath()), "/Instance/Scene")
+        self.assertTrue(scene_prim.IsInstanceProxy())
 
 
 class TestOverrideRootXform(unittest.TestCase):

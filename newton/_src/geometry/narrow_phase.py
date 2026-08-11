@@ -33,6 +33,8 @@ from ..geometry.collision_primitive import (
 )
 from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, ContactData, contact_passes_gap_check, make_contact_sort_key
 from ..geometry.contact_reduction_global import (
+    EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
+    EXPORT_REDUCED_CONTACTS_THREAD_BUDGET_MULTIPLIER,
     HASHTABLE_WARN_LOAD_PERCENT,
     GlobalContactReducer,
     create_export_reduced_contacts_kernel,
@@ -1472,6 +1474,8 @@ class NarrowPhase:
         has_meshes: bool = True,
         has_heightfields: bool = False,
         use_lean_gjk_mpr: bool = False,
+        mesh_sdf_texture_only: bool = False,
+        mesh_sdf_identity_scale_only: bool = False,
         deterministic: bool = False,
         contact_max: int | None = None,
         verify_buffers: bool = True,
@@ -1499,6 +1503,10 @@ class NarrowPhase:
                 Defaults to True for safety. Set to False when constructing from a model with no meshes.
             has_heightfields: Whether the scene contains any heightfield shapes (GeoType.HFIELD). When True,
                 heightfield collision buffers and kernels are allocated. Defaults to False.
+            mesh_sdf_texture_only: Whether every participating mesh SDF has a texture representation,
+                allowing BVH fallback branches to be removed from mesh/SDF kernels.
+            mesh_sdf_identity_scale_only: Whether every participating texture SDF is queried with
+                identity scale, allowing scale conversion branches to be removed.
             deterministic: Make contact generation and ordering independent of
                 GPU thread scheduling. Adds deterministic hydroelastic atomics
                 and a radix sort + gather pass.
@@ -1534,6 +1542,8 @@ class NarrowPhase:
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
         self.has_heightfields = has_heightfields
+        self.mesh_sdf_texture_only = mesh_sdf_texture_only
+        self.mesh_sdf_identity_scale_only = mesh_sdf_identity_scale_only
         self.deterministic = deterministic
         self.verify_buffers = verify_buffers
         device_obj = wp.get_device(device)
@@ -1628,15 +1638,35 @@ class NarrowPhase:
                     write_contact_to_reducer,
                     enable_heightfields=has_heightfields,
                     reduce_contacts=True,
+                    use_texture_sdf_only=self.mesh_sdf_texture_only,
+                    use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
+                )
+                self.mesh_mesh_contacts_kernel_precomputed = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                    write_contact_to_reducer,
+                    enable_heightfields=has_heightfields,
+                    reduce_contacts=True,
+                    use_precomputed_edge_data=True,
+                    use_texture_sdf_only=self.mesh_sdf_texture_only,
+                    use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
                 )
             else:
                 self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     writer_func,
                     enable_heightfields=has_heightfields,
+                    use_texture_sdf_only=self.mesh_sdf_texture_only,
+                    use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
+                )
+                self.mesh_mesh_contacts_kernel_precomputed = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                    writer_func,
+                    enable_heightfields=has_heightfields,
+                    use_precomputed_edge_data=True,
+                    use_texture_sdf_only=self.mesh_sdf_texture_only,
+                    use_identity_sdf_scale=self.mesh_sdf_identity_scale_only,
                 )
         else:
             self.mesh_plane_contacts_kernel = None
             self.mesh_mesh_contacts_kernel = None
+            self.mesh_mesh_contacts_kernel_precomputed = None
 
         # Create global contact reduction kernels for mesh/heightfield-triangle
         # contacts (mirror the predicate used to gate ``self.reduce_contacts``
@@ -1717,6 +1747,8 @@ class NarrowPhase:
             # slot per shape (not per candidate pair).
             num_shapes = shape_aabb_lower.shape[0] if shape_aabb_lower is not None else max_candidate_pairs
             self._empty_edge_indices = wp.zeros(1, dtype=wp.vec2i, device=device)
+            self._empty_edge_centers = wp.zeros(1, dtype=wp.vec4, device=device)
+            self._empty_edge_halves = wp.zeros(1, dtype=wp.vec4, device=device)
             self._empty_edge_range = wp.full(max(num_shapes, 1), (-1, 0), dtype=wp.vec2i, device=device)
             # Indexed by shape id; all-zero means "no watertight bit set" so the
             # sign method falls back to automatic selection (see resolve_mesh_sign_method).
@@ -1749,7 +1781,8 @@ class NarrowPhase:
         self.num_tile_blocks = num_blocks
 
         # Dynamic block allocation for mesh-mesh and mesh-plane contacts.
-        # On CUDA we target ~4 blocks per SM for good occupancy; on CPU
+        # On CUDA we partition toward ~4 blocks per SM and launch twice as many
+        # mesh-mesh blocks to reduce serial work in long per-pair queues. On CPU
         # there is no SM notion so we pick 64 as a modest parallelism
         # target that splits pair work across OpenMP threads without
         # over-subscribing on small scenes.
@@ -1757,7 +1790,7 @@ class NarrowPhase:
             target_blocks = device_obj.sm_count * 4 if device_obj.is_cuda else 64
             n = max_candidate_pairs + 1
             # Mesh-mesh
-            self.num_mesh_mesh_blocks = target_blocks
+            self.num_mesh_mesh_blocks = target_blocks * 2 if device_obj.is_cuda else target_blocks
             self.mesh_mesh_target_blocks = target_blocks
             self.mesh_mesh_block_offsets = wp.zeros(n, dtype=wp.int32, device=device)
             self.mesh_mesh_block_counts = wp.zeros(n, dtype=wp.int32, device=device)
@@ -1802,6 +1835,8 @@ class NarrowPhase:
         heightfield_data: wp.array[HeightfieldData] | None = None,
         heightfield_elevations: wp.array[wp.float32] | None = None,
         mesh_edge_indices: wp.array[wp.vec2i] | None = None,
+        mesh_edge_centers: wp.array[wp.vec4] | None = None,
+        mesh_edge_halves: wp.array[wp.vec4] | None = None,
         shape_edge_range: wp.array[wp.vec2i] | None = None,
         writer_data: Any,
         device: Devicelike | None = None,  # Device to launch on
@@ -2075,7 +2110,20 @@ class NarrowPhase:
                 texture_sdf_data = wp.zeros(0, dtype=TextureSDFData, device=device)
             if mesh_edge_indices is None:
                 mesh_edge_indices = self._empty_edge_indices
+            has_precomputed_edge_data = mesh_edge_centers is not None and mesh_edge_halves is not None
+            if mesh_edge_centers is None:
+                mesh_edge_centers = self._empty_edge_centers
+            if mesh_edge_halves is None:
+                mesh_edge_halves = self._empty_edge_halves
+            if shape_edge_range is None:
+                shape_edge_range = self._empty_edge_range
+
             if self.mesh_mesh_contacts_kernel is not None:
+                mesh_mesh_contacts_kernel = (
+                    self.mesh_mesh_contacts_kernel_precomputed
+                    if has_precomputed_edge_data
+                    else self.mesh_mesh_contacts_kernel
+                )
                 if self.reduce_contacts and self.mesh_mesh_block_offsets is not None:
                     # Mesh-mesh contacts → buffer + inline hashtable registration
                     compute_mesh_mesh_block_offsets_scan(
@@ -2084,7 +2132,7 @@ class NarrowPhase:
                         shape_edge_range=shape_edge_range,
                         shape_heightfield_index=shape_heightfield_index,
                         heightfield_data=heightfield_data,
-                        target_blocks=self.mesh_mesh_target_blocks,
+                        target_blocks=self.num_mesh_mesh_blocks,
                         block_offsets=self.mesh_mesh_block_offsets,
                         block_counts=self.mesh_mesh_block_counts,
                         weight_prefix_sums=self.mesh_mesh_weight_prefix_sums,
@@ -2093,7 +2141,7 @@ class NarrowPhase:
                     )
 
                     wp.launch_tiled(
-                        kernel=self.mesh_mesh_contacts_kernel,
+                        kernel=mesh_mesh_contacts_kernel,
                         dim=(self.num_mesh_mesh_blocks,),
                         inputs=[
                             shape_data,
@@ -2112,6 +2160,8 @@ class NarrowPhase:
                             heightfield_data,
                             heightfield_elevations,
                             mesh_edge_indices,
+                            mesh_edge_centers,
+                            mesh_edge_halves,
                             shape_edge_range,
                             self.mesh_mesh_block_offsets,
                             reducer_data,
@@ -2124,7 +2174,7 @@ class NarrowPhase:
                 else:
                     # Non-reduce fallback: direct contact write, no dynamic allocation
                     wp.launch_tiled(
-                        kernel=self.mesh_mesh_contacts_kernel,
+                        kernel=mesh_mesh_contacts_kernel,
                         dim=(self.num_tile_blocks,),
                         inputs=[
                             shape_data,
@@ -2143,6 +2193,8 @@ class NarrowPhase:
                             heightfield_data,
                             heightfield_elevations,
                             mesh_edge_indices,
+                            mesh_edge_centers,
+                            mesh_edge_halves,
                             shape_edge_range,
                             writer_data,
                             self.num_tile_blocks,
@@ -2156,9 +2208,16 @@ class NarrowPhase:
             if self.reduce_contacts:
                 # Zero exported_flags for cross-entry deduplication
                 self.global_contact_reducer.exported_flags.zero_()
-                wp.launch(
+                # Export has only one writer lane per block, so use a wider grid than
+                # the contact-generation kernels. On CPU, tiled kernels expose one lane.
+                effective_block_dim = min(self.block_dim, EXPORT_REDUCED_CONTACTS_BLOCK_DIM)
+                export_num_blocks = max(
+                    1,
+                    EXPORT_REDUCED_CONTACTS_THREAD_BUDGET_MULTIPLIER * self.total_num_threads // effective_block_dim,
+                )
+                wp.launch_tiled(
                     kernel=self.export_reduced_contacts_kernel,
-                    dim=self.total_num_threads,
+                    dim=export_num_blocks,
                     inputs=[
                         self.global_contact_reducer.hashtable.keys,
                         self.global_contact_reducer.ht_values,
@@ -2172,11 +2231,12 @@ class NarrowPhase:
                         shape_data,
                         shape_gap,
                         writer_data,
-                        self.total_num_threads,
+                        export_num_blocks,
+                        int(self.block_dim > 1),
                         int(self.global_contact_reducer.deterministic),
                     ],
                     device=device,
-                    block_dim=self.block_dim,
+                    block_dim=EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
                     record_tape=False,
                 )
         if self.hydroelastic_sdf is not None:
@@ -2297,6 +2357,8 @@ class NarrowPhase:
         shape_local_aabb_lower = kwargs.pop("shape_local_aabb_lower", None)
         shape_local_aabb_upper = kwargs.pop("shape_local_aabb_upper", None)
         mesh_edge_indices = kwargs.pop("mesh_edge_indices", None)
+        mesh_edge_centers = kwargs.pop("mesh_edge_centers", None)
+        mesh_edge_halves = kwargs.pop("mesh_edge_halves", None)
         shape_edge_range = kwargs.pop("shape_edge_range", None)
         if kwargs:
             unknown_keys = sorted(kwargs.keys())
@@ -2369,6 +2431,8 @@ class NarrowPhase:
             shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             mesh_edge_indices=mesh_edge_indices,
+            mesh_edge_centers=mesh_edge_centers,
+            mesh_edge_halves=mesh_edge_halves,
             shape_edge_range=shape_edge_range,
             writer_data=writer_data,
             device=device,

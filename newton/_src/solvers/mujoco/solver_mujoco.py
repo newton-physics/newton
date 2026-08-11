@@ -5026,16 +5026,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if selected_shapes.shape[0] > NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT:
             return compile_newton_collision_graph(groups)
 
-        # The compiler derives group-based edges itself. Map only explicit
-        # exclusions whose two endpoints are in this solver's shape selection.
-        filter_pairs = model.shape_collision_filter_pairs_array()
-        if filter_pairs.shape[0]:
-            to_local = np.full(model.shape_count, -1, dtype=np.int64)
-            to_local[selected_shapes] = np.arange(selected_shapes.shape[0], dtype=np.int64)
-            local_filter_pairs = to_local[filter_pairs]
-            local_filter_pairs = local_filter_pairs[np.all(local_filter_pairs >= 0, axis=1)]
-        else:
-            local_filter_pairs = np.empty((0, 2), dtype=np.int64)
+        # Query only the bounded selected-shape graph. Materializing the global
+        # sparse pair array scales this template conversion with replicated worlds.
+        shape_a, shape_b = np.triu_indices(selected_shapes.shape[0], k=1)
+        candidate_pairs = np.column_stack((selected_shapes[shape_a], selected_shapes[shape_b]))
+        filtered = model.shape_collision_filter_mask(candidate_pairs)
+        local_filter_pairs = np.column_stack((shape_a[filtered], shape_b[filtered]))
         return compile_newton_collision_graph(groups, excluded_pairs=local_filter_pairs)
 
     @staticmethod
