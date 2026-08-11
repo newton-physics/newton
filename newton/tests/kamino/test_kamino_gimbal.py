@@ -64,8 +64,8 @@ def _build_rotational_d6(
 ):
     """Build a minimal articulated three-axis D6 fixture."""
     builder = newton.ModelBuilder()
-    parent = builder.add_link(mass=2.0, inertia=wp.mat33(0.8, 0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.0, 1.0))
-    child = builder.add_link(mass=1.0, inertia=wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4))
+    parent = builder.add_link(mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+    child = builder.add_link(mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
     root = builder.add_joint_fixed(-1, parent)
     d6 = builder.add_joint_d6(
         parent,
@@ -269,8 +269,8 @@ class TestGimbal(unittest.TestCase):
     def test_universal_rejects_nonorthogonal_axes(self):
         """Reject a universal joint whose axes are not perpendicular."""
         builder = newton.ModelBuilder()
-        parent = builder.add_link(mass=2.0, inertia=wp.mat33(0.8, 0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.0, 1.0))
-        child = builder.add_link(mass=1.0, inertia=wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4))
+        parent = builder.add_link(mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+        child = builder.add_link(mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
         root = builder.add_joint_fixed(-1, parent)
         universal = builder.add_joint_d6(
             parent,
