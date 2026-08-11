@@ -47,6 +47,7 @@ class Definition:
         self.module = module
         self.node = node
         self.members = members or {}
+        self.surface_fingerprint: str | None = None
 
 
 class Module:
@@ -186,6 +187,55 @@ def _assignment(definitions: dict[str, Definition], node: ast.Assign | ast.AnnAs
         definitions[target.id] = Definition(symbol, module, node)
 
 
+def _self_attribute_names(target: ast.AST):
+    if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+        if not target.attr.startswith("_"):
+            yield target.attr
+        return
+    if isinstance(target, (ast.List, ast.Tuple)):
+        for item in target.elts:
+            yield from _self_attribute_names(item)
+
+
+def _instance_attributes(node: ast.FunctionDef | ast.AsyncFunctionDef, module: str) -> dict[str, Definition]:
+    """Collect public attributes initialized directly on ``self``."""
+    records: dict[str, tuple[ast.AST, set[str]]] = {}
+
+    def visit(child: ast.AST) -> None:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            return
+        if isinstance(child, ast.Assign):
+            targets = child.targets
+            annotation = None
+        elif isinstance(child, ast.AnnAssign):
+            targets = [child.target]
+            annotation = _expr(child.annotation)
+        else:
+            targets = []
+            annotation = None
+        for target in targets:
+            for name in _self_attribute_names(target):
+                record_node, annotations = records.setdefault(name, (child, set()))
+                if annotation is not None:
+                    annotations.add(annotation)
+                records[name] = (record_node, annotations)
+        for grandchild in ast.iter_child_nodes(child):
+            visit(grandchild)
+
+    for child in node.body:
+        visit(child)
+
+    attributes = {}
+    for name, (record_node, attribute_annotations) in records.items():
+        symbol = {"kind": "attribute"}
+        if len(attribute_annotations) == 1:
+            symbol["annotation"] = next(iter(attribute_annotations))
+        elif attribute_annotations:
+            symbol["annotations"] = sorted(attribute_annotations)
+        attributes[name] = Definition(symbol, module, record_node)
+    return attributes
+
+
 def _class_definition(node: ast.ClassDef, module: str) -> Definition:
     bases = [_expr(base) or "?" for base in node.bases]
     decorators = [_expr(item) or "?" for item in node.decorator_list]
@@ -201,6 +251,9 @@ def _class_definition(node: ast.ClassDef, module: str) -> Definition:
     for child in node.body:
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             _callable_definition(members, child, module, method=True)
+            if child.name == "__init__":
+                for name, attribute in _instance_attributes(child, module).items():
+                    members.setdefault(name, attribute)
         elif isinstance(child, ast.ClassDef):
             members[child.name] = _class_definition(child, module)
         elif isinstance(child, (ast.Assign, ast.AnnAssign)):
@@ -349,10 +402,21 @@ def _collect_module(module: Module, notes: dict[str, dict[str, str]]) -> None:
             _callable_definition(module.definitions, node, module.name, method=False)
         elif isinstance(node, ast.ClassDef):
             module.definitions[node.name] = _class_definition(node, module.name)
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            _assignment(module.definitions, node, module.name)
+    for node in _iter_scope_assignments(module.tree):
+        _assignment(module.definitions, node, module.name)
     _parse_exports(module, notes)
     _parse_lazy_map(module, notes)
+
+
+def _iter_scope_assignments(node: ast.AST):
+    """Yield assignments in one scope, including module-level control flow."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        yield node
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.stmt):
+            yield from _iter_scope_assignments(child)
 
 
 def _load_modules(root: Path, notes: dict[str, dict[str, str]]) -> dict[str, Module]:
@@ -461,6 +525,40 @@ def _export_names(module: Module, modules: dict[str, Module]) -> list[str]:
     return list(dict.fromkeys(names))
 
 
+def _definition_fingerprint(
+    definition: Definition,
+    modules: dict[str, Module],
+    stack: set[int] | None = None,
+) -> str:
+    """Hash the normalized public surface inherited from a definition."""
+    if definition.surface_fingerprint is not None:
+        return definition.surface_fingerprint
+    stack = set() if stack is None else stack
+    marker = id(definition)
+    if marker in stack:
+        return _digest(json.dumps({"cycle": definition.module, "symbol": definition.symbol}, sort_keys=True))
+    stack = {*stack, marker}
+    surface = {
+        "symbol": definition.symbol,
+        "members": {
+            name: _definition_fingerprint(member, modules, stack)
+            for name, member in sorted(definition.members.items())
+            if not name.startswith("_")
+        },
+    }
+    inherited = {}
+    for base in definition.symbol.get("bases", []):
+        if base in {"object", "Enum", "IntEnum", "StrEnum", "Flag", "IntFlag", "NamedTuple"}:
+            continue
+        found = _lookup(modules, definition.module, base) if base.isidentifier() else None
+        if found and found[0] == "definition":
+            inherited[base] = _definition_fingerprint(found[1], modules, stack)
+    if inherited:
+        surface["inherited"] = inherited
+    definition.surface_fingerprint = _digest(json.dumps(surface, sort_keys=True, separators=(",", ":")))
+    return definition.surface_fingerprint
+
+
 def _emit_definition(
     path: str,
     definition: Definition,
@@ -477,7 +575,7 @@ def _emit_definition(
             if base in {"object", "Enum", "IntEnum", "StrEnum", "Flag", "IntFlag", "NamedTuple"}:
                 continue
             found = _lookup(modules, definition.module, base) if base.isidentifier() else None
-            fingerprint = modules[found[1].module].digest if found and found[0] == "definition" else base
+            fingerprint = _definition_fingerprint(found[1], modules) if found and found[0] == "definition" else base
             _note(notes, f"inheritance:{path}:{base}", f"inherited members of {path} are not expanded", fingerprint)
     for name, member in definition.members.items():
         if not name.startswith("_"):
@@ -753,7 +851,10 @@ def format_comment(diff: dict, decision: str, uncertainty_changes: list[dict[str
     if decision == "unchanged":
         lines.append("No supported public API changes detected.")
     elif decision == "unknown":
-        lines.append("Static analysis is inconclusive; API review is requested conservatively.")
+        lines.append(
+            "Static analysis could not fully inspect one or more changed API-defining constructs. "
+            "Manual API review is requested."
+        )
     else:
         lines.append(
             f"Detected {summary['total']} interface change(s): "
@@ -769,12 +870,13 @@ def format_comment(diff: dict, decision: str, uncertainty_changes: list[dict[str
         remaining = summary["total"] - min(len(items), MAX_REPORT_ITEMS)
         if remaining:
             lines.append(f"- … and {remaining} more change(s).")
-    if uncertainty_changes:
-        lines.extend(["", "Analysis notes:"])
+    if decision == "unknown" and uncertainty_changes:
+        lines.extend(["", "<details>", "<summary>Technical analyzer details</summary>", ""])
         for item in uncertainty_changes[:MAX_REPORT_ITEMS]:
             lines.append(f"- {_safe(item['reason'])}")
         if len(uncertainty_changes) > MAX_REPORT_ITEMS:
             lines.append(f"- … and {len(uncertainty_changes) - MAX_REPORT_ITEMS} more note(s).")
+        lines.extend(["", "</details>"])
     lines.extend(
         ["", "This check is advisory: the label means API review needed, not that a breaking change is proven."]
     )
