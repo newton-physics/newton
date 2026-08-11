@@ -3689,24 +3689,24 @@ def parse_usd(
                         value = None
                     return builder.default_shape_cfg.sdf_target_voxel_size if value is None else value
 
-                sdf_target_voxel_size = R.get_value(
+                raw_sdf_target_voxel_size = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="sdf_target_voxel_size",
                     verbose=verbose,
                     comparison_key=_effective_sdf_target_voxel_size,
                 )
-                if sdf_target_voxel_size == float("-inf"):
-                    sdf_target_voxel_size = None
-                elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                if (
+                    raw_sdf_target_voxel_size is not None
+                    and raw_sdf_target_voxel_size != float("-inf")
+                    and raw_sdf_target_voxel_size <= 0
+                ):
                     warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
+                        f"{prim.GetPath()}: newton:sdfTargetVoxelSize={raw_sdf_target_voxel_size!r} is invalid "
                         f"(must be > 0); falling back to default.",
                         stacklevel=2,
                     )
-                    sdf_target_voxel_size = None
-                if sdf_target_voxel_size is None:
-                    sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
+                sdf_target_voxel_size = _effective_sdf_target_voxel_size(raw_sdf_target_voxel_size, None)
 
                 def _effective_sdf_max_resolution(
                     value,
@@ -3724,157 +3724,147 @@ def parse_usd(
                         return builder.default_shape_cfg.sdf_max_resolution
                     return value
 
-                sdf_max_resolution = R.get_value(
+                raw_sdf_max_resolution = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="sdf_max_resolution",
                     verbose=verbose,
                     comparison_key=_effective_sdf_max_resolution,
                 )
-                if sdf_max_resolution == float("-inf"):
-                    sdf_max_resolution = None
-                elif sdf_max_resolution is not None and sdf_max_resolution <= 0:
+                if (
+                    raw_sdf_max_resolution is not None
+                    and raw_sdf_max_resolution != float("-inf")
+                    and raw_sdf_max_resolution <= 0
+                ):
                     warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={raw_sdf_max_resolution!r} is invalid "
                         f"(must be > 0); falling back to default.",
                         stacklevel=2,
                     )
-                    sdf_max_resolution = None
-                elif sdf_max_resolution is not None and sdf_max_resolution % 8 != 0:
+                elif (
+                    raw_sdf_max_resolution is not None
+                    and raw_sdf_max_resolution != float("-inf")
+                    and raw_sdf_max_resolution % 8 != 0
+                ):
                     warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={raw_sdf_max_resolution!r} must be "
                         f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
                         stacklevel=2,
                     )
-                    sdf_max_resolution = None
-                if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
+                elif (
+                    sdf_target_voxel_size is not None
+                    and raw_sdf_max_resolution is not None
+                    and raw_sdf_max_resolution != float("-inf")
+                ):
                     warnings.warn(
                         f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
                         f"are set; sdfTargetVoxelSize takes precedence.",
                         stacklevel=2,
                     )
-                    sdf_max_resolution = None
-                if sdf_max_resolution is None:
-                    # When the API is applied but neither attribute is authored,
-                    # fall back to the schema default (64). When target voxel
-                    # size already drives the resolution, leave max_resolution
-                    # unset so the two don't conflict in ShapeConfig.validate().
-                    if has_sdf_api and sdf_target_voxel_size is None:
-                        sdf_max_resolution = 64
-                    else:
-                        sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
+                sdf_max_resolution = _effective_sdf_max_resolution(raw_sdf_max_resolution, None)
 
                 default_nb = builder.default_shape_cfg.sdf_narrow_band_range
+
+                def _effective_sdf_narrow_band(value, _resolver, default):
+                    return default if value is None or value == float("-inf") else value
+
                 sdf_narrow_band_inner = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="sdf_narrow_band_inner",
                     verbose=verbose,
-                    comparison_key=lambda value, _resolver, default=default_nb[0]: (
-                        default if value is None or value == float("-inf") else value
+                    comparison_key=lambda value, resolver, default=default_nb[0]: _effective_sdf_narrow_band(
+                        value, resolver, default
                     ),
                 )
-                if sdf_narrow_band_inner == float("-inf"):
-                    sdf_narrow_band_inner = None
+                sdf_narrow_band_inner = _effective_sdf_narrow_band(sdf_narrow_band_inner, None, default_nb[0])
                 sdf_narrow_band_outer = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="sdf_narrow_band_outer",
                     verbose=verbose,
-                    comparison_key=lambda value, _resolver, default=default_nb[1]: (
-                        default if value is None or value == float("-inf") else value
+                    comparison_key=lambda value, resolver, default=default_nb[1]: _effective_sdf_narrow_band(
+                        value, resolver, default
                     ),
                 )
-                if sdf_narrow_band_outer == float("-inf"):
-                    sdf_narrow_band_outer = None
-                sdf_narrow_band_range = (
-                    sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
-                    sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
-                )
+                sdf_narrow_band_outer = _effective_sdf_narrow_band(sdf_narrow_band_outer, None, default_nb[1])
+                sdf_narrow_band_range = (sdf_narrow_band_inner, sdf_narrow_band_outer)
 
                 _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
-                sdf_texture_format = R.get_value(
+
+                def _effective_sdf_texture_format(value, _resolver, valid_formats=_valid_sdf_tex_fmts):
+                    if value is None or value not in valid_formats:
+                        return builder.default_shape_cfg.sdf_texture_format
+                    return value
+
+                raw_sdf_texture_format = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="sdf_texture_format",
                     verbose=verbose,
-                    comparison_key=lambda value, _resolver, valid_formats=_valid_sdf_tex_fmts: (
-                        builder.default_shape_cfg.sdf_texture_format
-                        if value is None or value not in valid_formats
-                        else value
-                    ),
+                    comparison_key=_effective_sdf_texture_format,
                 )
-                if sdf_texture_format is not None and sdf_texture_format not in _valid_sdf_tex_fmts:
+                if raw_sdf_texture_format is not None and raw_sdf_texture_format not in _valid_sdf_tex_fmts:
                     warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
+                        f"{prim.GetPath()}: newton:sdfTextureFormat={raw_sdf_texture_format!r} is invalid "
                         f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
                         stacklevel=2,
                     )
-                    sdf_texture_format = None
-                if sdf_texture_format is None:
-                    sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
+                sdf_texture_format = _effective_sdf_texture_format(raw_sdf_texture_format, None)
 
-                sdf_padding = R.get_value(
+                def _effective_sdf_padding(value, _resolver):
+                    return None if value == float("-inf") or (value is not None and value < 0) else value
+
+                raw_sdf_padding = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="sdf_padding",
                     verbose=verbose,
-                    comparison_key=lambda value, _resolver: (
-                        None if value == float("-inf") or (value is not None and value < 0) else value
-                    ),
+                    comparison_key=_effective_sdf_padding,
                 )
-                if sdf_padding == float("-inf"):
-                    sdf_padding = None
-                elif sdf_padding is not None and sdf_padding < 0:
+                if raw_sdf_padding is not None and raw_sdf_padding != float("-inf") and raw_sdf_padding < 0:
                     warnings.warn(
-                        f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid "
+                        f"{prim.GetPath()}: newton:sdfPadding={raw_sdf_padding!r} is invalid "
                         f"(must be >= 0); falling back to default.",
                         stacklevel=2,
                     )
-                    sdf_padding = None
+                sdf_padding = _effective_sdf_padding(raw_sdf_padding, None)
+
+                def _effective_hydroelastic_enabled(value, _resolver, has_sdf_api=has_sdf_api):
+                    if value is True or value is False:
+                        return value
+                    if has_sdf_api:
+                        return False
+                    return builder.default_shape_cfg.is_hydroelastic
 
                 hydroelastic_enabled = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="hydroelastic_enabled",
                     verbose=verbose,
-                    comparison_key=lambda value, _resolver, has_sdf_api=has_sdf_api: (
-                        value
-                        if value is True or value is False
-                        else False
-                        if has_sdf_api
-                        else builder.default_shape_cfg.is_hydroelastic
-                    ),
+                    comparison_key=_effective_hydroelastic_enabled,
                 )
-                kh = R.get_value(
+                is_hydroelastic = _effective_hydroelastic_enabled(hydroelastic_enabled, None)
+
+                def _effective_hydroelastic_stiffness(value, _resolver):
+                    if value == float("-inf") or value is None or value <= 0:
+                        return builder.default_shape_cfg.kh
+                    return value
+
+                raw_kh = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="kh",
                     verbose=verbose,
-                    comparison_key=lambda value, _resolver: (
-                        builder.default_shape_cfg.kh if value == float("-inf") or value is None or value <= 0 else value
-                    ),
+                    comparison_key=_effective_hydroelastic_stiffness,
                 )
-                if kh == float("-inf"):
-                    kh = None
-                elif kh is not None and kh <= 0:
+                if raw_kh is not None and raw_kh != float("-inf") and raw_kh <= 0:
                     warnings.warn(
-                        f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid "
+                        f"{prim.GetPath()}: newton:hydroelasticStiffness={raw_kh!r} is invalid "
                         f"(must be > 0); falling back to default.",
                         stacklevel=2,
                     )
-                    kh = None
-                if hydroelastic_enabled is True:
-                    is_hydroelastic = True
-                elif hydroelastic_enabled is False:
-                    is_hydroelastic = False
-                elif has_sdf_api:
-                    # API applied but hydroelasticEnabled unauthored -> schema default False, not builder default.
-                    is_hydroelastic = False
-                else:
-                    is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
-                if kh is None:
-                    kh = builder.default_shape_cfg.kh
+                kh = _effective_hydroelastic_stiffness(raw_kh, None)
 
                 # Hydroelastic meshes need an SDF source. For primitives, a texture
                 # SDF is generated from a synthesized watertight mesh at finalize(),
