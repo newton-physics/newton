@@ -41,7 +41,11 @@ from typing import Any, ClassVar
 import warp as wp
 
 from newton import Model, ModelBuilder, ShapeFlags
-from newton._src.usd.schema_resolver import SchemaResolverManager, _registered_attribute_fallbacks
+from newton._src.usd.schema_resolver import (
+    SchemaResolverManager,
+    _registered_attribute_fallbacks,
+    _SchemaResolution,
+)
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.usd import (
@@ -104,6 +108,53 @@ class TestSchemaResolver(unittest.TestCase):
                 return 0.0 if name == "withFallback" else None
 
         self.assertEqual(_registered_attribute_fallbacks(PrimDefinition()), {"withFallback": 0.0})
+
+    def test_resolution_accepts_source_neutral_values(self):
+        """Accept plain values from source-neutral resolver adapters."""
+
+        class SourceResolver(SchemaResolver):
+            name = "source"
+            mapping: ClassVar = {PrimType.JOINT: {"armature": SchemaResolver.SchemaAttribute("source:armature")}}
+
+        resolver = SourceResolver()
+        resolution = _SchemaResolution([resolver])
+
+        authored = resolution._resolve_value(
+            lambda _resolver, _key: 0.5,
+            lambda _resolver, _key: False,
+            lambda _resolver, _key: 0.25,
+            PrimType.JOINT,
+            "armature",
+        )
+        fallback = resolution._resolve_value(
+            lambda _resolver, _key: None,
+            lambda _resolver, _key: True,
+            lambda _resolver, _key: 0.25,
+            PrimType.JOINT,
+            "armature",
+        )
+
+        self.assertEqual(authored.value, 0.5)
+        self.assertIs(authored.resolver, resolver)
+        self.assertTrue(authored.authored)
+        self.assertEqual(fallback.value, 0.25)
+        self.assertIs(fallback.resolver, resolver)
+        self.assertFalse(fallback.authored)
+
+    def test_get_value_override_accepts_missing_prim(self):
+        """Honor custom resolver getters when no PXR prim is available."""
+
+        class OverrideResolver(SchemaResolver):
+            name = "override"
+            mapping: ClassVar = {PrimType.JOINT: {"armature": SchemaResolver.SchemaAttribute("override:armature")}}
+
+            def get_value(self, prim, prim_type, key):
+                del prim, prim_type, key
+                return 0.5
+
+        resolver = SchemaResolverManager([OverrideResolver()])
+
+        self.assertEqual(resolver.get_value(None, PrimType.JOINT, "armature"), 0.5)
 
     def test_schema_application_controls_fallback_ownership(self):
         """Grant fallback ownership only when the schema is applied."""

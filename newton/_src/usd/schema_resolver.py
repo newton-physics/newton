@@ -155,11 +155,14 @@ class SchemaResolver:
         )
 
     def _get_value_state(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> _ResolverValue:
+        if type(self).get_value is not SchemaResolver.get_value:
+            value = self.get_value(prim, prim_type, key)
+            return _ResolverValue(value, value is not None)
         if prim is None:
             return _ResolverValue(None, False)
 
         spec = self.mapping.get(prim_type, {}).get(key)
-        if spec is None or type(self).get_value is not SchemaResolver.get_value:
+        if spec is None:
             value = self.get_value(prim, prim_type, key)
             return _ResolverValue(value, value is not None)
 
@@ -345,7 +348,7 @@ class _SchemaResolution:
 
     def _resolve_value(
         self,
-        read_value: Callable[[SchemaResolver, str], _ResolverValue],
+        read_value: Callable[[SchemaResolver, str], Any],
         schema_is_applied: Callable[[SchemaResolver, str], bool],
         read_fallback: Callable[[SchemaResolver, str], Any],
         prim_type: PrimType,
@@ -359,6 +362,8 @@ class _SchemaResolution:
             if spec is None:
                 continue
             value = read_value(resolver, key)
+            if not isinstance(value, _ResolverValue):
+                value = _ResolverValue(value, value is not None)
             if value.authored:
                 return _ResolvedValue(value.value, resolver, True)
 
