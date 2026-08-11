@@ -8,6 +8,10 @@ import warp as wp
 
 from newton._src.solvers.limx.affine_types import mat1212, vec12
 from newton._src.solvers.limx.block_csr_12 import BlockCsrBuilder12
+from newton._src.solvers.limx.mixed_linear_solver import (
+    _apply_affine_preconditioner,
+    _factor_affine_diagonal,
+)
 
 
 class TestAffineBlockCsr(unittest.TestCase):
@@ -106,3 +110,121 @@ class TestAffineBlockCsr(unittest.TestCase):
         ]:
             with self.subTest(row=row, column=column, shape=value.shape), self.assertRaises(ValueError):
                 builder.add_block(row, column, value)
+
+
+class TestAffinePreconditioner(unittest.TestCase):
+    def test_solves_literal_spd_block_residuals(self):
+        """Solve literal residuals with one native affine SPD block."""
+        r_factor = np.asarray(
+            [
+                [2.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 3.0, 1.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.5, 0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 2.5, 0.0, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 1.25, 0.0, -0.25, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.75, 0.0, 0.25, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.25, 0.0, -0.5, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.5, 0.0, 0.5, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.75, 0.0, 0.25],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.25, -0.75],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.5],
+            ],
+            dtype=np.float32,
+        )
+        matrix = r_factor.T @ r_factor + np.eye(12, dtype=np.float32) * 0.5
+        residuals = np.asarray(
+            [
+                np.asarray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]),
+                np.asarray([-6.0, -5.0, -4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0]),
+                np.asarray([3.0, -1.0, 4.0, -1.0, 5.0, -9.0, 2.0, -6.0, 5.0, -3.0, 5.0, -8.0]),
+            ],
+            dtype=np.float32,
+        )
+
+        for device in self._devices():
+            with self.subTest(device=device):
+                diagonal = wp.array([matrix, matrix, matrix], dtype=mat1212, device=device)
+                factors = wp.empty_like(diagonal)
+                regularization = wp.zeros(3, dtype=int, device=device)
+                residual = wp.array(residuals, dtype=vec12, device=device)
+                output = wp.empty_like(residual)
+
+                wp.launch(
+                    _factor_affine_diagonal,
+                    dim=3,
+                    inputs=[diagonal],
+                    outputs=[factors, regularization],
+                    device=device,
+                )
+                wp.launch(
+                    _apply_affine_preconditioner,
+                    dim=3,
+                    inputs=[factors, residual],
+                    outputs=[output],
+                    device=device,
+                )
+
+                np.testing.assert_allclose(matrix @ output.numpy().T, residuals.T, rtol=2.0e-4, atol=2.0e-5)
+                np.testing.assert_array_equal(regularization.numpy(), [0, 0, 0])
+
+    def test_regularizes_semidefinite_block(self):
+        """Regularize a semidefinite affine block before applying it."""
+        matrix = np.zeros((12, 12), dtype=np.float32)
+        matrix[0, 0] = 2.0
+        residual_values = np.arange(1.0, 13.0, dtype=np.float32)
+
+        for device in self._devices():
+            with self.subTest(device=device):
+                diagonal = wp.array([matrix], dtype=mat1212, device=device)
+                factors = wp.empty_like(diagonal)
+                regularization = wp.zeros(1, dtype=int, device=device)
+                residual = wp.array([residual_values], dtype=vec12, device=device)
+                output = wp.empty_like(residual)
+
+                wp.launch(
+                    _factor_affine_diagonal,
+                    dim=1,
+                    inputs=[diagonal],
+                    outputs=[factors, regularization],
+                    device=device,
+                )
+                wp.launch(
+                    _apply_affine_preconditioner,
+                    dim=1,
+                    inputs=[factors, residual],
+                    outputs=[output],
+                    device=device,
+                )
+
+                self.assertEqual(regularization.numpy()[0], 1)
+                self.assertTrue(np.isfinite(output.numpy()).all())
+
+    def test_rejects_nonfinite_factorization_input(self):
+        """Reject a non-finite affine block during factorization."""
+        matrix = np.eye(12, dtype=np.float32)
+        matrix[3, 7] = np.nan
+
+        for device in self._devices():
+            with self.subTest(device=device):
+                diagonal = wp.array([matrix], dtype=mat1212, device=device)
+                factors = wp.empty_like(diagonal)
+                regularization = wp.zeros(1, dtype=int, device=device)
+
+                wp.launch(
+                    _factor_affine_diagonal,
+                    dim=1,
+                    inputs=[diagonal],
+                    outputs=[factors, regularization],
+                    device=device,
+                )
+
+                self.assertEqual(regularization.numpy()[0], 1)
+                self.assertTrue(np.isfinite(factors.numpy()).all())
+
+    @staticmethod
+    def _devices() -> list[str]:
+        devices = ["cpu"]
+        if wp.is_cuda_available():
+            devices.append("cuda:0")
+        return devices
