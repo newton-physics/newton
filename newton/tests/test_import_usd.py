@@ -6224,7 +6224,8 @@ def Xform "Articulation" (
         builder.default_joint_cfg.damping = 99.0
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
-        model = builder.finalize()
+        with mock.patch("newton.use_coord_layout_targets", True):
+            model = builder.finalize()
 
         joint_index = model.joint_label.index("/World/Articulation/Joint")
         dof_start = int(model.joint_qd_start.numpy()[joint_index])
@@ -6260,7 +6261,8 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.damping = 99.0
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
-        model = builder.finalize()
+        with mock.patch("newton.use_coord_layout_targets", True):
+            model = builder.finalize()
 
         joint_index = model.joint_label.index("/World/Articulation/Joint")
         self.assertEqual(builder.joint_dof_dim[joint_index], (1, 1))

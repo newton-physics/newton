@@ -1,0 +1,1 @@
+Resolve USD `mjc:damping` through `SchemaResolverMjc` into `Model.joint_damping` like the other direct-mapped MuJoCo attributes; importing it no longer happens implicitly when MuJoCo custom attributes are registered, so pass `schema_resolvers=[..., SchemaResolverMjc()]` to `ModelBuilder.add_usd()` when reading MuJoCo-authored USD.

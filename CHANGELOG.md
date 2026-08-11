@@ -50,7 +50,6 @@
 
 ### Changed
 
-- Resolve USD `mjc:damping` through `SchemaResolverMjc` into `Model.joint_damping` like the other direct-mapped MuJoCo attributes; importing it no longer happens implicitly when MuJoCo custom attributes are registered, so pass `schema_resolvers=[..., SchemaResolverMjc()]` to `ModelBuilder.add_usd()` when reading MuJoCo-authored USD.
 - Decide collider visibility from USD `purpose` and visibility rather than from a bound render material. A collider whose `purpose` resolves to `default` is viewport geometry and is drawn; mark it `guide` to state that it is collision-only. Previously an unrelated visual elsewhere in the scene could make a collider vanish. `force_show_colliders` and `hide_collision_shapes` are unchanged.
 - Filter shared full-surface soft contacts per `SolverCoupled` entry, preserving them for capable solvers and dropping them for particle-only solvers or records spanning entries.
 - Require `warp-lang>=1.16.0`; upgrade Warp to version 1.16.0 or later.
@@ -89,8 +88,7 @@
 
 ### Removed
 
-- Remove the deprecated `Model.mujoco.dof_passive_damping` alias and its `mujoco:dof_passive_damping` custom attribute (deprecated in 1.3.0); use `Model.joint_damping` instead. USD `mjc:damping` is now resolved natively by `SchemaResolverMjc`, and MJCF `damping` continues to be parsed directly into `joint_damping`.
-- Remove the deprecated `joint_target_pos` / `joint_target_vel` aliases from `Model`, `Control`, and `ModelBuilder` (deprecated in 1.3.0); use `joint_target_q` / `joint_target_qd` instead. Reading or assigning the removed names raises `AttributeError` naming the replacement, so a stale `control.joint_target_pos = targets` fails loudly instead of being silently ignored. `Actuator` now always defaults `control_target_pos_attr` / `control_target_vel_attr` to the canonical `joint_target_q` / `joint_target_qd` names; passing `None` explicitly selects the same defaults. (#3617)
+- Remove the deprecated `joint_target_pos` / `joint_target_vel` aliases from `Model`, `Control`, and `ModelBuilder` (deprecated in 1.3.0); use `joint_target_q` / `joint_target_qd` instead. Reading or assigning the removed names raises `AttributeError` naming the replacement, so a stale `control.joint_target_pos = targets` fails loudly instead of being silently ignored. `Actuator` now always defaults `control_target_pos_attr` / `control_target_vel_attr` to the canonical `joint_target_q` / `joint_target_qd` names; passing `None` explicitly selects the same defaults.
 - Remove the deprecated SDF compatibility attributes `Model.shape_sdf_index`, `Model.texture_sdf_data`, `Model.texture_sdf_coarse_textures`, `Model.texture_sdf_subgrid_textures`, `Model.texture_sdf_subgrid_start_slots`, `Model.sdf_block_coords`, `Model.sdf_index2blocks`, and `SDF.texture_block_coords` (deprecated in 1.3.0); the hydroelastic broadphase derives block coordinates arithmetically and the remaining storage is internal. (#3622)
 - Remove the deprecated `newton.geometry.build_bvh_shape()`, `refit_bvh_shape()`, `build_bvh_particle()`, and `refit_bvh_particle()` helpers (deprecated in 1.3.0); use `Model.bvh_build_shapes()`, `Model.bvh_refit_shapes()`, `Model.bvh_build_particles()`, and `Model.bvh_refit_particles()` instead. (#3619)
 - Remove the deprecated `Model.has_heightfields` property (deprecated in 1.3.0); use `Model.heightfield_count`, or `model.heightfield_count > 0` for boolean checks, instead. (#3619)
@@ -120,7 +118,6 @@
 - Fix masked `SolverCoupledProxy.reset()` calls clearing proxy feedback history for unselected worlds.
 - Fix masked solver resets modifying unselected worlds or discarding their coupling and contact history.
 - Fix MJCF, URDF, and USD imports rendering collision-only bodies as visuals when the asset authors visual geometry elsewhere. (#3291)
-- Fix MJCF ball joints dropping authored damping when `ModelBuilder.default_joint_cfg.damping` is nonzero. (#3703)
 - Fix fully locked XPBD joints becoming permanently separated after large transient anchor errors.
 - Fix `SchemaResolverPhysx` reading every D6 translational limit gain from the `linear` instance instead of its `transX`, `transY`, or `transZ` instance.
 - Fix USD capsule, cylinder, and cone visuals and sites without authored `radius`/`height` to use the UsdGeom schema fallbacks, matching collision shapes.
