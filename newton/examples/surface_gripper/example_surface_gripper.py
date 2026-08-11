@@ -226,7 +226,6 @@ def update_seal_break_kernel(
     pad_seal_load_unclamped: wp.array[wp.vec4],  # [pads] the same four groups before the caps
     pad_seal_quality_rms: wp.array[float],  # [pads] RMS perimeter-gap deviation from the seated pose [m]
     break_on_seal_quality: wp.bool,  # False = force-based metric, True = geometry-based (RMS) metric
-    pad_engaged_bs_prev: wp.array[wp.vec2i],  # [pads] gripped body/shape last sub-step (``[0] < 0`` = was released)
     break_threshold: float,  # metric above this counts as over-capacity (units depend on the mode)
     break_hold_steps: int,  # sub-steps a pad must stay over threshold before the gripper fractures
     break_settle_steps: int,  # sub-steps after engaging during which the metric is not checked
@@ -255,7 +254,9 @@ def update_seal_break_kernel(
 
     Neither metric is checked for the first break_settle_steps sub-steps after a pad engages: a fresh
     seal is still pulling the gripped surface onto the pads, and that transient reads as a large
-    overload under both metrics (see BREAK_SETTLE_TIME).
+    overload under both metrics (see BREAK_SETTLE_TIME). The settle counter is reset whenever the pad
+    is released, so a pad's first engaged sub-step always starts a fresh window -- no separate
+    rising-edge test is needed, and the whole kernel reads and writes only the current state.
     """
     g = wp.tid()
     lo = pad_offsets[g]  # this gripper's pads are [lo, hi)
@@ -264,9 +265,10 @@ def update_seal_break_kernel(
     any_broken = wp.bool(False)
     for p in range(lo, hi):
         if not engaged:
+            # Released: both counters restart, so the next engagement gets a full settle window.
             pad_seal_break_count[p] = 0
             pad_settle_count[p] = 0
-        elif pad_engaged_bs_prev[p][0] >= 0:
+        else:
             pad_settle_count[p] = pad_settle_count[p] + 1
             if pad_settle_count[p] < break_settle_steps:
                 pad_seal_break_count[p] = 0  # still settling: the metric is not meaningful yet
@@ -291,9 +293,6 @@ def update_seal_break_kernel(
                     any_broken = True
             else:
                 pad_seal_break_count[p] = 0
-        else:
-            pad_seal_break_count[p] = 0
-            pad_settle_count[p] = 0  # just engaged this sub-step: start the settle window
     hold = engaged and not any_broken
     for p in range(lo, hi):
         if not hold:
@@ -982,38 +981,6 @@ class Example:
             )
             self.state_0.clear_forces()  # zero body_f each sub-step (the surface gripper accumulates into it)
 
-            # Per-pad seal quality (RMS perimeter-gap deviation from the seated pose) at this sub-step's pose.
-            # Engaged pads measure against the sdf0 cached at engagement; preparing pads recompute the
-            # seated pose + sdf0 live. Feeds the break check below and is read back by the GUI.
-            evaluate_seal_quality(
-                self.model,
-                self.state_0,
-                self.gripper_model,
-                self.gripper_state_input_prev,
-                self.gripper_state_output,
-                self.shape_mesh_id_wp,
-                iters=SEAT_ITERS,
-            )
-
-            # Release the gripper when any pad's unclamped load stays over capacity for long enough.
-            wp.launch(
-                update_seal_break_kernel,
-                dim=self.example_state_curr.gripper_command_engaged_wp.shape[0],  # one thread per gripper
-                inputs=[
-                    self.gripper_state_output.pad_seal_load,
-                    self.gripper_state_output.pad_seal_load_unclamped,
-                    self.gripper_state_output.pad_seal_quality_rms,
-                    bool(BREAK_ON_SEAL_QUALITY),
-                    self.gripper_state_input_prev.pad_engaged_bs,
-                    float(self.break_threshold),
-                    int(self.break_hold_steps),
-                    int(self.break_settle_steps),
-                    self.pad_offsets_wp,
-                    self.pad_seal_break_count_wp,
-                    self.pad_settle_count_wp,
-                ],
-                outputs=[self.gripper_state_input_curr.pad_engaged_bs],
-            )
             # On each pad's rising edge cache pad_anchor_b (the seal frame in the gripped body).
             # SEAL_SEAT_ON_ENGAGE: anchor to the on-device fitted (seated) box pose instead of the actual
             # one, so the seal seats the box on the pads. Fully kernel-driven, so it graph-captures.
@@ -1036,11 +1003,53 @@ class Example:
                     self.gripper_state_output,
                     self.gripper_state_input_curr,
                 )
+
+            # Per-pad seal quality (RMS perimeter-gap deviation from the seated pose) at this sub-step's
+            # pose. Engaged pads measure against the sdf0 cached at engagement; preparing pads recompute
+            # the seated pose + sdf0 live. Read back by the GUI and consumed by the break check next
+            # sub-step. Runs after attach_seal*, so a pad that just engaged measures against the sdf0
+            # cached for this grip rather than the previous one.
+            evaluate_seal_quality(
+                self.model,
+                self.state_0,
+                self.gripper_model,
+                self.gripper_state_input_curr,
+                self.gripper_state_output,
+                self.shape_mesh_id_wp,
+                iters=SEAT_ITERS,
+            )
+
+            # Release the gripper when any pad's break metric stays over threshold for long enough.
+            # Placed after evaluate_seal_quality and before evaluate_gripper_force, so that a fracture
+            # cancels this sub-step's seal force. The seal-quality RMS depends only on body poses and is
+            # therefore current here; the load metric is one sub-step old, which BREAK_HOLD_TIME (several
+            # sub-steps) absorbs.
+            wp.launch(
+                update_seal_break_kernel,
+                dim=self.example_state_curr.gripper_command_engaged_wp.shape[0],  # one thread per gripper
+                inputs=[
+                    self.gripper_state_output.pad_seal_load,
+                    self.gripper_state_output.pad_seal_load_unclamped,
+                    self.gripper_state_output.pad_seal_quality_rms,
+                    bool(BREAK_ON_SEAL_QUALITY),
+                    float(self.break_threshold),
+                    int(self.break_hold_steps),
+                    int(self.break_settle_steps),
+                    self.pad_offsets_wp,
+                    self.pad_seal_break_count_wp,
+                    self.pad_settle_count_wp,
+                ],
+                outputs=[self.gripper_state_input_curr.pad_engaged_bs],
+            )
+            # Force uses the engagement decided *this* sub-step, not the previous one: a pad that just
+            # engaged pulls immediately (attach_seal* cached its anchor just above), and one that just
+            # released stops pulling at once. It also keeps pad_seal_load in step with the engagement
+            # state, so the break check above reads loads computed against the same pads it is judging.
             evaluate_gripper_force(
                 self.model,
                 self.state_0,
                 self.gripper_model,
-                self.gripper_state_input_prev,
+                self.gripper_state_input_curr,
                 self.gripper_state_output,
                 self.gripper_control,
                 self.sim_dt,
