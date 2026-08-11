@@ -107,7 +107,6 @@
 - Bound Kamino DVI contact allocation with a per-world geometry heuristic instead of sizing every contact pair simultaneously; set `collision_detector.max_contacts_per_world` to override the inferred capacity.
 - Improve `SolverKamino` DVI contact convergence, warm-starting, and performance for dense contact manifolds.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
-- Honor explicit MuJoCo contact-pair parameters when `SolverMuJoCo` consumes contacts from Newton's collision pipeline.
 - Fix USD capsule, cylinder, and cone visual and site scaling to follow the authored primitive axis.
 - Fix MJCF contact pairs ignoring properties inherited from pair default classes.
 - Fix disabled USD colliders participating in particle collisions when visual shape loading is disabled.
