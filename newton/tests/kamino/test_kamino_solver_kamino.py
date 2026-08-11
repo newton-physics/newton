@@ -391,6 +391,14 @@ class TestSolverKaminoConfig(unittest.TestCase):
             with self.assertRaises(ValueError):
                 kamino_config.PADMMSolverConfig(warmstart_scale=scale)
 
+    def test_02_reject_dense_adaptive_padmm_penalty(self):
+        """Reject adaptive PADMM penalties with dense dynamics."""
+        with self.assertRaisesRegex(ValueError, "Adaptive PADMM penalty updates require `sparse_dynamics=True`"):
+            SolverKamino.Config(
+                sparse_dynamics=False,
+                padmm=kamino_config.PADMMSolverConfig(penalty_update_method="balanced"),
+            )
+
 
 class TestCollisionCapacityInitialization(unittest.TestCase):
     def setUp(self):

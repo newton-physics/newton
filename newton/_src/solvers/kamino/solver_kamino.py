@@ -429,6 +429,12 @@ class SolverKamino(SolverBase, CouplingInterface):
                     "The DVI solver currently requires `dynamics.preconditioning=False` so convergence checks and "
                     "contact cone updates stay in physical constraint units."
                 )
+            if (
+                self.dynamics_solver == "padmm"
+                and not self.sparse_dynamics
+                and self.padmm.penalty_update_method != "fixed"
+            ):
+                raise ValueError("Adaptive PADMM penalty updates require `sparse_dynamics=True`.")
 
             # Conversion to JointCorrectionMode will raise an error if the input string is invalid.
             JointCorrectionMode.from_string(self.rotation_correction)
@@ -728,6 +734,9 @@ class SolverKamino(SolverBase, CouplingInterface):
         # found on the model, so `self._config` will always be fully initialized after this step.
         if config is None:
             config = self.Config.from_model(model)
+        else:
+            # Validate the user-provided config. Protects against motifying the config after initialization.
+            config.validate()
         self._config = config
 
         # Create a Kamino model from the Newton model
