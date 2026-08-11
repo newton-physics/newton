@@ -17,7 +17,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from .broad_phase_common import (
-    check_aabb_overlap,
+    check_aabb_overlap_moving,
     is_pair_excluded,
     is_shape_pair_immovable_filtered,
     precompute_world_map,
@@ -32,6 +32,7 @@ def _nxn_broadphase_precomputed_pairs(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_sweep: wp.array[wp.vec3],  # Optional per-shape translation over normalized time [0, 1]
     nxn_shape_pair: wp.array[wp.vec2i],
     shape_body: wp.array[int],
     body_flags: wp.array[int],
@@ -57,13 +58,8 @@ def _nxn_broadphase_precomputed_pairs(
         gap1 = shape_gap[shape1]
         gap2 = shape_gap[shape2]
 
-    if check_aabb_overlap(
-        shape_bounding_box_lower[shape1],
-        shape_bounding_box_upper[shape1],
-        gap1,
-        shape_bounding_box_lower[shape2],
-        shape_bounding_box_upper[shape2],
-        gap2,
+    if check_aabb_overlap_moving(
+        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_sweep
     ):
         write_pair(
             pair,
@@ -139,6 +135,7 @@ def _nxn_broadphase_kernel(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_sweep: wp.array[wp.vec3],  # Optional per-shape translation over normalized time [0, 1]
     collision_group: wp.array[int],  # per-shape
     shape_world: wp.array[int],  # per-shape world indices
     shape_body: wp.array[int],
@@ -207,14 +204,8 @@ def _nxn_broadphase_kernel(
         gap1 = shape_gap[shape1]
         gap2 = shape_gap[shape2]
 
-    # Check AABB overlap
-    if check_aabb_overlap(
-        shape_bounding_box_lower[shape1],
-        shape_bounding_box_upper[shape1],
-        gap1,
-        shape_bounding_box_lower[shape2],
-        shape_bounding_box_upper[shape2],
-        gap2,
+    if check_aabb_overlap_moving(
+        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_sweep
     ):
         # Skip explicitly excluded pairs (e.g. shape_collision_filter_pairs)
         if num_filter_pairs > 0 and is_pair_excluded(wp.vec2i(shape1, shape2), filter_pairs, num_filter_pairs):
@@ -308,6 +299,7 @@ class BroadPhaseAllPairs:
         self.world_index_map = wp.array(index_map_np, dtype=wp.int32, device=device)
         self.world_slice_ends = wp.array(slice_ends_np, dtype=wp.int32, device=device)
         self.world_cumsum_lower_tri = wp.array(world_cumsum_lower_tri_np, dtype=wp.int32, device=device)
+        self._empty_shape_sweep = wp.empty(0, dtype=wp.vec3, device=device)
 
         # Store total number of kernel threads needed (last element of cumsum)
         self.num_kernel_threads = int(world_cumsum_lower_tri_np[-1]) if world_count > 0 else 0
@@ -334,6 +326,7 @@ class BroadPhaseAllPairs:
         shape_body: wp.array[int] | None = None,
         body_flags: wp.array[int] | None = None,
         include_static_kinematic_pairs: bool = True,
+        shape_sweep: wp.array[wp.vec3] | None = None,
     ) -> None:
         """Launch the N x N broad phase collision detection.
 
@@ -367,6 +360,7 @@ class BroadPhaseAllPairs:
                 an all-static model when ``shape_body`` is provided.
             include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
                 ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
+            shape_sweep: Optional world-space AABB translation over normalized time ``[0, 1]`` [m].
 
         The method will populate candidate_pair with the indices of shape pairs (i,j) where i < j whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose world indices are
@@ -388,6 +382,8 @@ class BroadPhaseAllPairs:
             shape_body = wp.empty(0, dtype=wp.int32, device=device)
         if body_flags is None:
             body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        if shape_sweep is None:
+            shape_sweep = self._empty_shape_sweep
 
         # Exclusion filter: empty array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
@@ -405,6 +401,7 @@ class BroadPhaseAllPairs:
                 shape_lower,
                 shape_upper,
                 shape_gap,
+                shape_sweep,
                 shape_collision_group,
                 shape_world,
                 shape_body,
@@ -435,7 +432,7 @@ class BroadPhaseExplicit:
     """
 
     def __init__(self) -> None:
-        pass
+        self._empty_shape_sweep = None
 
     def launch(
         self,
@@ -453,6 +450,7 @@ class BroadPhaseExplicit:
         shape_body: wp.array[int] | None = None,
         body_flags: wp.array[int] | None = None,
         include_static_kinematic_pairs: bool = True,
+        shape_sweep: wp.array[wp.vec3] | None = None,
     ) -> None:
         """Launch the explicit pairs broad phase collision detection.
 
@@ -480,6 +478,7 @@ class BroadPhaseExplicit:
                 an all-static model when ``shape_body`` is provided.
             include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
                 ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
+            shape_sweep: Optional world-space AABB translation over normalized time ``[0, 1]`` [m].
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), but only checking the explicitly provided pairs.
@@ -500,6 +499,10 @@ class BroadPhaseExplicit:
             shape_body = wp.empty(0, dtype=wp.int32, device=device)
         if body_flags is None:
             body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        if shape_sweep is None:
+            if self._empty_shape_sweep is None or self._empty_shape_sweep.device != wp.get_device(device):
+                self._empty_shape_sweep = wp.empty(0, dtype=wp.vec3, device=device)
+            shape_sweep = self._empty_shape_sweep
 
         wp.launch(
             kernel=_nxn_broadphase_precomputed_pairs,
@@ -508,6 +511,7 @@ class BroadPhaseExplicit:
                 shape_lower,
                 shape_upper,
                 shape_gap,
+                shape_sweep,
                 shape_pairs,
                 shape_body,
                 body_flags,

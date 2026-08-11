@@ -379,6 +379,37 @@ def test_speculative_candidates_require_approach(test, device):
         test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def test_speculative_candidates_reject_common_motion(test, device):
+    """Reject separated shapes whose large common motion makes their swept unions overlap."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.rigid_gap = 0.0
+    body_a = builder.add_body(xform=wp.transform_identity())
+    builder.add_shape_sphere(body_a, radius=0.1)
+    builder.body_qd[body_a] = (20.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.4, 0.0, 0.0)))
+    builder.add_shape_sphere(body_b, radius=0.1)
+    builder.body_qd[body_b] = (20.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    model = builder.finalize(device=device)
+    shape_pairs = wp.array([wp.vec2i(0, 1)], dtype=wp.vec2i, device=device)
+    config = newton.CollisionPipeline.SpeculativeContactConfig(
+        collision_update_dt=0.1,
+        max_speculative_extension=0.25,
+    )
+
+    for broad_phase in ("nxn", "sap", "explicit"):
+        with test.subTest(broad_phase=broad_phase):
+            pipeline = newton.CollisionPipeline(
+                model,
+                broad_phase=broad_phase,
+                shape_pairs_filtered=shape_pairs if broad_phase == "explicit" else None,
+                speculative_config=config,
+            )
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            test.assertEqual(int(pipeline.broad_phase_pair_count.numpy()[0]), 0)
+            test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
 def test_speculative_candidates_preserve_physical_geometry(test, device):
     """Verify candidate generation does not enlarge stored physical margins."""
     model, state = _build_spheres(device, velocity=10.0)
@@ -725,6 +756,7 @@ class TestSpeculativeMeshContacts(unittest.TestCase):
 for _name, _test in (
     ("test_speculative_candidates_are_opt_in", test_speculative_candidates_are_opt_in),
     ("test_speculative_candidates_require_approach", test_speculative_candidates_require_approach),
+    ("test_speculative_candidates_reject_common_motion", test_speculative_candidates_reject_common_motion),
     ("test_speculative_candidates_preserve_physical_geometry", test_speculative_candidates_preserve_physical_geometry),
     ("test_speculative_candidates_include_angular_motion", test_speculative_candidates_include_angular_motion),
     ("test_speculative_narrow_phase_launch", test_speculative_narrow_phase_launch),

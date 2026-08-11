@@ -350,6 +350,7 @@ def compute_shape_velocities(
     shape_linear_velocity: wp.array[wp.vec3],
     shape_angular_velocity: wp.array[wp.vec3],
     shape_search_gap: wp.array[float],
+    shape_sweep: wp.array[wp.vec3],
     shape_aabb_lower: wp.array[wp.vec3],
     shape_aabb_upper: wp.array[wp.vec3],
 ):
@@ -360,6 +361,7 @@ def compute_shape_velocities(
         shape_linear_velocity[shape_id] = wp.vec3(0.0)
         shape_angular_velocity[shape_id] = wp.vec3(0.0)
         shape_search_gap[shape_id] = shape_gap[shape_id]
+        shape_sweep[shape_id] = wp.vec3(0.0)
         return
 
     X_wb = body_q[body_id]
@@ -386,11 +388,12 @@ def compute_shape_velocities(
 
     swept_translation = shape_origin_velocity * collision_update_dt
     angular_extension = angular_speed_bound * collision_update_dt
-    negative_extension = wp.max(-swept_translation, wp.vec3(0.0)) + wp.vec3(angular_extension)
-    positive_extension = wp.max(swept_translation, wp.vec3(0.0)) + wp.vec3(angular_extension)
     cap = wp.vec3(max_speculative_extension)
-    shape_aabb_lower[shape_id] = shape_aabb_lower[shape_id] - wp.min(negative_extension, cap)
-    shape_aabb_upper[shape_id] = shape_aabb_upper[shape_id] + wp.min(positive_extension, cap)
+    # Preserve absolute motion so pairwise subtraction retains relative velocity.
+    shape_sweep[shape_id] = swept_translation
+    angular_extension_vec = wp.min(wp.vec3(angular_extension), cap)
+    shape_aabb_lower[shape_id] = shape_aabb_lower[shape_id] - angular_extension_vec
+    shape_aabb_upper[shape_id] = shape_aabb_upper[shape_id] + angular_extension_vec
 
 
 # Primitive pairs (GJK/MPR) produce up to 5 manifold contacts.
@@ -1288,10 +1291,12 @@ class CollisionPipeline:
                 self._shape_linear_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
                 self._shape_search_gap = wp.zeros(shape_count, dtype=wp.float32, device=device)
+                self._shape_sweep = wp.zeros(shape_count, dtype=wp.vec3, device=device)
             else:
                 self._shape_linear_velocity = wp.empty(0, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.empty(0, dtype=wp.vec3, device=device)
                 self._shape_search_gap = model.shape_gap
+                self._shape_sweep = wp.empty(0, dtype=wp.vec3, device=device)
 
         if (
             getattr(self.narrow_phase, "shape_aabb_lower", None) is None
@@ -1592,6 +1597,7 @@ class CollisionPipeline:
                     self._shape_linear_velocity,
                     self._shape_angular_velocity,
                     self._shape_search_gap,
+                    self._shape_sweep,
                     self.narrow_phase.shape_aabb_lower,
                     self.narrow_phase.shape_aabb_upper,
                 ],
@@ -1617,6 +1623,7 @@ class CollisionPipeline:
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
+                shape_sweep=self._shape_sweep if speculative_active else None,
             )
         elif isinstance(self.broad_phase, BroadPhaseSAP):
             self.broad_phase.launch(
@@ -1635,6 +1642,8 @@ class CollisionPipeline:
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
+                shape_sweep=self._shape_sweep if speculative_active else None,
+                shape_sweep_projection_limit=max_speculative_extension if speculative_active else None,
             )
         else:  # BroadPhaseExplicit
             self.broad_phase.launch(
@@ -1650,6 +1659,7 @@ class CollisionPipeline:
                 include_static_kinematic_pairs=self.include_static_kinematic_pairs,
                 device=self.device,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
+                shape_sweep=self._shape_sweep if speculative_active else None,
             )
 
         # Create ContactWriterData struct for custom contact writing

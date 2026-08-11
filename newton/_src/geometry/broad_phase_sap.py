@@ -20,7 +20,7 @@ import warp as wp
 from ..core.types import Devicelike
 from .broad_phase_common import (
     binary_search,
-    check_aabb_overlap,
+    check_aabb_overlap_moving,
     is_pair_excluded,
     is_shape_pair_immovable_filtered,
     precompute_world_map,
@@ -48,6 +48,8 @@ def _sap_project_aabb(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_sweep: wp.array[wp.vec3],  # Optional per-shape translation over normalized time [0, 1]
+    shape_sweep_projection_limit: float,
 ) -> wp.vec2:
     lower = shape_bounding_box_lower[elementid]
     upper = shape_bounding_box_upper[elementid]
@@ -59,9 +61,21 @@ def _sap_project_aabb(
 
     half_size = 0.5 * (upper - lower)
     half_size = wp.vec3(half_size[0] + gap, half_size[1] + gap, half_size[2] + gap)
-    radius = wp.dot(direction, half_size)
+    radius = wp.dot(wp.abs(direction), half_size)
     center = wp.dot(direction, 0.5 * (lower + upper))
-    return wp.vec2(center - radius, center + radius)
+    projection_lower = center - radius
+    projection_upper = center + radius
+    if shape_sweep.shape[0] > 0:
+        projected_sweep = wp.dot(direction, shape_sweep[elementid])
+        if shape_sweep_projection_limit >= 0.0:
+            projected_sweep = wp.clamp(
+                projected_sweep,
+                -shape_sweep_projection_limit,
+                shape_sweep_projection_limit,
+            )
+        projection_lower += wp.min(projected_sweep, 0.0)
+        projection_upper += wp.max(projected_sweep, 0.0)
+    return wp.vec2(projection_lower, projection_upper)
 
 
 @wp.func
@@ -148,6 +162,8 @@ def _sap_project_kernel(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_sweep: wp.array[wp.vec3],  # Optional per-shape translation over normalized time [0, 1]
+    shape_sweep_projection_limit: float,
     world_index_map: wp.array[int],
     world_slice_ends: wp.array[int],
     max_shapes_per_world: int,
@@ -180,7 +196,15 @@ def _sap_project_kernel(
     shape_id = world_index_map[world_slice_start + local_shape_id]
 
     # Project AABB onto direction
-    range = _sap_project_aabb(shape_id, direction, shape_bounding_box_lower, shape_bounding_box_upper, shape_gap)
+    range = _sap_project_aabb(
+        shape_id,
+        direction,
+        shape_bounding_box_lower,
+        shape_bounding_box_upper,
+        shape_gap,
+        shape_sweep,
+        shape_sweep_projection_limit,
+    )
 
     sap_projection_lower_out[idx] = range[0]
     sap_projection_upper_out[idx] = range[1]
@@ -246,6 +270,7 @@ def _process_single_sap_pair(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_sweep: wp.array[wp.vec3],  # Optional per-shape translation over normalized time [0, 1]
     candidate_pair: wp.array[wp.vec2i],
     candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
@@ -272,13 +297,8 @@ def _process_single_sap_pair(
         gap1 = shape_gap[shape1]
         gap2 = shape_gap[shape2]
 
-    if check_aabb_overlap(
-        shape_bounding_box_lower[shape1],
-        shape_bounding_box_upper[shape1],
-        gap1,
-        shape_bounding_box_lower[shape2],
-        shape_bounding_box_upper[shape2],
-        gap2,
+    if check_aabb_overlap_moving(
+        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_sweep
     ):
         write_pair(
             pair,
@@ -294,6 +314,7 @@ def _sap_broadphase_kernel(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_sweep: wp.array[wp.vec3],  # Optional per-shape translation over normalized time [0, 1]
     collision_group: wp.array[int],
     shape_world: wp.array[int],  # World indices
     world_index_map: wp.array[int],
@@ -394,6 +415,7 @@ def _sap_broadphase_kernel(
                 shape_bounding_box_lower,
                 shape_bounding_box_upper,
                 shape_gap,
+                shape_sweep,
                 candidate_pair,
                 candidate_pair_count,
                 max_candidate_pair,
@@ -512,6 +534,7 @@ class BroadPhaseSAP:
         self.sap_sort_index = wp.zeros(2 * total_elements, dtype=wp.int32, device=device)
         self.sap_range = wp.zeros(total_elements, dtype=wp.int32, device=device)
         self.sap_cumulative_sum = wp.zeros(total_elements, dtype=wp.int32, device=device)
+        self._empty_shape_sweep = wp.empty(0, dtype=wp.vec3, device=device)
 
         # Segment indices for segmented sort (needed for graph capture)
         # [0, max_shapes_per_world, 2*max_shapes_per_world, ..., world_count*max_shapes_per_world]
@@ -539,6 +562,8 @@ class BroadPhaseSAP:
         shape_body: wp.array[int] | None = None,
         body_flags: wp.array[int] | None = None,
         include_static_kinematic_pairs: bool = True,
+        shape_sweep: wp.array[wp.vec3] | None = None,
+        shape_sweep_projection_limit: float | None = None,
     ) -> None:
         """Launch the sweep and prune broad phase collision detection with per-world segmented sort.
 
@@ -572,6 +597,9 @@ class BroadPhaseSAP:
                 an all-static model when ``shape_body`` is provided.
             include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
                 ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
+            shape_sweep: Optional world-space AABB translation over normalized time ``[0, 1]`` [m].
+            shape_sweep_projection_limit: Optional non-negative per-shape projection limit used only by the coarse
+                SAP sort [m]. The exact pair test continues to use the full relative sweep.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose worlds are
@@ -597,6 +625,17 @@ class BroadPhaseSAP:
             shape_body = wp.empty(0, dtype=wp.int32, device=device)
         if body_flags is None:
             body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        if shape_sweep is None:
+            shape_sweep = self._empty_shape_sweep
+        if shape_sweep_projection_limit is None:
+            projection_limit = -1.0
+        else:
+            if not np.isfinite(shape_sweep_projection_limit) or shape_sweep_projection_limit < 0.0:
+                raise ValueError(
+                    "shape_sweep_projection_limit must be a non-negative finite number, "
+                    f"got {shape_sweep_projection_limit!r}"
+                )
+            projection_limit = shape_sweep_projection_limit
 
         # Exclusion filter: empty array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
@@ -615,6 +654,8 @@ class BroadPhaseSAP:
                 shape_lower,
                 shape_upper,
                 shape_gap,
+                shape_sweep,
+                projection_limit,
                 self.world_index_map,
                 self.world_slice_ends,
                 self.max_shapes_per_world,
@@ -683,6 +724,7 @@ class BroadPhaseSAP:
                 shape_lower,
                 shape_upper,
                 shape_gap,
+                shape_sweep,
                 shape_collision_group,
                 shape_world,
                 self.world_index_map,
