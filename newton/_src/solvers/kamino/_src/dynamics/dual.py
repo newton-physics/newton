@@ -369,14 +369,14 @@ def precondition_scalar(d: wp.float32) -> wp.float32:
     system as P D Pᵀ. Clamping bounds the scale factor to preserve float32
     solver precision during scaling and unscaling.
 
-    The upper bound of 30.0 limits matrix scaling to approximately 10³,
+    The upper bound of 50.0 limits matrix scaling to approximately 10³,
     retaining roughly four significant digits for the solver.
 
     Args:
         d: Diagonal matrix entry.
     """
     inv_sqrt_d = 1.0 / wp.sqrt(wp.abs(d) + FLOAT32_EPS)
-    return wp.clamp(inv_sqrt_d, wp.float32(1.0 / 30.0), wp.float32(30.0))
+    return wp.clamp(inv_sqrt_d, wp.float32(1.0 / 50.0), wp.float32(50.0))
 
 
 @wp.func

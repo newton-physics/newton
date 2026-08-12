@@ -517,7 +517,6 @@ class DRLegsBenchmarkWorkload:
         # Pin the linear solver so a change to default_settings cannot
         # silently switch what this benchmark measures.
         settings.solver.dynamics.linear_solver_type = "LLTBRCM"
-        settings.solver.padmm.rho_0 = 0.1
         return newton.solvers.SolverKamino(model, config=settings.solver)
 
 
