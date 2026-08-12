@@ -524,7 +524,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(builder.joint_target_ke[dof0], 1.0e5)  # add_rod default stretch stiffness
 
     def test_material_attr_authored_on_geometry_warns(self):
-        """Deformable material properties authored on the geometry (not the material) warn and are ignored."""
+        """Verify that deformable material properties authored on geometry warn and are ignored."""
         from pxr import Sdf
 
         stage = _deformable_stage(up_axis="y")
@@ -682,7 +682,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertGreater(np.linalg.det(np.array(builder.body_inertia[b]).reshape(3, 3)), 0.0)
 
     def test_malformed_material_values_warn_and_use_fallbacks(self):
-        """Malformed AOUSD material values warn and use their documented fallbacks."""
+        """Verify that malformed AOUSD material values warn and use documented fallbacks."""
         stage = _deformable_stage(up_axis="y")
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
@@ -959,11 +959,13 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(b1 - b0, 3)
 
     def test_cable_full_affine_xform_is_exact(self):
-        """Cable import honors the full affine world transform. Under a reflected + sheared
-        xform: body positions mirror (reflection parity preserved), authored normals orient
-        by the full linear block, and stiffness-normalization rest lengths measure the full
-        linear map. A rotation + per-axis-scale decomposition would drop both the reflection
-        and the shear."""
+        """Verify that cable import preserves the full affine world transform.
+
+        Under a reflected and sheared transform, body positions preserve reflection parity,
+        authored normals use the full linear block, and stiffness-normalization rest lengths
+        measure the full linear map. A rotation and per-axis-scale decomposition would drop
+        both the reflection and the shear.
+        """
         from pxr import Gf, Sdf, UsdGeom
 
         stage = _deformable_stage()
@@ -1039,7 +1041,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(set(group_labels(builder, "cable")), {"/World/A/Cable", "/World/B/Cable"})
 
     def test_periodic_cable_imports_closing_segment(self):
-        """A periodic curve builds and locally normalizes its closing segment."""
+        """Verify that a periodic curve builds and locally normalizes its closing segment."""
         stage = _deformable_stage(up_axis="y")
         # The three segment lengths are 0.3, 0.4, and 0.5, including the wrap segment.
         pts = [(0.0, 0.0, 1.0), (0.3, 0.0, 1.0), (0.3, 0.4, 1.0)]
