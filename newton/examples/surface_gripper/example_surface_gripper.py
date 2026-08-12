@@ -48,6 +48,46 @@
 #     Either way the overload must persist for BREAK_HOLD_TIME before the gripper lets go, so a
 #     transient spike does not drop the load.
 #
+# Building a multi-world gripper (the classes mirror Newton's Builder -> Model -> State/Control)
+#
+#   One SurfaceGripper per world, each attached to that world's copy of the tool body. A gripper's
+#   world index is what keeps the seat fit from mixing environments, so it must match the world its
+#   body lives in:
+#
+#     gripper_builder = SurfaceGripperBuilder()
+#     for w in range(world_count):
+#         gripper = SurfaceGripper(
+#             w * bodies_per_world + tool_body,  # this world's copy of the tool body
+#             wp.transform_identity(),           # gripper frame in that body
+#             world=w,
+#             n_perimeter_samples=16,            # contact-perimeter samples per pad, for the seat fit
+#         )
+#         # Seal gains, either directly or as (natural frequency [rad/s], damping ratio) per DOF
+#         # converted against a reference solid -- see set_stiffness_damping for the direct form.
+#         gripper.set_natural_frequency_damping_ratio(mass, inertia, f_grip_max, *modes)
+#         for pad_xform, radius, half_height in pads:
+#             gripper.add_pad(pad_xform, radius, half_height)
+#         gripper_builder.add_gripper(gripper)
+#
+#     gripper_model = gripper_builder.finalize(device=model.device)  # SurfaceGripperModel
+#
+#   The state is double-buffered, because engaging and releasing are edge-triggered: the seal is
+#   anchored on a disengaged->engaged rising edge, which needs both the previous and current step.
+#
+#     state_in_prev = gripper_model.state_input()    # SurfaceGripperStateInput: who each pad grips
+#     state_in_curr = gripper_model.state_input()
+#     state_out     = gripper_model.state_output()   # SurfaceGripperStateOutput: loads, anchors, RMS
+#     control       = gripper_model.control()        # per-pad vacuum on/off
+#
+#   Then per sub-step, with the caller deciding engagement and writing it into state_in_curr:
+#
+#     attach_seal_seated(model, state, gripper_model, state_in_prev, state_out, state_in_curr, ...)
+#     evaluate_seal_quality(model, state, gripper_model, state_in_curr, state_out, ...)
+#     ...caller's break logic, which may clear state_in_curr...
+#     evaluate_gripper_force(model, state, gripper_model, state_in_curr, state_out, control, dt)
+#     ...solver step...
+#     state_in_prev, state_in_curr = state_in_curr, state_in_prev
+#
 # The scene: a fixed-base FANUC arm (assets/fanuc_arm.usda) with four suction pads on its flange,
 # two pallets, and the pick boxes -- one wide panel and six crates (assets/fanuc_pick_scene.usda).
 # The panel is picked first, then each crate in turn; every crate waits out of reach until its turn
@@ -55,6 +95,7 @@
 # recorded timestamps before every physics sub-step, so the arm follows the recorded motion at its
 # true speed. Everything runs on device and is CUDA-graph capturable, and the whole scene can be
 # replicated across parallel environments with --world-count.
+
 
 # Command: uv run -m newton.examples surface_gripper
 ###########################################################################
