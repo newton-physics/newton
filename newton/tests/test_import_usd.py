@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import builtins
+import contextlib
 import functools
 import hashlib
+import io
 import logging
 import math
 import os
@@ -30,6 +32,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.utils.import_usd import _is_uniform_scale
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
@@ -935,6 +938,111 @@ def Xform "World"
 
         shape_id = results["path_shape_map"]["/World/Body/Parent/Child/Collision"]
         assert_np_equal(np.array(builder.shape_scale[shape_id]), np.array([1.0, 6.0, 6.0]), tol=1e-5)
+
+    def test_import_sphere_scale_uniformity_tolerance(self):
+        """Treat scales within a relative tolerance as uniform, and larger spreads as non-uniform."""
+        # The single-precision transform decomposition emits these for an exactly uniform
+        # scale composed through a nested transform chain; they differ by one float32 ULP.
+        self.assertTrue(_is_uniform_scale((0.9999999403953552, 0.9999999403953552, 1.0)))
+        self.assertTrue(_is_uniform_scale((0.9999999403953552, 1.0, 0.9999999403953552)))
+        self.assertTrue(_is_uniform_scale((1.0, 1.0, 1.0)))
+        self.assertTrue(_is_uniform_scale((0.0, 0.0, 0.0)))
+        # Genuinely non-uniform scales must still be reported.
+        self.assertFalse(_is_uniform_scale((1.0, 1.0, 2.0)))
+        self.assertFalse(_is_uniform_scale((1.0, 1.0, 1.001)))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_sphere_near_uniform_scale_does_not_warn(self):
+        """Import spheres whose scale is uniform to within float32 round-off without warning.
+
+        Both the collision and the visual code path guard against non-uniform sphere scaling.
+        A scale that is exactly uniform in the source asset can still reach those guards with
+        its components a ULP apart, which an exact equality comparison reports as non-uniform.
+        """
+        from pxr import Usd
+
+        usd_text = """#usda 1.0
+(
+    upAxis = "Z"
+)
+def PhysicsScene "physicsScene"
+{
+}
+def Xform "World"
+{
+    def Xform "Body" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Sphere "NearUniformCollision" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.5
+            float3 xformOp:scale = (0.99999994, 0.99999994, 1)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+        }
+
+        def Sphere "NearUniformVisual"
+        {
+            double radius = 0.5
+            double3 xformOp:translate = (2, 0, 0)
+            float3 xformOp:scale = (0.99999994, 0.99999994, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        }
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
+
+        builder = newton.ModelBuilder()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            builder.add_usd(stage)
+
+        self.assertNotIn("Non-uniform scaling of spheres", stdout.getvalue())
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_sphere_non_uniform_scale_warns(self):
+        """Warn, and name the prim, when a sphere really is scaled non-uniformly."""
+        from pxr import Usd
+
+        usd_text = """#usda 1.0
+(
+    upAxis = "Z"
+)
+def PhysicsScene "physicsScene"
+{
+}
+def Xform "World"
+{
+    def Xform "Body" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Sphere "SquashedCollision" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.5
+            float3 xformOp:scale = (1, 1, 2)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+        }
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
+
+        builder = newton.ModelBuilder()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            builder.add_usd(stage)
+
+        output = stdout.getvalue()
+        self.assertIn("Non-uniform scaling of spheres", output)
+        self.assertIn("/World/Body/SquashedCollision", output)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_no_visuals(self):

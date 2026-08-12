@@ -22,8 +22,8 @@ from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.checks import assert_builders_equal
 from newton.tests import get_kamino_basics_asset, get_kamino_testing_asset
+from newton.tests.kamino.utils.checks import assert_builders_equal
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 ###
