@@ -869,13 +869,18 @@ class CollisionPipeline:
 
     @dataclasses.dataclass(frozen=True)
     class SpeculativeContactConfig:
-        """Configuration for predictive rigid-contact candidate generation."""
+        """Configure velocity-adapted contact gaps for rigid contacts.
+
+        Approaching candidates are retained when their contact points can close
+        the current separation before the next collision update.
+        See :ref:`Speculative contacts <speculative-contacts>`.
+        """
 
         collision_update_dt: float = 1.0 / 60.0
-        """Default collision-update horizon [s]."""
+        """Prediction horizon [s]. ``0.0`` disables velocity adaptation; :meth:`collide` can override it."""
 
         max_speculative_extension: float = 0.1
-        """Maximum predictive search extension [m]."""
+        """Upper bound on the velocity-based contact gap [m]. ``0.0`` disables velocity adaptation."""
 
         def __post_init__(self):
             """Validate finite, non-negative physical parameters."""
@@ -1014,10 +1019,12 @@ class CollisionPipeline:
                 pass; disable in hot loops or CUDA graph capture once buffer
                 sizes are known to be adequate.
             speculative_config: Optional predictive-contact configuration.
-                ``None`` keeps the default collision path unchanged. When set,
-                the broad and narrow phases conservatively search one collision
-                horizon ahead, while final candidates are admitted only by
-                exact normal-directed contact-point velocity.
+                ``None`` disables speculative contacts. When set, admits a
+                separated rigid-contact candidate if its normal-directed
+                contact-point velocity can close the separation within the
+                collision-update horizon. See
+                :ref:`Speculative contacts <speculative-contacts>` and
+                :class:`SpeculativeContactConfig`.
 
         .. experimental::
 
@@ -1519,7 +1526,9 @@ class CollisionPipeline:
                 ``model.shape_margin``.
             dt: Optional collision-update horizon [s], overriding
                 :attr:`SpeculativeContactConfig.collision_update_dt` for this
-                call. Ignored when predictive contacts are disabled.
+                call. ``0.0`` disables velocity adaptation for this call.
+                Ignored when speculative contacts are disabled. See
+                :ref:`Speculative contacts <speculative-contacts>`.
         """
         # Keep the buffer's full-surface capability marker in sync with this pipeline on every call.
         # collide() may be handed a Contacts created elsewhere (or by a flag-off pipeline); the edge/

@@ -700,8 +700,8 @@ class GlobalContactReducerData:
     normal: wp.array[wp.vec2]  # Octahedral-encoded unit normal (see encode_oct/decode_oct)
     shape_pairs: wp.array[wp.vec2i]
     contact_count: wp.array[wp.int32]
-    reclaimed_contact_head: wp.array[wp.uint64]
-    reclaimed_contact_next: wp.array[wp.int32]
+    reclaimed_contact_bits: wp.array[wp.uint32]
+    reclaimed_contact_cursor: wp.array[wp.int32]
     capacity: int
 
     # Deterministic fingerprint per contact (triangle/edge/vertex index).
@@ -780,7 +780,8 @@ def _clear_active_kernel(
     agg_moment2_reduced: wp.array[wp.float32],
     # Counter arrays to zero (merged from _zero_count_and_contacts_kernel)
     contact_count: wp.array[wp.int32],
-    reclaimed_contact_head: wp.array[wp.uint64],
+    reclaimed_contact_bits: wp.array[wp.uint32],
+    reclaimed_contact_cursor: wp.array[wp.int32],
     ht_insert_failures: wp.array[wp.int32],
     ht_capacity: int,
     values_per_key: int,
@@ -803,8 +804,8 @@ def _clear_active_kernel(
 
     if tid == 0:
         contact_count[0] = 0
-        if reclaimed_contact_head.shape[0] > 0:
-            reclaimed_contact_head[0] = wp.uint64(0)
+        if reclaimed_contact_cursor.shape[0] > 0:
+            reclaimed_contact_cursor[0] = 0
         ht_insert_failures[0] = 0
 
     # Read count from GPU - stored at active_slots[capacity].
@@ -842,6 +843,12 @@ def _clear_active_kernel(
         # Clear this value slot (slot-major layout)
         value_idx = local_idx * ht_capacity + entry_idx
         ht_values[value_idx] = wp.uint64(0)
+        i += num_threads
+
+    # Reclaimed IDs need not correspond to active hashtable entries.
+    i = tid
+    while i < reclaimed_contact_bits.shape[0]:
+        reclaimed_contact_bits[i] = wp.uint32(0)
         i += num_threads
 
 
@@ -979,13 +986,13 @@ class GlobalContactReducer:
 
         # Atomic counter for contact allocation
         self.contact_count = wp.zeros(1, dtype=wp.int32, device=device)
-        # ABA-tagged Treiber stack for reservations superseded before finalization.
+        # Atomic bits avoid publishing a linked-list pointer separately from its head.
         if enable_contact_reclamation:
-            self.reclaimed_contact_head = wp.zeros(1, dtype=wp.uint64, device=device)
-            self.reclaimed_contact_next = wp.zeros(buffer_size, dtype=wp.int32, device=device)
+            self.reclaimed_contact_bits = wp.zeros(capacity // 32 + 1, dtype=wp.uint32, device=device)
+            self.reclaimed_contact_cursor = wp.zeros(1, dtype=wp.int32, device=device)
         else:
-            self.reclaimed_contact_head = wp.zeros(0, dtype=wp.uint64, device=device)
-            self.reclaimed_contact_next = wp.zeros(0, dtype=wp.int32, device=device)
+            self.reclaimed_contact_bits = wp.zeros(0, dtype=wp.uint32, device=device)
+            self.reclaimed_contact_cursor = wp.zeros(0, dtype=wp.int32, device=device)
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
 
@@ -1036,7 +1043,8 @@ class GlobalContactReducer:
     def clear(self):
         """Clear all contacts and reset the reducer (full clear)."""
         self.contact_count.zero_()
-        self.reclaimed_contact_head.zero_()
+        self.reclaimed_contact_bits.zero_()
+        self.reclaimed_contact_cursor.zero_()
         self.ht_insert_failures.zero_()
         self.hashtable.clear()
         self.ht_values.zero_()
@@ -1079,7 +1087,8 @@ class GlobalContactReducer:
                 self.agg_moment_reduced,
                 self.agg_moment2_reduced,
                 self.contact_count,
-                self.reclaimed_contact_head,
+                self.reclaimed_contact_bits,
+                self.reclaimed_contact_cursor,
                 self.ht_insert_failures,
                 self.hashtable.capacity,
                 self.values_per_key,
@@ -1108,8 +1117,8 @@ class GlobalContactReducer:
         data.normal = self.normal
         data.shape_pairs = self.shape_pairs
         data.contact_count = self.contact_count
-        data.reclaimed_contact_head = self.reclaimed_contact_head
-        data.reclaimed_contact_next = self.reclaimed_contact_next
+        data.reclaimed_contact_bits = self.reclaimed_contact_bits
+        data.reclaimed_contact_cursor = self.reclaimed_contact_cursor
         data.capacity = self.capacity
         data.contact_fingerprints = self.contact_fingerprints
         data.contact_area = self.contact_area
@@ -1133,46 +1142,37 @@ class GlobalContactReducer:
 
 @wp.func
 def reclaim_contact_id(contact_id: int, reducer_data: GlobalContactReducerData):
-    """Return an unreferenced materialized contact ID to the reservation stack."""
-    if reducer_data.reclaimed_contact_head.shape[0] == 0:
+    """Mark an unreferenced materialized contact ID as available for reuse."""
+    if reducer_data.reclaimed_contact_bits.shape[0] == 0:
         return
-    head_value = reducer_data.reclaimed_contact_head[0]
-    while True:
-        head_id = int(head_value & wp.uint64(0xFFFFFFFF))
-        reducer_data.reclaimed_contact_next[contact_id] = head_id
-        version = (head_value >> wp.uint64(32)) + wp.uint64(1)
-        new_head_value = (version << wp.uint64(32)) | wp.uint64(contact_id)
-        old_head_value = wp.atomic_cas(
-            reducer_data.reclaimed_contact_head,
-            0,
-            head_value,
-            new_head_value,
-        )
-        if old_head_value == head_value:
-            return
-        head_value = old_head_value
+    word = contact_id / 32
+    mask = wp.uint32(1) << wp.uint32(contact_id % 32)
+    wp.atomic_or(reducer_data.reclaimed_contact_bits, word, mask)
 
 
 @wp.func
 def _pop_reclaimed_contact_id(reducer_data: GlobalContactReducerData) -> int:
-    """Pop a reclaimed contact ID, returning zero when the stack is empty."""
-    head_value = reducer_data.reclaimed_contact_head[0]
-    while True:
-        contact_id = int(head_value & wp.uint64(0xFFFFFFFF))
-        if contact_id == 0:
-            return 0
-        next_id = reducer_data.reclaimed_contact_next[contact_id]
-        version = (head_value >> wp.uint64(32)) + wp.uint64(1)
-        new_head_value = (version << wp.uint64(32)) | wp.uint64(next_id)
-        old_head_value = wp.atomic_cas(
-            reducer_data.reclaimed_contact_head,
-            0,
-            head_value,
-            new_head_value,
-        )
-        if old_head_value == head_value:
-            return contact_id
-        head_value = old_head_value
+    """Claim a reclaimed contact ID, returning zero when none is available."""
+    if reducer_data.reclaimed_contact_bits.shape[0] == 0:
+        return 0
+
+    word_count = reducer_data.reclaimed_contact_bits.shape[0]
+    start = wp.atomic_add(reducer_data.reclaimed_contact_cursor, 0, 1) % word_count
+    offset = int(0)
+    while offset < word_count:
+        word = (start + offset) % word_count
+        bits = wp.atomic_or(reducer_data.reclaimed_contact_bits, word, wp.uint32(0))
+        bit = int(0)
+        while bit < 32:
+            mask = wp.uint32(1) << wp.uint32(bit)
+            if bits & mask != wp.uint32(0):
+                keep_mask = ~mask
+                old_bits = wp.atomic_and(reducer_data.reclaimed_contact_bits, word, keep_mask)
+                if old_bits & mask != wp.uint32(0):
+                    return word * 32 + bit
+            bit += 1
+        offset += 1
+    return 0
 
 
 @wp.func
@@ -1207,7 +1207,7 @@ def export_contact_to_buffer(
         contact_id = buffer_idx + 1  # ID zero is reserved for provisional winners.
     else:
         contact_id = int(0)
-        if reducer_data.reclaimed_contact_head.shape[0] > 0:
+        if reducer_data.reclaimed_contact_bits.shape[0] > 0:
             contact_id = _pop_reclaimed_contact_id(reducer_data)
         if contact_id == 0:
             # Undo the reservation because no buffer slot was available.

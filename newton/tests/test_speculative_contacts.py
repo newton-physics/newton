@@ -387,6 +387,25 @@ def _replace_validated_predictive_claims(
 
 
 @wp.kernel
+def _reclaim_and_allocate_contact_ids(
+    reducer_data: GlobalContactReducerData,
+    allocated_ids: wp.array[wp.int32],
+):
+    """Reclaim one ID per thread and immediately contend for the available IDs."""
+    tid = wp.tid()
+    reclaim_contact_id(tid + 1, reducer_data)
+    allocated_ids[tid] = export_contact_to_buffer(
+        0,
+        1,
+        wp.vec3(float(tid), 0.0, 0.0),
+        wp.vec3(1.0, 0.0, 0.0),
+        0.0,
+        tid,
+        reducer_data,
+    )
+
+
+@wp.kernel
 def _register_predictive_clearance_candidates_sequential(
     reducer_data: GlobalContactReducerData,
     shape_transform: wp.array[wp.transform],
@@ -459,10 +478,10 @@ def _make_predictive_reducer(capacity, device, deterministic):
     )
 
 
-def _build_spheres(device, velocity: float, separation: float = 0.3):
+def _build_spheres(device, velocity: float, separation: float = 0.3, gap: float = 0.0):
     """Build two spheres separated along X with the first sphere moving."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
-    builder.rigid_gap = 0.0
+    builder.rigid_gap = gap
     body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
     builder.add_shape_sphere(body_a, radius=0.1)
     builder.body_qd[body_a] = (velocity, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -565,6 +584,23 @@ def test_speculative_candidates_respect_dt_override(test, device):
     overridden_contacts = pipeline.contacts()
     pipeline.collide(state, overridden_contacts, dt=0.005)
     test.assertEqual(int(overridden_contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_speculative_gap_uses_larger_fixed_or_velocity_distance(test, device):
+    """Use the larger fixed or velocity-based gap without adding them."""
+    model, state = _build_spheres(device, velocity=1.0, separation=0.33, gap=0.05)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(max_speculative_extension=0.25),
+    )
+
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts, dt=0.05)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    pipeline.collide(state, contacts, dt=0.15)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
 def test_speculative_candidates_reject_invalid_dt_override(test, device):
@@ -1193,8 +1229,28 @@ def test_predictive_reducer_restores_winner_when_buffer_is_full(test, device, de
 def test_predictive_reducer_reclamation_storage_is_opt_in(test, device):
     """Avoid allocating predictive reservation storage in the default reducer."""
     reducer = GlobalContactReducer(capacity=32, device=device)
-    test.assertEqual(reducer.reclaimed_contact_head.shape[0], 0)
-    test.assertEqual(reducer.reclaimed_contact_next.shape[0], 0)
+    test.assertEqual(reducer.reclaimed_contact_bits.shape[0], 0)
+    test.assertEqual(reducer.reclaimed_contact_cursor.shape[0], 0)
+
+
+def test_predictive_reducer_reclaims_ids_without_duplicates(test, device):
+    """Allocate each concurrently reclaimed contact ID exactly once."""
+    capacity = 1024
+    reducer = _make_predictive_reducer(capacity, device, deterministic=False)
+    reducer.contact_count.fill_(capacity)
+    allocated_ids = wp.full(capacity, -1, dtype=wp.int32, device=device)
+
+    wp.launch(
+        _reclaim_and_allocate_contact_ids,
+        dim=capacity,
+        inputs=[reducer.get_data_struct(), allocated_ids],
+        device=device,
+    )
+
+    ids = np.sort(allocated_ids.numpy())
+    np.testing.assert_array_equal(ids, np.arange(1, capacity + 1, dtype=np.int32))
+    test.assertEqual(int(reducer.contact_count.numpy()[0]), capacity)
+    test.assertEqual(int(np.count_nonzero(reducer.reclaimed_contact_bits.numpy())), 0)
 
 
 class TestSpeculativeContacts(unittest.TestCase):
@@ -1209,6 +1265,10 @@ for _name, _test in (
     ("test_speculative_candidates_are_opt_in", test_speculative_candidates_are_opt_in),
     ("test_speculative_candidates_require_approach", test_speculative_candidates_require_approach),
     ("test_speculative_candidates_respect_dt_override", test_speculative_candidates_respect_dt_override),
+    (
+        "test_speculative_gap_uses_larger_fixed_or_velocity_distance",
+        test_speculative_gap_uses_larger_fixed_or_velocity_distance,
+    ),
     ("test_speculative_candidates_reject_invalid_dt_override", test_speculative_candidates_reject_invalid_dt_override),
     ("test_speculative_candidates_reject_common_motion", test_speculative_candidates_reject_common_motion),
     ("test_speculative_candidates_preserve_physical_geometry", test_speculative_candidates_preserve_physical_geometry),
@@ -1239,6 +1299,10 @@ for _name, _test in (
     (
         "test_predictive_reducer_reclamation_storage_is_opt_in",
         test_predictive_reducer_reclamation_storage_is_opt_in,
+    ),
+    (
+        "test_predictive_reducer_reclaims_ids_without_duplicates",
+        test_predictive_reducer_reclaims_ids_without_duplicates,
     ),
 ):
     add_function_test(TestSpeculativeContacts, _name, _test, devices=get_test_devices())
