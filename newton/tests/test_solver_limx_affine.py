@@ -847,6 +847,66 @@ class TestAffineBodyModel(unittest.TestCase):
             atol=1.0e-6,
         )
 
+    def test_builds_repeated_affine_instances(self):
+        """Build independent affine states over one repeated rest mesh."""
+        vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()
+        transforms = [
+            wp.transform_identity(),
+            wp.transform(
+                wp.vec3(2.0, -1.0, 0.5),
+                wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * np.pi),
+            ),
+        ]
+
+        model = AffineBodyModel.from_instances(
+            vertices,
+            tetrahedra,
+            surface_triangles,
+            density=6.0,
+            rigidity=2.5,
+            initial_transforms=transforms,
+            device="cpu",
+        )
+
+        self.assertEqual(model.body_count, 2)
+        self.assertEqual(model.surface_vertex_count, 8)
+        self.assertEqual(model.surface_triangle_count, 8)
+        np.testing.assert_array_equal(model.surface_ownership.numpy(), [0, 0, 0, 0, 1, 1, 1, 1])
+        np.testing.assert_array_equal(model.tetrahedron_indices.numpy(), [[0, 1, 2, 3], [4, 5, 6, 7]])
+        np.testing.assert_array_equal(model.surface_triangle_indices.numpy()[4:], surface_triangles + 4)
+        np.testing.assert_allclose(model.volumes.numpy(), [1.0 / 6.0, 1.0 / 6.0])
+        np.testing.assert_allclose(model.rigidities.numpy(), [2.5, 2.5])
+        np.testing.assert_allclose(model.mass_matrices.numpy()[0], model.mass_matrices.numpy()[1])
+
+        output = wp.empty(8, dtype=wp.vec3, device="cpu")
+        model.update_surface_positions(model.q, output)
+        np.testing.assert_allclose(output.numpy()[:4], vertices, atol=1.0e-6)
+        expected_second = np.column_stack((-vertices[:, 1], vertices[:, 0], vertices[:, 2]))
+        expected_second += [2.0, -1.0, 0.5]
+        np.testing.assert_allclose(output.numpy()[4:], expected_second, atol=1.0e-6)
+
+    def test_rejects_invalid_affine_instance_transforms(self):
+        """Reject empty, malformed, and non-rigid instance transforms."""
+        vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()
+        arguments = {
+            "rest_vertices": vertices,
+            "tetrahedron_indices": tetrahedra,
+            "surface_triangle_indices": surface_triangles,
+            "density": 1.0,
+            "rigidity": 0.0,
+            "device": "cpu",
+        }
+
+        with self.assertRaisesRegex(ValueError, "initial_transforms"):
+            AffineBodyModel.from_instances(**arguments, initial_transforms=[])
+        with self.assertRaisesRegex(ValueError, "initial_transform"):
+            AffineBodyModel.from_instances(**arguments, initial_transforms=[np.zeros(6)])
+        with self.assertRaisesRegex(ValueError, "unit quaternion"):
+            AffineBodyModel.from_instances(
+                **arguments,
+                initial_transforms=[wp.transform(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0)],
+            )
+
     def test_rejects_invalid_body_data(self):
         """Reject malformed, non-finite, non-positive, and inverted body data."""
         vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()

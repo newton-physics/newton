@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -151,7 +152,7 @@ def _lift_gravity(
 
 
 class AffineBodyModel:
-    """Store one tetrahedral affine body's constant physical data."""
+    """Store tetrahedral affine-body constant physical data."""
 
     def __init__(
         self,
@@ -175,6 +176,71 @@ class AffineBodyModel:
             initial_transform: Initial rigid transform applied to the rest body.
             device: Warp device that owns the model arrays.
         """
+        self._initialize(
+            rest_vertices,
+            tetrahedron_indices,
+            surface_triangle_indices,
+            density,
+            rigidity,
+            (initial_transform,),
+            device,
+        )
+
+    @classmethod
+    def from_instances(
+        cls,
+        rest_vertices: Any,
+        tetrahedron_indices: Any,
+        surface_triangle_indices: Any,
+        density: float,
+        rigidity: float,
+        initial_transforms: Sequence[Any],
+        device: Any,
+    ) -> AffineBodyModel:
+        """Create affine instances that share one tetrahedral rest mesh.
+
+        Args:
+            rest_vertices: Rest-space vertex positions [m], shape ``(vertex_count, 3)``.
+            tetrahedron_indices: Positively oriented tetrahedra, shape ``(tetrahedron_count, 4)``.
+            surface_triangle_indices: Surface triangles into ``rest_vertices``, shape
+                ``(triangle_count, 3)``.
+            density: Uniform mass density [kg/m^3].
+            rigidity: ARAP rigidity coefficient [Pa].
+            initial_transforms: Initial rigid transforms, one per affine body.
+            device: Warp device that owns the model arrays.
+
+        Returns:
+            A model containing one affine body per initial transform.
+        """
+        try:
+            transforms = tuple(initial_transforms)
+        except TypeError as error:
+            raise ValueError("initial_transforms must be a nonempty sequence") from error
+        if not transforms:
+            raise ValueError("initial_transforms must be a nonempty sequence")
+
+        model = cls.__new__(cls)
+        model._initialize(
+            rest_vertices,
+            tetrahedron_indices,
+            surface_triangle_indices,
+            density,
+            rigidity,
+            transforms,
+            device,
+        )
+        return model
+
+    def _initialize(
+        self,
+        rest_vertices: Any,
+        tetrahedron_indices: Any,
+        surface_triangle_indices: Any,
+        density: float,
+        rigidity: float,
+        initial_transforms: Sequence[Any],
+        device: Any,
+    ) -> None:
         vertices = _validate_vertices(rest_vertices)
         tetrahedra = _validate_indices(tetrahedron_indices, 4, len(vertices), "tetrahedron_indices")
         surface_triangles = _validate_indices(
@@ -190,7 +256,9 @@ class AffineBodyModel:
         centered_vertices, rest_centroid, volume, mass, first_moment, second_moment = _integrate_mass_moments(
             vertices, tetrahedra, density
         )
-        initial_state = _initial_affine_state(initial_transform, rest_centroid)
+        initial_states = np.stack(
+            [_initial_affine_state(initial_transform, rest_centroid) for initial_transform in initial_transforms]
+        )
         integrated_mass_matrix = _build_mass_matrix(mass, first_moment, second_moment)
         mass_matrix = integrated_mass_matrix.astype(np.float32)
         if not np.isfinite(mass_matrix).all():
@@ -207,22 +275,48 @@ class AffineBodyModel:
         compact_surface_triangles = surface_vertex_remap[surface_triangles]
         rest_surface_vertices = centered_vertices[surface_vertex_indices]
 
+        body_count = len(initial_states)
+        vertex_count = len(centered_vertices)
+        surface_vertex_count_per_body = len(rest_surface_vertices)
+        repeated_vertices = np.tile(centered_vertices, (body_count, 1))
+        repeated_tetrahedra = np.concatenate(
+            [tetrahedra + body * vertex_count for body in range(body_count)],
+            axis=0,
+        )
+        repeated_surface_vertices = np.tile(rest_surface_vertices, (body_count, 1))
+        repeated_surface_vertex_indices = np.concatenate(
+            [surface_vertex_indices + body * vertex_count for body in range(body_count)],
+            axis=0,
+        )
+        repeated_surface_triangles = np.concatenate(
+            [compact_surface_triangles + body * surface_vertex_count_per_body for body in range(body_count)],
+            axis=0,
+        )
+        surface_ownership = np.repeat(
+            np.arange(body_count, dtype=np.int32),
+            surface_vertex_count_per_body,
+        )
+
         self.device = device
-        self.body_count = 1
-        self.surface_vertex_count = len(rest_surface_vertices)
-        self.surface_triangle_count = len(compact_surface_triangles)
-        self.rest_vertices = wp.array(centered_vertices, dtype=wp.vec3, device=device)
-        self.tetrahedron_indices = wp.array(tetrahedra, dtype=int, device=device)
-        self.rest_surface_vertices = wp.array(rest_surface_vertices, dtype=wp.vec3, device=device)
-        self.surface_vertex_indices = wp.array(surface_vertex_indices, dtype=int, device=device)
-        self.surface_triangle_indices = wp.array(compact_surface_triangles, dtype=int, device=device)
-        self.surface_ownership = wp.zeros(self.surface_vertex_count, dtype=int, device=device)
-        self.volumes = wp.array([volume], dtype=float, device=device)
-        self.mass_matrices = wp.array([mass_matrix], dtype=mat1212, device=device)
-        self.rigidities = wp.array([rigidity], dtype=float, device=device)
-        self.gravity = wp.array([gravity], dtype=vec12, device=device)
-        self.q = wp.array([initial_state], dtype=vec12, device=device)
-        self.qd = wp.zeros(1, dtype=vec12, device=device)
+        self.body_count = body_count
+        self.surface_vertex_count = len(repeated_surface_vertices)
+        self.surface_triangle_count = len(repeated_surface_triangles)
+        self.rest_vertices = wp.array(repeated_vertices, dtype=wp.vec3, device=device)
+        self.tetrahedron_indices = wp.array(repeated_tetrahedra, dtype=int, device=device)
+        self.rest_surface_vertices = wp.array(repeated_surface_vertices, dtype=wp.vec3, device=device)
+        self.surface_vertex_indices = wp.array(repeated_surface_vertex_indices, dtype=int, device=device)
+        self.surface_triangle_indices = wp.array(repeated_surface_triangles, dtype=int, device=device)
+        self.surface_ownership = wp.array(surface_ownership, dtype=int, device=device)
+        self.volumes = wp.array(np.full(body_count, volume), dtype=float, device=device)
+        self.mass_matrices = wp.array(
+            np.repeat(mass_matrix[np.newaxis], body_count, axis=0),
+            dtype=mat1212,
+            device=device,
+        )
+        self.rigidities = wp.array(np.full(body_count, rigidity), dtype=float, device=device)
+        self.gravity = wp.array(np.repeat(gravity[np.newaxis], body_count, axis=0), dtype=vec12, device=device)
+        self.q = wp.array(initial_states, dtype=vec12, device=device)
+        self.qd = wp.zeros(body_count, dtype=vec12, device=device)
 
     def update_surface_positions(self, q: wp.array[vec12], output: wp.array[wp.vec3]) -> None:
         """Map rest surface vertices through affine generalized states.
@@ -232,7 +326,7 @@ class AffineBodyModel:
             output: World-space surface positions [m], shape ``(surface_vertex_count, 3)``.
         """
         if q.dtype != vec12 or q.ndim != 1 or len(q) != self.body_count:
-            raise ValueError(f"q must contain {self.body_count} vec12 state")
+            raise ValueError(f"q must contain {self.body_count} vec12 states")
         if output.dtype != wp.vec3 or output.ndim != 1 or len(output) != self.surface_vertex_count:
             raise ValueError(f"output must contain {self.surface_vertex_count} vec3 positions")
         if q.device != self.device or output.device != self.device:
