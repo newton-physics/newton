@@ -59,7 +59,9 @@
 # Command: uv run -m newton.examples surface_gripper
 ###########################################################################
 
+import argparse
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -70,6 +72,8 @@ from newton.examples.surface_gripper.robot_playback import RobotPlayback
 from newton.examples.surface_gripper.surface_gripper import (
     SurfaceGripper,
     SurfaceGripperBuilder,
+    SurfaceGripperModel,
+    SurfaceGripperStateInput,
     SurfaceGripperStateOutput,
     attach_seal,
     attach_seal_seated,
@@ -77,6 +81,7 @@ from newton.examples.surface_gripper.surface_gripper import (
     evaluate_seal_quality,
 )
 from newton.selection import ArticulationView
+from newton.viewer import ViewerBase
 
 # Asset paths (global constants). All assets live in the shared newton/examples/assets/ directory.
 ASSETS = Path(__file__).parent.parent / "assets"
@@ -303,7 +308,9 @@ def update_seal_break_kernel(
             pad_engaged_bs_curr[p] = wp.vec2i(-1, -1)
 
 
-def picked_box_seal_modes(gripper_model, state, model, body_b):
+def picked_box_seal_modes(
+    gripper_model: SurfaceGripperModel, state: newton.State, model: newton.Model, body_b: int
+) -> list[tuple[str, float, float]]:
     """Per-DOF ``(name, angular natural frequency [rad/s], damping ratio)`` the seal presents for the
     picked body ``body_b``. The tool's stiffness/damping are fixed, so the modes follow the body's mass
     (translation DOFs) and its inertia about each seal axis (rotation DOFs) -- the latter uses the
@@ -325,11 +332,11 @@ def picked_box_seal_modes(gripper_model, state, model, body_b):
     q_px = wp.quat(float(px[3]), float(px[4]), float(px[5]), float(px[6]))
     q_seal = q_a * q_gx * q_px  # seal-frame world orientation (rotation of any pad; all share it)
 
-    def i_about(axis):  # box inertia about a world seal axis: rotate the axis into the box body frame
+    def i_about(axis: wp.vec3) -> float:  # box inertia about a world seal axis: rotate it into the box body frame
         n = wp.quat_rotate_inv(q_box, wp.quat_rotate(q_seal, axis))
         return float(wp.dot(n, i_box * n))
 
-    def val(name):
+    def val(name: str) -> float:
         return float(getattr(gm, "gripper_" + name).numpy()[0])
 
     dofs = (
@@ -351,7 +358,7 @@ def picked_box_seal_modes(gripper_model, state, model, body_b):
     return modes
 
 
-def box_sdf_mesh(hx, hy, hz, device=None):
+def box_sdf_mesh(hx: float, hy: float, hz: float, device: wp.Device | str | None = None) -> wp.Mesh:
     """A ``wp.Mesh`` of an axis-aligned box (half-extents [m]) for SDF queries only (not collision).
 
     In general the gripped object would supply its own surface mesh; here the pick boxes are primitives,
@@ -365,7 +372,7 @@ def box_sdf_mesh(hx, hy, hz, device=None):
     )
 
 
-def read_pad_dimensions(builder, robot) -> tuple[list[float], list[float]]:
+def read_pad_dimensions(builder: newton.ModelBuilder, robot: dict[str, Any]) -> tuple[list[float], list[float]]:
     """Per-pad radius and half-height [m], read from the loaded arm USD.
 
     Each pad is a visual cylinder under J6_link/GripperPads; a cylinder's ``shape_scale`` is
@@ -388,7 +395,7 @@ def read_pad_dimensions(builder, robot) -> tuple[list[float], list[float]]:
     return radii, half_heights
 
 
-def read_pad_transforms(builder, robot) -> list[wp.transform]:
+def read_pad_transforms(builder: newton.ModelBuilder, robot: dict[str, Any]) -> list[wp.transform]:
     """Placement transform of each surface-gripper pad, in the flange (J6_link) frame, read from the arm USD.
     Args:
         builder: the ``ModelBuilder`` the arm USD was loaded into.
@@ -404,13 +411,13 @@ def read_pad_transforms(builder, robot) -> list[wp.transform]:
     return transforms
 
 
-def _box_half_extents(pick, body_prim) -> tuple[float, float, float]:
+def _box_half_extents(pick: dict[str, Any], body_prim: str) -> tuple[float, float, float]:
     """(hx, hy, hz) half-extents [m] of a pick box's collider (the ``/collision`` child of ``body_prim``)."""
     s = pick["path_shape_scale"][body_prim + "/collision"]
     return (float(s[0]), float(s[1]), float(s[2]))
 
 
-def read_panel_box(pick) -> tuple[int, tuple[float, float, float]]:
+def read_panel_box(pick: dict[str, Any]) -> tuple[int, tuple[float, float, float]]:
     """Panel's env-local body id and half-extents, read from the loaded pick-scene USD.
 
     Args:
@@ -423,7 +430,7 @@ def read_panel_box(pick) -> tuple[int, tuple[float, float, float]]:
     return pick["path_body_map"][PANEL_PRIM], _box_half_extents(pick, PANEL_PRIM)
 
 
-def read_crate_boxes(pick) -> tuple[list[int], list[tuple[float, float, float]]]:
+def read_crate_boxes(pick: dict[str, Any]) -> tuple[list[int], list[tuple[float, float, float]]]:
     """Crates' env-local body ids and half-extents, read from the loaded pick-scene USD.
 
     Args:
@@ -442,7 +449,7 @@ def read_crate_boxes(pick) -> tuple[list[int], list[tuple[float, float, float]]]
     return bodies, half_extents
 
 
-def filter_pick_boxes_against_arm(builder, pick, ee_body_id) -> None:
+def filter_pick_boxes_against_arm(builder: newton.ModelBuilder, pick: dict[str, Any], ee_body_id: int) -> None:
     """Disable collision between every pick box and every robot-arm link (bodies 0..``ee_body_id``).
 
     With the pad-box rigid contact off, the soft seal alone holds the box, so the box colliders must not
@@ -521,10 +528,10 @@ def teleport_crate_kernel(
 def teleport_crate(
     example_state_prev: "ExampleState",
     example_state_curr: "ExampleState",
-    crate_joint_q_start_wp: wp.array,
-    crate_joint_qd_start_wp: wp.array,
-    crate_grip_q_wp: wp.array,
-    state,
+    crate_joint_q_start_wp: wp.array[int],
+    crate_joint_qd_start_wp: wp.array[int],
+    crate_grip_q_wp: wp.array[float],
+    state: newton.State,
 ) -> None:
     """Teleport the next crate to its grip pose when curr_box advances (engagement fell this sub-step).
 
@@ -612,13 +619,13 @@ def update_engagement_signals_kernel(
 def update_engagement_signals(
     example_state_prev: "ExampleState",
     example_state_curr: "ExampleState",
-    gripper_box_body_ids: wp.array,
-    gripper_box_shape_ids: wp.array,
+    gripper_box_body_ids: wp.array[int],
+    gripper_box_shape_ids: wp.array[int],
     n_boxes_per_world: int,
-    gripper_model,
-    pad_offsets: wp.array,
-    gripper_state_input_prev,
-    gripper_state_input_curr,
+    gripper_model: SurfaceGripperModel,
+    pad_offsets: wp.array[int],
+    gripper_state_input_prev: SurfaceGripperStateInput,
+    gripper_state_input_curr: SurfaceGripperStateInput,
 ) -> None:
     """Fan per-gripper engaged/preparing signals out to per-pad state with edge detection and box advance.
 
@@ -674,7 +681,7 @@ class Example:
         parser.set_defaults(num_frames=round(RECORDING_DURATION * FPS))
         return parser
 
-    def __init__(self, viewer, args):
+    def __init__(self, viewer: ViewerBase, args: argparse.Namespace):
 
         # Cache the viewer
         self.viewer = viewer
@@ -794,7 +801,11 @@ class Example:
 
         # Note: Newton's collision pipeline is used in this example so set use_mujoco_contacts=False
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, nconmax=256 * self.world_count, njmax=2048 * self.world_count, iterations=10, use_mujoco_contacts=False
+            self.model,
+            nconmax=256 * self.world_count,
+            njmax=2048 * self.world_count,
+            iterations=10,
+            use_mujoco_contacts=False,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
