@@ -270,8 +270,11 @@ def update_seal_break_kernel(
             pad_seal_break_count[p] = 0
             pad_settle_count[p] = 0
         else:
+            # The counter is 0 while released, so it reads 1 on the first engaged sub-step. ``<=``
+            # therefore skips exactly break_settle_steps sub-steps and checks on the next one; ``<``
+            # would skip one fewer. 0 disables the window, under either test.
             pad_settle_count[p] = pad_settle_count[p] + 1
-            if pad_settle_count[p] < break_settle_steps:
+            if pad_settle_count[p] <= break_settle_steps:
                 pad_seal_break_count[p] = 0  # still settling: the metric is not meaningful yet
                 continue
             if break_on_seal_quality:
