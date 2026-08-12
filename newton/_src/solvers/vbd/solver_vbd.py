@@ -511,6 +511,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if particle_collision_detection_interval is not None:
             if (
                 collision_frequency_type is not None
+                and len(collision_frequency_type) > SolverBase._COLLISION_SLOT_SOFT_SELF
                 and SolverBase.CollisionFrequencyType(collision_frequency_type[1])
                 != SolverBase.CollisionFrequencyType.AUTO
             ):

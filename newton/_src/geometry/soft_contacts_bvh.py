@@ -110,9 +110,10 @@ def build_rigid_soft_bvh_rigid_feature_tables(model: Model, shape_mask: np.ndarr
     edge_vertex_rows: list[tuple[int, int]] = []
     edge_normals: list[np.ndarray] = []
 
-    # Cache topology only. Normals remain per instance because non-uniform and
-    # mirrored shape scale changes angles and outward directions.
+    # Cache topology per mesh and normals per mesh/scale pair. Table rows remain
+    # per instance because non-uniform and mirrored scale changes their normals.
     topology_cache: dict[int, tuple[int, np.ndarray]] = {}
+    normal_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray]] = {}
     for shape_index in np.flatnonzero(shape_mask):
         mesh = model.shape_source[int(shape_index)]
         if mesh is None:
@@ -123,7 +124,13 @@ def build_rigid_soft_bvh_rigid_feature_tables(model: Model, shape_mask: np.ndarr
             cached = (len(mesh.vertices), np.asarray(mesh.edges, dtype=np.int32).reshape(-1, 2))
             topology_cache[cache_key] = cached
         vertex_count, edges = cached
-        v_normals, e_normals = _scaled_mesh_feature_normals(mesh, np.asarray(shape_scales[shape_index]))
+        scale = np.asarray(shape_scales[shape_index])
+        normal_key = (cache_key, tuple(float(component) for component in scale))
+        normals = normal_cache.get(normal_key)
+        if normals is None:
+            normals = _scaled_mesh_feature_normals(mesh, scale)
+            normal_cache[normal_key] = normals
+        v_normals, e_normals = normals
         vertex_offset = len(vertex_rows)
         vertex_rows.extend((int(shape_index), vertex_index) for vertex_index in range(vertex_count))
         vertex_positions.extend(np.asarray(mesh.vertices, dtype=np.float32))

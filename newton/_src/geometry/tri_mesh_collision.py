@@ -604,8 +604,8 @@ class TriMeshCollisionDetector:
                 "struct before detecting."
             )
 
-    # Result-array views into the owned/injected ``collision_info`` (D21: the
-    # detector owns no result buffers). Read-only properties preserve the
+    # Result-array views into the owned/injected ``collision_info``; the
+    # detector owns no result buffers. Read-only properties preserve the
     # historical attribute surface, including ``None`` for the optional
     # triangle-side buffers when ``record_triangle_contacting_vertices`` is off.
 
@@ -789,7 +789,7 @@ class TriMeshCollisionDetector:
             self.edge_filtering_list_offsets = wp.array(filtering_list_offsets, dtype=wp.int32, device=self.device)
 
     def get_collision_data(self):
-        """Return the result struct; results live in :attr:`collision_info` (D27)."""
+        """Return the result struct; results live in :attr:`collision_info`."""
         return self.collision_info
 
     def compute_collision_buffer_offsets(self, buffer_sizes: wp.array[wp.int32], offsets: wp.array[wp.int32]):

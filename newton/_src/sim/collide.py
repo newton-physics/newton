@@ -1468,6 +1468,9 @@ class CollisionPipeline:
             soft_self_contact_edge_buffer_pre_alloc=(
                 detector.edge_collision_buffer_pre_alloc if soft_self_contact else 0
             ),
+            soft_self_contact_triangle_buffer_pre_alloc=(
+                detector.triangle_collision_buffer_pre_alloc if soft_self_contact else 0
+            ),
             soft_self_contact_record_triangle_vertices=(
                 detector.record_triangle_contacting_vertices if soft_self_contact else False
             ),
@@ -1503,6 +1506,7 @@ class CollisionPipeline:
         rest_shape_exclusion_radius: float = 0.0,
         vertex_buffer_pre_alloc: int = 32,
         edge_buffer_pre_alloc: int = 64,
+        triangle_buffer_pre_alloc: int = 16,
         edge_edge_parallel_epsilon: float = 1e-5,
         record_triangle_contacting_vertices: bool = False,
         topological_filter_threshold: int = 2,
@@ -1534,6 +1538,8 @@ class CollisionPipeline:
                 pairs beyond it are silently dropped during detection.
             edge_buffer_pre_alloc: Per-edge collision buffer capacity;
                 pairs beyond it are silently dropped during detection.
+            triangle_buffer_pre_alloc: Per-triangle collision buffer capacity;
+                used only when ``record_triangle_contacting_vertices=True``.
             edge_edge_parallel_epsilon: Near-parallel edge-pair threshold.
             record_triangle_contacting_vertices: Also record per-triangle
                 contacting vertices.
@@ -1561,6 +1567,7 @@ class CollisionPipeline:
             record_triangle_contacting_vertices=record_triangle_contacting_vertices,
             vertex_collision_buffer_pre_alloc=vertex_buffer_pre_alloc,
             edge_collision_buffer_pre_alloc=edge_buffer_pre_alloc,
+            triangle_collision_buffer_pre_alloc=triangle_buffer_pre_alloc,
             edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
             topological_contact_filter_threshold=topological_filter_threshold,
             external_vertex_triangle_filtering_map=external_vertex_filter_map,

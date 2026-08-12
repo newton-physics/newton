@@ -160,6 +160,7 @@ class Contacts:
         edge_count: int = 0,
         soft_self_contact_vertex_buffer_pre_alloc: int = 16,
         soft_self_contact_edge_buffer_pre_alloc: int = 32,
+        soft_self_contact_triangle_buffer_pre_alloc: int = 16,
         soft_self_contact_record_triangle_vertices: bool = False,
     ):
         """
@@ -208,6 +209,8 @@ class Contacts:
                 pairs beyond it are silently dropped during detection.
             soft_self_contact_edge_buffer_pre_alloc: Per-edge collision buffer capacity;
                 pairs beyond it are silently dropped during detection.
+            soft_self_contact_triangle_buffer_pre_alloc: Per-triangle collision buffer capacity;
+                used only when ``soft_self_contact_record_triangle_vertices=True``.
             soft_self_contact_record_triangle_vertices: Also record per-triangle
                 contacting vertices.
 
@@ -436,6 +439,7 @@ class Contacts:
                 edge_count,
                 vertex_collision_buffer_pre_alloc=soft_self_contact_vertex_buffer_pre_alloc,
                 edge_collision_buffer_pre_alloc=soft_self_contact_edge_buffer_pre_alloc,
+                triangle_collision_buffer_pre_alloc=soft_self_contact_triangle_buffer_pre_alloc,
                 record_triangle_contacting_vertices=soft_self_contact_record_triangle_vertices,
                 device=device,
             )

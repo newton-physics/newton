@@ -97,7 +97,7 @@ class Example:
         # allocate sim states for trajectory, control and contacts
         self.states = [self.model.state() for _ in range(self.sim_steps * self.sim_substeps + 1)]
         self.control = self.model.control()
-        # Create collision pipeline with soft contact margin (requires_grad for differentiable simulation)
+        # Create collision pipeline with soft contact gap (requires_grad for differentiable simulation)
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="explicit",

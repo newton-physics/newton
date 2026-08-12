@@ -189,7 +189,7 @@ def test_vbd_rigid_iterations_mode(test, device):
         builder.add_ground_plane()
         builder.color()
         model = builder.finalize(device=device)
-        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
         solver = SolverVBD(
             model,
             iterations=3,
@@ -345,7 +345,9 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
 
     q_a = run(model_a, solver_a, None)
     q_b = run(model_b, solver_b, None)
-    assert_np_equal(q_b, q_a, tol=1e-6)
+    # The two self-contact paths can retain equivalent rows in a different
+    # atomic order; allow the resulting last-bit accumulation noise.
+    assert_np_equal(q_b, q_a, tol=1e-5)
 
     # Deprecated radius selects the legacy interpretation and warns.
     with test.assertWarns(DeprecationWarning):
@@ -376,6 +378,14 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
             particle_collision_detection_interval=2,
             collision_frequency_type=[Frequency.AUTO, Frequency.ITERATIONS],
         )
+    with test.assertWarns(DeprecationWarning):
+        with test.assertRaisesRegex(ValueError, "collision_frequency_type must have length 2"):
+            SolverVBD(
+                _build_cloth_model(device),
+                iterations=1,
+                particle_collision_detection_interval=2,
+                collision_frequency_type=[Frequency.AUTO],
+            )
     # gap cannot be combined with the deprecated radius.
     with test.assertRaises(ValueError):
         SolverVBD(

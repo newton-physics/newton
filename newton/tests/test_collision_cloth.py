@@ -1601,22 +1601,6 @@ def test_pipeline_soft_self_contact(test, device):
         detector_ref.vertex_colliding_triangles_count.numpy(),
     )
 
-    # The per-call soft_contact_margin override is deprecated but still honored.
-    with test.assertWarns(DeprecationWarning):
-        pipeline.collide(state, contacts_a, soft_contact_margin=0.1)
-
-    # The constructor parameter and attribute are deprecated aliases of soft_contact_gap.
-    with test.assertWarns(DeprecationWarning):
-        legacy = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.07)
-    test.assertEqual(legacy.soft_contact_gap, 0.07)
-    with test.assertWarns(DeprecationWarning):
-        test.assertEqual(legacy.soft_contact_margin, 0.07)
-    with test.assertWarns(DeprecationWarning):
-        legacy.soft_contact_margin = 0.08
-    test.assertEqual(legacy.soft_contact_gap, 0.08)
-    with test.assertRaises(ValueError):
-        newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.01, soft_contact_margin=0.02)
-
     # set_collision_detection_range: partial update, applied at the next collide.
     pipeline.set_collision_detection_range(soft_contact_gap=0.02, soft_self_contact_gap=0.0)
     test.assertEqual(pipeline.soft_contact_gap, 0.02)
@@ -1642,7 +1626,36 @@ def test_pipeline_soft_self_contact(test, device):
     test.assertEqual(int(contacts_e.soft_self_contact_data.vertex_colliding_triangles_count.numpy().sum()), 0)
     test.assertEqual(int(contacts_e.soft_self_contact_data.edge_colliding_edges_count.numpy().sum()), 0)
 
-    # Misuse guards.
+
+def test_pipeline_soft_contact_gap_deprecated_aliases(test, device):
+    """Keep deprecated soft-contact margin entry points mapped to the gap API."""
+    vertices, faces = get_data()
+    model, _detector_ref = init_model(vertices, faces, device, record_triangle_contacting_vertices=False)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+
+    # The per-call soft_contact_margin override is deprecated but still honored.
+    with test.assertWarns(DeprecationWarning):
+        pipeline.collide(state, pipeline.contacts(), soft_contact_margin=0.1)
+
+    # The constructor parameter and attribute are deprecated aliases of soft_contact_gap.
+    with test.assertWarns(DeprecationWarning):
+        legacy = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.07)
+    test.assertEqual(legacy.soft_contact_gap, 0.07)
+    with test.assertWarns(DeprecationWarning):
+        test.assertEqual(legacy.soft_contact_margin, 0.07)
+    with test.assertWarns(DeprecationWarning):
+        legacy.soft_contact_margin = 0.08
+    test.assertEqual(legacy.soft_contact_gap, 0.08)
+    with test.assertRaises(ValueError):
+        newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.01, soft_contact_margin=0.02)
+
+
+def test_pipeline_soft_self_contact_misuse_guards(test, device):
+    """Reject self-contact operations before the pipeline is configured."""
+    vertices, faces = get_data()
+    model, _detector_ref = init_model(vertices, faces, device, record_triangle_contacting_vertices=False)
+    state = model.state()
     unconfigured = newton.CollisionPipeline(model, broad_phase="nxn")
     with test.assertRaises(ValueError):
         unconfigured.collide(state, unconfigured.contacts(), soft_self_contact=True)
@@ -1698,9 +1711,17 @@ def test_soft_self_contact_buffer_validation(test, device):
 
     pipeline_with_triangle_records = newton.CollisionPipeline(model, broad_phase="nxn")
     pipeline_with_triangle_records.init_soft_self_contact(
-        record_triangle_contacting_vertices=True, topological_filter_threshold=0
+        triangle_buffer_pre_alloc=7,
+        record_triangle_contacting_vertices=True,
+        topological_filter_threshold=0,
     )
     detector_with_triangle_records = pipeline_with_triangle_records._soft_self_contact_detector
+    matching_triangle_capacity = pipeline_with_triangle_records.contacts()
+    test.assertEqual(
+        matching_triangle_capacity.soft_self_contact_data.triangle_colliding_vertices.shape[0],
+        model.tri_count * detector_with_triangle_records.triangle_collision_buffer_pre_alloc,
+    )
+    pipeline_with_triangle_records._get_soft_self_contact_detector(matching_triangle_capacity)
     missing_triangle_records = newton.Contacts(
         0,
         0,
@@ -1816,6 +1837,18 @@ add_function_test(
     TestCollision,
     "test_pipeline_soft_self_contact",
     test_pipeline_soft_self_contact,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_pipeline_soft_contact_gap_deprecated_aliases",
+    test_pipeline_soft_contact_gap_deprecated_aliases,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_pipeline_soft_self_contact_misuse_guards",
+    test_pipeline_soft_self_contact_misuse_guards,
     devices=devices,
 )
 add_function_test(

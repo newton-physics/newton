@@ -57,7 +57,7 @@ class Example:
 
         # contact (meter scale)
         self.particle_radius = 0.005
-        self.soft_body_contact_margin = 0.01
+        self.soft_body_contact_gap = 0.01
         self.particle_self_contact_margin = 0.003
         self.particle_self_contact_gap = 0.002
 
@@ -133,7 +133,7 @@ class Example:
         # collision pipeline for soft body - robot contacts
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            soft_contact_gap=self.soft_body_contact_margin,
+            soft_contact_gap=self.soft_body_contact_gap,
         )
         self.contacts = self.collision_pipeline.contacts()
 
