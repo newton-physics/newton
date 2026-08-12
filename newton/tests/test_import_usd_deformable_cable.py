@@ -1066,9 +1066,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         builder.finalize()
 
     def test_two_point_curves(self):
-        """An open two-point curve (one segment) warns and is skipped (the rod needs two
-        segments); a periodic two-point curve closes into two segments and imports with a
-        parallel-joint warning."""
+        """Verify open two-point curves are skipped and periodic curves warn on parallel joints."""
         with self.subTest(wrap="open"):
             stage = _deformable_stage()
             _add_cable_curve(stage, "/World/Two", [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0)])
@@ -1081,7 +1079,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage = _deformable_stage()
             _add_cable_curve(stage, "/World/Loop2", [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0)], periodic=True)
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, r"Adding a ROD joint.*undefined semantics"):
+            with self.assertWarnsRegex(
+                UserWarning,
+                r"Parallel joints between the same pair of bodies have undefined semantics",
+            ):
                 builder.add_usd(stage)
             b0, b1 = group_range(builder, "cable", "/World/Loop2", "body")
             self.assertEqual(b1 - b0, 2, "two segments after closure")
