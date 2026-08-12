@@ -1414,7 +1414,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
 
         # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
         r_ncp_natmap, _ = compute_ncp_natural_map_residual(
-            nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
+            njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
         )
 
         # Compute the iterate residuals, or reuse the accelerated solver status
@@ -1595,7 +1595,7 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
 
         # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
         r_ncp_natmap, _ = compute_ncp_natural_map_residual(
-            nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
+            njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
         )
 
         # Compute the iterate residuals, or reuse the accelerated solver status

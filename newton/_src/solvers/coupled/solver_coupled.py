@@ -2811,21 +2811,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
-            if contacts.rigid_contact_diff_distance is not None and filtered.rigid_contact_diff_distance is not None:
+            if contacts._rigid_contact_diff_distance is not None and filtered._rigid_contact_diff_distance is not None:
                 wp.launch(
                     _copy_filtered_rigid_contact_diff_kernel,
                     dim=contacts.rigid_contact_max,
                     inputs=[
                         self._entry_rigid_contact_update[entry.name],
                         rigid_src_to_dst,
-                        contacts.rigid_contact_diff_distance,
-                        contacts.rigid_contact_diff_normal,
-                        contacts.rigid_contact_diff_point0_world,
-                        contacts.rigid_contact_diff_point1_world,
-                        filtered.rigid_contact_diff_distance,
-                        filtered.rigid_contact_diff_normal,
-                        filtered.rigid_contact_diff_point0_world,
-                        filtered.rigid_contact_diff_point1_world,
+                        contacts._rigid_contact_diff_distance,
+                        contacts._rigid_contact_diff_point0_world,
+                        contacts._rigid_contact_diff_point1_world,
+                        filtered._rigid_contact_diff_distance,
+                        filtered._rigid_contact_diff_point0_world,
+                        filtered._rigid_contact_diff_point1_world,
                     ],
                     device=self.model.device,
                 )
@@ -3642,11 +3640,9 @@ def _copy_filtered_rigid_contact_diff_kernel(
     update_filter: wp.array[wp.int32],
     src_to_dst: wp.array[wp.int32],
     src_distance: wp.array[wp.float32],
-    src_normal: wp.array[wp.vec3],
     src_point0_world: wp.array[wp.vec3],
     src_point1_world: wp.array[wp.vec3],
     dst_distance: wp.array[wp.float32],
-    dst_normal: wp.array[wp.vec3],
     dst_point0_world: wp.array[wp.vec3],
     dst_point1_world: wp.array[wp.vec3],
 ):
@@ -3659,7 +3655,6 @@ def _copy_filtered_rigid_contact_diff_kernel(
         return
 
     dst_distance[dst_id] = src_distance[src_id]
-    dst_normal[dst_id] = src_normal[src_id]
     dst_point0_world[dst_id] = src_point0_world[src_id]
     dst_point1_world[dst_id] = src_point1_world[src_id]
 
