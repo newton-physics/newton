@@ -121,8 +121,7 @@ class _InitializeModelTiledCamera:
 
     def setup(self, scene, world_count):
         self.world = TILED_CAMERA_SCENES[scene].build()
-        warmup = newton.ModelBuilder()
-        warmup.replicate(self.world, 1)
+        warmup = self._replicate(1)
         _model, _sensor = self._initialize_model_and_sensor(warmup)
         self.replicated_builder = self._replicate(world_count)
         wp.synchronize_device()
