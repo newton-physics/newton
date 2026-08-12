@@ -25,17 +25,37 @@ import newton
 import newton.examples
 from newton import ParticleFlags
 
+# Assertion thresholds. A flipped tet has a signed/rest volume ratio <= 0; a
+# no-recovery release state sits at COMPRESS_RATIO (0.50), so the recovery bar
+# must be well above it. Measured reals: cube recovery ~1.0, min signed-volume
+# ratio ~1.0 after release (both the 50% main and 90% near-flat runs).
+_INVERSION_TOL = 0.25  # min per-tet signed/rest volume ratio before a tet counts as inverted
+_RECOVERY_TOL = 0.85  # min height/volume recovery ratio after release (was a trivial 0.50)
 
-def _compute_tet_volume(q: np.ndarray, tet_indices: np.ndarray) -> float:
+
+def _signed_tet_volumes(q: np.ndarray, tet_indices: np.ndarray) -> np.ndarray:
+    """Per-tet signed volumes [m^3] from current positions, shape [tet_count]."""
     v0 = q[tet_indices[:, 0]]
     v1 = q[tet_indices[:, 1]]
     v2 = q[tet_indices[:, 2]]
     v3 = q[tet_indices[:, 3]]
-    d1 = v1 - v0
-    d2 = v2 - v0
-    d3 = v3 - v0
-    volumes = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) / 6.0
-    return float(np.sum(np.abs(volumes)))
+    return np.einsum("ij,ij->i", v1 - v0, np.cross(v2 - v0, v3 - v0)) / 6.0
+
+
+def _compute_tet_volume(q: np.ndarray, tet_indices: np.ndarray) -> float:
+    """Total bulk volume: sum of unsigned per-tet volumes."""
+    return float(np.sum(np.abs(_signed_tet_volumes(q, tet_indices))))
+
+
+def _min_signed_volume_ratio(q: np.ndarray, tet_indices: np.ndarray, rest_signed: np.ndarray) -> float:
+    """Smallest per-tet ratio of current signed volume to its rest signed volume.
+
+    ``<= 0`` means at least one tet has inverted (flipped orientation) relative to
+    the rest configuration; ``~1`` means every tet preserves its orientation and
+    size. Normalizing by the rest sign is robust to ``add_soft_grid``'s per-cell
+    tet orientation, which is not uniformly positive.
+    """
+    return float(np.min(_signed_tet_volumes(q, tet_indices) / rest_signed))
 
 
 def _run_compression(
@@ -50,12 +70,15 @@ def _run_compression(
     k_damp: float = 1.0e-2,
     iterations: int = 30,
     substeps: int = 5,
-) -> tuple[float, float, bool]:
+) -> tuple[float, float, float, bool]:
     """Headless compress-then-release run used to probe extreme-deformation recovery.
 
     Drives the pinned cube's top face down to ``compress_ratio`` of the rest height,
     releases it, and lets the cube settle under zero gravity. Returns the recovered
-    height ratio, the recovered volume ratio, and whether any NaN appeared.
+    height ratio, the recovered (unsigned) volume ratio, the smallest per-tet
+    signed-volume ratio of the recovered state (``<= 0`` means a tet is still
+    inverted, so recovery from the near-flat inversion failed), and whether any NaN
+    appeared.
     """
     builder = newton.ModelBuilder()
     cube_size = dim * cell
@@ -97,6 +120,7 @@ def _run_compression(
 
     tet_indices = model.tet_indices.numpy()
     rest_volume = _compute_tet_volume(q0, tet_indices)
+    rest_signed = _signed_tet_volumes(q0, tet_indices)
 
     # Drive the top face down to compress_ratio of the rest height.
     for f in range(n_compress):
@@ -127,7 +151,8 @@ def _run_compression(
     has_nan = bool(np.any(np.isnan(q)))
     recovered_height = (float(np.mean(q[top_indices, 2])) - base_z) / cube_size
     recovered_volume = _compute_tet_volume(q, tet_indices) / rest_volume
-    return recovered_height, recovered_volume, has_nan
+    recovered_min_inv = _min_signed_volume_ratio(q, tet_indices, rest_signed)
+    return recovered_height, recovered_volume, recovered_min_inv, has_nan
 
 
 class Example:
@@ -203,6 +228,7 @@ class Example:
 
         self.tet_indices = self.model.tet_indices.numpy()
         self.rest_volume = _compute_tet_volume(q_np, self.tet_indices)
+        self.rest_signed = _signed_tet_volumes(q_np, self.tet_indices)
 
         self._frame_index = 0
         self._released = False
@@ -254,32 +280,45 @@ class Example:
             lambda q, qd: wp.length(qd) < 100.0,
         )
 
-        # Height recovery: top particles should recover to >50% of rest height
+        # Height recovery: after release + settle the top face should return near its
+        # rest height. A cube that never recovers sits at COMPRESS_RATIO (0.50), so the
+        # bar must be well above 0.50 to actually test recovery (measured real ~1.0).
         top_z_final = float(np.mean(q[self.top_indices, 2]))
         recovered_height = top_z_final - self.base_z
         recovery_ratio = recovered_height / self.cube_size
-        if recovery_ratio < 0.50:
+        if recovery_ratio < _RECOVERY_TOL:
             raise ValueError(
                 f"Insufficient height recovery: {recovery_ratio:.1%} of rest "
                 f"(top_z={top_z_final:.4f}, base={self.base_z}, rest_height={self.cube_size})"
             )
 
-        # Volume should partially recover
+        # Bulk volume should recover too.
         final_volume = _compute_tet_volume(q, self.tet_indices)
         volume_ratio = final_volume / self.rest_volume
-        if volume_ratio < 0.50:
-            raise ValueError(f"Volume collapsed: ratio {volume_ratio:.3f}")
+        if volume_ratio < _RECOVERY_TOL:
+            raise ValueError(f"Insufficient volume recovery: ratio {volume_ratio:.3f}")
+
+        # The bulk volume above is unsigned, so it cannot see inverted tets; require the
+        # recovered state to have no inverted element.
+        min_inv = _min_signed_volume_ratio(q, self.tet_indices, self.rest_signed)
+        if min_inv < _INVERSION_TOL:
+            raise ValueError(f"Recovered cube has an inverted tet: min signed-volume ratio {min_inv:.3f}")
 
         # Extreme robustness: a near-flat (90%) compression inverts elements, and the
         # stable Neo-Hookean material should un-invert them so the cube springs back to
-        # its rest height and volume once released.
-        rec, vol, has_nan = _run_compression(compress_ratio=0.10)
+        # its rest height and volume once released. The min signed-volume ratio confirms
+        # the inverted tets actually recovered (an unsigned-volume check alone cannot).
+        rec, vol, min_inv_nf, has_nan = _run_compression(compress_ratio=0.10)
         if has_nan:
             raise ValueError("NaN during near-flat (90%) compression recovery")
         if rec < 0.90:
             raise ValueError(f"Near-flat cube failed to recover height: {rec:.1%} of rest")
         if vol < 0.90:
             raise ValueError(f"Near-flat cube failed to recover volume: ratio {vol:.3f}")
+        if min_inv_nf < _INVERSION_TOL:
+            raise ValueError(
+                f"Near-flat cube left an inverted tet after recovery: min signed-volume ratio {min_inv_nf:.3f}"
+            )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
