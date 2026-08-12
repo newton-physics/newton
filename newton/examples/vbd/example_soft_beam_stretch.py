@@ -22,18 +22,34 @@ import newton
 import newton.examples
 from newton import ParticleFlags
 
+# A flipped tet has a signed/rest volume ratio <= 0. Measured real min signed-volume
+# ratio at 2x stretch ~0.92.
+_INVERSION_TOL = 0.25  # min per-tet signed/rest volume ratio before a tet counts as inverted
 
-def _compute_tet_volume(q: np.ndarray, tet_indices: np.ndarray) -> float:
-    """Sum of signed tet volumes from current positions."""
+
+def _signed_tet_volumes(q: np.ndarray, tet_indices: np.ndarray) -> np.ndarray:
+    """Per-tet signed volumes [m^3] from current positions, shape [tet_count]."""
     v0 = q[tet_indices[:, 0]]
     v1 = q[tet_indices[:, 1]]
     v2 = q[tet_indices[:, 2]]
     v3 = q[tet_indices[:, 3]]
-    d1 = v1 - v0
-    d2 = v2 - v0
-    d3 = v3 - v0
-    volumes = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) / 6.0
-    return float(np.sum(np.abs(volumes)))
+    return np.einsum("ij,ij->i", v1 - v0, np.cross(v2 - v0, v3 - v0)) / 6.0
+
+
+def _compute_tet_volume(q: np.ndarray, tet_indices: np.ndarray) -> float:
+    """Total bulk volume: sum of unsigned per-tet volumes."""
+    return float(np.sum(np.abs(_signed_tet_volumes(q, tet_indices))))
+
+
+def _min_signed_volume_ratio(q: np.ndarray, tet_indices: np.ndarray, rest_signed: np.ndarray) -> float:
+    """Smallest per-tet ratio of current signed volume to its rest signed volume.
+
+    ``<= 0`` means at least one tet has inverted (flipped orientation) relative to
+    the rest configuration; ``~1`` means every tet preserves its orientation and
+    size. Normalizing by the rest sign is robust to ``add_soft_grid``'s per-cell
+    tet orientation, which is not uniformly positive.
+    """
+    return float(np.min(_signed_tet_volumes(q, tet_indices) / rest_signed))
 
 
 class Example:
@@ -110,6 +126,7 @@ class Example:
         # Compute rest volume
         self.tet_indices = self.model.tet_indices.numpy()
         self.rest_volume = _compute_tet_volume(q_np, self.tet_indices)
+        self.rest_signed = _signed_tet_volumes(q_np, self.tet_indices)
 
         self._frame_index = 0
 
@@ -156,6 +173,12 @@ class Example:
                 f"Volume not preserved: ratio {volume_ratio:.3f} "
                 f"(rest={self.rest_volume:.6f}, final={final_volume:.6f})"
             )
+
+        # The volume ratio above uses unsigned tet volumes, so a stretched-but-inverted
+        # state could still look volume-preserving; assert no tet inverted at 2x stretch.
+        min_inv = _min_signed_volume_ratio(q, self.tet_indices, self.rest_signed)
+        if min_inv < _INVERSION_TOL:
+            raise ValueError(f"Tet inverted at 2x stretch: min signed-volume ratio {min_inv:.3f}")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
