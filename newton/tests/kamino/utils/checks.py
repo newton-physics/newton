@@ -180,6 +180,7 @@ def assert_array_attributes_equal(
         if mapping is not None and len(mapping) == desired.shape[0]:
             desired = desired[mapping]
         if index_remaps is not None and attr in index_remaps:
+            desired = np.asarray(desired).copy()
             remap = index_remaps[attr]
             for i, value in enumerate(desired):
                 if value >= 0:
