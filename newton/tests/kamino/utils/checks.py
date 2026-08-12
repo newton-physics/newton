@@ -185,7 +185,11 @@ def assert_array_attributes_equal(
             for i, value in enumerate(desired):
                 if value >= 0:
                     desired[i] = remap[value]
-        diff = actual - desired
+        # Unbounded limits are stored as inf (e.g. JointsModel.tau_j_max), so this purely
+        # informational diff hits inf - inf. Left unguarded it raises a RuntimeWarning, which
+        # CI turns into a test error via --strict-warnings.
+        with np.errstate(invalid="ignore"):
+            diff = actual - desired
         msg.debug("Comparing %s:\nactual:\n%s\ndesired:\n%s\ndiff:\n%s", f"{obj_name}.{attr}", actual, desired, diff)
         np.testing.assert_allclose(
             actual=actual,
