@@ -17,14 +17,15 @@ reviews:
   path_instructions:
     - path: "**"
       instructions: |
-        Check that any user-facing change includes a corresponding entry in
-        CHANGELOG.md under the [Unreleased] section. Entries should use
-        imperative present tense ("Add X", not "Added X") and be placed under
-        the correct category (Added, Changed, Deprecated, Removed, or Fixed).
-        Entries may appear at any position within their category — do not flag
-        placement order. For Deprecated, Changed, and Removed entries, verify
-        the entry includes migration guidance telling users what replaces the
-        old behavior.
+        Follow changelog/README.md. For user-facing changes, suggest a
+        Towncrier fragment instead of a direct CHANGELOG.md edit. Do not require
+        a .skip fragment for changes without user-facing impact. When a fragment
+        is present, check that numeric identifiers refer to GitHub issues and
+        orphan identifiers start with +. Entries use imperative present tense
+        ("Add X", not "Added X"), end with a period, and use the correct
+        category (added, changed, deprecated, removed, or fixed). Changed,
+        deprecated, and removed entries include migration guidance. Release
+        cleanup may edit CHANGELOG.md and delete consumed fragments directly.
     - path: "**/*.py"
       instructions: |
         Flag inline code comments (not docstrings) that are verbose or

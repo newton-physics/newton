@@ -20,6 +20,7 @@ from newton._src.geometry.sdf_texture import (
     SIGN_MODE_NORMAL,
     QuantizationMode,
     TextureSDFData,
+    _texture_sample_sdf_grad_hw_impl,
     build_sparse_sdf_from_primitive,
     compute_isomesh_from_texture_sdf,
     create_empty_texture_sdf_data,
@@ -28,6 +29,7 @@ from newton._src.geometry.sdf_texture import (
     create_texture_sdf_from_volume,
     texture_sample_sdf,
     texture_sample_sdf_grad,
+    texture_sample_sdf_hw,
 )
 from newton._src.geometry.sdf_utils import (
     SDFData,
@@ -191,6 +193,57 @@ def _sample_texture_sdf_grad_kernel(
     dist, grad = texture_sample_sdf_grad(sdf, query_points[tid])
     results[tid] = dist
     gradients[tid] = grad
+
+
+@wp.func
+def _texture_sample_sdf_grad_hw_scalar_reference(sdf: TextureSDFData, local_pos: wp.vec3) -> wp.vec3:
+    """Evaluate the hardware gradient with six independent scalar samples."""
+    clamped = wp.vec3(
+        wp.clamp(local_pos[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0]),
+        wp.clamp(local_pos[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
+        wp.clamp(local_pos[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
+    )
+    diff = local_pos - clamped
+    diff_mag = wp.length(diff)
+    if diff_mag > 0.0:
+        return diff / diff_mag
+
+    h_x = 0.5 / sdf.inv_sdf_dx[0]
+    h_y = 0.5 / sdf.inv_sdf_dx[1]
+    h_z = 0.5 / sdf.inv_sdf_dx[2]
+    gx = (
+        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(h_x, 0.0, 0.0))
+        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(h_x, 0.0, 0.0))
+    ) / (2.0 * h_x)
+    gy = (
+        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(0.0, h_y, 0.0))
+        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(0.0, h_y, 0.0))
+    ) / (2.0 * h_y)
+    gz = (
+        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(0.0, 0.0, h_z))
+        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(0.0, 0.0, h_z))
+    ) / (2.0 * h_z)
+    return wp.vec3(gx, gy, gz)
+
+
+@wp.kernel
+def _sample_texture_sdf_hw_gradient_paired_kernel(
+    sdf: TextureSDFData,
+    query_points: wp.array[wp.vec3],
+    paired: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    paired[tid] = _texture_sample_sdf_grad_hw_impl(sdf, query_points[tid])
+
+
+@wp.kernel
+def _sample_texture_sdf_hw_gradient_scalar_kernel(
+    sdf: TextureSDFData,
+    query_points: wp.array[wp.vec3],
+    scalar: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    scalar[tid] = _texture_sample_sdf_grad_hw_scalar_reference(sdf, query_points[tid])
 
 
 @wp.kernel
@@ -475,6 +528,61 @@ def test_texture_sdf_gradient_accuracy(test, device):
     test.assertLess(s["nb_angle_mean"], 3.0, f"Contact-zone mean gradient angle: {s['nb_angle_mean']:.2f} deg")
     test.assertLess(s["nb_angle_median"], 0.5, f"Contact-zone median gradient angle: {s['nb_angle_median']:.2f} deg")
     test.assertLess(s["nb_angle_p95"], 15.0, f"Contact-zone p95 gradient angle: {s['nb_angle_p95']:.2f} deg")
+
+
+def test_texture_sdf_paired_hw_gradient_matches_scalar(test, device):
+    """Match paired hardware-gradient samples to the scalar stencil."""
+    mesh = _create_box_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        quantization_mode=QuantizationMode.FLOAT32,
+        device=device,
+    )
+
+    lower = np.array(tex_sdf.sdf_box_lower, dtype=np.float32)
+    upper = np.array(tex_sdf.sdf_box_upper, dtype=np.float32)
+    voxel_size = np.array(tex_sdf.voxel_size, dtype=np.float32)
+    rng = np.random.default_rng(123)
+    query_parts = [rng.uniform(lower - voxel_size, upper + voxel_size, size=(1024, 3)).astype(np.float32)]
+
+    center = 0.5 * (lower + upper)
+    coarse_stride = voxel_size * tex_sdf.subgrid_size
+    boundary_points = []
+    for axis in range(3):
+        boundaries = np.arange(lower[axis], upper[axis] + coarse_stride[axis], coarse_stride[axis])
+        for boundary in boundaries:
+            for offset in (-0.25, 0.0, 0.25):
+                point = center.copy()
+                point[axis] = boundary + offset * voxel_size[axis]
+                boundary_points.append(point)
+    query_parts.append(np.asarray(boundary_points, dtype=np.float32))
+    query_np = np.concatenate(query_parts)
+
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    paired = wp.empty(len(query_np), dtype=wp.vec3, device=device)
+    scalar = wp.empty(len(query_np), dtype=wp.vec3, device=device)
+    wp.launch(
+        _sample_texture_sdf_hw_gradient_paired_kernel,
+        dim=len(query_np),
+        inputs=[tex_sdf, query_points, paired],
+        device=device,
+    )
+    wp.launch(
+        _sample_texture_sdf_hw_gradient_scalar_kernel,
+        dim=len(query_np),
+        inputs=[tex_sdf, query_points, scalar],
+        device=device,
+    )
+
+    np.testing.assert_allclose(paired.numpy(), scalar.numpy(), rtol=0.0, atol=1.0e-6)
 
 
 def test_texture_sdf_extrapolation(test, device):
@@ -1507,6 +1615,12 @@ add_function_test(
 )
 add_function_test(
     TestTextureSDF, "test_texture_sdf_gradient_accuracy", test_texture_sdf_gradient_accuracy, devices=devices
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_paired_hw_gradient_matches_scalar",
+    test_texture_sdf_paired_hw_gradient_matches_scalar,
+    devices=devices,
 )
 add_function_test(TestTextureSDF, "test_texture_sdf_extrapolation", test_texture_sdf_extrapolation, devices=devices)
 add_function_test(TestTextureSDF, "test_texture_sdf_array_indexing", test_texture_sdf_array_indexing, devices=devices)

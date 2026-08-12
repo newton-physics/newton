@@ -61,6 +61,10 @@ class ViewerGui:
         self._last_fps_time: float = perf_counter()
         self._fps_frame_count: int = 0
         self._current_fps: float = 0.0
+        # Visual / collision shape counts for the stats panel, refreshed by
+        # update_shape_counts() when the viewer is given a model.
+        self._shape_visual_count: int | None = None
+        self._shape_collision_count: int | None = None
 
         # Selection panel state (UI-local, not simulation state).
         self._selection_ui_state = {
@@ -786,8 +790,15 @@ class ViewerGui:
                     imgui.separator()
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[viewer.model.up_axis]}")
-                    gravity = viewer.model.gravity.numpy()[0]
-                    imgui.text(f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})")
+                    gravity = viewer.model.gravity.numpy()
+                    world_gravity = gravity[0]
+                    global_gravity = gravity[-1]
+                    imgui.text(
+                        f"World 0 Gravity: ({world_gravity[0]:.2f}, {world_gravity[1]:.2f}, {world_gravity[2]:.2f})"
+                    )
+                    imgui.text(
+                        f"Global Gravity: ({global_gravity[0]:.2f}, {global_gravity[1]:.2f}, {global_gravity[2]:.2f})"
+                    )
 
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Visualization", flags=header_flags):
@@ -798,13 +809,37 @@ class ViewerGui:
                         _, renderer.joint_scale = imgui.slider_float("Joint Scale", renderer.joint_scale, 0.25, 5.0)
                     _changed, viewer.show_contacts = imgui.checkbox("Show Contacts", viewer.show_contacts)
                     if viewer.show_contacts and renderer is not None:
-                        if hasattr(renderer, "arrow_length_scale"):
-                            _, renderer.arrow_length_scale = imgui.slider_float(
-                                "Contact Length", renderer.arrow_length_scale, 0.25, 5.0
+                        imgui.indent()
+                        _, viewer.show_contact_normals = imgui.checkbox("Normal", bool(viewer.show_contact_normals))
+                        _, viewer.show_contact_disks = imgui.checkbox("Contact Mode", bool(viewer.show_contact_disks))
+                        _, viewer.show_contact_forces = imgui.checkbox("Force", bool(viewer.show_contact_forces))
+                        imgui.unindent()
+
+                        log_flag = imgui.SliderFlags_.logarithmic.value
+                        base = float(viewer._contact_viz_scale_default) or 1.0
+                        _, viewer.contact_viz_scale = imgui.slider_float(
+                            "Contact Scale",
+                            float(viewer.contact_viz_scale),
+                            base * 0.01,
+                            base * 100.0,
+                            "%.4g",
+                            log_flag,
+                        )
+                        if viewer.show_contact_forces:
+                            base = float(viewer._contact_force_scale_default) or 0.5
+                            _, viewer.contact_force_scale = imgui.slider_float(
+                                "Force Relative Scale",
+                                float(viewer.contact_force_scale),
+                                base * 0.01,
+                                base * 100.0,
+                                "%.4g",
+                                log_flag,
                             )
-                        if hasattr(renderer, "arrow_scale"):
+                        if hasattr(renderer, "arrow_scale") and (
+                            viewer.show_contact_normals or viewer.show_contact_forces
+                        ):
                             _, renderer.arrow_scale = imgui.slider_float(
-                                "Contact Width", renderer.arrow_scale, 0.25, 5.0
+                                "Arrow Thickness", renderer.arrow_scale, 0.25, 5.0
                             )
                     _changed, viewer.show_particles = imgui.checkbox("Show Particles", viewer.show_particles)
                     _changed, viewer.show_springs = imgui.checkbox("Show Springs", viewer.show_springs)
@@ -826,6 +861,7 @@ class ViewerGui:
                                 "Wireframe Width (px)", renderer.wireframe_line_width, 0.5, 5.0
                             )
                     _changed, viewer.show_visual = imgui.checkbox("Show Visual", viewer.show_visual)
+                    _changed, viewer.show_ground = imgui.checkbox("Show Ground", viewer.show_ground)
                     _changed, viewer.show_inertia_boxes = imgui.checkbox(
                         "Show Inertia Boxes", viewer.show_inertia_boxes
                     )
@@ -902,6 +938,21 @@ class ViewerGui:
         imgui.text(f"Pitch: {cam.pitch:.1f} deg")
         imgui.text(f"Yaw: {cam.yaw:.1f} deg")
 
+    def update_shape_counts(self, model) -> None:
+        """Recompute the visual / collision shape counts shown in the stats overlay.
+
+        Called when the viewer is given a model. ``shape_flags`` is a device array, so
+        this is done once per model rather than while rendering the overlay.
+        """
+        flags_array = getattr(model, "shape_flags", None) if model is not None else None
+        if flags_array is None or len(flags_array) == 0:
+            self._shape_visual_count = None
+            self._shape_collision_count = None
+            return
+        flags = flags_array.numpy()
+        self._shape_visual_count = int(np.count_nonzero(flags & int(nt.ShapeFlags.VISIBLE)))
+        self._shape_collision_count = int(np.count_nonzero(flags & int(nt.ShapeFlags.COLLIDE_SHAPES)))
+
     def _render_stats_overlay(self):
         """Render performance overlay in the top-right corner."""
         if not self.is_available:
@@ -949,6 +1000,12 @@ class ViewerGui:
                 imgui.text(f"Worlds: {viewer.model.world_count}")
                 imgui.text(f"Bodies: {viewer.model.body_count}")
                 imgui.text(f"Shapes: {viewer.model.shape_count}")
+                if self._shape_visual_count is not None:
+                    # Categories overlap when a shape carries both flags.
+                    imgui.indent()
+                    imgui.text(f"visual: {self._shape_visual_count}")
+                    imgui.text(f"collision: {self._shape_collision_count}")
+                    imgui.unindent()
                 imgui.text(f"Joints: {viewer.model.joint_count}")
                 imgui.text(f"Particles: {viewer.model.particle_count}")
                 imgui.text(f"Springs: {viewer.model.spring_count}")

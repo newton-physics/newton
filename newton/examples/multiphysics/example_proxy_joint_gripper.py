@@ -64,7 +64,7 @@ class Example:
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
-        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        SolverVBD.register_custom_attributes(builder)
         builder.default_particle_radius = 0.01
 
         self.soft_particle_start = builder.particle_count
