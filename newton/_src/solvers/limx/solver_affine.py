@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Collision-free projected-Newton stepping for LIMX affine bodies."""
+"""Projected-Newton stepping for LIMX affine bodies."""
 
 from __future__ import annotations
+
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -66,7 +68,7 @@ def _finish_affine_step(
 
 
 class SolverLIMXAffine:
-    """Advance collision-free affine bodies with implicit Euler and Newton's method."""
+    """Advance affine bodies with implicit Euler and Newton's method."""
 
     def __init__(
         self,
@@ -74,14 +76,16 @@ class SolverLIMXAffine:
         nonlinear_iterations: int = 4,
         linear_iterations: int = 32,
         velocity_damping: float = 1.0,
+        dynamic_operator: Any | None = None,
     ):
-        """Create a collision-free LIMX affine-body solver.
+        """Create a LIMX affine-body solver with optional dynamic contact.
 
         Args:
             body_model: Affine body mass, gravity, surface, and ARAP data.
             nonlinear_iterations: Newton position iterations per step.
             linear_iterations: Fixed PCG iterations per Newton iteration.
             velocity_damping: Per-step generalized-velocity multiplier.
+            dynamic_operator: Optional matrix-free affine contact operator.
         """
         if not isinstance(body_model, AffineBodyModel):
             raise TypeError("body_model must be an AffineBodyModel")
@@ -98,6 +102,15 @@ class SolverLIMXAffine:
         self.nonlinear_iterations = nonlinear_iterations
         self.linear_iterations = linear_iterations
         self.velocity_damping = float(velocity_damping)
+        if dynamic_operator is None:
+            self.dynamic_operator = EmptyMixedDynamicOperator()
+        else:
+            if getattr(dynamic_operator, "body_count", None) != self.body_count:
+                raise ValueError("Dynamic operator and solver must have matching body counts")
+            operator_device = getattr(dynamic_operator, "device", None)
+            if operator_device is None or wp.get_device(operator_device) != self.device:
+                raise ValueError("Dynamic operator and solver must use the same device")
+            self.dynamic_operator = dynamic_operator
 
         self.arap_constraint = ConstraintAffineARAP(
             body_model.rigidities.numpy(),
@@ -118,7 +131,7 @@ class SolverLIMXAffine:
         self.operator = MixedLinearOperator(
             particle_operator=None,
             affine_matrix=self.static_matrix,
-            mixed_dynamic_operator=EmptyMixedDynamicOperator(),
+            mixed_dynamic_operator=self.dynamic_operator,
             device=self.device,
         )
         self.linear_solver = MixedPcgSolver(0, self.body_count, self.device)
@@ -150,6 +163,7 @@ class SolverLIMXAffine:
             outputs=[self.previous_q, self.inertia_q],
             device=self.device,
         )
+        self.dynamic_operator.begin_step(self.q, self.qd, dt)
 
         inv_dt_squared = 1.0 / (dt * dt)
         for nonlinear_iteration in range(self.nonlinear_iterations):
@@ -172,6 +186,8 @@ class SolverLIMXAffine:
                 self.rhs,
                 self.static_matrix.values,
             )
+            self.dynamic_operator.prepare(self.q)
+            self.dynamic_operator.accumulate_force(self.q, self.rhs)
             self.static_matrix.update_diagonal()
             self.operator.prepare(None, dt)
             self.last_linear_iterations = self.linear_solver.solve(

@@ -33,6 +33,15 @@ class MixedVector3x12:
 class EmptyMixedDynamicOperator:
     """A matrix-free mixed operator that contributes nothing."""
 
+    def begin_step(self, q: wp.array[vec12], qd: wp.array[vec12], dt: float) -> None:
+        """Leave affine step-start data unused."""
+
+    def prepare(self, q: wp.array[vec12]) -> None:
+        """Leave affine linearization data unused."""
+
+    def accumulate_force(self, q: wp.array[vec12], output: wp.array[vec12]) -> None:
+        """Leave affine force output unchanged."""
+
     def multiply(
         self,
         particle_input: wp.array[wp.vec3],

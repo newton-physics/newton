@@ -22,7 +22,7 @@ from newton._src.solvers.limx.mixed_linear_solver import (
 )
 from newton._src.solvers.limx.mixed_operator import EmptyMixedDynamicOperator, MixedLinearOperator, MixedVector3x12
 from newton._src.solvers.limx.operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
-from newton.solvers import AffineBodyModel, SolverLIMXAffine
+from newton.solvers import AffineBodyModel, ConstraintAffineStaticPlaneContact, SolverLIMXAffine
 
 
 @wp.kernel
@@ -1069,6 +1069,72 @@ class TestSolverLIMXAffine(unittest.TestCase):
         solver.step(0.01)
 
         self.assertEqual(zero_initial_guess_sequence, [False, True, True, False, True, True])
+
+    def test_integrates_real_affine_dynamic_contact(self):
+        """Integrate a real affine plane-contact force through the Newton solve."""
+        free_model = self._make_model("cpu", rigidity=0.0)
+        contact_model = self._make_model("cpu", rigidity=0.0)
+        free_model.gravity.zero_()
+        contact_model.gravity.zero_()
+        contact = ConstraintAffineStaticPlaneContact(
+            contact_model,
+            normal=(0.0, 0.0, 1.0),
+            offset=0.0,
+            thickness=0.3,
+            stiffness=10.0,
+            normal_damping=0.0,
+            friction=0.0,
+            friction_epsilon=0.1,
+        )
+        free_solver = SolverLIMXAffine(free_model, nonlinear_iterations=1, linear_iterations=16)
+        contact_solver = SolverLIMXAffine(
+            contact_model,
+            nonlinear_iterations=1,
+            linear_iterations=16,
+            dynamic_operator=contact,
+        )
+        initial_state = free_solver.q.numpy().copy()
+
+        free_solver.step(0.1)
+        contact_solver.step(0.1)
+
+        np.testing.assert_allclose(free_solver.q.numpy(), initial_state, rtol=0.0, atol=1.0e-6)
+        self.assertGreater(float(contact_solver.q.numpy()[0, 2]), float(free_solver.q.numpy()[0, 2]))
+        self.assertGreater(float(contact_solver.qd.numpy()[0, 2]), 0.0)
+        self.assertIs(contact_solver.dynamic_operator, contact)
+        self.assertTrue(np.isfinite(contact_solver.q.numpy()).all())
+
+    def test_defaults_to_empty_affine_dynamic_operator(self):
+        """Preserve collision-free behavior with the default empty operator."""
+        solver = self._make_solver("cpu", rigidity=0.0, nonlinear_iterations=1)
+
+        self.assertIsInstance(solver.dynamic_operator, EmptyMixedDynamicOperator)
+
+    def test_rejects_mismatched_affine_dynamic_operator_domains(self):
+        """Reject affine dynamic operators with mismatched bodies or devices."""
+        model = self._make_model("cpu", rigidity=0.0)
+
+        class Domain:
+            def __init__(self, body_count, device):
+                self.body_count = body_count
+                self.device = wp.get_device(device)
+
+        with self.assertRaisesRegex(ValueError, "body count"):
+            SolverLIMXAffine(model, dynamic_operator=Domain(2, "cpu"))
+        if wp.is_cuda_available():
+            cuda_model = self._make_model("cuda:0", rigidity=0.0)
+            cuda_contact = ConstraintAffineStaticPlaneContact(
+                cuda_model,
+                normal=(0.0, 0.0, 1.0),
+                offset=0.0,
+                thickness=0.1,
+                stiffness=10.0,
+                normal_damping=0.0,
+                friction=0.0,
+                friction_epsilon=0.1,
+            )
+            with self.assertRaisesRegex(ValueError, "device"):
+                SolverLIMXAffine(model, dynamic_operator=cuda_contact)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_captures_and_replays_one_complete_step_on_cuda(self):
