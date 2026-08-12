@@ -1334,6 +1334,74 @@ class RendererGL:
         err = gl.glGetError()
         assert err == gl.GL_NO_ERROR, hex(err)
 
+    def render_texture(
+        self,
+        texture_id: int | None,
+        texture_width: int = 0,
+        texture_height: int = 0,
+    ):
+        """Draw a texture to the frame buffer without rendering the 3D scene.
+
+        Args:
+            texture_id: OpenGL texture id to draw, or ``None`` to only clear.
+            texture_width: Source texture width in pixels.
+            texture_height: Source texture height in pixels.
+        """
+        gl = RendererGL.gl
+        self._make_current()
+
+        screen_w = max(int(self._screen_width), 1)
+        screen_h = max(int(self._screen_height), 1)
+
+        assert self._frame_fbo is not None
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
+        gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
+        gl.glClearColor(0.0, 0.0, 0.0, 1.0)
+        gl.glDisable(gl.GL_DEPTH_TEST)
+        gl.glDepthMask(True)
+        gl.glDisable(gl.GL_BLEND)
+        gl.glViewport(0, 0, screen_w, screen_h)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+        gl.glDepthMask(False)
+
+        if texture_id is not None and texture_id != 0:
+            draw_x, draw_y = 0, 0
+            draw_w, draw_h = screen_w, screen_h
+            if texture_width > 0 and texture_height > 0:
+                scale = min(screen_w / float(texture_width), screen_h / float(texture_height))
+                draw_w = max(1, int(round(texture_width * scale)))
+                draw_h = max(1, int(round(texture_height * scale)))
+                draw_x = max(0, (screen_w - draw_w) // 2)
+                draw_y = max(0, (screen_h - draw_h) // 2)
+
+            gl.glViewport(draw_x, draw_y, draw_w, draw_h)
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id))
+            with self._frame_shader:
+                self._frame_shader.update(0, flip_y=True)
+                gl.glBindVertexArray(self._frame_vao)
+                gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
+                gl.glBindVertexArray(0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+        gl.glDepthMask(True)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glViewport(0, 0, screen_w, screen_h)
+
+        if self._frame_texture is not None:
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._frame_texture)
+            with self._frame_shader:
+                self._frame_shader.update(0)
+                gl.glBindVertexArray(self._frame_vao)
+                gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
+                gl.glBindVertexArray(0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+        err = gl.glGetError()
+        assert err == gl.GL_NO_ERROR, hex(err)
+
     def present(self):
         if not self.headless:
             if self._dwm_flush is not None and self.window._interval:
