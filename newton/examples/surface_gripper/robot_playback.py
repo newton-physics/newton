@@ -159,7 +159,7 @@ def sample_playback_kernel(
     )
 
 
-def _arm_targets_rad(frame, num_arm_dofs) -> np.ndarray:
+def _arm_targets_rad(frame: Frame, num_arm_dofs: int) -> np.ndarray:
     """Recorded :class:`Frame` -> the ``num_arm_dofs`` arm joint position targets [rad].
 
     Takes J1-J6, applies the J3-relative-to-J2 coupling (real J3 = recorded J3 + J2), and converts
@@ -170,7 +170,7 @@ def _arm_targets_rad(frame, num_arm_dofs) -> np.ndarray:
     return np.deg2rad(np.asarray(j, dtype=np.float32))
 
 
-def _load_playback(path, num_arm_dofs):
+def _load_playback(path: str | Path, num_arm_dofs: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """Load a recording and extract the arrays the sim consumes.
 
     Returns ``(rec_times, rec_targets, rec_engaged, rec_preparing, rec_duration)``:
@@ -188,7 +188,7 @@ def _load_playback(path, num_arm_dofs):
     return rec_times, rec_targets, rec_engaged, rec_preparing, float(rec_times[-1])
 
 
-def _gaussian_smooth(times, values, sigma):
+def _gaussian_smooth(times: np.ndarray, values: np.ndarray, sigma: float) -> np.ndarray:
     """Gaussian-smooth ``values`` ([N, D]) over the non-uniform sample ``times`` ([N]).
 
     Each output sample is a Gaussian-weighted average of all samples by *time* distance
@@ -212,7 +212,7 @@ class RobotPlayback:
     number of arm joints to extract (J1-J6).
     """
 
-    def __init__(self, path, smoothing_sigma, num_arm_dofs):
+    def __init__(self, path: str | Path, smoothing_sigma: float, num_arm_dofs: int):
         rec_times, rec_targets, rec_engaged, rec_preparing, self.rec_duration = _load_playback(path, num_arm_dofs)
         rec_targets = _gaussian_smooth(rec_times, rec_targets, smoothing_sigma)  # smooth the coarse waypoints
         self.rec_times_wp = wp.array(rec_times, dtype=wp.float32)  # [N] sample times [s]
@@ -223,7 +223,15 @@ class RobotPlayback:
         self.rising = [i for i in range(1, len(rec_engaged)) if rec_engaged[i] and not rec_engaged[i - 1]]
         self.falling = [i for i in range(1, len(rec_engaged)) if not rec_engaged[i] and rec_engaged[i - 1]]
 
-    def step(self, sim_step_count, last_lo, dt, joint_target_q, engaged, preparing):
+    def step(
+        self,
+        sim_step_count: wp.array[int],
+        last_lo: wp.array[int],
+        dt: float,
+        joint_target_q: wp.array[float],
+        engaged: wp.array[wp.bool],
+        preparing: wp.array[wp.bool],
+    ) -> None:
         """Launch :func:`sample_playback_kernel`: interpolate the arm drive targets and sample the
         engagement (and preparing-to-engage) commands at the current sub-step time, advancing the clock.
 
