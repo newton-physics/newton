@@ -3337,7 +3337,7 @@ class ModelBuilder:
         parent_body: int = -1,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
-        joint_drive_gains_scaling: float = 1.0,
+        joint_drive_gains_scaling: float = _default_when_omitted(1.0),
         verbose: bool = False,
         ignore_paths: list[str] | None = None,
         collapse_fixed_joints: bool = False,
@@ -3445,7 +3445,11 @@ class ModelBuilder:
 
             only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-            joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
+            joint_drive_gains_scaling: When omitted, use ``1.0`` as the importer
+                default for scaling PD control gains. With
+                ``use_applied_schema_fallbacks=True``, an explicitly provided value
+                overrides ``newton:joint_drive_gains_scaling`` on the PhysicsScene.
+                Legacy resolution continues to treat it as an importer default.
             verbose: If True, print additional information about the parsed USD file. Default is False.
             ignore_paths: A list of regular expressions matching prim paths to ignore.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".

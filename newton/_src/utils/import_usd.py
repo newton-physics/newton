@@ -57,6 +57,7 @@ from ..usd.schema_resolver import (
     SchemaResolverManager,
     _default_when_omitted,
     _interpret_import_argument,
+    _resolve_import_option,
 )
 from ..usd.schemas import SchemaResolverNewton
 from .import_usd_deformable_attachments import (
@@ -246,7 +247,7 @@ def parse_usd(
     parent_body: int = -1,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
-    joint_drive_gains_scaling: float = 1.0,
+    joint_drive_gains_scaling: float = _default_when_omitted(1.0),
     verbose: bool = False,
     ignore_paths: list[str] | None = None,
     collapse_fixed_joints: bool = False,
@@ -355,7 +356,11 @@ def parse_usd(
 
         only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
-        joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
+        joint_drive_gains_scaling: When omitted, use ``1.0`` as the importer
+            default for scaling PD control gains. With
+            ``use_applied_schema_fallbacks=True``, an explicitly provided value
+            overrides ``newton:joint_drive_gains_scaling`` on the PhysicsScene.
+            Legacy resolution continues to treat it as an importer default.
         verbose: If True, print additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matching prim paths to ignore.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
@@ -509,7 +514,6 @@ def parse_usd(
     builder._validate_base_joint_params(floating, base_joint, parent_body)
 
     self_collision_override, self_collision_default = _interpret_import_argument(enable_self_collisions)
-
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
     max_hull_vertices_override, max_hull_vertices_default = _interpret_import_argument(mesh_maxhullvert)
@@ -626,6 +630,16 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
+    authored_drive_gain_scaling = (
+        usd.get_attribute(physics_scene_prim, "newton:joint_drive_gains_scaling")
+        if physics_scene_prim is not None
+        else None
+    )
+    joint_drive_gains_scaling = _resolve_import_option(
+        joint_drive_gains_scaling,
+        authored_drive_gain_scaling,
+        use_explicit_overrides=use_applied_schema_fallbacks,
+    )
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(
@@ -2465,11 +2479,6 @@ def parse_usd(
         declarations = usd.get_custom_attribute_declarations(physics_scene_prim)
         for attr in declarations.values():
             builder.add_custom_attribute(attr)
-
-        # Updating joint_drive_gains_scaling if set of the PhysicsScene
-        joint_drive_gains_scaling = usd.get_float(
-            physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
-        )
 
         time_steps_per_second = R.get_value(
             physics_scene_prim, prim_type=PrimType.SCENE, key="time_steps_per_second", default=1000, verbose=verbose

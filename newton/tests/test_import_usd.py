@@ -1302,6 +1302,59 @@ class TestImportUsdJoints(unittest.TestCase):
         self.assertIn(shape_pair, builder.shape_collision_filter_pairs)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_drive_gain_scaling_explicit_override(self):
+        """Let explicit joint gain scaling override authored scene metadata."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        gain_scale_attr = scene.GetPrim().CreateAttribute(
+            "newton:joint_drive_gains_scaling",
+            Sdf.ValueTypeNames.Float,
+            custom=False,
+        )
+        gain_scale_attr.Set(3.0)
+        gain_scale_attr.SetCustomDataByKey("assignment", "model")
+        gain_scale_attr.SetCustomDataByKey("frequency", "once")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        bodies = []
+        for name in ("Body0", "Body1"):
+            body = UsdGeom.Cube.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            bodies.append(body)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.CreateBody0Rel().SetTargets([bodies[0].GetPath()])
+        joint.CreateBody1Rel().SetTargets([bodies[1].GetPath()])
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
+        drive.CreateStiffnessAttr().Set(10.0)
+        drive.CreateDampingAttr().Set(1.0)
+
+        def imported_gain(builder):
+            joint_index = builder.joint_label.index("/World/Joint")
+            dof_index = sum(sum(builder.joint_dof_dim[i]) for i in range(joint_index))
+            return builder.joint_target_ke[dof_index]
+
+        authored_builder = newton.ModelBuilder()
+        authored_builder.add_usd(stage)
+        authored_gain = imported_gain(authored_builder)
+        self.assertGreater(authored_gain, 0.0)
+
+        legacy_builder = newton.ModelBuilder()
+        legacy_builder.add_usd(stage, joint_drive_gains_scaling=2.0)
+        self.assertAlmostEqual(imported_gain(legacy_builder), authored_gain)
+
+        override_builder = newton.ModelBuilder()
+        override_builder.add_usd(
+            stage,
+            joint_drive_gains_scaling=2.0,
+            use_applied_schema_fallbacks=True,
+        )
+        self.assertAlmostEqual(imported_gain(override_builder), authored_gain * (2.0 / 3.0))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_does_not_filter_collisions(self):
         from pxr import Usd, UsdGeom, UsdPhysics
 

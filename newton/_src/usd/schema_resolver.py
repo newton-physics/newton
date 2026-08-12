@@ -53,6 +53,16 @@ def _interpret_import_argument(value: Any) -> tuple[Any, _ImporterDefault]:
     return value, _ImporterDefault(value)
 
 
+def _resolve_import_option(value: Any, authored_value: Any, *, use_explicit_overrides: bool) -> Any:
+    """Resolve importer metadata while preserving legacy argument precedence."""
+    override, default = _interpret_import_argument(value)
+    if use_explicit_overrides and override is not _NO_OVERRIDE:
+        return override
+    if authored_value is not None:
+        return authored_value
+    return default.value
+
+
 def _importer_default(default: Any) -> tuple[bool, Any]:
     """Return whether an importer default exists and its unwrapped value."""
     if isinstance(default, _ImporterDefault):
