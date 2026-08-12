@@ -2569,6 +2569,8 @@ class ModelBuilder:
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
         *,
         xforms: Sequence[Transform] | None = None,
+        source_path_prefix: str | None = None,
+        destination_path_prefixes: Sequence[str] | None = None,
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -2603,6 +2605,11 @@ class ModelBuilder:
                 Defaults to (0.0, 0.0, 0.0).
             xforms: Optional sequence of transforms, one per replicated world.
                 When provided, its length must equal ``world_count``.
+            source_path_prefix: Source namespace to replace in imported deformable
+                visual paths. Must be passed with ``destination_path_prefixes``.
+            destination_path_prefixes: Destination namespace for each replicated
+                world. Must be passed with ``source_path_prefix`` and contain
+                ``world_count`` entries.
         """
         if world_count <= 0:
             return
@@ -2617,9 +2624,21 @@ class ModelBuilder:
         elif len(xforms) != world_count:
             raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
 
+        if (source_path_prefix is None) != (destination_path_prefixes is None):
+            raise ValueError("source_path_prefix and destination_path_prefixes must be passed together")
+        if destination_path_prefixes is None:
+            path_prefixes = [None] * world_count
+        else:
+            if len(destination_path_prefixes) != world_count:
+                raise ValueError(
+                    f"destination_path_prefixes must contain {world_count} entries, "
+                    f"got {len(destination_path_prefixes)}"
+                )
+            path_prefixes = [(source_path_prefix, destination) for destination in destination_path_prefixes]
+
         base_world = self.world_count
         worlds = list(range(base_world, base_world + world_count))
-        self._merge_builder_copies(builder, worlds, xforms, [None] * world_count)
+        self._merge_builder_copies(builder, worlds, xforms, [None] * world_count, path_prefixes)
 
         self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
         self.world_count += world_count
@@ -2630,6 +2649,7 @@ class ModelBuilder:
         worlds: Sequence[int],
         xforms: Sequence[Transform | None],
         label_prefixes: Sequence[str | None],
+        path_prefixes: Sequence[tuple[str, str] | None] | None = None,
     ) -> None:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
@@ -2637,6 +2657,10 @@ class ModelBuilder:
         world_count = len(worlds)
         if len(xforms) != world_count or len(label_prefixes) != world_count:
             raise ValueError("worlds, xforms, and label_prefixes must have the same length")
+        if path_prefixes is None:
+            path_prefixes = [None] * world_count
+        elif len(path_prefixes) != world_count:
+            raise ValueError("worlds and path_prefixes must have the same length")
 
         worlds = np.asarray(worlds, dtype=np.int64)
 
@@ -2687,11 +2711,41 @@ class ModelBuilder:
             DeformableVisualMesh.Kind.TET: "tetrahedron",
             DeformableVisualMesh.Kind.BODY: "body",
         }
+
+        def rebase_path(
+            value: str | None,
+            prefixes: tuple[str, str] | None,
+            *,
+            required: bool = False,
+        ) -> str | None:
+            if value is None or prefixes is None:
+                return value
+            source, destination = prefixes
+            source_parts = source.strip("/").split("/") if source.strip("/") else []
+            value_parts = value.strip("/").split("/") if value.strip("/") else []
+            if value_parts[: len(source_parts)] != source_parts:
+                if required:
+                    raise ValueError(f"deformable visual path {value!r} is outside source_path_prefix {source!r}")
+                return value
+            rebased_parts = [*destination.strip("/").split("/"), *value_parts[len(source_parts) :]]
+            leading_slash = "/" if destination.startswith("/") else ""
+            return leading_slash + "/".join(part for part in rebased_parts if part)
+
+        for prefixes in path_prefixes:
+            if prefixes is None:
+                continue
+            for spec in builder._deformable_visual_meshes:
+                for name in ("body_path", "sim_path", "graphics_path"):
+                    rebase_path(spec.get(name), prefixes, required=True)
+
         for world_index in range(world_count):
             for spec in builder._deformable_visual_meshes:
                 merged = dict(spec)
                 parent_start = int(starts(visual_parent_kinds[spec["kind"]])[world_index])
                 merged["parent"] = np.asarray(spec["parent"], dtype=np.int32) + parent_start
+                merged["label"] = rebase_path(spec.get("label"), path_prefixes[world_index])
+                for name in ("body_path", "sim_path", "graphics_path"):
+                    merged[name] = rebase_path(spec.get(name), path_prefixes[world_index], required=True)
                 self._deformable_visual_meshes.append(merged)
 
         def extend_referenced(dst: list, values: Sequence[Any], kind: str) -> None:

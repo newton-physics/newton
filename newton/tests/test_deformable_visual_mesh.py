@@ -531,9 +531,28 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "single world"):
             builder.finalize()
 
-    def test_single_world_replicated_mesh_keeps_world(self):
-        """A mesh added before replicate() is duplicated per world with correct
-        world ownership and shifted drivers."""
+    def test_replicate_validates_visual_namespace_arguments(self):
+        """Require one destination namespace per world and a paired source namespace."""
+        source = newton.ModelBuilder()
+
+        with self.assertRaisesRegex(ValueError, "must be passed together"):
+            newton.ModelBuilder().replicate(source, 2, source_path_prefix="/World/envs/env_0")
+        with self.assertRaisesRegex(ValueError, "must be passed together"):
+            newton.ModelBuilder().replicate(
+                source,
+                2,
+                destination_path_prefixes=["/World/envs/env_0", "/World/envs/env_1"],
+            )
+        with self.assertRaisesRegex(ValueError, "must contain 2 entries"):
+            newton.ModelBuilder().replicate(
+                source,
+                2,
+                source_path_prefix="/World/envs/env_0",
+                destination_path_prefixes=["/World/envs/env_0"],
+            )
+
+    def test_replicated_programmatic_mesh_keeps_identity_and_world(self):
+        """Preserve programmatic identity while assigning worlds and shifting drivers."""
         source = newton.ModelBuilder()
         _add_cloth(source)
         n = source.particle_count
@@ -542,11 +561,23 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
             verts, _QUAD, kind="particle", particles=np.arange(n, dtype=np.int32), label="skin"
         )
         builder = newton.ModelBuilder()
-        builder.replicate(source, 2)
+        builder.replicate(
+            source,
+            2,
+            source_path_prefix="/World/envs/env_0",
+            destination_path_prefixes=["/World/envs/env_0", "/World/envs/env_1"],
+        )
         model = builder.finalize()
         self.assertEqual(model.deformable_visual_mesh_count, 2)
-        worlds = sorted(rm.world for rm in model.deformable_visual_meshes)
-        self.assertEqual(worlds, [0, 1])
+        for world, mesh in enumerate(model.deformable_visual_meshes):
+            with self.subTest(world=world):
+                self.assertEqual(mesh.world, world)
+                self.assertEqual(mesh.label, "skin")
+                self.assertIsNone(mesh.body_path)
+                self.assertIsNone(mesh.sim_path)
+                self.assertIsNone(mesh.graphics_path)
+                expected = np.arange(n, dtype=np.int32) + world * n
+                np.testing.assert_array_equal(mesh.parent.numpy(), expected)
 
 
 class TestDeformableVisualMeshViewer(unittest.TestCase):
@@ -1140,6 +1171,56 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         shift = np.array([0.0, 0.0, 2.0], dtype=np.float32)
         state.particle_q = wp.array(state.particle_q.numpy() + shift, dtype=wp.vec3)
         assert_np_equal(_skin(model, rm, state), rest + shift, tol=1.0e-5)
+
+    def test_replicate_rebases_visual_ownership_paths(self):
+        """Rebase imported visual identities and drivers into each replicated namespace."""
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/envs/env_0/Object")
+        self._add_graphics_mesh(stage, "/World/envs/env_0/Object/Skin")
+        template = self._import(stage)
+
+        scene = newton.ModelBuilder()
+        scene.replicate(
+            template,
+            2,
+            source_path_prefix="/World/envs/env_0",
+            destination_path_prefixes=["/World/envs/env_0", "/World/envs/env_1"],
+        )
+        model = scene.finalize()
+
+        self.assertEqual(model.deformable_visual_mesh_count, 2)
+        for world, mesh in enumerate(model.deformable_visual_meshes):
+            destination = f"/World/envs/env_{world}/Object"
+            with self.subTest(world=world):
+                self.assertEqual(mesh.world, world)
+                self.assertEqual(mesh.label, f"{destination}/Skin")
+                self.assertEqual(mesh.body_path, destination)
+                self.assertEqual(mesh.sim_path, f"{destination}/Sim")
+                self.assertEqual(mesh.graphics_path, f"{destination}/Skin")
+                self.assertEqual(mesh.parent.numpy().tolist(), [world, world, world])
+
+        source_mesh = template.finalize().deformable_visual_meshes[0]
+        self.assertEqual(source_mesh.graphics_path, "/World/envs/env_0/Object/Skin")
+
+    def test_replicate_rejects_visual_paths_outside_source_namespace(self):
+        """Reject source-prefix lookalikes instead of retaining stale ownership paths."""
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/envs/env_0/Object")
+        self._add_graphics_mesh(stage, "/World/envs/env_0/Object/Skin")
+        self._add_volume_body(stage, "/World/envs/env_01/Object")
+        self._add_graphics_mesh(stage, "/World/envs/env_01/Object/Skin")
+        template = self._import(stage)
+
+        scene = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "outside source_path_prefix"):
+            scene.replicate(
+                template,
+                1,
+                source_path_prefix="/World/envs/env_0",
+                destination_path_prefixes=["/World/envs/env_1"],
+            )
+        self.assertEqual((scene.particle_count, scene.tet_count, scene.world_count), (0, 0, 0))
+        self.assertEqual(scene.finalize().deformable_visual_mesh_count, 0)
 
     def test_multiple_graphics_meshes_and_nested_bodies(self):
         """Multiple graphics meshes under one body all import; a nested deformable
