@@ -1480,10 +1480,14 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
-        # Applications may rebase group identities before finalization. Element ranges stay
-        # private because DeformableView is the public access surface after finalization.
+        # One entry describes each recorded deformable group. Public labels and worlds mirror
+        # articulation_label/articulation_world so applications can rebase identities before
+        # finalization. add_builder() and replicate() preserve the entries and assign their
+        # destination worlds. Private [start, end) ranges locate simulation data in builder
+        # arrays: rod-backed curves use bodies/joints, cloth-backed surfaces use
+        # particles/triangles/edges, and tetrahedral volumes use particles/tets.
         self.curve_label: list[str] = []
-        """Curve labels used by :class:`~newton.selection.DeformableView` after finalization."""
+        """Labels of rod-backed curve groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`curve_world`."""
         self.curve_world: list[int] = []
         """World index corresponding to each entry in :attr:`curve_label`."""
         self._curve_body_start: list[int] = []
@@ -1498,7 +1502,7 @@ class ModelBuilder:
         """Nesting depth for private curve-group recording suppression."""
 
         self.surface_label: list[str] = []
-        """Surface labels used by :class:`~newton.selection.DeformableView` after finalization."""
+        """Labels of cloth-backed surface groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`surface_world`."""
         self.surface_world: list[int] = []
         """World index corresponding to each entry in :attr:`surface_label`."""
         self._surface_particle_start: list[int] = []
@@ -1515,7 +1519,7 @@ class ModelBuilder:
         """Exclusive edge-range end of each surface group."""
 
         self.volume_label: list[str] = []
-        """Volume labels used by :class:`~newton.selection.DeformableView` after finalization."""
+        """Labels of tetrahedral volume groups used by :class:`~newton.selection.DeformableView`, aligned with :attr:`volume_world`."""
         self.volume_world: list[int] = []
         """World index corresponding to each entry in :attr:`volume_label`."""
         self._volume_particle_start: list[int] = []
@@ -12157,8 +12161,9 @@ class ModelBuilder:
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
-            # Snapshot builder group registries as private finalized records;
-            # DeformableView provides state and topology access after finalization.
+            # Combine public group identities and private simulation ranges into finalized
+            # records. DeformableView is the public interface for selecting those records and
+            # accessing their state and topology.
             deformable_groups: list[_DeformableGroup] = []
 
             def _append_deformable_group_records(
