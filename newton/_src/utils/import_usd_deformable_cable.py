@@ -406,7 +406,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # articulation here; path_cable_map exposes empty joints for graph curves accordingly.
         # The graph spans several welded curves; per-curve cable groups are recorded
         # below instead of one group for the whole component.
-        with builder._suppress_cable_group_recording():
+        with builder._suppress_curve_group_recording():
             body_ids, _graph_joint_ids = builder.add_rod_graph(
                 node_positions=node_positions,
                 edges=edges,
@@ -468,7 +468,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 # Edges are assembled curve-by-curve, so each curve's graph bodies are contiguous.
                 # A welded curve owns no individual tree joints (they live in the shared graph
                 # articulation, found via articulation_label), so its joint range is empty.
-                builder._record_cable_group(
+                builder._record_curve_group(
                     key, (key_bodies[0], key_bodies[-1] + 1), (builder.joint_count, builder.joint_count)
                 )
             _apply_cable_masses(builder, rec.prim, key_bodies, [(0, n, key_bodies)], rec.closed, deformable_read, n)
@@ -710,7 +710,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             # bodies are loop-closing and stay outside the articulation regardless.
             # One group per prim is recorded below; a multi-curve prim spans several
             # add_rod calls, so per-call recording would split it.
-            with builder._suppress_cable_group_recording():
+            with builder._suppress_curve_group_recording():
                 bodies, joints = builder.add_rod(
                     positions=positions,
                     quaternions=quaternions,
@@ -758,7 +758,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             joint_range = (
                 (cable_joints[0], cable_joints[-1] + 1) if cable_joints else (builder.joint_count, builder.joint_count)
             )
-            builder._record_cable_group(path, body_range, joint_range)
+            builder._record_curve_group(path, body_range, joint_range)
             path_cable_point_anchors[path] = cable_point_anchors
             path_cable_segments[path] = cable_segments
             path_cable_attrs[path] = {

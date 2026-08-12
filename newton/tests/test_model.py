@@ -2144,12 +2144,12 @@ class TestModelJoints(unittest.TestCase):
             positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
         )
         # Record the group the way the USD importer does, so the range remap is exercised.
-        builder._record_cable_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
+        builder._record_curve_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
         builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
         cable_labels_before = [builder.body_label[b] for b in bodies]
         builder.collapse_fixed_joints()
         # The fixed pair merged into one body; the cable bodies stay contiguous and ordered.
-        start, end = builder._cable_body_start[0], builder._cable_body_end[0]
+        start, end = builder._curve_body_start[0], builder._curve_body_end[0]
         self.assertEqual(end - start, len(bodies))
         self.assertEqual([builder.body_label[b] for b in range(start, end)], cable_labels_before)
 

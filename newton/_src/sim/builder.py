@@ -330,13 +330,13 @@ class ModelBuilder:
     }
 
     _BUILDER_GROUP_REFERENCES: ClassVar[dict[str, dict[str, Model.AttributeFrequency]]] = {
-        "cable": {
+        "curve": {
             "body_start": Model.AttributeFrequency.BODY,
             "body_end": Model.AttributeFrequency.BODY,
             "joint_start": Model.AttributeFrequency.JOINT,
             "joint_end": Model.AttributeFrequency.JOINT,
         },
-        "cloth": {
+        "surface": {
             "particle_start": Model.AttributeFrequency.PARTICLE,
             "particle_end": Model.AttributeFrequency.PARTICLE,
             "tri_start": Model.AttributeFrequency.TRIANGLE,
@@ -344,7 +344,7 @@ class ModelBuilder:
             "edge_start": Model.AttributeFrequency.EDGE,
             "edge_end": Model.AttributeFrequency.EDGE,
         },
-        "soft": {
+        "volume": {
             "particle_start": Model.AttributeFrequency.PARTICLE,
             "particle_end": Model.AttributeFrequency.PARTICLE,
             "tet_start": Model.AttributeFrequency.TETRAHEDRON,
@@ -1484,50 +1484,50 @@ class ModelBuilder:
         # curve/surface/volume (mirrors articulation_start/end/label/world). Ranges are
         # [start, end) into the corresponding builder arrays; finalize() copies them onto the Model,
         # and replicate()/add_builder() carry them per world so each group stays indexable by label.
-        self._cable_label: list[str] = []
-        """Labels of curve (cable) groups."""
-        self._cable_world: list[int] = []
-        """World index of each cable group."""
-        self._cable_body_start: list[int] = []
-        """Inclusive body-range start of each cable group."""
-        self._cable_body_end: list[int] = []
-        """Exclusive body-range end of each cable group."""
-        self._cable_joint_start: list[int] = []
-        """Inclusive joint-range start of each cable group."""
-        self._cable_joint_end: list[int] = []
-        """Exclusive joint-range end of each cable group."""
-        self._cable_group_recording_suppressed: int = 0
-        """Nesting depth for private cable-group recording suppression."""
+        self.curve_label: list[str] = []
+        """Mutable labels of curve deformable groups."""
+        self.curve_world: list[int] = []
+        """World index of each curve deformable group."""
+        self._curve_body_start: list[int] = []
+        """Inclusive body-range start of each curve group."""
+        self._curve_body_end: list[int] = []
+        """Exclusive body-range end of each curve group."""
+        self._curve_joint_start: list[int] = []
+        """Inclusive joint-range start of each curve group."""
+        self._curve_joint_end: list[int] = []
+        """Exclusive joint-range end of each curve group."""
+        self._curve_group_recording_suppressed: int = 0
+        """Nesting depth for private curve-group recording suppression."""
 
-        self._cloth_label: list[str] = []
-        """Labels of surface (cloth) groups."""
-        self._cloth_world: list[int] = []
-        """World index of each cloth group."""
-        self._cloth_particle_start: list[int] = []
-        """Inclusive particle-range start of each cloth group."""
-        self._cloth_particle_end: list[int] = []
-        """Exclusive particle-range end of each cloth group."""
-        self._cloth_tri_start: list[int] = []
-        """Inclusive triangle-range start of each cloth group."""
-        self._cloth_tri_end: list[int] = []
-        """Exclusive triangle-range end of each cloth group."""
-        self._cloth_edge_start: list[int] = []
-        """Inclusive edge-range start of each cloth group."""
-        self._cloth_edge_end: list[int] = []
-        """Exclusive edge-range end of each cloth group."""
+        self.surface_label: list[str] = []
+        """Mutable labels of surface deformable groups."""
+        self.surface_world: list[int] = []
+        """World index of each surface deformable group."""
+        self._surface_particle_start: list[int] = []
+        """Inclusive particle-range start of each surface group."""
+        self._surface_particle_end: list[int] = []
+        """Exclusive particle-range end of each surface group."""
+        self._surface_tri_start: list[int] = []
+        """Inclusive triangle-range start of each surface group."""
+        self._surface_tri_end: list[int] = []
+        """Exclusive triangle-range end of each surface group."""
+        self._surface_edge_start: list[int] = []
+        """Inclusive edge-range start of each surface group."""
+        self._surface_edge_end: list[int] = []
+        """Exclusive edge-range end of each surface group."""
 
-        self._soft_label: list[str] = []
-        """Labels of volume (soft-body) groups."""
-        self._soft_world: list[int] = []
-        """World index of each soft group."""
-        self._soft_particle_start: list[int] = []
-        """Inclusive particle-range start of each soft group."""
-        self._soft_particle_end: list[int] = []
-        """Exclusive particle-range end of each soft group."""
-        self._soft_tet_start: list[int] = []
-        """Inclusive tetrahedron-range start of each soft group."""
-        self._soft_tet_end: list[int] = []
-        """Exclusive tetrahedron-range end of each soft group."""
+        self.volume_label: list[str] = []
+        """Mutable labels of volume deformable groups."""
+        self.volume_world: list[int] = []
+        """World index of each volume deformable group."""
+        self._volume_particle_start: list[int] = []
+        """Inclusive particle-range start of each volume group."""
+        self._volume_particle_end: list[int] = []
+        """Exclusive particle-range end of each volume group."""
+        self._volume_tet_start: list[int] = []
+        """Inclusive tetrahedron-range start of each volume group."""
+        self._volume_tet_end: list[int] = []
+        """Exclusive tetrahedron-range end of each volume group."""
 
         self.joint_dof_count: int = 0
         """Total joint DoF count propagated to :attr:`Model.joint_dof_count`."""
@@ -2919,9 +2919,9 @@ class ModelBuilder:
         specs["joint_target_q"] = Model.AttributeSpec(target_q_frequency)
 
         for group, references in cls._BUILDER_GROUP_REFERENCES.items():
-            specs[f"_{group}_label"] = Model.AttributeSpec(group)
-            specs[f"_{group}_world"] = Model.AttributeSpec(group, references=Model.AttributeFrequency.WORLD)
-            declared_builder_attributes.update((f"_{group}_label", f"_{group}_world"))
+            specs[f"{group}_label"] = Model.AttributeSpec(group)
+            specs[f"{group}_world"] = Model.AttributeSpec(group, references=Model.AttributeFrequency.WORLD)
+            declared_builder_attributes.update((f"{group}_label", f"{group}_world"))
             for suffix, reference in references.items():
                 name = f"_{group}_{suffix}"
                 specs[name] = Model.AttributeSpec(
@@ -3138,64 +3138,64 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
 
-    def _record_cable_group(
+    def _record_curve_group(
         self,
         label: str | None,
         body_range: tuple[int, int],
         joint_range: tuple[int, int],
     ) -> None:
-        """Register a cable as an addressable, world-tagged group."""
-        if self._cable_group_recording_suppressed:
+        """Register a curve as an addressable, world-tagged group."""
+        if self._curve_group_recording_suppressed:
             return
-        label = label or f"curve_{len(self._cable_label)}"
-        self._cable_label.append(label)
-        self._cable_world.append(self.current_world)
-        self._cable_body_start.append(body_range[0])
-        self._cable_body_end.append(body_range[1])
-        self._cable_joint_start.append(joint_range[0])
-        self._cable_joint_end.append(joint_range[1])
+        label = label or f"curve_{len(self.curve_label)}"
+        self.curve_label.append(label)
+        self.curve_world.append(self.current_world)
+        self._curve_body_start.append(body_range[0])
+        self._curve_body_end.append(body_range[1])
+        self._curve_joint_start.append(joint_range[0])
+        self._curve_joint_end.append(joint_range[1])
 
     @contextmanager
-    def _suppress_cable_group_recording(self) -> Iterator[None]:
-        """Temporarily let internal callers choose a different cable grouping."""
-        self._cable_group_recording_suppressed += 1
+    def _suppress_curve_group_recording(self) -> Iterator[None]:
+        """Temporarily let internal callers choose a different curve grouping."""
+        self._curve_group_recording_suppressed += 1
         try:
             yield
         finally:
-            self._cable_group_recording_suppressed -= 1
+            self._curve_group_recording_suppressed -= 1
 
-    def _record_cloth_group(
+    def _record_surface_group(
         self,
         label: str | None,
         particle_range: tuple[int, int],
         tri_range: tuple[int, int],
         edge_range: tuple[int, int],
     ) -> None:
-        """Register a cloth as an addressable, world-tagged group."""
-        label = label or f"surface_{len(self._cloth_label)}"
-        self._cloth_label.append(label)
-        self._cloth_world.append(self.current_world)
-        self._cloth_particle_start.append(particle_range[0])
-        self._cloth_particle_end.append(particle_range[1])
-        self._cloth_tri_start.append(tri_range[0])
-        self._cloth_tri_end.append(tri_range[1])
-        self._cloth_edge_start.append(edge_range[0])
-        self._cloth_edge_end.append(edge_range[1])
+        """Register a surface as an addressable, world-tagged group."""
+        label = label or f"surface_{len(self.surface_label)}"
+        self.surface_label.append(label)
+        self.surface_world.append(self.current_world)
+        self._surface_particle_start.append(particle_range[0])
+        self._surface_particle_end.append(particle_range[1])
+        self._surface_tri_start.append(tri_range[0])
+        self._surface_tri_end.append(tri_range[1])
+        self._surface_edge_start.append(edge_range[0])
+        self._surface_edge_end.append(edge_range[1])
 
-    def _record_soft_group(
+    def _record_volume_group(
         self,
         label: str | None,
         particle_range: tuple[int, int],
         tet_range: tuple[int, int],
     ) -> None:
-        """Register a soft volume as an addressable, world-tagged group."""
-        label = label or f"volume_{len(self._soft_label)}"
-        self._soft_label.append(label)
-        self._soft_world.append(self.current_world)
-        self._soft_particle_start.append(particle_range[0])
-        self._soft_particle_end.append(particle_range[1])
-        self._soft_tet_start.append(tet_range[0])
-        self._soft_tet_end.append(tet_range[1])
+        """Register a volume as an addressable, world-tagged group."""
+        label = label or f"volume_{len(self.volume_label)}"
+        self.volume_label.append(label)
+        self.volume_world.append(self.current_world)
+        self._volume_particle_start.append(particle_range[0])
+        self._volume_particle_end.append(particle_range[1])
+        self._volume_tet_start.append(tet_range[0])
+        self._volume_tet_end.append(tet_range[1])
 
     # region importers
     def add_urdf(
@@ -5967,12 +5967,12 @@ class ModelBuilder:
         # range would misrepresent the original curve topology.
         cable_records = []
         for label, world, body_start, body_end, joint_start, joint_end in zip(
-            self._cable_label,
-            self._cable_world,
-            self._cable_body_start,
-            self._cable_body_end,
-            self._cable_joint_start,
-            self._cable_joint_end,
+            self.curve_label,
+            self.curve_world,
+            self._curve_body_start,
+            self._curve_body_end,
+            self._curve_joint_start,
+            self._curve_joint_end,
             strict=True,
         ):
             old_bodies = list(range(body_start, body_end))
@@ -6006,12 +6006,12 @@ class ModelBuilder:
 
             cable_records.append((label, world, new_bodies[0], new_bodies[-1] + 1, *remapped_joint_range))
 
-        self._cable_label = [record[0] for record in cable_records]
-        self._cable_world = [record[1] for record in cable_records]
-        self._cable_body_start = [record[2] for record in cable_records]
-        self._cable_body_end = [record[3] for record in cable_records]
-        self._cable_joint_start = [record[4] for record in cable_records]
-        self._cable_joint_end = [record[5] for record in cable_records]
+        self.curve_label = [record[0] for record in cable_records]
+        self.curve_world = [record[1] for record in cable_records]
+        self._curve_body_start = [record[2] for record in cable_records]
+        self._curve_body_end = [record[3] for record in cable_records]
+        self._curve_joint_start = [record[4] for record in cable_records]
+        self._curve_joint_end = [record[5] for record in cable_records]
 
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):
@@ -7826,7 +7826,7 @@ class ModelBuilder:
         start_joint = self.joint_count
         # add_rod records its own group below, after the optional loop-closing joint,
         # so a closed rod's group covers that joint too.
-        with self._suppress_cable_group_recording():
+        with self._suppress_curve_group_recording():
             link_bodies, link_joints = self.add_rod_graph(
                 node_positions=positions_wp,
                 edges=edges,
@@ -7905,7 +7905,7 @@ class ModelBuilder:
                 )
                 link_joints.append(j_loop)
 
-        self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
+        self._record_curve_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return link_bodies, link_joints
 
@@ -8329,7 +8329,7 @@ class ModelBuilder:
                                     continue
                                 self.add_shape_collision_filter_pair(int(si), int(sj))
 
-        self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
+        self._record_curve_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return edge_bodies, all_joints
 
@@ -9264,7 +9264,7 @@ class ModelBuilder:
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
-        self._record_cloth_group(
+        self._record_surface_group(
             label,
             (start_vertex, len(self.particle_q)),
             (start_tri, end_tri),
@@ -9545,7 +9545,7 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
-        self._record_soft_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
+        self._record_volume_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     @deprecate_nonkeyword_arguments
     def add_soft_mesh(
@@ -9768,7 +9768,7 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
-        self._record_soft_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
+        self._record_volume_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -12159,41 +12159,38 @@ class ModelBuilder:
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
-            # Deformable groups (cable/cloth/volume): snapshot the builder's per-group registries
-            # as private records; newton.selection.DeformableView is the public way to address
-            # them after finalization. Translate legacy private registry names only here so
-            # the public API consistently uses the proposal's generic terminology.
+            # Snapshot builder group registries as private finalized records;
+            # DeformableView provides state and topology access after finalization.
             deformable_groups: list[_DeformableGroup] = []
 
             def _append_deformable_group_records(
-                private_family: str,
-                public_family: str,
+                family: str,
                 kinds: tuple[tuple[str, str], ...],
             ) -> None:
-                labels = getattr(self, f"_{private_family}_label")
-                worlds = getattr(self, f"_{private_family}_world")
+                labels = getattr(self, f"{family}_label")
+                worlds = getattr(self, f"{family}_world")
                 for i, label in enumerate(labels):
                     deformable_groups.append(
                         _DeformableGroup(
                             id=len(deformable_groups),
-                            family=public_family,
+                            family=family,
                             label=label,
                             world=worlds[i],
                             ranges={
                                 public_kind: (
-                                    getattr(self, f"_{private_family}_{private_kind}_start")[i],
-                                    getattr(self, f"_{private_family}_{private_kind}_end")[i],
+                                    getattr(self, f"_{family}_{private_kind}_start")[i],
+                                    getattr(self, f"_{family}_{private_kind}_end")[i],
                                 )
                                 for private_kind, public_kind in kinds
                             },
                         )
                     )
 
-            _append_deformable_group_records("cable", "curve", (("body", "body"), ("joint", "joint")))
+            _append_deformable_group_records("curve", (("body", "body"), ("joint", "joint")))
             _append_deformable_group_records(
-                "cloth", "surface", (("particle", "particle"), ("tri", "triangle"), ("edge", "edge"))
+                "surface", (("particle", "particle"), ("tri", "triangle"), ("edge", "edge"))
             )
-            _append_deformable_group_records("soft", "volume", (("particle", "particle"), ("tet", "tetrahedron")))
+            _append_deformable_group_records("volume", (("particle", "particle"), ("tet", "tetrahedron")))
             m._deformable_groups = tuple(deformable_groups)
 
             # ---------------------

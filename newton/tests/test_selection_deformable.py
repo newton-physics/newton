@@ -949,6 +949,34 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
 class TestDeformableViewBuilderGroups(unittest.TestCase):
     """Groups recorded by labeled builder calls (no USD) are selectable through the view."""
 
+    def test_builder_deformable_identities_are_public_and_mutable(self):
+        """Applications can rebase deformable labels before finalization."""
+        builder = newton.ModelBuilder()
+        _add_test_cable(builder, label="source_curve")
+        _add_test_cloth(builder, label="source_surface")
+        _add_test_soft_body(builder, label="source_volume")
+
+        self.assertEqual(builder.curve_label, ["source_curve"])
+        self.assertEqual(builder.curve_world, [-1])
+        self.assertEqual(builder.surface_label, ["source_surface"])
+        self.assertEqual(builder.surface_world, [-1])
+        self.assertEqual(builder.volume_label, ["source_volume"])
+        self.assertEqual(builder.volume_world, [-1])
+
+        builder.curve_label[:] = ["/World/envs/env_0/Cable"]
+        builder.surface_label = ["/World/envs/env_0/Cloth"]
+        builder.volume_label[:] = ["/World/envs/env_0/SoftBody"]
+
+        model = builder.finalize(device="cpu")
+        for label, family in (
+            ("/World/envs/env_0/Cable", "curve"),
+            ("/World/envs/env_0/Cloth", "surface"),
+            ("/World/envs/env_0/SoftBody", "volume"),
+        ):
+            with self.subTest(family=family):
+                view = DeformableView(model, label, family=family)
+                self.assertEqual((view.labels, view.worlds), ([label], [-1]))
+
     def test_unlabeled_curve_builders_get_default_group_labels(self):
         """Both public curve constructors record a group without an explicit label."""
         rod_builder = newton.ModelBuilder()
