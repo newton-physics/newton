@@ -1040,6 +1040,38 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
                 view = DeformableView(model, label, family=family)
                 self.assertEqual((view.count, view.labels, view.worlds), (2, [label, label], [0, 1]))
 
+    def test_rebased_builder_identities_survive_replication(self):
+        """Cloning keeps application-rebased labels and assigns destination worlds."""
+        prototype = newton.ModelBuilder()
+        _add_test_cable(prototype, label="source_curve")
+        _add_test_cloth(prototype, label="source_surface")
+        _add_test_soft_body(prototype, label="source_volume")
+
+        prototype.curve_label[0] = "/Template/Cable"
+        prototype.surface_label[0] = "/Template/Cloth"
+        prototype.volume_label[0] = "/Template/SoftBody"
+
+        scene = newton.ModelBuilder()
+        scene.replicate(prototype, 2)
+
+        for labels, worlds, expected_label in (
+            (scene.curve_label, scene.curve_world, "/Template/Cable"),
+            (scene.surface_label, scene.surface_world, "/Template/Cloth"),
+            (scene.volume_label, scene.volume_world, "/Template/SoftBody"),
+        ):
+            self.assertEqual(labels, [expected_label, expected_label])
+            self.assertEqual(worlds, [0, 1])
+
+        model = scene.finalize(device="cpu")
+        for label, family in (
+            ("/Template/Cable", "curve"),
+            ("/Template/Cloth", "surface"),
+            ("/Template/SoftBody", "volume"),
+        ):
+            with self.subTest(family=family):
+                view = DeformableView(model, label, family=family)
+                self.assertEqual((view.count, view.labels, view.worlds), (2, [label, label], [0, 1]))
+
     def test_labeled_curve_builders_record_one_complete_group(self):
         """Public rod builders hide their nested construction from group selection."""
         closed_builder = newton.ModelBuilder()
@@ -1247,7 +1279,9 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         )
         builder.add_joint_fixed(-1, bodies[0], label="anchor")
 
+        self.assertEqual((builder.curve_label, builder.curve_world), (["anchored_curve"], [-1]))
         builder.collapse_fixed_joints(joints_to_keep=["anchor"])
+        self.assertEqual((builder.curve_label, builder.curve_world), (["anchored_curve"], [-1]))
         model = builder.finalize()
         view = DeformableView(model, "anchored_curve", family="curve")
 
