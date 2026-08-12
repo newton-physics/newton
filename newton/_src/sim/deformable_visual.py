@@ -152,18 +152,22 @@ class DeformableVisualMesh:
         self.world = world
         """World index this visual mesh belongs to (-1 for global)."""
         self.label = label
-        """Display label. Not unique; use :attr:`index` for a stable identity."""
+        """Display label. Imported path labels follow requested namespace rebasing.
+        Not unique; use :attr:`index` for a stable identity."""
         self.index = index
         """Invariant index of this mesh in :attr:`newton.Model.deformable_visual_meshes`."""
         self.body_path = body_path
         """USD path of the owning ``PhysicsDeformableBodyAPI`` prim, or ``None``
-        when created programmatically."""
+        when created programmatically. Replicated imported meshes use the
+        destination path when namespace rebasing is requested."""
         self.sim_path = sim_path
         """USD path of the owning simulation geometry prim, or ``None`` when
-        created programmatically."""
+        created programmatically. Replicated imported meshes use the
+        destination path when namespace rebasing is requested."""
         self.graphics_path = graphics_path
-        """USD path of the source graphics geometry prim, or ``None`` when
-        created programmatically."""
+        """USD path of the graphics geometry prim, or ``None`` when
+        created programmatically. Replicated imported meshes use the
+        destination path when namespace rebasing is requested."""
 
     @property
     def vertex_count(self) -> int:
