@@ -55,10 +55,9 @@ class Clamping:
 
     ``params[i, base:]`` holds this clamp's parameters; see :meth:`bind_params`.
 
-    Clamps apply in list order, innermost first. Order is irrelevant while every
-    clamp's feasible interval contains zero (the result is their intersection),
-    but :class:`ClampingDCMotor` can exclude zero above its velocity limit, in
-    which case the intervals may be disjoint and the order decides the outcome.
+    Clamps apply in list order, innermost first. Order matters only when a
+    clamp's feasible interval excludes zero, which :class:`ClampingDCMotor` can
+    do above its velocity limit.
     """
 
     def param_width(self) -> int:
@@ -68,7 +67,7 @@ class Clamping:
     def bind_params(self, block: wp.array2d[float]) -> None:
         """Fill *block* with this clamp's parameters and wire attributes to it.
 
-        *block* is this clamp's ``(N, param_width())`` slice of the effort
+        ``block`` is this clamp's ``(N, param_width())`` slice of the effort
         mode's packed array. Re-pointing the user-facing arrays (e.g.
         ``clamp.max_effort``) at its columns keeps later writes visible to the
         solve kernel.

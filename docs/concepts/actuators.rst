@@ -240,21 +240,21 @@ current pose:
    from newton.actuators import ResponseOracle
 
    oracle = ResponseOracle(model)
-   actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+   actuator.set_effort_mode_implicit(response=oracle)
 
    # Simulation loop
-   oracle.refresh(state)  # refresh effective masses at the current pose
+   oracle.refresh(state)
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
 
 The solve couples the DOFs of each articulation, so the response is the full
 per-articulation inverse mass rather than a per-DOF scalar.
 
-:meth:`~newton.actuators.ResponseOracle.refresh` assembles its own mass matrix,
-which omits joint damping, contacts and constraint regularization and so
-over-estimates the response. Reuse the solver's own joint-space inertia instead
-for a response consistent with the dynamics the effort is applied to. MuJoCo
-keeps that inertia factorized rather than dense, so the response is recovered by
-back-substituting unit vectors through the factorization:
+:meth:`~newton.actuators.ResponseOracle.refresh` assembles its own mass matrix.
+It omits joint damping, contacts and constraint regularization, so the response
+is too large and the actuator under-drives the joint. Reuse the solver's own
+inertia instead. MuJoCo keeps it factorized, so
+:meth:`~newton.actuators.ResponseOracle.refresh_from_inertia` recovers the
+response by back-substituting unit vectors:
 
 .. code-block:: python
 
@@ -265,15 +265,20 @@ back-substituting unit vectors through the factorization:
    # Simulation loop, in place of oracle.refresh(state)
    oracle.refresh_from_inertia(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
 
-Both refresh paths are kernel-only, so the whole loop — actuator, solver step and
-response update — can be captured in a single CUDA graph. Call
-:meth:`~newton.actuators.Actuator.set_effort_mode_explicit` to switch back;
-tuning lives in :class:`~newton.actuators.ActuatorImplicitOptions`. Every
-controller supports the implicit mode except the neural ones, which enter the
-solve through a per-step linearization of the network about the current state
-and so need an ONNX checkpoint; :class:`~newton.actuators.ControllerNeuralMLP`
-additionally needs a single-step input history (``input_idx == [0]``).
-Torch-backed checkpoints must use the explicit mode.
+Both refresh paths only launch kernels, so the actuator, the solver step and the
+response update can be captured in one CUDA graph.
+
+Call :meth:`~newton.actuators.Actuator.set_effort_mode_explicit` to switch back.
+
+Solver tuning lives in :class:`~newton.actuators.Actuator.ImplicitOptions`.
+
+All controllers support the implicit mode. The neural controllers enter the
+solve as a per-step linearization of the network, so they need an ONNX
+checkpoint; :class:`~newton.actuators.ControllerNeuralMLP` also needs a
+single-step input history (``input_idx == [0]``).
+
+The solve is not differentiable: building the actuator with
+``requires_grad=True`` raises ``NotImplementedError``.
 
 Differentiability and Graph Capture
 -----------------------------------

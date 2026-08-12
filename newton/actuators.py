@@ -17,7 +17,6 @@ construction.
 
 from ._src.actuators import (
     Actuator,
-    ActuatorImplicitOptions,
     ActuatorParsed,
     Clamping,
     ClampingDCMotor,
@@ -38,7 +37,6 @@ from ._src.actuators import (
 
 __all__ = [
     "Actuator",
-    "ActuatorImplicitOptions",
     "ActuatorParsed",
     "Clamping",
     "ClampingDCMotor",

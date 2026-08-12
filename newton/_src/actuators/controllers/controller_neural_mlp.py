@@ -10,6 +10,14 @@ from typing import Any, ClassVar
 import warp as wp
 
 from ..utils import _looks_like_torch_checkpoint, _parse_metadata_scale, _runtime_shape, load_checkpoint, load_metadata
+from ._linearization import (
+    IMPLICIT_JACOBIAN_MARGIN as _JACOBIAN_MARGIN,
+)
+from ._linearization import (
+    _assemble_linear_params_kernel,
+    _gather_slot_state_kernel,
+    _linear_force,
+)
 from .base import Controller
 
 if typing.TYPE_CHECKING:
@@ -159,98 +167,6 @@ def _output_and_state_grads_kernel(
     dtau_dqd[i] = in_grad[i, vel_col] * vel_scale * effort_scale
 
 
-@wp.func
-def _mlp_linear_force(
-    q: wp.float64,
-    qd: wp.float64,
-    target_q: wp.float64,
-    target_qd: wp.float64,
-    feedforward: wp.float64,
-    params: wp.array2d[float],
-    i: wp.int32,
-) -> wp.float64:
-    """Force law from the network's linearization about the current state.
-
-    ``tau(q, qd) = tau0 + a (q - q0) + b (qd - qd0)`` with ``a = d(tau)/dq`` and
-    ``b = d(tau)/dqd`` taken at the expansion point ``(q0, qd0)`` (see
-    :meth:`ControllerNeuralMLP.prepare_implicit`). Keeping the expansion point
-    rather than a collapsed offset avoids cancelling two large float32 terms to
-    recover ``tau0`` near that point, where the solve is most sensitive. So the
-    network enters the general implicit solve as any other in-kernel law.
-    """
-    tau0 = wp.float64(params[i, 0])
-    a = wp.float64(params[i, 1])
-    b = wp.float64(params[i, 2])
-    q0 = wp.float64(params[i, 3])
-    qd0 = wp.float64(params[i, 4])
-    return tau0 + a * (q - q0) + b * (qd - qd0)
-
-
-@wp.kernel(enable_backward=False)
-def _gather_slot_state_kernel(
-    positions: wp.array[float],
-    velocities: wp.array[float],
-    target_pos: wp.array[float],
-    target_vel: wp.array[float],
-    pos_indices: wp.array[wp.uint32],
-    vel_indices: wp.array[wp.uint32],
-    target_pos_indices: wp.array[wp.uint32],
-    target_vel_indices: wp.array[wp.uint32],
-    q0: wp.array[float],
-    qd0: wp.array[float],
-    tq0: wp.array[float],
-    tqd0: wp.array[float],
-):
-    """Gather per-slot current state and targets for the linearization point."""
-    i = wp.tid()
-    q0[i] = positions[pos_indices[i]]
-    qd0[i] = velocities[vel_indices[i]]
-    tq0[i] = target_pos[target_pos_indices[i]]
-    tqd0[i] = target_vel[target_vel_indices[i]]
-
-
-@wp.kernel(enable_backward=False)
-def _assemble_linear_params_kernel(
-    tau0: wp.array[float],
-    dtau_dq: wp.array[float],
-    dtau_dqd: wp.array[float],
-    q0: wp.array[float],
-    qd0: wp.array[float],
-    inv_mass: wp.array[float],
-    dt: float,
-    margin: float,
-    params: wp.array2d[float],
-):
-    """Pack the linearization into ``[tau0, a, b, q0, qd0]`` for :func:`_mlp_linear_force`.
-
-    The solve's Jacobian is ``J = 1 - dt*alpha*(a*dt + b)``. A network is free to
-    linearize to positive stiffness or damping, and once ``a*dt + b`` reaches
-    ``1/(dt*alpha)`` the implicit problem is singular; past it the solution flips
-    sign and drives the joint away from the target. Because the law is affine the
-    solve still converges in one step, so nothing in the residual would flag it.
-    Both slopes are therefore scaled down together -- preserving their ratio, and
-    so the stiffness/damping balance -- until ``J >= margin``. Well-behaved laws
-    (``a, b <= 0``, as any PD-like controller gives) are never touched.
-    The expansion point is stored alongside the slopes so the law reproduces
-    ``tau0`` exactly there regardless of how the slopes were capped.
-    """
-    i = wp.tid()
-    a = dtau_dq[i]
-    b = dtau_dqd[i]
-    alpha = inv_mass[i]
-    slope = a * dt + b
-    limit = (1.0 - margin) / (dt * wp.max(alpha, 1.0e-12))
-    if slope > limit and slope > 0.0:
-        scale = limit / slope
-        a *= scale
-        b *= scale
-    params[i, 0] = tau0[i]
-    params[i, 1] = a
-    params[i, 2] = b
-    params[i, 3] = q0[i]
-    params[i, 4] = qd0[i]
-
-
 class ControllerNeuralMLP(Controller):
     """MLP-based neural network controller.
 
@@ -271,8 +187,8 @@ class ControllerNeuralMLP(Controller):
     Implicit actuation linearizes the network about the current state each
     step (:meth:`prepare_implicit`) and enters the shared implicit solve as
     the linearized force law ``tau0 + a*(q-q0) + b*(qd-qd0)`` (see
-    :attr:`evaluate_force` / :meth:`bind_params`). Supported only on the
-    Warp-NN backend with ``history_length == 1``.
+    :attr:`evaluate_force` / :meth:`bind_params`). Supported only on ONNX
+    checkpoints with ``input_idx == [0]``.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -412,6 +328,8 @@ class ControllerNeuralMLP(Controller):
         self._tau0 = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self._dtau_dq = wp.zeros(num_actuators, dtype=wp.float32, device=device)
         self._dtau_dqd = wp.zeros(num_actuators, dtype=wp.float32, device=device)
+        self._net_input.requires_grad = True
+        self._grad_seed = wp.full((num_actuators, 1), 1.0, dtype=wp.float32, device=device)
 
         try:
             out_shape = _runtime_shape(runtime, self._net_output_name)
@@ -430,16 +348,16 @@ class ControllerNeuralMLP(Controller):
     def is_graphable(self) -> bool:
         return not self._is_torch_checkpoint
 
-    IMPLICIT_JACOBIAN_MARGIN: ClassVar[float] = 0.1
+    IMPLICIT_JACOBIAN_MARGIN: ClassVar[float] = _JACOBIAN_MARGIN
     """Lower bound kept on the implicit solve's Jacobian when linearizing.
 
     Caps how much positive stiffness/damping the network may contribute before
-    the solve would go singular; see :func:`_assemble_linear_params_kernel`.
+    the solve would go singular, so both slopes are scaled down together.
     """
 
     #: The network enters the general implicit solve as a per-step-linearized
     #: in-kernel law (see :meth:`prepare_implicit`), like any other controller.
-    evaluate_force = _mlp_linear_force
+    evaluate_force = _linear_force
 
     def _implicit_supported(self) -> bool:
         # input_idx == [0], not just history_length == 1: the implicit input
@@ -456,15 +374,10 @@ class ControllerNeuralMLP(Controller):
 
         The pack is allocated in :meth:`finalize` and rewritten in place each
         step by :meth:`prepare_implicit`, so binding just hands it to the
-        effort mode. ``None`` for Torch checkpoints or ``history_length > 1``
-        (implicit needs a single-step, Warp-NN-backed net).
+        effort mode. ``None`` unless the checkpoint is ONNX with
+        ``input_idx == [0]``.
         """
         return self._lin_params if self._implicit_supported() else None
-
-    def _ensure_grad_setup(self) -> None:
-        if self._grad_seed is None:
-            self._net_input.requires_grad = True
-            self._grad_seed = wp.full((self._num_actuators, 1), 1.0, dtype=wp.float32, device=self._device)
 
     def prepare_implicit(
         self,
@@ -486,13 +399,12 @@ class ControllerNeuralMLP(Controller):
         One network forward + autodiff backward at the current per-slot state
         gives ``tau0, d(tau)/dq, d(tau)/dqd``; these are packed as ``[tau0, a, b, q0, qd0]``
         into :meth:`bind_params`, which the general implicit kernel then reads
-        through :func:`_mlp_linear_force`. Called once per step before the solve.
+        as the linearized force law. Called once per step before the solve.
         """
         if inv_mass is None:
             raise ValueError("ControllerNeuralMLP.prepare_implicit requires inv_mass (the per-slot response)")
         device = device or self._device
         n = self._num_actuators
-        self._ensure_grad_setup()
         wp.launch(
             _gather_slot_state_kernel,
             dim=n,

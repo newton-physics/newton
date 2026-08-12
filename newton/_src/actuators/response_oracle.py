@@ -4,11 +4,17 @@
 """Effective inverse-mass response for articulated systems.
 
 :class:`ResponseOracle` owns the full inverse joint-space mass block for each
-articulation. Update it with :meth:`ResponseOracle.refresh`, which assembles the
-mass matrix itself, or with :meth:`ResponseOracle.refresh_from_mass_matrix`,
-which inverts one a solver has already assembled. Both use preallocated buffers
-and device kernels and so can be captured in a CUDA graph. The buffer is also
-writable, so a response computed elsewhere can be assigned directly.
+articulation. There are three ways to update it:
+
+- :meth:`ResponseOracle.refresh` assembles the mass matrix itself.
+- :meth:`ResponseOracle.refresh_from_inertia` reuses a solver's own inertia
+  without materializing it, so factorized solvers work too.
+- :meth:`ResponseOracle.refresh_from_mass_matrix` inverts a dense matrix a
+  solver has already assembled.
+
+All three use preallocated buffers and device kernels, so they can be captured
+in a CUDA graph. The buffer is also writable, so a response computed elsewhere
+can be assigned directly.
 """
 
 from __future__ import annotations
@@ -166,10 +172,10 @@ class ResponseOracle:
     [1/kg or 1/(kg·m²)], indexed by articulation-local DOF. Articulations with
     no entry have a zero response.
 
-    :meth:`refresh` computes it from a mass matrix it assembles itself, while
-    :meth:`refresh_from_mass_matrix` inverts one the solver already built, which
-    is more faithful to the dynamics the effort is fed into. Both run entirely in
-    device kernels.
+    :meth:`refresh` computes it from a mass matrix it assembles itself.
+    :meth:`refresh_from_inertia` and :meth:`refresh_from_mass_matrix` reuse the
+    solver's own inertia, which is more faithful to the dynamics the effort is
+    fed into. All three run entirely in device kernels.
     """
 
     def __init__(self, model):
@@ -287,15 +293,15 @@ class ResponseOracle:
         """Recompute :attr:`inverse_blocks` from a solver's own joint-space inertia.
 
         Prefer this over :meth:`refresh` when the solver can apply its inertia:
-        the response then carries whatever the solver folds in (armature, tendon
-        armature) rather than only what :func:`~newton.eval_mass_matrix`
-        reproduces. Unlike :meth:`refresh_from_mass_matrix` the inertia never has
-        to be materialized, so solvers that keep it factorized work too; the
-        inverse is recovered a column at a time by back-substituting the unit
-        vectors. That is one solve per DOF, all on device, so this stays
-        CUDA-graph capturable -- provided *solve_inverse* is too, and that a
-        *dof_map* wider than the model's own DOF layout has been seen once
-        before capture, since that resizes the scratch buffers.
+        the response then carries what the solver folds in (armature, tendon
+        armature). The inertia never has to be materialized, so factorized
+        solvers work too -- the inverse is recovered one column at a time by
+        back-substituting unit vectors.
+
+        That is one solve per DOF, all on device, so this is CUDA-graph
+        capturable if *solve_inverse* is. Call it once outside capture when
+        *dof_map* has a different width than the model's DOF layout; that first
+        call resizes the scratch buffers.
 
         With :class:`~newton.solvers.SolverMuJoCo`, which factorizes its inertia
         each step::
@@ -364,12 +370,9 @@ class ResponseOracle:
     ) -> None:
         """Recompute :attr:`inverse_blocks` from a mass matrix a solver assembled.
 
-        Prefer this over :meth:`refresh` when the solver exposes its joint-space
-        inertia: inverting the solver's own matrix keeps the response consistent
-        with the dynamics the effort is applied to, and carries whatever the
-        solver folds in (armature, tendon armature) rather than only what
-        :func:`~newton.eval_mass_matrix` reproduces. Like :meth:`refresh` it only
-        launches kernels, so it is CUDA-graph capturable.
+        Prefer this over :meth:`refresh`: inverting the solver's own matrix keeps
+        the response consistent with the dynamics the effort is applied to.
+        Kernel-only, so CUDA-graph capturable.
 
         For a solver that keeps its inertia factorized rather than dense, such
         as :class:`~newton.solvers.SolverMuJoCo`, use
@@ -426,7 +429,7 @@ class ResponseOracle:
         wp.launch(
             _inverse_block_from_mass_matrix_kernel,
             dim=self.model.articulation_count,
-            inputs=[self._H, self._art_dof_count, self._L],
-            outputs=[self._inv_block],
+            inputs=[self._H, self._art_dof_count],
+            outputs=[self._L, self._inv_block],
             device=self.model.device,
         )

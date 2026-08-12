@@ -46,8 +46,10 @@ def _pid_prepare_kernel(
     params: wp.array2d[float],
     next_integral: wp.array[float],
 ):
-    """Advance the integral (current-step error, anti-windup) and fold ``ki*integral``
-    into the ``const_eff`` column read by :func:`_pid_evaluate_force`."""
+    """Advance the integral and fold ``ki*integral`` into the constant column.
+
+    Uses the current-step error with anti-windup clamping.
+    """
     i = wp.tid()
     e_q = target_pos[target_pos_indices[i]] - positions[pos_indices[i]]
     integral = wp.clamp(integral_prev[i] + e_q * dt, -integral_max[i], integral_max[i])
@@ -245,10 +247,10 @@ class ControllerPID(Controller):
         inv_mass=None,
         device=None,
     ) -> None:
-        """Advance the integral (current-step error, anti-windup) and fold
-        ``ki*integral`` into the pack's constant column. The implicit solve
-        then evaluates :func:`_pid_evaluate_force` with that integral
-        contribution held constant.
+        """Fold ``ki*integral`` into the pack's constant column.
+
+        Advances the integral with the current-step error and anti-windup
+        clamping. The implicit solve then holds that contribution constant.
         """
         if ctrl_state is None:
             raise RuntimeError("Implicit ControllerPID requires controller state (integral)")

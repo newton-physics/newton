@@ -14,23 +14,23 @@ predicted end-of-step state:
 
 Here ``h`` is the timestep, ``g`` is the controller force law with clamping,
 and ``A`` is the coupled inverse-mass response supplied by
-:class:`ResponseOracle`. Controller integration is defined by
-:class:`Controller`; solver configuration is provided by
-:class:`ActuatorImplicitOptions`.
+:class:`ResponseOracle`. Options: :class:`ImplicitOptions`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import numpy as np
 import warp as wp
 
 from ..sim import JointType
+from .controllers.base import Controller
 from .response_oracle import ResponseOracle
 
-__all__ = ["ActuatorImplicitOptions", "ResponseOracle"]
+__all__ = ["ImplicitOptions", "ResponseOracle"]
 
 
 # ---------------------------------------------------------------------------
@@ -39,29 +39,36 @@ __all__ = ["ActuatorImplicitOptions", "ResponseOracle"]
 
 
 @dataclass
-class ActuatorImplicitOptions:
-    """Configuration for implicit actuation; see :meth:`Actuator.set_effort_mode_implicit`.
+class ImplicitOptions:
+    """Configuration for implicit actuation; see :meth:`Actuator.set_effort_mode_implicit`."""
 
-    Args:
-        max_iters: Maximum Newton iterations per articulation group.
-        residual_tol: Stop when the residual vector norm falls below this
-            [N·s or N·m·s]. The residual is an impulse.
-        update_tol: Stop when the impulse-update vector norm falls below this
-            [N·s or N·m·s].
-        fd_epsilon: Relative forward finite-difference step in impulse space
-            (dimensionless; scaled by ``1 + |p|``).
-        derivative_floor: Smallest Jacobian pivot used during elimination and
-            back-substitution (dimensionless: the Jacobian is d(impulse)/d(impulse)).
-        warm_start: Initial impulse guess: ``"explicit"`` starts from the
-            explicit force impulse, ``"zero"`` starts from zero.
-    """
+    class WarmStart(str, Enum):
+        """Initial impulse guess for the Newton solve."""
+
+        EXPLICIT = "explicit"
+        """Start from the clamped explicit force impulse."""
+
+        ZERO = "zero"
+        """Start from zero impulse."""
 
     max_iters: int = 4
+    """Maximum Newton iterations per articulation group."""
+
     residual_tol: float = 1.0e-5
+    """Stop when the residual vector norm falls below this [N·s or N·m·s]."""
+
     update_tol: float = 1.0e-5
+    """Stop when the impulse-update vector norm falls below this [N·s or N·m·s]."""
+
     fd_epsilon: float = 1.0e-4
+    """Relative forward finite-difference step in velocity space (dimensionless)."""
+
     derivative_floor: float = 1.0e-8
-    warm_start: str = "explicit"
+    """Smallest Jacobian pivot used during elimination and back-substitution
+    (dimensionless: the Jacobian is d(impulse)/d(impulse))."""
+
+    warm_start: WarmStart = WarmStart.EXPLICIT
+    """Initial impulse guess."""
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +139,48 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
     if cached is not None:
         return cached
 
-    @wp.kernel
+    @wp.func
+    def predict_qd(
+        velocities: wp.array[float],
+        vel_indices: wp.array[wp.uint32],
+        inverse_blocks: wp.array3d[float],
+        group_local: wp.array2d[wp.int32],
+        pbuf: wp.array2d[wp.float64],
+        art: wp.int32,
+        g: wp.int32,
+        i: wp.int32,
+        ng: wp.int32,
+        si: wp.int32,
+    ) -> wp.float64:
+        """End-of-step velocity of row *i*: ``qd + (A p)_i``."""
+        qd_i = wp.float64(velocities[vel_indices[si]])
+        li = group_local[g, i]
+        for jj in range(ng):
+            qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
+        return qd_i
+
+    @wp.func
+    def force_at(
+        q_i: wp.float64,
+        qd_i: wp.float64,
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        params: wp.array2d[float],
+        clamp_params: wp.array2d[float],
+        si: wp.int32,
+    ) -> wp.float64:
+        """Clamped control law of row *i* at a predicted state."""
+        tq = wp.float64(target_pos[target_pos_indices[si]])
+        tqd = wp.float64(target_vel[target_vel_indices[si]])
+        ff = wp.float64(0.0)
+        if feedforward:
+            ff = wp.float64(feedforward[target_vel_indices[si]])
+        return clamp_chain(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si), q_i, qd_i, clamp_params, si)
+
+    @wp.kernel(enable_backward=False)
     def solve(
         group_size: wp.array[wp.int32],
         group_art: wp.array[wp.int32],
@@ -159,6 +207,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
         clamp_params: wp.array2d[float],
         pbuf: wp.array2d[wp.float64],
         rbuf: wp.array2d[wp.float64],
+        sbuf: wp.array2d[wp.float64],
         jbuf: wp.array3d[wp.float64],
         computed_efforts: wp.array[float],
         applied_efforts: wp.array[float],
@@ -180,58 +229,70 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
             else:
                 q0 = wp.float64(positions[pos_indices[si]])
                 qd0 = wp.float64(velocities[vel_indices[si]])
-                tq = wp.float64(target_pos[target_pos_indices[si]])
-                tqd = wp.float64(target_vel[target_vel_indices[si]])
-                ff = wp.float64(0.0)
-                if feedforward:
-                    ff = wp.float64(feedforward[target_vel_indices[si]])
-                tau0 = evaluate_force(q0, qd0, tq, tqd, ff, params, si)
-                pbuf[g, i] = hd * clamp_chain(tau0, q0, qd0, clamp_params, si)
+                pbuf[g, i] = hd * force_at(
+                    q0,
+                    qd0,
+                    target_pos,
+                    target_vel,
+                    feedforward,
+                    target_pos_indices,
+                    target_vel_indices,
+                    params,
+                    clamp_params,
+                    si,
+                )
 
         for _ in range(max_iters):
-            # Residual at the current impulse guess (state coupled via A_g).
+            # Residual at the current impulse guess (state coupled via A_g), plus
+            # the row slope s_i = h*df_i/dq + df_i/dqd by one forward difference.
             rn = wp.float64(0.0)
             for i in range(ng):
                 si = group_slot[g, i]
-                li = group_local[g, i]
-                qd_i = wp.float64(velocities[vel_indices[si]])
-                for jj in range(ng):
-                    qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
+                qd_i = predict_qd(velocities, vel_indices, inverse_blocks, group_local, pbuf, art, g, i, ng, si)
                 q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
-                tq = wp.float64(target_pos[target_pos_indices[si]])
-                tqd = wp.float64(target_vel[target_vel_indices[si]])
-                ff = wp.float64(0.0)
-                if feedforward:
-                    ff = wp.float64(feedforward[target_vel_indices[si]])
-                f_i = clamp_chain(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si), q_i, qd_i, clamp_params, si)
+                f_i = force_at(
+                    q_i,
+                    qd_i,
+                    target_pos,
+                    target_vel,
+                    feedforward,
+                    target_pos_indices,
+                    target_vel_indices,
+                    params,
+                    clamp_params,
+                    si,
+                )
                 ri = pbuf[g, i] - hd * f_i
                 rbuf[g, i] = ri
                 rn += ri * ri
+
+                eps = fd_eps * (wp.float64(1.0) + wp.abs(qd_i))
+                f_p = force_at(
+                    q_i + hd * eps,
+                    qd_i + eps,
+                    target_pos,
+                    target_vel,
+                    feedforward,
+                    target_pos_indices,
+                    target_vel_indices,
+                    params,
+                    clamp_params,
+                    si,
+                )
+                sbuf[g, i] = (f_p - f_i) / eps
             if rn < res_tol * res_tol:
                 break
 
-            # Jacobian columns by forward finite difference: perturb p_c (which
-            # shifts every predicted state through A_g) and re-form the residual.
-            for c in range(ng):
-                psave = pbuf[g, c]
-                eps = fd_eps * (wp.float64(1.0) + wp.abs(psave))
-                pbuf[g, c] = psave + eps
-                for i in range(ng):
-                    si = group_slot[g, i]
-                    li = group_local[g, i]
-                    qd_i = wp.float64(velocities[vel_indices[si]])
-                    for jj in range(ng):
-                        qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
-                    q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
-                    tq = wp.float64(target_pos[target_pos_indices[si]])
-                    tqd = wp.float64(target_vel[target_vel_indices[si]])
-                    ff = wp.float64(0.0)
-                    if feedforward:
-                        ff = wp.float64(feedforward[target_vel_indices[si]])
-                    f_i = clamp_chain(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si), q_i, qd_i, clamp_params, si)
-                    r_pert = pbuf[g, i] - hd * f_i
-                    jbuf[g, i, c] = (r_pert - rbuf[g, i]) / eps
-                pbuf[g, c] = psave
+            # Row i depends on p only through u_i = (A p)_i, so the Jacobian is
+            # exactly dr_i/dp_c = delta_ic - h * s_i * A[li, lc].
+            for i in range(ng):
+                li = group_local[g, i]
+                si_slope = sbuf[g, i]
+                for c in range(ng):
+                    jij = -hd * si_slope * wp.float64(inverse_blocks[art, li, group_local[g, c]])
+                    if i == c:
+                        jij += wp.float64(1.0)
+                    jbuf[g, i, c] = jij
 
             # Dense Newton step: solve J dp = -r by Gauss elimination, update p.
             for i in range(ng):
@@ -263,10 +324,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
         # Re-clamp at the final predicted state and write effort.
         for i in range(ng):
             si = group_slot[g, i]
-            li = group_local[g, i]
-            qd_i = wp.float64(velocities[vel_indices[si]])
-            for jj in range(ng):
-                qd_i += wp.float64(inverse_blocks[art, li, group_local[g, jj]]) * pbuf[g, jj]
+            qd_i = predict_qd(velocities, vel_indices, inverse_blocks, group_local, pbuf, art, g, i, ng, si)
             q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
             tq = wp.float64(target_pos[target_pos_indices[si]])
             tqd = wp.float64(target_vel[target_vel_indices[si]])
@@ -302,28 +360,33 @@ class _EffortModeImplicit:
         self,
         controller,
         clamping,
-        effective_inv_mass: ResponseOracle | None,
-        options: ActuatorImplicitOptions | None,
+        response: ResponseOracle,
+        options: ImplicitOptions | None,
         num_actuators: int,
         device: wp.Device,
-        vel_indices: wp.array[wp.uint32] | None = None,
+        vel_indices: wp.array[wp.uint32],
     ):
-        self._options = options or ActuatorImplicitOptions()
-        if self._options.warm_start not in ("explicit", "zero"):
-            raise ValueError(f"warm_start must be 'explicit' or 'zero', got {self._options.warm_start!r}")
+        self._options = options or ImplicitOptions()
+        try:
+            self._options.warm_start = ImplicitOptions.WarmStart(self._options.warm_start)
+        except ValueError:
+            valid = ", ".join(repr(w.value) for w in ImplicitOptions.WarmStart)
+            raise ValueError(f"warm_start must be one of {valid}, got {self._options.warm_start!r}") from None
         self._num_actuators = num_actuators
         self._device = device
-        if not isinstance(effective_inv_mass, ResponseOracle):
+        if not isinstance(response, ResponseOracle):
             raise ValueError(
-                "Implicit actuation requires effective_inv_mass to be a ResponseOracle; "
+                "Implicit actuation requires response to be a ResponseOracle; "
                 "build one with newton.actuators.ResponseOracle(model)."
             )
-        self._response = effective_inv_mass
+        self._response = response
         self._controller = controller
+        # Only controllers with their own prepare_implicit (the neural linearizers)
+        # read the per-slot response, so PD/PID skip both launches.
+        self._needs_prepare = type(controller).prepare_implicit is not Controller.prepare_implicit
         self._init_solver(controller, clamping)
         # Up front: this reads to host and allocates, both illegal during graph capture.
-        if vel_indices is not None:
-            self._build_groups(vel_indices)
+        self._build_groups(vel_indices)
 
     def _resolve_force_law(self, controller):
         """Validate the controller's in-kernel force law and adopt its params.
@@ -384,7 +447,6 @@ class _EffortModeImplicit:
         chain, entries = self._pack_clamps(clamping)
         key = (controller.evaluate_force, entries)
         self._kernel = _build_coupled_solve_kernel(controller.evaluate_force, chain, key)
-        self._groups_built = False
 
     def _build_groups(self, vel_indices) -> None:
         """Map actuator DOFs to (articulation, local index) and group by articulation."""
@@ -414,19 +476,30 @@ class _EffortModeImplicit:
             bad = int(dofs[~in_range][0])
             raise ValueError(f"Implicit actuation: DOF {bad} is not in an articulation")
 
-        # q + h*qd only integrates 1-DOF axes; BALL/FREE store quaternion components.
+        # q + h*qd needs one scalar coordinate per DOF; derive that from the
+        # joint's layout rather than its type.
         joint_type = model.joint_type.numpy()
         joint_qd_start_all = model.joint_qd_start.numpy()
-        scalar_types = (int(JointType.REVOLUTE), int(JointType.PRISMATIC))
+        joint_q_start_all = model.joint_q_start.numpy()
         dof_ok = np.zeros(int(model.joint_dof_count), dtype=bool)
-        for jt, lo, hi in zip(joint_type, joint_qd_start_all[:-1], joint_qd_start_all[1:], strict=True):
-            if int(jt) in scalar_types:
-                dof_ok[lo:hi] = True
+        joint_of_dof = np.zeros(int(model.joint_dof_count), dtype=np.int64)
+        for j, (qd_lo, qd_hi, q_lo, q_hi) in enumerate(
+            zip(
+                joint_qd_start_all[:-1],
+                joint_qd_start_all[1:],
+                joint_q_start_all[:-1],
+                joint_q_start_all[1:],
+                strict=True,
+            )
+        ):
+            joint_of_dof[qd_lo:qd_hi] = j
+            dof_ok[qd_lo:qd_hi] = (qd_hi - qd_lo) == (q_hi - q_lo)
         bad_dofs = [int(d) for d in dofs if not dof_ok[int(d)]]
         if bad_dofs:
+            bad = bad_dofs[0]
+            name = JointType(int(joint_type[joint_of_dof[bad]])).name
             raise ValueError(
-                f"Implicit actuation supports REVOLUTE and PRISMATIC joints only; "
-                f"DOF {bad_dofs[0]} belongs to another joint type"
+                f"Implicit actuation requires one position coordinate per DOF; DOF {bad} belongs to a {name} joint"
             )
 
         groups: dict[int, list[tuple[int, int]]] = {}  # art -> [(slot, local_dof)]
@@ -455,6 +528,7 @@ class _EffortModeImplicit:
         self._group_local = wp.array(local, dtype=wp.int32, device=device)
         self._pbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
         self._rbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
+        self._sbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
         self._jbuf = wp.zeros((num_groups, max_ng, max_ng), dtype=wp.float64, device=device)
         slot_art = np.zeros(self._num_actuators, dtype=np.int32)
         slot_local = np.zeros(self._num_actuators, dtype=np.int32)
@@ -466,10 +540,9 @@ class _EffortModeImplicit:
         self._slot_local = wp.array(slot_local, dtype=wp.int32, device=device)
         self._slot_response = wp.zeros(self._num_actuators, dtype=float, device=device)
         self._num_groups = num_groups
-        self._groups_built = True
 
     def is_graphable(self) -> bool:
-        return True
+        return self._controller.is_graphable()
 
     def compute_force(
         self,
@@ -500,29 +573,28 @@ class _EffortModeImplicit:
             raise ValueError(f"Implicit actuation requires dt > 0, got {dt}")
         if applied_forces is None:
             raise RuntimeError("Implicit actuation requires an applied-effort buffer")
-        if not self._groups_built:
-            self._build_groups(vel_indices)
-        wp.launch(
-            _gather_slot_response_kernel,
-            dim=self._num_actuators,
-            inputs=[self._response.inverse_blocks, self._slot_art, self._slot_local],
-            outputs=[self._slot_response],
-            device=self._device,
-        )
-        self._controller.prepare_implicit(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            pos_indices,
-            vel_indices,
-            target_pos_indices,
-            target_vel_indices,
-            ctrl_state,
-            float(dt),
-            self._slot_response,
-            self._device,
-        )
+        if self._needs_prepare:
+            wp.launch(
+                _gather_slot_response_kernel,
+                dim=self._num_actuators,
+                inputs=[self._response.inverse_blocks, self._slot_art, self._slot_local],
+                outputs=[self._slot_response],
+                device=self._device,
+            )
+            self._controller.prepare_implicit(
+                positions,
+                velocities,
+                target_pos,
+                target_vel,
+                pos_indices,
+                vel_indices,
+                target_pos_indices,
+                target_vel_indices,
+                ctrl_state,
+                float(dt),
+                self._slot_response,
+                self._device,
+            )
         inverse_blocks = self._response.inverse_blocks
 
         opts = self._options
@@ -551,10 +623,11 @@ class _EffortModeImplicit:
                 float(opts.update_tol),
                 float(opts.fd_epsilon),
                 float(opts.derivative_floor),
-                1 if opts.warm_start == "zero" else 0,
+                1 if opts.warm_start is ImplicitOptions.WarmStart.ZERO else 0,
                 self._clamp_params,
                 self._pbuf,
                 self._rbuf,
+                self._sbuf,
                 self._jbuf,
             ],
             outputs=[computed_forces, applied_forces],

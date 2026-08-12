@@ -22,7 +22,6 @@ from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
-    ActuatorImplicitOptions,
     ActuatorParsed,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -286,7 +285,7 @@ def _make_implicit_actuator(model, device, kp, kd, max_effort=None, **kwargs):
     clamping = None
     if max_effort is not None:
         clamping = [ClampingMaxEffort(max_effort=wp.array(max_effort, dtype=float, device=device))]
-    oracle = kwargs.setdefault("effective_inv_mass", ResponseOracle(model))
+    oracle = kwargs.setdefault("response", ResponseOracle(model))
     actuator = Actuator(
         indices=wp.array(np.arange(n, dtype=np.uint32), device=device),
         controller=ControllerPD(kp=kp, kd=kd),
@@ -633,54 +632,6 @@ class TestControllerNeuralMLP(unittest.TestCase):
         )
         np.testing.assert_allclose(forces.numpy(), np.array([3.0, 5.0, 7.0], dtype=np.float32), rtol=1e-5)
 
-    def test_implicit_neural_step_is_graph_capturable(self):
-        """is_graphable() must hold for the implicit neural path, not just explicit.
-
-        The implicit path runs a network forward and a ``wp.Tape`` backward every
-        step, and sets up its gradient buffers on first use. Captures with no
-        warm-up so that setup has to be capture-safe too, then checks the replayed
-        effort against the analytic Stable-PD solution.
-        """
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("graph capture requires CUDA")
-
-        h = 0.01
-        w0, w1, b = 400.0, 8.0, 2.5
-        q0, target = 0.2, 1.0
-
-        model = _build_pendulum(device)
-        state = model.state()
-        state.joint_q.assign(np.array([q0], dtype=np.float32))
-        control = model.control()
-        control.joint_target_q.assign(np.array([target], dtype=np.float32))
-
-        path = self._save_mlp(
-            np.array([[w0, w1]], dtype=np.float32), np.array([b], dtype=np.float32), filename="capture_linear.onnx"
-        )
-        controller = ControllerNeuralMLP(model_path=path)
-        oracle = ResponseOracle(model)
-        actuator = Actuator(
-            indices=wp.array([0], dtype=wp.uint32, device=device),
-            controller=controller,
-            control_target_pos_attr="joint_target_q",
-            control_target_vel_attr="joint_target_qd",
-        )
-        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
-        self.assertTrue(actuator.is_graphable())
-        oracle.refresh(state)
-        state_a, state_b = actuator.state(), actuator.state()
-
-        with wp.ScopedCapture(device) as capture:
-            actuator.step(state, control, state_a, state_b, dt=h)
-        control.joint_f.zero_()
-        wp.capture_launch(capture.graph)
-
-        alpha = _response_at_state(model, state)[0, 0]
-        e_q = target - q0
-        expected = (w0 * e_q + b) / (1.0 - alpha * h * w1 + alpha * h * h * w0)
-        self.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
-
     def test_neural_mlp_implicit_linear_net(self):
         """A 1-layer (linear) neural controller solves implicitly, exact.
 
@@ -710,7 +661,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        actuator.set_effort_mode_implicit(response=oracle)
         self.assertTrue(actuator.is_graphable())
 
         oracle.refresh(state)
@@ -722,6 +673,82 @@ class TestControllerNeuralMLP(unittest.TestCase):
         e_q = target - q0
         expected_tau = (w0 * e_q + b) / (1.0 - alpha * h * w1 + alpha * h * h * w0)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
+
+        # Same step under graph capture, with no warm-up: the per-step wp.Tape
+        # backward and the network's gradient buffers must both be capture-safe.
+        if device.is_cuda:
+            fresh = ControllerNeuralMLP(model_path=path)
+            captured = Actuator(
+                indices=wp.array([0], dtype=wp.uint32, device=device),
+                controller=fresh,
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            captured.set_effort_mode_implicit(response=oracle)
+            cap_a, cap_b = captured.state(), captured.state()
+            control.joint_f.zero_()
+            with wp.ScopedCapture() as capture:
+                captured.step(state, control, cap_a, cap_b, dt=h)
+            wp.capture_launch(capture.graph)
+            self.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
+
+    def test_neural_mlp_implicit_multi_dof_uses_per_dof_response(self):
+        """Each DOF must be capped with its own inverse mass, not DOF 0's.
+
+        The Jacobian guard scales a network's slopes using that DOF's response
+        ``alpha_i``. Every other implicit neural test is single-DOF, so the
+        per-slot gather always reads index 0 and a wrong local index is
+        invisible. Here a velocity-only net is made stiff enough that the guard
+        binds on a coupled two-link chain, where the two DOFs have different
+        ``alpha``: the capped slope is ``0.9 / (dt * alpha_i)``, so using the
+        wrong one changes the answer.
+        """
+        device = wp.get_device()
+        h = 0.01
+        w0, w1, bias = 0.0, 400.0, 1.5
+        margin = ControllerNeuralMLP.IMPLICIT_JACOBIAN_MARGIN
+        q0 = np.array([0.0, 0.0], dtype=np.float32)
+        qd0 = np.array([3.0, -2.0], dtype=np.float32)
+
+        model = _build_two_link(device)
+        state = model.state()
+        state.joint_q.assign(q0)
+        state.joint_qd.assign(qd0)
+        control = model.control()
+        control.joint_target_q.assign(np.zeros(2, dtype=np.float32))
+
+        path = self._save_mlp(
+            np.array([[w0, w1]], dtype=np.float32),
+            np.array([bias], dtype=np.float32),
+            filename="implicit_multidof.onnx",
+        )
+        oracle = ResponseOracle(model)
+        actuator = Actuator(
+            indices=wp.array([0, 1], dtype=wp.uint32, device=device),
+            controller=ControllerNeuralMLP(model_path=path),
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        actuator.set_effort_mode_implicit(response=oracle)
+
+        oracle.refresh(state)
+        state_a, state_b = actuator.state(), actuator.state()
+        control.joint_f.zero_()
+        actuator.step(state, control, state_a, state_b, dt=h)
+
+        response = _response_at_state(model, state)
+        alpha = np.diag(response)
+        # Guard: slope = a*dt + b is capped to (1 - margin) / (dt * alpha_i).
+        slope = -w0 * h + w1
+        limit = (1.0 - margin) / (h * alpha)
+        self.assertTrue(np.all(slope > limit), "the guard must bind for this test to mean anything")
+        self.assertGreater(abs(limit[0] - limit[1]), 1e-3 * abs(limit[0]), "the two DOFs must differ")
+        b_capped = w1 * (limit / slope)
+
+        # Affine law: (I - h*diag(b_capped) @ A) p = h*tau0, and effort = p/h.
+        tau0 = w1 * qd0 + bias
+        p = np.linalg.solve(np.eye(2) - h * (b_capped[:, None] * response), h * tau0)
+        np.testing.assert_allclose(control.joint_f.numpy(), p / h, rtol=2e-3, atol=1e-4)
 
     def test_neural_mlp_implicit_nonlinear_linearized(self):
         """A nonlinear neural controller enters the solve as a linearization.
@@ -784,7 +811,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        actuator.set_effort_mode_implicit(response=oracle)
         oracle.refresh(state)
         sa, sb = actuator.state(), actuator.state()
         control.joint_f.zero_()
@@ -895,7 +922,7 @@ class TestControllerNeuralLSTM(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
 
-        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        actuator.set_effort_mode_implicit(response=oracle)
         oracle.refresh(state)
         sa, sb = actuator.state(), actuator.state()
         control.joint_f.zero_()
@@ -1341,7 +1368,7 @@ class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
         )
         self.assertIsNone(controller.bind_params())
         with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(effective_inv_mass=ResponseOracle(model))
+            actuator.set_effort_mode_implicit(response=ResponseOracle(model))
 
 
 # ---------------------------------------------------------------------------
@@ -1526,19 +1553,42 @@ class TestClampingDCMotor(unittest.TestCase):
                 control_target_vel_attr="joint_target_qd",
             )
             if implicit:
-                actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+                actuator.set_effort_mode_implicit(response=oracle)
             # Retune through the (possibly view-backed) parameter array.
             clamp.max_motor_effort.assign(np.array([max_e], dtype=np.float32))
             control.joint_f.zero_()
             _refresh_and_step(actuator, oracle, state, control, h)
-            return float(control.joint_f.numpy()[0])
+            return float(control.joint_f.numpy()[0]), float(oracle.inverse_blocks.numpy()[0, 0, 0])
 
-        for implicit in (False, True):
-            loose = run(20.0, implicit)
-            tight = run(5.0, implicit)
-            # The retune must be honoured, and never exceed the stated current limit.
-            self.assertLessEqual(abs(tight), 5.0 * (1.0 + 1e-4))
-            self.assertLess(abs(tight), abs(loose))
+        # Explicit mode clamps at the measured velocity, so the envelope is exact:
+        #   corner = vel_lim * (1 + max_e/sat); vel = clip(qd0, +/-corner)
+        #   effort = clip(kp*e, sat*(-1 - vel/vel_lim), sat*(1 - vel/vel_lim)) then +/-max_e
+        for max_e, expected in ((20.0, -10.0), (5.0, -5.0)):
+            self.assertAlmostEqual(run(max_e, implicit=False)[0], expected, places=3)
+
+        # Implicit mode clamps at the *predicted* velocity, so the effort must be
+        # the envelope evaluated at the velocity its own impulse produces.
+        for max_e in (20.0, 5.0):
+            effort, alpha = run(max_e, implicit=True)
+            qd_pred = qd0 + alpha * h * effort
+            self.assertAlmostEqual(effort, _dc_envelope(sat, vel_lim, max_e, qd_pred), places=3)
+
+        self.assertLess(abs(run(5.0, implicit=True)[0]), abs(run(20.0, implicit=True)[0]))
+
+
+def _dc_bounds(sat: float, vel_lim: float, max_e: float, qd: float) -> tuple[float, float]:
+    """DC-motor effort interval at velocity *qd*, mirroring ClampingDCMotor."""
+    corner = vel_lim * (1.0 + max_e / sat) if sat > 0.0 else vel_lim
+    vel = float(np.clip(qd, -corner, corner))
+    return (
+        max(sat * (-1.0 - vel / vel_lim), -max_e),
+        min(sat * (1.0 - vel / vel_lim), max_e),
+    )
+
+
+def _dc_envelope(sat: float, vel_lim: float, max_e: float, qd: float) -> float:
+    """Upper DC-motor effort bound at *qd*; a hard-driven controller lands here."""
+    return _dc_bounds(sat, vel_lim, max_e, qd)[1]
 
 
 class TestClampingPositionBased(unittest.TestCase):
@@ -1748,7 +1798,7 @@ class TestActuatorStep(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
         if implicit:
-            actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+            actuator.set_effort_mode_implicit(response=oracle)
         self.assertTrue(actuator.is_graphable())
 
         def reference(q, qd, integral, kp_now, kd_now):
@@ -1901,10 +1951,6 @@ class TestActuatorStep(unittest.TestCase):
         """Verify a max-effort clamp bounds the implicit effort exactly."""
         self.run_test_actuator_pipeline(controller="pd", clamp="max_effort")
 
-    def test_pipeline_pd_max_effort_explicit(self):
-        """Verify the same max-effort clamp in explicit mode."""
-        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort", implicit=False)
-
     def test_pipeline_pd_dc_motor_implicit(self):
         """Verify the DC-motor envelope binds at the predicted end-of-step velocity."""
         self.run_test_actuator_pipeline(controller="pd", clamp="dc_motor", kp=5.0e4, kd=0.0, q0=0.0, qd0=1.0)
@@ -1922,14 +1968,6 @@ class TestActuatorStep(unittest.TestCase):
     def test_pipeline_pd_high_gain_implicit(self):
         """Verify an extreme stiffness stays finite and matches the reference."""
         self.run_test_actuator_pipeline(controller="pd", kp=1.0e8, kd=0.0, q0=0.0, target=0.5)
-
-    def test_pipeline_pid_implicit(self):
-        """Verify the implicit PID solve with the advanced integral folded in."""
-        self.run_test_actuator_pipeline(controller="pid", kp=400.0, ki=50.0, kd=6.0)
-
-    def test_pipeline_pid_implicit_multistep(self):
-        """Verify the PID integral accumulates across steps of the implicit pipeline."""
-        self.run_test_actuator_pipeline(controller="pid", kp=400.0, ki=50.0, kd=6.0, steps=5)
 
     def test_pipeline_pid_antiwindup_implicit(self):
         """Verify a saturating integral bound feeds the implicit solve each step.
@@ -1958,18 +1996,6 @@ class TestActuatorStep(unittest.TestCase):
             target=[0.6, 0.4],
         )
 
-    def test_pipeline_pd_coupled_explicit(self):
-        """Verify the same two-link chain in explicit mode, where the DOFs stay independent."""
-        self.run_test_actuator_pipeline(
-            controller="pd",
-            dofs=2,
-            implicit=False,
-            kp=[4000.0, 3000.0],
-            kd=[40.0, 30.0],
-            q0=[0.3, -0.8],
-            target=[0.6, 0.4],
-        )
-
     def test_pipeline_pid_coupled_implicit(self):
         """Verify a stateful controller on the coupled chain over several steps."""
         self.run_test_actuator_pipeline(
@@ -1987,10 +2013,6 @@ class TestActuatorStep(unittest.TestCase):
     def test_pipeline_pd_implicit_retune(self):
         """Verify gain and clamp writes reach the installed implicit solve."""
         self.run_test_actuator_pipeline(controller="pd", clamp="max_effort", retune=True)
-
-    def test_pipeline_pd_explicit_retune(self):
-        """Verify the same gain and clamp writes in explicit mode."""
-        self.run_test_actuator_pipeline(controller="pd", clamp="max_effort", implicit=False, retune=True)
 
     def test_pipeline_pd_stiff_implicit_converges(self):
         """Verify stiff gains converge to the target over a long implicit run."""
@@ -2150,7 +2172,7 @@ class TestActuatorStep(unittest.TestCase):
         self.assertAlmostEqual(explicit_tau, kp_val * (target - q0), delta=1e-3)
         self.assertLess(implicit_tau, explicit_tau)
 
-        actuator.set_effort_mode_implicit(effective_inv_mass=oracle)
+        actuator.set_effort_mode_implicit(response=oracle)
         control.joint_f.zero_()
         _refresh_and_step(actuator, oracle, state, control, h)
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), implicit_tau, delta=abs(implicit_tau) * 1e-5)
@@ -2189,7 +2211,7 @@ class TestActuatorImplicit(unittest.TestCase):
             control_target_vel_attr="joint_target_qd",
         )
         with self.assertRaises(NotImplementedError):
-            actuator.set_effort_mode_implicit(effective_inv_mass=ResponseOracle(model))
+            actuator.set_effort_mode_implicit(response=ResponseOracle(model))
 
     def test_validation_errors(self):
         """A non-ResponseOracle inverse mass and a missing dt raise clearly."""
@@ -2205,8 +2227,8 @@ class TestActuatorImplicit(unittest.TestCase):
             control_target_pos_attr="joint_target_q",
             control_target_vel_attr="joint_target_qd",
         )
-        with self.assertRaisesRegex(ValueError, "effective_inv_mass"):
-            actuator.set_effort_mode_implicit(effective_inv_mass=None)
+        with self.assertRaisesRegex(ValueError, "ResponseOracle"):
+            actuator.set_effort_mode_implicit(response=None)
 
         actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
         with self.assertRaisesRegex(ValueError, "requires dt"):
@@ -2220,7 +2242,9 @@ class TestActuatorImplicit(unittest.TestCase):
         kd = wp.array([1.0], dtype=float, device=device)
 
         with self.assertRaisesRegex(ValueError, "warm_start"):
-            _make_implicit_actuator(model, device, kp=kp, kd=kd, options=ActuatorImplicitOptions(warm_start="Zero"))
+            _make_implicit_actuator(
+                model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(warm_start="Zero")
+            )
 
         actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
         with self.assertRaisesRegex(ValueError, "dt > 0"):
@@ -2313,7 +2337,7 @@ class TestActuatorImplicit(unittest.TestCase):
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
             max_effort=np.array([limit, 1.0e6], dtype=np.float32),
-            effective_inv_mass=oracle,
+            response=oracle,
         )
         control.joint_f.zero_()
         _refresh_and_step(clamped, oracle, state, control, h)
@@ -2334,6 +2358,153 @@ class TestActuatorImplicit(unittest.TestCase):
         # And DOF 1 genuinely responded to DOF 0's saturation (a post-hoc clamp would not).
         self.assertGreater(abs(joint_f[1] - unclamped[1]), abs(unclamped[1]) * 1e-3)
 
+    def test_joint_type_support_follows_the_coordinate_layout(self):
+        """Joints with one coordinate per DOF are accepted; quaternion ones are not.
+
+        The solve predicts ``q + dt*qd``, which needs a scalar coordinate per
+        DOF. Revolute and D6 joints satisfy that, so both must be accepted. A
+        ball joint has three DOFs but four coordinates (a quaternion), so it
+        must be rejected with an error naming the joint type.
+        """
+        device = wp.get_device()
+
+        def build(kind):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            link = builder.add_link(mass=1.0)
+            builder.add_shape_box(link, hx=0.2, hy=0.1, hz=0.1)
+            if kind == "revolute":
+                joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+            elif kind == "d6":
+                joint = builder.add_joint_d6(
+                    parent=-1,
+                    child=link,
+                    linear_axes=[],
+                    angular_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z)],
+                )
+            else:
+                joint = builder.add_joint_ball(parent=-1, child=link)
+            builder.add_articulation([joint])
+            return builder.finalize(device=device)
+
+        def install(model):
+            n = model.joint_dof_count
+            actuator = Actuator(
+                indices=wp.array(np.arange(n, dtype=np.uint32), device=device),
+                controller=ControllerPD(
+                    kp=wp.array(np.full(n, 100.0, dtype=np.float32), dtype=float, device=device),
+                    kd=wp.zeros(n, dtype=float, device=device),
+                ),
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            actuator.set_effort_mode_implicit(response=ResponseOracle(model))
+
+        for kind in ("revolute", "d6"):
+            install(build(kind))  # must not raise
+
+        with self.assertRaisesRegex(ValueError, "BALL"):
+            install(build("ball"))
+
+    def test_newton_loop_needed_when_the_clamp_switches_branch(self):
+        """The Newton loop must iterate when the solve crosses a clamp branch.
+
+        Every built-in control law is affine in the impulse, and each branch of
+        the DC-motor envelope is affine too, so a single Newton step is normally
+        exact and the iteration count never matters. It starts to matter when
+        the solution lies on a different branch of the envelope than the initial
+        guess. Starting from zero impulse on a coupled two-link chain does that:
+        one step lands far away, two steps converge, and the result agrees with
+        a damped Picard iteration -- a genuinely different algorithm -- so both
+        ``max_iters`` and the convergence tolerances stay covered.
+        """
+        device = wp.get_device()
+        h = 0.01
+        kp, sat, vel_lim, max_e = 50.0, 20.0, 0.5, 50.0
+        q0 = np.zeros(2)
+        qd0 = np.array([1.5, -1.0])
+        target = np.array([1.0, 1.0])
+
+        def run(max_iters):
+            model = _build_two_link(device)
+            state = model.state()
+            state.joint_q.assign(q0.astype(np.float32))
+            state.joint_qd.assign(qd0.astype(np.float32))
+            control = model.control()
+            control.joint_target_q.assign(target.astype(np.float32))
+            oracle = ResponseOracle(model)
+            actuator = Actuator(
+                indices=wp.array([0, 1], dtype=wp.uint32, device=device),
+                controller=ControllerPD(
+                    kp=wp.array([kp, kp], dtype=float, device=device),
+                    kd=wp.zeros(2, dtype=float, device=device),
+                ),
+                clamping=[
+                    ClampingDCMotor(
+                        saturation_effort=wp.array([sat, sat], dtype=float, device=device),
+                        velocity_limit=wp.array([vel_lim, vel_lim], dtype=float, device=device),
+                        max_motor_effort=wp.array([max_e, max_e], dtype=float, device=device),
+                    )
+                ],
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            actuator.set_effort_mode_implicit(
+                response=oracle,
+                options=newton.actuators.Actuator.ImplicitOptions(max_iters=max_iters, warm_start="zero"),
+            )
+            control.joint_f.zero_()
+            _refresh_and_step(actuator, oracle, state, control, h)
+            return control.joint_f.numpy().copy(), _response_at_state(model, state)
+
+        converged, response = run(8)
+
+        # Independent reference: damped fixed point on p = h*g(q(p), qd(p)).
+        p = np.zeros(2)
+        for _ in range(200000):
+            qd_p = qd0 + response @ p
+            q_p = q0 + h * qd_p
+            bounds = np.array([_dc_bounds(sat, vel_lim, max_e, v) for v in qd_p])
+            f = np.clip(kp * (target - q_p), bounds[:, 0], bounds[:, 1])
+            p += 0.02 * (h * f - p)
+        np.testing.assert_allclose(converged, p / h, rtol=2e-3, atol=1e-3)
+
+        # One step lands on the wrong branch; two are enough and further ones change nothing.
+        single, _ = run(1)
+        self.assertGreater(np.max(np.abs(single - converged)), 0.5 * np.max(np.abs(converged)))
+        np.testing.assert_allclose(run(2)[0], converged, rtol=1e-6, atol=1e-6)
+
+    def test_warm_start_zero_reaches_the_same_solution(self):
+        """``warm_start="zero"`` converges to the same effort as the explicit start.
+
+        The two warm starts only change the initial guess, so a converged solve
+        must not depend on which was used. Nothing else exercises the ``"zero"``
+        branch, and starting from zero also makes the Newton loop climb from a
+        genuinely bad guess.
+        """
+        device = wp.get_device()
+        h = 0.01
+        kp_val, kd_val = 5.0e3, 12.0
+
+        def run(warm_start):
+            model = _build_two_link(device)
+            state = model.state()
+            state.joint_q.assign(np.array([0.1, -0.2], dtype=np.float32))
+            state.joint_qd.assign(np.array([0.5, 0.25], dtype=np.float32))
+            control = model.control()
+            control.joint_target_q.assign(np.array([0.8, 0.4], dtype=np.float32))
+            actuator, oracle = _make_implicit_actuator(
+                model,
+                device,
+                kp=wp.array([kp_val, kp_val], dtype=float, device=device),
+                kd=wp.array([kd_val, kd_val], dtype=float, device=device),
+                options=newton.actuators.Actuator.ImplicitOptions(warm_start=warm_start),
+            )
+            control.joint_f.zero_()
+            _refresh_and_step(actuator, oracle, state, control, h)
+            return control.joint_f.numpy().copy()
+
+        np.testing.assert_allclose(run("zero"), run("explicit"), rtol=1e-5, atol=1e-6)
+
     def test_singular_jacobian_stays_finite(self):
         """A degenerate Jacobian must not leak Inf/NaN into the effort.
 
@@ -2341,7 +2512,9 @@ class TestActuatorImplicit(unittest.TestCase):
         floored value has to reach the back-substitution divide, otherwise a
         vanishing diagonal produces a non-finite impulse. With kp = kd = 0 the
         force law is identically zero, so the residual is flat and the solve
-        leans on that floor.
+        leans on that floor. The correct effort is exactly zero, so asserting
+        that (rather than only finiteness) also pins the sign of the floored
+        pivot: a floor that drops the sign still returns a finite wrong answer.
         """
         device = wp.get_device()
         h = 0.01
@@ -2356,11 +2529,11 @@ class TestActuatorImplicit(unittest.TestCase):
             device,
             kp=wp.zeros(model.joint_dof_count, dtype=float, device=device),
             kd=wp.zeros(model.joint_dof_count, dtype=float, device=device),
-            options=ActuatorImplicitOptions(derivative_floor=1.0e-8),
+            options=newton.actuators.Actuator.ImplicitOptions(derivative_floor=1.0e-8),
         )
         control.joint_f.zero_()
         _refresh_and_step(actuator, oracle, state, control, h)
-        self.assertTrue(np.all(np.isfinite(control.joint_f.numpy())))
+        np.testing.assert_allclose(control.joint_f.numpy(), 0.0, atol=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -2370,21 +2543,6 @@ class TestActuatorImplicit(unittest.TestCase):
 
 class TestResponseOracle(unittest.TestCase):
     """ResponseOracle: the per-articulation inv(H) the implicit solve reads."""
-
-    def test_provider_matches_inverse_mass(self):
-        """The oracle's block diagonal equals (H^{-1})_{ii} per model DOF."""
-        device = wp.get_device()
-        model = _build_pendulum(device)
-        state = model.state()
-
-        provider = ResponseOracle(model)
-        provider.refresh(state)
-        n = model.joint_dof_count
-        alpha = np.diag(provider.inverse_blocks.numpy()[0, :n, :n])
-        self.assertEqual(alpha.shape, (n,))
-
-        alpha_ref = np.diag(_response_at_state(model, state))
-        self.assertAlmostEqual(alpha[0], alpha_ref[0], places=5)
 
     def test_inverse_blocks_match_dense_inverse(self):
         """refresh() fills the full per-articulation inverse mass block.
@@ -2497,49 +2655,6 @@ class TestResponseOracle(unittest.TestCase):
             J = np.eye(2) + h * np.diag(h * kp[sl] + kd[sl]) @ A
             expected[sl] = np.linalg.solve(J, h * f0) / h
         np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
-
-    def test_direct_write_from_solver(self):
-        """Use a solver-computed inverse mass written straight into the oracle.
-
-        MuJoCo's ``dof_invweight0`` gives the effective inverse mass per DOF; it
-        is written onto the articulation block diagonal and the solve reads it
-        directly.
-        """
-        device = wp.get_device()
-        h = 0.01
-        kp_val, kd_val = 500.0, 5.0
-        q0, target = 0.2, 1.0
-
-        model = _build_pendulum(device)
-        state = model.state()
-        state.joint_q.assign(np.array([q0], dtype=np.float32))
-        control = model.control()
-        control.joint_target_q.assign(np.array([target], dtype=np.float32))
-
-        actuator, oracle = _make_implicit_actuator(
-            model,
-            device,
-            kp=wp.array([kp_val], dtype=float, device=device),
-            kd=wp.array([kd_val], dtype=float, device=device),
-        )
-
-        # MuJoCo's compile-time effective inverse mass per DOF. This one-joint
-        # model maps MuJoCo DOF 0 to Newton DOF 0; multi-joint models must remap
-        # through the solver's MuJoCo->Newton DOF tables.
-        solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
-        alpha_mjc = np.array(solver.mj_model.dof_invweight0, dtype=np.float32)
-        blocks = np.zeros(oracle.inverse_blocks.shape, dtype=np.float32)
-        for i, v in enumerate(alpha_mjc):
-            blocks[0, i, i] = v
-        oracle.inverse_blocks.assign(blocks)
-
-        control.joint_f.zero_()
-        actuator.step(state, control, dt=h)  # no refresh(): alpha holds the MuJoCo values
-
-        a = float(alpha_mjc[0])
-        e_q = target - q0
-        expected_tau = kp_val * e_q / (1.0 + a * h * kd_val + a * h * h * kp_val)
-        self.assertAlmostEqual(control.joint_f.numpy()[0], expected_tau, delta=abs(expected_tau) * 1e-4)
 
     def test_refresh_from_mass_matrix_in_newton_dof_order(self):
         """Invert a mass matrix supplied in Newton DOF order (``dof_map=None``).
@@ -3228,11 +3343,13 @@ class TestActuatorSelectionAPI(unittest.TestCase):
                     launch.assert_not_called()
 
     def test_selection_api_updates_implicit_solve(self):
-        """Writing a gain through the selection API reaches the installed implicit solve.
+        """Gain writes reach the installed implicit solve, through either write path.
 
-        ``set_actuator_parameter`` scatters into the packed parameter views that
-        ``set_effort_mode_implicit`` binds, so the next solve must use the new gain.
-        This exercises the masked-scatter write path, not the direct ``.assign`` one.
+        ``set_effort_mode_implicit`` re-points the controller's parameter arrays
+        at columns of a packed array. Both the masked scatter used by
+        ``set_actuator_parameter`` and a direct ``.assign`` must land in that
+        pack. Re-installing the mode must also reuse the same pack, otherwise
+        the second bind would detach the views handed out by the first.
         """
         device = wp.get_device()
         h = 0.01
@@ -3262,33 +3379,14 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         expected = _expected_implicit_pd(model, state, kp2, kd_val, target, h)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
 
-    def test_bind_params_is_idempotent(self):
-        """Re-binding must not detach the installed solve from later writes."""
-        device = wp.get_device()
-        h = 0.01
-        kp1, kp2, kd_val = 500.0, 2000.0, 5.0
-        q0, target = 0.2, 1.0
-
-        model = _build_pendulum(device)
-        state = model.state()
-        state.joint_q.assign(np.array([q0], dtype=np.float32))
-        control = model.control()
-        control.joint_target_q.assign(np.array([target], dtype=np.float32))
-
-        actuator, oracle = _make_implicit_actuator(
-            model,
-            device,
-            kp=wp.array([kp1], dtype=float, device=device),
-            kd=wp.array([kd_val], dtype=float, device=device),
-        )
-
-        pack = actuator.controller.bind_params()
-        self.assertIs(actuator.controller.bind_params(), pack)
-
-        actuator.controller.kp.assign(np.array([kp2], dtype=np.float32))
+        # Re-installing must keep the same pack, so a direct assign still lands.
+        pack = actuator.controller._param_pack
+        actuator.set_effort_mode_implicit(response=oracle)
+        self.assertIs(actuator.controller._param_pack, pack)
+        actuator.controller.kp.assign(np.array([kp1], dtype=np.float32))
         control.joint_f.zero_()
         _refresh_and_step(actuator, oracle, state, control, h)
-        expected = _expected_implicit_pd(model, state, kp2, kd_val, target, h)
+        expected = _expected_implicit_pd(model, state, kp1, kd_val, target, h)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
 
 

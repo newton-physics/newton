@@ -244,7 +244,13 @@ class ClampingPositionBased(Clamping):
         return 1 + 2 * self.lookup_size
 
     def bind_params(self, block: wp.array2d[float]) -> None:
-        # Same row per actuator: [size, positions..., efforts...]. Copied, not aliased.
+        """Copy the lookup table into *block*.
+
+        Unlike the other clamps this copies rather than aliases, so edits to
+        :attr:`lookup_efforts` after the implicit mode is installed are not
+        seen by the solve. Reinstall the mode to pick them up.
+        """
+        # Same row per actuator: [size, positions..., efforts...].
         if self.lookup_positions is None:
             raise RuntimeError("ClampingPositionBased.bind_params() requires finalize() to have run")
         row = np.concatenate(

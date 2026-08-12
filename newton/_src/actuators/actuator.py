@@ -13,7 +13,7 @@ from .clamping.base import Clamping
 from .controllers.base import Controller
 from .delay import Delay
 from .effort_mode_explicit import _EffortModeExplicit
-from .effort_mode_implicit import ActuatorImplicitOptions, ResponseOracle, _EffortModeImplicit
+from .effort_mode_implicit import ImplicitOptions, ResponseOracle, _EffortModeImplicit
 
 
 @wp.kernel
@@ -187,10 +187,12 @@ class Actuator:
 
         self._effort_mode = _EffortModeExplicit(controller, self.clamping, self.device)
 
+    ImplicitOptions = ImplicitOptions
+
     def set_effort_mode_implicit(
         self,
-        effective_inv_mass: ResponseOracle,
-        options: ActuatorImplicitOptions | None = None,
+        response: ResponseOracle,
+        options: Actuator.ImplicitOptions | None = None,
     ) -> None:
         """Switch effort computation to implicit mode.
 
@@ -198,20 +200,25 @@ class Actuator:
         before the solver runs.
 
         Args:
-            effective_inv_mass: :class:`~newton.actuators.ResponseOracle` providing
-                the coupled effective inverse mass [1/kg or 1/(kg·m²)] the
-                actuator works against. Keep it current by calling
-                ``oracle.refresh(state)`` once per step before :meth:`step`.
-                Values may also be written directly into
-                ``oracle.inverse_blocks``, e.g. by inverting the solver's own
-                mass matrix.
-            options: Solver options; defaults to
-                :class:`ActuatorImplicitOptions`.
+            response: :class:`~newton.actuators.ResponseOracle` supplying the
+                coupled effective inverse mass [1/kg or 1/(kg·m²)]. Refresh it
+                once per step before :meth:`step`.
+            options: Solver options; defaults to :class:`Actuator.ImplicitOptions`.
+
+        Raises:
+            NotImplementedError: The actuator was built with ``requires_grad=True``.
+                The implicit solve is not differentiable.
         """
+        if self.requires_grad:
+            raise NotImplementedError(
+                "Implicit actuation is not differentiable: the Newton solve has no adjoint, "
+                "and the neural controllers open their own wp.Tape, which cannot nest inside "
+                "an outer tape. Build the Actuator with requires_grad=False."
+            )
         self._effort_mode = _EffortModeImplicit(
             self.controller,
             self.clamping,
-            effective_inv_mass,
+            response,
             options,
             self.num_actuators,
             self.device,
@@ -258,7 +265,7 @@ class Actuator:
            law, or the implicit end-of-step solve).
         3. **Clamping** — bounded effort into ``_applied_forces``. Explicit
            clamps after the control law; implicit enforces them inside the
-           solve. Steps 2 and 3 are one call into the installed effort mode.
+           solve.
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.

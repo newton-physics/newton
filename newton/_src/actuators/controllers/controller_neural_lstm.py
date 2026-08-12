@@ -16,16 +16,13 @@ from ..utils import (
     load_checkpoint,
     load_metadata,
 )
-from .base import Controller
-
-# Generic linearization helpers shared with the MLP controller: gather per-slot
-# state, pack [tau0, a, b, q0, qd0], and the linearized force law.
-from .controller_neural_mlp import (
-    ControllerNeuralMLP,
+from ._linearization import (
+    IMPLICIT_JACOBIAN_MARGIN,
     _assemble_linear_params_kernel,
     _gather_slot_state_kernel,
-    _mlp_linear_force,
+    _linear_force,
 )
+from .base import Controller
 
 if typing.TYPE_CHECKING:
     import torch
@@ -322,6 +319,8 @@ class ControllerNeuralLSTM(Controller):
                 )
 
         self._net_input = wp.zeros((1, num_actuators, 2), dtype=wp.float32, device=device)
+        self._net_input.requires_grad = True
+        self._grad_seed = wp.full((num_actuators, 1), 1.0, dtype=wp.float32, device=device)
         self._next_hidden = wp.zeros(
             (self._num_layers, num_actuators, self._hidden_size), dtype=wp.float32, device=device
         )
@@ -348,7 +347,7 @@ class ControllerNeuralLSTM(Controller):
 
     #: The network enters the general implicit solve as a per-step-linearized
     #: in-kernel law (see :meth:`prepare_implicit`), like any other controller.
-    evaluate_force = _mlp_linear_force
+    evaluate_force = _linear_force
 
     def _implicit_supported(self) -> bool:
         return not self._is_torch_checkpoint and self._network is not None
@@ -360,11 +359,6 @@ class ControllerNeuralLSTM(Controller):
         step by :meth:`prepare_implicit`. ``None`` for the Torch backend.
         """
         return self._lin_params if self._implicit_supported() else None
-
-    def _ensure_grad_setup(self) -> None:
-        if self._grad_seed is None:
-            self._net_input.requires_grad = True
-            self._grad_seed = wp.full((self._num_actuators, 1), 1.0, dtype=wp.float32, device=self._device)
 
     def prepare_implicit(
         self,
@@ -392,7 +386,6 @@ class ControllerNeuralLSTM(Controller):
             raise RuntimeError("Implicit ControllerNeuralLSTM requires controller state (hidden/cell)")
         device = device or self._device
         n = self._num_actuators
-        self._ensure_grad_setup()
         wp.launch(
             _gather_slot_state_kernel,
             dim=n,
@@ -431,7 +424,7 @@ class ControllerNeuralLSTM(Controller):
                 self._qd0,
                 inv_mass,
                 float(dt),
-                ControllerNeuralMLP.IMPLICIT_JACOBIAN_MARGIN,
+                IMPLICIT_JACOBIAN_MARGIN,
             ],
             outputs=[self._lin_params],
             device=device,

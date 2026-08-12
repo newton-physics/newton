@@ -27,7 +27,6 @@ construction.
    :nosignatures:
 
    Actuator
-   ActuatorImplicitOptions
    ActuatorParsed
    Clamping
    ClampingDCMotor

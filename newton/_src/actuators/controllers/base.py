@@ -132,10 +132,8 @@ class Controller:
         1. Pack the controller's parameters into a contiguous
            ``(num_actuators, P)`` array — row ``i`` for actuator slot ``i``,
            layout matching :attr:`evaluate_force`.
-        2. Re-point the controller's user-facing parameter arrays (e.g.
-           ``kp``) to column views of that pack, so later writes stay visible
-           to the solve kernel and to the selection API.
-        3. Return the pack; the effort mode adopts it as the kernel input.
+        2. Re-point the controller's parameter arrays (e.g. ``kp``) at columns
+           of the pack so later writes stay visible.
 
         ``None`` (the default) means the controller does not support implicit
         actuation.
