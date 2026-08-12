@@ -3,6 +3,7 @@
 
 """Static particle constraint batches for the LIMX solver."""
 
+from .affine_body_contact import ConstraintAffineBodyContact
 from .affine_dynamic_group import ConstraintGroupAffine
 from .affine_static_plane_contact import ConstraintAffineStaticPlaneContact
 from .anchor import ConstraintAnchor
@@ -15,6 +16,7 @@ from .tetrahedron_arap import ConstraintTetrahedronARAP
 from .triangle_elastic import ConstraintTriangleElastic
 
 __all__ = [
+    "ConstraintAffineBodyContact",
     "ConstraintAffineStaticPlaneContact",
     "ConstraintAnchor",
     "ConstraintDihedralBending",

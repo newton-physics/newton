@@ -35,10 +35,12 @@ https://newton-physics.github.io/newton/stable/solvers/index.html.
    :nosignatures:
 
    AffineBodyModel
+   ConstraintAffineBodyContact
    ConstraintAffineStaticPlaneContact
    ConstraintAnchor
    ConstraintDihedralBending
    ConstraintDistance
+   ConstraintGroupAffine
    ConstraintGroupDynamic
    ConstraintSelfCollision
    ConstraintStaticPlaneContact

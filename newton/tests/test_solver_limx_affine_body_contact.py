@@ -6,6 +6,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.limx import AffineBodyModel
 from newton._src.solvers.limx.affine_types import mat1212, vec12
 from newton._src.solvers.limx.constraints.affine_body_contact import ConstraintAffineBodyContact
@@ -528,6 +529,59 @@ class TestConstraintAffineBodyContactOperator(unittest.TestCase):
 
         self.assertGreater(expected_active_count, 0)
         np.testing.assert_allclose(forces[1] - forces[0], expected, rtol=5.0e-4, atol=5.0e-6)
+
+
+class TestConstraintAffineBodyContactPublicAPI(unittest.TestCase):
+    def test_exports_and_steps_affine_body_contact(self):
+        """Export and step grouped affine body and ground contact."""
+        vertices, tetrahedra, surface_triangles = _unit_tetrahedron()
+        model = newton.solvers.AffineBodyModel.from_instances(
+            vertices,
+            tetrahedra,
+            surface_triangles,
+            density=1.0,
+            rigidity=1.0,
+            initial_transforms=(
+                wp.transform_identity(),
+                wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity()),
+            ),
+            device="cpu",
+        )
+        model.gravity.zero_()
+
+        body_contact_type = newton.solvers.ConstraintAffineBodyContact
+        group_type = newton.solvers.ConstraintGroupAffine
+        body_contact = body_contact_type(
+            model,
+            thickness=0.01,
+            stiffness=10.0,
+            normal_damping=0.0,
+            friction=0.0,
+            friction_epsilon=1.0e-4,
+        )
+        ground_contact = newton.solvers.ConstraintAffineStaticPlaneContact(
+            model,
+            normal=(0.0, 0.0, 1.0),
+            offset=-10.0,
+            thickness=0.01,
+            stiffness=10.0,
+            normal_damping=0.0,
+            friction=0.0,
+            friction_epsilon=1.0e-4,
+        )
+        group = group_type([body_contact, ground_contact])
+        solver = newton.solvers.SolverLIMXAffine(
+            model,
+            nonlinear_iterations=1,
+            linear_iterations=50,
+            dynamic_operator=group,
+        )
+
+        solver.step(0.01)
+
+        self.assertEqual(solver.body_count, 2)
+        self.assertIs(solver.dynamic_operator, group)
+        self.assertTrue(np.isfinite(solver.q.numpy()).all())
 
 
 if __name__ == "__main__":
