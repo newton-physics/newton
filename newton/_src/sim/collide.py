@@ -21,6 +21,7 @@ from ..geometry.flags import ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
+from ..geometry.soft_contacts_bvh import build_rigid_soft_bvh_rigid_feature_tables, launch_rigid_soft_bvh_contacts
 from ..geometry.soft_contacts_sdf import launch_soft_ef_contacts
 from ..geometry.support_function import (
     GenericShapeData,
@@ -556,7 +557,9 @@ def _world_compatible_pairs(
     return _pairs(np.concatenate(f_cols), np.concatenate(s_cols))
 
 
-def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+def _build_soft_particle_rigid_contact_pairs(
+    model: Model, capable_shape_mask: np.ndarray | None = None
+) -> wp.array[wp.vec2i]:
     """Build the soft-rigid (particle-shape) candidate pairs for ``model``.
 
     Emits every particle-shape pair whose worlds are compatible (see :func:`_world_compatible_pairs`).
@@ -569,7 +572,13 @@ def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]
     if particle_count == 0 or shape_count == 0:
         return wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
     world_count = int(getattr(model, "world_count", 0) or 0)
-    return _world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device)
+    return _world_compatible_pairs(
+        model.particle_world.numpy(),
+        model.shape_world.numpy(),
+        world_count,
+        model.device,
+        shape_ok=capable_shape_mask,
+    )
 
 
 def _count_soft_particle_rigid_contact_pairs(model: Model) -> int:
@@ -773,6 +782,8 @@ class CollisionPipeline:
         soft_contact_gap: float | None = None,
         soft_contact_margin: float | None = None,
         enable_rigid_soft_full_surface_contact: bool = False,
+        full_surface_mesh_backend: Literal["bvh", "sdf"] = "bvh",
+        rigid_soft_bvh_candidate_max: int | None = None,
         requires_grad: bool | None = None,
         broad_phase: Literal["nxn", "sap", "explicit"]
         | BroadPhaseAllPairs
@@ -822,15 +833,28 @@ class CollisionPipeline:
                 value is detection-only slack on top of the particle radius,
                 i.e. a gap under the margin/gap convention).
             enable_rigid_soft_full_surface_contact: Generate soft contacts over the full soft-mesh
-                surface -- the edges and triangle interiors -- against rigid SDFs, in addition to the
-                per-vertex (particle) contacts. Catches rigid features that pass between soft vertices
-                (e.g. a thin box edge through a coarse cloth cell), which the per-particle path misses.
-                Requires an SDF on every participating rigid mesh/convex shape (provision via
-                :meth:`ModelBuilder.ShapeConfig.configure_sdf`, e.g. ``configure_sdf(force_sdf=True)`` on
-                the builder's ``default_shape_cfg``), and is consumed only by
-                :class:`~newton.solvers.SolverVBD`; other solvers raise on such contacts. Records are
-                emitted into :attr:`Contacts.soft_contact_indices`. Defaults to False. Fixed at
-                construction because it sizes the soft-contact buffer headroom.
+                surface, in addition to the ordinary particle-shape contacts. Analytic rigid shapes
+                use SDF minimization. Mesh and convex-mesh shapes use the backend selected by
+                ``full_surface_mesh_backend``. This catches rigid features that pass between soft
+                vertices (for example, a thin box edge through a coarse cloth cell).
+            full_surface_mesh_backend: Backend for mesh and convex-mesh rigid shapes when
+                ``enable_rigid_soft_full_surface_contact`` is enabled. ``"bvh"`` (default)
+                enumerates full VF/FV/EE primitive pairs and does not require a volume SDF;
+                ``"sdf"`` retains the SDF-minimization implementation and requires a provisioned SDF.
+                BVH normals use the rigid mesh winding: closed solid meshes require coherent
+                outward winding, while an open mesh is treated as a one-sided surface whose
+                positive-winding side is outside. The BVH backend does not reconstruct a global
+                inside/outside sign for open or inconsistently wound meshes.
+                The SDF backend requires an SDF on every participating rigid mesh/convex shape
+                (provision via :meth:`ModelBuilder.ShapeConfig.configure_sdf`, for example
+                ``configure_sdf(force_sdf=True)`` on the builder's ``default_shape_cfg``).
+                Full-surface records are consumed only by :class:`~newton.solvers.SolverVBD`;
+                other solvers raise on such contacts. Both options are fixed at construction
+                because they determine contact and intermediate-buffer capacities.
+            rigid_soft_bvh_candidate_max: Capacity of the intermediate rigid-soft BVH
+                primitive-pair buffer. Defaults to four candidates per BVH query seed. This is
+                independent of ``soft_contact_max``, which sizes the shared final soft-contact
+                output buffer. Ignored when the rigid-soft BVH path has no query seeds.
             requires_grad: Whether to enable gradient computation. If None, uses model.requires_grad.
             broad_phase:
                 Either a broad phase mode string ("explicit", "nxn", "sap") or
@@ -905,6 +929,10 @@ class CollisionPipeline:
         if contact_matching not in ("disabled", "latest", "sticky"):
             raise ValueError(
                 f"contact_matching must be one of 'disabled', 'latest', 'sticky', got {contact_matching!r}"
+            )
+        if full_surface_mesh_backend not in ("bvh", "sdf"):
+            raise ValueError(
+                f"full_surface_mesh_backend must be either 'bvh' or 'sdf', got {full_surface_mesh_backend!r}"
             )
         if contact_matching_pos_threshold < 0.0:
             raise ValueError(
@@ -1189,33 +1217,97 @@ class CollisionPipeline:
                 f"(expected {shape_count}, got {self.narrow_phase.shape_aabb_upper.shape[0]})"
             )
 
-        # Built here (not in finalize) so models/tasks that never collide don't pay for it.
-        # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
-        self.soft_rigid_contact_pairs = _build_soft_particle_rigid_contact_pairs(model)
-        self._soft_contact_pair_count = len(self.soft_rigid_contact_pairs)
         self.enable_rigid_soft_full_surface_contact = enable_rigid_soft_full_surface_contact
-        # Full-surface edge/face candidate pairs (world-compatible, like the particle pairs above);
-        # empty when the flag is off so the flag-off default stays bit-for-bit.
+        self.full_surface_mesh_backend = full_surface_mesh_backend
+        shape_types = model.shape_type.numpy() if model.shape_count > 0 else np.empty(0, dtype=np.int32)
+        is_mesh = np.isin(shape_types, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
+        has_mesh_source = (
+            np.array([source is not None for source in model.shape_source], dtype=bool)
+            if model.shape_count > 0
+            else np.empty(0, dtype=bool)
+        )
+        self._rigid_soft_bvh_rigid_mesh_shape_mask = np.zeros(model.shape_count, dtype=bool)
+
+        # Full-surface SDF feature pairs and BVH mesh features are disjoint. Analytic shapes always
+        # retain the exact SDF edge/face path; mesh shapes use exactly the requested backend.
         if enable_rigid_soft_full_surface_contact:
-            # Only shapes with a usable SDF can generate edge/face contacts (see
-            # _full_surface_capable_shape_mask). A participating mesh/convex WITHOUT an SDF is a
-            # provisioning mistake and fails loudly. Unsupported shape TYPES (heightfields, finite
-            # planes, Gaussian splats, ...) instead warn and are excluded from the edge/face candidate
-            # pairs, falling back to per-particle soft contact -- so one such shape does not disable
-            # full-surface for the rest of the scene.
-            _capable = _full_surface_capable_shape_mask(model) if model.shape_count > 0 else None
-            if _capable is not None:
-                _raise_on_unprovisioned_full_surface_meshes(model, _capable)
-                _warn_full_surface_fallbacks(model, _capable)
-            self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model, _capable)
-            self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model, _capable)
+            sdf_capable = _full_surface_capable_shape_mask(model) if model.shape_count > 0 else np.empty(0, dtype=bool)
+            if full_surface_mesh_backend == "sdf":
+                _raise_on_unprovisioned_full_surface_meshes(model, sdf_capable)
+            else:
+                missing_mesh = np.flatnonzero(is_mesh & ~has_mesh_source)
+                if len(missing_mesh):
+                    labels = getattr(model, "shape_label", None)
+                    missing = [
+                        f"{labels[i] if labels is not None and i < len(labels) else f'shape_{int(i)}'} (index {int(i)})"
+                        for i in missing_mesh
+                    ]
+                    raise ValueError(
+                        "full_surface_mesh_backend='bvh' requires every mesh and convex-mesh shape "
+                        f"to have a Mesh source; missing sources: {missing}"
+                    )
+                # Include every mesh instance in the fixed owner tables. COLLIDE_PARTICLES is
+                # mutable and is therefore tested in the kernels, rather than frozen here.
+                self._rigid_soft_bvh_rigid_mesh_shape_mask = is_mesh & has_mesh_source
+                # Meshes move to the BVH family; the remaining SDF feature path is analytic only.
+                sdf_capable = sdf_capable & ~is_mesh
+            _warn_full_surface_fallbacks(model, sdf_capable | self._rigid_soft_bvh_rigid_mesh_shape_mask)
+            self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model, sdf_capable)
+            self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model, sdf_capable)
         else:
             _empty_pairs = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
             self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _empty_pairs, _empty_pairs
+
+        # BVH mesh shapes obtain their soft-vertex records from the VF query, so only the remaining
+        # shapes need entries in the particle-shape candidate list. This does not exclude those shapes
+        # from the separate SDF edge/face passes.
+        non_rigid_soft_bvh_shape_mask = ~self._rigid_soft_bvh_rigid_mesh_shape_mask
+        self.soft_rigid_contact_pairs = _build_soft_particle_rigid_contact_pairs(model, non_rigid_soft_bvh_shape_mask)
+        self._soft_contact_pair_count = len(self.soft_rigid_contact_pairs)
+        self.rigid_soft_bvh_soft_particle_rigid_shape_pairs = _build_soft_particle_rigid_contact_pairs(
+            model, self._rigid_soft_bvh_rigid_mesh_shape_mask
+        )
+        # These feature tables contain geometry only from rigid mesh/convex-mesh shapes selected for
+        # the BVH backend; analytic rigid shapes and soft-mesh features are not included.
+        # Naming: ``rigid_soft_bvh`` scopes the subsystem; the following ``rigid`` identifies the
+        # side whose vertices and edges are stored.
+        (
+            self.rigid_soft_bvh_rigid_vertex_table,
+            self.rigid_soft_bvh_rigid_vertex_position,
+            self.rigid_soft_bvh_rigid_vertex_normal,
+            self.rigid_soft_bvh_rigid_edge_table,
+            self.rigid_soft_bvh_rigid_edge_vertex_rows,
+            self.rigid_soft_bvh_rigid_edge_outward,
+        ) = build_rigid_soft_bvh_rigid_feature_tables(model, self._rigid_soft_bvh_rigid_mesh_shape_mask)
+        self._rigid_soft_bvh_query_seed_count = (
+            len(self.rigid_soft_bvh_soft_particle_rigid_shape_pairs)
+            + (len(self.rigid_soft_bvh_rigid_vertex_table) if model.tri_count > 0 else 0)
+            + (len(self.rigid_soft_bvh_rigid_edge_table) if model.edge_count > 0 else 0)
+        )
+        self._rigid_soft_bvh_requires_soft_feature_bvhs = (
+            model.tri_count > 0 and len(self.rigid_soft_bvh_rigid_vertex_table) > 0
+        ) or (model.edge_count > 0 and len(self.rigid_soft_bvh_rigid_edge_table) > 0)
+
+        if rigid_soft_bvh_candidate_max is not None and rigid_soft_bvh_candidate_max < 0:
+            raise ValueError(f"rigid_soft_bvh_candidate_max must be non-negative, got {rigid_soft_bvh_candidate_max}")
+        if self._rigid_soft_bvh_query_seed_count > 0:
+            # Candidate storage is private to the BVH traversal. Do not include particle/SDF
+            # contact capacity here: those contacts append directly to the final output buffer.
+            self._rigid_soft_bvh_candidate_max = (
+                4 * self._rigid_soft_bvh_query_seed_count
+                if rigid_soft_bvh_candidate_max is None
+                else rigid_soft_bvh_candidate_max
+            )
+        else:
+            self._rigid_soft_bvh_candidate_max = 0
+
         if soft_contact_max is None:
             soft_contact_max = self.soft_contact_pair_count
-            # Flag-aware headroom: one record per world-compatible (soft edge/tri, shape) pair.
             soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
+            # Every retained BVH candidate can emit at most one final contact row.
+            soft_contact_max += self._rigid_soft_bvh_candidate_max
+        if soft_contact_max < 0:
+            raise ValueError(f"soft_contact_max must be non-negative, got {soft_contact_max}")
         self.soft_contact_gap = soft_contact_gap
         # Soft (cloth) self-contact tuning values, populated by
         # init_soft_self_contact(); consumed at detection time like
@@ -1225,6 +1317,11 @@ class CollisionPipeline:
         self.soft_self_contact_gap = 0.0
         self.soft_self_contact_rest_shape_exclusion_radius = 0.0
         self._soft_contact_max = soft_contact_max
+        with wp.ScopedDevice(device):
+            self._rigid_soft_bvh_candidate_count = wp.zeros(1, dtype=wp.int32, device=device)
+            self._rigid_soft_bvh_candidates = wp.empty(
+                self._rigid_soft_bvh_candidate_max, dtype=wp.vec4i, device=device
+            )
 
         self.requires_grad = requires_grad
         self.deterministic = deterministic
@@ -1258,9 +1355,14 @@ class CollisionPipeline:
         else:
             self._contact_matcher = None
 
-        # Soft (cloth) self-contact: disabled until init_soft_self_contact() creates
-        # the shared detector (re-pointed per Contacts buffer; see
-        # _get_soft_self_contact_detector).
+        # One detector owns the deformable surface BVHs. BVH rigid-soft contact needs only the
+        # acceleration structures; self-contact result buffers remain an independent opt-in.
+        self._soft_self_contact_enabled = False
+        self._soft_surface_detector: TriMeshCollisionDetector | None = None
+        if self._rigid_soft_bvh_requires_soft_feature_bvhs:
+            self._soft_surface_detector = TriMeshCollisionDetector(model)
+        # Private compatibility alias retained for callers/tests that inspected the detector
+        # before its ownership was generalized from self-contact to all soft-surface BVH users.
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
 
     @property
@@ -1272,6 +1374,28 @@ class CollisionPipeline:
     def soft_contact_max(self) -> int:
         """Maximum soft contact buffer capacity used by this pipeline."""
         return self._soft_contact_max
+
+    @property
+    def rigid_soft_bvh_requires_soft_feature_bvhs(self) -> bool:
+        """Whether rigid-soft detection requires BVHs over soft triangles or edges."""
+        return self._rigid_soft_bvh_requires_soft_feature_bvhs
+
+    @property
+    def rigid_soft_bvh_candidate_count(self) -> wp.array[wp.int32]:
+        """Attempted BVH primitive-pair count from the latest collision pass.
+
+        A value greater than :attr:`rigid_soft_bvh_candidate_max` indicates truncation of the
+        intermediate BVH candidate stream; final soft-contact overflow remains visible through
+        :attr:`Contacts.soft_contact_count` versus :attr:`Contacts.soft_contact_max`. Candidate
+        slots are claimed atomically, so the retained subset is not deterministic after overflow,
+        even when rigid-contact sorting is deterministic.
+        """
+        return self._rigid_soft_bvh_candidate_count
+
+    @property
+    def rigid_soft_bvh_candidate_max(self) -> int:
+        """Capacity of the intermediate BVH primitive-pair stream."""
+        return self._rigid_soft_bvh_candidate_max
 
     @property
     def soft_contact_margin(self) -> float:
@@ -1327,8 +1451,8 @@ class CollisionPipeline:
             allocated; rigid-contact differentiability may change without prior
             notice (see :meth:`collide`).
         """
-        detector = self._soft_self_contact_detector
-        soft_self_contact = detector is not None
+        detector = self._soft_surface_detector
+        soft_self_contact = self._soft_self_contact_enabled
         contacts = Contacts(
             self.rigid_contact_max,
             self.soft_contact_max,
@@ -1347,10 +1471,13 @@ class CollisionPipeline:
             soft_self_contact_record_triangle_vertices=(
                 detector.record_triangle_contacting_vertices if soft_self_contact else False
             ),
-            # The per-thread replay array must span every soft candidate-pair thread (particle + edge +
-            # face), independent of soft_contact_max (which the caller may set smaller). See E2 fix.
+            # The replay array spans every particle/SDF launch thread and fixed BVH emission thread,
+            # independent of output capacity, so differentiable slots never alias.
             soft_contact_tids_size=(
-                self._soft_contact_pair_count + len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
+                self._soft_contact_pair_count
+                + len(self.soft_edge_rigid_pairs)
+                + len(self.soft_face_rigid_pairs)
+                + self._rigid_soft_bvh_candidate_max
             ),
             requires_grad=self.requires_grad,
             device=self.model.device,
@@ -1429,7 +1556,7 @@ class CollisionPipeline:
         # The explicit opt-in is what creates the detector (its BVHs are built
         # from model.particle_q); the result struct stays unallocated until the
         # first Contacts buffer is bound. Re-configuring rebuilds the detector.
-        self._soft_self_contact_detector = TriMeshCollisionDetector(
+        self._soft_surface_detector = TriMeshCollisionDetector(
             self.model,
             record_triangle_contacting_vertices=record_triangle_contacting_vertices,
             vertex_collision_buffer_pre_alloc=vertex_buffer_pre_alloc,
@@ -1439,6 +1566,8 @@ class CollisionPipeline:
             external_vertex_triangle_filtering_map=external_vertex_filter_map,
             external_edge_edge_filtering_map=external_edge_filter_map,
         )
+        self._soft_self_contact_detector = self._soft_surface_detector
+        self._soft_self_contact_enabled = True
 
     def set_collision_detection_range(
         self,
@@ -1484,9 +1613,18 @@ class CollisionPipeline:
 
     def _ensure_soft_self_contact_detector(self) -> TriMeshCollisionDetector:
         """Return the shared detector created by :meth:`init_soft_self_contact`."""
-        if self._soft_self_contact_detector is None:
+        if not self._soft_self_contact_enabled or self._soft_surface_detector is None:
             raise ValueError("configure the pipeline with init_soft_self_contact() first.")
-        return self._soft_self_contact_detector
+        return self._soft_surface_detector
+
+    def _ensure_soft_surface_detector(self) -> TriMeshCollisionDetector:
+        """Return the detector that owns the deformable surface BVHs."""
+        if self._soft_surface_detector is None:
+            raise ValueError(
+                "This pipeline has no soft-surface BVH; enable BVH full-surface contact or "
+                "configure soft self-contact first."
+            )
+        return self._soft_surface_detector
 
     def _get_soft_self_contact_detector(self, contacts: Contacts) -> TriMeshCollisionDetector:
         """Return the shared detector re-pointed at ``contacts.soft_self_contact_data``."""
@@ -1501,27 +1639,45 @@ class CollisionPipeline:
             detector._bind_external_buffers(data)
         return detector
 
-    def refit_soft_self_contact_bvh(self, new_pos: wp.array[wp.vec3], rebuild: bool = False) -> None:
-        """Refit (or fully rebuild) the soft self-contact BVHs to ``new_pos``.
+    @staticmethod
+    def _soft_surface_positions(state_or_positions: State | wp.array) -> wp.array:
+        return state_or_positions.particle_q if isinstance(state_or_positions, State) else state_or_positions
+
+    def refit_soft_surface_bvh(self, state_or_positions: State | wp.array[wp.vec3]) -> None:
+        """Refit the shared soft triangle/edge BVHs to current particle positions.
 
         Keeping the BVHs up to date is the caller's responsibility:
-        :meth:`collide` never updates them, and self-contact detection reads
-        the positions of the last refit/rebuild. Call this after particle
-        positions change; pass ``rebuild=True`` to rebuild the trees from
-        scratch when repeated refitting has degraded their quality under large
-        deformation. (An owning solver refits internally as part of its own
-        detection procedure.)
+        :meth:`collide` never updates them. Call this before a collision pass
+        after particle positions change. An owning solver does this at each
+        scheduled rigid-soft BVH detection point.
 
         Args:
-            new_pos: Particle positions [m] to fit the BVHs to, e.g.
-                ``state.particle_q``.
-            rebuild: Rebuild the trees instead of refitting them.
+            state_or_positions: A :class:`State` or its particle position array.
         """
-        detector = self._ensure_soft_self_contact_detector()
-        if rebuild:
-            detector.rebuild(new_pos)
+        detector = self._ensure_soft_surface_detector()
+        positions = self._soft_surface_positions(state_or_positions)
+        # Warp's grouped CPU BVH refit is not currently reliable; rebuilding preserves the
+        # public freshness contract on CPU. CUDA uses the intended cheaper refit path.
+        if self.device.is_cpu:
+            detector.rebuild(positions)
         else:
-            detector.refit(new_pos)
+            detector.refit(positions)
+
+    def rebuild_soft_surface_bvh(self, state_or_positions: State | wp.array[wp.vec3]) -> None:
+        """Fully rebuild the shared soft triangle/edge BVHs from current positions."""
+        self._ensure_soft_surface_detector().rebuild(self._soft_surface_positions(state_or_positions))
+
+    def refit_soft_self_contact_bvh(self, new_pos: wp.array[wp.vec3], rebuild: bool = False) -> None:
+        """Deprecated alias for the shared soft-surface BVH lifecycle methods."""
+        warnings.warn(
+            "refit_soft_self_contact_bvh() is deprecated; use refit_soft_surface_bvh() or rebuild_soft_surface_bvh().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if rebuild:
+            self.rebuild_soft_surface_bvh(new_pos)
+        else:
+            self.refit_soft_surface_bvh(new_pos)
 
     def reset_contact_matching(self, world_mask: wp.array[wp.bool] | None = None) -> None:
         """Clear all or reset-selected previous-frame contact history.
@@ -1595,7 +1751,7 @@ class CollisionPipeline:
                 into ``contacts.soft_self_contact_data``. Requires
                 :meth:`init_soft_self_contact` to have been called. The
                 self-contact BVHs are **not** updated by this call — keep them
-                current via :meth:`refit_soft_self_contact_bvh`.
+                current via :meth:`refit_soft_surface_bvh`.
         """
         # Keep the buffer's full-surface capability marker in sync with this pipeline on every call.
         # collide() may be handed a Contacts created elsewhere (or by a flag-off pipeline); the edge/
@@ -1932,7 +2088,7 @@ class CollisionPipeline:
             )
 
         # Full-surface EDGE/FACE passes (opt-in, set at construction): add the soft edge/face contacts
-        # the per-particle path cannot detect. Run after the legacy particle launch on the same stream;
+        # the per-particle path cannot detect. Run after the particle-contact launch on the same stream;
         # the particle records therefore occupy [0, particle_count) and the edge/face records append.
         # The flag is fixed at construction because soft_contact_max headroom is sized there.
         if self.enable_rigid_soft_full_surface_contact and state.particle_q:
@@ -1946,6 +2102,33 @@ class CollisionPipeline:
                 face_pairs=self.soft_face_rigid_pairs,
                 n_particle_pairs=self.soft_contact_pair_count,
             )
+            if self._rigid_soft_bvh_query_seed_count > 0:
+                launch_rigid_soft_bvh_contacts(
+                    model=model,
+                    state=state,
+                    contacts=contacts,
+                    detector=self._soft_surface_detector,
+                    particle_shape_pairs=self.rigid_soft_bvh_soft_particle_rigid_shape_pairs,
+                    rigid_vertex_table=self.rigid_soft_bvh_rigid_vertex_table,
+                    rigid_vertex_position=self.rigid_soft_bvh_rigid_vertex_position,
+                    rigid_vertex_normal=self.rigid_soft_bvh_rigid_vertex_normal,
+                    rigid_edge_table=self.rigid_soft_bvh_rigid_edge_table,
+                    rigid_edge_vertex_rows=self.rigid_soft_bvh_rigid_edge_vertex_rows,
+                    rigid_edge_outward=self.rigid_soft_bvh_rigid_edge_outward,
+                    candidate_count=self._rigid_soft_bvh_candidate_count,
+                    candidates=self._rigid_soft_bvh_candidates,
+                    candidate_max=self._rigid_soft_bvh_candidate_max,
+                    gap=soft_contact_gap,
+                    tid_base=(
+                        self.soft_contact_pair_count + len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
+                    ),
+                    edge_edge_parallel_epsilon=(
+                        self._soft_surface_detector.edge_edge_parallel_epsilon
+                        if self._soft_surface_detector is not None
+                        else 1.0e-5
+                    ),
+                    device=self.device,
+                )
 
         # Preserve the previous provenance if validation or collision setup fails.
         contacts._contact_matching_mode = self.contact_matching
@@ -1956,7 +2139,7 @@ class CollisionPipeline:
             detector = self._get_soft_self_contact_detector(contacts)
             query_radius = self.soft_self_contact_margin + self.soft_self_contact_gap
             # The BVHs (and the positions detection reads) are NOT updated here —
-            # keeping them current via refit_soft_self_contact_bvh() is
+            # keeping them current via refit_soft_surface_bvh() is
             # the caller's responsibility. Rest-shape exclusion measures pair
             # distances in the model's initial (rest) positions.
             detector.vertex_triangle_collision_detection(

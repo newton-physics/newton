@@ -374,6 +374,8 @@ class SolverBase:
 
     def _run_rigid_collision(self, state: State) -> None:
         """Run the owned pipeline into the owned contacts buffer."""
+        if self.pipeline.rigid_soft_bvh_requires_soft_feature_bvhs:
+            self.pipeline.refit_soft_surface_bvh(state)
         self.pipeline.collide(state, self._pipeline_contacts)
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:

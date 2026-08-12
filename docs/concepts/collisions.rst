@@ -1410,6 +1410,68 @@ Soft contacts are generated automatically when particles are present. They use a
     particles = contacts.soft_contact_particle.numpy()[:n_soft]
     shapes = contacts.soft_contact_shape.numpy()[:n_soft]
 
+Full-surface rigid-soft contact
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ordinary soft-contact path tests each particle against each compatible rigid
+shape. For a coarse cloth or tetrahedral surface, a thin rigid feature can pass
+between particles even though it intersects a soft edge or triangle interior.
+Set ``enable_rigid_soft_full_surface_contact=True`` to add those surface
+contacts. Analytic rigid shapes continue to use signed-distance minimization.
+Mesh and convex-mesh shapes default to ``full_surface_mesh_backend="bvh"``,
+which enumerates all nearby vertex-face (VF), face-vertex (FV), and edge-edge
+(EE) primitive pairs without requiring a volume SDF. The explicit ``"sdf"``
+backend preserves the earlier SDF-minimization behavior for provisioned meshes.
+
+.. code-block:: python
+
+    pipeline = CollisionPipeline(
+        model,
+        enable_rigid_soft_full_surface_contact=True,
+        full_surface_mesh_backend="bvh",  # Default for mesh and convex-mesh shapes
+        soft_contact_gap=0.01,
+    )
+
+The BVH path emits the same ``Contacts.soft_contact_*`` schema used by the SDF
+path. Its closest-point direction is oriented by the rigid feature's outward
+reference normal; an interior point therefore receives the outward contact
+normal rather than the inward closest-point direction. The path honors shape
+collision flags, shape transforms (including nonuniform or mirrored scale),
+and world grouping.
+
+BVH normal orientation relies on coherent rigid-mesh winding. Closed meshes
+must use outward winding to obtain solid inside/outside behavior. Open meshes
+are treated as one-sided surfaces: the positive-winding side is outside and the
+negative side is penetrating. The BVH backend does not reconstruct a global
+inside/outside sign for open, non-manifold, or inconsistently wound meshes.
+
+The deformable surface BVHs are initialized from ``model.particle_q`` and are
+not implicitly refit by :meth:`~CollisionPipeline.collide`. Newton's owning
+solvers refit them at each scheduled rigid-soft detection point. A standalone
+collision loop that changes particle positions must do the same explicitly:
+
+.. code-block:: python
+
+    pipeline.refit_soft_surface_bvh(state)
+    pipeline.collide(state, contacts)
+
+Use :meth:`~CollisionPipeline.rebuild_soft_surface_bvh` when topology or BVH
+quality requires a full rebuild. ``refit_soft_self_contact_bvh`` remains a
+deprecated compatibility alias.
+
+BVH traversal first records primitive-pair candidates, then a fixed-capacity
+stage emits differentiable contact rows. Compare
+``pipeline.rigid_soft_bvh_candidate_count.numpy()[0]`` with
+``pipeline.rigid_soft_bvh_candidate_max`` to detect intermediate overflow.
+Final output overflow remains detectable by comparing
+``contacts.soft_contact_count`` with ``contacts.soft_contact_max``. Increase
+``rigid_soft_bvh_candidate_max`` when the intermediate stream overflows, or
+``soft_contact_max`` when the final stream overflows. Both stages use separate
+fixed buffers and support CUDA graph capture. Candidate slots are assigned with
+atomic increments, so the subset retained after intermediate overflow is not
+deterministic; ``deterministic=True`` only sorts rigid contacts and does not
+make an overflowing soft-contact stream reproducible.
+
 .. _collision-frequency-in-the-simulation-loop:
 
 Collision frequency in the simulation loop

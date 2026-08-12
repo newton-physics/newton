@@ -171,8 +171,9 @@ class Contacts:
             soft_contact_tids_size: Length of the internal per-thread replay-index array
                 (``soft_contact_tids``) used for differentiable backward. Defaults to
                 ``soft_contact_max``; the collision pipeline sets it to the full
-                particle + edge + face candidate-pair count so a custom (smaller)
-                ``soft_contact_max`` cannot drop a launch thread's replay slot.
+                legacy/SDF launch space plus the fixed-capacity BVH emission space,
+                so a custom (smaller) ``soft_contact_max`` cannot drop a launch
+                thread's replay slot.
             requires_grad: Whether contact arrays require gradients for differentiable
                 simulation.  When ``True``, soft contact arrays (body_pos, body_vel, normal)
                 are allocated with gradients so that gradient-based optimization can flow
@@ -346,7 +347,9 @@ class Contacts:
                 self.rigid_contact_broken_indices = None
                 self.rigid_contact_broken_count = None
 
-            # requires_grad flows through the soft-contact arrays below for differentiable simulation.
+            # Here ``soft_contact_*`` means a soft feature against a rigid/world shape; deformable
+            # self-contact is stored separately in ``soft_self_contact_data``. requires_grad flows
+            # through these rigid-soft arrays for differentiable simulation.
             # soft_contact_count is the [1:2] view of contact_counters above -- the total number of
             # soft (particle + edge + face) contacts. With the full-surface flag off, only the
             # particle pass emits records, so this equals the particle-contact count and is
@@ -387,9 +390,9 @@ class Contacts:
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             # Replay index array for differentiable backward: recorded per launch *thread*, not per
-            # contact, so it must span the full particle+edge+face candidate-pair space -- which can
-            # exceed soft_contact_max when the caller overrides that capacity. Sized independently so a
-            # smaller soft_contact_max never drops a thread's replay slot. Defaults to soft_contact_max.
+            # contact, so it spans every legacy/SDF launch thread plus the fixed-capacity BVH
+            # emission space. Sized independently from output storage so a custom capacity never
+            # aliases replay slots. Defaults to soft_contact_max for direct Contacts construction.
             _tids_size = soft_contact_tids_size if soft_contact_tids_size is not None else soft_contact_max
             self.soft_contact_tids = wp.full(_tids_size, -1, dtype=int)
 

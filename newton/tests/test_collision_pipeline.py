@@ -3528,7 +3528,11 @@ def test_mesh_sdf_provisioned_and_emits(test, device):
     test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[mesh_shape]), 0)
 
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=0.1,
+        enable_rigid_soft_full_surface_contact=True,
+        full_surface_mesh_backend="sdf",
     )
     contacts = pipeline.contacts()
     state = model.state()
@@ -3704,7 +3708,12 @@ def test_full_surface_empty_sdf_descriptor_rejected(test, device):
     # carries no texture (coarse texture None), exactly what a BVH fallback appends.
     model._texture_sdf_coarse_textures[sdf_idx] = None
     with test.assertRaises(ValueError):
-        newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+        newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            enable_rigid_soft_full_surface_contact=True,
+            full_surface_mesh_backend="sdf",
+        )
 
 
 def _add_soft_triangle(builder, z=1.0):
@@ -3840,7 +3849,11 @@ def test_full_surface_nonuniform_mesh_accurate_distance(test, device):
     # 0.08 m gap, 0.06 m margin -> outside -> no contact. min_scale would under-report 0.04 < 0.06.
     model_out = _nonuniform_box_mesh_gap_model(device, tri_x=1.08)
     pipe_out = newton.CollisionPipeline(
-        model_out, broad_phase="nxn", soft_contact_gap=0.06, enable_rigid_soft_full_surface_contact=True
+        model_out,
+        broad_phase="nxn",
+        soft_contact_gap=0.06,
+        enable_rigid_soft_full_surface_contact=True,
+        full_surface_mesh_backend="sdf",
     )
     contacts_out = pipe_out.contacts()
     pipe_out.collide(model_out.state(), contacts_out)
@@ -3851,7 +3864,11 @@ def test_full_surface_nonuniform_mesh_accurate_distance(test, device):
     # 0.03 m gap -> inside the margin -> contact, projected onto the true +x surface at x = 1.0.
     model_in = _nonuniform_box_mesh_gap_model(device, tri_x=1.03)
     pipe_in = newton.CollisionPipeline(
-        model_in, broad_phase="nxn", soft_contact_gap=0.06, enable_rigid_soft_full_surface_contact=True
+        model_in,
+        broad_phase="nxn",
+        soft_contact_gap=0.06,
+        enable_rigid_soft_full_surface_contact=True,
+        full_surface_mesh_backend="sdf",
     )
     contacts_in = pipe_in.contacts()
     pipe_in.collide(model_in.state(), contacts_in)
@@ -3908,7 +3925,11 @@ def test_unprovisioned_mesh_raises(test, device):
     model = builder.finalize(device=device)
     with test.assertRaises(ValueError):
         newton.CollisionPipeline(
-            model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
+            model,
+            broad_phase="nxn",
+            soft_contact_gap=0.1,
+            enable_rigid_soft_full_surface_contact=True,
+            full_surface_mesh_backend="sdf",
         )
 
 
@@ -4121,6 +4142,7 @@ def test_end_to_end_no_false_pos_neg(test, device):
         soft_contact_gap=margin,
         soft_contact_max=n_shapes * (n_tris + n_edges) + 16,
         enable_rigid_soft_full_surface_contact=True,
+        full_surface_mesh_backend="sdf",
     )
     contacts = pipeline.contacts()
     state = model.state()
