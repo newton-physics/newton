@@ -54,7 +54,7 @@
 # comes, when it is teleported onto the pick pallet. Arm joint targets are interpolated from the
 # recorded timestamps before every physics sub-step, so the arm follows the recorded motion at its
 # true speed. Everything runs on device and is CUDA-graph capturable, and the whole scene can be
-# replicated across NUM_WORLDS parallel environments.
+# replicated across parallel environments with --world-count.
 
 # Command: uv run -m newton.examples surface_gripper
 ###########################################################################
@@ -94,13 +94,10 @@ FPS = 60
 # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
 SIM_HZ = 120
 
-# Number of simulation worlds (environments). The whole scene (arm + boxes + pallets + gripper) is
-# replicated NUM_WORLDS times, all overlapping at the origin -- Newton's broad phase does not collide
-# across worlds, so the copies don't interact. WORLD_RENDER_SPACING lays them out for display.
-NUM_WORLDS = 1
-
-# Visual grid spacing [m] between worlds in the viewer. The worlds still simulate overlapped at the
-# origin (they never collide); this only separates them for rendering. Set to None to overlap them.
+# Visual grid spacing [m] between worlds in the viewer. The whole scene (arm + boxes + pallets +
+# gripper) is replicated ``--world-count`` times, all overlapping at the origin -- Newton's broad
+# phase does not collide across worlds, so the copies do not interact. This spacing separates them
+# for rendering only. Set to None to overlap them.
 WORLD_RENDER_SPACING = (7.0, 7.0, 0.0)
 
 # Gaussian smoothing of the recorded drive targets [s]. The recording is a coarse waypoint staircase
@@ -663,10 +660,20 @@ class ExampleState:
 
 
 class Example:
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        newton.examples.add_world_count_arg(parser)
+        return parser
+
     def __init__(self, viewer, args):
 
         # Cache the viewer
         self.viewer = viewer
+
+        # Number of replicated environments (--world-count). Every world holds a full copy of the
+        # scene, so pads, boxes and recording signals are all sized from this.
+        self.world_count = args.world_count
 
         # FPS and sim step dt
         self.fps = FPS  # rendered frames per second
@@ -693,7 +700,7 @@ class Example:
         self.robot_arm_playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA, NUM_ARM_DOFS)
 
         # Build ONE environment (arm with pad cylinders + pick boxes + pallets), then replicate it across
-        # NUM_WORLDS worlds. The copies overlap at the origin (Newton's broad phase never collides across
+        # self.world_count worlds. The copies overlap at the origin (Newton's broad phase never collides across
         # worlds), and the ground plane is added globally (world -1) so a single floor is shared by all.
         env = newton.ModelBuilder()
 
@@ -751,7 +758,7 @@ class Example:
         builder.add_ground_plane()  # global (world -1): adds no body, so per-world bodies stay contiguous
         # The ground plane does add a shape, so per-world shapes start after it.
         world_shape_offset = len(builder.shape_body)
-        for _ in range(NUM_WORLDS):
+        for _ in range(self.world_count):
             builder.add_world(env)
         self.model = builder.finalize(device=device)  # same device the SDF meshes were built on
 
@@ -771,7 +778,7 @@ class Example:
         # and model.shape_transform already holds the correct value from the builder.
         env_shape_count = len(env.shape_body)  # per-world shape stride
         shape_mesh_id = np.zeros(self.model.shape_count, dtype=np.uint64)
-        for w in range(NUM_WORLDS):
+        for w in range(self.world_count):
             for lb, mesh in self.sdf_meshes.items():
                 global_shape_id = world_shape_offset + w * env_shape_count + env_body_to_shape_id[lb]
                 shape_mesh_id[global_shape_id] = mesh.id
@@ -779,7 +786,7 @@ class Example:
 
         # Note: Newton's collision pipeline is used in this example so set use_mujoco_contacts=False
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, nconmax=256 * NUM_WORLDS, njmax=2048 * NUM_WORLDS, iterations=10, use_mujoco_contacts=False
+            self.model, nconmax=256 * self.world_count, njmax=2048 * self.world_count, iterations=10, use_mujoco_contacts=False
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -792,7 +799,7 @@ class Example:
         # natural frequency/damping ratio those k/d yield vary with the gripped box's mass; picked_box_seal_modes
         # reports that in the GUI, but the seal parameters do not change.)
         gripper_builder = SurfaceGripperBuilder()
-        for w in range(NUM_WORLDS):
+        for w in range(self.world_count):
             gripper = SurfaceGripper(
                 w * env.body_count + ee_body_local,
                 wp.transform_identity(),
@@ -839,7 +846,7 @@ class Example:
         self.n_boxes_per_world = n_boxes_per_world
         box_body_ids = []
         box_shape_ids = []
-        for w in range(NUM_WORLDS):
+        for w in range(self.world_count):
             box_body_ids.append(w * env.body_count + panel_body_local_id)
             box_shape_ids.append(world_shape_offset + w * env_shape_count + env_body_to_shape_id[panel_body_local_id])
             for i in range(len(crate_body_local_ids)):
@@ -863,9 +870,9 @@ class Example:
         # Use ArticulationView to compute the array elements in state.joint_q
         # that correspond to each crate in each world.
         n_crates = len(CRATE_PRIMS)
-        crate_joint_q_start = np.zeros((NUM_WORLDS, n_crates), dtype=np.int32)
-        crate_joint_qd_start = np.zeros((NUM_WORLDS, n_crates), dtype=np.int32)
-        crate_grip_q = np.zeros((NUM_WORLDS, n_crates, 7), dtype=np.float32)
+        crate_joint_q_start = np.zeros((self.world_count, n_crates), dtype=np.int32)
+        crate_joint_qd_start = np.zeros((self.world_count, n_crates), dtype=np.int32)
+        crate_grip_q = np.zeros((self.world_count, n_crates, 7), dtype=np.float32)
         for crate_index in range(n_crates):
             crate_name = CRATE_PRIMS[crate_index].split("/")[-1]  # e.g. "crate_0"
             crate_view = ArticulationView(self.model, pattern=f"*{crate_name}*")
@@ -874,7 +881,7 @@ class Example:
             grip = CRATE_GRIP_POSES[crate_index]
             pos = wp.transform_get_translation(grip)
             quat = wp.transform_get_rotation(grip)
-            for w in range(NUM_WORLDS):
+            for w in range(self.world_count):
                 crate_joint_q_start[w, crate_index] = coord_layout.offset + w * coord_layout.stride_between_worlds
                 crate_joint_qd_start[w, crate_index] = dof_layout.offset + w * dof_layout.stride_between_worlds
                 crate_grip_q[w, crate_index] = [pos[0], pos[1], pos[2], quat[0], quat[1], quat[2], quat[3]]
@@ -898,7 +905,7 @@ class Example:
         # Start each world's arm at the first recorded pose.
         initial_arm_q = self.robot_arm_playback.rec_targets_wp.numpy()[0]  # drive target at t=0, the start pose
         joint_q = self.state_0.joint_q.numpy()
-        for w in range(NUM_WORLDS):
+        for w in range(self.world_count):
             start = self.arm_coord_offset + w * self.arm_coord_stride
             joint_q[start : start + NUM_ARM_DOFS] = initial_arm_q
         self.state_0.joint_q.assign(joint_q)
@@ -944,15 +951,15 @@ class Example:
                 self.example_state_curr.gripper_command_preparing_wp,  # out: preparing flag (ro[2]) for world 0
             )
             # The playback only fills world 0; fan its arm targets and gripper commands out to the rest.
-            if NUM_WORLDS > 1:
+            if self.world_count > 1:
                 wp.launch(
                     broadcast_arm_targets_kernel,
-                    dim=(NUM_WORLDS - 1) * NUM_ARM_DOFS,
+                    dim=(self.world_count - 1) * NUM_ARM_DOFS,
                     inputs=[NUM_ARM_DOFS, self.arm_dof_offset, self.arm_dof_stride, self.control.joint_target_q],
                 )
                 wp.launch(
                     broadcast_gripper_command_kernel,
-                    dim=NUM_WORLDS - 1,
+                    dim=self.world_count - 1,
                     inputs=[
                         self.example_state_curr.gripper_command_engaged_wp,
                         self.example_state_curr.gripper_command_preparing_wp,
@@ -1162,6 +1169,6 @@ class Example:
 
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
+    parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)
