@@ -300,9 +300,11 @@ class Example:
                 shapes.scales = wp.array(sc, dtype=wp.vec3, device=shapes.device)
 
         # gravity arrays for swapping during simulation
-        self.gravity_zero = wp.zeros(1, dtype=wp.vec3)
+        self.gravity_zero = wp.zeros(self.model.gravity.shape[0], dtype=wp.vec3, device=self.model.device)
         # gravity in cm/s²
-        self.gravity_earth = wp.array(wp.vec3(0.0, 0.0, -981.0), dtype=wp.vec3)
+        self.gravity_earth = wp.full(
+            self.model.gravity.shape[0], wp.vec3(0.0, 0.0, -981.0), dtype=wp.vec3, device=self.model.device
+        )
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)

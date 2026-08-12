@@ -19,6 +19,7 @@ def compute_sensor_imu_kernel(
     body_world: wp.array[wp.int32],
     body_com: wp.array[wp.vec3],
     shape_body: wp.array[int],
+    shape_world: wp.array[wp.int32],
     shape_transform: wp.array[wp.transform],
     sensor_sites: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -40,12 +41,14 @@ def compute_sensor_imu_kernel(
     site_transform = shape_transform[site_idx]
 
     if body_idx < 0:
-        accelerometer[sensor_idx] = wp.quat_rotate_inv(site_transform.q, -gravity[0])
+        world_idx = shape_world[site_idx]
+        world_g = gravity[world_idx]
+        accelerometer[sensor_idx] = wp.quat_rotate_inv(site_transform.q, -world_g)
         gyroscope[sensor_idx] = wp.vec3(0.0)
         return
 
     world_idx = body_world[body_idx]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     body_acc = body_qdd[body_idx]
 
@@ -191,6 +194,7 @@ class SensorIMU:
                 self.model.body_world,
                 self.model.body_com,
                 self.model.shape_body,
+                self.model.shape_world,
                 self.model.shape_transform,
                 self.sensor_sites_arr,
                 state.body_q,

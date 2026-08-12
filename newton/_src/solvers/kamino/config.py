@@ -100,18 +100,20 @@ class CollisionDetectorConfig(ConfigBase):
 
     max_contacts: int | None = None
     """
-    The maximum number of contacts to generate over the entire model.\n
-    Used to compute the total maximum contacts allocated for the model,
-    in conjunction with the total number of candidate geom-pairs.\n
-    Defaults to `DEFAULT_MODEL_MAX_CONTACTS` (`1000`) if unspecified.
+    Model-wide cap on contact buffer capacity during collision-detector
+    initialization.\n
+    When ``max_contacts_per_world`` is None, the geometry-based estimate is
+    capped at this value; otherwise this field is ignored.\n
+    Defaults to ``None``, leaving the geometry-based estimate uncapped.
     """
 
     max_contacts_per_world: int | None = None
     """
-    The per-world maximum contacts allocation override.\n
-    If specified, it will override the per-world maximum number of contacts
-    computed according to the candidate geom-pairs represented in the model.\n
-    Defaults to `None`, allowing contact allocations to occur according to the model.
+    Per-world contact buffer capacity override.\n
+    When set, allocates ``max_contacts_per_world`` contacts for every world
+    (``num_worlds * max_contacts_per_world`` total), bypassing the
+    geometry-based estimate and ``max_contacts``.\n
+    Defaults to ``None``.
     """
 
     max_contacts_per_pair: int | None = None
@@ -179,7 +181,6 @@ class CollisionDetectorConfig(ConfigBase):
         from ._src.geometry.contacts import (  # noqa: PLC0415
             DEFAULT_GEOM_PAIR_CONTACT_GAP,
             DEFAULT_GEOM_PAIR_MAX_CONTACTS,
-            DEFAULT_MODEL_MAX_CONTACTS,
             DEFAULT_TRIANGLE_MAX_PAIRS,
         )
 
@@ -207,8 +208,6 @@ class CollisionDetectorConfig(ConfigBase):
             raise ValueError(f"Invalid max_triangle_pairs: {self.max_triangle_pairs}. Must be non-negative.")
 
         # Check if optional arguments are specified and override with defaults if not
-        if self.max_contacts is None:
-            self.max_contacts = DEFAULT_MODEL_MAX_CONTACTS
         if self.max_contacts_per_pair is None:
             self.max_contacts_per_pair = DEFAULT_GEOM_PAIR_MAX_CONTACTS
         if self.max_triangle_pairs is None:
@@ -370,7 +369,7 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Defaults to `True`.
     """
 
-    linear_solver_type: Literal["LLTB", "LLTBRCM", "CR"] = "LLTB"
+    linear_solver_type: Literal["LLTB", "LLTBRCM", "CR", "CRF"] = "LLTB"
     """
     The type of linear solver to use for the dynamics problem.\n
     See :class:`LinearSolverType` for available options.\n
@@ -585,6 +584,16 @@ class PADMMSolverConfig:
     Defaults to `containers` to warmstart from the solver data containers.
     """
 
+    warmstart_scale: float = 0.9
+    """
+    Scale applied to cached constraint forces during warm-starting.\n
+    Must be in the range [0, 1]. Defaults to `0.9`.
+
+    PADMM converges to a minimum-norm deviation from its initial guess. Scaling
+    the warm-start forces makes null-space forces converge to the overall
+    minimum-norm solution.
+    """
+
     contact_warmstart_method: Literal[
         "key_and_position",
         "geom_pair_net_force",
@@ -761,6 +770,8 @@ class PADMMSolverConfig:
             raise ValueError(
                 f"Invalid linear solver tolerance ratio: {self.linear_solver_tolerance_ratio}. Must be non-negative."
             )
+        if not 0.0 <= self.warmstart_scale <= 1.0:
+            raise ValueError(f"Invalid warmstart scale: {self.warmstart_scale}. Must be in the range [0, 1].")
 
         # Ensure that the enum-valued parameters are valid options
         # Conversion to enum-type configs will raise an error
@@ -781,14 +792,6 @@ class DVISolverConfig:
     A container to hold configurations for the DVI forward dynamics solver.
     """
 
-    max_iterations: int = 100
-    """
-    Maximum projected Gauss-Seidel iterations for the all-constraint
-    fallback path. The direct bilateral block path is controlled by
-    `block_iterations` and `contact_iterations`. Must be greater than zero.
-    Defaults to `100`.
-    """
-
     tolerance: float = 1e-5
     """
     The convergence tolerance on the projected update size.
@@ -807,24 +810,33 @@ class DVISolverConfig:
     Must be in the range `(0, 2]`. Defaults to `1.0`.
     """
 
-    block_iterations: int = 32
+    max_alternating_iterations: int = 24
     """
-    Number of outer DVI block iterations alternating direct bilateral solves
-    with projected inequality solves. Must be greater than zero. Defaults to `32`.
+    Maximum number of outer DVI iterations alternating direct bilateral
+    solves with projected inequality solves. Must be greater than zero.
+    This schedule is also used when no bilateral constraints are present;
+    in that case, the bilateral solve is skipped. Defaults to `24`.
     """
 
-    contact_iterations: int = 4
+    inequality_sweeps_per_iteration: int = 2
     """
     Number of projected Gauss-Seidel sweeps used for unilateral inequalities
-    during each DVI block iteration. Contacts use graph-colored sweeps on CUDA.
-    Must be greater than zero. Defaults to `4`.
+    during each alternating DVI iteration. Contacts use graph-colored sweeps
+    on CUDA. Must be greater than zero. Defaults to `2`.
     """
 
-    bilateral_solve_period: int = 1
+    bilateral_solve_interval: int = 1
     """
-    Number of DVI block iterations between repeated direct bilateral solves.
+    Number of alternating DVI iterations between repeated direct bilateral solves.
     A value of `1` re-solves after every projected inequality block, preserving
     the standard direct-block schedule. Must be greater than zero. Defaults to `1`.
+    """
+
+    tangential_warmstart_scale: float = 0.97
+    """
+    Scale applied to cached tangential contact reactions before a DVI solve.
+    Normal reactions remain fully warm-started. Must be in the range `[0, 1]`.
+    Defaults to `0.97`.
     """
 
     bilateral_solver_type: Literal["LLTB", "LLTBRCM"] = "LLTB"
@@ -841,24 +853,6 @@ class DVISolverConfig:
     Defaults to an empty dictionary.
     """
 
-    contact_jacobi_omega: float = 0.3
-    """
-    Step size for contact Jacobi updates and block-preconditioned contact
-    updates. Must be in the range `(0, 2]`. Defaults to `0.3`.
-    """
-
-    contact_jacobi_relaxation: float = 0.9
-    """
-    Solution mixing factor for contact Jacobi updates and block-preconditioned
-    contact updates. Must be in the range `(0, 1]`. Defaults to `0.9`.
-    """
-
-    contact_block_preconditioner: bool = False
-    """
-    Whether to use a full 3x3 contact diagonal block preconditioner for DVI
-    projected contact updates. Defaults to `False`.
-    """
-
     warmstart_mode: Literal["none", "internal", "containers"] = "containers"
     """
     Warmstart mode to be used for the DVI solver.
@@ -869,11 +863,12 @@ class DVISolverConfig:
         "key_and_position",
         "geom_pair_net_force",
         "key_and_position_with_net_force_backup",
-    ] = "key_and_position_with_net_force_backup"
+        "key_and_position_with_tangential_net_force",
+    ] = "key_and_position_with_tangential_net_force"
     """
     The contact warmstart method used when `warmstart_mode` is `containers`.
     See :class:`WarmstarterContacts.Method` for available options.
-    Defaults to `key_and_position_with_net_force_backup`.
+    Defaults to `key_and_position_with_tangential_net_force`.
     """
 
     @override
@@ -897,9 +892,9 @@ class DVISolverConfig:
         cfg = DVISolverConfig(**kwargs)
         kamino_attrs = getattr(model, "kamino", None)
         if kamino_attrs is not None and hasattr(kamino_attrs, "max_solver_iterations"):
-            max_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
-            if max_iterations >= 0:
-                cfg.max_iterations = max_iterations
+            max_alternating_iterations = int(kamino_attrs.max_solver_iterations.numpy()[0])
+            if max_alternating_iterations >= 0:
+                cfg.max_alternating_iterations = max_alternating_iterations
         cfg.validate()
         return cfg
 
@@ -909,31 +904,33 @@ class DVISolverConfig:
         from ._src.solvers.common import WarmStartMode  # noqa: PLC0415
         from ._src.solvers.warmstart import WarmstarterContacts  # noqa: PLC0415
 
-        if self.max_iterations <= 0:
-            raise ValueError(f"Invalid maximum iterations: {self.max_iterations}. Must be a positive integer.")
         if self.tolerance < 0.0:
             raise ValueError(f"Invalid tolerance: {self.tolerance}. Must be non-negative.")
         if self.regularization <= 0.0:
             raise ValueError(f"Invalid regularization: {self.regularization}. Must be greater than zero.")
         if self.omega <= 0.0 or self.omega > 2.0:
             raise ValueError(f"Invalid omega: {self.omega}. Must be in the range (0, 2].")
-        if self.block_iterations <= 0:
-            raise ValueError(f"Invalid block iterations: {self.block_iterations}. Must be a positive integer.")
-        if self.contact_iterations <= 0:
-            raise ValueError(f"Invalid contact iterations: {self.contact_iterations}. Must be a positive integer.")
-        if self.bilateral_solve_period <= 0:
+        if self.max_alternating_iterations <= 0:
             raise ValueError(
-                f"Invalid bilateral solve period: {self.bilateral_solve_period}. Must be a positive integer."
+                f"Invalid maximum alternating iterations: {self.max_alternating_iterations}. "
+                "Must be a positive integer."
+            )
+        if self.inequality_sweeps_per_iteration <= 0:
+            raise ValueError(
+                f"Invalid inequality sweeps per iteration: {self.inequality_sweeps_per_iteration}. "
+                "Must be a positive integer."
+            )
+        if self.bilateral_solve_interval <= 0:
+            raise ValueError(
+                f"Invalid bilateral solve interval: {self.bilateral_solve_interval}. Must be a positive integer."
+            )
+        if self.tangential_warmstart_scale < 0.0 or self.tangential_warmstart_scale > 1.0:
+            raise ValueError(
+                f"Invalid tangential warmstart scale: {self.tangential_warmstart_scale}. Must be in the range [0, 1]."
             )
         if self.bilateral_solver_type not in {"LLTB", "LLTBRCM"}:
             raise ValueError(
                 f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM']."
-            )
-        if self.contact_jacobi_omega <= 0.0 or self.contact_jacobi_omega > 2.0:
-            raise ValueError(f"Invalid contact Jacobi omega: {self.contact_jacobi_omega}. Must be in the range (0, 2].")
-        if self.contact_jacobi_relaxation <= 0.0 or self.contact_jacobi_relaxation > 1.0:
-            raise ValueError(
-                f"Invalid contact Jacobi relaxation: {self.contact_jacobi_relaxation}. Must be in the range (0, 1]."
             )
         WarmStartMode.from_string(self.warmstart_mode)
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
@@ -941,6 +938,7 @@ class DVISolverConfig:
             "key_and_position",
             "geom_pair_net_force",
             "key_and_position_with_net_force_backup",
+            "key_and_position_with_tangential_net_force",
         }
         if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
             raise ValueError(
