@@ -11042,7 +11042,12 @@ def Xform "Articulation" (
         mesh_prim.ApplyAPI("NewtonMeshCollisionAPI")
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(DeprecationWarning, "newton:maxHullVertices"):
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "error",
+                message=r".*schema fallbacks.*",
+                category=DeprecationWarning,
+            )
             builder.add_usd(stage, mesh_maxhullvert=20)
         self.assertEqual(builder.shape_source[0].maxhullvert, 20)
 
@@ -11052,6 +11057,14 @@ def Xform "Articulation" (
         builder.add_usd(stage, mesh_maxhullvert=20)
         # the authored value should override the builder value
         self.assertEqual(builder.shape_source[0].maxhullvert, 32)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            mesh_maxhullvert=20,
+            use_applied_schema_fallbacks=True,
+        )
+        self.assertEqual(builder.shape_source[0].maxhullvert, 20)
 
 
 class TestImportSampleAssetsComposition(unittest.TestCase):

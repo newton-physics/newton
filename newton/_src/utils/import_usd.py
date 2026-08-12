@@ -262,7 +262,7 @@ def parse_usd(
     hide_collision_shapes: bool = False,
     force_show_colliders: bool = False,
     parse_mujoco_options: bool = True,
-    mesh_maxhullvert: int | None = None,
+    mesh_maxhullvert: int | None = _default_when_omitted(Mesh.MAX_HULL_VERTICES),
     schema_resolvers: list[SchemaResolver] | None = None,
     use_applied_schema_fallbacks: bool = False,
     force_position_velocity_actuation: bool = False,
@@ -388,7 +388,12 @@ def parse_usd(
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
             and finalize under ``model.mujoco.equality_constraint_*``.
-        mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+        mesh_maxhullvert: When omitted, use
+            :attr:`newton.Mesh.MAX_HULL_VERTICES` as the importer default for
+            convex hull approximation. With
+            ``use_applied_schema_fallbacks=True``, an explicitly provided value
+            overrides the corresponding authored USD value and schema fallback.
+            Legacy resolution continues to treat it as an importer default.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
             These include namespaced attributes such as ``newton:*``, ``physx*``
@@ -507,6 +512,7 @@ def parse_usd(
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
+    max_hull_vertices_override, max_hull_vertices_default = _interpret_import_argument(mesh_maxhullvert)
 
     if schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
@@ -4037,8 +4043,9 @@ def parse_usd(
                         prim,
                         prim_type=PrimType.SHAPE,
                         key="max_hull_vertices",
-                        default=mesh_maxhullvert,
+                        default=max_hull_vertices_default,
                         verbose=verbose,
+                        override=max_hull_vertices_override,
                     )
                     # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
                     # write the SDF intent to the builder lists, deferring the build to finalize().
