@@ -1480,14 +1480,12 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
-        # Deformable group registries: labeled, world-tagged index ranges for each
-        # curve/surface/volume (mirrors articulation_start/end/label/world). Ranges are
-        # [start, end) into the corresponding builder arrays; finalize() copies them onto the Model,
-        # and replicate()/add_builder() carry them per world so each group stays indexable by label.
+        # Applications may rebase group identities before finalization. Element ranges stay
+        # private because DeformableView is the public access surface after finalization.
         self.curve_label: list[str] = []
-        """Mutable labels of curve deformable groups."""
+        """Curve labels used by :class:`~newton.selection.DeformableView` after finalization."""
         self.curve_world: list[int] = []
-        """World index of each curve deformable group."""
+        """World index corresponding to each entry in :attr:`curve_label`."""
         self._curve_body_start: list[int] = []
         """Inclusive body-range start of each curve group."""
         self._curve_body_end: list[int] = []
@@ -1500,9 +1498,9 @@ class ModelBuilder:
         """Nesting depth for private curve-group recording suppression."""
 
         self.surface_label: list[str] = []
-        """Mutable labels of surface deformable groups."""
+        """Surface labels used by :class:`~newton.selection.DeformableView` after finalization."""
         self.surface_world: list[int] = []
-        """World index of each surface deformable group."""
+        """World index corresponding to each entry in :attr:`surface_label`."""
         self._surface_particle_start: list[int] = []
         """Inclusive particle-range start of each surface group."""
         self._surface_particle_end: list[int] = []
@@ -1517,9 +1515,9 @@ class ModelBuilder:
         """Exclusive edge-range end of each surface group."""
 
         self.volume_label: list[str] = []
-        """Mutable labels of volume deformable groups."""
+        """Volume labels used by :class:`~newton.selection.DeformableView` after finalization."""
         self.volume_world: list[int] = []
-        """World index of each volume deformable group."""
+        """World index corresponding to each entry in :attr:`volume_label`."""
         self._volume_particle_start: list[int] = []
         """Inclusive particle-range start of each volume group."""
         self._volume_particle_end: list[int] = []
