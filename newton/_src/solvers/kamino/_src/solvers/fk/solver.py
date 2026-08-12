@@ -29,6 +29,7 @@ from ...linalg.conjugate import BatchedLinearOperator, CGSolver
 from ...linalg.factorize.llt_blocked_semi_sparse import SemiSparseBlockCholeskySolverBatched
 from ...linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ...linalg.sparse_operator import BlockSparseLinearOperators
+from ...utils import logger as msg
 from ...utils.tile import get_block_dim, get_num_tiles, get_tile_size
 from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_classes
 from .kernels import (
@@ -2253,6 +2254,13 @@ class ForwardKinematicsSolver:
         assert base_u is None or base_u.device == self.device
         assert actuators_u is None or actuators_u.device == self.device
         assert bodies_u is None or bodies_u.device == self.device
+
+        # Warn if any world does not have an assigned base body when base attributes are provided.
+        if (base_q is not None or base_u is not None) and self.model.info.has_world_without_base_body:
+            msg.warning(
+                "Some worlds have no free-floating base body assigned, possibly due to a non-free articulation root (fixed-base system). "
+                "Base pose/velocity updates for forward kinematics will have no effect for those worlds."
+            )
 
         # Run solve (with or without graph)
         if use_graph:
