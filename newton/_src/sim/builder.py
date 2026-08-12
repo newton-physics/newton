@@ -481,9 +481,17 @@ class ModelBuilder:
         on the solver constructor for this field to take effect.
         """
         mu_torsional: float = 0.005
-        """The coefficient of torsional friction (resistance to spinning at contact point)."""
+        """The coefficient of torsional friction [m] (resistance to spinning at contact point).
+
+        Length-dimensioned rather than dimensionless: it scales a normal impulse into a
+        torsional one, and can be read as the diameter of the contact patch.
+        """
         mu_rolling: float = 0.0001
-        """The coefficient of rolling friction (resistance to rolling motion)."""
+        """The coefficient of rolling friction [m] (resistance to rolling motion).
+
+        Length-dimensioned, on the same basis as :attr:`mu_torsional`; it can be read as
+        the depth of the local deformation over which energy is dissipated.
+        """
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,

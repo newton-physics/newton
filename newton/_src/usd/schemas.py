@@ -287,8 +287,8 @@ class SchemaResolverNewton(SchemaResolver):
             "self_collision_enabled": SchemaAttribute("newton:selfCollisionEnabled", True),
         },
         PrimType.MATERIAL: {
-            "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.25),
-            "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0005),
+            "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.005),
+            "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0001),
             "ke": SchemaAttribute("newton:contactStiffness", None),
             "kd": SchemaAttribute("newton:contactDamping", None),
             "kf": SchemaAttribute("newton:contactFrictionGain", None),
