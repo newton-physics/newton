@@ -5,6 +5,7 @@ from typing import Any
 
 import warp as wp
 
+from ..core.reset import normalize_reset_world_mask
 from ..geometry import ParticleFlags
 from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
 
@@ -43,7 +44,7 @@ def integrate_particles(
 
     inv_mass = w[tid]
     world_idx = particle_world[tid]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     # simple semi-implicit Euler. v1 = v0 + a dt, x1 = x0 + v1 dt
     v1 = v0 + (f0 * inv_mass + world_g * wp.step(-inv_mass)) * dt
@@ -148,7 +149,7 @@ def integrate_bodies(
 
     com = body_com[tid]
     world_idx = body_world[tid]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     q_new, qd_new = integrate_rigid_body(
         q,
@@ -216,6 +217,15 @@ class SolverBase:
         if changed:
             SolverBase._module_options_revision += 1
         self._applied_module_options_revision = SolverBase._module_options_revision
+
+    def _normalize_reset_world_mask(self, world_mask: wp.array[wp.bool] | None) -> wp.array[wp.bool] | None:
+        """Validate a reset mask and return the canonical shape."""
+        return normalize_reset_world_mask(
+            world_mask,
+            world_count=int(self.model.world_count),
+            device=self.model.device,
+            allow_legacy=True,
+        )
 
     @property
     def device(self) -> wp.Device:
@@ -332,7 +342,7 @@ class SolverBase:
     def reset(
         self,
         state: State,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Reset the solver internal state data.
@@ -346,14 +356,21 @@ class SolverBase:
 
         Args:
             state: The simulation state to reset (modified in place).
-            world_mask: Optional boolean mask of shape ``(num_worlds,)``
-                specifying which worlds to reset.  If ``None``, all worlds
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
+                specifying which worlds to reset. Entries before the last select
+                local worlds by index, and the final entry selects global entities
+                whose world is ``-1``. If ``None``, all local and global entities
                 are reset.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
         """
-        pass
+        self._normalize_reset_world_mask(world_mask)
 
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float

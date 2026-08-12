@@ -98,6 +98,7 @@ def _soft_solver_entry_args(soft_solver: str, args):
 
 class Example:
     def __init__(self, viewer: ViewerBase, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.solver_type = args.solver
         self.rigid_solver = _normalized_rigid_solver_name(args.rigid_solver)

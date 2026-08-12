@@ -939,15 +939,14 @@ class TestGravCompForce(TestInverseDynamicsBase):
                 )
 
     def test_gravity_three_worlds_different_axes(self):
-        """G(q) for a free body in each of three worlds with X, Y, Z gravity vectors.
+        """Verify G(q) for global and local free bodies with distinct gravity vectors.
 
-        Three worlds, each containing a single free body of mass ``m`` at the
-        origin with identity orientation and CoM at the body origin. World 0
-        has gravity along +X, world 1 along +Y, world 2 along +Z. Under
-        Newton's free-joint convention the per-world gravity force must
-        equal ``-m * g_world`` in the linear part and zero in the
-        angular part, which exercises the per-world ``body_world`` lookup
-        inside the RNEA gravity term.
+        The global world and three local worlds each contain a free body of
+        mass ``m`` at the origin with identity orientation and CoM at the body
+        origin. Under Newton's free-joint convention each gravity force must
+        equal ``-m * g_world`` in the linear part and zero in the angular part,
+        which exercises the global and local ``body_world`` lookups inside the
+        RNEA gravity term.
         """
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
         m = 1.5
@@ -973,28 +972,30 @@ class TestGravCompForce(TestInverseDynamicsBase):
             return b
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+        builder.add_builder(build_world())
         for _ in range(3):
             builder.add_world(build_world())
 
         model = builder.finalize(device=self.device)
         self.assertEqual(model.world_count, 3)
-        self.assertEqual(model.articulation_count, 3)
-        self.assertEqual(model.joint_dof_count, 18)  # 3 free joints * 6 DOFs
+        self.assertEqual(model.articulation_count, 4)
+        self.assertEqual(model.joint_dof_count, 24)  # 4 free joints * 6 DOFs
 
-        # Per-world gravity vectors along the three world axes.
+        global_gravity = (-g_mag, -g_mag, -g_mag)
         gravity_per_world = [
             (g_mag, 0.0, 0.0),  # world 0: along +X
             (0.0, g_mag, 0.0),  # world 1: along +Y
             (0.0, 0.0, g_mag),  # world 2: along +Z
         ]
+        model.set_gravity(global_gravity, world=-1)
         for w, g in enumerate(gravity_per_world):
             model.set_gravity(g, world=w)
 
         # Identity pose for every body: translation = 0, rotation = identity quat.
         state = model.state()
         joint_q = state.joint_q.numpy()
-        for w in range(3):
-            joint_q[w * 7 : (w + 1) * 7] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        for articulation in range(4):
+            joint_q[articulation * 7 : (articulation + 1) * 7] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
         state.joint_q.assign(joint_q)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
@@ -1015,12 +1016,15 @@ class TestGravCompForce(TestInverseDynamicsBase):
         # ∂U/∂x_com = -m * g_world, so the linear part equals -m * g_world.
         # The angular part is zero (body CoM at the body origin -> no
         # gravity torque).
-        for w, g in enumerate(gravity_per_world):
-            with self.subTest(world=w, gravity=g):
+        for articulation, (world, g) in enumerate([(-1, global_gravity), *enumerate(gravity_per_world)]):
+            with self.subTest(world=world, gravity=g):
                 expected_linear = -m * np.asarray(g, dtype=np.float64)
                 expected_angular = np.zeros(3)
-                np.testing.assert_allclose(measured[w * 6 : w * 6 + 3], expected_linear, atol=1e-5, rtol=1e-5)
-                np.testing.assert_allclose(measured[w * 6 + 3 : w * 6 + 6], expected_angular, atol=1e-5, rtol=1e-5)
+                dof_start = articulation * 6
+                np.testing.assert_allclose(measured[dof_start : dof_start + 3], expected_linear, atol=1e-5, rtol=1e-5)
+                np.testing.assert_allclose(
+                    measured[dof_start + 3 : dof_start + 6], expected_angular, atol=1e-5, rtol=1e-5
+                )
 
     def test_free_body_rotated_parent_frame_gravity_is_world_frame(self):
         """gravity_force for a free/distance body must be expressed in world frame, not parent frame.
