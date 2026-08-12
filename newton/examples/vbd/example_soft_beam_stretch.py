@@ -60,7 +60,7 @@ class Example:
     DENSITY = 1000.0
     K_MU = 1.0e4
     K_LAMBDA = 1.0e5
-    K_DAMP = 1.0e-3
+    K_DAMP = 10.0  # [Pa·s] absolute (#2877); = 1.0e-3 * K_MU (old Rayleigh-relative value)
     STRETCH = 2.0
     RAMP_FRAMES = 200
 

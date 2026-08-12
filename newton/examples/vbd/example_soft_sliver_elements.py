@@ -31,7 +31,7 @@ class Example:
     DENSITY = 1000.0
     K_MU = 5.0e4
     K_LAMBDA = 5.0e4
-    K_DAMP = 0.1
+    K_DAMP = 5000.0  # [Pa·s] absolute (#2877); = 0.1 * K_MU (old Rayleigh-relative value)
 
     def __init__(self, viewer, args=None):
         self.viewer = viewer

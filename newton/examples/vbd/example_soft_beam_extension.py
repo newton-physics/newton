@@ -31,7 +31,7 @@ class Example:
     DENSITY = 1000.0
     K_MU = 5.0e4
     K_LAMBDA = 5.0e4
-    K_DAMP = 0.1
+    K_DAMP = 5000.0  # [Pa·s] absolute (#2877); = 0.1 * K_MU (old Rayleigh-relative value)
 
     # Tolerance on the relative error between the measured tip extension and the
     # analytical linear-elastic prediction (see test_final). The small residual is

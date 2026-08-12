@@ -67,7 +67,7 @@ def _run_compression(
     density: float = 1000.0,
     k_mu: float = 1.0e4,
     k_lambda: float = 1.0e4,
-    k_damp: float = 1.0e-2,
+    k_damp: float = 100.0,  # [Pa·s] absolute (#2877); = 1.0e-2 * k_mu, matches Example.K_DAMP
     iterations: int = 30,
     substeps: int = 5,
 ) -> tuple[float, float, float, bool]:
@@ -161,7 +161,7 @@ class Example:
     DENSITY = 1000.0
     K_MU = 1.0e4
     K_LAMBDA = 1.0e4
-    K_DAMP = 1.0e-2
+    K_DAMP = 100.0  # [Pa·s] absolute (#2877); = 1.0e-2 * K_MU (old Rayleigh-relative value)
     COMPRESS_RATIO = 0.50
     COMPRESS_FRAMES = 150
     RELEASE_FRAME = 150

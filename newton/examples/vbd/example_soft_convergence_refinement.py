@@ -63,7 +63,7 @@ def _run_extension(dim_xy: int, dim_z: int, cell: float, n_frames: int, iteratio
         density=_DENSITY,
         k_mu=_K_MU,
         k_lambda=_K_LAMBDA,
-        k_damp=0.1,
+        k_damp=5000.0,  # [Pa·s] absolute (#2877); = 0.1 * _K_MU (old Rayleigh-relative value)
     )
     builder.color()
     model = builder.finalize()
@@ -142,7 +142,7 @@ class Example:
             density=_DENSITY,
             k_mu=_K_MU,
             k_lambda=_K_LAMBDA,
-            k_damp=0.1,
+            k_damp=5000.0,  # [Pa·s] absolute (#2877); = 0.1 * _K_MU (old Rayleigh-relative value)
         )
         builder.color()
         self.model = builder.finalize()
