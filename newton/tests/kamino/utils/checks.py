@@ -809,8 +809,7 @@ def assert_model_equal(
         atol: Per-attribute absolute tolerance overrides for floating-point array comparisons.
         allow_reordering: If True, bodies/joints/geoms are matched by label within each world
             instead of by row order, so ``model0`` and ``model1`` may store entities of the same
-            world in a different order. Worlds whose entities are already in the same order fall
-            back to the strict, order-sensitive comparison automatically. Defaults to ``False``.
+            world in a different order. Defaults to ``False``.
     """
     assert_model_size_equal(test, model0.size, model1.size, excluded)
 
