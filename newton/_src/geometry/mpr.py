@@ -38,6 +38,8 @@ import warp as wp
 from .support_function import GeoTypeEx, closest_point_on_triangle, unpack_mesh_ptr
 from .types import GeoType
 
+MPR_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
+
 
 @wp.struct
 class Vert:
@@ -230,33 +232,53 @@ def create_support_map_function(support_func: Any):
             center_b_local = 0.5 * (min_b + max_b)
 
         center_b_world = position_b + wp.quat_rotate(orientation_b, center_b_local)
+        center_b_to_a = center_a - center_b_world
 
         if geom_a.shape_type == int(GeoTypeEx.TRIANGLE) or geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
-            # Project shape B's center onto the triangle for a starting
-            # point near the contact region — this dramatically improves
-            # MPR convergence for large triangles.
-            #
-            # Blend 1% toward the centroid so the point is strictly in the
-            # face interior.  This does NOT prevent an MPR degeneracy (MPR
-            # works fine from an edge point); it improves *manifold quality*.
-            # When shape B projects onto a shared mesh edge, both adjacent
-            # triangles get the same v0, producing MPR witness points biased
-            # toward the edge.  The manifold builder (multicontact.py) uses
-            # these witness points as its center for perturbed support
-            # mapping, so edge-biased centers cause overlapping contact
-            # polygons across the two triangles instead of distinct ones —
-            # resulting in asymmetric force distribution and spurious torque.
-            # The 1% nudge gives each triangle a unique v0 pulled toward its
-            # own interior, yielding well-separated manifold centers.
+            # Start near the local contact region.  A small centroid bias keeps
+            # adjacent triangles' manifold witnesses distinct at a shared
+            # edge, but bound it by the normal center-to-plane distance so a
+            # large face cannot turn the initial MPR ray nearly tangential.
             tri_a = wp.vec3(0.0, 0.0, 0.0)
             tri_b = geom_a.scale
             tri_c = geom_a.auxiliary
+            face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+            face_normal_length_sq = wp.length_sq(face_normal)
             proj = closest_point_on_triangle(center_b_world, tri_a, tri_b, tri_c)
-            centroid = (tri_a + tri_b + tri_c) / 3.0
-            center_a = proj + 0.01 * (centroid - proj)
+
+            if face_normal_length_sq >= 1.0e-20:
+                face_normal_length = wp.sqrt(face_normal_length_sq)
+                face_normal_unit = face_normal / face_normal_length
+                signed_plane_distance = wp.dot(center_b_world - tri_a, face_normal_unit)
+                plane_proj = center_b_world - signed_plane_distance * face_normal_unit
+
+                # Reconstruct face-region offsets directly.  Subtracting two
+                # large, nearby positions can otherwise leave a spurious
+                # tangential component in the initial MPR ray.
+                inside_face = (
+                    wp.dot(wp.cross(tri_b - tri_a, plane_proj - tri_a), face_normal) >= 0.0
+                    and wp.dot(wp.cross(tri_c - tri_b, plane_proj - tri_b), face_normal) >= 0.0
+                    and wp.dot(wp.cross(tri_a - tri_c, plane_proj - tri_c), face_normal) >= 0.0
+                )
+                if inside_face:
+                    proj = plane_proj
+                    center_b_to_a = -signed_plane_distance * face_normal_unit
+                else:
+                    center_b_to_a = proj - center_b_world
+
+                centroid = (tri_a + tri_b + tri_c) / 3.0
+                to_centroid = centroid - proj
+                to_centroid -= wp.dot(to_centroid, face_normal_unit) * face_normal_unit
+                distance_to_centroid = wp.length(to_centroid)
+                if distance_to_centroid > 1.0e-12:
+                    nudge_distance = 0.01 * wp.min(distance_to_centroid, wp.abs(signed_plane_distance))
+                    center_b_to_a += to_centroid * (nudge_distance / distance_to_centroid)
+
+            else:
+                center_b_to_a = proj - center_b_world
 
         center.B = center_b_world
-        center.BtoA = center_a - center_b_world
+        center.BtoA = center_b_to_a
 
         return center
 
@@ -281,9 +303,27 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     """
 
     if _support_funcs is not None:
-        _support_map_b, minkowski_support, geometric_center = _support_funcs
+        _support_map_b, _minkowski_support, geometric_center = _support_funcs
     else:
-        _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
+        _support_map_b, _minkowski_support, geometric_center = create_support_map_function(support_func)
+
+    @wp.func
+    def centered_box_support(geom: Any, direction: wp.vec3, data_provider: Any) -> wp.vec3:
+        result = support_func(geom, direction, data_provider)
+        if geom.shape_type == GeoType.BOX:
+            # A nearly tied box face has infinitely many valid support points. Its center
+            # avoids feeding solver-scale rotation noise into MPR's portal topology.
+            contribution = wp.cw_mul(wp.abs(direction), geom.scale)
+            threshold = MPR_BOX_SUPPORT_TIE_EPSILON * (contribution[0] + contribution[1] + contribution[2])
+            if contribution[0] <= threshold:
+                result[0] = 0.0
+            if contribution[1] <= threshold:
+                result[1] = 0.0
+            if contribution[2] <= threshold:
+                result[2] = 0.0
+        return result
+
+    _, mpr_support, _ = create_support_map_function(centered_box_support)
 
     @wp.func
     def solve_mpr_core(
@@ -335,25 +375,49 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
         normal = v0.BtoA
         if wp.length_sq(normal) < NUMERIC_EPSILON:
-            # Centers coincide — probe three orthogonal directions and
-            # pick the one with the largest Minkowski support, giving
-            # MPR the most room to find a valid portal.
-            best_dot = float(-1.0e30)
-            best_dir = wp.vec3(1.0, 0.0, 0.0)
-            for axis_idx in range(3):
-                probe = wp.vec3(0.0, 0.0, 0.0)
-                probe[axis_idx] = 1.0
-                sv = minkowski_support(geom_a, geom_b, probe, orientation_b, position_b, extend, data_provider)
-                d = wp.dot(sv.BtoA, probe)
-                if d > best_dot:
-                    best_dot = d
-                    best_dir = probe
-            v0.BtoA = best_dir * 1e-05
+            used_triangle_fallback = bool(False)
+            if geom_a.shape_type == int(GeoTypeEx.TRIANGLE) or geom_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM):
+                tri_a = wp.vec3(0.0, 0.0, 0.0)
+                tri_b = geom_a.scale
+                tri_c = geom_a.auxiliary
+                face_normal = wp.cross(tri_b - tri_a, tri_c - tri_a)
+                face_normal_length_sq = wp.length_sq(face_normal)
+                if face_normal_length_sq >= 1.0e-20:
+                    face_normal = face_normal / wp.sqrt(face_normal_length_sq)
+                    proj = closest_point_on_triangle(v0.B, tri_a, tri_b, tri_c)
+                    centroid = (tri_a + tri_b + tri_c) / 3.0
+                    to_centroid = centroid - proj
+                    to_centroid -= wp.dot(to_centroid, face_normal) * face_normal
+                    to_centroid_length_sq = wp.length_sq(to_centroid)
+
+                    # Use the face normal for coincident triangle/convex
+                    # centers, retaining a small triangle-specific bias.
+                    fallback_dir = -face_normal
+                    if wp.dot(v0.B - proj, face_normal) < 0.0:
+                        fallback_dir = face_normal
+                    if to_centroid_length_sq > 1.0e-20:
+                        fallback_dir += 0.01 * to_centroid / wp.sqrt(to_centroid_length_sq)
+                    v0.BtoA = wp.normalize(fallback_dir) * 1.0e-5
+                    used_triangle_fallback = True
+
+            if not used_triangle_fallback:
+                # Probe three axes and use the direction with most support.
+                best_dot = float(-1.0e30)
+                best_dir = wp.vec3(1.0, 0.0, 0.0)
+                for axis_idx in range(3):
+                    probe = wp.vec3(0.0, 0.0, 0.0)
+                    probe[axis_idx] = 1.0
+                    sv = mpr_support(geom_a, geom_b, probe, orientation_b, position_b, extend, data_provider)
+                    d = wp.dot(sv.BtoA, probe)
+                    if d > best_dot:
+                        best_dot = d
+                        best_dir = probe
+                v0.BtoA = best_dir * 1e-05
 
         normal = -v0.BtoA
 
         # First support point
-        v1 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+        v1 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         point_a = vert_a(v1)
         point_b = v1.B
@@ -373,7 +437,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
             return True, point_a, point_b, normal, penetration
 
         # Second support point
-        v2 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+        v2 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         if wp.dot(v2.BtoA, normal) <= 0.0:
             return False, point_a, point_b, normal, penetration
@@ -408,7 +472,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
             phase1 += 1
 
-            v3 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+            v3 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             if wp.dot(v3.BtoA, normal) <= 0.0:
                 return False, point_a, point_b, normal, penetration
@@ -455,7 +519,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                 # If the origin is inside the wedge, we have a hit
                 hit = d >= 0.0
 
-            v4 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
+            v4 = mpr_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             temp3 = v4.BtoA - v3.BtoA
             delta = wp.dot(temp3, normal)

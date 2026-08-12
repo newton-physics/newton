@@ -873,6 +873,11 @@ solvers = {
         False,
         1e-4,  # Tighter tolerance - directly integrates CoM velocity
     ),
+    "kamino": (
+        newton.solvers.SolverKamino,
+        False,
+        1e-4,  # Tighter tolerance - directly integrates CoM velocity
+    ),
 }
 
 # Test configurations: different CoM offsets and velocity directions

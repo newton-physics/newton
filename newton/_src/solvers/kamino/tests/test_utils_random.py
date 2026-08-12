@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-import newton._src.solvers.kamino.tests.utils.rand as rand
+import newton.tests.kamino.utils.rand as rand
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 ###

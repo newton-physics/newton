@@ -1499,16 +1499,17 @@ def get_decode_contacts_kernel(
             if output_index >= writer_data.contact_max:
                 continue
 
-            pair = shape_pairs[tid]
+            contact_id = tid + 1
+            pair = shape_pairs[contact_id]
             shape_a = pair[0]
             shape_b = pair[1]
 
             transform_b = shape_transform[shape_b]
 
-            pd = position_depth[tid]
+            pd = position_depth[contact_id]
             pos = wp.vec3(pd[0], pd[1], pd[2])
             depth = pd[3]
-            contact_normal = decode_oct(normal[tid])
+            contact_normal = decode_oct(normal[contact_id])
 
             normal_world = wp.transform_vector(transform_b, contact_normal)
             pos_world = wp.transform_point(transform_b, pos)
@@ -1518,7 +1519,7 @@ def get_decode_contacts_kernel(
             gap_b = shape_gap[shape_b]
             gap_sum = gap_a + gap_b
 
-            area = contact_area[tid]
+            area = contact_area[contact_id]
 
             # Hydroelastic force per face: F = area * pressure_func(depth)
             # (Elandt et al. 2019). The solver applies
@@ -1559,7 +1560,7 @@ def get_decode_contacts_kernel(
             # ``tid`` is a buffer slot handed out by an atomic during generation,
             # so it varies between runs; the fingerprint is the marching-cubes
             # voxel and face index and is stable.
-            contact_data.sort_sub_key = contact_fingerprints[tid]
+            contact_data.sort_sub_key = contact_fingerprints[contact_id]
 
             writer_func(contact_data, writer_data, output_index)
 
@@ -1790,10 +1791,11 @@ def get_generate_contacts_kernel(
                         reducer_data,
                     )
                     if wp.static(output_vertices) and contact_id >= 0:
+                        buffer_idx = contact_id - 1
                         for vi in range(3):
-                            iso_vertex_point[3 * contact_id + vi] = wp.transform_point(X_ws_b, face_verts[vi])
-                        iso_vertex_depth[contact_id] = pen_depth
-                        iso_vertex_shape_pair[contact_id] = pair
+                            iso_vertex_point[3 * buffer_idx + vi] = wp.transform_point(X_ws_b, face_verts[vi])
+                        iso_vertex_depth[buffer_idx] = pen_depth
+                        iso_vertex_shape_pair[buffer_idx] = pair
                     continue
 
                 # Local-first compaction: keep top-K penetrating faces by force
@@ -1863,12 +1865,13 @@ def get_generate_contacts_kernel(
                         out_idx = base
 
                         if best_pen0_valid == 1 and out_idx < reducer_data.capacity:
-                            reducer_data.position_depth[out_idx] = wp.vec4(
+                            contact_id = out_idx + 1
+                            reducer_data.position_depth[contact_id] = wp.vec4(
                                 best_pen0_center[0], best_pen0_center[1], best_pen0_center[2], best_pen0_depth
                             )
-                            reducer_data.normal[out_idx] = encode_oct(best_pen0_normal)
-                            reducer_data.shape_pairs[out_idx] = wp.vec2i(shape_a, shape_b)
-                            reducer_data.contact_area[out_idx] = best_pen0_area
+                            reducer_data.normal[contact_id] = encode_oct(best_pen0_normal)
+                            reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
+                            reducer_data.contact_area[contact_id] = best_pen0_area
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen0_v0)
                                 iso_vertex_point[3 * out_idx + 1] = wp.transform_point(X_ws_b, best_pen0_v1)
@@ -1879,12 +1882,13 @@ def get_generate_contacts_kernel(
 
                         if wp.static(PRE_PRUNE_MAX_PENETRATING > 1):
                             if best_pen1_valid == 1 and out_idx < reducer_data.capacity:
-                                reducer_data.position_depth[out_idx] = wp.vec4(
+                                contact_id = out_idx + 1
+                                reducer_data.position_depth[contact_id] = wp.vec4(
                                     best_pen1_center[0], best_pen1_center[1], best_pen1_center[2], best_pen1_depth
                                 )
-                                reducer_data.normal[out_idx] = encode_oct(best_pen1_normal)
-                                reducer_data.shape_pairs[out_idx] = wp.vec2i(shape_a, shape_b)
-                                reducer_data.contact_area[out_idx] = best_pen1_area
+                                reducer_data.normal[contact_id] = encode_oct(best_pen1_normal)
+                                reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
+                                reducer_data.contact_area[contact_id] = best_pen1_area
                                 if wp.static(output_vertices):
                                     iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_pen1_v0)
                                     iso_vertex_point[3 * out_idx + 1] = wp.transform_point(X_ws_b, best_pen1_v1)
@@ -1894,12 +1898,13 @@ def get_generate_contacts_kernel(
                                 out_idx = out_idx + 1
 
                         if best_nonpen_valid == 1 and out_idx < reducer_data.capacity:
-                            reducer_data.position_depth[out_idx] = wp.vec4(
+                            contact_id = out_idx + 1
+                            reducer_data.position_depth[contact_id] = wp.vec4(
                                 best_nonpen_center[0], best_nonpen_center[1], best_nonpen_center[2], best_nonpen_depth
                             )
-                            reducer_data.normal[out_idx] = encode_oct(best_nonpen_normal)
-                            reducer_data.shape_pairs[out_idx] = wp.vec2i(shape_a, shape_b)
-                            reducer_data.contact_area[out_idx] = best_nonpen_area
+                            reducer_data.normal[contact_id] = encode_oct(best_nonpen_normal)
+                            reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
+                            reducer_data.contact_area[contact_id] = best_nonpen_area
                             if wp.static(output_vertices):
                                 iso_vertex_point[3 * out_idx + 0] = wp.transform_point(X_ws_b, best_nonpen_v0)
                                 iso_vertex_point[3 * out_idx + 1] = wp.transform_point(X_ws_b, best_nonpen_v1)
