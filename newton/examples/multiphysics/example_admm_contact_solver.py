@@ -39,6 +39,7 @@ def _gather_particles(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -240,7 +241,7 @@ class Example:
         builder: newton.ModelBuilder,
         args,
     ) -> tuple[list[int], list[int], int, int]:
-        tray_body = builder.add_body(
+        tray_body = builder.add_link(
             xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             mass=args.tray_mass,
             inertia=wp.mat33(np.eye(3) * args.tray_inertia),
