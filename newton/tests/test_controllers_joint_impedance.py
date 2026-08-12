@@ -447,6 +447,59 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         with self.assertRaises(ValueError):
             ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
+    def test_wrong_device_constructor_array_raises(self):
+        """Verify every wp.array constructor argument is rejected when it is on the wrong device."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("needs a second device to mismatch against")
+        other = "cpu"
+
+        def _kwargs():
+            return {
+                "dofs_per_robot": _dofs_arr([2], device),
+                "default_dof_indices": _iota(2, device),
+                "stiffness": _gains(1, 2, 1.0, device),
+                "damping": _gains(1, 2, 0.0, device),
+                "use_gravity_compensation": False,
+                "use_coriolis_compensation": False,
+                "use_inertia_decoupling": False,
+                "device": device,
+            }
+
+        # One entry per wp.array argument, each moved to the wrong device in turn.
+        wrong = {
+            "dofs_per_robot": _dofs_arr([2], other),
+            "default_dof_indices": _iota(2, other),
+            "stiffness": _gains(1, 2, 1.0, other),
+            "damping": _gains(1, 2, 0.0, other),
+            "joint_q_idx": _iota(2, other),
+            "joint_qd_idx": _iota(2, other),
+            "joint_q_des_idx": _iota(2, other),
+            "joint_qd_des_idx": _iota(2, other),
+            "joint_qdd_idx": _iota(2, other),
+            "gravity_force_idx": _iota(2, other),
+            "coriolis_force_idx": _iota(2, other),
+            "joint_f_idx": _iota(2, other),
+        }
+        for name, bad_array in wrong.items():
+            with self.subTest(argument=name), self.assertRaises(ValueError):
+                ControllerJointImpedanceModelFree(**{**_kwargs(), name: bad_array})
+
+    def test_wrong_dtype_constructor_array_raises(self):
+        """Verify a wp.array constructor argument with the wrong dtype raises TypeError."""
+        device = wp.get_device()
+        with self.assertRaises(TypeError):
+            ControllerJointImpedanceModelFree(
+                dofs_per_robot=_dofs_arr([2], device),
+                default_dof_indices=wp.zeros(2, dtype=wp.int32, device=device),  # want uint32
+                stiffness=_gains(1, 2, 1.0, device),
+                damping=_gains(1, 2, 0.0, device),
+                use_gravity_compensation=False,
+                use_coriolis_compensation=False,
+                use_inertia_decoupling=False,
+                device=device,
+            )
+
     def test_zero_dof_robot_raises(self):
         """Verify a robot declaring zero DOFs raises at construction."""
         device = wp.get_device()
@@ -760,6 +813,26 @@ class TestControllerJointImpedance(unittest.TestCase):
                 use_coriolis_compensation=False,
                 device=device,
             )
+
+    def test_short_joint_q_raises_before_gather(self):
+        """Verify a short joint_q is rejected before the internal FK gather reads it."""
+        device = wp.get_device()
+        ctrl = self._make_ctrl(device)
+        ins, outs = ctrl.input(), ctrl.output()
+        ins.joint_q = wp.zeros(0, dtype=wp.float32, device=device)
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=ins, outputs=outs, dt=0.01)
+
+    def test_wrong_device_joint_q_raises_before_gather(self):
+        """Verify a joint_q on another device is rejected before the internal FK gather reads it."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("needs a second device to mismatch against")
+        ctrl = self._make_ctrl(device)
+        ins, outs = ctrl.input(), ctrl.output()
+        ins.joint_q = wp.zeros(1, dtype=wp.float32, device="cpu")
+        with self.assertRaises(ValueError):
+            ctrl.step(inputs=ins, outputs=outs, dt=0.01)
 
     def test_input_outputs_shapes(self):
         """Verify input/output struct arrays have the expected flat shapes."""
