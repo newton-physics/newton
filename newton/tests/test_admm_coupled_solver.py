@@ -288,6 +288,22 @@ def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
     return model
 
 
+def _build_two_world_body_particle_attachment_scene() -> newton.Model:
+    """Build two worlds with one rigid-particle attachment each."""
+    world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = world.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    particle = world.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+    SolverCoupledADMM.add_body_particle_attachment(world, body, particle, stiffness=500.0)
+    world.color()
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_world(world)
+    builder.add_world(world)
+    model = builder.finalize(device="cpu")
+    model.particle_grid = None
+    return model
+
+
 def _build_two_body_contact_scene(gap: float = -0.1) -> newton.Model:
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_body(
@@ -1014,6 +1030,49 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
 
         self.assertLess(final_gap, 0.5 * initial_gap)
 
+    def test_masked_reset_preserves_unselected_attachment_history(self):
+        """Clear selected attachment duals and preserve every other row."""
+        model = _build_two_world_body_particle_attachment_scene()
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(
+                    "body",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    bodies=range(model.body_count),
+                ),
+                SolverCoupled.Entry(
+                    "particle",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    particles=range(model.particle_count),
+                ),
+            ],
+            SolverCoupledADMM.Config(iterations=1),
+        )
+        group = solver._admm_rp_groups[0]
+        u_before = np.arange(1, group.u.numpy().size + 1, dtype=np.float32).reshape(group.u.numpy().shape)
+        lambda_before = u_before + 10.0
+        group.u.assign(u_before)
+        group.lambda_.assign(lambda_before)
+
+        solver.reset(
+            model.state(),
+            world_mask=wp.array((False, False, False), dtype=wp.bool, device=model.device),
+            flags=0,
+        )
+        np.testing.assert_array_equal(group.u.numpy(), u_before)
+        np.testing.assert_array_equal(group.lambda_.numpy(), lambda_before)
+
+        solver.reset(
+            model.state(),
+            world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
+            flags=0,
+        )
+        np.testing.assert_array_equal(group.u.numpy()[0], 0.0)
+        np.testing.assert_array_equal(group.lambda_.numpy()[0], 0.0)
+        np.testing.assert_array_equal(group.u.numpy()[1], u_before[1])
+        np.testing.assert_array_equal(group.lambda_.numpy()[1], lambda_before[1])
+
 
 class TestAdmmExternalForces(unittest.TestCase):
     """External forces set on ``state_in.body_f`` / ``particle_f`` by the
@@ -1071,6 +1130,61 @@ class TestAdmmExternalForces(unittest.TestCase):
 
 class TestAdmmCollisionDetection(unittest.TestCase):
     """Collision-detected ADMM contact constraints."""
+
+    def test_masked_reset_preserves_unselected_contact_history(self):
+        """Clear only dynamic contact duals touching the reset world."""
+        world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        world.add_particle(pos=(-0.04, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.05)
+        world.add_particle(pos=(0.04, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.05)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.add_world(world)
+        builder.add_world(world, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+        model = builder.finalize(device="cpu")
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(
+                    "a",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    particles=(0, 2),
+                ),
+                SolverCoupled.Entry(
+                    "b",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    particles=(1, 3),
+                ),
+            ],
+            SolverCoupledADMM.Config(
+                iterations=1,
+                contact_pairs=[SolverCoupledADMM.ContactPair(source="a", destination="b")],
+            ),
+        )
+        solver._refresh_collision_contact_groups(model.state())
+        group = solver._admm_dynamic_pp_contact_groups[0]
+        active = np.flatnonzero(group.active.numpy())
+        self.assertEqual(active.size, 2)
+        ids_a = group.particle_ids_a.numpy()[active]
+        ids_b = group.particle_ids_b.numpy()[active]
+        worlds_a = solver._entries[group.particle_entry_name_a].view.particle_world.numpy()[ids_a]
+        worlds_b = solver._entries[group.particle_entry_name_b].view.particle_world.numpy()[ids_b]
+        selected = (worlds_a == 0) | (worlds_b == 0)
+
+        u_before = np.arange(1, group.u.numpy().size + 1, dtype=np.float32).reshape(group.u.numpy().shape)
+        lambda_before = u_before + 20.0
+        group.u.assign(u_before)
+        group.lambda_.assign(lambda_before)
+        solver.reset(
+            model.state(),
+            world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
+            flags=0,
+        )
+
+        after_u = group.u.numpy()[active]
+        after_lambda = group.lambda_.numpy()[active]
+        np.testing.assert_array_equal(after_u[selected], 0.0)
+        np.testing.assert_array_equal(after_lambda[selected], 0.0)
+        np.testing.assert_array_equal(after_u[~selected], u_before[active][~selected])
+        np.testing.assert_array_equal(after_lambda[~selected], lambda_before[active][~selected])
 
     def test_rigid_contact_detection_rejects_cross_world_pairs(self):
         builder = newton.ModelBuilder()

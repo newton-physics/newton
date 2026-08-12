@@ -8,7 +8,8 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.geometry.sdf_contact import mesh_sdf_contact_search_precision
+from newton._src.geometry.sdf_contact import _sdf_rsqrt_rn, mesh_sdf_contact_search_precision
+from newton.tests.unittest_utils import get_test_devices
 
 
 @wp.kernel(enable_backward=False)
@@ -19,6 +20,12 @@ def _mesh_sdf_contact_search_precision_kernel(out: wp.array[wp.float32]):
     out[3] = mesh_sdf_contact_search_precision(0.01, 2.0, 0.001, False)
 
 
+@wp.kernel(enable_backward=False)
+def _sdf_rsqrt_rn_kernel(values: wp.array[wp.float32], out: wp.array[wp.float32]):
+    tid = wp.tid()
+    out[tid] = _sdf_rsqrt_rn(values[tid])
+
+
 class TestSDFContact(unittest.TestCase):
     def test_mesh_sdf_contact_search_precision_uses_inner_envelope(self) -> None:
         device = wp.get_preferred_device()
@@ -27,6 +34,19 @@ class TestSDFContact(unittest.TestCase):
         wp.launch(_mesh_sdf_contact_search_precision_kernel, dim=1, inputs=[values], device=device)
 
         np.testing.assert_allclose(values.numpy(), np.array([0.0, 0.001, 0.005, 0.005], dtype=np.float32))
+
+    def test_sdf_rsqrt_rn_on_all_devices(self) -> None:
+        """Verify the native reciprocal square root on CPU and CUDA."""
+        values_np = np.array([0.25, 1.0, 2.0, 4.0, 100.0], dtype=np.float32)
+        expected = np.float32(1.0) / np.sqrt(values_np)
+
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                values = wp.array(values_np, device=device)
+                result = wp.empty_like(values)
+                wp.launch(_sdf_rsqrt_rn_kernel, dim=len(values_np), inputs=[values, result], device=device)
+
+                np.testing.assert_allclose(result.numpy(), expected, rtol=np.finfo(np.float32).eps, atol=0.0)
 
 
 if __name__ == "__main__":

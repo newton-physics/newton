@@ -223,6 +223,12 @@ def map_joint_coords_to_dofs_universal(q_j: wp.vec2f) -> wp.vec2f:
 
 
 @wp.func
+def map_joint_coords_to_dofs_gimbal(q_j: wp.vec3f) -> wp.vec3f:
+    """Use intrinsic Euler coordinates directly for scalar gimbal limits."""
+    return q_j
+
+
+@wp.func
 def map_joint_coords_to_dofs_spherical(q_j: wp.vec4f) -> wp.vec3f:
     """Maps quaternion coordinates of a spherical
     joint to a local axes-aligned rotation vector."""
@@ -250,6 +256,10 @@ def get_joint_coords_to_dofs_mapping_function(dof_type: JointDoFType):
         return map_joint_coords_to_dofs_cylindrical
     elif dof_type == JointDoFType.UNIVERSAL:
         return map_joint_coords_to_dofs_universal
+    elif dof_type == JointDoFType.GIMBAL:
+        return map_joint_coords_to_dofs_gimbal
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        return map_joint_coords_to_dofs_gimbal
     elif dof_type == JointDoFType.SPHERICAL:
         return map_joint_coords_to_dofs_spherical
     elif dof_type == JointDoFType.CARTESIAN:
@@ -352,6 +362,26 @@ def read_joint_coords_map_and_limits(
 
     elif dof_type == JointDoFType.UNIVERSAL:
         d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.UNIVERSAL))(
+            dofs_offset,
+            coords_offset,
+            model_joint_q_j_min,
+            model_joint_q_j_max,
+            state_joints_q_j,
+        )
+
+    elif dof_type == JointDoFType.GIMBAL:
+        d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.GIMBAL))(
+            dofs_offset,
+            coords_offset,
+            model_joint_q_j_min,
+            model_joint_q_j_max,
+            state_joints_q_j,
+        )
+
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        d_j, q_j_min, q_j_max, q_j_map = wp.static(
+            make_read_joint_coords_map_and_limits(JointDoFType.GIMBAL_LEFT_HANDED)
+        )(
             dofs_offset,
             coords_offset,
             model_joint_q_j_min,
