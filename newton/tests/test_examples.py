@@ -49,13 +49,17 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
     r")\n?"
 )
+_ASSET_CACHE_REFRESH_OUTPUT_RE = (
+    r"(?:New version of [^\n]+ found "
+    r"\(cached: [0-9a-f]{8}, latest: [0-9a-f]{8}\)\. Refreshing\.\.\.\n)?"
+)
 _NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
-    r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+    _ASSET_CACHE_REFRESH_OUTPUT_RE + r"Cloning https://github\.com/newton-physics/newton-assets\.git "
     r"\(ref: [0-9a-f]{40}\)\.\.\.\n"
     r"Successfully downloaded folder to: [^\n]+\n?"
 )
 _ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE = (
-    r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
+    _ASSET_CACHE_REFRESH_OUTPUT_RE + r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
     r"\(ref: main\)\.\.\.\n"
     r"Successfully downloaded folder to: [^\n]+\n?"
 )
