@@ -268,11 +268,13 @@ class ResponseOracle:
             state: Simulation state providing ``joint_q`` / ``joint_qd``.
         """
         model = self.model
-        # eval_fk overwrites body_q/body_qd, so keep it off the caller's state.
+        # eval_fk overwrites body_q/body_qd, so keep it off the caller's state. It
+        # only reads joint_q/joint_qd, and eval_jacobian reads joint_q from the
+        # state it is handed, so the scratch state can alias rather than copy.
         fk_state = self._fk_state
-        wp.copy(fk_state.joint_q, state.joint_q)
-        wp.copy(fk_state.joint_qd, state.joint_qd)
-        eval_fk(model, fk_state.joint_q, fk_state.joint_qd, fk_state)
+        fk_state.joint_q = state.joint_q
+        fk_state.joint_qd = state.joint_qd
+        eval_fk(model, state.joint_q, state.joint_qd, fk_state)
         eval_jacobian(model, fk_state, J=self._J, joint_S_s=self._joint_S_s)
         eval_mass_matrix(model, fk_state, H=self._H, J=self._J, body_I_s=self._body_I_s)
         if model.joint_armature is not None:
