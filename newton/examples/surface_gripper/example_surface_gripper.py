@@ -88,6 +88,10 @@ ROBOT_ARTICULATION_PATTERN = "*Robot*"
 PICK_SCENE_USD = ASSETS / "fanuc_pick_scene.usda"
 # recording of the robot arm motion and surface gripper engagement/disengagement.
 RECORDING_JSONL = ASSETS / "fanuc_recording.jsonl"
+# Duration of that recording [s]: one panel pick followed by six crate picks, the last release at
+# ~25.6 s. Used to default --num-frames so a plain run plays the whole cycle rather than stopping
+# partway through the first pick.
+RECORDING_DURATION = 26.15  # [s]
 
 # rendered frames per second
 FPS = 60
@@ -664,6 +668,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
+        parser.set_defaults(num_frames=round(RECORDING_DURATION * FPS))
         return parser
 
     def __init__(self, viewer, args):
