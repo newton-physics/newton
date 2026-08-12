@@ -558,6 +558,11 @@ com_solvers = {
         1e-3,
         True,
     ),
+    "kamino": (
+        newton.solvers.SolverKamino,
+        1e-3,
+        True,
+    ),
 }
 
 # Test configurations for non-zero CoM tests

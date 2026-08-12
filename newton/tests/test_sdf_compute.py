@@ -1370,7 +1370,7 @@ def test_brick_pyramid_stability(test, device):
         for i in range(bricks_in_row):
             x_pos = start_x + i * (brick_width + gap)
 
-            body = builder.add_body(xform=wp.transform(wp.vec3(x_pos, 0.0, z_pos), wp.quat_identity()))
+            body = builder.add_link(xform=wp.transform(wp.vec3(x_pos, 0.0, z_pos), wp.quat_identity()))
             builder.add_shape_mesh(
                 body,
                 mesh=cube_mesh,
