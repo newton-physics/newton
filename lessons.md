@@ -1,5 +1,17 @@
 # Project Lessons
 
+## 2026-08-12 — Use one Newton solve for the first ABD bunny drop
+
+- Context: Fixing the runtime configuration for the first frictional affine-body bunny-to-ground example.
+- Mistake: Proposed four Newton iterations with 32 PCG iterations instead of preserving the user's preferred LIMX convergence schedule.
+- Rule: Configure this ABD bunny drop with exactly one Newton iteration and 50 PCG iterations per frame. Do not retune those counts unless the user explicitly requests it.
+
+## 2026-08-12 — Keep ABD ground contact penalty-based
+
+- Context: Designing the first frictional affine-body bunny drop after consulting libuipc's affine contact implementation.
+- Mistake: Proposed adopting libuipc's IPC barrier even though the requested Newton/LIMX collision direction remains penalty contact.
+- Rule: Implement ABD normal contact with the project's penalty formulation. Use libuipc only as a reference for the `A+t` material-point Jacobian, the lifts `J^T g` and `J^T H J`, and smooth lagged friction unless the user explicitly requests a barrier formulation.
+
 ## 2026-08-11 — Keep affine and particle solver blocks distinct
 
 - Context: Designing pure-Newton affine-body dynamics integration with deformable LIMX particles.

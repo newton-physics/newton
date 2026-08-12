@@ -300,6 +300,7 @@ reportUnusedCallResult = false
 files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf", "*.js"]
 
 [tool.typos.default.extend-words]
+abd = "abd"
 arange = "arange"
 precess = "precess"
 ba = "ba"
