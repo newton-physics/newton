@@ -12,6 +12,7 @@
 - Add adaptive LIMX self-collision stiffness derived from the current elastic diagonal and inertia, with independent VF, EE, and EF factors.
 - Add automatic LIMX self-collision thickness from the rest-geometry two-ring clearance, capped at 5 mm.
 - Add regularized Coulomb friction to LIMX vertex-face and edge-edge cloth self-collision.
+- Add penalty-based static-plane contact for LIMX affine bodies and a frictional bunny-drop example.
 - Add a topology-local-only scope for geometry-aware LIMX self-collision radii so one-ring VF/EE can use rest-geometry caps while nonlocal pairs keep the nominal thickness.
 - Add optional surface-particle subsets to LIMX static-plane contact and an option to disable edge-face recovery in self-collision.
 - Add opt-in outward-normal signed VF/EE contact for closed LIMX volume surfaces, excluding only strictly incident pairs that share primitive indices.

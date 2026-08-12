@@ -35,6 +35,7 @@ https://newton-physics.github.io/newton/stable/solvers/index.html.
    :nosignatures:
 
    AffineBodyModel
+   ConstraintAffineStaticPlaneContact
    ConstraintAnchor
    ConstraintDihedralBending
    ConstraintDistance
