@@ -45,6 +45,31 @@ def _two_body_model(translation: tuple[float, float, float], device: str = "cpu"
     )
 
 
+def _near_parallel_model(device: str = "cpu") -> AffineBodyModel:
+    vertices, tetrahedra, surface_triangles = _unit_tetrahedron()
+    angle = 0.01
+    translation = (
+        0.5 - 0.5 * np.cos(angle),
+        -0.5 * np.sin(angle),
+        0.002,
+    )
+    return AffineBodyModel.from_instances(
+        vertices,
+        tetrahedra,
+        surface_triangles,
+        density=6.0,
+        rigidity=0.0,
+        initial_transforms=[
+            wp.transform_identity(),
+            wp.transform(
+                wp.vec3(*translation),
+                wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle),
+            ),
+        ],
+        device=device,
+    )
+
+
 def _make_contact(model: AffineBodyModel, **overrides) -> ConstraintAffineBodyContact:
     parameters = {
         "body_model": model,
@@ -286,6 +311,223 @@ class TestConstraintAffineBodyContactOperator(unittest.TestCase):
         force_values = force.numpy()
         self.assertTrue(np.isfinite(force_values).all())
         self.assertLess(float(np.sum(force_values * velocity_values)), 0.0)
+
+    def test_lifts_near_parallel_ee_mollifier(self):
+        """Lift the EE mollifier residual and full Gauss-Newton operator."""
+        model = _near_parallel_model()
+        contact = _make_contact(
+            model,
+            thickness=0.0025,
+            stiffness=7.0,
+            normal_damping=0.0,
+            friction=0.0,
+        )
+        input_values = np.linspace(-0.4, 0.7, 24, dtype=np.float32).reshape(2, 12)
+        affine_input = wp.array(input_values, dtype=vec12, device="cpu")
+        force = wp.zeros(2, dtype=vec12, device="cpu")
+        product = wp.zeros_like(force)
+        diagonal = wp.zeros(2, dtype=mat1212, device="cpu")
+        empty_particles = wp.empty(0, dtype=wp.vec3, device="cpu")
+
+        contact.begin_step(model.q, model.qd, 0.1)
+        contact.prepare(model.q)
+        contact.accumulate_force(model.q, force)
+        contact.multiply(empty_particles, affine_input, empty_particles, product)
+        contact.accumulate_diagonal(wp.empty(0, dtype=wp.mat33, device="cpu"), diagonal)
+
+        rest_positions = model.rest_surface_vertices.numpy().astype(np.float64)
+        ownership = model.surface_ownership.numpy()
+        base_positions = contact.positions.numpy().astype(np.float64)
+        base_states = model.q.numpy().astype(np.float64)
+        expected_force = np.zeros(24, dtype=np.float64)
+        expected_hessian = np.zeros((24, 24), dtype=np.float64)
+
+        def contact_body_jacobian(contact_ids, contact_weights):
+            jacobian = np.zeros((3, 24), dtype=np.float64)
+            for particle, weight in zip(contact_ids, contact_weights, strict=True):
+                body = ownership[particle]
+                jacobian[:, 12 * body : 12 * (body + 1)] += float(weight) * _point_jacobian(rest_positions[particle])
+            return jacobian
+
+        vf_ids, vf_weights, vf_depths = _active_rows(contact.vertex_face_contacts)
+        vf_directions = contact.vertex_face_contacts.directions.numpy()[: len(vf_ids)].astype(np.float64)
+        for ids, weights, direction, depth in zip(
+            vf_ids,
+            vf_weights,
+            vf_directions,
+            vf_depths,
+            strict=True,
+        ):
+            jacobian = contact_body_jacobian(ids, weights)
+            expected_force += jacobian.T @ (7.0 * float(depth) * direction)
+            expected_hessian += 7.0 * jacobian.T @ np.outer(direction, direction) @ jacobian
+
+        ee_ids, ee_weights, ee_depths = _active_rows(contact.edge_edge_contacts)
+        ee_directions = contact.edge_edge_contacts.directions.numpy()[: len(ee_ids)].astype(np.float64)
+        thresholds = contact.edge_edge_contacts.mollifier_thresholds.numpy()[: len(ee_ids)].astype(np.float64)
+        expected_active = []
+        epsilon = 2.0e-5
+
+        def residual(
+            flat_states,
+            contact_ids,
+            contact_base_positions,
+            contact_depth,
+            contact_weights,
+            contact_direction,
+            contact_threshold,
+        ):
+            states = flat_states.reshape(2, 12)
+            current = np.stack(
+                [_point_jacobian(rest_positions[particle]) @ states[ownership[particle]] for particle in contact_ids]
+            )
+            displacement = current - contact_base_positions
+            current_depth = contact_depth - float(np.sum(contact_weights[:, None] * displacement * contact_direction))
+            edge_0 = current[1] - current[0]
+            edge_1 = current[3] - current[2]
+            cross_product = np.cross(edge_0, edge_1)
+            cross_squared = float(cross_product @ cross_product)
+            beta = np.sqrt(max(2.0 * contact_threshold - cross_squared, 0.0)) / contact_threshold
+            return current_depth * beta * cross_product
+
+        for ids, weights, direction, depth, threshold in zip(
+            ee_ids,
+            ee_weights,
+            ee_directions,
+            ee_depths,
+            thresholds,
+            strict=True,
+        ):
+            base_contact_positions = base_positions[ids]
+            base_cross = np.cross(
+                base_contact_positions[1] - base_contact_positions[0],
+                base_contact_positions[3] - base_contact_positions[2],
+            )
+            active = float(base_cross @ base_cross) < float(threshold)
+            expected_active.append(int(active))
+            if not active:
+                jacobian = contact_body_jacobian(ids, weights)
+                expected_force += jacobian.T @ (7.0 * float(depth) * direction)
+                expected_hessian += 7.0 * jacobian.T @ np.outer(direction, direction) @ jacobian
+                continue
+
+            flat_states = base_states.reshape(-1)
+            residual_arguments = (
+                ids,
+                base_contact_positions,
+                float(depth),
+                weights,
+                direction,
+                float(threshold),
+            )
+            residual_value = residual(flat_states, *residual_arguments)
+            residual_jacobian = np.empty((3, 24), dtype=np.float64)
+            for column in range(24):
+                offset = np.zeros(24, dtype=np.float64)
+                offset[column] = epsilon
+                residual_jacobian[:, column] = (
+                    residual(flat_states + offset, *residual_arguments)
+                    - residual(flat_states - offset, *residual_arguments)
+                ) / (2.0 * epsilon)
+            expected_force += -7.0 * residual_jacobian.T @ residual_value
+            expected_hessian += 7.0 * residual_jacobian.T @ residual_jacobian
+
+        self.assertIn(1, expected_active)
+        np.testing.assert_array_equal(
+            contact.edge_edge_contacts.mollifier_active.numpy()[: len(ee_ids)],
+            expected_active,
+        )
+        expected_product = (expected_hessian @ input_values.reshape(-1)).reshape(2, 12)
+        expected_diagonal = np.stack(
+            [expected_hessian[:12, :12], expected_hessian[12:, 12:]],
+        )
+        np.testing.assert_allclose(force.numpy().reshape(-1), expected_force, rtol=4.0e-4, atol=4.0e-5)
+        np.testing.assert_allclose(product.numpy(), expected_product, rtol=5.0e-4, atol=5.0e-5)
+        np.testing.assert_allclose(diagonal.numpy(), expected_diagonal, rtol=5.0e-4, atol=5.0e-5)
+        np.testing.assert_allclose(expected_hessian, expected_hessian.T, atol=1.0e-9)
+        self.assertGreaterEqual(float(np.linalg.eigvalsh(expected_hessian)[0]), -1.0e-8)
+
+    def test_scales_near_parallel_ee_friction_load(self):
+        """Scale near-parallel EE friction by the active mollifier value."""
+        model = _near_parallel_model()
+        velocity_values = np.zeros((2, 12), dtype=np.float32)
+        velocity_values[1, :3] = [0.0, 0.1, 0.0]
+        velocities = wp.array(velocity_values, dtype=vec12, device="cpu")
+        frictionless = _make_contact(
+            model,
+            thickness=0.0025,
+            stiffness=10.0,
+            normal_damping=0.0,
+            friction=0.0,
+        )
+        frictional = _make_contact(
+            model,
+            thickness=0.0025,
+            stiffness=10.0,
+            normal_damping=0.0,
+            friction=0.4,
+            friction_epsilon=1.0e-4,
+        )
+        forces = []
+        for contact in (frictionless, frictional):
+            force = wp.zeros(2, dtype=vec12, device="cpu")
+            contact.begin_step(model.q, velocities, 0.1)
+            contact.prepare(model.q)
+            contact.accumulate_force(model.q, force)
+            forces.append(force.numpy())
+
+        rest_positions = model.rest_surface_vertices.numpy().astype(np.float64)
+        ownership = model.surface_ownership.numpy()
+        expected = np.zeros((2, 12), dtype=np.float64)
+        expected_active_count = 0
+        for buffer, use_mollifier in (
+            (frictional.vertex_face_contacts, False),
+            (frictional.edge_edge_contacts, True),
+        ):
+            ids, weights, depths = _active_rows(buffer)
+            directions = buffer.directions.numpy()[: len(ids)].astype(np.float64)
+            thresholds = (
+                buffer.mollifier_thresholds.numpy()[: len(ids)].astype(np.float64)
+                if use_mollifier
+                else np.zeros(len(ids))
+            )
+            for contact_ids, contact_weights, direction, depth, threshold in zip(
+                ids,
+                weights,
+                directions,
+                depths,
+                thresholds,
+                strict=True,
+            ):
+                body_jacobians = np.zeros((2, 3, 12), dtype=np.float64)
+                for particle, weight in zip(contact_ids, contact_weights, strict=True):
+                    body_jacobians[ownership[particle]] += float(weight) * _point_jacobian(rest_positions[particle])
+                relative_velocity = sum(body_jacobians[body] @ velocity_values[body] for body in range(2))
+                tangent = np.eye(3) - np.outer(direction, direction)
+                tangent_displacement = 0.1 * tangent @ relative_velocity
+                tangent_length = float(np.linalg.norm(tangent_displacement))
+                inverse_length = (
+                    1.0 / tangent_length if tangent_length > 1.0e-4 else (2.0 - tangent_length / 1.0e-4) / 1.0e-4
+                )
+                load_scale = 1.0
+                if use_mollifier:
+                    positions = frictional.positions.numpy()[contact_ids]
+                    cross_product = np.cross(positions[1] - positions[0], positions[3] - positions[2])
+                    cross_squared = float(cross_product @ cross_product)
+                    if cross_squared < threshold:
+                        expected_active_count += 1
+                        load_scale = np.clip(
+                            cross_squared * (2.0 * threshold - cross_squared) / (threshold * threshold),
+                            0.0,
+                            1.0,
+                        )
+                alpha = 0.4 * 10.0 * float(depth) * inverse_length * load_scale
+                world_force = -alpha * tangent_displacement
+                for body in range(2):
+                    expected[body] += body_jacobians[body].T @ world_force
+
+        self.assertGreater(expected_active_count, 0)
+        np.testing.assert_allclose(forces[1] - forces[0], expected, rtol=5.0e-4, atol=5.0e-6)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,12 @@ from ....utils.mesh import MeshAdjacency
 from ..affine_body import AffineBodyModel
 from ..affine_types import mat1212, vec12
 from .affine_static_plane_contact import _affine_point, _lift_affine_vector
+from .self_collision import (
+    _edge_edge_gauss_newton_multiply,
+    _edge_edge_mollified_residual_data,
+    _edge_edge_mollified_residual_jacobian_transpose_multiply,
+    _prepare_edge_edge_mollifier,
+)
 
 _MIN_CONTACT_DISTANCE = 1.0e-7
 _EE_MOLLIFIER_THRESHOLD_SCALE = 1.0e-3
@@ -46,6 +52,18 @@ def _lift_weighted_affine_matrix(
             world_column = _contact_jacobian_axis(column)
             column_weight = _contact_jacobian_weight(column, translation_weight, rest_weight)
             result[row, column] = row_weight * world_matrix[world_row, world_column] * column_weight
+    return result
+
+
+@wp.func
+def _affine_point_basis(rest_position: wp.vec3, column: int) -> wp.vec3:
+    result = wp.vec3(0.0)
+    if column < 3:
+        result[column] = 1.0
+    else:
+        axis = (column - 3) // 3
+        coordinate = (column - 3) % 3
+        result[axis] = rest_position[coordinate]
     return result
 
 
@@ -225,8 +243,12 @@ def _prepare_affine_contact_response(
     depths: wp.array[float],
     count: wp.array[int],
     capacity: int,
+    positions: wp.array[wp.vec3],
     rest_positions: wp.array[wp.vec3],
     surface_ownership: wp.array[int],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    use_mollifier: int,
     velocities: wp.array[vec12],
     stiffness: float,
     normal_damping: float,
@@ -250,8 +272,30 @@ def _prepare_affine_contact_response(
     direction = directions[contact]
     depth = depths[contact]
     normal_outer = wp.outer(direction, direction)
-    force = stiffness * depth * direction
-    hessian = stiffness * normal_outer
+    normal_scale = float(1.0)
+    friction_load_scale = float(1.0)
+    if use_mollifier != 0 and mollifier_active[contact] != 0:
+        normal_scale = 0.0
+        position_0 = positions[ids[contact, 0]]
+        position_1 = positions[ids[contact, 1]]
+        position_2 = positions[ids[contact, 2]]
+        position_3 = positions[ids[contact, 3]]
+        edge_0 = position_1 - position_0
+        edge_1 = position_3 - position_2
+        cross_product = wp.cross(edge_0, edge_1)
+        cross_squared = wp.dot(cross_product, cross_product)
+        threshold = mollifier_thresholds[contact]
+        if threshold > 0.0:
+            friction_load_scale = wp.clamp(
+                cross_squared * (2.0 * threshold - cross_squared) / (threshold * threshold),
+                0.0,
+                1.0,
+            )
+        else:
+            friction_load_scale = 0.0
+
+    force = normal_scale * stiffness * depth * direction
+    hessian = normal_scale * stiffness * normal_outer
 
     normal_velocity = wp.dot(direction, relative_velocity)
     if normal_velocity < 0.0 and normal_damping > 0.0:
@@ -266,12 +310,206 @@ def _prepare_affine_contact_response(
         friction_over_length = 1.0 / tangent_length
     else:
         friction_over_length = (-tangent_length / friction_epsilon + 2.0) / friction_epsilon
-    alpha = friction * stiffness * depth * friction_over_length
+    alpha = friction_load_scale * friction * stiffness * depth * friction_over_length
     force -= alpha * tangent_displacement
     hessian += alpha * tangent
 
     forces[contact] = force
     hessians[contact] = hessian
+
+
+@wp.kernel
+def _accumulate_mollified_affine_edge_force(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    capacity: int,
+    stiffness: float,
+    positions: wp.array[wp.vec3],
+    rest_positions: wp.array[wp.vec3],
+    surface_ownership: wp.array[int],
+    output: wp.array[vec12],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity) or mollifier_active[contact] == 0:
+        return
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    edge_0 = positions[index_1] - positions[index_0]
+    edge_1 = positions[index_3] - positions[index_2]
+    direction = directions[contact]
+    depth = depths[contact]
+    threshold = mollifier_thresholds[contact]
+    contact_weights = wp.vec4(
+        weights[contact, 0],
+        weights[contact, 1],
+        weights[contact, 2],
+        weights[contact, 3],
+    )
+    cross_product, residual_scale, _scale_gradient = _edge_edge_mollified_residual_data(
+        edge_0,
+        edge_1,
+        threshold,
+    )
+    edge_product_0, edge_product_1, depth_product = _edge_edge_mollified_residual_jacobian_transpose_multiply(
+        edge_0,
+        edge_1,
+        depth,
+        threshold,
+        depth * residual_scale * cross_product,
+    )
+    gradient_0 = -edge_product_0 - contact_weights[0] * depth_product * direction
+    gradient_1 = edge_product_0 - contact_weights[1] * depth_product * direction
+    gradient_2 = -edge_product_1 - contact_weights[2] * depth_product * direction
+    gradient_3 = edge_product_1 - contact_weights[3] * depth_product * direction
+    gradients = gradient_0, gradient_1, gradient_2, gradient_3
+
+    for local_index in range(4):
+        particle = ids[contact, local_index]
+        body = surface_ownership[particle]
+        lifted_force = _lift_affine_vector(
+            -stiffness * gradients[local_index],
+            rest_positions[particle],
+        )
+        wp.atomic_add(output, body, lifted_force)
+
+
+@wp.kernel
+def _mollified_affine_edge_hessian_multiply(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    capacity: int,
+    stiffness: float,
+    positions: wp.array[wp.vec3],
+    rest_positions: wp.array[wp.vec3],
+    surface_ownership: wp.array[int],
+    vector: wp.array[vec12],
+    output: wp.array[vec12],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity) or mollifier_active[contact] == 0:
+        return
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    contact_weights = wp.vec4(
+        weights[contact, 0],
+        weights[contact, 1],
+        weights[contact, 2],
+        weights[contact, 3],
+    )
+    product_0, product_1, product_2, product_3 = _edge_edge_gauss_newton_multiply(
+        positions[index_1] - positions[index_0],
+        positions[index_3] - positions[index_2],
+        contact_weights,
+        directions[contact],
+        depths[contact],
+        mollifier_thresholds[contact],
+        _affine_point(vector[surface_ownership[index_0]], rest_positions[index_0]),
+        _affine_point(vector[surface_ownership[index_1]], rest_positions[index_1]),
+        _affine_point(vector[surface_ownership[index_2]], rest_positions[index_2]),
+        _affine_point(vector[surface_ownership[index_3]], rest_positions[index_3]),
+    )
+    products = product_0, product_1, product_2, product_3
+    for local_index in range(4):
+        particle = ids[contact, local_index]
+        body = surface_ownership[particle]
+        lifted_product = _lift_affine_vector(
+            stiffness * products[local_index],
+            rest_positions[particle],
+        )
+        wp.atomic_add(output, body, lifted_product)
+
+
+@wp.kernel
+def _accumulate_mollified_affine_edge_diagonal(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    mollifier_thresholds: wp.array[float],
+    mollifier_active: wp.array[int],
+    count: wp.array[int],
+    capacity: int,
+    stiffness: float,
+    positions: wp.array[wp.vec3],
+    rest_positions: wp.array[wp.vec3],
+    surface_ownership: wp.array[int],
+    output: wp.array[mat1212],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity) or mollifier_active[contact] == 0:
+        return
+
+    index_0 = ids[contact, 0]
+    index_1 = ids[contact, 1]
+    index_2 = ids[contact, 2]
+    index_3 = ids[contact, 3]
+    body_0 = surface_ownership[index_0]
+    body_1 = surface_ownership[index_2]
+    contact_weights = wp.vec4(
+        weights[contact, 0],
+        weights[contact, 1],
+        weights[contact, 2],
+        weights[contact, 3],
+    )
+
+    for side in range(2):
+        body = body_0
+        if side == 1:
+            body = body_1
+        block = mat1212(0.0)
+        for column in range(12):
+            vector_0 = wp.vec3(0.0)
+            vector_1 = wp.vec3(0.0)
+            vector_2 = wp.vec3(0.0)
+            vector_3 = wp.vec3(0.0)
+            if surface_ownership[index_0] == body:
+                vector_0 = _affine_point_basis(rest_positions[index_0], column)
+            if surface_ownership[index_1] == body:
+                vector_1 = _affine_point_basis(rest_positions[index_1], column)
+            if surface_ownership[index_2] == body:
+                vector_2 = _affine_point_basis(rest_positions[index_2], column)
+            if surface_ownership[index_3] == body:
+                vector_3 = _affine_point_basis(rest_positions[index_3], column)
+            product_0, product_1, product_2, product_3 = _edge_edge_gauss_newton_multiply(
+                positions[index_1] - positions[index_0],
+                positions[index_3] - positions[index_2],
+                contact_weights,
+                directions[contact],
+                depths[contact],
+                mollifier_thresholds[contact],
+                vector_0,
+                vector_1,
+                vector_2,
+                vector_3,
+            )
+            generalized_product = vec12(0.0)
+            if surface_ownership[index_0] == body:
+                generalized_product += _lift_affine_vector(product_0, rest_positions[index_0])
+            if surface_ownership[index_1] == body:
+                generalized_product += _lift_affine_vector(product_1, rest_positions[index_1])
+            if surface_ownership[index_2] == body:
+                generalized_product += _lift_affine_vector(product_2, rest_positions[index_2])
+            if surface_ownership[index_3] == body:
+                generalized_product += _lift_affine_vector(product_3, rest_positions[index_3])
+            for row in range(12):
+                block[row, column] = stiffness * generalized_product[row]
+        wp.atomic_add(output, body, block)
 
 
 @wp.kernel
@@ -386,6 +624,8 @@ class _AffineContactBuffer:
         self.depths = wp.empty(capacity, dtype=wp.float32, device=device)
         self.forces = wp.empty(capacity, dtype=wp.vec3, device=device)
         self.hessians = wp.empty(capacity, dtype=wp.mat33, device=device)
+        self.mollifier_thresholds = wp.zeros(capacity, dtype=wp.float32, device=device)
+        self.mollifier_active = wp.zeros(capacity, dtype=wp.int32, device=device)
         self.count = wp.zeros(1, dtype=wp.int32, device=device)
         self.overflow_count = wp.zeros(1, dtype=wp.int32, device=device)
 
@@ -395,10 +635,7 @@ class _AffineContactBuffer:
 
 
 class _AffineEdgeEdgeContactBuffer(_AffineContactBuffer):
-    def __init__(self, capacity: int, device: wp.context.Device):
-        super().__init__(capacity, device)
-        self.mollifier_thresholds = wp.empty(capacity, dtype=wp.float32, device=device)
-        self.mollifier_active = wp.zeros(capacity, dtype=wp.int32, device=device)
+    pass
 
 
 class ConstraintAffineBodyContact:
@@ -558,8 +795,21 @@ class ConstraintAffineBodyContact:
             ],
             device=self.device,
         )
-        self._prepare_response(self.vertex_face_contacts)
-        self._prepare_response(self.edge_edge_contacts)
+        wp.launch(
+            _prepare_edge_edge_mollifier,
+            dim=self.edge_edge_contacts.capacity,
+            inputs=[
+                self.edge_edge_contacts.ids,
+                self.edge_edge_contacts.mollifier_thresholds,
+                self.edge_edge_contacts.count,
+                self.edge_edge_contacts.capacity,
+                self.positions,
+            ],
+            outputs=[self.edge_edge_contacts.mollifier_active],
+            device=self.device,
+        )
+        self._prepare_response(self.vertex_face_contacts, use_mollifier=False)
+        self._prepare_response(self.edge_edge_contacts, use_mollifier=True)
         self._prepared = True
 
     def accumulate_force(self, q: wp.array[vec12], output: wp.array[vec12]) -> None:
@@ -573,6 +823,26 @@ class ConstraintAffineBodyContact:
         self._validate_affine_vectors((q, "q"), (output, "output"))
         self._accumulate_buffer_force(self.vertex_face_contacts, output)
         self._accumulate_buffer_force(self.edge_edge_contacts, output)
+        wp.launch(
+            _accumulate_mollified_affine_edge_force,
+            dim=self.edge_edge_contacts.capacity,
+            inputs=[
+                self.edge_edge_contacts.ids,
+                self.edge_edge_contacts.weights,
+                self.edge_edge_contacts.directions,
+                self.edge_edge_contacts.depths,
+                self.edge_edge_contacts.mollifier_thresholds,
+                self.edge_edge_contacts.mollifier_active,
+                self.edge_edge_contacts.count,
+                self.edge_edge_contacts.capacity,
+                self.stiffness,
+                self.positions,
+                self.body_model.rest_surface_vertices,
+                self.body_model.surface_ownership,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
 
     def multiply(
         self,
@@ -588,6 +858,27 @@ class ConstraintAffineBodyContact:
         self._validate_affine_vectors((affine_input, "affine_input"), (affine_output, "affine_output"))
         self._multiply_buffer(self.vertex_face_contacts, affine_input, affine_output)
         self._multiply_buffer(self.edge_edge_contacts, affine_input, affine_output)
+        wp.launch(
+            _mollified_affine_edge_hessian_multiply,
+            dim=self.edge_edge_contacts.capacity,
+            inputs=[
+                self.edge_edge_contacts.ids,
+                self.edge_edge_contacts.weights,
+                self.edge_edge_contacts.directions,
+                self.edge_edge_contacts.depths,
+                self.edge_edge_contacts.mollifier_thresholds,
+                self.edge_edge_contacts.mollifier_active,
+                self.edge_edge_contacts.count,
+                self.edge_edge_contacts.capacity,
+                self.stiffness,
+                self.positions,
+                self.body_model.rest_surface_vertices,
+                self.body_model.surface_ownership,
+                affine_input,
+            ],
+            outputs=[affine_output],
+            device=self.device,
+        )
 
     def accumulate_diagonal(
         self,
@@ -605,8 +896,28 @@ class ConstraintAffineBodyContact:
             raise TypeError("affine_diagonal must have dtype mat1212")
         self._accumulate_buffer_diagonal(self.vertex_face_contacts, affine_diagonal)
         self._accumulate_buffer_diagonal(self.edge_edge_contacts, affine_diagonal)
+        wp.launch(
+            _accumulate_mollified_affine_edge_diagonal,
+            dim=self.edge_edge_contacts.capacity,
+            inputs=[
+                self.edge_edge_contacts.ids,
+                self.edge_edge_contacts.weights,
+                self.edge_edge_contacts.directions,
+                self.edge_edge_contacts.depths,
+                self.edge_edge_contacts.mollifier_thresholds,
+                self.edge_edge_contacts.mollifier_active,
+                self.edge_edge_contacts.count,
+                self.edge_edge_contacts.capacity,
+                self.stiffness,
+                self.positions,
+                self.body_model.rest_surface_vertices,
+                self.body_model.surface_ownership,
+            ],
+            outputs=[affine_diagonal],
+            device=self.device,
+        )
 
-    def _prepare_response(self, buffer: _AffineContactBuffer) -> None:
+    def _prepare_response(self, buffer: _AffineContactBuffer, use_mollifier: bool) -> None:
         if self._velocities is None:
             raise RuntimeError("begin_step() must be called before preparing contact response")
         wp.launch(
@@ -619,8 +930,12 @@ class ConstraintAffineBodyContact:
                 buffer.depths,
                 buffer.count,
                 buffer.capacity,
+                self.positions,
                 self.body_model.rest_surface_vertices,
                 self.body_model.surface_ownership,
+                buffer.mollifier_thresholds,
+                buffer.mollifier_active,
+                int(use_mollifier),
                 self._velocities,
                 self.stiffness,
                 self.normal_damping,
