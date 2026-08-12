@@ -164,12 +164,20 @@ Known gaps of the experimental importer, tracked as follow-ups:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
 * **Cable frames** -- if per-point normals are missing, segment orientation is synthesized.
-* **Thickness fallbacks** -- without a resolved thickness the importer assumes a default
-  (2 mm cloth shell thickness; for cables the proposal's 1 mm diameter with a bound
-  current-revision curve material, else Newton's 2.5 mm radius) and warns with the assumed
-  value. The assumed size affects mass, collision geometry, and stiffness derived from material
-  moduli. Author ``physics:thickness`` -- ``physics:curvesThickness`` for cables -- on the
-  material to override.
+* **Thickness fallbacks** -- for cloth that needs a thickness to convert volumetric density or
+  stiffness, the importer warns and assumes a 2 mm shell thickness if none resolves. A cable
+  without a valid thickness instead uses AOUSD's 1 mm diameter when the bound material follows
+  the current ``physics:curves*`` contract described above; when no curve material is bound or
+  it uses only the deprecated unprefixed attributes, Newton retains its previous 2.5 mm radius.
+  The assumed size affects mass, collision geometry, and stiffness derived from material
+  moduli. At the 1 mm cable diameter, the smallest principal moment of
+  short segments at typical densities may fall below :class:`~newton.ModelBuilder`'s inertia-validation
+  floor, causing their inertia to be corrected during finalization. Explicitly authored
+  comparably thin cables can do the same. Set
+  :attr:`~newton.ModelBuilder.validate_inertia_detailed` before finalization to identify corrected
+  bodies. To override the fallback, author ``physics:thickness`` for cloth (or configure
+  ``newton:massModel = "shell"`` with ``newton:shellThickness``) or
+  ``physics:curvesThickness`` for cables.
 * **Single-segment curves** -- an open two-point curve (one segment) is warned and skipped;
   the rod representation needs at least two segments. A periodic two-point curve closes into
   two segments and imports.

@@ -5299,6 +5299,14 @@ class ModelBuilder:
         twist_stiffness: float | None,
     ) -> None:
         """Overwrite each non-None stiffness and its inferred target mode, in :meth:`add_joint_cable` axis order."""
+        joint_type = self.joint_type[joint]
+        joint_dof_dim = self.joint_dof_dim[joint]
+        if joint_type != JointType.CABLE or joint_dof_dim != (2, 2):
+            raise ValueError(
+                "_set_joint_cable_stiffnesses() expected the four-DOF CABLE layout "
+                f"(2 linear, 2 angular); got joint type {JointType(joint_type).name} with dimensions "
+                f"{joint_dof_dim}. Update the CABLE material-slot mapping when changing its DOF layout."
+            )
         dof_start = self.joint_qd_start[joint]
         for offset, stiffness in enumerate((stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness)):
             if stiffness is not None:

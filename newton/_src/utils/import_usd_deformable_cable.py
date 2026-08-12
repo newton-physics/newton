@@ -179,10 +179,17 @@ def _warn_legacy_curve_material(path: str, material: dict[str, float] | None) ->
 
 def _warn_default_cable_radius(path: str, radius: float, linear_unit: float) -> None:
     """Report the radius assumed when no cable thickness resolves from authored material."""
+    inertia_note = ""
+    if radius * linear_unit <= 0.5 * _AOUSD_DEFAULT_CURVES_THICKNESS:
+        inertia_note = (
+            " At this radius, the smallest principal moment of short cable segments may fall below "
+            "ModelBuilder's inertia-validation floor, causing their inertia to be corrected during finalization."
+        )
     warnings.warn(
         f"{path}: no cable thickness could be resolved from authored material "
         f"(physics:curvesThickness); assuming a default radius of {radius:g} stage units "
-        f"(~{radius * linear_unit:g} m). Author physics:curvesThickness on the bound curve material to set it.",
+        f"(~{radius * linear_unit:g} m).{inertia_note} "
+        f"Author physics:curvesThickness on the bound curve material to set it.",
         stacklevel=2,
     )
 

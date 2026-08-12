@@ -328,7 +328,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat")
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "no cable thickness"):
+            with self.assertWarnsRegex(UserWarning, "inertia-validation floor"):
                 builder.add_usd(stage)
             j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
             radius, youngs, poissons = 0.0005, 1.0e6, 0.3
@@ -397,6 +397,25 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(builder.joint_target_ke[dof0], 0.0)
             self.assertEqual(builder.joint_target_mode[dof0], int(newton.JointTargetMode.NONE))
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["curvesStretchStiffness"], 0.0)
+
+    def test_cable_stiffness_setter_rejects_incompatible_joint(self):
+        """Verify that local cable stiffness assignment rejects incompatible joints."""
+        builder = newton.ModelBuilder()
+        cable = builder.add_joint_cable(-1, builder.add_link())
+        fixed = builder.add_joint_fixed(-1, builder.add_link())
+        stiffnesses = {
+            "stretch_stiffness": 1.0,
+            "shear_stiffness": 1.0,
+            "bend_stiffness": 1.0,
+            "twist_stiffness": 1.0,
+        }
+
+        with self.assertRaisesRegex(ValueError, "expected the four-DOF CABLE layout"):
+            builder._set_joint_cable_stiffnesses(fixed, **stiffnesses)
+
+        builder.joint_dof_dim[cable] = (3, 3)
+        with self.assertRaisesRegex(ValueError, "expected the four-DOF CABLE layout"):
+            builder._set_joint_cable_stiffnesses(cable, **stiffnesses)
 
     def test_cable_rest_length_from_rest_shape_points(self):
         """Verify ``restShapePoints`` supplies each cable joint's local dual rest length.
@@ -1042,6 +1061,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(j1 - j0, 3, "expected 2 chain joints + 1 loop joint")
         # The importer wraps the closed cable; add_rod keeps the loop-closing joint out of the tree.
         self.assertIn("/World/Cable_articulation", builder.articulation_label)
+        # The closing joint is appended last and pairs the 0.5 and 0.3 segments.
         for joint, joint_length in zip(range(j0, j1), (0.35, 0.45, 0.4), strict=True):
             expected = stretch / joint_length
             dof0 = builder.joint_qd_start[joint]
