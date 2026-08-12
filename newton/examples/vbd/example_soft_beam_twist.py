@@ -7,7 +7,10 @@
 # A vertical tetrahedral beam with its bottom face pinned and top face
 # twisted 360° around the Z-axis over a linear ramp. The stable
 # Neo-Hookean material handles this extreme rotation without inversion
-# (unlike StVK). The test validates volume preservation and stability.
+# (unlike StVK). Because a 360° twist is periodic (the driven face returns to
+# its rest orientation at the end of the ramp), volume preservation and signed-
+# tet validity are checked after every frame — covering the extreme mid-ramp
+# twist — rather than only at the relaxed final frame.
 #
 # Command: python -m newton.examples vbd.example_soft_beam_twist
 #
@@ -20,17 +23,36 @@ import newton
 import newton.examples
 from newton import ParticleFlags
 
+# Assertion thresholds. A flipped tet has a signed/rest volume ratio <= 0. Measured
+# reals over the full 360 deg twist: min signed-volume ratio ~0.78, peak bulk-volume
+# deviation ~0.07.
+_INVERSION_TOL = 0.25  # min per-tet signed/rest volume ratio before a tet counts as inverted
+_VOLUME_TOL = 0.10  # max fractional bulk-volume deviation for a volume-preserving twist
 
-def _compute_tet_volume(q: np.ndarray, tet_indices: np.ndarray) -> float:
+
+def _signed_tet_volumes(q: np.ndarray, tet_indices: np.ndarray) -> np.ndarray:
+    """Per-tet signed volumes [m^3] from current positions, shape [tet_count]."""
     v0 = q[tet_indices[:, 0]]
     v1 = q[tet_indices[:, 1]]
     v2 = q[tet_indices[:, 2]]
     v3 = q[tet_indices[:, 3]]
-    d1 = v1 - v0
-    d2 = v2 - v0
-    d3 = v3 - v0
-    volumes = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) / 6.0
-    return float(np.sum(np.abs(volumes)))
+    return np.einsum("ij,ij->i", v1 - v0, np.cross(v2 - v0, v3 - v0)) / 6.0
+
+
+def _compute_tet_volume(q: np.ndarray, tet_indices: np.ndarray) -> float:
+    """Total bulk volume: sum of unsigned per-tet volumes."""
+    return float(np.sum(np.abs(_signed_tet_volumes(q, tet_indices))))
+
+
+def _min_signed_volume_ratio(q: np.ndarray, tet_indices: np.ndarray, rest_signed: np.ndarray) -> float:
+    """Smallest per-tet ratio of current signed volume to its rest signed volume.
+
+    ``<= 0`` means at least one tet has inverted (flipped orientation) relative to
+    the rest configuration; ``~1`` means every tet preserves its orientation and
+    size. Normalizing by the rest sign is robust to ``add_soft_grid``'s per-cell
+    tet orientation, which is not uniformly positive.
+    """
+    return float(np.min(_signed_tet_volumes(q, tet_indices) / rest_signed))
 
 
 class Example:
@@ -113,8 +135,14 @@ class Example:
 
         self.tet_indices = self.model.tet_indices.numpy()
         self.rest_volume = _compute_tet_volume(q_np, self.tet_indices)
+        self.rest_signed = _signed_tet_volumes(q_np, self.tet_indices)
 
         self._frame_index = 0
+        # Worst case seen over the whole twist (the extreme is mid-ramp, not the
+        # periodic final frame): smallest signed-volume ratio and largest bulk-
+        # volume deviation.
+        self._min_inv_ratio = 1.0
+        self._max_volume_dev = 0.0
 
         self.viewer.set_model(self.model)
 
@@ -150,6 +178,26 @@ class Example:
         self.sim_time += self.frame_dt
         self._frame_index += 1
 
+    def test_post_step(self):
+        # The 360° twist is periodic: once the ramp completes, the driven face is back
+        # at its rest orientation, so the final frame no longer represents the extreme
+        # twist. Validate signed-tet validity and volume preservation every frame so the
+        # peak twist (mid-ramp) is actually covered.
+        q = self.state_0.particle_q.numpy()
+        if np.any(np.isnan(q)):
+            raise ValueError(f"NaN detected during twist at frame {self._frame_index}")
+
+        min_inv = _min_signed_volume_ratio(q, self.tet_indices, self.rest_signed)
+        self._min_inv_ratio = min(self._min_inv_ratio, min_inv)
+        if min_inv < _INVERSION_TOL:
+            raise ValueError(
+                f"Tet inverted/degenerate during twist at frame {self._frame_index}: "
+                f"min signed-volume ratio {min_inv:.3f} < {_INVERSION_TOL}"
+            )
+
+        volume_dev = abs(_compute_tet_volume(q, self.tet_indices) / self.rest_volume - 1.0)
+        self._max_volume_dev = max(self._max_volume_dev, volume_dev)
+
     def test_final(self):
         newton.examples.test_particle_state(
             self.state_0,
@@ -158,19 +206,21 @@ class Example:
         )
 
         q = self.state_0.particle_q.numpy()
-
-        # No NaN
         if np.any(np.isnan(q)):
             raise ValueError("NaN detected in particle positions")
 
-        # Volume preservation
-        final_volume = _compute_tet_volume(q, self.tet_indices)
-        volume_ratio = final_volume / self.rest_volume
-        if abs(volume_ratio - 1.0) > 0.10:
+        # Volume preservation is asserted at the worst frame over the whole twist (the
+        # extreme mid-ramp state), not just the final frame where the driven face has
+        # returned to its rest orientation.
+        if self._max_volume_dev > _VOLUME_TOL:
             raise ValueError(
-                f"Volume not preserved under twist: ratio {volume_ratio:.3f} "
-                f"(rest={self.rest_volume:.6f}, final={final_volume:.6f})"
+                f"Volume not preserved under twist: peak deviation {self._max_volume_dev:.3f} "
+                f"exceeds {_VOLUME_TOL} over {self._frame_index} frames"
             )
+
+        # No tet inverted at any point during the 360° twist.
+        if self._min_inv_ratio < _INVERSION_TOL:
+            raise ValueError(f"Tet inverted during twist: min signed-volume ratio {self._min_inv_ratio:.3f}")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
