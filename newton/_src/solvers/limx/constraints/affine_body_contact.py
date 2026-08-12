@@ -11,10 +11,42 @@ import warp as wp
 from ....geometry.kernels import triangle_closest_point_barycentric
 from ....utils.mesh import MeshAdjacency
 from ..affine_body import AffineBodyModel
-from ..affine_types import vec12
+from ..affine_types import mat1212, vec12
+from .affine_static_plane_contact import _affine_point, _lift_affine_vector
 
 _MIN_CONTACT_DISTANCE = 1.0e-7
 _EE_MOLLIFIER_THRESHOLD_SCALE = 1.0e-3
+
+
+@wp.func
+def _contact_jacobian_axis(index: int) -> int:
+    if index < 3:
+        return index
+    return (index - 3) // 3
+
+
+@wp.func
+def _contact_jacobian_weight(index: int, translation_weight: float, rest_weight: wp.vec3) -> float:
+    if index < 3:
+        return translation_weight
+    return rest_weight[(index - 3) % 3]
+
+
+@wp.func
+def _lift_weighted_affine_matrix(
+    world_matrix: wp.mat33,
+    translation_weight: float,
+    rest_weight: wp.vec3,
+) -> mat1212:
+    result = mat1212(0.0)
+    for row in range(12):
+        world_row = _contact_jacobian_axis(row)
+        row_weight = _contact_jacobian_weight(row, translation_weight, rest_weight)
+        for column in range(12):
+            world_column = _contact_jacobian_axis(column)
+            column_weight = _contact_jacobian_weight(column, translation_weight, rest_weight)
+            result[row, column] = row_weight * world_matrix[world_row, world_column] * column_weight
+    return result
 
 
 @wp.kernel
@@ -185,6 +217,165 @@ def _detect_affine_edge_edge_contacts(
         mollifier_active[contact] = 0
 
 
+@wp.kernel
+def _prepare_affine_contact_response(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    directions: wp.array[wp.vec3],
+    depths: wp.array[float],
+    count: wp.array[int],
+    capacity: int,
+    rest_positions: wp.array[wp.vec3],
+    surface_ownership: wp.array[int],
+    velocities: wp.array[vec12],
+    stiffness: float,
+    normal_damping: float,
+    friction: float,
+    friction_epsilon: float,
+    dt: float,
+    forces: wp.array[wp.vec3],
+    hessians: wp.array[wp.mat33],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    relative_velocity = wp.vec3(0.0)
+    for local_index in range(4):
+        particle = ids[contact, local_index]
+        body = surface_ownership[particle]
+        point_velocity = _affine_point(velocities[body], rest_positions[particle])
+        relative_velocity += weights[contact, local_index] * point_velocity
+
+    direction = directions[contact]
+    depth = depths[contact]
+    normal_outer = wp.outer(direction, direction)
+    force = stiffness * depth * direction
+    hessian = stiffness * normal_outer
+
+    normal_velocity = wp.dot(direction, relative_velocity)
+    if normal_velocity < 0.0 and normal_damping > 0.0:
+        force -= normal_damping * normal_velocity * direction
+        hessian += normal_damping / dt * normal_outer
+
+    tangent = wp.identity(3, float) - normal_outer
+    tangent_displacement = dt * tangent * relative_velocity
+    tangent_length = wp.length(tangent_displacement)
+    friction_over_length = float(0.0)
+    if tangent_length > friction_epsilon:
+        friction_over_length = 1.0 / tangent_length
+    else:
+        friction_over_length = (-tangent_length / friction_epsilon + 2.0) / friction_epsilon
+    alpha = friction * stiffness * depth * friction_over_length
+    force -= alpha * tangent_displacement
+    hessian += alpha * tangent
+
+    forces[contact] = force
+    hessians[contact] = hessian
+
+
+@wp.kernel
+def _accumulate_affine_contact_force(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    forces: wp.array[wp.vec3],
+    count: wp.array[int],
+    capacity: int,
+    rest_positions: wp.array[wp.vec3],
+    surface_ownership: wp.array[int],
+    output: wp.array[vec12],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    force = forces[contact]
+    for local_index in range(4):
+        particle = ids[contact, local_index]
+        body = surface_ownership[particle]
+        lifted_force = _lift_affine_vector(
+            weights[contact, local_index] * force,
+            rest_positions[particle],
+        )
+        wp.atomic_add(output, body, lifted_force)
+
+
+@wp.kernel
+def _affine_contact_hessian_multiply(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    hessians: wp.array[wp.mat33],
+    count: wp.array[int],
+    capacity: int,
+    rest_positions: wp.array[wp.vec3],
+    surface_ownership: wp.array[int],
+    vector: wp.array[vec12],
+    output: wp.array[vec12],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    world_vector = wp.vec3(0.0)
+    for local_index in range(4):
+        particle = ids[contact, local_index]
+        body = surface_ownership[particle]
+        point_vector = _affine_point(vector[body], rest_positions[particle])
+        world_vector += weights[contact, local_index] * point_vector
+    world_product = hessians[contact] * world_vector
+
+    for local_index in range(4):
+        particle = ids[contact, local_index]
+        body = surface_ownership[particle]
+        lifted_product = _lift_affine_vector(
+            weights[contact, local_index] * world_product,
+            rest_positions[particle],
+        )
+        wp.atomic_add(output, body, lifted_product)
+
+
+@wp.kernel
+def _accumulate_affine_contact_diagonal(
+    ids: wp.array2d[int],
+    weights: wp.array2d[float],
+    hessians: wp.array[wp.mat33],
+    count: wp.array[int],
+    capacity: int,
+    rest_positions: wp.array[wp.vec3],
+    surface_ownership: wp.array[int],
+    output: wp.array[mat1212],
+):
+    contact = wp.tid()
+    if contact >= wp.min(count[0], capacity):
+        return
+
+    body_0 = surface_ownership[ids[contact, 0]]
+    body_1 = body_0
+    for local_index in range(1, 4):
+        candidate = surface_ownership[ids[contact, local_index]]
+        if candidate != body_0:
+            body_1 = candidate
+
+    for side in range(2):
+        body = body_0
+        if side == 1:
+            body = body_1
+        translation_weight = float(0.0)
+        rest_weight = wp.vec3(0.0)
+        for local_index in range(4):
+            particle = ids[contact, local_index]
+            if surface_ownership[particle] == body:
+                weight = weights[contact, local_index]
+                translation_weight += weight
+                rest_weight += weight * rest_positions[particle]
+        block = _lift_weighted_affine_matrix(
+            hessians[contact],
+            translation_weight,
+            rest_weight,
+        )
+        wp.atomic_add(output, body, block)
+
+
 class _AffineContactBuffer:
     def __init__(self, capacity: int, device: wp.context.Device):
         self.capacity = capacity
@@ -193,6 +384,8 @@ class _AffineContactBuffer:
         self.weights = wp.empty((capacity, 4), dtype=wp.float32, device=device)
         self.directions = wp.empty(capacity, dtype=wp.vec3, device=device)
         self.depths = wp.empty(capacity, dtype=wp.float32, device=device)
+        self.forces = wp.empty(capacity, dtype=wp.vec3, device=device)
+        self.hessians = wp.empty(capacity, dtype=wp.mat33, device=device)
         self.count = wp.zeros(1, dtype=wp.int32, device=device)
         self.overflow_count = wp.zeros(1, dtype=wp.int32, device=device)
 
@@ -365,7 +558,144 @@ class ConstraintAffineBodyContact:
             ],
             device=self.device,
         )
+        self._prepare_response(self.vertex_face_contacts)
+        self._prepare_response(self.edge_edge_contacts)
         self._prepared = True
+
+    def accumulate_force(self, q: wp.array[vec12], output: wp.array[vec12]) -> None:
+        """Add frozen affine-body contact forces.
+
+        Args:
+            q: Current affine generalized states.
+            output: Affine generalized force accumulation buffer [N, N·m].
+        """
+        self._require_prepared()
+        self._validate_affine_vectors((q, "q"), (output, "output"))
+        self._accumulate_buffer_force(self.vertex_face_contacts, output)
+        self._accumulate_buffer_force(self.edge_edge_contacts, output)
+
+    def multiply(
+        self,
+        particle_input: wp.array[wp.vec3],
+        affine_input: wp.array[vec12],
+        particle_output: wp.array[wp.vec3],
+        affine_output: wp.array[vec12],
+    ) -> None:
+        """Add complete matrix-free affine contact Hessian products."""
+        self._require_prepared()
+        self._validate_empty_particle_vector(particle_input, "particle_input")
+        self._validate_empty_particle_vector(particle_output, "particle_output")
+        self._validate_affine_vectors((affine_input, "affine_input"), (affine_output, "affine_output"))
+        self._multiply_buffer(self.vertex_face_contacts, affine_input, affine_output)
+        self._multiply_buffer(self.edge_edge_contacts, affine_input, affine_output)
+
+    def accumulate_diagonal(
+        self,
+        particle_diagonal: wp.array[wp.mat33],
+        affine_diagonal: wp.array[mat1212],
+    ) -> None:
+        """Add exact 12-by-12 contact blocks to the affine diagonal."""
+        self._require_prepared()
+        self._validate_empty_particle_diagonal(particle_diagonal)
+        if len(affine_diagonal) != self.body_count:
+            raise ValueError(f"affine_diagonal must contain {self.body_count} blocks")
+        if affine_diagonal.device != self.device:
+            raise ValueError(f"affine_diagonal must use device {self.device}")
+        if affine_diagonal.dtype != mat1212:
+            raise TypeError("affine_diagonal must have dtype mat1212")
+        self._accumulate_buffer_diagonal(self.vertex_face_contacts, affine_diagonal)
+        self._accumulate_buffer_diagonal(self.edge_edge_contacts, affine_diagonal)
+
+    def _prepare_response(self, buffer: _AffineContactBuffer) -> None:
+        if self._velocities is None:
+            raise RuntimeError("begin_step() must be called before preparing contact response")
+        wp.launch(
+            _prepare_affine_contact_response,
+            dim=buffer.capacity,
+            inputs=[
+                buffer.ids,
+                buffer.weights,
+                buffer.directions,
+                buffer.depths,
+                buffer.count,
+                buffer.capacity,
+                self.body_model.rest_surface_vertices,
+                self.body_model.surface_ownership,
+                self._velocities,
+                self.stiffness,
+                self.normal_damping,
+                self.friction,
+                self.friction_epsilon,
+                self._dt,
+            ],
+            outputs=[buffer.forces, buffer.hessians],
+            device=self.device,
+        )
+
+    def _accumulate_buffer_force(self, buffer: _AffineContactBuffer, output: wp.array[vec12]) -> None:
+        wp.launch(
+            _accumulate_affine_contact_force,
+            dim=buffer.capacity,
+            inputs=[
+                buffer.ids,
+                buffer.weights,
+                buffer.forces,
+                buffer.count,
+                buffer.capacity,
+                self.body_model.rest_surface_vertices,
+                self.body_model.surface_ownership,
+            ],
+            outputs=[output],
+            device=self.device,
+        )
+
+    def _multiply_buffer(
+        self,
+        buffer: _AffineContactBuffer,
+        affine_input: wp.array[vec12],
+        affine_output: wp.array[vec12],
+    ) -> None:
+        wp.launch(
+            _affine_contact_hessian_multiply,
+            dim=buffer.capacity,
+            inputs=[
+                buffer.ids,
+                buffer.weights,
+                buffer.hessians,
+                buffer.count,
+                buffer.capacity,
+                self.body_model.rest_surface_vertices,
+                self.body_model.surface_ownership,
+                affine_input,
+            ],
+            outputs=[affine_output],
+            device=self.device,
+        )
+
+    def _accumulate_buffer_diagonal(
+        self,
+        buffer: _AffineContactBuffer,
+        affine_diagonal: wp.array[mat1212],
+    ) -> None:
+        wp.launch(
+            _accumulate_affine_contact_diagonal,
+            dim=buffer.capacity,
+            inputs=[
+                buffer.ids,
+                buffer.weights,
+                buffer.hessians,
+                buffer.count,
+                buffer.capacity,
+                self.body_model.rest_surface_vertices,
+                self.body_model.surface_ownership,
+            ],
+            outputs=[affine_diagonal],
+            device=self.device,
+        )
+
+    def _require_prepared(self) -> None:
+        if not self._prepared:
+            raise RuntimeError("prepare() must be called before using affine contact contributions")
 
     def _update_bounds(self) -> None:
         wp.launch(
@@ -391,3 +721,19 @@ class ConstraintAffineBodyContact:
                 raise ValueError(f"{name} must use device {self.device}")
             if array.dtype != vec12:
                 raise TypeError(f"{name} must have dtype vec12")
+
+    def _validate_empty_particle_vector(self, array: wp.array[wp.vec3], name: str) -> None:
+        if len(array) != 0:
+            raise ValueError(f"{name} must be empty for affine-only contact")
+        if array.device != self.device:
+            raise ValueError(f"{name} must use device {self.device}")
+        if array.dtype != wp.vec3:
+            raise TypeError(f"{name} must have dtype wp.vec3")
+
+    def _validate_empty_particle_diagonal(self, array: wp.array[wp.mat33]) -> None:
+        if len(array) != 0:
+            raise ValueError("particle_diagonal must be empty for affine-only contact")
+        if array.device != self.device:
+            raise ValueError(f"particle_diagonal must use device {self.device}")
+        if array.dtype != wp.mat33:
+            raise TypeError("particle_diagonal must have dtype wp.mat33")

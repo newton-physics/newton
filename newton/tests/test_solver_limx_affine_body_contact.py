@@ -7,6 +7,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.limx import AffineBodyModel
+from newton._src.solvers.limx.affine_types import mat1212, vec12
 from newton._src.solvers.limx.constraints.affine_body_contact import ConstraintAffineBodyContact
 
 
@@ -84,6 +85,18 @@ def _find_edge_row(ids: np.ndarray, edge_0: tuple[int, int], edge_1: tuple[int, 
         if (actual_0, actual_1) == (target_0, target_1) or (actual_0, actual_1) == (target_1, target_0):
             return row
     return -1
+
+
+def _point_jacobian(rest_position: np.ndarray) -> np.ndarray:
+    x, y, z = rest_position
+    return np.asarray(
+        [
+            [1.0, 0.0, 0.0, x, y, z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, x, y, z, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, x, y, z],
+        ],
+        dtype=np.float64,
+    )
 
 
 class TestConstraintAffineBodyContactDetection(unittest.TestCase):
@@ -184,6 +197,95 @@ class TestConstraintAffineBodyContactDetection(unittest.TestCase):
         for overrides, message in cases:
             with self.subTest(overrides=overrides), self.assertRaisesRegex((TypeError, ValueError), message):
                 _make_contact(model, **overrides)
+
+
+class TestConstraintAffineBodyContactOperator(unittest.TestCase):
+    def test_lifts_vf_force_full_hessian_and_exact_diagonal(self):
+        """Lift one VF response into the complete two-body affine operator."""
+        model = _two_body_model((0.33, 0.33, 0.342))
+        contact = _make_contact(
+            model,
+            stiffness=10.0,
+            normal_damping=2.0,
+            friction=0.5,
+            friction_epsilon=0.01,
+        )
+        velocity_values = np.zeros((2, 12), dtype=np.float32)
+        velocity_values[1, :3] = [0.2, -0.1, -0.5]
+        velocities = wp.array(velocity_values, dtype=vec12, device="cpu")
+        input_values = np.linspace(-0.6, 0.8, 24, dtype=np.float32).reshape(2, 12)
+        affine_input = wp.array(input_values, dtype=vec12, device="cpu")
+        force = wp.zeros(2, dtype=vec12, device="cpu")
+        product = wp.zeros_like(force)
+        diagonal = wp.zeros(2, dtype=mat1212, device="cpu")
+        empty_particles = wp.empty(0, dtype=wp.vec3, device="cpu")
+        dt = 0.1
+
+        contact.begin_step(model.q, velocities, dt)
+        contact.prepare(model.q)
+        contact.accumulate_force(model.q, force)
+        contact.multiply(empty_particles, affine_input, empty_particles, product)
+        contact.accumulate_diagonal(wp.empty(0, dtype=wp.mat33, device="cpu"), diagonal)
+
+        ids, weights, depths = _active_rows(contact.vertex_face_contacts)
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(min(int(contact.edge_edge_contacts.count.numpy()[0]), contact.max_contacts), 0)
+        rest_positions = model.rest_surface_vertices.numpy().astype(np.float64)
+        ownership = model.surface_ownership.numpy()
+        body_jacobians = np.zeros((2, 3, 12), dtype=np.float64)
+        for particle, weight in zip(ids[0], weights[0], strict=True):
+            body_jacobians[ownership[particle]] += float(weight) * _point_jacobian(rest_positions[particle])
+
+        direction = contact.vertex_face_contacts.directions.numpy()[0].astype(np.float64)
+        depth = float(depths[0])
+        relative_velocity = sum(body_jacobians[body] @ velocity_values[body] for body in range(2))
+        normal_velocity = float(direction @ relative_velocity)
+        tangent = np.eye(3) - np.outer(direction, direction)
+        tangent_displacement = dt * tangent @ relative_velocity
+        tangent_length = float(np.linalg.norm(tangent_displacement))
+        inverse_length = 1.0 / tangent_length if tangent_length > 0.01 else (2.0 - tangent_length / 0.01) / 0.01
+        alpha = 0.5 * 10.0 * depth * inverse_length
+        world_force = 10.0 * depth * direction - alpha * tangent_displacement
+        world_hessian = 10.0 * np.outer(direction, direction) + alpha * tangent
+        if normal_velocity < 0.0:
+            world_force -= 2.0 * normal_velocity * direction
+            world_hessian += 2.0 / dt * np.outer(direction, direction)
+
+        expected_force = np.stack([jacobian.T @ world_force for jacobian in body_jacobians])
+        dense_hessian = np.block(
+            [
+                [body_jacobians[row].T @ world_hessian @ body_jacobians[column] for column in range(2)]
+                for row in range(2)
+            ]
+        )
+        expected_product = (dense_hessian @ input_values.reshape(-1)).reshape(2, 12)
+        expected_diagonal = np.stack([jacobian.T @ world_hessian @ jacobian for jacobian in body_jacobians])
+
+        np.testing.assert_allclose(force.numpy(), expected_force, rtol=3.0e-5, atol=3.0e-6)
+        np.testing.assert_allclose(product.numpy(), expected_product, rtol=3.0e-5, atol=3.0e-6)
+        np.testing.assert_allclose(diagonal.numpy(), expected_diagonal, rtol=3.0e-5, atol=3.0e-6)
+        np.testing.assert_allclose(force.numpy()[:, :3].sum(axis=0), np.zeros(3), atol=2.0e-6)
+        np.testing.assert_allclose(dense_hessian, dense_hessian.T, atol=1.0e-10)
+        self.assertGreaterEqual(float(np.linalg.eigvalsh(dense_hessian)[0]), -1.0e-9)
+
+    def test_regularizes_friction_and_requires_prepared_lifecycle(self):
+        """Keep small-slip friction finite and require prepared affine buffers."""
+        model = _two_body_model((0.33, 0.33, 0.342))
+        contact = _make_contact(model, normal_damping=0.0, friction=0.5, friction_epsilon=0.01)
+        velocity_values = np.zeros((2, 12), dtype=np.float32)
+        velocity_values[1, :3] = [1.0e-5, -1.0e-5, 0.0]
+        velocities = wp.array(velocity_values, dtype=vec12, device="cpu")
+        force = wp.zeros(2, dtype=vec12, device="cpu")
+
+        with self.assertRaisesRegex(RuntimeError, "prepare"):
+            contact.accumulate_force(model.q, force)
+        contact.begin_step(model.q, velocities, 0.1)
+        contact.prepare(model.q)
+        contact.accumulate_force(model.q, force)
+
+        force_values = force.numpy()
+        self.assertTrue(np.isfinite(force_values).all())
+        self.assertLess(float(np.sum(force_values * velocity_values)), 0.0)
 
 
 if __name__ == "__main__":
