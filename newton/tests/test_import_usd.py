@@ -1355,6 +1355,46 @@ class TestImportUsdJoints(unittest.TestCase):
         self.assertAlmostEqual(imported_gain(override_builder), authored_gain * (2.0 / 3.0))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collapse_fixed_joints_explicit_override(self):
+        """Let an explicit collapse choice override authored scene metadata."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        collapse_attr = scene.GetPrim().CreateAttribute(
+            "newton:collapse_fixed_joints",
+            Sdf.ValueTypeNames.Bool,
+            custom=False,
+        )
+        collapse_attr.Set(True)
+        collapse_attr.SetCustomDataByKey("assignment", "model")
+        collapse_attr.SetCustomDataByKey("frequency", "once")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        bodies = []
+        for name in ("Body0", "Body1"):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            bodies.append(body)
+
+        joint = UsdPhysics.FixedJoint.Define(stage, "/World/Joint")
+        joint.CreateBody0Rel().SetTargets([bodies[0].GetPath()])
+        joint.CreateBody1Rel().SetTargets([bodies[1].GetPath()])
+
+        legacy_builder = newton.ModelBuilder()
+        legacy_result = legacy_builder.add_usd(stage, collapse_fixed_joints=False)
+        self.assertIsNotNone(legacy_result["collapse_results"])
+
+        override_builder = newton.ModelBuilder()
+        override_result = override_builder.add_usd(
+            stage,
+            collapse_fixed_joints=False,
+            use_applied_schema_fallbacks=True,
+        )
+        self.assertIsNone(override_result["collapse_results"])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_does_not_filter_collisions(self):
         from pxr import Usd, UsdGeom, UsdPhysics
 

@@ -250,7 +250,7 @@ def parse_usd(
     joint_drive_gains_scaling: float = _default_when_omitted(1.0),
     verbose: bool = False,
     ignore_paths: list[str] | None = None,
-    collapse_fixed_joints: bool = False,
+    collapse_fixed_joints: bool = _default_when_omitted(False),
     enable_self_collisions: bool = _default_when_omitted(True),
     apply_up_axis_from_stage: bool = False,
     root_path: str = "/",
@@ -363,7 +363,11 @@ def parse_usd(
             Legacy resolution continues to treat it as an importer default.
         verbose: If True, print additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matching prim paths to ignore.
-        collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
+        collapse_fixed_joints: When omitted, use ``False`` as the importer default
+            for removing fixed joints and merging their bodies. With
+            ``use_applied_schema_fallbacks=True``, an explicitly provided value
+            overrides ``newton:collapse_fixed_joints`` on the PhysicsScene. Legacy
+            resolution continues to treat it as an importer default.
         enable_self_collisions: When omitted, use ``True`` as the importer
             default for self-collisions within an articulation. With
             ``use_applied_schema_fallbacks=True``, an explicitly provided value
@@ -638,6 +642,16 @@ def parse_usd(
     joint_drive_gains_scaling = _resolve_import_option(
         joint_drive_gains_scaling,
         authored_drive_gain_scaling,
+        use_explicit_overrides=use_applied_schema_fallbacks,
+    )
+    authored_collapse_fixed_joints = (
+        usd.get_attribute(physics_scene_prim, "newton:collapse_fixed_joints")
+        if physics_scene_prim is not None
+        else None
+    )
+    collapse_fixed_joints = _resolve_import_option(
+        collapse_fixed_joints,
+        authored_collapse_fixed_joints,
         use_explicit_overrides=use_applied_schema_fallbacks,
     )
 
@@ -4959,7 +4973,7 @@ def parse_usd(
     collapse_results = None
     path_body_relative_transform = {}
     builder_joint_labels_before_collapse = list(builder.joint_label)
-    if scene_attributes.get("newton:collapse_fixed_joints", collapse_fixed_joints):
+    if collapse_fixed_joints:
         collapse_results = builder.collapse_fixed_joints()
         body_merged_parent = collapse_results["body_merged_parent"]
         body_merged_transform = collapse_results["body_merged_transform"]

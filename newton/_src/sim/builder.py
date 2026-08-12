@@ -3340,7 +3340,7 @@ class ModelBuilder:
         joint_drive_gains_scaling: float = _default_when_omitted(1.0),
         verbose: bool = False,
         ignore_paths: list[str] | None = None,
-        collapse_fixed_joints: bool = False,
+        collapse_fixed_joints: bool = _default_when_omitted(False),
         enable_self_collisions: bool = _default_when_omitted(True),
         apply_up_axis_from_stage: bool = False,
         root_path: str = "/",
@@ -3452,7 +3452,11 @@ class ModelBuilder:
                 Legacy resolution continues to treat it as an importer default.
             verbose: If True, print additional information about the parsed USD file. Default is False.
             ignore_paths: A list of regular expressions matching prim paths to ignore.
-            collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
+            collapse_fixed_joints: When omitted, use ``False`` as the importer
+                default for removing fixed joints and merging their bodies. With
+                ``use_applied_schema_fallbacks=True``, an explicitly provided value
+                overrides ``newton:collapse_fixed_joints`` on the PhysicsScene.
+                Legacy resolution continues to treat it as an importer default.
             enable_self_collisions: When omitted, use ``True`` as the importer
                 default for self-collisions within an articulation. With
                 ``use_applied_schema_fallbacks=True``, an explicitly provided value
