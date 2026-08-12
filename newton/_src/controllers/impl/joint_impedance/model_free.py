@@ -29,7 +29,7 @@ import numpy as np
 import warp as wp
 
 from ...controller import ControllerBase
-from ...utils import _normalize_indices
+from ...utils import _normalize_indices, _validate_array, _validate_flat_port
 from ._common import (
     _add_term_kernel,
     _gather_dof_kernel,
@@ -47,8 +47,10 @@ class ControllerJointImpedanceModelFree(ControllerBase):
     expects the mass matrix, gravity, and Coriolis terms to be computed
     externally — it is the caller's responsibility to compute the enabled ones
     correctly and write them into the input struct before every :meth:`step`.
-    Shapes and devices are checked on each call, but staleness is not: a missed
-    update silently yields torques for an old configuration.
+
+    Array shapes and devices are validated on each direct call to :meth:`step`,
+    but not when a captured graph is replayed, since the checks run in Python
+    at capture time only.
 
     Supports heterogeneous robot fleets — robots in the batch may have
     different DOF counts. Internal buffers are padded to ``max_dofs``; kernels
@@ -119,7 +121,7 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         coriolis_force: wp.array[wp.float32] | None
         """Coriolis generalized forces [N or N·m], flat sim-level array. ``None`` unless ``use_coriolis_compensation=True``."""
         mass_matrix: wp.array3d[wp.float32] | None
-        """Per-robot generalized mass matrices, shape ``(robot_count, max_dofs, max_dofs)``. Entry units depend on the row and column DOF types: [kg] for two translational DOFs, [kg·m] for mixed translational/rotational DOFs, and [kg·m²] for two rotational DOFs. ``None`` unless ``use_inertia_decoupling=True``."""
+        """Per-robot mass matrices, shape ``(robot_count, max_dofs, max_dofs)``. Units by row/column DOF type: [kg] translational, [kg·m] mixed, [kg·m²] rotational. ``None`` unless ``use_inertia_decoupling=True``."""
         stiffness: wp.array2d[wp.float32] | None
         """Position-error gain Kp, shape ``(robot_count, max_dofs)``. [1/s²] when ``use_inertia_decoupling`` is enabled, otherwise [N/m or N·m/rad]. ``None`` when gains are baked at construction."""
         damping: wp.array2d[wp.float32] | None
@@ -153,14 +155,14 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         device: Any = None,
         requires_grad: bool = False,
     ):
-        if not isinstance(dofs_per_robot, wp.array) or dofs_per_robot.dtype != wp.int32:
-            raise TypeError("dofs_per_robot must be wp.array[int32].")
-        if dofs_per_robot.ndim != 1:
-            raise ValueError(f"dofs_per_robot must be 1-D, got shape {tuple(dofs_per_robot.shape)}.")
-        if not isinstance(default_dof_indices, wp.array) or default_dof_indices.dtype != wp.uint32:
-            raise TypeError("default_dof_indices must be wp.array[uint32].")
-        if default_dof_indices.ndim != 1:
-            raise ValueError(f"default_dof_indices must be 1-D, got shape {tuple(default_dof_indices.shape)}.")
+        self._device = wp.get_device(device)
+
+        # ------------------------------------------------------------------
+        # Validation: every wp.array argument is checked here, and nowhere
+        # else. dofs_per_robot comes first because the shapes below derive
+        # from it.
+        # ------------------------------------------------------------------
+        _validate_array(array=dofs_per_robot, name="dofs_per_robot", dtype=wp.int32, shape=(-1,), device=self._device)
 
         dofs_per_robot_np = dofs_per_robot.numpy()
         robot_count = int(dofs_per_robot_np.size)
@@ -171,10 +173,23 @@ class ControllerJointImpedanceModelFree(ControllerBase):
 
         max_dofs = int(dofs_per_robot_np.max())
         total_dofs = int(dofs_per_robot_np.sum())
-        if int(default_dof_indices.size) != total_dofs:
-            raise ValueError(
-                f"default_dof_indices length {default_dof_indices.size} must equal sum(dofs_per_robot) = {total_dofs}."
-            )
+        gain_shape, idx_shape = (robot_count, max_dofs), (total_dofs,)
+
+        for name, array, dtype, shape, required in (
+            ("default_dof_indices", default_dof_indices, wp.uint32, idx_shape, True),
+            ("stiffness", stiffness, wp.float32, gain_shape, False),
+            ("damping", damping, wp.float32, gain_shape, False),
+            ("joint_q_idx", joint_q_idx, wp.uint32, idx_shape, False),
+            ("joint_qd_idx", joint_qd_idx, wp.uint32, idx_shape, False),
+            ("joint_q_des_idx", joint_q_des_idx, wp.uint32, idx_shape, False),
+            ("joint_qd_des_idx", joint_qd_des_idx, wp.uint32, idx_shape, False),
+            ("joint_qdd_idx", joint_qdd_idx, wp.uint32, idx_shape, False),
+            ("gravity_force_idx", gravity_force_idx, wp.uint32, idx_shape, False),
+            ("coriolis_force_idx", coriolis_force_idx, wp.uint32, idx_shape, False),
+            ("joint_f_idx", joint_f_idx, wp.uint32, idx_shape, False),
+        ):
+            _validate_array(array=array, name=name, dtype=dtype, shape=shape, device=self._device, required=required)
+        # ------------------------------------------------------------------
 
         self._robot_count = robot_count
         self._max_dofs = max_dofs
@@ -183,7 +198,6 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         self._use_coriolis = bool(use_coriolis_compensation)
         self._use_inertia = bool(use_inertia_decoupling)
         self._has_qdd = bool(has_qdd_feedforward)
-        self._device = device if device is not None else wp.get_device()
         self._requires_grad = requires_grad
 
         self._dofs_per_robot = dofs_per_robot
@@ -191,14 +205,14 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         offsets_np[1:] = np.cumsum(dofs_per_robot_np[:-1])
         self._dof_offsets = wp.array(offsets_np, dtype=wp.int32, device=self._device)
 
-        self._q_idx = _normalize_indices(joint_q_idx, default_dof_indices, name="joint_q")
-        self._qd_idx = _normalize_indices(joint_qd_idx, default_dof_indices, name="joint_qd")
-        self._q_des_idx = _normalize_indices(joint_q_des_idx, default_dof_indices, name="joint_q_des")
-        self._qd_des_idx = _normalize_indices(joint_qd_des_idx, default_dof_indices, name="joint_qd_des")
-        self._qdd_idx = _normalize_indices(joint_qdd_idx, default_dof_indices, name="joint_qdd")
-        self._gravity_idx = _normalize_indices(gravity_force_idx, default_dof_indices, name="gravity_force")
-        self._coriolis_idx = _normalize_indices(coriolis_force_idx, default_dof_indices, name="coriolis_force")
-        self._f_idx = _normalize_indices(joint_f_idx, default_dof_indices, name="joint_f")
+        self._q_idx = _normalize_indices(idx=joint_q_idx, default_idx=default_dof_indices)
+        self._qd_idx = _normalize_indices(idx=joint_qd_idx, default_idx=default_dof_indices)
+        self._q_des_idx = _normalize_indices(idx=joint_q_des_idx, default_idx=default_dof_indices)
+        self._qd_des_idx = _normalize_indices(idx=joint_qd_des_idx, default_idx=default_dof_indices)
+        self._qdd_idx = _normalize_indices(idx=joint_qdd_idx, default_idx=default_dof_indices)
+        self._gravity_idx = _normalize_indices(idx=gravity_force_idx, default_idx=default_dof_indices)
+        self._coriolis_idx = _normalize_indices(idx=coriolis_force_idx, default_idx=default_dof_indices)
+        self._f_idx = _normalize_indices(idx=joint_f_idx, default_idx=default_dof_indices)
 
         f_idx_np = self._f_idx.numpy()
         if len(f_idx_np) != len(np.unique(f_idx_np)):
@@ -218,8 +232,8 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         self._min_len_coriolis = _idx_max(self._coriolis_idx)
         self._min_len_f = _idx_max(self._f_idx)
 
-        self._stiffness_baked = self._normalize_gain(stiffness, "stiffness")
-        self._damping_baked = self._normalize_gain(damping, "damping")
+        self._stiffness_baked = self._bake_gain(stiffness)
+        self._damping_baked = self._bake_gain(damping)
 
         def _buf():
             return wp.zeros((robot_count, max_dofs), dtype=wp.float32, device=self._device, requires_grad=requires_grad)
@@ -235,37 +249,22 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         self._tau_buf = _buf()
         self._acc_buf: wp.array2d[wp.float32] | None = _buf() if self._use_inertia else None
 
-    def _normalize_gain(
-        self,
-        value: wp.array2d[wp.float32] | None,
-        name: str,
-    ) -> wp.array2d[wp.float32] | None:
-        """Validate and copy a baked gain array, or return ``None`` for live gains."""
+    def _bake_gain(self, value: wp.array2d[wp.float32] | None) -> wp.array2d[wp.float32] | None:
+        """Copy a gain array so later edits to the caller's array have no effect.
+
+        Returns ``None`` for live gains, which are read from the input struct
+        each step instead. Already validated by :func:`_validate_array`.
+        """
         if value is None:
             return None
-        if isinstance(value, wp.array):
-            expected = (self._robot_count, self._max_dofs)
-            if tuple(value.shape) != expected:
-                raise ValueError(
-                    f"Port '{name}': baked array shape {tuple(value.shape)} must equal "
-                    f"(robot_count, max_dofs) = {expected}."
-                )
-            if value.dtype != wp.float32:
-                raise TypeError(f"Port '{name}': baked array dtype must be wp.float32, got {value.dtype}.")
-            baked = wp.zeros(expected, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad)
-            wp.copy(baked, value)
-            return baked
-        raise TypeError(
-            f"Port '{name}': must be wp.array2d[wp.float32] of shape (robot_count, max_dofs) "
-            f"or None; got {type(value).__name__}."
+        baked = wp.zeros(
+            (self._robot_count, self._max_dofs),
+            dtype=wp.float32,
+            device=self._device,
+            requires_grad=self._requires_grad,
         )
-
-    def _validate_flat_port(self, array: wp.array[wp.float32], name: str, min_length: int) -> None:
-        """Check a caller-bound flat array's device and length before any kernel reads it."""
-        if array.device != self._device:
-            raise ValueError(f"{name} is on device {array.device}, expected {self._device}.")
-        if array.size < min_length:
-            raise ValueError(f"{name} has length {array.size}, expected at least {min_length}.")
+        wp.copy(baked, value)
+        return baked
 
     @property
     def robot_count(self) -> int:
@@ -347,29 +346,51 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         stiffness = self._stiffness_baked if self._stiffness_baked is not None else inputs.stiffness
         damping = self._damping_baked if self._damping_baked is not None else inputs.damping
 
-        self._validate_flat_port(inputs.joint_q, "inputs.joint_q", self._min_len_q)
-        self._validate_flat_port(inputs.joint_qd, "inputs.joint_qd", self._min_len_qd)
-        self._validate_flat_port(inputs.joint_q_des, "inputs.joint_q_des", self._min_len_q_des)
-        self._validate_flat_port(inputs.joint_qd_des, "inputs.joint_qd_des", self._min_len_qd_des)
+        _validate_flat_port(
+            array=inputs.joint_q, name="inputs.joint_q", min_length=self._min_len_q, device=self._device
+        )
+        _validate_flat_port(
+            array=inputs.joint_qd, name="inputs.joint_qd", min_length=self._min_len_qd, device=self._device
+        )
+        _validate_flat_port(
+            array=inputs.joint_q_des, name="inputs.joint_q_des", min_length=self._min_len_q_des, device=self._device
+        )
+        _validate_flat_port(
+            array=inputs.joint_qd_des, name="inputs.joint_qd_des", min_length=self._min_len_qd_des, device=self._device
+        )
         if self._has_qdd:
-            self._validate_flat_port(inputs.joint_qdd, "inputs.joint_qdd", self._min_len_qdd)
+            _validate_flat_port(
+                array=inputs.joint_qdd, name="inputs.joint_qdd", min_length=self._min_len_qdd, device=self._device
+            )
         if self._use_gravity:
-            self._validate_flat_port(inputs.gravity_force, "inputs.gravity_force", self._min_len_gravity)
+            _validate_flat_port(
+                array=inputs.gravity_force,
+                name="inputs.gravity_force",
+                min_length=self._min_len_gravity,
+                device=self._device,
+            )
         if self._use_coriolis:
-            self._validate_flat_port(inputs.coriolis_force, "inputs.coriolis_force", self._min_len_coriolis)
-        self._validate_flat_port(outputs.joint_f, "outputs.joint_f", self._min_len_f)
+            _validate_flat_port(
+                array=inputs.coriolis_force,
+                name="inputs.coriolis_force",
+                min_length=self._min_len_coriolis,
+                device=self._device,
+            )
+        _validate_flat_port(
+            array=outputs.joint_f, name="outputs.joint_f", min_length=self._min_len_f, device=self._device
+        )
 
-        expected_2d = (self._robot_count, self._max_dofs)
-        if tuple(stiffness.shape) != expected_2d:
-            raise ValueError(f"stiffness has shape {tuple(stiffness.shape)}, expected {expected_2d}.")
-        if tuple(damping.shape) != expected_2d:
-            raise ValueError(f"damping has shape {tuple(damping.shape)}, expected {expected_2d}.")
+        gain_shape = (self._robot_count, self._max_dofs)
+        _validate_array(array=stiffness, name="stiffness", dtype=wp.float32, shape=gain_shape, device=self._device)
+        _validate_array(array=damping, name="damping", dtype=wp.float32, shape=gain_shape, device=self._device)
         if self._use_inertia:
-            expected_3d = (self._robot_count, self._max_dofs, self._max_dofs)
-            if tuple(inputs.mass_matrix.shape) != expected_3d:
-                raise ValueError(
-                    f"inputs.mass_matrix has shape {tuple(inputs.mass_matrix.shape)}, expected {expected_3d}."
-                )
+            _validate_array(
+                array=inputs.mass_matrix,
+                name="inputs.mass_matrix",
+                dtype=wp.float32,
+                shape=(self._robot_count, self._max_dofs, self._max_dofs),
+                device=self._device,
+            )
 
         dim2d = (self._robot_count, self._max_dofs)
 

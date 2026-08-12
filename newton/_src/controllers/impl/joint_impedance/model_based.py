@@ -24,7 +24,7 @@ from newton._src.sim.builder import ModelBuilder
 from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
 
 from ...controller import ControllerBase
-from ...utils import _normalize_indices
+from ...utils import _normalize_indices, _validate_array, _validate_flat_port
 from ._common import _gather_dof_flat_kernel, _idx_max
 from .model_free import ControllerJointImpedanceModelFree
 
@@ -143,9 +143,6 @@ class ControllerJointImpedance(ControllerBase):
     ):
         if not isinstance(builder, ModelBuilder):
             raise TypeError(f"builder must be a newton.ModelBuilder, got {type(builder).__name__}.")
-        if not isinstance(default_dof_indices, wp.array) or default_dof_indices.dtype != wp.uint32:
-            raise TypeError("default_dof_indices must be wp.array[uint32].")
-
         robot_count = builder.articulation_count
         if robot_count < 1:
             raise ValueError("builder has no articulations.")
@@ -163,7 +160,7 @@ class ControllerJointImpedance(ControllerBase):
                 f"zero-DOF fixed joints; found unsupported joint types: {unsupported_joints}"
             )
 
-        self._device = device if device is not None else wp.get_device()
+        self._device = wp.get_device(device)
         self._requires_grad = requires_grad
         self._use_gravity = bool(use_gravity_compensation)
         self._use_coriolis = bool(use_coriolis_compensation)
@@ -189,21 +186,40 @@ class ControllerJointImpedance(ControllerBase):
         dofs_per_robot = wp.array(dofs_per_robot_np, dtype=wp.int32, device=self._device)
         total_dofs = int(dofs_per_robot_np.sum())
 
-        if int(default_dof_indices.size) != total_dofs:
-            raise ValueError(
-                f"default_dof_indices length {default_dof_indices.size} must equal "
-                f"sum of per-robot DOF counts = {total_dofs}."
-            )
+        # ------------------------------------------------------------------
+        # Validation: every wp.array argument is checked here, and nowhere
+        # else. This runs after finalize() because the expected shapes derive
+        # from the finalized model.
+        # ------------------------------------------------------------------
+        gain_shape, idx_shape = (robot_count, max_dofs), (total_dofs,)
+        for name, array, dtype, shape, required in (
+            ("default_dof_indices", default_dof_indices, wp.uint32, idx_shape, True),
+            ("stiffness", stiffness, wp.float32, gain_shape, False),
+            ("damping", damping, wp.float32, gain_shape, False),
+            ("joint_q_idx", joint_q_idx, wp.uint32, idx_shape, False),
+            ("joint_qd_idx", joint_qd_idx, wp.uint32, idx_shape, False),
+            ("joint_q_des_idx", joint_q_des_idx, wp.uint32, idx_shape, False),
+            ("joint_qd_des_idx", joint_qd_des_idx, wp.uint32, idx_shape, False),
+            ("joint_qdd_idx", joint_qdd_idx, wp.uint32, idx_shape, False),
+            ("joint_f_idx", joint_f_idx, wp.uint32, idx_shape, False),
+        ):
+            _validate_array(array=array, name=name, dtype=dtype, shape=shape, device=self._device, required=required)
+        # ------------------------------------------------------------------
 
         self._robot_count = robot_count
         self._max_dofs = max_dofs
         self._total_dofs = total_dofs
 
-        self._q_idx = _normalize_indices(joint_q_idx, default_dof_indices, name="joint_q")
-        self._qd_idx = _normalize_indices(joint_qd_idx, default_dof_indices, name="joint_qd")
-        self._q_des_idx = _normalize_indices(joint_q_des_idx, default_dof_indices, name="joint_q_des")
-        self._qd_des_idx = _normalize_indices(joint_qd_des_idx, default_dof_indices, name="joint_qd_des")
-        self._qdd_idx = _normalize_indices(joint_qdd_idx, default_dof_indices, name="joint_qdd")
+        self._q_idx = _normalize_indices(idx=joint_q_idx, default_idx=default_dof_indices)
+        self._qd_idx = _normalize_indices(idx=joint_qd_idx, default_idx=default_dof_indices)
+        self._q_des_idx = _normalize_indices(idx=joint_q_des_idx, default_idx=default_dof_indices)
+        self._qd_des_idx = _normalize_indices(idx=joint_qd_des_idx, default_idx=default_dof_indices)
+        self._qdd_idx = _normalize_indices(idx=joint_qdd_idx, default_idx=default_dof_indices)
+
+        # joint_q and joint_qd are gathered by this class before it delegates,
+        # so their ports are checked here rather than by the inner controller.
+        self._min_len_q = _idx_max(self._q_idx)
+        self._min_len_qd = _idx_max(self._qd_idx)
 
         self._mass_matrix: wp.array3d[wp.float32] | None = None
         self._gravity_flat: wp.array[wp.float32] | None = None
@@ -318,6 +334,15 @@ class ControllerJointImpedance(ControllerBase):
             outputs: :class:`Outputs` struct to write torques into.
             dt: Unused. Accepted for API compatibility.
         """
+        # Checked here because the gathers below read these two ports before
+        # the inner controller — which validates the rest — ever sees them.
+        _validate_flat_port(
+            array=inputs.joint_q, name="inputs.joint_q", min_length=self._min_len_q, device=self._device
+        )
+        _validate_flat_port(
+            array=inputs.joint_qd, name="inputs.joint_qd", min_length=self._min_len_qd, device=self._device
+        )
+
         wp.launch(
             _gather_dof_flat_kernel,
             dim=self._total_dofs,
