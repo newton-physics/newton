@@ -773,8 +773,8 @@ class _CellLookup:
 
 
 @wp.func
-def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
-    """Resolve the cell coordinates / start slot shared by every sampler.
+def _locate_cell_coords(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
+    """Resolve cell coordinates without loading the subgrid slot.
 
     See :class:`_CellLookup` for the field layout.
     """
@@ -804,8 +804,6 @@ def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
     y_base = wp.clamp(int(float(iy) * sdf.fine_to_coarse), 0, coarse_y - 1)
     z_base = wp.clamp(int(float(iz) * sdf.fine_to_coarse), 0, coarse_z - 1)
 
-    start_slot = sdf.subgrid_start_slots[x_base, y_base, z_base]
-
     loc = _CellLookup()
     loc.ix = ix
     loc.iy = iy
@@ -816,8 +814,30 @@ def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
     loc.x_base = x_base
     loc.y_base = y_base
     loc.z_base = z_base
-    loc.start_slot = start_slot
+    loc.start_slot = SLOT_EMPTY
     return loc
+
+
+@wp.func
+def _locate_cell(sdf: TextureSDFData, f: wp.vec3) -> _CellLookup:
+    """Resolve cell coordinates and the corresponding subgrid slot."""
+    loc = _locate_cell_coords(sdf, f)
+    loc.start_slot = sdf.subgrid_start_slots[loc.x_base, loc.y_base, loc.z_base]
+    return loc
+
+
+@wp.func
+def _locate_cell_pair(sdf: TextureSDFData, f0: wp.vec3, f1: wp.vec3) -> tuple[_CellLookup, _CellLookup]:
+    """Resolve two cells while sharing a common subgrid-slot lookup."""
+    loc0 = _locate_cell_coords(sdf, f0)
+    loc1 = _locate_cell_coords(sdf, f1)
+    start_slot0 = sdf.subgrid_start_slots[loc0.x_base, loc0.y_base, loc0.z_base]
+    start_slot1 = start_slot0
+    if loc0.x_base != loc1.x_base or loc0.y_base != loc1.y_base or loc0.z_base != loc1.z_base:
+        start_slot1 = sdf.subgrid_start_slots[loc1.x_base, loc1.y_base, loc1.z_base]
+    loc0.start_slot = start_slot0
+    loc1.start_slot = start_slot1
+    return loc0, loc1
 
 
 @wp.func
@@ -948,7 +968,6 @@ def texture_sample_sdf_at_voxel(
     x_base = wp.clamp(int(float(ix) * sdf.fine_to_coarse), 0, coarse_x - 1)
     y_base = wp.clamp(int(float(iy) * sdf.fine_to_coarse), 0, coarse_y - 1)
     z_base = wp.clamp(int(float(iz) * sdf.fine_to_coarse), 0, coarse_z - 1)
-
     start_slot = sdf.subgrid_start_slots[x_base, y_base, z_base]
 
     if start_slot < SLOT_LINEAR:
@@ -1074,34 +1093,122 @@ def texture_sample_sdf(
 
 
 @wp.func
-def texture_sample_sdf_hw(
+def _texture_sample_pair(
+    texture0: wp.Texture3D,
+    uvw0: wp.vec3f,
+    texture1: wp.Texture3D,
+    uvw1: wp.vec3f,
+) -> wp.vec2f:
+    """Issue two independent hardware texture samples before consuming either."""
+    value0 = wp.texture_sample(texture0, uvw0, dtype=float)
+    value1 = wp.texture_sample(texture1, uvw1, dtype=float)
+    return wp.vec2f(value0, value1)
+
+
+@wp.func
+def _texture_sample_sdf_hw_pair(
     sdf: TextureSDFData,
-    local_pos: wp.vec3,
-) -> float:
-    """Sample SDF value via the GPU's hardware trilinear filter.
-
-    Issues a single ``wp.texture_sample`` per query at a fractional
-    coordinate; the texture unit returns the trilinearly filtered value
-    using its 8-bit fixed-point interpolation weights. Eight times fewer
-    texture fetches than :func:`texture_sample_sdf` for the value-only
-    path; the small interpolation-weight precision loss (~1/256
-    relative) is harmless in PGS / TGS contact solvers but should be
-    avoided in stress-integration paths like hydroelastic contact.
-
-    Args:
-        sdf: texture SDF data
-        local_pos: query position in local SDF space [m]
-
-    Returns:
-        Signed distance value [m].
-    """
-    clamped = wp.vec3(
-        wp.clamp(local_pos[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0]),
-        wp.clamp(local_pos[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
-        wp.clamp(local_pos[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
+    local_pos0: wp.vec3,
+    local_pos1: wp.vec3,
+) -> wp.vec2f:
+    """Sample two SDF positions while overlapping their texture latency."""
+    clamped0 = wp.vec3(
+        wp.clamp(local_pos0[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0]),
+        wp.clamp(local_pos0[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
+        wp.clamp(local_pos0[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
     )
-    diff_mag = wp.length(local_pos - clamped)
+    clamped1 = wp.vec3(
+        wp.clamp(local_pos1[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0]),
+        wp.clamp(local_pos1[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
+        wp.clamp(local_pos1[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
+    )
+    diff0 = local_pos0 - clamped0
+    diff1 = local_pos1 - clamped1
+    diff_mag0 = float(0.0)
+    diff_mag1 = float(0.0)
+    if diff0[0] != 0.0 or diff0[1] != 0.0 or diff0[2] != 0.0:
+        diff_mag0 = wp.length(diff0)
+    if diff1[0] != 0.0 or diff1[1] != 0.0 or diff1[2] != 0.0:
+        diff_mag1 = wp.length(diff1)
 
+    f0 = wp.cw_mul(clamped0 - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+    f1 = wp.cw_mul(clamped1 - sdf.sdf_box_lower, sdf.inv_sdf_dx)
+    loc0, loc1 = _locate_cell_pair(sdf, f0, f1)
+
+    texture0 = sdf.coarse_texture
+    texture1 = sdf.coarse_texture
+    uvw0 = wp.vec3f(0.0)
+    uvw1 = wp.vec3f(0.0)
+
+    if loc0.start_slot >= SLOT_LINEAR:
+        cx0 = float(loc0.x_base)
+        cy0 = float(loc0.y_base)
+        cz0 = float(loc0.z_base)
+        coarse_f0 = (
+            wp.vec3(float(loc0.ix) + loc0.tx, float(loc0.iy) + loc0.ty, float(loc0.iz) + loc0.tz) * sdf.fine_to_coarse
+        )
+        uvw0 = wp.vec3f(
+            cx0 + (coarse_f0[0] - cx0) + 0.5,
+            cy0 + (coarse_f0[1] - cy0) + 0.5,
+            cz0 + (coarse_f0[2] - cz0) + 0.5,
+        )
+    else:
+        texture0 = sdf.subgrid_texture
+        block_x0 = float(loc0.start_slot & wp.uint32(0x3FF))
+        block_y0 = float((loc0.start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
+        block_z0 = float((loc0.start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
+        lx0 = float(loc0.ix) - float(loc0.x_base) * sdf.subgrid_size_f
+        ly0 = float(loc0.iy) - float(loc0.y_base) * sdf.subgrid_size_f
+        lz0 = float(loc0.iz) - float(loc0.z_base) * sdf.subgrid_size_f
+        uvw0 = wp.vec3f(
+            block_x0 * sdf.subgrid_samples_f + lx0 + 0.5 + loc0.tx,
+            block_y0 * sdf.subgrid_samples_f + ly0 + 0.5 + loc0.ty,
+            block_z0 * sdf.subgrid_samples_f + lz0 + 0.5 + loc0.tz,
+        )
+
+    if loc1.start_slot >= SLOT_LINEAR:
+        cx1 = float(loc1.x_base)
+        cy1 = float(loc1.y_base)
+        cz1 = float(loc1.z_base)
+        coarse_f1 = (
+            wp.vec3(float(loc1.ix) + loc1.tx, float(loc1.iy) + loc1.ty, float(loc1.iz) + loc1.tz) * sdf.fine_to_coarse
+        )
+        uvw1 = wp.vec3f(
+            cx1 + (coarse_f1[0] - cx1) + 0.5,
+            cy1 + (coarse_f1[1] - cy1) + 0.5,
+            cz1 + (coarse_f1[2] - cz1) + 0.5,
+        )
+    else:
+        texture1 = sdf.subgrid_texture
+        block_x1 = float(loc1.start_slot & wp.uint32(0x3FF))
+        block_y1 = float((loc1.start_slot >> wp.uint32(10)) & wp.uint32(0x3FF))
+        block_z1 = float((loc1.start_slot >> wp.uint32(20)) & wp.uint32(0x3FF))
+        lx1 = float(loc1.ix) - float(loc1.x_base) * sdf.subgrid_size_f
+        ly1 = float(loc1.iy) - float(loc1.y_base) * sdf.subgrid_size_f
+        lz1 = float(loc1.iz) - float(loc1.z_base) * sdf.subgrid_size_f
+        uvw1 = wp.vec3f(
+            block_x1 * sdf.subgrid_samples_f + lx1 + 0.5 + loc1.tx,
+            block_y1 * sdf.subgrid_samples_f + ly1 + 0.5 + loc1.ty,
+            block_z1 * sdf.subgrid_samples_f + lz1 + 0.5 + loc1.tz,
+        )
+
+    values = _texture_sample_pair(texture0, uvw0, texture1, uvw1)
+    value0 = values[0]
+    value1 = values[1]
+    if loc0.start_slot < SLOT_LINEAR:
+        value0 = value0 * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
+    if loc1.start_slot < SLOT_LINEAR:
+        value1 = value1 * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
+    return wp.vec2f(value0 + diff_mag0, value1 + diff_mag1)
+
+
+@wp.func
+def _texture_sample_sdf_hw_clamped(
+    sdf: TextureSDFData,
+    clamped: wp.vec3,
+    diff_mag: float,
+) -> float:
+    """Sample a hardware SDF from a point already clamped to its domain."""
     f = wp.cw_mul(clamped - sdf.sdf_box_lower, sdf.inv_sdf_dx)
     loc = _locate_cell(sdf, f)
 
@@ -1142,6 +1249,42 @@ def texture_sample_sdf_hw(
         sdf_val = raw * sdf.subgrids_sdf_value_range + sdf.subgrids_min_sdf_value
 
     return sdf_val + diff_mag
+
+
+@wp.func
+def texture_sample_sdf_hw(
+    sdf: TextureSDFData,
+    local_pos: wp.vec3,
+) -> float:
+    """Sample SDF value via the GPU's hardware trilinear filter.
+
+    Issues a single ``wp.texture_sample`` per query at a fractional
+    coordinate; the texture unit returns the trilinearly filtered value
+    using its 8-bit fixed-point interpolation weights. Eight times fewer
+    texture fetches than :func:`texture_sample_sdf` for the value-only
+    path; the small interpolation-weight precision loss (~1/256
+    relative) is harmless in PGS / TGS contact solvers but should be
+    avoided in stress-integration paths like hydroelastic contact.
+
+    Args:
+        sdf: texture SDF data
+        local_pos: query position in local SDF space [m]
+
+    Returns:
+        Signed distance value [m].
+    """
+    clamped = wp.vec3(
+        wp.clamp(local_pos[0], sdf.sdf_box_lower[0], sdf.sdf_box_upper[0]),
+        wp.clamp(local_pos[1], sdf.sdf_box_lower[1], sdf.sdf_box_upper[1]),
+        wp.clamp(local_pos[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
+    )
+    diff = local_pos - clamped
+    diff_mag = float(0.0)
+    # Avoid a square root for the common in-box path.
+    if diff[0] != 0.0 or diff[1] != 0.0 or diff[2] != 0.0:
+        diff_mag = wp.length(diff)
+
+    return _texture_sample_sdf_hw_clamped(sdf, clamped, diff_mag)
 
 
 @wp.func
@@ -1224,28 +1367,35 @@ def _texture_sample_sdf_grad_hw_impl(
         wp.clamp(local_pos[2], sdf.sdf_box_lower[2], sdf.sdf_box_upper[2]),
     )
     diff = local_pos - clamped
-    diff_mag = wp.length(diff)
 
     # Out-of-box: the clamp-direction extrapolation defines the gradient
     # exactly, so skip the six FD texture fetches that would be discarded.
-    if diff_mag > 0.0:
-        return diff / diff_mag
+    if diff[0] != 0.0 or diff[1] != 0.0 or diff[2] != 0.0:
+        diff_mag = wp.length(diff)
+        if diff_mag > 0.0:
+            return diff / diff_mag
 
     h_x = 0.5 / sdf.inv_sdf_dx[0]
     h_y = 0.5 / sdf.inv_sdf_dx[1]
     h_z = 0.5 / sdf.inv_sdf_dx[2]
-    gx = (
-        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(h_x, 0.0, 0.0))
-        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(h_x, 0.0, 0.0))
-    ) / (2.0 * h_x)
-    gy = (
-        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(0.0, h_y, 0.0))
-        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(0.0, h_y, 0.0))
-    ) / (2.0 * h_y)
-    gz = (
-        texture_sample_sdf_hw(sdf, local_pos + wp.vec3(0.0, 0.0, h_z))
-        - texture_sample_sdf_hw(sdf, local_pos - wp.vec3(0.0, 0.0, h_z))
-    ) / (2.0 * h_z)
+    x_values = _texture_sample_sdf_hw_pair(
+        sdf,
+        local_pos + wp.vec3(h_x, 0.0, 0.0),
+        local_pos - wp.vec3(h_x, 0.0, 0.0),
+    )
+    y_values = _texture_sample_sdf_hw_pair(
+        sdf,
+        local_pos + wp.vec3(0.0, h_y, 0.0),
+        local_pos - wp.vec3(0.0, h_y, 0.0),
+    )
+    z_values = _texture_sample_sdf_hw_pair(
+        sdf,
+        local_pos + wp.vec3(0.0, 0.0, h_z),
+        local_pos - wp.vec3(0.0, 0.0, h_z),
+    )
+    gx = (x_values[0] - x_values[1]) * sdf.inv_sdf_dx[0]
+    gy = (y_values[0] - y_values[1]) * sdf.inv_sdf_dx[1]
+    gz = (z_values[0] - z_values[1]) * sdf.inv_sdf_dx[2]
     return wp.vec3(gx, gy, gz)
 
 

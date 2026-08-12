@@ -408,7 +408,7 @@ class Example:
 
         self._pick_body = wp.array([-1], dtype=int, device=self.model.device)
         self._pick_target = wp.zeros(1, dtype=wp.vec3, device=self.model.device)
-        self._gravity = wp.vec3(*self.model.gravity.numpy()[0])
+        self._gravity = wp.vec3(*self.model.gravity.numpy()[-1])
 
         self.capture()
 
