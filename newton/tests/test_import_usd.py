@@ -11159,6 +11159,18 @@ def Xform "Articulation" (
         )
         self.assertEqual(builder.shape_source[0].maxhullvert, 20)
 
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, use_applied_schema_fallbacks=True)
+        self.assertEqual(builder.shape_source[0].maxhullvert, 32)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            mesh_maxhullvert=None,
+            use_applied_schema_fallbacks=True,
+        )
+        self.assertEqual(builder.shape_source[0].maxhullvert, newton.Mesh.MAX_HULL_VERTICES)
+
 
 class TestImportSampleAssetsComposition(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

@@ -479,7 +479,15 @@ When multiple physics solvers define conflicting attributes for the same propert
 With ``use_applied_schema_fallbacks=True``, an explicit importer override is
 returned before this hierarchy. For example, passing
 ``enable_self_collisions=False`` forces self-collisions off even when a USD
-value or registered schema fallback enables them.
+value or registered schema fallback enables them. Passing
+``mesh_maxhullvert=None`` explicitly selects
+:attr:`newton.Mesh.MAX_HULL_VERTICES` and overrides an authored hull limit.
+
+``joint_drive_gains_scaling`` and ``collapse_fixed_joints`` are currently raw
+PhysicsScene importer metadata, rather than registered schema properties. Their
+opt-in order is therefore an explicit override, authored ``newton:*`` metadata,
+then the importer default; they do not have schema-fallback or custom-resolver
+stages.
 
 By default, attribute resolution retains the compatibility hierarchy:
 

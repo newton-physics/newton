@@ -363,11 +363,11 @@ def parse_usd(
             Legacy resolution continues to treat it as an importer default.
         verbose: If True, print additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matching prim paths to ignore.
-        collapse_fixed_joints: When omitted, use ``False`` as the importer default
-            for removing fixed joints and merging their bodies. With
-            ``use_applied_schema_fallbacks=True``, an explicitly provided value
-            overrides ``newton:collapse_fixed_joints`` on the PhysicsScene. Legacy
-            resolution continues to treat it as an importer default.
+        collapse_fixed_joints: When omitted, use ``False`` as the
+            importer default for removing fixed joints and merging their bodies.
+            With ``use_applied_schema_fallbacks=True``, an explicitly provided
+            value overrides ``newton:collapse_fixed_joints`` on the PhysicsScene.
+            Legacy resolution continues to treat it as an importer default.
         enable_self_collisions: When omitted, use ``True`` as the importer
             default for self-collisions within an articulation. With
             ``use_applied_schema_fallbacks=True``, an explicitly provided value
@@ -399,7 +399,8 @@ def parse_usd(
             and finalize under ``model.mujoco.equality_constraint_*``.
         mesh_maxhullvert: When omitted, use
             :attr:`newton.Mesh.MAX_HULL_VERTICES` as the importer default for
-            convex hull approximation. With
+            convex hull approximation. Passing ``None`` explicitly selects
+            the same limit. With
             ``use_applied_schema_fallbacks=True``, an explicitly provided value
             overrides the corresponding authored USD value and schema fallback.
             Legacy resolution continues to treat it as an importer default.
