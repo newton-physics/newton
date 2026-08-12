@@ -165,14 +165,20 @@ If you run the examples from a source checkout with uv, use
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_limx_affine_bunny_ground.jpg" alt="LIMX Affine Bunny Ground Contact">
       </a>
     </td>
-    <td width="33%"></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_limx_affine_bunnies_ground.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_limx_affine_bunnies_ground.jpg" alt="LIMX Affine Bunny Pile Contact">
+      </a>
+    </td>
     <td width="33%"></td>
   </tr>
   <tr>
     <td align="center" width="33%">
       <code>uv run -m newton.examples basic_limx_affine_bunny_ground</code>
     </td>
-    <td width="33%"></td>
+    <td align="center" width="33%">
+      <code>uv run -m newton.examples basic_limx_affine_bunnies_ground</code>
+    </td>
     <td width="33%"></td>
   </tr>
   <tr>
