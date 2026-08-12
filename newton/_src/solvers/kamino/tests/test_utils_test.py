@@ -82,7 +82,7 @@ class TestModelComparisonReordering(unittest.TestCase):
         """assert_model_equal succeeds when bodies/joints/geoms are permuted but label-matched."""
         model_forward = self._build_three_body_model(("a", "b", "c"))
         model_reversed = self._build_three_body_model(("c", "b", "a"))
-        assert_model_equal(self, model_forward, model_reversed)
+        assert_model_equal(self, model_forward, model_reversed, allow_reordering=True)
 
     def test_reordered_model_rejects_strict_comparison(self):
         """The same reordered pair fails a strict, order-sensitive (allow_reordering=False) check."""
@@ -98,7 +98,7 @@ class TestModelComparisonReordering(unittest.TestCase):
         corrupted = np.full(model_reversed.bodies.bid.shape, 12345, dtype=np.int32)
         model_reversed.bodies.bid.assign(corrupted)
         with self.assertRaises(AssertionError):
-            assert_model_equal(self, model_forward, model_reversed)
+            assert_model_equal(self, model_forward, model_reversed, allow_reordering=True)
 
     def test_reordered_model_detects_unremapped_collidable_pairs(self):
         """A corrupted ``collidable_pairs`` entry is still caught after geometry reordering."""
@@ -111,7 +111,7 @@ class TestModelComparisonReordering(unittest.TestCase):
         corrupted[0] = (corrupted[0][0], corrupted[0][0])
         model_reversed.geoms.collidable_pairs.assign(corrupted)
         with self.assertRaises(AssertionError):
-            assert_model_equal(self, model_forward, model_reversed)
+            assert_model_equal(self, model_forward, model_reversed, allow_reordering=True)
 
 
 ###
