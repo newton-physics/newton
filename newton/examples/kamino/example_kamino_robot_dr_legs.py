@@ -106,7 +106,7 @@ class Example:
             self.config.dvi.max_alternating_iterations = 4
             self.config.dvi.inequality_sweeps_per_iteration = 3
             self.config.dvi.bilateral_solve_interval = 1
-            self.config.dvi.contact_warmstart_method = "key_and_position_with_net_force_backup"
+            self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Set joint armature and viscous damping for better

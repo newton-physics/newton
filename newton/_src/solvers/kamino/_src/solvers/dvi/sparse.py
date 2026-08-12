@@ -15,6 +15,7 @@ from ...geometry.contacts import ContactsKamino
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
 from .kernels import (
+    _FUSED_INEQUALITY_BLOCK,
     _initialize_dvi_status,
     _scatter_bilateral_solution,
     _set_dvi_direct_status_iterations,
@@ -237,7 +238,8 @@ def _solve_sparse_inequality_pgs(path: SparseDVIPath, problem: DualProblem) -> N
     delassus = _get_sparse_delassus(problem)
     delassus.diagonal(path.data.state.scratch)
     _prepare_sparse_inequality_pgs(path, problem)
-    for block_iteration in range(path.max_alternating_iterations):
+    # Inequality-only solves need no host work between PGS blocks.
+    for block_iteration in (_FUSED_INEQUALITY_BLOCK,):
         _launch_sparse_inequality_pgs(path, problem, block_iteration)
     _compute_sparse_solution_vectors(path, problem)
     wp.launch(

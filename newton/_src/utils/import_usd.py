@@ -154,6 +154,17 @@ def _cache_path_for_absolute_usd_reference(url: str) -> str:
     return posixpath.join("_external_usd", digest, basename)
 
 
+def _is_uniform_scale(scale, rel_tol: float = 1.0e-6) -> bool:
+    """Whether the three components of a scale vector agree to within ``rel_tol``.
+
+    Scales reach the importer through single-precision transform decomposition, so an
+    exactly uniform scale routinely comes back with components a few ULP apart. An exact
+    ``==`` comparison reports those as non-uniform.
+    """
+    lo, hi = min(scale), max(scale)
+    return hi - lo <= rel_tol * max(abs(lo), abs(hi))
+
+
 def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
     """Warn when a rigid body prim has an improper (mirrored) world transform.
 
@@ -452,6 +463,8 @@ def parse_usd(
               - The stage's Meters Per Unit (MPU) definition (1.0 by default)
             * - ``"scene_attributes"``
               - Dictionary of all attributes applied to the PhysicsScene prim
+            * - ``"physics_scene_path"``
+              - Prim path of the PhysicsScene selected during import, or ``None`` if no PhysicsScene was found
             * - ``"collapse_results"``
               - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if ``collapse_fixed_joints`` is True, otherwise None.
             * - ``"physics_dt"``
@@ -583,6 +596,8 @@ def parse_usd(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
+    physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
+    physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
@@ -637,7 +652,6 @@ def parse_usd(
     # cache for TetMesh data loaded from USD prims
     tetmesh_cache: dict[str, TetMesh] = {}
 
-    physics_scene_prim = None
     physics_dt = None
     max_solver_iters = None
 
@@ -1364,8 +1378,8 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "sphere":
-                if not (scale[0] == scale[1] == scale[2]):
-                    print("Warning: Non-uniform scaling of spheres is not supported.")
+                if not _is_uniform_scale(scale):
+                    print(f"Warning: Non-uniform scaling of spheres is not supported, at {path_name}.")
                 radius = usd.get_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
@@ -2322,24 +2336,23 @@ def parse_usd(
 
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
-    physics_scene_prim = None
     scene_gravity_direction = None
     scene_gravity_magnitude = None
     gravity_enabled = True
-    if UsdPhysics.ObjectType.Scene in ret_dict:
+    if physics_scene_prim is not None:
         paths, scene_descs = ret_dict[UsdPhysics.ObjectType.Scene]
         if len(paths) > 1 and verbose:
             print("Only the first PhysicsScene is considered")
-        path, scene_desc = paths[0], scene_descs[0]
+        scene_path = physics_scene_prim.GetPath()
+        scene_desc = next(desc for path, desc in zip(paths, scene_descs, strict=True) if path == scene_path)
         if verbose:
-            print("Found PhysicsScene:", path)
+            print("Found PhysicsScene:", scene_path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
         scene_gravity_direction = scene_desc.gravityDirection
         scene_gravity_magnitude = scene_desc.gravityMagnitude
 
         # Storing Physics Scene attributes
-        physics_scene_prim = stage.GetPrimAtPath(path)
         for a in physics_scene_prim.GetAttributes():
             scene_attributes[a.GetName()] = a.Get()
 
@@ -3514,6 +3527,11 @@ def parse_usd(
                 # geometry, and an empty viewport is the honest result of that. Reach for
                 # ``force_show_colliders`` to inspect such a scene.
                 collider_is_visible = (force_show_colliders or _is_viewport_drawn(prim)) and not hide_collider_for_body
+                # Approximating a viewport-drawn collider splits off its authored topology
+                # as a visual shape (see the approximation pass below). That copy is subject
+                # to ``hide_collision_shapes`` as well, so that the flag does not turn into a
+                # no-op for exactly those colliders that carry ``physics:approximation``.
+                splits_off_visual_copy = load_visual_shapes and _is_viewport_drawn(prim) and not hide_collider_for_body
 
                 # Contact response precedence:
                 #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
@@ -3774,8 +3792,8 @@ def parse_usd(
                         hz=hz,
                     )
                 elif key == UsdPhysics.ObjectType.SphereShape:
-                    if not (scale[0] == scale[1] == scale[2]):
-                        print("Warning: Non-uniform scaling of spheres is not supported.")
+                    if not _is_uniform_scale(scale):
+                        print(f"Warning: Non-uniform scaling of spheres is not supported, at {path}.")
                     radius = shape_spec.radius
                     shape_id = builder.add_shape_sphere(
                         **shape_params,
@@ -3824,10 +3842,8 @@ def parse_usd(
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
                     # The mesh needs its render material when anything will draw it: either
                     # the collider itself is visible, or it is viewport geometry whose
-                    # authored topology is about to be split off as a visual shape. The
-                    # latter is not covered by collider_is_visible, which hide_collision_shapes
-                    # can clear while the visual copy is still produced.
-                    if collider_is_visible or (load_visual_shapes and _is_viewport_drawn(prim)):
+                    # authored topology is about to be split off as a visual shape.
+                    if collider_is_visible or splits_off_visual_copy:
                         # Drawn colliders should render with the same visual material metadata
                         # as visual-only mesh imports.
                         mesh = _get_mesh_with_visual_material(prim, path_name=path)
@@ -3888,7 +3904,7 @@ def parse_usd(
                                     if remeshing_method not in remeshing_queue:
                                         remeshing_queue[remeshing_method] = []
                                     remeshing_queue[remeshing_method].append(shape_id)
-                                    if _is_viewport_drawn(prim):
+                                    if splits_off_visual_copy:
                                         approximated_viewport_shapes.add(shape_id)
 
                 elif key == UsdPhysics.ObjectType.PlaneShape:
@@ -5002,6 +5018,7 @@ def parse_usd(
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,
         "scene_attributes": scene_attributes,
+        "physics_scene_path": str(physics_scene_prim.GetPath()) if physics_scene_prim is not None else None,
         "physics_dt": physics_dt,
         "collapse_results": collapse_results,
         "schema_attrs": R.schema_attrs,
