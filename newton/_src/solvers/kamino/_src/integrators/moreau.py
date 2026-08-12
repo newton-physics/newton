@@ -126,7 +126,7 @@ def _integrate_moreau_jean_second_inplace(
     # Inputs:
     alpha: float,
     model_dt: wp.array[wp.float32],
-    model_gravity: wp.array[wp.vec4f],
+    model_gravity: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_inv_m: wp.array[wp.float32],
     model_bodies_I: wp.array[wp.mat33f],
@@ -145,8 +145,7 @@ def _integrate_moreau_jean_second_inplace(
     # Retrieve the configured time-step and the
     # gravity vector of the corresponding world
     dt = model_dt[wid]
-    gv = model_gravity[wid]
-    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
+    g = model_gravity[wid]
 
     # Retrieve the model data
     inv_m_i = model_bodies_inv_m[tid]

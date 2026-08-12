@@ -13,13 +13,13 @@ from .core.bodies import (
 )
 from .core.control import ControlKamino
 from .core.conversions import (
+    StructuralUpdateViolation,
     compute_material_first_shape,
     convert_model_joint_actuation,
     convert_model_joint_transforms,
     convert_model_materials,
-    validate_model_joint_updates,
+    validate_model_structural_updates,
 )
-from .core.gravity import convert_model_gravity
 from .core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType
 from .core.model import ModelKamino
 from .core.state import StateKamino
@@ -46,6 +46,7 @@ __all__ = [
     "ModelKamino",
     "SolverKaminoImpl",
     "StateKamino",
+    "StructuralUpdateViolation",
     "compute_material_first_shape",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
@@ -53,10 +54,9 @@ __all__ = [
     "convert_contacts_kamino_to_newton",
     "convert_contacts_newton_to_kamino",
     "convert_geom_offset_origin_to_com",
-    "convert_model_gravity",
     "convert_model_joint_actuation",
     "convert_model_joint_transforms",
     "convert_model_materials",
     "msg",
-    "validate_model_joint_updates",
+    "validate_model_structural_updates",
 ]

@@ -5,15 +5,22 @@
 # Example Cable Cross-Slide Table
 #
 # Demonstrates a cable-driven cross-slide table inspired by the Simscape
-# Multibody cable-driven XY table example https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html.
-# The mechanism is laid out on the ground plane: the blue base is fixed, the green carriage moves horizontally,
-# and the beige carriage moves vertically on the green carriage. The cable is
-# driven only by the two blue input pulleys.
+# Multibody cable-driven XY table example:
+# https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html
+# The mechanism is laid out on the ground plane: the blue base is fixed, the
+# green carriage moves horizontally, and the beige carriage moves vertically on
+# the green carriage. The cable is driven only by the two blue input pulleys.
 #
 # The sample combines passive revolute pulleys, a closed cable loop, and two
 # commanded input pulleys. The input rotations trace a rectangle with the
 # beige table marker while the solver resolves cable wrapping and contact
 # against the guides.
+#
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table --test --viewer null
 #
 ###########################################################################
 
@@ -412,6 +419,7 @@ def add_visual_bar(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # Store viewer and configure simulation cadence.
         self.viewer = viewer
 
@@ -755,6 +763,7 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, 0.0))
 
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
@@ -765,10 +774,9 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
 
-        # Device arrays used by kernels during simulation and CUDA graph replay.
+        # Device arrays used by kernels during simulation and captured replay.
         self.kinematic_body_indices = wp.array(
             kinematic_body_indices,
             dtype=wp.int32,
@@ -827,13 +835,10 @@ class Example:
         self.capture()
 
     def capture(self):
-        """Capture the simulation update when running on CUDA."""
-        if self.solver.device.is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        """Capture the simulation update into a graph for replay."""
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         """Advance the XY table simulation by one rendered frame."""

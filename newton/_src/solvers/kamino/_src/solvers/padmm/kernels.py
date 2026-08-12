@@ -11,6 +11,18 @@ from typing import Any
 import warp as wp
 
 from ...core.math import FLOAT32_EPS, FLOAT32_MAX
+from ..common import (
+    apply_dual_preconditioner_to_solution as _apply_dual_preconditioner_to_solution,
+)
+from ..common import (
+    warmstart_contact_constraints as _warmstart_contact_constraints,
+)
+from ..common import (
+    warmstart_joint_constraints as _warmstart_joint_constraints,
+)
+from ..common import (
+    warmstart_limit_constraints as _warmstart_limit_constraints,
+)
 from .math import (
     compute_cwise_vec_div,
     compute_cwise_vec_mul,
@@ -47,6 +59,7 @@ __all__ = [
     "_make_project_dual_convergence_accel_kernel",
     "_project_to_feasible_cone",
     "_reset_solver_data",
+    "_scale_warmstart_forces",
     "_update_delassus_proximal_regularization",
     "_update_delassus_proximal_regularization_sparse",
     "_warmstart_contact_constraints",
@@ -152,184 +165,24 @@ def _warmstart_desaxce_correction(
 
 
 @wp.kernel
-def _warmstart_joint_constraints(
+def _scale_warmstart_forces(
     # Inputs:
-    model_time_dt: wp.array[wp.float32],
-    joint_wid: wp.array[wp.int32],
-    joint_num_dynamic_cts: wp.array[wp.int32],
-    joint_num_kinematic_cts: wp.array[wp.int32],
-    joint_dynamic_cts_offset_joint_cts: wp.array[wp.int32],
-    joint_kinematic_cts_offset_joint_cts: wp.array[wp.int32],
-    joint_dynamic_cts_offset_total_cts: wp.array[wp.int32],
-    joint_kinematic_cts_offset_total_cts: wp.array[wp.int32],
-    joint_lambda_j: wp.array[wp.float32],
-    problem_P: wp.array[wp.float32],
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    solver_config: wp.array[PADMMConfigStruct],
     # Outputs:
-    x_0: wp.array[wp.float32],
-    y_0: wp.array[wp.float32],
-    z_0: wp.array[wp.float32],
+    solver_x: wp.array[wp.float32],
+    solver_y: wp.array[wp.float32],
 ):
-    # Retrieve the thread index as the joint index
-    jid = wp.tid()
-
-    # Retrieve the joint-specific model info
-    wid_j = joint_wid[jid]
-    num_dynamic_cts_j = joint_num_dynamic_cts[jid]
-    num_kinematic_cts_j = joint_num_kinematic_cts[jid]
-
-    # Retrieve the world-specific info
-    dt = model_time_dt[wid_j]
-
-    # Retrieve offsets in the joint-only and total constraints vector
-    joint_dyn_cts_start = joint_dynamic_cts_offset_joint_cts[jid]
-    joint_kin_cts_start = joint_kinematic_cts_offset_joint_cts[jid]
-    dyn_cts_row_start_j = joint_dynamic_cts_offset_total_cts[jid]
-    kin_cts_row_start_j = joint_kinematic_cts_offset_total_cts[jid]
-
-    # For each joint constraint, scale the constraint force by the time-step and
-    # the preconditioner and initialize the solver state variables accordingly
-    for j in range(num_dynamic_cts_j):
-        P_j = problem_P[dyn_cts_row_start_j + j]
-        lambda_j = (dt / P_j) * joint_lambda_j[joint_dyn_cts_start + j]
-        x_0[dyn_cts_row_start_j + j] = lambda_j
-        y_0[dyn_cts_row_start_j + j] = lambda_j
-        z_0[dyn_cts_row_start_j + j] = 0.0
-    for j in range(num_kinematic_cts_j):
-        P_j = problem_P[kin_cts_row_start_j + j]
-        lambda_j = (dt / P_j) * joint_lambda_j[joint_kin_cts_start + j]
-        x_0[kin_cts_row_start_j + j] = lambda_j
-        y_0[kin_cts_row_start_j + j] = lambda_j
-        z_0[kin_cts_row_start_j + j] = 0.0
-
-
-@wp.kernel
-def _warmstart_limit_constraints(
-    # Inputs:
-    model_time_dt: wp.array[wp.float32],
-    model_info_total_cts_offset: wp.array[wp.int32],
-    data_info_limit_cts_group_offset: wp.array[wp.int32],
-    limit_model_num_active: wp.array[wp.int32],
-    limit_wid: wp.array[wp.int32],
-    limit_lid: wp.array[wp.int32],
-    limit_reaction: wp.array[wp.float32],
-    limit_velocity: wp.array[wp.float32],
-    problem_P: wp.array[wp.float32],
-    # Outputs:
-    x_0: wp.array[wp.float32],
-    y_0: wp.array[wp.float32],
-    z_0: wp.array[wp.float32],
-):
-    # Retrieve the thread index as the limit index
-    lid = wp.tid()
-
-    # Retrieve the number of limits active in the model
-    model_nl = limit_model_num_active[0]
-
-    # Skip if lid is greater than the number of limits active in the model
-    if lid >= model_nl:
+    """Scale cached constraint forces copied into the primal and slack iterates."""
+    wid, tid = wp.tid()
+    if tid >= problem_dim[wid]:
         return
 
-    # Retrieve the limit-specific data
-    wid = limit_wid[lid]
-    lid_l = limit_lid[lid]
-    lambda_l = limit_reaction[lid]
-    v_plus_l = limit_velocity[lid]
-
-    # Retrieve the world-specific info
-    dt = model_time_dt[wid]
-    total_cts_offset = model_info_total_cts_offset[wid]
-    limit_cts_offset = data_info_limit_cts_group_offset[wid]
-
-    # Compute block offsets of the limit constraints within
-    # the limit-only constraints and total constraints arrays
-    vio_l = total_cts_offset + limit_cts_offset + lid_l
-
-    # Load the diagonal preconditioner for the limit constraints
-    # NOTE: We only need to load the first element since by necessity
-    # the preconditioner is constant across the 3 constraint dimensions
-    P_l = problem_P[vio_l]
-
-    # Scale the limit force by the time-step to
-    # render an impulse and by the preconditioner
-    lambda_l *= dt / P_l
-
-    # Scale the limit velocity by the preconditioner
-    v_plus_l *= P_l
-
-    # Compute and store the limit-constraint reaction forces
-    x_0[vio_l] = lambda_l
-    y_0[vio_l] = lambda_l
-    z_0[vio_l] = v_plus_l
-
-
-@wp.kernel
-def _warmstart_contact_constraints(
-    # Inputs:
-    model_time_dt: wp.array[wp.float32],
-    model_info_total_cts_offset: wp.array[wp.int32],
-    data_info_contact_cts_group_offset: wp.array[wp.int32],
-    contact_model_num_contacts: wp.array[wp.int32],
-    contact_wid: wp.array[wp.int32],
-    contact_cid: wp.array[wp.int32],
-    contact_material: wp.array[wp.vec2f],
-    contact_reaction: wp.array[wp.vec3f],
-    contact_velocity: wp.array[wp.vec3f],
-    problem_P: wp.array[wp.float32],
-    # Outputs:
-    x_0: wp.array[wp.float32],
-    y_0: wp.array[wp.float32],
-    z_0: wp.array[wp.float32],
-):
-    # Retrieve the thread index as the contact index
-    cid = wp.tid()
-
-    # Retrieve the number of contacts active in the model
-    model_nc = contact_model_num_contacts[0]
-
-    # Skip if cid is greater than the number of contacts active in the model
-    if cid >= model_nc:
-        return
-
-    # Retrieve the contact-specific data
-    wid = contact_wid[cid]
-    cid_k = contact_cid[cid]
-    material_k = contact_material[cid]
-    lambda_k = contact_reaction[cid]
-    v_plus_k = contact_velocity[cid]
-
-    # Retrieve the world-specific info
-    dt = model_time_dt[wid]
-    total_cts_offset = model_info_total_cts_offset[wid]
-    contact_cts_offset = data_info_contact_cts_group_offset[wid]
-
-    # Compute block offsets of the contact constraints within
-    # the contact-only constraints and total constraints arrays
-    vio_k = total_cts_offset + contact_cts_offset + 3 * cid_k
-
-    # Load the diagonal preconditioner for the contact constraints
-    # NOTE: We only need to load the first element since by necessity
-    # the preconditioner is constant across the 3 constraint dimensions
-    P_k = problem_P[vio_k]
-
-    # Scale the contact force by the time-step to
-    # render an impulse and by the preconditioner
-    lambda_k *= dt / P_k
-
-    # Scale the contact velocity by the preconditioner
-    # and apply the De Saxce correction to the post-event
-    # contact velocity to render solver dual variables
-    v_plus_k *= P_k
-    mu_k = material_k[0]
-    vt_norm = wp.sqrt(v_plus_k.x * v_plus_k.x + v_plus_k.y * v_plus_k.y)
-    v_plus_k.z += mu_k * vt_norm
-
-    # Compute and store the contact-constraint reaction forces
-    for k in range(3):
-        x_0[vio_k + k] = lambda_k[k]
-    for k in range(3):
-        y_0[vio_k + k] = lambda_k[k]
-    for k in range(3):
-        z_0[vio_k + k] = v_plus_k[k]
+    index = problem_vio[wid] + tid
+    scale = solver_config[wid].warmstart_scale
+    solver_x[index] *= scale
+    solver_y[index] *= scale
 
 
 def make_initialize_solver_kernel(use_acceleration: bool = False):
@@ -935,6 +788,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         solver_state_a_factor: wp.array[wp.float32],
         solver_status: wp.array[PADMMStatus],
         solver_penalty_out: wp.array[PADMMPenalty],
+        linear_solver_atol: wp.array[wp.float32],
         solver_state_y_hat_out: wp.array[wp.float32],
         solver_state_z_hat_out: wp.array[wp.float32],
         solver_state_x_p_out: wp.array[wp.float32],
@@ -1094,6 +948,12 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
             status.r_p = r_p_max
             status.r_d = r_d_max
             status.r_c = r_c_max
+
+            # Inexact-ADMM: schedule the inner linear-solver tolerance from the primal residual
+            # (looser early, tighter as PADMM converges). A 0 ratio keeps the fixed inner tolerance.
+            if linear_solver_atol and config.linear_solver_tolerance_ratio > 0.0:
+                linear_solver_atol[wid] = wp.max(config.linear_solver_tolerance_ratio * r_p_max, FLOAT32_EPS)
+
             status.r_dx = wp.sqrt(r_dx_l2_sum)
             status.r_dy = wp.sqrt(r_dy_l2_sum)
             status.r_dz = wp.sqrt(r_dz_l2_sum)
@@ -1397,6 +1257,11 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_u_m
             status.r_p = r_p_max
             status.r_d = r_d_max
             status.r_c = r_c_max
+
+            # Inexact-ADMM: schedule the inner linear-solver tolerance from the primal residual
+            # (looser early, tighter as PADMM converges). A 0 ratio keeps the fixed inner tolerance.
+            if linear_solver_atol and config.linear_solver_tolerance_ratio > 0.0:
+                linear_solver_atol[wid] = wp.max(config.linear_solver_tolerance_ratio * r_p_max, FLOAT32_EPS)
 
             # Check and store convergence state
             if status.iterations > 1 and r_p_max <= eps_p and r_d_max <= eps_d and r_c_max <= eps_c:
@@ -1821,44 +1686,6 @@ def _apply_dual_preconditioner_to_state(
     solver_x[v_i] = P_i * x_i
     solver_y[v_i] = P_i * y_i
     solver_z[v_i] = (1.0 / P_i) * z_i
-
-
-@wp.kernel
-def _apply_dual_preconditioner_to_solution(
-    # Inputs:
-    problem_dim: wp.array[wp.int32],
-    problem_vio: wp.array[wp.int32],
-    problem_P: wp.array[wp.float32],
-    # Outputs:
-    solution_lambdas: wp.array[wp.float32],
-    solution_v_plus: wp.array[wp.float32],
-):
-    # Retrieve the thread index
-    wid, tid = wp.tid()
-
-    # Retrieve the number of active constraints in the world
-    ncts = problem_dim[wid]
-
-    # Skip if row index exceed the problem size
-    if tid >= ncts:
-        return
-
-    # Retrieve the vector index offset of the world
-    vio = problem_vio[wid]
-
-    # Compute the global index of the vector entry
-    v_i = vio + tid
-
-    # Retrieve the i-th entries of the target vectors
-    lambdas_i = solution_lambdas[v_i]
-    v_plus_i = solution_v_plus[v_i]
-
-    # Retrieve the i-th entry of the diagonal preconditioner
-    P_i = problem_P[v_i]
-
-    # Store the preconditioned i-th entry of the vector
-    solution_lambdas[v_i] = (1.0 / P_i) * lambdas_i
-    solution_v_plus[v_i] = P_i * v_plus_i
 
 
 @wp.kernel

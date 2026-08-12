@@ -23,7 +23,7 @@ NEWTON_ASSETS_URL = "https://github.com/newton-physics/newton-assets.git"
 NEWTON_ASSETS_REF = "261cd1f429619d8ef4f546bd788ab9dea906b5e1"
 
 MENAGERIE_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
-MENAGERIE_REF = "feadf76d42f8a2162426f7d226a3b539556b3bf5"
+MENAGERIE_REF = "affef0836947b64cc06c4ab1cbf0152835693374"
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 

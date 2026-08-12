@@ -49,6 +49,11 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
     r")\n?"
 )
+_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
+    r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+    r"\(ref: [0-9a-f]{40}\)\.\.\.\n"
+    r"Successfully downloaded folder to: [^\n]+\n?"
+)
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
 _DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
@@ -73,6 +78,16 @@ _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
     r")+"
     r"^\d+ warnings? generated\.\n?"
 )
+_ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
+    r"^.*newton[/\\]_src[/\\]utils[/\\]import_urdf\.py:\d+: UserWarning: Warning: mesh "
+    r"[^\n]*[/\\]base\.dae has a texture but no UVs; texture will be ignored\.\n"
+    r"  parse_shapes\(link, visuals, density=0\.0, just_visual=True, visible=not hide_visuals\)\n?"
+)
+_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
+    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
+    (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
+]
 _OutputRegexSpec = str | tuple[str, str]
 
 
@@ -231,6 +246,7 @@ def add_example_test(
 
         if isinstance(test, NewtonTestCase):
             _register_output_regexes(test, expect_output_regexes, required=True)
+            _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
             _register_output_regexes(test, allow_output_regexes, required=False)
             test.assertSubprocessSuccess(result, command=command)
         else:
@@ -301,20 +317,12 @@ cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test o
 test_devices = get_test_devices(mode="basic")
 
 
-_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
-    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
-]
-
-
 class TestBasicExamples(NewtonTestCase):
     pass
 
 
 def add_basic_example_test(**kwargs):
-    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
-    allow_output_regexes = [*_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
-    add_example_test(TestBasicExamples, allow_output_regexes=allow_output_regexes, **kwargs)
+    add_example_test(TestBasicExamples, **kwargs)
 
 
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
@@ -386,6 +394,30 @@ add_basic_example_test(
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "xpbd"},
+    test_suffix="xpbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "vbd"},
+    test_suffix="vbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_conveyor_forces",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "solver": "mujoco"},
+    test_suffix="mujoco",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
@@ -415,7 +447,7 @@ add_basic_example_test(
 )
 
 
-class TestCableExamples(unittest.TestCase):
+class TestCableExamples(NewtonTestCase):
     pass
 
 
@@ -443,7 +475,7 @@ add_example_test(
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_bundle_hysteresis",
-    devices=cuda_test_devices,
+    devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 150, "eps-max": 2.0, "tau": 0.1},
     test_suffix="dahl_retention",
@@ -451,7 +483,7 @@ add_example_test(
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_bundle_hysteresis",
-    devices=cuda_test_devices,
+    devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 150, "no-dahl": True},
     test_suffix="no_dahl_recovery",
@@ -467,6 +499,13 @@ add_example_test(
     TestCableExamples,
     name="cable.example_cable_pile",
     devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_plectoneme",
+    devices=cuda_test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
 )
@@ -628,7 +667,8 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 720},
+    # Deterministic contacts keep the pick-and-place check from flaking.
+    test_options={"usd_required": True, "num-frames": 720, "deterministic": True},
     use_viewer=True,
 )
 
@@ -698,7 +738,7 @@ add_example_test(
 )
 
 
-class TestAdvancedRobotExamples(unittest.TestCase):
+class TestAdvancedRobotExamples(NewtonTestCase):
     pass
 
 
@@ -707,6 +747,7 @@ add_example_test(
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
     test_options={"num-frames": 100, "onnx_required": True},
+    allow_output_regexes=[(_ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE, "stderr")],
     use_viewer=True,
 )
 
@@ -726,6 +767,19 @@ add_example_test(
     name="ik.example_ik_cube_stacking",
     test_options_cuda={"world-count": 16, "num-frames": 2000},
     devices=cuda_test_devices,
+    use_viewer=True,
+)
+
+
+class TestMuJoCoExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestMuJoCoExamples,
+    name="mujoco.example_mujoco_sleeping",
+    devices=cuda_test_devices,
+    test_options={"stack-count": 2, "num-frames": 300},
     use_viewer=True,
 )
 
@@ -937,6 +991,22 @@ class TestContactsExamples(unittest.TestCase):
     pass
 
 
+for example_name in (
+    "contacts.example_balance_bird",
+    "contacts.example_domino_spiral",
+    "contacts.example_newton_cradle",
+):
+    for solver in ("xpbd", "vbd"):
+        add_example_test(
+            TestContactsExamples,
+            name=example_name,
+            devices=cuda_test_devices,
+            test_options={"num-frames": 60, "solver": solver},
+            use_viewer=True,
+            test_suffix=solver,
+        )
+
+
 add_example_test(
     TestContactsExamples,
     name="contacts.example_nut_bolt_sdf",
@@ -967,29 +1037,32 @@ add_example_test(
 )
 
 
-class TestMultiphysicsExamples(unittest.TestCase):
+class TestMultiphysicsExamples(NewtonTestCase):
     pass
 
 
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_softbody_gift",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 200},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="cloth.example_cloth_poker_cards",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 30},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_softbody_dropping_to_cloth",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 200},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
@@ -1003,24 +1076,27 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 180, "solver": "xpbd"},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
     test_suffix="xpbd",
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 180, "solver": "semi_implicit"},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
     test_suffix="semi_implicit",
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 180, "solver": "vbd"},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
     test_suffix="vbd",
 )
@@ -1074,6 +1150,7 @@ add_example_test(
         "graph-capture": False,
     },
     use_viewer=True,
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 add_example_test(
     TestMultiphysicsExamples,
@@ -1099,7 +1176,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_proxy_joint_gripper",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
 )
@@ -1129,15 +1206,16 @@ add_example_test(
 )
 
 
-class TestSoftbodyExamples(unittest.TestCase):
+class TestSoftbodyExamples(NewtonTestCase):
     pass
 
 
 add_example_test(
     TestSoftbodyExamples,
     name="softbody.example_softbody_hanging",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 120},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 
@@ -1177,6 +1255,19 @@ add_example_test(
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 500},
+    use_viewer=True,
+)
+
+
+class TestControllersExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestControllersExamples,
+    name="controllers.example_controller_joint_impedance_heterogeneous",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,

@@ -32,6 +32,12 @@ __all__ += [
     "validate_triangle_mesh",
 ]
 
+from ._src.utils.heightfield import rasterize_mesh_to_heightfield  # noqa: E402
+
+__all__ += [
+    "rasterize_mesh_to_heightfield",
+]
+
 # ==================================================================================
 # render utils
 # ==================================================================================
@@ -63,6 +69,7 @@ __all__ += [
 # cable utils
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
+    CableStiffness,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
     create_straight_cable_points,
@@ -70,6 +77,7 @@ from ._src.utils.cable import (  # noqa: E402
 )
 
 __all__ += [
+    "CableStiffness",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
     "create_straight_cable_points",

@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import gc
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
@@ -53,6 +56,7 @@ from .rheology_solver_kernels import (
 )
 
 _TILED_SUM_BLOCK_DIM = 512
+_STRESS_DOF_COUNT = 6
 
 
 @wp.kernel
@@ -68,12 +72,98 @@ def _tiled_sum_kernel(
     wp.tile_store(partial_sums[1], wp.tile_max(tile), offset=block_id)
 
 
+@wp.kernel
+def _batched_sum_max_kernel(
+    data: wp.array2d[float],
+    batch_offsets: wp.array[int],
+    result: wp.array2d[float],
+):
+    batch, lane = wp.tid()
+
+    batch_start = batch_offsets[batch] + lane
+    batch_end = batch_offsets[batch + 1]
+
+    sum_value = float(0.0)
+    max_value = float(0.0)
+    for i in range(batch_start, batch_end, wp.block_dim()):
+        sum_value += data[0, i]
+        max_value = wp.max(max_value, data[1, i])
+
+    wp.tile_store(result[0], wp.tile_sum(wp.tile(sum_value)), offset=batch)
+    wp.tile_store(result[1], wp.tile_max(wp.tile(max_value)), offset=batch)
+
+
+@wp.kernel
+def _scale_offsets_kernel(
+    offsets: wp.array[int],
+    scale: int,
+    scaled_offsets: wp.array[int],
+):
+    i = wp.tid()
+    scaled_offsets[i] = scale * offsets[i]
+
+
+@wp.kernel
+def _compute_environment_l2_tolerance_scales(
+    environment_offsets: wp.array[int],
+    tolerance_scales: wp.array[float],
+):
+    environment = wp.tid()
+    environment_size = environment_offsets[environment + 1] - environment_offsets[environment]
+    tolerance_scales[environment] = wp.sqrt(float(1 + environment_size))
+
+
+@wp.kernel
+def _scale_linear_system_by_environment(
+    environment_offsets: wp.array[int],
+    tolerance_scales: wp.array[float],
+    inverse: bool,
+    rhs: wp.array[vec6],
+    solution: wp.array[vec6],
+):
+    environment, lane = wp.tid()
+    scale = tolerance_scales[environment]
+    factor = wp.where(inverse, 1.0 / scale, scale)
+    begin = environment_offsets[environment] + lane
+    end = environment_offsets[environment + 1]
+    for i in range(begin, end, wp.block_dim()):
+        rhs[i] = factor * rhs[i]
+        solution[i] = factor * solution[i]
+
+
 class ArraySquaredNorm:
     """Utility to compute squared L2 norm of a large array via tiled reductions."""
 
-    def __init__(self, max_length: int, device=None, temporary_store=None):
+    def __init__(self, max_length: int, batch_offsets: wp.array[int] | None = None, device=None, temporary_store=None):
         self.tile_size = _TILED_SUM_BLOCK_DIM
         self.device = device
+        self.batch_offsets = batch_offsets
+
+        self.partial_sums_a = None
+        self.partial_sums_b = None
+        self.batch_result = None
+        self.sum_launch = None
+        self.batch_sum_launch = None
+
+        if batch_offsets is not None:
+            if not self.device.is_cuda:
+                self.tile_size = 1
+
+            batch_count = batch_offsets.shape[0] - 1
+            self.batch_result = fem.borrow_temporary(
+                temporary_store, shape=(2, batch_count), dtype=float, device=self.device
+            )
+            self.batch_result.zero_()
+            self.batch_sum_launch = wp.launch(
+                _batched_sum_max_kernel,
+                dim=(batch_count, self.tile_size),
+                inputs=(self.batch_result, batch_offsets),
+                outputs=(self.batch_result,),
+                block_dim=self.tile_size,
+                device=self.device,
+                record_cmd=True,
+            )
+            return
 
         num_blocks = (max_length + self.tile_size - 1) // self.tile_size
         self.partial_sums_a = fem.borrow_temporary(
@@ -91,6 +181,7 @@ class ArraySquaredNorm:
             inputs=(self.partial_sums_a,),
             outputs=(self.partial_sums_b,),
             block_dim=self.tile_size,
+            device=self.device,
             record_cmd=True,
         )
 
@@ -105,6 +196,11 @@ class ArraySquaredNorm:
                 strides=(0, data.strides[0]),
                 device=data.device,
             )
+
+        if self.batch_sum_launch is not None:
+            self.batch_sum_launch.set_param_at_index(0, data)
+            self.batch_sum_launch.launch()
+            return self.batch_result
 
         array_length = data.shape[1]
 
@@ -130,7 +226,7 @@ class ArraySquaredNorm:
 
     def release(self):
         """Return borrowed temporaries to their pool."""
-        for attr in ("partial_sums_a", "partial_sums_b"):
+        for attr in ("partial_sums_a", "partial_sums_b", "batch_result"):
             temporary = getattr(self, attr, None)
             if temporary is not None:
                 temporary.release()
@@ -151,9 +247,35 @@ def update_condition(
     condition: wp.array[int],
 ):
     cur_it = iteration[0] + solve_granularity
-    stop = (
-        residual[0, 0] < residual_threshold * l2_scale and residual[1, 0] < residual_threshold
-    ) or cur_it > max_iterations
+    converged = bool(True)
+    for batch in range(residual.shape[1]):
+        converged = converged and residual[0, batch] < residual_threshold * l2_scale
+        converged = converged and residual[1, batch] < residual_threshold
+
+    stop = converged or cur_it > max_iterations
+
+    iteration[0] = cur_it
+    condition[0] = wp.where(stop, 0, 1)
+
+
+@wp.kernel
+def update_batched_condition(
+    residual_threshold: float,
+    l2_tolerance_scales: wp.array[float],
+    solve_granularity: int,
+    max_iterations: int,
+    residual: wp.array2d[float],
+    iteration: wp.array[int],
+    condition: wp.array[int],
+):
+    cur_it = iteration[0] + solve_granularity
+    converged = bool(True)
+    for batch in range(residual.shape[1]):
+        scale = l2_tolerance_scales[batch]
+        converged = converged and residual[0, batch] < residual_threshold * scale * scale
+        converged = converged and residual[1, batch] < residual_threshold
+
+    stop = converged or cur_it > max_iterations
 
     iteration[0] = cur_it
     condition[0] = wp.where(stop, 0, 1)
@@ -239,6 +361,9 @@ class RheologyData:
             node, shape ``[strain_count, 6]``.
         stress: In/out stress per strain node (rotated internally),
             shape ``[strain_count, 6]``.
+        strain_environment_offsets: Strain-node offsets delimiting independent
+            environments, shape ``[environment_count + 1]``. ``None`` for a
+            single shared solve.
     """
 
     strain_mat: sp.BsrMatrix
@@ -254,6 +379,7 @@ class RheologyData:
     elastic_strain_delta: wp.array[vec6]
     plastic_strain_delta: wp.array[vec6]
     stress: wp.array[vec6]
+    strain_environment_offsets: wp.array[int] | None = None
 
     has_viscosity: bool = False
     has_dilatancy: bool = False
@@ -533,6 +659,7 @@ class _RheologySolver:
         # Utility to compute the squared norm of the residual
         self._residual_squared_norm_computer = ArraySquaredNorm(
             max_length=self.size,
+            batch_offsets=self.rheology.strain_environment_offsets,
             device=self.device,
             temporary_store=temporary_store,
         )
@@ -1312,9 +1439,36 @@ class _LinearSolver:
         dtype = self.rheology.compliance_mat.dtype
         device = self.rheology.compliance_mat.device
 
-        self.linear_operator = LinearOperator(shape=shape, dtype=dtype, device=device, matvec=self._delassus_matvec)
+        self._batch_offsets = None
+        if self.rheology.strain_environment_offsets is not None:
+            strain_environment_offsets = self.rheology.strain_environment_offsets
+            self._batch_offsets = fem.borrow_temporary(
+                temporary_store,
+                shape=strain_environment_offsets.shape,
+                dtype=int,
+                device=device,
+            )
+            wp.launch(
+                _scale_offsets_kernel,
+                dim=strain_environment_offsets.shape[0],
+                inputs=[strain_environment_offsets, _STRESS_DOF_COUNT],
+                outputs=[self._batch_offsets],
+                device=device,
+            )
+
+        self.linear_operator = LinearOperator(
+            shape=shape,
+            dtype=dtype,
+            device=device,
+            matvec=self._delassus_matvec,
+            batch_offsets=self._batch_offsets,
+        )
         self.preconditioner = LinearOperator(
-            shape=shape, dtype=dtype, device=device, matvec=self._preconditioner_matvec
+            shape=shape,
+            dtype=dtype,
+            device=device,
+            matvec=self._preconditioner_matvec,
+            batch_offsets=self._batch_offsets,
         )
 
     def _delassus_matvec(self, x: wp.array[vec6], y: wp.array[vec6], z: wp.array[vec6], alpha: float, beta: float):
@@ -1342,7 +1496,31 @@ class _LinearSolver:
             ],
         )
 
-    def solve(self, tol: float, tolerance_scale: float, max_iterations: int, use_graph: bool, verbose: bool):
+    def _scale_batched_system(self, tolerance_scales: wp.array[float], inverse: bool):
+        environment_offsets = self.rheology.strain_environment_offsets
+        block_dim = 256 if self.momentum.velocity.device.is_cuda else 1
+        wp.launch(
+            _scale_linear_system_by_environment,
+            dim=(tolerance_scales.shape[0], block_dim),
+            inputs=[
+                environment_offsets,
+                tolerance_scales,
+                inverse,
+                self.rheology.plastic_strain_delta,
+                self.rheology.stress,
+            ],
+            block_dim=block_dim,
+            device=self.momentum.velocity.device,
+        )
+
+    def solve(
+        self,
+        tol: float,
+        tolerance_scale: float | wp.array,
+        max_iterations: int,
+        use_graph: bool,
+        verbose: bool,
+    ):
         self.delassus_operator.apply_velocity_delta(
             self.momentum.velocity,
             self.rheology.elastic_strain_delta,
@@ -1351,29 +1529,37 @@ class _LinearSolver:
             beta=-1.0,
         )
 
-        with _ScopedDisableGC():
-            end_iter, residual, _ = self._method_fn(
-                A=self.linear_operator,
-                M=self.preconditioner,
-                b=self.rheology.plastic_strain_delta,
-                x=self.rheology.stress,
-                atol=tol * tolerance_scale,
-                tol=tol,
-                maxiter=max_iterations,
-                check_every=0 if use_graph else 10,
-                use_cuda_graph=use_graph,
-            )
+        is_batched = self._batch_offsets is not None
+        if is_batched:
+            self._scale_batched_system(tolerance_scale, inverse=True)
+
+        try:
+            with _ScopedDisableGC():
+                end_iter, residual, atol = self._method_fn(
+                    A=self.linear_operator,
+                    M=self.preconditioner,
+                    b=self.rheology.plastic_strain_delta,
+                    x=self.rheology.stress,
+                    atol=tol if is_batched else tol * tolerance_scale,
+                    tol=tol,
+                    maxiter=max_iterations,
+                    check_every=0 if use_graph else 10,
+                    use_cuda_graph=use_graph,
+                )
+        finally:
+            if is_batched:
+                self._scale_batched_system(tolerance_scale, inverse=False)
 
         # With use_cuda_graph=True the solver returns end_iter and residual as
-        # length-1 device arrays so the caller need not synchronize. Read them
-        # back only for the verbose report, and never while an outer capture is
-        # recording: a device-to-host copy there serializes the capturing stream
-        # (CUDA error 906).
+        # device arrays so the caller need not synchronize. Read them back only
+        # for the verbose report, and never while an outer capture is recording:
+        # a device-to-host copy there serializes the capturing stream (CUDA
+        # error 906). Batched solves report the largest residual.
         if verbose and not (use_graph and self.momentum.velocity.device.is_capturing):
             if use_graph:
                 end_iter = end_iter.numpy()[0]
-                residual = residual.numpy()[0]
-            res = math.sqrt(residual) / tolerance_scale
+            residual, _ = _linear_solver_result_norms(residual, atol, use_graph)
+            res = residual if is_batched else residual / tolerance_scale
             print(f"{self.name} terminated after {end_iter} iterations with residual {res}")
 
     @property
@@ -1382,6 +1568,16 @@ class _LinearSolver:
 
     def release(self):
         self.delta_velocity.release()
+        if self._batch_offsets is not None:
+            self._batch_offsets.release()
+            self._batch_offsets = None
+
+
+def _linear_solver_result_norms(residual, atol, use_graph: bool) -> tuple[float, float]:
+    if use_graph:
+        residual = math.sqrt(float(residual.numpy().max()))
+        atol = math.sqrt(float(atol.numpy().max()))
+    return residual, atol
 
 
 class _ContactSolver:
@@ -1574,12 +1770,21 @@ class _SubgridContactSolver(_ContactSolver):
         super().release()
 
 
+def _nonlinear_solver_result_norms(residual, l2_tolerance_scale: float | np.ndarray) -> tuple[float, float]:
+    """Return the largest independently scaled residual across solver batches."""
+
+    return (
+        float(np.max(np.sqrt(residual[0]) / l2_tolerance_scale)),
+        math.sqrt(float(residual[1].max())),
+    )
+
+
 def _run_solver_loop(
     rheology_solver: _RheologySolver,
     contact_solver: _ContactSolver,
     max_iterations: int,
     tolerance: float,
-    l2_tolerance_scale: float,
+    l2_tolerance_scale: float | wp.array,
     use_graph: bool,
     verbose: bool,
     temporary_store: fem.TemporaryStore,
@@ -1599,19 +1804,34 @@ def _run_solver_loop(
                 contact_solver.solve()
                 rheology_solver.solve()
             residual = rheology_solver.eval_residual()
-            wp.launch(
-                update_condition,
-                dim=1,
-                inputs=[
-                    tolerance * tolerance,
-                    l2_tolerance_scale * l2_tolerance_scale,
-                    solve_granularity,
-                    max_iterations,
-                    residual,
-                    iteration,
-                    condition,
-                ],
-            )
+            if rheology_solver.rheology.strain_environment_offsets is None:
+                wp.launch(
+                    update_condition,
+                    dim=1,
+                    inputs=[
+                        tolerance * tolerance,
+                        l2_tolerance_scale * l2_tolerance_scale,
+                        solve_granularity,
+                        max_iterations,
+                        residual,
+                        iteration,
+                        condition,
+                    ],
+                )
+            else:
+                wp.launch(
+                    update_batched_condition,
+                    dim=1,
+                    inputs=[
+                        tolerance * tolerance,
+                        l2_tolerance_scale,
+                        solve_granularity,
+                        max_iterations,
+                        residual,
+                        iteration,
+                        condition,
+                    ],
+                )
 
         device = rheology_solver.device
         if device.is_capturing:
@@ -1626,7 +1846,12 @@ def _run_solver_loop(
 
             if verbose:
                 residual = rheology_solver.eval_residual().numpy()
-                res_l2, res_linf = math.sqrt(residual[0, 0]) / l2_tolerance_scale, math.sqrt(residual[1, 0])
+                host_tolerance_scale = (
+                    l2_tolerance_scale
+                    if rheology_solver.rheology.strain_environment_offsets is None
+                    else l2_tolerance_scale.numpy()
+                )
+                res_l2, res_linf = _nonlinear_solver_result_norms(residual, host_tolerance_scale)
                 print(
                     f"{rheology_solver.name} terminated after {iteration_and_condition.numpy()[0]} iterations with residuals {res_l2}, {res_linf}"
                 )
@@ -1634,6 +1859,11 @@ def _run_solver_loop(
         iteration_and_condition.release()
     else:
         solve_granularity = rheology_solver.solve_granularity
+        host_tolerance_scale = (
+            l2_tolerance_scale
+            if rheology_solver.rheology.strain_environment_offsets is None
+            else l2_tolerance_scale.numpy()
+        )
 
         for batch in range(max_iterations // solve_granularity):
             for _k in range(solve_granularity):
@@ -1641,7 +1871,7 @@ def _run_solver_loop(
                 rheology_solver.solve()
 
             residual = rheology_solver.eval_residual().numpy()
-            res_l2, res_linf = math.sqrt(residual[0, 0]) / l2_tolerance_scale, math.sqrt(residual[1, 0])
+            res_l2, res_linf = _nonlinear_solver_result_norms(residual, host_tolerance_scale)
 
             if verbose:
                 print(
@@ -1722,7 +1952,6 @@ def solve_rheology(
     """
 
     verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
-
     subgrid_collisions = collision.collider_mat.nnz > 0
     if subgrid_collisions:
         contact_solver = _SubgridContactSolver(momentum, collision, temporary_store)
@@ -1732,7 +1961,25 @@ def solve_rheology(
     contact_solver.apply_initial_guess()
 
     delassus_operator = _DelassusOperator(rheology, momentum, temporary_store)
-    tolerance_scale = math.sqrt(1 + delassus_operator.size)
+    batch_tolerance_scales = None
+    if rheology.strain_environment_offsets is None:
+        tolerance_scale = math.sqrt(1 + delassus_operator.size)
+    else:
+        environment_count = rheology.strain_environment_offsets.shape[0] - 1
+        batch_tolerance_scales = fem.borrow_temporary(
+            temporary_store,
+            shape=(environment_count,),
+            dtype=float,
+            device=momentum.velocity.device,
+        )
+        wp.launch(
+            _compute_environment_l2_tolerance_scales,
+            dim=environment_count,
+            inputs=[rheology.strain_environment_offsets],
+            outputs=[batch_tolerance_scales],
+            device=momentum.velocity.device,
+        )
+        tolerance_scale = batch_tolerance_scales
 
     solvers = (solver,) if isinstance(solver, str) else tuple(solver)
     if len(solvers) == 0:
@@ -1755,6 +2002,8 @@ def solve_rheology(
             delassus_operator.postprocess_stress_and_strain()
             delassus_operator.release()
             contact_solver.release()
+            if batch_tolerance_scales is not None:
+                batch_tolerance_scales.release()
             return None
 
         # linear solver as warmstart
@@ -1787,12 +2036,21 @@ def solve_rheology(
     rheology_solver.apply_initial_guess()
 
     solve_graph = _run_solver_loop(
-        rheology_solver, contact_solver, max_iterations, tolerance, tolerance_scale, use_graph, verbose, temporary_store
+        rheology_solver,
+        contact_solver,
+        max_iterations,
+        tolerance,
+        tolerance_scale,
+        use_graph,
+        verbose,
+        temporary_store,
     )
 
     # release temporary storage
     rheology_solver.release()
     contact_solver.release()
+    if batch_tolerance_scales is not None:
+        batch_tolerance_scales.release()
 
     delassus_operator.postprocess_stress_and_strain()
     delassus_operator.release()

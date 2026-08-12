@@ -15,7 +15,6 @@ import warp as wp
 
 from .....core.types import Axis
 from .....geometry import ShapeFlags
-from ..utils import logger as msg
 from .bodies import RigidBodiesModel, RigidBodyDescriptor
 from .geometry import GeometriesModel, GeometryDescriptor
 from .gravity import GravityDescriptor, GravityModel
@@ -31,7 +30,7 @@ from .model import ModelKamino, ModelKaminoInfo
 from .shapes import ShapeDescriptorType, max_contacts_for_shape_pair
 from .size import SizeKamino
 from .time import TimeModel
-from .types import to_warp_int32_array
+from .types import ArrayLike, to_warp_int32_array
 from .world import WorldDescriptor
 
 ###
@@ -206,7 +205,7 @@ class ModelBuilderKamino:
 
     @property
     def gravity(self) -> list[GravityDescriptor]:
-        """Returns the list of gravity descriptors for each world contained in the model."""
+        """Returns the gravity descriptor for each world contained in the model."""
         return self._gravity
 
     @property
@@ -261,7 +260,7 @@ class ModelBuilderKamino:
         name: str = "world",
         uid: str | None = None,
         up_axis: Axis | None = None,
-        gravity: GravityDescriptor | None = None,
+        gravity: GravityDescriptor | ArrayLike | None = None,
     ) -> int:
         """
         Add a new world to the model.
@@ -272,8 +271,8 @@ class ModelBuilderKamino:
                 If None, a UUID will be generated.
             up_axis: The up axis of the world.
                 If None, Axis.Z will be used.
-            gravity: The gravity descriptor of the world.
-                If None, a default gravity descriptor will be used.
+            gravity: The gravity descriptor or vector [m/s²] of the world.
+                If ``None``, Newton's default gravity is used along the negative up axis.
 
         Returns:
             The index of the newly added world.
@@ -293,7 +292,9 @@ class ModelBuilderKamino:
 
         # Set gravity
         if gravity is None:
-            gravity = GravityDescriptor()
+            gravity = GravityDescriptor.default_from_up_axis(up_axis)
+        elif not isinstance(gravity, GravityDescriptor):
+            gravity = GravityDescriptor.from_array(gravity)
         self._gravity.append(gravity)
 
         # Register the default material in the new world
@@ -752,26 +753,20 @@ class ModelBuilderKamino:
         # Set the new up axis
         self._up_axes[world_index] = axis
 
-    def set_gravity(self, gravity: GravityDescriptor, world_index: int = 0):
+    def set_gravity(self, gravity: GravityDescriptor | ArrayLike, world_index: int = 0):
         """
-        Set the gravity descriptor for a specific world.
+        Set the gravity vector for a specific world.
 
         Args:
-            gravity: The new gravity descriptor to be set.
-            world_index: The index of the world for which to set the gravity descriptor.
+            gravity: The new gravity descriptor or vector [m/s²].
+            world_index: The index of the world for which to set gravity.
                 Defaults to the first world with index `0`.
-
-        Raises:
-            TypeError: If the provided gravity descriptor is not of type `GravityDescriptor`.
         """
         # Check if the world index is valid
         self._check_world_index(world_index)
 
-        # Check if the gravity descriptor is valid
         if not isinstance(gravity, GravityDescriptor):
-            raise TypeError(f"Invalid gravity descriptor type: {type(gravity)}. Must be `GravityDescriptor`.")
-
-        # Set the new gravity configurations
+            gravity = GravityDescriptor.from_array(gravity)
         self._gravity[world_index] = gravity
 
     def set_default_material(self, material: MaterialDescriptor, world_index: int = 0):
@@ -912,6 +907,7 @@ class ModelBuilderKamino:
         self._compute_world_offsets()
 
         # Validate base body/joint data for each world, and fill in missing data if possible
+        has_world_without_base_body = False
         for w, world in enumerate(self._worlds):
             if world.has_base_joint:
                 base_joint = self._joints[w][world.base_joint_idx]
@@ -937,11 +933,10 @@ class ModelBuilderKamino:
                             break
                 # As a last fallback, set body 0 in that world as base body (no base joint), if no unary
                 # joints were found (else this is not a floating-base model and we assign no base body).
-                if not world.has_base_body and not has_unary_joint:
-                    if world.num_bodies == 0:
-                        msg.warning(f"Zero bodies in world {w}, no base body assigned.")
-                        continue
+                if not world.has_base_body and not has_unary_joint and world.num_bodies > 0:
                     world.set_base_body(0)
+
+            has_world_without_base_body = has_world_without_base_body or not world.has_base_body
 
         ###
         # ModelKamino data collection
@@ -981,7 +976,6 @@ class ModelBuilderKamino:
         info_base_jid = []
 
         # Initialize the gravity data collections
-        gravity_g_dir_acc = []
         gravity_vector = []
 
         # Initialize the body data collections
@@ -1101,8 +1095,7 @@ class ModelBuilderKamino:
         # A helper function to collect model gravity data
         def collect_gravity_model_data():
             for w in range(num_worlds):
-                gravity_g_dir_acc.append(self._gravity[w].dir_accel())
-                gravity_vector.append(self._gravity[w].vector())
+                gravity_vector.append(self._gravity[w].vector)
 
         # A helper function to collect model bodies data
         def collect_body_model_data():
@@ -1356,6 +1349,7 @@ class ModelBuilderKamino:
                 joint_kinematic_cts_offset=to_warp_int32_array(info_jkcio),
                 base_body_index=to_warp_int32_array(info_base_bid),
                 base_joint_index=to_warp_int32_array(info_base_jid),
+                has_world_without_base_body=has_world_without_base_body,
             )
 
             # Create the model time data
@@ -1364,10 +1358,7 @@ class ModelBuilderKamino:
             )
 
             # Construct model gravity data
-            model_gravity = GravityModel(
-                g_dir_acc=wp.array(gravity_g_dir_acc, dtype=wp.vec4f),
-                vector=wp.array(gravity_vector, dtype=wp.vec4f, requires_grad=requires_grad),
-            )
+            model_gravity = GravityModel(vector=wp.array(gravity_vector, dtype=wp.vec3, requires_grad=requires_grad))
 
             # Create the bodies model
             model_bodies = RigidBodiesModel(
@@ -1766,7 +1757,7 @@ class ModelBuilderKamino:
                 else:
                     world_max_contacts[geom1.wid] += num_contacts
 
-        # Override the per-world maximum contacts if specified in the settings
+        # Cap per-world totals when a per-world maximum is specified
         if max_contacts_per_world is not None:
             for w in range(self.num_worlds):
                 world_max_contacts[w] = min(world_max_contacts[w], max_contacts_per_world)

@@ -7,8 +7,6 @@ from ._src.geometry import (
     BroadPhaseAllPairs,
     BroadPhaseExplicit,
     BroadPhaseSAP,
-    build_bvh_particle,
-    build_bvh_shape,
     collide_box_box,
     collide_capsule_box,
     collide_capsule_capsule,
@@ -21,8 +19,6 @@ from ._src.geometry import (
     collide_sphere_capsule,
     collide_sphere_cylinder,
     collide_sphere_sphere,
-    refit_bvh_particle,
-    refit_bvh_shape,
 )
 from ._src.geometry.contact_match import MATCH_BROKEN as _MATCH_BROKEN
 from ._src.geometry.contact_match import MATCH_NOT_FOUND as _MATCH_NOT_FOUND
@@ -38,8 +34,6 @@ __all__ = [
     "BroadPhaseSAP",
     "HydroelasticSDF",
     "NarrowPhase",
-    "build_bvh_particle",
-    "build_bvh_shape",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
@@ -55,8 +49,6 @@ __all__ = [
     "compute_inertia_shape",
     "compute_offset_mesh",
     "create_empty_sdf_data",
-    "refit_bvh_particle",
-    "refit_bvh_shape",
     "sdf_box",
     "sdf_capsule",
     "sdf_cone",

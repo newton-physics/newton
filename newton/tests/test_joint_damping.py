@@ -41,25 +41,45 @@ def _build_revolute_model(device, damping: float):
     return builder.finalize(device=device)
 
 
-def _build_ball_model(device, damping: float):
+def _build_ball_model(
+    device,
+    damping: float,
+    initial_qd: tuple[float, float, float] = (1.0, 0.0, 0.0),
+    use_public_helper: bool = False,
+    parent_xform: wp.transform | None = None,
+    child_xform: wp.transform | None = None,
+):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
         lock_inertia=True,
     )
-    joint = builder.add_joint(
-        newton.JointType.BALL,
-        parent=-1,
-        child=body,
-        angular_axes=[
-            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, damping=damping, armature=0.0, friction=0.0),
-            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, damping=damping, armature=0.0, friction=0.0),
-            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, damping=damping, armature=0.0, friction=0.0),
-        ],
-    )
+
+    if use_public_helper:
+        joint = builder.add_joint_ball(
+            parent=-1,
+            child=body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            damping=damping,
+        )
+    else:
+        joint = builder.add_joint(
+            newton.JointType.BALL,
+            parent=-1,
+            child=body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            angular_axes=[
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, damping=damping, armature=0.0, friction=0.0),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, damping=damping, armature=0.0, friction=0.0),
+                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, damping=damping, armature=0.0, friction=0.0),
+            ],
+        )
+
     builder.add_articulation([joint])
-    builder.joint_qd[0:3] = [1.0, 0.0, 0.0]
+    builder.joint_qd[0:3] = list(initial_qd)
 
     return builder.finalize(device=device)
 
@@ -83,9 +103,24 @@ def _simulate_joint_damping(device, solver_fn, damping: float, sync_joint_qd: bo
     return initial_qd, float(state_0.joint_qd.numpy()[0])
 
 
-def _simulate_ball_joint_damping(device, damping: float) -> tuple[float, float]:
-    model = _build_ball_model(device, damping)
-    solver = newton.solvers.SolverSemiImplicit(model, angular_damping=0.0)
+def _simulate_ball_joint_damping(
+    device,
+    solver_fn,
+    damping: float,
+    initial_qd: tuple[float, float, float] = (1.0, 0.0, 0.0),
+    use_public_helper: bool = False,
+    parent_xform: wp.transform | None = None,
+    child_xform: wp.transform | None = None,
+) -> tuple[float, float]:
+    model = _build_ball_model(
+        device,
+        damping,
+        initial_qd=initial_qd,
+        use_public_helper=use_public_helper,
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+    )
+    solver = solver_fn(model)
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -111,11 +146,70 @@ def test_revolute_joint_damping_decays_velocity(test: TestJointDamping, device, 
 
 
 def test_semi_implicit_ball_joint_damping_decays_velocity(test: TestJointDamping, device):
-    undamped_initial, undamped_final = _simulate_ball_joint_damping(device, damping=0.0)
-    damped_initial, damped_final = _simulate_ball_joint_damping(device, damping=3.0)
+    def solver_fn(model):
+        return newton.solvers.SolverSemiImplicit(model, angular_damping=0.0)
+
+    cases = (
+        ((1.0, 0.0, 0.0), False, None, None),
+        ((0.0, 1.0, 0.0), False, None, None),
+        ((0.0, 0.0, 1.0), False, None, None),
+        ((0.5, -0.25, 1.0), False, None, None),
+        (
+            (0.5, -0.25, 1.0),
+            True,
+            wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3)),
+            wp.transform_identity(),
+        ),
+    )
+
+    for initial_qd, use_public_helper, parent_xform, child_xform in cases:
+        with test.subTest(initial_qd=initial_qd, use_public_helper=use_public_helper):
+            undamped_initial, undamped_final = _simulate_ball_joint_damping(
+                device,
+                solver_fn,
+                damping=0.0,
+                initial_qd=initial_qd,
+                use_public_helper=use_public_helper,
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+            )
+            damped_initial, damped_final = _simulate_ball_joint_damping(
+                device,
+                solver_fn,
+                damping=3.0,
+                initial_qd=initial_qd,
+                use_public_helper=use_public_helper,
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+            )
+
+            np.testing.assert_allclose(undamped_final, undamped_initial, atol=1.0e-5, rtol=1.0e-5)
+            test.assertLess(damped_final, damped_initial * 0.85)
+
+
+def test_featherstone_ball_joint_damping_decays_velocity(test: TestJointDamping, device):
+    def solver_fn(model):
+        return newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+
+    undamped_initial, undamped_final = _simulate_ball_joint_damping(device, solver_fn, damping=0.0)
+    damped_initial, damped_final = _simulate_ball_joint_damping(device, solver_fn, damping=3.0)
 
     np.testing.assert_allclose(undamped_final, undamped_initial, atol=1.0e-5, rtol=1.0e-5)
     test.assertLess(damped_final, damped_initial * 0.85)
+
+
+def test_add_joint_ball_sets_passive_damping(test: TestJointDamping, device):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
+    body = builder.add_link(
+        mass=1.0,
+        inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        lock_inertia=True,
+    )
+    joint = builder.add_joint_ball(parent=-1, child=body, damping=2.5)
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+
+    np.testing.assert_allclose(model.joint_damping.numpy()[0:3], [2.5, 2.5, 2.5])
 
 
 devices = get_test_devices()
@@ -141,6 +235,18 @@ for device in devices:
         TestJointDamping,
         "test_semi_implicit_ball_joint_damping_decays_velocity",
         test_semi_implicit_ball_joint_damping_decays_velocity,
+        devices=[device],
+    )
+    add_function_test(
+        TestJointDamping,
+        "test_featherstone_ball_joint_damping_decays_velocity",
+        test_featherstone_ball_joint_damping_decays_velocity,
+        devices=[device],
+    )
+    add_function_test(
+        TestJointDamping,
+        "test_add_joint_ball_sets_passive_damping",
+        test_add_joint_ball_sets_passive_damping,
         devices=[device],
     )
 

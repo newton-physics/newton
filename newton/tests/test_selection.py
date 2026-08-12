@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -29,6 +31,40 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
 
 
 class TestSelection(unittest.TestCase):
+    def test_compiled_regex_selectors(self):
+        builder = newton.ModelBuilder()
+        articulation_labels = [
+            "/World/envs/env_0/Robot_A",
+            "/World/envs/env_0/Robot_B",
+            "/World/envs/env_0/Robot_C",
+            "/World/envs/env_0/Prop",
+        ]
+        for label in articulation_labels:
+            base = builder.add_link(label=f"{label}/base")
+            left_foot = builder.add_link(label=f"{label}/LF_FOOT")
+            right_foot = builder.add_link(label=f"{label}/RF_FOOT")
+            fixed_mount = builder.add_joint_free(child=base, label=f"{label}/fixed_mount")
+            left_hip = builder.add_joint_revolute(parent=base, child=left_foot, label=f"{label}/LF_HIP")
+            right_hip = builder.add_joint_revolute(parent=base, child=right_foot, label=f"{label}/RF_HIP")
+            builder.add_articulation([fixed_mount, left_hip, right_hip], label=label)
+        model = builder.finalize(device="cpu")
+
+        view = ArticulationView(
+            model,
+            pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_(A|B|C)"),
+            include_links=re.compile(r"(LF|RF)_FOOT"),
+            exclude_joints=re.compile(r"fixed_.*"),
+        )
+
+        assert_np_equal(view.articulation_ids.numpy(), [[0, 1, 2]])
+        self.assertEqual(view.link_names, ["LF_FOOT", "RF_FOOT"])
+        self.assertEqual(view.joint_names, ["LF_HIP", "RF_HIP"])
+        self.assertEqual(view.link_count, 2)
+        self.assertEqual(view.joint_count, 2)
+
+        with self.assertRaisesRegex(KeyError, "No articulations matching pattern"):
+            ArticulationView(model, pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_Z"))
+
     def test_articulation_selector_lists(self):
         builder = newton.ModelBuilder()
         for label in ["robot_a", "robot_b", "prop"]:
@@ -115,6 +151,33 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.get_dof_velocities(state).shape, (1, 1, 0))
         self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
 
+    def test_root_base_classification_uses_dof_count(self):
+        """Classify zero-DOF roots as fixed while preserving floating roots."""
+        cases = (
+            ("fixed", True, False),
+            ("locked_d6", True, False),
+            ("free", False, True),
+        )
+
+        for root_kind, expected_fixed, expected_floating in cases:
+            with self.subTest(root_kind=root_kind):
+                builder = newton.ModelBuilder()
+                root = builder.add_link(label="root")
+
+                if root_kind == "fixed":
+                    root_joint = builder.add_joint_fixed(parent=-1, child=root)
+                elif root_kind == "locked_d6":
+                    root_joint = builder.add_joint_d6(parent=-1, child=root)
+                else:
+                    root_joint = builder.add_joint_free(parent=-1, child=root)
+
+                builder.add_articulation([root_joint], label=root_kind)
+                model = builder.finalize(device="cpu")
+                view = ArticulationView(model, root_kind)
+
+                self.assertEqual(view.is_fixed_base, expected_fixed)
+                self.assertEqual(view.is_floating_base, expected_floating)
+
     def test_labels_preserve_full_paths(self):
         """Two-finger gripper whose distal bodies, finger joints, and tip
         shapes each share a colliding leaf name. ``*_names`` attributes
@@ -168,7 +231,8 @@ class TestSelection(unittest.TestCase):
 
         j_root = builder.add_joint_free(parent=-1, child=root, label="root_joint")
         j_tip = builder.add_joint_revolute(parent=root, child=tip, axis=wp.vec3(0.0, 0.0, 1.0), label="tip_joint")
-        j_tip_duplicate = builder.add_joint_fixed(parent=root, child=tip, label="tip_duplicate_joint")
+        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+            j_tip_duplicate = builder.add_joint_fixed(parent=root, child=tip, label="tip_duplicate_joint")
         builder.add_articulation([j_root, j_tip, j_tip_duplicate], label="robot")
         model = builder.finalize()
 
@@ -498,6 +562,10 @@ class TestSelection(unittest.TestCase):
         expected = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
+        world_mask = wp.array([0, 1, 1, 0], dtype=wp.bool, device=view.device)
+        model_mask = view.get_model_articulation_mask(mask=world_mask)
+        assert_np_equal(model_mask.numpy(), expected)
+
         # test world-arti mask
         m = [
             [0, 1, 0],
@@ -508,6 +576,41 @@ class TestSelection(unittest.TestCase):
         model_mask = view.get_model_articulation_mask(mask=m)
         expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
+
+        world_articulation_mask = wp.array(m, dtype=wp.bool, device=view.device)
+        model_mask = view.get_model_articulation_mask(mask=world_articulation_mask)
+        assert_np_equal(model_mask.numpy(), expected)
+
+    def test_selection_mask_rejects_invalid_warp_arrays(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_link()
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint], label="robot")
+        model = builder.finalize()
+        view = ArticulationView(model, "robot")
+
+        invalid_masks = (
+            wp.empty(0, dtype=wp.bool, device=view.device),
+            wp.ones(2, dtype=wp.bool, device=view.device),
+            wp.ones((1, 2), dtype=wp.bool, device=view.device),
+            wp.ones((1, 1, 1), dtype=wp.bool, device=view.device),
+            wp.ones(1, dtype=wp.int32, device=view.device),
+        )
+        for mask in invalid_masks:
+            with self.subTest(shape=mask.shape, dtype=mask.dtype):
+                with mock.patch.object(wp, "launch") as launch:
+                    with self.assertRaisesRegex(ValueError, "Boolean mask"):
+                        view.get_model_articulation_mask(mask)
+                    launch.assert_not_called()
+
+        if wp.is_cuda_available():
+            other_device = "cpu" if view.device.is_cuda else "cuda:0"
+            mask = wp.ones(1, dtype=wp.bool, device=other_device)
+            with self.subTest(device=mask.device):
+                with mock.patch.object(wp, "launch") as launch:
+                    with self.assertRaisesRegex(ValueError, "device"):
+                        view.get_model_articulation_mask(mask)
+                    launch.assert_not_called()
 
     def run_test_joint_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
         """Test an ArticulationView that includes a subset of joints and that we
@@ -1315,21 +1418,23 @@ class TestSelection(unittest.TestCase):
         """ArticulationView excludes loop-closing joints unless requested."""
         builder = newton.ModelBuilder()
         root = builder.add_link(label="root")
+        middle = builder.add_link(label="middle")
         tip = builder.add_link(label="tip")
         j_root = builder.add_joint_revolute(-1, root, label="root_joint")
-        j_tip = builder.add_joint_revolute(root, tip, label="tip_joint")
-        builder.add_articulation([j_root, j_tip], label="robot")
+        j_middle = builder.add_joint_revolute(root, middle, label="middle_joint")
+        j_tip = builder.add_joint_revolute(middle, tip, label="tip_joint")
+        builder.add_articulation([j_root, j_middle, j_tip], label="robot")
         builder.add_joint_ball(tip, root, label="loop_joint")
 
         model = builder.finalize()
-        np.testing.assert_array_equal(model.articulation_start.numpy(), np.array([0, 3], dtype=np.int32))
-        np.testing.assert_array_equal(model.articulation_end.numpy(), np.array([2], dtype=np.int32))
+        np.testing.assert_array_equal(model.articulation_start.numpy(), np.array([0, 4], dtype=np.int32))
+        np.testing.assert_array_equal(model.articulation_end.numpy(), np.array([3], dtype=np.int32))
 
         view = ArticulationView(model, "robot")
-        self.assertEqual(view.joint_names, ["root_joint", "tip_joint"])
+        self.assertEqual(view.joint_names, ["root_joint", "middle_joint", "tip_joint"])
 
         view_with_loop = ArticulationView(model, "robot", include_loop_closing_joints=True)
-        self.assertEqual(view_with_loop.joint_names, ["root_joint", "tip_joint", "loop_joint"])
+        self.assertEqual(view_with_loop.joint_names, ["root_joint", "middle_joint", "tip_joint", "loop_joint"])
 
 
 class TestSelectionFixedTendons(unittest.TestCase):

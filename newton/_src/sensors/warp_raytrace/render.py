@@ -32,6 +32,7 @@ def create_kernel(
     config: RenderContext.Config, state: RenderContext.State, clear_data: RenderContext.ClearData
 ) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
+    sample_texture = textures.create_sample_texture_function(config)
 
     if (
         state.render_color
@@ -64,9 +65,9 @@ def create_kernel(
         out_hdr_color: wp.array[wp.vec3f],
     ):
         if wp.static(state.render_color):
-            out_color[out_index] = wp.uint32(wp.static(clear_data.clear_color))
+            out_color[out_index] = wp.static(wp.uint32(clear_data.clear_color))
         if wp.static(state.render_albedo):
-            out_albedo[out_index] = wp.uint32(wp.static(clear_data.clear_albedo))
+            out_albedo[out_index] = wp.static(wp.uint32(clear_data.clear_albedo))
         if wp.static(state.render_hdr_color):
             out_hdr_color[out_index] = wp.vec3f(0.0)
         if wp.static(state.render_depth):
@@ -80,7 +81,7 @@ def create_kernel(
                 wp.static(clear_data.clear_normal[2]),
             )
         if wp.static(state.render_shape_index):
-            out_shape_index[out_index] = wp.uint32(wp.static(clear_data.clear_shape_index))
+            out_shape_index[out_index] = wp.static(wp.uint32(clear_data.clear_shape_index))
 
     @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": config.enable_fast_math})
     def render_megakernel(
@@ -260,7 +261,7 @@ def create_kernel(
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
                 if texture_index > -1:
-                    tex_color = textures.sample_texture(
+                    tex_color = sample_texture(
                         shape_types[closest_hit.shape_index],
                         shape_transforms[closest_hit.shape_index],
                         texture_data,
@@ -269,6 +270,7 @@ def create_kernel(
                         mesh_data,
                         shape_mesh_data_ids[closest_hit.shape_index],
                         hit_point,
+                        closest_hit.normal,
                         closest_hit.bary_u,
                         closest_hit.bary_v,
                         closest_hit.face_idx,

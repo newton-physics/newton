@@ -217,6 +217,14 @@ class IKSolver:
         lambda_min: Minimum LM damping value.
         lambda_max: Maximum LM damping value.
         rho_min: Minimum LM acceptance ratio.
+        joint_dof_mask: Optional model-wide mask, shape ``[joint_dof_count]``,
+            indexed in DOF (velocity) space per :attr:`Model.joint_qd_start` —
+            a free joint has 6 entries. ``True`` entries are optimized;
+            ``False`` entries receive an exactly-zero update. Quaternion-
+            integrated joints (free/ball/distance) must be masked
+            all-or-nothing, which the constructor enforces. The mask array
+            must not be modified after construction. Currently supported by
+            the LM optimizer with sampling disabled.
         history_len: Number of correction pairs retained by L-BFGS.
         h0_scale: Initial inverse-Hessian scale for L-BFGS.
         line_search_alphas: Candidate line-search step sizes for L-BFGS.
@@ -242,6 +250,7 @@ class IKSolver:
         lambda_min: float = 1e-5,
         lambda_max: float = 1e10,
         rho_min: float = 1e-3,
+        joint_dof_mask: wp.array[wp.bool] | None = None,
         # L-BFGS parameters
         history_len: int = 10,
         h0_scale: float = 1.0,
@@ -260,6 +269,12 @@ class IKSolver:
             raise ValueError("n_seeds must be >= 1")
         if sampler is IKSampler.NONE and n_seeds != 1:
             raise ValueError("sampler 'none' requires n_seeds == 1")
+        if joint_dof_mask is not None:
+            if optimizer is not IKOptimizer.LM:
+                raise ValueError("joint_dof_mask is only supported by the LM optimizer")
+            if sampler is not IKSampler.NONE:
+                raise ValueError("joint_dof_mask requires sampler='none'")
+            # remaining mask validation happens in IKOptimizerLM
 
         self.model = model
         self.device = model.device
@@ -310,6 +325,7 @@ class IKSolver:
                 lambda_min=lambda_min,
                 lambda_max=lambda_max,
                 rho_min=rho_min,
+                joint_dof_mask=joint_dof_mask,
             )
         elif optimizer is IKOptimizer.LBFGS:
             self._impl = IKOptimizerLBFGS(
