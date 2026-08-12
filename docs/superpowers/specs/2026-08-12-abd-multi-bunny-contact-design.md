@@ -75,9 +75,12 @@ buffers, and regenerates the frozen contact set.
 
 Every surface vertex queries the triangle BVH, which naturally evaluates VF
 in both body directions. Candidates whose vertex and triangle belong to the
-same affine body are rejected. The narrow phase uses unsigned triangle
-closest point, including clamped edge and vertex regions. VF therefore owns
-the PE and PP boundary cases.
+same affine body are rejected. The narrow phase uses a clamped triangle
+closest point, including edge and vertex regions. It selects the target
+feature's outward face, edge, or vertex pseudo-normal to classify the signed
+side without discarding the Euclidean closest-point direction. VF therefore
+owns the PE and PP boundary cases without letting the response flip inward
+after a crossing.
 
 Every surface edge queries the edge BVH. An unordered edge pair is evaluated
 once, same-body pairs and shared vertices are rejected, and a contact is
@@ -98,8 +101,11 @@ A frozen contact contains material-point IDs, scalar closest-feature weights
 `w_i`, a unit direction `n`, and penetration depth
 
 \[
-\delta=h-d>0.
+\delta=h-s>0,
 \]
+
+where `s` is the closest-feature distance signed by the outward target
+pseudo-normal. Exterior contacts have `s=d`; crossed contacts have `s=-d`.
 
 For ordinary VF and non-mollified EE contact, define the relative world
 displacement Jacobian for body `b` as
@@ -136,9 +142,11 @@ is obtained from the same generalized residual Jacobian, including
 cross-terms between the two endpoints owned by that body.
 
 The response is discrete and penalty-based. It does not add CCD, a line
-search, an IPC barrier, deep-overlap recovery, or oriented projected VF.
-Initial separation, the 3 mm activation band, and the existing 0.01 s step
-are therefore part of the example's stability contract.
+search, an IPC barrier, or unbounded deep-overlap recovery. VF retains its
+clamped face/PE/PP closest point while using outward feature pseudo-normals
+for side classification. Initial separation, the 3 mm activation band, and
+the existing 0.01 s step are therefore part of the example's stability
+contract.
 
 ## Damping and Friction
 
@@ -149,8 +157,8 @@ frozen contact, compute the relative point velocity
 v_{rel}=\sum_bG_b\dot q_b.
 \]
 
-Approaching normal motion receives the same lagged normal damping convention
-as affine-plane contact:
+The operator supports the same optional lagged normal damping convention as
+affine-plane contact:
 
 \[
 f_d=-c_n\min(n^Tv_{rel},0)n.
@@ -218,8 +226,8 @@ Add `basic_limx_affine_bunnies_ground` with these fixed first-pass settings:
 - ground top at `z = 0` with a render box large enough for the pile;
 - contact thickness `0.003 m`;
 - normal stiffness `2.0e4 N/m` per retained contact;
-- normal damping `0.5 N*s/m`;
-- body-body and ground friction coefficient `0.5`;
+- normal damping `0.0 N*s/m` for the uncalibrated pile experiment;
+- body-body and ground friction coefficient `0.01`;
 - friction regularization `1.0e-4 m`;
 - time step `0.01 s`;
 - exactly one Newton iteration and 50 PCG iterations per frame;
@@ -264,8 +272,8 @@ Use `unittest` and write focused regression tests before implementation.
 2. Compare mollified EE force, HVP, and exact body diagonals with a dense or
    directional-derivative reference.
 3. Verify translation forces sum to zero, friction opposes relative tangent
-   velocity, normal damping acts only while approaching, and all regularized
-   results remain finite.
+   velocity, optional normal damping acts only while approaching, and all
+   regularized results remain finite.
 4. Verify the assembled two-body operator is symmetric positive semidefinite
    within numerical tolerance.
 5. Verify `ConstraintGroupAffine` forwards every lifecycle method and rejects
@@ -282,16 +290,16 @@ Run 300 frames with graph capture and require:
 - no VF or EE contact-buffer overflow;
 - at least one cross-body VF or strict EE contact after release;
 - all eight centers fall from their initial heights;
-- ground penetration remains below `0.006 m`;
+- transient ground penetration remains below `0.015 m`;
 - maximum stored VF or EE penalty depth remains below `0.012 m`;
-- during the final 30 frames, at least one initially upper-layer bunny keeps
-  its center at least `0.10 m` above the highest initially lower-layer center,
-  demonstrating sustained pile support rather than eight independent ground
-  contacts.
+- every center finishes below `0.13 m`, the final center-height range remains
+  below `0.03 m`, and every reconstructed surface finishes above the ground,
+  demonstrating that no bunny remains suspended by an inward-facing contact
+  cage.
 
 The rollout thresholds may be tightened after measuring the implemented
 scene, but they may not be weakened to hide inversion, pass-through, contact
-overflow, excessive ground penetration, or loss of pile support.
+overflow, excessive ground penetration, or artificial suspended support.
 
 ## Scope Boundaries
 

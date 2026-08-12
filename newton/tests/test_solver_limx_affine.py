@@ -822,6 +822,39 @@ class TestAffineBodyModel(unittest.TestCase):
                     atol=0.0,
                 )
 
+    def test_orients_every_affine_surface_face_outward(self):
+        """Orient every supplied tetrahedral boundary face away from its incident tetrahedron."""
+        vertices, tetrahedra, outward_surface = self._unit_tetrahedron()
+        mixed_winding_surface = outward_surface.copy()
+        mixed_winding_surface[0, [1, 2]] = mixed_winding_surface[0, [2, 1]]
+
+        model = AffineBodyModel(
+            vertices,
+            tetrahedra,
+            mixed_winding_surface,
+            density=1.0,
+            rigidity=0.0,
+            initial_transform=wp.transform_identity(),
+            device="cpu",
+        )
+
+        np.testing.assert_array_equal(model.surface_triangle_indices.numpy(), outward_surface)
+
+    def test_rejects_incomplete_affine_tetrahedral_boundary(self):
+        """Reject a collision surface that omits a tetrahedral boundary face."""
+        vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()
+
+        with self.assertRaisesRegex(ValueError, "complete tetrahedral boundary"):
+            AffineBodyModel(
+                vertices,
+                tetrahedra,
+                surface_triangles[:-1],
+                density=1.0,
+                rigidity=0.0,
+                initial_transform=wp.transform_identity(),
+                device="cpu",
+            )
+
     def test_initializes_state_from_rigid_transform(self):
         """Initialize centered translation and affine rows from a rigid transform."""
         vertices, tetrahedra, surface_triangles = self._unit_tetrahedron()

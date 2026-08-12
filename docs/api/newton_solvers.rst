@@ -36,6 +36,7 @@ https://newton-physics.github.io/newton/stable/solvers/index.html.
 
    AffineBodyModel
    ConstraintAffineBodyContact
+   ConstraintAffineParticleContact
    ConstraintAffineStaticPlaneContact
    ConstraintAnchor
    ConstraintDihedralBending
@@ -52,6 +53,7 @@ https://newton-physics.github.io/newton/stable/solvers/index.html.
    SolverKamino
    SolverLIMX
    SolverLIMXAffine
+   SolverLIMXCoupled
    SolverMuJoCo
    SolverSemiImplicit
    SolverStyle3D

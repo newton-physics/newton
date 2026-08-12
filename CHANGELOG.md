@@ -5,6 +5,7 @@
 ### Added
 
 - Add a source-verified Isaac Sim 6.0.1 development launcher and CUDA rigid-body demo.
+- Add fully coupled affine-particle VF/EE contact and an ABD bunny-on-pinned-cloth example.
 - Add `SolverLIMX` with current-position projected-Newton assembly, fixed-topology 3×3 block-CSR elasticity, matrix-free dynamic constraint hooks, block-Jacobi PCG, and batched anchor, distance, and anisotropic triangle-membrane constraints.
 - Add a public LIMX tetrahedral ARAP constraint with exact analytical derivatives, full-matrix positive-semidefinite Hessian projection, and a fixed cantilever-beam example.
 - Add dihedral-angle bending to LIMX cloth with exact wrapped-angle forces and Gauss-Newton positive-semidefinite block-CSR Hessians.
@@ -115,6 +116,7 @@
 - Restrict LIMX vertex-face candidates to vertices referenced by the surface triangle mesh.
 - Delegate LIMX point-edge and point-point proximity response to vertex-face contact instead of duplicating it through endpoint edge-edge contacts.
 - Keep nonlocal near-parallel LIMX edge-edge contacts at full penalty strength so layered cloth does not cross before edge-face recovery.
+- Preserve outward-oriented VF/EE response on tetrahedral boundary features, including mixed cloth-volume collision and affine-body PE/PP regions.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
 - Fix `ModelBuilder.add_usd()` marking a `guide`-purpose collider visible when it has a bound render material. Such a collider is not viewport geometry, and the extra `VISIBLE` flag left it drawn by the viewer's visual toggle instead of its collision toggle. `force_show_colliders` still reveals it.

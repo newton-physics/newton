@@ -5,6 +5,7 @@
 
 from .affine_body_contact import ConstraintAffineBodyContact
 from .affine_dynamic_group import ConstraintGroupAffine
+from .affine_particle_contact import ConstraintAffineParticleContact
 from .affine_static_plane_contact import ConstraintAffineStaticPlaneContact
 from .anchor import ConstraintAnchor
 from .dihedral_bending import ConstraintDihedralBending
@@ -17,6 +18,7 @@ from .triangle_elastic import ConstraintTriangleElastic
 
 __all__ = [
     "ConstraintAffineBodyContact",
+    "ConstraintAffineParticleContact",
     "ConstraintAffineStaticPlaneContact",
     "ConstraintAnchor",
     "ConstraintDihedralBending",

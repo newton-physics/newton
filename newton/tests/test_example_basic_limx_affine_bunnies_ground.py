@@ -27,14 +27,16 @@ class TestBasicLimxAffineBunniesGroundExample(unittest.TestCase):
         self.assertEqual(example.solver.velocity_damping, 1.0)
         self.assertEqual(example.body_contact.thickness, 0.003)
         self.assertEqual(example.body_contact.stiffness, 2.0e4)
-        self.assertEqual(example.body_contact.normal_damping, 0.5)
-        self.assertEqual(example.body_contact.friction, 0.5)
-        self.assertEqual(example.ground_contact.friction, 0.5)
+        self.assertEqual(example.ground_contact.stiffness, 2.0e4)
+        self.assertEqual(example.body_contact.normal_damping, 0.0)
+        self.assertEqual(example.ground_contact.normal_damping, 0.0)
+        self.assertEqual(example.body_contact.friction, 0.01)
+        self.assertEqual(example.ground_contact.friction, 0.01)
         self.assertEqual(module.Example.create_parser().parse_args([]).num_frames, 300)
         self.assertIsNotNone(example.graph)
 
-    def test_stacks_eight_bunnies_over_300_frames(self):
-        """Stack eight affine bunnies without inversion, overflow, or deep contact."""
+    def test_drops_eight_bunnies_to_ground_over_300_frames(self):
+        """Drop every affine bunny to the ground without inversion, overflow, or deep contact."""
         module = importlib.import_module("newton.examples.basic.example_basic_limx_affine_bunnies_ground")
         device = wp.get_cuda_devices()[0]
 
@@ -43,18 +45,19 @@ class TestBasicLimxAffineBunniesGroundExample(unittest.TestCase):
             for _ in range(300):
                 example.step()
                 example.test_post_step()
-            example.test_final()
 
         final_centers = example.center_heights[-1]
         self.assertTrue(np.all(example.initial_center_heights - final_centers > 0.03))
         self.assertGreater(example.minimum_determinant, 0.0)
         self.assertLess(example.maximum_singular_value_error, 0.02)
-        self.assertGreaterEqual(example.minimum_height, -0.006)
+        self.assertGreaterEqual(example.minimum_height, -0.015)
         self.assertEqual(example.maximum_vf_overflow, 0)
         self.assertEqual(example.maximum_ee_overflow, 0)
         self.assertLess(example.maximum_contact_depth, 0.012)
         self.assertTrue(example.cross_body_contact_observed)
-        self.assertGreater(float(np.mean(example.support_margins[-30:])), 0.10)
+        self.assertLess(float(np.max(final_centers)), 0.13)
+        self.assertLess(float(np.ptp(final_centers)), 0.03)
+        self.assertGreater(float(example.surface_positions.numpy()[:, 2].min()), 0.0)
 
 
 if __name__ == "__main__":

@@ -17,10 +17,13 @@ from .self_collision import (
     _edge_edge_gauss_newton_multiply,
     _edge_edge_mollified_residual_data,
     _edge_edge_mollified_residual_jacobian_transpose_multiply,
+    _edge_pseudo_normal,
     _prepare_edge_edge_mollifier,
+    _triangle_unit_normal,
 )
 
 _MIN_CONTACT_DISTANCE = 1.0e-7
+_FEATURE_WEIGHT_EPSILON = 1.0e-6
 _EE_MOLLIFIER_THRESHOLD_SCALE = 1.0e-3
 
 
@@ -67,6 +70,67 @@ def _affine_point_basis(rest_position: wp.vec3, column: int) -> wp.vec3:
     return result
 
 
+@wp.func
+def _vertex_pseudo_normal(
+    vertex: int,
+    positions: wp.array[wp.vec3],
+    triangle_indices: wp.array2d[int],
+    vertex_triangle_offsets: wp.array[int],
+    vertex_triangle_indices: wp.array[int],
+) -> wp.vec3:
+    normal = wp.vec3(0.0)
+    for cursor in range(vertex_triangle_offsets[vertex], vertex_triangle_offsets[vertex + 1]):
+        normal += _triangle_unit_normal(vertex_triangle_indices[cursor], positions, triangle_indices)
+    normal_length = wp.length(normal)
+    if normal_length <= _MIN_CONTACT_DISTANCE:
+        return wp.vec3(0.0)
+    return normal / normal_length
+
+
+@wp.func
+def _closest_triangle_feature_normal(
+    triangle: int,
+    barycentric: wp.vec3,
+    positions: wp.array[wp.vec3],
+    triangle_indices: wp.array2d[int],
+    triangle_edge_indices: wp.array2d[int],
+    edge_triangle_indices: wp.array2d[int],
+    vertex_triangle_offsets: wp.array[int],
+    vertex_triangle_indices: wp.array[int],
+) -> wp.vec3:
+    zero_0 = barycentric[0] <= _FEATURE_WEIGHT_EPSILON
+    zero_1 = barycentric[1] <= _FEATURE_WEIGHT_EPSILON
+    zero_2 = barycentric[2] <= _FEATURE_WEIGHT_EPSILON
+    zero_count = int(zero_0) + int(zero_1) + int(zero_2)
+    if zero_count == 0:
+        return _triangle_unit_normal(triangle, positions, triangle_indices)
+    if zero_count == 1:
+        local_edge = int(1)
+        if zero_1:
+            local_edge = 2
+        elif zero_2:
+            local_edge = 0
+        return _edge_pseudo_normal(
+            triangle_edge_indices[triangle, local_edge],
+            positions,
+            triangle_indices,
+            edge_triangle_indices,
+        )
+
+    local_vertex = int(0)
+    if barycentric[1] > barycentric[local_vertex]:
+        local_vertex = 1
+    if barycentric[2] > barycentric[local_vertex]:
+        local_vertex = 2
+    return _vertex_pseudo_normal(
+        triangle_indices[triangle, local_vertex],
+        positions,
+        triangle_indices,
+        vertex_triangle_offsets,
+        vertex_triangle_indices,
+    )
+
+
 @wp.kernel
 def _update_affine_triangle_bounds(
     positions: wp.array[wp.vec3],
@@ -104,6 +168,10 @@ def _detect_affine_vertex_face_contacts(
     positions: wp.array[wp.vec3],
     surface_ownership: wp.array[int],
     triangle_indices: wp.array2d[int],
+    triangle_edge_indices: wp.array2d[int],
+    edge_triangle_indices: wp.array2d[int],
+    vertex_triangle_offsets: wp.array[int],
+    vertex_triangle_indices: wp.array[int],
     contact_ids: wp.array2d[int],
     contact_weights: wp.array2d[float],
     contact_directions: wp.array[wp.vec3],
@@ -141,6 +209,24 @@ def _detect_affine_vertex_face_contacts(
         if distance <= _MIN_CONTACT_DISTANCE or distance >= thickness:
             continue
 
+        feature_normal = _closest_triangle_feature_normal(
+            triangle,
+            barycentric,
+            positions,
+            triangle_indices,
+            triangle_edge_indices,
+            edge_triangle_indices,
+            vertex_triangle_offsets,
+            vertex_triangle_indices,
+        )
+        if wp.length(feature_normal) <= _MIN_CONTACT_DISTANCE:
+            continue
+        direction = separation / distance
+        signed_distance = distance
+        if wp.dot(separation, feature_normal) < 0.0:
+            direction = -direction
+            signed_distance = -distance
+
         contact = wp.atomic_add(contact_count, 0, 1)
         if contact >= capacity:
             wp.atomic_add(overflow_count, 0, 1)
@@ -154,8 +240,8 @@ def _detect_affine_vertex_face_contacts(
         contact_weights[contact, 1] = -barycentric[0]
         contact_weights[contact, 2] = -barycentric[1]
         contact_weights[contact, 3] = -barycentric[2]
-        contact_directions[contact] = separation / distance
-        contact_depths[contact] = thickness - distance
+        contact_directions[contact] = direction
+        contact_depths[contact] = thickness - signed_distance
 
 
 @wp.kernel
@@ -166,7 +252,9 @@ def _detect_affine_edge_edge_contacts(
     positions: wp.array[wp.vec3],
     rest_positions: wp.array[wp.vec3],
     surface_ownership: wp.array[int],
+    triangle_indices: wp.array2d[int],
     edge_indices: wp.array2d[int],
+    edge_triangle_indices: wp.array2d[int],
     contact_ids: wp.array2d[int],
     contact_weights: wp.array2d[float],
     contact_directions: wp.array[wp.vec3],
@@ -212,6 +300,15 @@ def _detect_affine_edge_edge_contacts(
         if distance <= _MIN_CONTACT_DISTANCE or distance >= thickness:
             continue
 
+        pseudo_normal_0 = _edge_pseudo_normal(edge, positions, triangle_indices, edge_triangle_indices)
+        pseudo_normal_1 = _edge_pseudo_normal(other_edge, positions, triangle_indices, edge_triangle_indices)
+        direction_raw = pseudo_normal_1 - pseudo_normal_0
+        direction_length = wp.length(direction_raw)
+        if direction_length <= _MIN_CONTACT_DISTANCE:
+            continue
+        direction = direction_raw / direction_length
+        signed_distance = wp.dot(separation, direction)
+
         contact = wp.atomic_add(contact_count, 0, 1)
         if contact >= capacity:
             wp.atomic_add(overflow_count, 0, 1)
@@ -225,8 +322,8 @@ def _detect_affine_edge_edge_contacts(
         contact_weights[contact, 1] = parameter_0
         contact_weights[contact, 2] = -(1.0 - parameter_1)
         contact_weights[contact, 3] = -parameter_1
-        contact_directions[contact] = separation / distance
-        contact_depths[contact] = thickness - distance
+        contact_directions[contact] = direction
+        contact_depths[contact] = thickness - signed_distance
         rest_edge_0 = rest_positions[index_1] - rest_positions[index_0]
         rest_edge_1 = rest_positions[index_3] - rest_positions[index_2]
         mollifier_thresholds[contact] = (
@@ -702,6 +799,26 @@ class ConstraintAffineBodyContact:
 
         self.triangle_indices = wp.array(triangles, dtype=wp.int32, device=self.device)
         self.edge_indices = wp.array(edges, dtype=wp.int32, device=self.device)
+        self.triangle_edge_indices = wp.array(adjacency.tri_edge_indices, dtype=wp.int32, device=self.device)
+        self.edge_triangle_indices = wp.array(adjacency.edge_tri_indices, dtype=wp.int32, device=self.device)
+        if np.any(adjacency.edge_tri_indices < 0):
+            raise ValueError("Affine tetrahedral collision surfaces must be closed")
+        vertex_triangles = [[] for _ in range(body_model.surface_vertex_count)]
+        for triangle, indices in enumerate(triangles):
+            for vertex in indices:
+                vertex_triangles[int(vertex)].append(triangle)
+        vertex_triangle_offsets = np.zeros(body_model.surface_vertex_count + 1, dtype=np.int32)
+        vertex_triangle_offsets[1:] = np.cumsum(
+            [len(incident) for incident in vertex_triangles],
+            dtype=np.int32,
+        )
+        vertex_triangle_indices = np.fromiter(
+            (triangle for incident in vertex_triangles for triangle in incident),
+            dtype=np.int32,
+            count=int(vertex_triangle_offsets[-1]),
+        )
+        self.vertex_triangle_offsets = wp.array(vertex_triangle_offsets, dtype=wp.int32, device=self.device)
+        self.vertex_triangle_indices = wp.array(vertex_triangle_indices, dtype=wp.int32, device=self.device)
         self.triangle_count = len(triangles)
         self.edge_count = len(edges)
         self.surface_vertex_count = body_model.surface_vertex_count
@@ -760,6 +877,10 @@ class ConstraintAffineBodyContact:
                 self.positions,
                 self.body_model.surface_ownership,
                 self.triangle_indices,
+                self.triangle_edge_indices,
+                self.edge_triangle_indices,
+                self.vertex_triangle_offsets,
+                self.vertex_triangle_indices,
             ],
             outputs=[
                 self.vertex_face_contacts.ids,
@@ -781,7 +902,9 @@ class ConstraintAffineBodyContact:
                 self.positions,
                 self.body_model.rest_surface_vertices,
                 self.body_model.surface_ownership,
+                self.triangle_indices,
                 self.edge_indices,
+                self.edge_triangle_indices,
             ],
             outputs=[
                 self.edge_edge_contacts.ids,

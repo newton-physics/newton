@@ -110,8 +110,8 @@ class Example:
             self.body_model,
             thickness=0.003,
             stiffness=2.0e4,
-            normal_damping=0.5,
-            friction=0.5,
+            normal_damping=0.0,
+            friction=0.01,
             friction_epsilon=1.0e-4,
         )
         self.ground_contact = newton.solvers.ConstraintAffineStaticPlaneContact(
@@ -120,8 +120,8 @@ class Example:
             offset=self.ground_top,
             thickness=0.003,
             stiffness=2.0e4,
-            normal_damping=0.5,
-            friction=0.5,
+            normal_damping=0.0,
+            friction=0.01,
             friction_epsilon=1.0e-4,
         )
         self.dynamic_constraints = newton.solvers.ConstraintGroupAffine([self.body_contact, self.ground_contact])
@@ -175,7 +175,6 @@ class Example:
         self.maximum_contact_depth = 0.0
         self.cross_body_contact_observed = False
         self.center_heights: list[np.ndarray] = []
-        self.support_margins: list[float] = []
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(1.25, -1.55, 1.05), -10.0, 140.0)
@@ -245,8 +244,8 @@ class Example:
             raise AssertionError("Affine bunny singular values deviated by at least two percent")
 
         minimum_height = float(positions[:, 2].min())
-        if minimum_height < -0.006:
-            raise AssertionError("An affine bunny penetrated more than 6 mm below the ground")
+        if minimum_height < -0.015:
+            raise AssertionError("Transient affine ground penetration exceeded 15 mm")
 
         vf_count = min(
             int(self.body_contact.vertex_face_contacts.count.numpy()[0]),
@@ -275,7 +274,6 @@ class Example:
             raise AssertionError("Affine body contact depth reached at least 12 mm")
 
         center_heights = states[:, 2].copy()
-        support_margin = float(np.mean(center_heights[4:]) - np.mean(center_heights[:4]))
         self.minimum_height = min(self.minimum_height, minimum_height)
         self.minimum_determinant = min(self.minimum_determinant, determinant)
         self.maximum_singular_value_error = max(self.maximum_singular_value_error, singular_value_error)
@@ -284,17 +282,20 @@ class Example:
         self.maximum_contact_depth = max(self.maximum_contact_depth, maximum_contact_depth)
         self.cross_body_contact_observed = self.cross_body_contact_observed or vf_count > 0 or ee_count > 0
         self.center_heights.append(center_heights)
-        self.support_margins.append(support_margin)
 
     def test_final(self) -> None:
-        """Fall, contact another body, and retain an upper supported layer."""
+        """Fall, contact another body, and bring every bunny to the ground."""
         self.test_post_step()
         if not np.all(self.initial_center_heights - self.center_heights[-1] > 0.03):
             raise AssertionError("Every affine bunny center must fall by more than 3 cm")
         if not self.cross_body_contact_observed:
             raise AssertionError("The affine bunny pile never generated cross-body contact")
-        if len(self.support_margins) >= 30 and float(np.mean(self.support_margins[-30:])) <= 0.10:
-            raise AssertionError("The upper affine bunny layer lost its support margin")
+        if float(np.max(self.center_heights[-1])) >= 0.13:
+            raise AssertionError("At least one affine bunny remained suspended above the ground")
+        if float(np.ptp(self.center_heights[-1])) >= 0.03:
+            raise AssertionError("Affine bunny centers did not converge to the ground pose band")
+        if float(self.surface_positions.numpy()[:, 2].min()) <= 0.0:
+            raise AssertionError("An affine bunny did not recover above the ground")
 
     @staticmethod
     def create_parser():

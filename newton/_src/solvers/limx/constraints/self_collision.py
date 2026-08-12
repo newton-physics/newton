@@ -18,6 +18,7 @@ _MIN_BARYCENTRIC_DENOMINATOR = 1.0e-12
 _MIN_CONTACT_DISTANCE = 1.0e-7
 _MIN_GEOMETRY_NORM = 1.0e-8
 _MIN_STIFFNESS_DENOMINATOR = 1.0e-12
+_FEATURE_WEIGHT_EPSILON = 1.0e-6
 _EE_MOLLIFIER_THRESHOLD_SCALE = 1.0e-3
 _AUTOMATIC_THICKNESS_ETA = 0.8
 _AUTOMATIC_THICKNESS_MAX = 5.0e-3
@@ -33,6 +34,39 @@ def _pack_index_sets(index_sets: list[set[int]]) -> tuple[np.ndarray, np.ndarray
         count=int(offsets[-1]),
     )
     return offsets, values
+
+
+def _tetrahedral_triangle_orientation_signs(
+    rest_positions: np.ndarray,
+    tetrahedron_indices: np.ndarray,
+    triangle_indices: np.ndarray,
+) -> np.ndarray:
+    """Mark tetrahedral boundary triangles with their outward winding sign."""
+    signs = np.zeros(len(triangle_indices), dtype=np.int32)
+    if len(tetrahedron_indices) == 0:
+        return signs
+
+    face_opposites: dict[tuple[int, int, int], list[int]] = {}
+    for tetrahedron in tetrahedron_indices:
+        for opposite_local in range(4):
+            face = tuple(sorted(int(index) for index in np.delete(tetrahedron, opposite_local)))
+            face_opposites.setdefault(face, []).append(int(tetrahedron[opposite_local]))
+    boundary_opposites = {face: opposites[0] for face, opposites in face_opposites.items() if len(opposites) == 1}
+
+    for triangle_index, triangle in enumerate(triangle_indices):
+        face = tuple(sorted(int(index) for index in triangle))
+        opposite_index = boundary_opposites.get(face)
+        if opposite_index is None:
+            continue
+        position_0, position_1, position_2 = rest_positions[triangle]
+        normal = np.cross(position_1 - position_0, position_2 - position_0)
+        opposite = rest_positions[opposite_index]
+        orientation = float(np.dot(normal, opposite - position_0))
+        scale = float(np.linalg.norm(normal) * np.linalg.norm(opposite - position_0))
+        if not np.isfinite(orientation) or scale <= 0.0 or abs(orientation) <= 64.0 * np.finfo(float).eps * scale:
+            raise ValueError(f"tetrahedral boundary triangle {triangle_index} has degenerate orientation")
+        signs[triangle_index] = 1 if orientation < 0.0 else -1
+    return signs
 
 
 def _compute_two_ring_collision_upper_bound(
@@ -425,6 +459,123 @@ def _edge_pseudo_normal(
 
 
 @wp.func
+def _oriented_triangle_unit_normal(
+    triangle: int,
+    positions: wp.array[wp.vec3],
+    triangle_indices: wp.array2d[int],
+    triangle_orientation_signs: wp.array[int],
+) -> wp.vec3:
+    if triangle < 0 or triangle_orientation_signs[triangle] == 0:
+        return wp.vec3(0.0)
+    return float(triangle_orientation_signs[triangle]) * _triangle_unit_normal(
+        triangle,
+        positions,
+        triangle_indices,
+    )
+
+
+@wp.func
+def _oriented_edge_pseudo_normal(
+    edge: int,
+    positions: wp.array[wp.vec3],
+    triangle_indices: wp.array2d[int],
+    edge_triangle_indices: wp.array2d[int],
+    triangle_orientation_signs: wp.array[int],
+) -> wp.vec3:
+    normal = _oriented_triangle_unit_normal(
+        edge_triangle_indices[edge, 0],
+        positions,
+        triangle_indices,
+        triangle_orientation_signs,
+    )
+    normal += _oriented_triangle_unit_normal(
+        edge_triangle_indices[edge, 1],
+        positions,
+        triangle_indices,
+        triangle_orientation_signs,
+    )
+    length = wp.length(normal)
+    if length <= _MIN_GEOMETRY_NORM:
+        return wp.vec3(0.0)
+    return normal / length
+
+
+@wp.func
+def _oriented_vertex_pseudo_normal(
+    vertex: int,
+    positions: wp.array[wp.vec3],
+    triangle_indices: wp.array2d[int],
+    triangle_orientation_signs: wp.array[int],
+    vertex_triangle_offsets: wp.array[int],
+    vertex_triangle_indices: wp.array[int],
+) -> wp.vec3:
+    normal = wp.vec3(0.0)
+    for cursor in range(vertex_triangle_offsets[vertex], vertex_triangle_offsets[vertex + 1]):
+        normal += _oriented_triangle_unit_normal(
+            vertex_triangle_indices[cursor],
+            positions,
+            triangle_indices,
+            triangle_orientation_signs,
+        )
+    length = wp.length(normal)
+    if length <= _MIN_GEOMETRY_NORM:
+        return wp.vec3(0.0)
+    return normal / length
+
+
+@wp.func
+def _oriented_closest_feature_normal(
+    triangle: int,
+    barycentric: wp.vec3,
+    positions: wp.array[wp.vec3],
+    triangle_indices: wp.array2d[int],
+    triangle_edge_indices: wp.array2d[int],
+    edge_triangle_indices: wp.array2d[int],
+    triangle_orientation_signs: wp.array[int],
+    vertex_triangle_offsets: wp.array[int],
+    vertex_triangle_indices: wp.array[int],
+) -> wp.vec3:
+    zero_0 = barycentric[0] <= _FEATURE_WEIGHT_EPSILON
+    zero_1 = barycentric[1] <= _FEATURE_WEIGHT_EPSILON
+    zero_2 = barycentric[2] <= _FEATURE_WEIGHT_EPSILON
+    zero_count = int(zero_0) + int(zero_1) + int(zero_2)
+    if zero_count == 0:
+        return _oriented_triangle_unit_normal(
+            triangle,
+            positions,
+            triangle_indices,
+            triangle_orientation_signs,
+        )
+    if zero_count == 1:
+        local_edge = int(1)
+        if zero_1:
+            local_edge = 2
+        elif zero_2:
+            local_edge = 0
+        return _oriented_edge_pseudo_normal(
+            triangle_edge_indices[triangle, local_edge],
+            positions,
+            triangle_indices,
+            edge_triangle_indices,
+            triangle_orientation_signs,
+        )
+
+    local_vertex = int(0)
+    if barycentric[1] > barycentric[local_vertex]:
+        local_vertex = 1
+    if barycentric[2] > barycentric[local_vertex]:
+        local_vertex = 2
+    return _oriented_vertex_pseudo_normal(
+        triangle_indices[triangle, local_vertex],
+        positions,
+        triangle_indices,
+        triangle_orientation_signs,
+        vertex_triangle_offsets,
+        vertex_triangle_indices,
+    )
+
+
+@wp.func
 def _edge_edge_mollified_residual_data(
     edge_0: wp.vec3,
     edge_1: wp.vec3,
@@ -485,7 +636,11 @@ def _detect_vertex_face_contacts(
     capacity: int,
     positions: wp.array[wp.vec3],
     surface_vertex_indices: wp.array[int],
-    use_outward_normals: int,
+    triangle_orientation_signs: wp.array[int],
+    triangle_edge_indices: wp.array2d[int],
+    edge_triangle_indices: wp.array2d[int],
+    vertex_triangle_offsets: wp.array[int],
+    vertex_triangle_indices: wp.array[int],
     vertex_neighbor_offsets: wp.array[int],
     vertex_neighbors: wp.array[int],
     particle_world: wp.array[int],
@@ -525,32 +680,17 @@ def _detect_vertex_face_contacts(
         position_0 = positions[index_0]
         position_1 = positions[index_1]
         position_2 = positions[index_2]
-        normal_raw = wp.cross(position_1 - position_0, position_2 - position_0)
-        normal_length = wp.length(normal_raw)
-        if normal_length <= _MIN_GEOMETRY_NORM:
+        barycentric = triangle_closest_point_barycentric(
+            position_0,
+            position_1,
+            position_2,
+            vertex_position,
+        )
+        closest_point = barycentric[0] * position_0 + barycentric[1] * position_1 + barycentric[2] * position_2
+        separation = vertex_position - closest_point
+        distance = wp.length(separation)
+        if distance <= _MIN_CONTACT_DISTANCE or distance >= thickness:
             continue
-        triangle_normal = normal_raw / normal_length
-        signed_distance = wp.dot(vertex_position - position_0, triangle_normal)
-        if use_outward_normals != 0:
-            distance = wp.abs(signed_distance)
-            if distance >= thickness:
-                continue
-            projected = vertex_position - signed_distance * triangle_normal
-            barycentric = _triangle_barycentric(position_0, position_1, position_2, projected)
-            if barycentric[0] < 0.0 or barycentric[1] < 0.0 or barycentric[2] < 0.0:
-                continue
-        else:
-            barycentric = triangle_closest_point_barycentric(
-                position_0,
-                position_1,
-                position_2,
-                vertex_position,
-            )
-            closest_point = barycentric[0] * position_0 + barycentric[1] * position_1 + barycentric[2] * position_2
-            separation = vertex_position - closest_point
-            distance = wp.length(separation)
-            if distance <= _MIN_CONTACT_DISTANCE or distance >= thickness:
-                continue
 
         effective_thickness = thickness
         if use_geometry_radii != 0 and (geometry_radius_topology_local_only == 0 or topology_local):
@@ -563,17 +703,32 @@ def _detect_vertex_face_contacts(
         if distance >= effective_thickness:
             continue
 
+        direction = separation / distance
+        signed_distance = distance
+        if triangle_orientation_signs[triangle] != 0:
+            feature_normal = _oriented_closest_feature_normal(
+                triangle,
+                barycentric,
+                positions,
+                triangle_indices,
+                triangle_edge_indices,
+                edge_triangle_indices,
+                triangle_orientation_signs,
+                vertex_triangle_offsets,
+                vertex_triangle_indices,
+            )
+            if wp.length(feature_normal) <= _MIN_GEOMETRY_NORM:
+                continue
+            if wp.dot(separation, feature_normal) < 0.0:
+                direction = -direction
+                signed_distance = -distance
+        depth = effective_thickness - signed_distance
+
         contact = wp.atomic_add(contact_count, 0, 1)
         if contact >= capacity:
             wp.atomic_add(overflow_count, 0, 1)
             continue
 
-        if use_outward_normals != 0:
-            direction = triangle_normal
-            depth = effective_thickness - signed_distance
-        else:
-            direction = separation / distance
-            depth = effective_thickness - distance
         contact_ids[contact, 0] = vertex
         contact_ids[contact, 1] = index_0
         contact_ids[contact, 2] = index_1
@@ -600,7 +755,7 @@ def _detect_edge_edge_contacts(
     triangle_indices: wp.array2d[int],
     edge_indices: wp.array2d[int],
     edge_triangle_indices: wp.array2d[int],
-    use_outward_normals: int,
+    triangle_orientation_signs: wp.array[int],
     contact_ids: wp.array2d[int],
     contact_weights: wp.array2d[float],
     contact_directions: wp.array[wp.vec3],
@@ -672,10 +827,30 @@ def _detect_edge_edge_contacts(
 
         direction = wp.vec3(0.0)
         depth = 0.0
-        if use_outward_normals != 0:
-            pseudo_normal_0 = _edge_pseudo_normal(edge, positions, triangle_indices, edge_triangle_indices)
-            pseudo_normal_1 = _edge_pseudo_normal(other_edge, positions, triangle_indices, edge_triangle_indices)
-            direction_raw = pseudo_normal_1 - pseudo_normal_0
+        pseudo_normal_0 = _oriented_edge_pseudo_normal(
+            edge,
+            positions,
+            triangle_indices,
+            edge_triangle_indices,
+            triangle_orientation_signs,
+        )
+        pseudo_normal_1 = _oriented_edge_pseudo_normal(
+            other_edge,
+            positions,
+            triangle_indices,
+            edge_triangle_indices,
+            triangle_orientation_signs,
+        )
+        oriented_0 = wp.length(pseudo_normal_0) > _MIN_GEOMETRY_NORM
+        oriented_1 = wp.length(pseudo_normal_1) > _MIN_GEOMETRY_NORM
+        if oriented_0 or oriented_1:
+            direction_raw = wp.vec3(0.0)
+            if oriented_0 and oriented_1:
+                direction_raw = pseudo_normal_1 - pseudo_normal_0
+            elif oriented_0:
+                direction_raw = -pseudo_normal_0
+            else:
+                direction_raw = pseudo_normal_1
             direction_length = wp.length(direction_raw)
             if direction_length <= _MIN_GEOMETRY_NORM:
                 continue
@@ -2804,7 +2979,9 @@ class ConstraintSelfCollision:
             enable_edge_face: Whether to detect and assemble edge-face
                 intersection recovery contacts.
             use_outward_normals: Whether to use oriented signed VF/EE contact
-                for outward-wound closed volume surfaces.
+                for non-tetrahedral triangles, assuming outward winding.
+                Tetrahedral boundary features are always oriented outward;
+                leave this false to keep other triangles two-sided.
         """
         thickness_was_estimated = thickness is None
         if thickness is not None and (not np.isfinite(thickness) or thickness <= 0.0):
@@ -2898,6 +3075,18 @@ class ConstraintSelfCollision:
         if len(edge_indices) == 0:
             raise ValueError("ConstraintSelfCollision requires at least one mesh edge")
         rest_positions = np.asarray(model.particle_q.numpy(), dtype=np.float64)
+        tetrahedron_indices = np.empty((0, 4), dtype=np.int32)
+        if model.tet_count > 0 and model.tet_indices is not None:
+            tetrahedron_indices = np.asarray(model.tet_indices.numpy(), dtype=np.int32).reshape(-1, 4)
+        tetrahedral_orientation_signs = _tetrahedral_triangle_orientation_signs(
+            rest_positions,
+            tetrahedron_indices,
+            triangle_indices,
+        )
+        self.tetrahedral_triangle_count = int(np.count_nonzero(tetrahedral_orientation_signs))
+        triangle_orientation_signs = tetrahedral_orientation_signs.copy()
+        if self.use_outward_normals:
+            triangle_orientation_signs[triangle_orientation_signs == 0] = 1
         if thickness is None:
             two_ring_upper_bound = _compute_two_ring_collision_upper_bound(
                 rest_positions,
@@ -2951,11 +3140,28 @@ class ConstraintSelfCollision:
         self.triangle_indices = wp.array(triangle_indices, dtype=wp.int32, device=self.device)
         self.surface_vertex_indices = wp.array(surface_vertex_indices, dtype=wp.int32, device=self.device)
         self.edge_indices = wp.array(edge_indices, dtype=wp.int32, device=self.device)
+        self.triangle_orientation_signs = wp.array(
+            triangle_orientation_signs,
+            dtype=wp.int32,
+            device=self.device,
+        )
+        self.triangle_edge_indices = wp.array(
+            mesh_adjacency.tri_edge_indices,
+            dtype=wp.int32,
+            device=self.device,
+        )
         self.edge_triangle_indices = wp.array(
             mesh_adjacency.edge_tri_indices,
             dtype=wp.int32,
             device=self.device,
         )
+        vertex_triangles = [set() for _ in range(model.particle_count)]
+        for triangle, indices in enumerate(triangle_indices):
+            for vertex in indices:
+                vertex_triangles[int(vertex)].add(triangle)
+        vertex_triangle_offsets, vertex_triangle_indices = _pack_index_sets(vertex_triangles)
+        self.vertex_triangle_offsets = wp.array(vertex_triangle_offsets, dtype=wp.int32, device=self.device)
+        self.vertex_triangle_indices = wp.array(vertex_triangle_indices, dtype=wp.int32, device=self.device)
         self.vertex_neighbor_offsets = wp.array(vertex_neighbor_offsets, dtype=wp.int32, device=self.device)
         self.vertex_neighbors = wp.array(vertex_neighbors, dtype=wp.int32, device=self.device)
         self.triangle_count = len(triangle_indices)
@@ -3042,7 +3248,11 @@ class ConstraintSelfCollision:
                 self.max_contacts,
                 positions,
                 self.surface_vertex_indices,
-                int(self.use_outward_normals),
+                self.triangle_orientation_signs,
+                self.triangle_edge_indices,
+                self.edge_triangle_indices,
+                self.vertex_triangle_offsets,
+                self.vertex_triangle_indices,
                 self.vertex_neighbor_offsets,
                 self.vertex_neighbors,
                 self.particle_world,
@@ -3074,7 +3284,7 @@ class ConstraintSelfCollision:
                 self.triangle_indices,
                 self.edge_indices,
                 self.edge_triangle_indices,
-                int(self.use_outward_normals),
+                self.triangle_orientation_signs,
             ],
             outputs=[
                 self.edge_edge_contacts.ids,

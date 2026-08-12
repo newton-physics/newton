@@ -1,5 +1,41 @@
 # Project Lessons
 
+## 2026-08-12 — Treat surface pseudo-normals only as orientation classifiers
+
+- Context: Finalizing the mixed affine–cloth AVF/EE response after removing lateral impulses caused by directly applying affine vertex and edge pseudo-normals.
+- Mistake: Conflated an oriented surface pseudo-normal with the geometric contact normal and used it as the response force line.
+- Rule: In mixed closest-point contact, derive the actual contact normal from the normalized closest-point separation. Use reliable face, edge, or vertex pseudo-normals only to classify the separation's sign, orient the response consistently, and construct signed distance; never substitute a pseudo-normal for the closest-point contact normal.
+
+## 2026-08-12 — Orient mixed EE separation with affine edge normals
+
+- Context: After correcting mixed AVF, the low-drop bunny still drifted backward; force decomposition showed mixed EE supplied about `1.7 kN` of lateral force at initial impact and dominated CVF/AVF.
+- Mistake: Used the full affine edge pseudo-normal as the mixed EE force direction, injecting its tangential component even though the affine-edge–cloth-edge closest separation already supplied the contact force line.
+- Rule: For mixed affine–cloth EE, use the affine edge outward pseudo-normal to orient the normalized closest separation and signed gap. Preserve the pseudo-normal's side classification, but do not substitute it for the closest-separation direction and create artificial tangential force.
+
+## 2026-08-12 — Use affine normals to orient AVF separation without injecting tangential force
+
+- Context: The centered low-drop ABD bunny acquired a persistent backward velocity only after its first affine-vertex–cloth-face contact.
+- Mistake: Replaced the closest-point separation direction with the full affine vertex inward pseudo-normal. A tilted vertex normal then injected a horizontal contact impulse against an otherwise horizontal cloth, moving the bunny off center.
+- Rule: For mixed AVF contact, use the affine vertex outward pseudo-normal to choose the sign of the normalized closest-point separation and signed gap, matching the CVF orientation pattern. Do not replace the closest-point direction with the pseudo-normal when that would add a tangential force; the normal supplies side information while the separation supplies the force line.
+
+## 2026-08-12 — Center the transformed bunny geometry, not only affine translation
+
+- Context: Lowering the ABD bunny near the cloth exposed that it started or drifted toward the back edge and then fell off instead of loading the cloth center.
+- Mistake: Treated the affine translation `t=(0, 0, z)` as proof that the bunny geometry and mass center were centered over the cloth without checking the rotated rest mesh's actual world-space bounds or centroid.
+- Rule: In the mixed bunny–cloth scene, initialize the transformed bunny geometry and mass center over the cloth center and verify negligible lateral motion before first contact. Do not infer placement from the affine translation alone; account for rest-mesh origin and the initial rotation.
+
+## 2026-08-12 — Start DCD bunny–cloth experiments near the contact band
+
+- Context: Visually reviewing the mixed ABD bunny–cloth scene after correcting post-crossing AVF orientation.
+- Mistake: Started the bunny at `z=0.78 m`, leaving its lowest surface roughly `0.24 m` above the initial cloth and creating an unnecessarily high-speed impact for discrete collision detection.
+- Rule: For the current penalty-DCD bunny–cloth experiment, start the bunny at `z=0.55 m`, about `9 mm` above the cloth at its lowest surface point. Keep the initial geometry nonpenetrating while avoiding a large free-fall impact unless the user explicitly requests a drop-height stress test.
+
+## 2026-08-12 — Reserve EF for cloth self-collision and preserve available normals
+
+- Context: Correcting post-crossing recovery for mixed ABD bunny–cloth contact after affine vertex–cloth face response used an unsigned closest-point direction.
+- Mistake: Considered EF-style untangling as an alternative for mixed rigid-cloth penetration even though the affine surface already supplies reliable outward pseudo-normals.
+- Rule: Use EF recovery only for cloth self-collision. Whenever a collision surface provides reliable face, edge, or vertex outward normals, orient the contact response with that information and preserve it through penetration instead of falling back to an unsigned closest-point direction.
+
 ## 2026-08-12 — Use one Newton solve for the first ABD bunny drop
 
 - Context: Fixing the runtime configuration for the first frictional affine-body bunny-to-ground example.
@@ -11,6 +47,12 @@
 - Context: Designing the first frictional affine-body bunny drop after consulting libuipc's affine contact implementation.
 - Mistake: Proposed adopting libuipc's IPC barrier even though the requested Newton/LIMX collision direction remains penalty contact.
 - Rule: Implement ABD normal contact with the project's penalty formulation. Use libuipc only as a reference for the `A+t` material-point Jacobian, the lifts `J^T g` and `J^T H J`, and smooth lagged friction unless the user explicitly requests a barrier formulation.
+
+## 2026-08-12 — Validate post-crossing recovery in affine-cloth contact
+
+- Context: Visually validating the first fully coupled ABD bunny drop onto a four-corner-pinned cloth.
+- Mistake: Treated bounded contact depth and final relative center height as sufficient support evidence even though the bunny visibly crossed the cloth and the expected outward-normal recovery did not persist.
+- Rule: For mixed affine-body/cloth contact, track primitive-side classification and contact persistence after the first surface crossing. Do not accept the scene until a penetrated affine surface continues receiving outward-oriented recovery contact and visibly exits the cloth; aggregate depth and center-height assertions alone are insufficient.
 
 ## 2026-08-11 — Keep affine and particle solver blocks distinct
 
@@ -470,3 +512,45 @@
 - Context: The 20,000-particle twist mesh spent most of Reset in millions of serial Python VF/EE distance evaluations.
 - Mistake: Started optimizing scalar CPU arithmetic and caching instead of moving the naturally independent candidate-distance evaluations to the GPU.
 - Rule: Build fixed two-ring VF/EE candidate stencils once, evaluate their rest distances in parallel on the model device, and obtain the upper bound with a GPU minimum reduction/atomic reduction. Do not retain a serial Python distance loop as the production path for large meshes.
+
+## 2026-08-12 — Use lower friction in the ABD bunny pile
+
+- Context: Reviewing the first interactive eight-bunny affine-body pile with body-body and ground friction both set to `0.5`.
+- Mistake: The initial friction made the pile motion look too sticky for the intended visual experiment.
+- Rule: Set both affine body-body and ground friction to `0.1` in `basic_limx_affine_bunnies_ground` unless the user explicitly requests another coefficient.
+
+## 2026-08-12 — Do not stabilize the low-friction bunny experiment through layout
+
+- Context: Lowering the eight-bunny affine pile friction to `0.1` so the user could inspect sliding.
+- Mistake: Retained a nearly supported 4 cm layer offset and ten-times-reduced lateral velocities that had been tuned to satisfy a stable-support regression, so the lower-friction scene still did not visibly slide.
+- Rule: When the affine bunny pile is used as a friction/sliding experiment, choose off-center placement and lateral momentum that can actually produce sliding, validate per-body center motion, and do not preserve the stable upper-layer support-margin acceptance criterion.
+
+## 2026-08-12 — Do not add uncalibrated normal damping to the ABD pile
+
+- Context: Reviewing why the low-friction affine bunny pile did not visibly slide after tracing `normal_damping=0.5` to a locally chosen value rather than the PABD DCD spring reference.
+- Mistake: Added a per-contact normal dashpot with an empirical coefficient that was neither requested nor derived from the reference method, obscuring the behavior of the penalty-contact experiment.
+- Rule: Keep both body-body and ground `normal_damping` at `0.0` in `basic_limx_affine_bunnies_ground` unless the user explicitly requests a calibrated damping model. Distinguish this local dashpot from the solver's global `velocity_damping`.
+
+## 2026-08-12 — Use 0.01 friction for the ABD sliding experiment
+
+- Context: Visually inspecting the affine bunny pile after removing normal damping while keeping body-body and ground friction at `0.1`.
+- Mistake: Treated `0.1` as sufficiently low without verifying that the upper bunnies could slide off; they remained caught on the lower layer.
+- Rule: Set both body-body and ground friction to `0.01` in `basic_limx_affine_bunnies_ground` for the current sliding experiment, and judge the coefficient by visible upper-body descent rather than numerical stability alone.
+
+## 2026-08-12 — Audit affine contact normals before further friction tuning
+
+- Context: The upper affine bunnies still remained suspended on the lower layer with friction `0.01` and `normal_damping=0.0`.
+- Mistake: Continued treating the visible sticking as a coefficient-tuning problem without first proving that VF and EE responses use geometrically valid outward surface normals and provide forces in the intended directions.
+- Rule: When the nearly frictionless ABD pile remains suspended, stop tuning coefficients. Trace the exact VF/EE direction construction and active-contact support forces, including whether triangle outward normals and edge incident normals are used, before proposing any collision change.
+
+## 2026-08-12 — Preserve outward normals on every tetrahedral surface
+
+- Context: Correcting collision orientation after the affine bunny contact path discarded the outward winding of its tetrahedral boundary and used unsigned closest-point directions.
+- Mistake: Treated a closed tetrahedral volume surface like an unoriented cloth surface, allowing VF and EE directions to flip after penetration and create artificial internal support.
+- Rule: Every collision surface derived from tetrahedra must preserve and validate outward orientation. Use outward face normals for face features and outward pseudo-normals for edge/vertex PE/PP features; never use an unsigned direction that can push an interior point farther into a tetrahedral body.
+
+## 2026-08-12 — Keep ABD rigidity checks secondary in rigid-cloth scenes
+
+- Context: Defining acceptance for an affine-body bunny falling onto a four-corner-pinned cloth.
+- Mistake: Presented affine non-inversion as a central scene outcome even though the high-rigidity ARAP term already keeps the affine matrix near the rotation space.
+- Rule: In ABD rigid-cloth experiments, keep finite-state and `det(A) > 0` checks as secondary numerical guards. Judge the experiment primarily by coupled contact behavior: cloth support, penetration, contact capacity, and stable load transfer. Distinguish allowed whole-body rotation from forbidden affine shear, stretch, or reflection.

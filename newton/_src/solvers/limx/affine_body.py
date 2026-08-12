@@ -53,6 +53,40 @@ def _validate_indices(indices: Any, width: int, vertex_count: int, name: str) ->
     return values.astype(np.int32, copy=False)
 
 
+def _orient_tetrahedral_boundary(
+    vertices: np.ndarray,
+    tetrahedra: np.ndarray,
+    surface_triangles: np.ndarray,
+) -> np.ndarray:
+    """Return the complete tetrahedral boundary with outward winding."""
+    face_opposites: dict[tuple[int, int, int], list[int]] = {}
+    for tetrahedron in tetrahedra:
+        for opposite_local in range(4):
+            face = tuple(sorted(int(index) for index in np.delete(tetrahedron, opposite_local)))
+            face_opposites.setdefault(face, []).append(int(tetrahedron[opposite_local]))
+
+    boundary_opposites = {face: opposites[0] for face, opposites in face_opposites.items() if len(opposites) == 1}
+    supplied_faces = [tuple(sorted(int(index) for index in triangle)) for triangle in surface_triangles]
+    if len(set(supplied_faces)) != len(supplied_faces) or set(supplied_faces) != set(boundary_opposites):
+        raise ValueError("surface_triangle_indices must contain the complete tetrahedral boundary exactly once")
+
+    outward = surface_triangles.copy()
+    for triangle_index, triangle in enumerate(outward):
+        position_0, position_1, position_2 = vertices[triangle]
+        normal = np.cross(position_1 - position_0, position_2 - position_0)
+        opposite = vertices[boundary_opposites[supplied_faces[triangle_index]]]
+        orientation = float(np.dot(normal, opposite - position_0))
+        scale = float(np.linalg.norm(normal) * np.linalg.norm(opposite - position_0))
+        if not np.isfinite(orientation) or scale <= 0.0 or abs(orientation) <= 64.0 * np.finfo(float).eps * scale:
+            raise ValueError(f"surface triangle {triangle_index} has degenerate tetrahedral orientation")
+        if orientation > 0.0:
+            outward[triangle_index, 1], outward[triangle_index, 2] = (
+                outward[triangle_index, 2],
+                outward[triangle_index, 1],
+            )
+    return outward
+
+
 def _validate_scalar(value: float, name: str, *, allow_zero: bool) -> float:
     value = float(value)
     if not np.isfinite(value) or value < 0.0 or (not allow_zero and value == 0.0):
@@ -164,13 +198,14 @@ class AffineBodyModel:
         initial_transform: Any,
         device: Any,
     ):
-        """Create one affine body from an oriented tetrahedral mesh.
+        """Create one affine body from a tetrahedral mesh.
 
         Args:
             rest_vertices: Rest-space vertex positions [m], shape ``(vertex_count, 3)``.
             tetrahedron_indices: Positively oriented tetrahedra, shape ``(tetrahedron_count, 4)``.
-            surface_triangle_indices: Surface triangles into ``rest_vertices``, shape
-                ``(triangle_count, 3)``.
+            surface_triangle_indices: Complete tetrahedral boundary into
+                ``rest_vertices``, shape ``(triangle_count, 3)``. Its winding
+                is normalized outward.
             density: Uniform mass density [kg/m^3].
             rigidity: ARAP rigidity coefficient [Pa].
             initial_transform: Initial rigid transform applied to the rest body.
@@ -202,8 +237,9 @@ class AffineBodyModel:
         Args:
             rest_vertices: Rest-space vertex positions [m], shape ``(vertex_count, 3)``.
             tetrahedron_indices: Positively oriented tetrahedra, shape ``(tetrahedron_count, 4)``.
-            surface_triangle_indices: Surface triangles into ``rest_vertices``, shape
-                ``(triangle_count, 3)``.
+            surface_triangle_indices: Complete tetrahedral boundary into
+                ``rest_vertices``, shape ``(triangle_count, 3)``. Its winding
+                is normalized outward before creating the instances.
             density: Uniform mass density [kg/m^3].
             rigidity: ARAP rigidity coefficient [Pa].
             initial_transforms: Initial rigid transforms, one per affine body.
@@ -256,6 +292,7 @@ class AffineBodyModel:
         centered_vertices, rest_centroid, volume, mass, first_moment, second_moment = _integrate_mass_moments(
             vertices, tetrahedra, density
         )
+        surface_triangles = _orient_tetrahedral_boundary(vertices, tetrahedra, surface_triangles)
         initial_states = np.stack(
             [_initial_affine_state(initial_transform, rest_centroid) for initial_transform in initial_transforms]
         )

@@ -125,6 +125,22 @@ def _point_jacobian(rest_position: np.ndarray) -> np.ndarray:
     )
 
 
+def _edge_pseudo_normal(
+    positions: np.ndarray,
+    triangles: np.ndarray,
+    edge: tuple[int, int],
+) -> np.ndarray:
+    """Compute the outward pseudo-normal of a closed oriented surface edge."""
+    edge_set = set(edge)
+    normal = np.zeros(3, dtype=np.float64)
+    for triangle in triangles:
+        if edge_set.issubset(int(index) for index in triangle):
+            position_0, position_1, position_2 = positions[triangle]
+            face_normal = np.cross(position_1 - position_0, position_2 - position_0)
+            normal += face_normal / np.linalg.norm(face_normal)
+    return normal / np.linalg.norm(normal)
+
+
 class TestConstraintAffineBodyContactDetection(unittest.TestCase):
     def test_detects_vf_interior_edge_and_vertex_regions(self):
         """Retain triangle interior, edge, and vertex closest-point VF contacts."""
@@ -162,6 +178,22 @@ class TestConstraintAffineBodyContactDetection(unittest.TestCase):
         self.assertTrue(np.all(ownership[vf_ids[:, 0]] != ownership[vf_ids[:, 1]]))
         self.assertTrue(np.all(ownership[ee_ids[:, 0]] != ownership[ee_ids[:, 2]]))
 
+    def test_orients_inside_vf_away_from_target_tetrahedron(self):
+        """Push an inside affine vertex along the target tetrahedron's outward face normal."""
+        model = _two_body_model((0.33, 0.33, 0.338))
+        contact = _make_contact(model)
+        contact.begin_step(model.q, model.qd, 0.01)
+        contact.prepare(model.q)
+        ids, _weights, depths = _active_rows(contact.vertex_face_contacts)
+        row = _find_row(ids, 4, (1, 2, 3))
+
+        self.assertGreaterEqual(row, 0)
+        direction = contact.vertex_face_contacts.directions.numpy()[row].astype(np.float64)
+        expected_direction = np.ones(3, dtype=np.float64) / np.sqrt(3.0)
+        signed_distance = (0.33 + 0.33 + 0.338 - 1.0) / np.sqrt(3.0)
+        np.testing.assert_allclose(direction, expected_direction, atol=5.0e-5)
+        self.assertAlmostEqual(float(depths[row]), 0.01 - signed_distance, places=6)
+
     def test_accepts_strict_interior_ee_and_rejects_endpoint_ee(self):
         """Accept EE only when both closest parameters lie strictly inside."""
         interior_model = _two_body_model((0.25, -0.5, 0.002))
@@ -184,6 +216,30 @@ class TestConstraintAffineBodyContactDetection(unittest.TestCase):
         endpoint_ids, _weights, _depths = _active_rows(endpoint_contact.edge_edge_contacts)
 
         self.assertEqual(_find_edge_row(endpoint_ids, (0, 1), (4, 6)), -1)
+
+    def test_orients_ee_from_incident_outward_face_normals(self):
+        """Orient affine EE response from both edges' incident outward faces."""
+        model = _two_body_model((0.25, -0.5, 0.002))
+        contact = _make_contact(model)
+        contact.begin_step(model.q, model.qd, 0.01)
+        contact.prepare(model.q)
+        ids, _weights, depths = _active_rows(contact.edge_edge_contacts)
+        row = _find_edge_row(ids, (0, 1), (4, 6))
+
+        self.assertGreaterEqual(row, 0)
+        contact_ids = ids[row]
+        positions = contact.positions.numpy().astype(np.float64)
+        triangles = contact.triangle_indices.numpy()
+        normal_0 = _edge_pseudo_normal(positions, triangles, tuple(int(index) for index in contact_ids[:2]))
+        normal_1 = _edge_pseudo_normal(positions, triangles, tuple(int(index) for index in contact_ids[2:]))
+        expected_direction = normal_1 - normal_0
+        expected_direction /= np.linalg.norm(expected_direction)
+        actual_direction = contact.edge_edge_contacts.directions.numpy()[row].astype(np.float64)
+        weights = contact.edge_edge_contacts.weights.numpy()[row].astype(np.float64)
+        separation = np.sum(weights[:, None] * positions[contact_ids], axis=0)
+
+        np.testing.assert_allclose(actual_direction, expected_direction, atol=1.0e-6)
+        self.assertAlmostEqual(float(depths[row]), 0.01 - float(separation @ expected_direction), places=6)
 
     def test_counts_contact_buffer_overflow(self):
         """Count excess contacts without writing beyond fixed buffer capacity."""

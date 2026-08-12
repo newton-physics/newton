@@ -6,6 +6,7 @@
 from .affine_body import AffineBodyModel
 from .constraints import (
     ConstraintAffineBodyContact,
+    ConstraintAffineParticleContact,
     ConstraintAffineStaticPlaneContact,
     ConstraintAnchor,
     ConstraintDihedralBending,
@@ -20,12 +21,14 @@ from .constraints import (
 from .linear_solver import PcgSolver
 from .operator import CompositeLinearOperator, EmptyDynamicConstraintOperator
 from .solver_affine import SolverLIMXAffine
+from .solver_coupled import SolverLIMXCoupled
 from .solver_newton import SolverLIMX
 
 __all__ = [
     "AffineBodyModel",
     "CompositeLinearOperator",
     "ConstraintAffineBodyContact",
+    "ConstraintAffineParticleContact",
     "ConstraintAffineStaticPlaneContact",
     "ConstraintAnchor",
     "ConstraintDihedralBending",
@@ -40,4 +43,5 @@ __all__ = [
     "PcgSolver",
     "SolverLIMX",
     "SolverLIMXAffine",
+    "SolverLIMXCoupled",
 ]

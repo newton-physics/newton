@@ -1415,6 +1415,35 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         return builder.finalize(device="cuda:0")
 
     @staticmethod
+    def _make_mixed_tetrahedral_cloth_model():
+        positions = np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.33, 0.33, 0.338],
+                [3.0, 3.0, 3.0],
+                [4.0, 3.0, 3.0],
+            ],
+            dtype=np.float32,
+        )
+        builder = newton.ModelBuilder(up_axis="Z")
+        builder.add_particles(
+            pos=positions,
+            vel=[wp.vec3(0.0)] * len(positions),
+            mass=[1.0] * len(positions),
+            radius=[0.01] * len(positions),
+        )
+        builder.add_tetrahedron(0, 1, 2, 3)
+        triangles = np.asarray(
+            [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3], [4, 5, 6]],
+            dtype=np.int32,
+        )
+        builder.add_triangles(triangles[:, 0], triangles[:, 1], triangles[:, 2])
+        return builder.finalize(device="cuda:0")
+
+    @staticmethod
     def _stored_contacts(buffer):
         count = min(int(buffer.count.numpy()[0]), buffer.capacity)
         return (
@@ -1763,6 +1792,28 @@ class TestConstraintSelfCollisionDetection(unittest.TestCase):
         np.testing.assert_allclose(directions[contact], [0.0, 0.0, 1.0], atol=1.0e-6)
         self.assertAlmostEqual(float(depths[contact]), 0.15, places=6)
         self.assertGreater(float(force_np[3, 2]), 0.0)
+
+    def test_tetrahedral_face_is_outward_in_mixed_unsigned_mesh(self):
+        """Orient tetrahedral VF while retaining the unsigned mode for mixed cloth."""
+        with wp.ScopedDevice("cuda:0"):
+            model = self._make_mixed_tetrahedral_cloth_model()
+            collision = ConstraintSelfCollision(
+                model,
+                thickness=0.01,
+                stiffness=10.0,
+                max_contacts=64,
+                use_outward_normals=False,
+            )
+            collision.prepare(model.particle_q)
+            ids, _weights, directions, depths = self._stored_contacts(collision.vertex_face_contacts)
+
+        matches = np.nonzero(np.all(ids == [4, 1, 2, 3], axis=1))[0]
+        self.assertEqual(len(matches), 1)
+        contact = int(matches[0])
+        expected_direction = np.ones(3, dtype=np.float64) / np.sqrt(3.0)
+        signed_distance = (0.33 + 0.33 + 0.338 - 1.0) / np.sqrt(3.0)
+        np.testing.assert_allclose(directions[contact], expected_direction, atol=5.0e-5)
+        self.assertAlmostEqual(float(depths[contact]), 0.01 - signed_distance, places=6)
 
     def test_oriented_vertex_face_retains_nonincident_one_ring_neighbor(self):
         """Keep a nonincident one-ring vertex eligible for oriented VF contact."""
