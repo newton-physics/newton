@@ -104,7 +104,7 @@ class CollisionDetectorConfig(ConfigBase):
     initialization.\n
     When ``max_contacts_per_world`` is None, the geometry-based estimate is
     capped at this value; otherwise this field is ignored.\n
-    Defaults to ``DEFAULT_MODEL_MAX_CONTACTS`` (``1000``) if unspecified.
+    Defaults to ``None``, leaving the geometry-based estimate uncapped.
     """
 
     max_contacts_per_world: int | None = None
@@ -181,7 +181,6 @@ class CollisionDetectorConfig(ConfigBase):
         from ._src.geometry.contacts import (  # noqa: PLC0415
             DEFAULT_GEOM_PAIR_CONTACT_GAP,
             DEFAULT_GEOM_PAIR_MAX_CONTACTS,
-            DEFAULT_MODEL_MAX_CONTACTS,
             DEFAULT_TRIANGLE_MAX_PAIRS,
         )
 
@@ -209,8 +208,6 @@ class CollisionDetectorConfig(ConfigBase):
             raise ValueError(f"Invalid max_triangle_pairs: {self.max_triangle_pairs}. Must be non-negative.")
 
         # Check if optional arguments are specified and override with defaults if not
-        if self.max_contacts is None:
-            self.max_contacts = DEFAULT_MODEL_MAX_CONTACTS
         if self.max_contacts_per_pair is None:
             self.max_contacts_per_pair = DEFAULT_GEOM_PAIR_MAX_CONTACTS
         if self.max_triangle_pairs is None:
@@ -587,6 +584,16 @@ class PADMMSolverConfig:
     Defaults to `containers` to warmstart from the solver data containers.
     """
 
+    warmstart_scale: float = 0.9
+    """
+    Scale applied to cached constraint forces during warm-starting.\n
+    Must be in the range [0, 1]. Defaults to `0.9`.
+
+    PADMM converges to a minimum-norm deviation from its initial guess. Scaling
+    the warm-start forces makes null-space forces converge to the overall
+    minimum-norm solution.
+    """
+
     contact_warmstart_method: Literal[
         "key_and_position",
         "geom_pair_net_force",
@@ -763,6 +770,8 @@ class PADMMSolverConfig:
             raise ValueError(
                 f"Invalid linear solver tolerance ratio: {self.linear_solver_tolerance_ratio}. Must be non-negative."
             )
+        if not 0.0 <= self.warmstart_scale <= 1.0:
+            raise ValueError(f"Invalid warmstart scale: {self.warmstart_scale}. Must be in the range [0, 1].")
 
         # Ensure that the enum-valued parameters are valid options
         # Conversion to enum-type configs will raise an error
