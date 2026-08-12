@@ -138,6 +138,19 @@ def _sparse_grid_rebuild_error(status: int) -> RuntimeError:
     return RuntimeError(f"Implicit MPM sparse grid rebuild failed with status {status}.")
 
 
+@wp.kernel(enable_backward=False)
+def _clear_sparse_grid_rebuild_status_masked(
+    world_mask: wp.array[wp.bool],
+    status: wp.array[wp.uint32],
+    accumulated_status: wp.array[wp.uint32],
+):
+    for world in range(world_mask.shape[0]):
+        if world_mask[world]:
+            status[0] = wp.uint32(0)
+            accumulated_status[0] = wp.uint32(0)
+            return
+
+
 def _validate_sparse_grid_node_capacity(name: str, value: int) -> int:
     """Validate one optional NanoVDB hierarchy capacity."""
     if isinstance(value, bool):
@@ -703,6 +716,7 @@ class LastStepData:
         collider_body_q: wp.array[wp.transform] | None,
         body_world: wp.array[wp.int32] | None = None,
         world_mask: wp.array[wp.bool] | None = None,
+        world_count: int | None = None,
     ):
         had_previous = self.body_q_prev is not None and (
             collider_body_q is None or self.body_q_prev.shape == collider_body_q.shape
@@ -712,10 +726,12 @@ class LastStepData:
             if world_mask is None or body_world is None or not had_previous:
                 self.body_q_prev.assign(collider_body_q)
             else:
+                if world_count is None:
+                    raise ValueError("world_count is required with world_mask.")
                 wp.launch(
                     reset_mpm_collider_history,
                     dim=collider_body_q.shape[0],
-                    inputs=[body_world, world_mask, collider_body_q, self.body_q_prev],
+                    inputs=[body_world, world_mask, world_count, collider_body_q, self.body_q_prev],
                     device=collider_body_q.device,
                 )
 
@@ -757,8 +773,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     capture resources internally. Run an uncaptured warm-up step for rheology
     modes that build an inner graph lazily, and keep model topology, solver
     configuration, captured buffers, and step arguments fixed across replays.
-    Keep :meth:`reset` outside capture and call :meth:`check_status` after
-    replay to report sparse-grid capacity failures.
+    Keep :meth:`reset` outside capture and call
+    :meth:`check_sparse_grid_rebuild_status` after replay to report
+    sparse-grid capacity failures.
 
     [1] https://doi.org/10.1145/2897824.2925877
 
@@ -830,8 +847,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         A positive value reserves persistent sparse-grid capacity and bounds
         active subsets of dense and fixed grids.
         ``-1`` retains per-step sparse-grid allocation and uses exact active
-        counts elsewhere. Call :meth:`check_status` after graph replay to
-        detect sparse-grid overflow.
+        counts elsewhere. Call :meth:`check_sparse_grid_rebuild_status` after
+        graph replay to detect sparse-grid overflow.
         """
         max_leaf_node_count: int = -1
         """Maximum NanoVDB leaf-node count across all worlds.
@@ -1318,12 +1335,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Grid voxel size used by the solver."""
         return self._mpm_model.voxel_size
 
-    def _check_sparse_grid_rebuild_status(self) -> None:
+    def check_sparse_grid_rebuild_status(self) -> None:
         """Raise if a rebuildable sparse grid exceeded its reserved capacity.
 
-        The check synchronizes the solver device and is therefore intended for
-        initialization diagnostics or calls made after graph replay, not
-        from inside graph capture.
+        Rebuildable sparse-grid failures accumulate until a valid
+        :meth:`reset`. Call this method outside graph capture after replay; the
+        check synchronizes the solver device. It is a no-op when the solver has
+        no asynchronous sparse-grid status buffer.
+
+        Raises:
+            RuntimeError: If rebuild status is inspected during graph capture,
+                or if a rebuild reported a capacity or topology failure.
         """
         if self._grid_status is None:
             return
@@ -1336,26 +1358,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if status != wp.Volume.REBUILD_SUCCESS:
             raise _sparse_grid_rebuild_error(status)
 
-    def check_status(self) -> None:
-        """Raise if a sparse-grid rebuild exceeded its reserved capacity.
-
-        Rebuildable sparse-grid failures accumulate until a valid
-        :meth:`reset`. Call this method outside graph capture after replay; the
-        check synchronizes the solver device. It is a no-op when the solver has
-        no asynchronous sparse-grid status buffer.
-
-        Raises:
-            RuntimeError: If rebuild status is inspected during graph capture,
-                or if a rebuild reported a capacity or topology failure.
-        """
-        self._check_sparse_grid_rebuild_status()
-
     def _clear_sparse_grid_rebuild_status(self) -> None:
         """Clear the latest and accumulated sparse-grid rebuild status.
 
         Call this outside graph capture after handling a reported rebuild
-        failure. A subsequent :meth:`check_status` then reports only failures
-        produced after this boundary.
+        failure. A subsequent :meth:`check_sparse_grid_rebuild_status` then
+        reports only failures produced after this boundary.
 
         Raises:
             RuntimeError: If called while the solver device is capturing a graph.
@@ -1385,7 +1393,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if array.device != device:
             raise ValueError(f"state.{name} is on device {array.device}, expected {device}.")
 
-    def _validate_reset_inputs(self, state: newton.State, world_mask: wp.array | None) -> None:
+    def _validate_reset_inputs(self, state: newton.State) -> None:
         if state is None:
             raise ValueError("'state' argument is required.")
 
@@ -1444,18 +1452,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 device=device,
             )
 
-        if world_mask is None:
-            return
-        if not isinstance(world_mask, wp.array):
-            raise TypeError("world_mask must be a Warp array with dtype wp.bool.")
-        expected_shape = (self._initial_world_count + 1,)
-        if world_mask.shape != expected_shape:
-            raise ValueError(f"world_mask has shape {world_mask.shape}, expected {expected_shape}.")
-        if world_mask.dtype != wp.bool:
-            raise TypeError(f"world_mask has dtype {world_mask.dtype}, expected {wp.bool}.")
-        if world_mask.device != device:
-            raise ValueError(f"world_mask is on device {world_mask.device}, expected {device}.")
-
     def _reset_grid_warmstart_partition(self, name, field, scratch_field) -> fem.SpacePartition:
         scratch_partition = scratch_field.space_partition
         if field.space.topology == scratch_partition.space_topology:
@@ -1481,7 +1477,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         return partition
 
     def _validate_reset_warmstart_fields(
-        self, world_mask: wp.array | None
+        self, world_mask: wp.array[wp.bool] | None
     ) -> tuple[fem.SpacePartition | None, fem.SpacePartition | None]:
         reset_partitions = []
         for name, field, scratch_field in (
@@ -1512,7 +1508,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def _clear_reset_warmstarts(
         self,
-        world_mask: wp.array | None,
+        world_mask: wp.array[wp.bool] | None,
         reset_partitions: tuple[fem.SpacePartition | None, fem.SpacePartition | None],
     ) -> None:
         for field, partition in zip(
@@ -1528,14 +1524,20 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 wp.launch(
                     reset_mpm_point_warmstart,
                     dim=self._initial_particle_count,
-                    inputs=[self.model.particle_world, world_mask, field.dof_values],
+                    inputs=[self.model.particle_world, world_mask, self._initial_world_count, field.dof_values],
                     device=self.model.device,
                 )
             elif partition is not None and partition.node_count() > 0:
                 wp.launch(
                     reset_mpm_grid_warmstart,
                     dim=partition.node_count(),
-                    inputs=[world_mask, partition.env_offsets, partition.space_node_indices(), field.dof_values],
+                    inputs=[
+                        world_mask,
+                        self._initial_world_count,
+                        partition.env_offsets,
+                        partition.space_node_indices(),
+                        field.dof_values,
+                    ],
                     device=self.model.device,
                 )
 
@@ -1543,7 +1545,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def reset(
         self,
         state: newton.State,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Reset implicit MPM history for all or selected worlds.
@@ -1557,16 +1559,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         :attr:`Config.separate_worlds` or a full reset. A full reset clears
         every warm-start field. Sparse-grid rebuild status is always cleared at
         a valid reset boundary, and the previous-collider-pose cache is
-        refreshed from ``state``. The final mask entry selects global
-        particle-backed history and collider poses whose world index is ``-1``.
+        refreshed from ``state``. When present, the final mask entry selects
+        global particle-backed history and collider poses whose world index is
+        ``-1``.
 
         Args:
             state: Simulation state whose MPM history is modified in place.
-            world_mask: Optional boolean mask of shape
-                ``(model.world_count + 1,)`` selecting worlds to reset. Entries
-                before the last select local worlds by index, and the last
+            world_mask: Optional one-dimensional Warp boolean mask on the
+                model device with shape ``(model.world_count + 1,)``. The final
                 entry selects global objects whose world index is ``-1``. If
                 ``None``, reset all worlds and global objects.
+
+                .. deprecated:: 1.5
+                    Passing a mask with shape ``(world_count,)`` is deprecated.
+                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
+                    to select local worlds only.
 
                 .. experimental::
 
@@ -1574,14 +1581,24 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             flags: Optional state bitmask. If ``None``, reset all particle
                 history.
         """
-        self._validate_reset_inputs(state, world_mask)
+        self._validate_reset_inputs(state)
+        world_mask = self._normalize_reset_world_mask(world_mask)
+
         reset_partitions = self._validate_reset_warmstart_fields(world_mask)
         state_flags = int(StateFlags.ALL if flags is None else flags)
         reset_particle_history = bool(state_flags & int(StateFlags.PARTICLE))
 
         # Clearing first ensures a capture-time rejection cannot leave state
         # partially reset.
-        self._clear_sparse_grid_rebuild_status()
+        if world_mask is None:
+            self._clear_sparse_grid_rebuild_status()
+        elif self._grid_status is not None:
+            wp.launch(
+                _clear_sparse_grid_rebuild_status_masked,
+                dim=1,
+                inputs=[world_mask, self._grid_status, self._grid_accumulated_status],
+                device=self.model.device,
+            )
 
         with wp.ScopedDevice(self.model.device):
             self._clear_reset_warmstarts(world_mask, reset_partitions)
@@ -1601,6 +1618,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         inputs=[
                             self.model.particle_world,
                             world_mask,
+                            self._initial_world_count,
                             state.mpm.particle_elastic_strain,
                             state.mpm.particle_transform,
                             state.mpm.particle_qd_grad,
@@ -1614,6 +1632,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 state.body_q,
                 body_world=self.model.body_world,
                 world_mask=world_mask,
+                world_count=self._initial_world_count,
             )
 
     @override
@@ -2093,7 +2112,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                             status=self._grid_status,
                             **capacity_kwargs,
                         )
-                        self._check_sparse_grid_rebuild_status()
+                        self.check_sparse_grid_rebuild_status()
                     else:
                         cell_ijks = [
                             voxel_coordinates(positions[begin:end], voxel_size, padding_voxels=padding_voxels)
@@ -2144,7 +2163,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         max_upper_node_count=self.max_upper_node_count,
                     )
                     if self._sparse_rebuildable:
-                        self._check_sparse_grid_rebuild_status()
+                        self.check_sparse_grid_rebuild_status()
                         grid = fem.Nanogrid(volume, temporary_store=temporary_store, rebuildable=True)
                     else:
                         grid = fem.Nanogrid(volume, temporary_store=temporary_store)

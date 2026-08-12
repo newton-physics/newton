@@ -31,7 +31,7 @@ from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.materials import make_get_material_pair_properties
 from ...core.model import ModelKamino
-from ...geometry.contacts import ContactsKaminoData, make_contact_frame_znorm
+from ...geometry.contacts import ContactsKaminoData, make_contact_frame_znorm, reserve_contact_capacity
 from ...geometry.keying import build_pair_key2
 from .broadphase import CollisionCandidatesData
 
@@ -73,7 +73,6 @@ PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS: list[tuple[GeoType, GeoType]] = [
 """
 List of primitive shape combinations supported by the primitive narrow-phase collider.
 """
-
 
 ###
 # Geometry helper Types
@@ -257,21 +256,25 @@ def add_single_contact(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Skip if the contact distance exceeds the detection threshold
     if (distance - margin_plus_gap) > 0.0:
         return
 
-    # Safely increment the active contact counters (see notes in _write_contact_unified_kamino in unified.py)
-    wcid = wp.atomic_add(contact_world_num, wid, 1)
-    if wcid >= world_max_contacts:
-        wp.atomic_sub(contact_world_num, wid, 1)
+    reservation = reserve_contact_capacity(
+        model_max_contacts,
+        world_max_contacts,
+        wid,
+        1,
+        contact_model_num,
+        contact_world_num,
+        contact_overflow_warning_emitted,
+    )
+    if reservation[0] == 0:
         return
-    mcid = wp.atomic_add(contact_model_num, 0, 1)
-    if mcid >= model_max_contacts:
-        wp.atomic_sub(contact_model_num, 0, 1)
-        wp.atomic_sub(contact_world_num, wid, 1)
-        return
+    wcid = reservation[1]
+    mcid = reservation[2]
 
     # Perform A/B geom and body assignment
     # NOTE: We want the normal to always point from A to B,
@@ -347,6 +350,7 @@ def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
         contact_frame: wp.array[wp.quatf],
         contact_material: wp.array[wp.vec2f],
         contact_key: wp.array[wp.uint64],
+        contact_overflow_warning_emitted: wp.array[wp.int32],
     ):
         # Count valid contacts (those within the detection threshold)
         num_contacts = wp.int32(0)
@@ -369,30 +373,20 @@ def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
             gid_AB = wp.vec2i(gid_1, gid_2)
             bid_AB = wp.vec2i(bid_1, bid_2)
 
-        # Safely increment the per-world active contact counter (see notes in _write_contact_unified_kamino in unified.py)
-        wcio = wp.atomic_add(contact_world_num, wid, num_contacts)
-        if wcio >= world_max_contacts:
-            wp.atomic_sub(contact_world_num, wid, num_contacts)
+        reservation = reserve_contact_capacity(
+            model_max_contacts,
+            world_max_contacts,
+            wid,
+            num_contacts,
+            contact_model_num,
+            contact_world_num,
+            contact_overflow_warning_emitted,
+        )
+        if reservation[0] == 0:
             return
-
-        # Handle case where this thread saturated the counter and only partial contacts can be written
-        max_num_contacts = wp.min(world_max_contacts - wcio, num_contacts)
-        if max_num_contacts < num_contacts:
-            wp.atomic_sub(contact_world_num, wid, num_contacts - max_num_contacts)
-
-        # Safely increment the model active contact counter
-        mcio = wp.atomic_add(contact_model_num, 0, max_num_contacts)
-        if mcio >= model_max_contacts:
-            wp.atomic_sub(contact_model_num, 0, max_num_contacts)
-            wp.atomic_sub(contact_world_num, wid, max_num_contacts)
-            return
-
-        # Handle case where this thread saturated the counter and only partial contacts can be written
-        max_num_contacts_prev = max_num_contacts
-        max_num_contacts = wp.min(model_max_contacts - mcio, max_num_contacts_prev)
-        if max_num_contacts < max_num_contacts_prev:
-            wp.atomic_sub(contact_model_num, 0, max_num_contacts_prev - max_num_contacts)
-            wp.atomic_sub(contact_world_num, wid, max_num_contacts_prev - max_num_contacts)
+        max_num_contacts = reservation[0]
+        wcio = reservation[1]
+        mcio = reservation[2]
 
         # Create the common material for this contact set
         material = wp.vec2f(friction, restitution)
@@ -486,6 +480,7 @@ def sphere_sphere(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Run the respective collider function to detect sphere-sphere contacts
     distance, position, normal = collide_sphere_sphere(sphere1.pos, sphere1.radius, sphere2.pos, sphere2.radius)
@@ -518,6 +513,7 @@ def sphere_sphere(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -546,6 +542,7 @@ def sphere_cylinder(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     distance, position, normal = collide_sphere_cylinder(
@@ -585,6 +582,7 @@ def sphere_cylinder(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -618,6 +616,7 @@ def sphere_capsule(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     distance, position, normal = collide_sphere_capsule(
@@ -657,6 +656,7 @@ def sphere_capsule(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -685,6 +685,7 @@ def sphere_box(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     distance, position, normal = collide_sphere_box(sphere1.pos, sphere1.radius, box2.pos, box2.rot, box2.size)
@@ -717,6 +718,7 @@ def sphere_box(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -795,6 +797,7 @@ def capsule_capsule(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     distance, position, normal = collide_capsule_capsule(
@@ -838,6 +841,7 @@ def capsule_capsule(
                 contact_frame,
                 contact_material,
                 contact_key,
+                contact_overflow_warning_emitted,
             )
 
 
@@ -866,6 +870,7 @@ def capsule_box(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     distances, positions, normals = collide_capsule_box(
@@ -906,6 +911,7 @@ def capsule_box(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -939,6 +945,7 @@ def box_box(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     distances, positions, normals = collide_box_box(
@@ -973,6 +980,7 @@ def box_box(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -1011,6 +1019,7 @@ def plane_sphere(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     # Note: collide_plane_sphere returns (distance, position) without normal
@@ -1047,6 +1056,7 @@ def plane_sphere(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -1075,6 +1085,7 @@ def plane_box(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     distances, positions, normal = collide_plane_box(
@@ -1109,6 +1120,7 @@ def plane_box(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -1137,6 +1149,7 @@ def plane_ellipsoid(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     distance, position, normal = collide_plane_ellipsoid(
@@ -1171,6 +1184,7 @@ def plane_ellipsoid(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -1199,6 +1213,7 @@ def plane_capsule(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     # Note: collide_plane_capsule returns a contact frame, not individual normals
@@ -1232,12 +1247,20 @@ def plane_capsule(
         gid_AB = wp.vec2i(plane1.gid, capsule2.gid)
         bid_AB = wp.vec2i(plane1.bid, capsule2.bid)
 
-    # Increment the active contact counter
-    mcio = wp.atomic_add(contact_model_num, 0, num_contacts)
-    wcio = wp.atomic_add(contact_world_num, wid, num_contacts)
-
-    # Retrieve the maximum number of contacts that can be stored
-    max_num_contacts = wp.min(wp.min(model_max_contacts - mcio, world_max_contacts - wcio), num_contacts)
+    reservation = reserve_contact_capacity(
+        model_max_contacts,
+        world_max_contacts,
+        wid,
+        num_contacts,
+        contact_model_num,
+        contact_world_num,
+        contact_overflow_warning_emitted,
+    )
+    if reservation[0] == 0:
+        return
+    max_num_contacts = reservation[0]
+    wcio = reservation[1]
+    mcio = reservation[2]
 
     # Create the common properties shared by all contacts in the current set
     q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
@@ -1309,6 +1332,7 @@ def plane_cylinder(
     contact_frame: wp.array[wp.quatf],
     contact_material: wp.array[wp.vec2f],
     contact_key: wp.array[wp.uint64],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
 ):
     # Use the tested collision calculation from collision_primitive.py
     distances, positions, normal = collide_plane_cylinder(
@@ -1343,6 +1367,7 @@ def plane_cylinder(
         contact_frame,
         contact_material,
         contact_key,
+        contact_overflow_warning_emitted,
     )
 
 
@@ -1373,6 +1398,7 @@ def _primitive_narrowphase(
     material_pair_restitution: wp.array[wp.float32],
     material_pair_static_friction: wp.array[wp.float32],
     material_pair_dynamic_friction: wp.array[wp.float32],
+    contact_overflow_warning_emitted: wp.array[wp.int32],
     # Outputs:
     contact_model_num: wp.array[wp.int32],
     contact_world_num: wp.array[wp.int32],
@@ -1466,6 +1492,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.SPHERE and sid2 == GeoType.CYLINDER:
@@ -1491,6 +1518,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.SPHERE and sid2 == GeoType.CONE:
@@ -1519,6 +1547,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.SPHERE and sid2 == GeoType.BOX:
@@ -1544,6 +1573,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.SPHERE and sid2 == GeoType.ELLIPSOID:
@@ -1599,6 +1629,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.CAPSULE and sid2 == GeoType.BOX:
@@ -1624,6 +1655,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.CAPSULE and sid2 == GeoType.ELLIPSOID:
@@ -1652,6 +1684,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.BOX and sid2 == GeoType.ELLIPSOID:
@@ -1684,6 +1717,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.PLANE and sid2 == GeoType.BOX:
@@ -1709,6 +1743,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.PLANE and sid2 == GeoType.ELLIPSOID:
@@ -1734,6 +1769,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.PLANE and sid2 == GeoType.CAPSULE:
@@ -1759,6 +1795,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
     elif sid1 == GeoType.PLANE and sid2 == GeoType.CYLINDER:
@@ -1784,6 +1821,7 @@ def _primitive_narrowphase(
             contact_frame,
             contact_material,
             contact_key,
+            contact_overflow_warning_emitted,
         )
 
 
@@ -1797,6 +1835,7 @@ def primitive_narrowphase(
     data: DataKamino,
     candidates: CollisionCandidatesData,
     contacts: ContactsKaminoData,
+    contact_overflow_warning_emitted: wp.array[wp.int32],
     default_gap: float | None = None,
 ):
     """
@@ -1807,6 +1846,7 @@ def primitive_narrowphase(
         data: The data containing the current state of the geometries.
         candidates: The collision container holding collision pairs.
         contacts: The contacts container to store detected contacts.
+        contact_overflow_warning_emitted: Overflow diagnostic flag.
         default_gap: Default detection gap [m] applied as a floor to per-geometry gaps.
             If None, ``0.0`` is used.
     """
@@ -1838,6 +1878,7 @@ def primitive_narrowphase(
             model.material_pairs.restitution,
             model.material_pairs.static_friction,
             model.material_pairs.dynamic_friction,
+            contact_overflow_warning_emitted,
         ],
         outputs=[
             contacts.model_active_contacts,

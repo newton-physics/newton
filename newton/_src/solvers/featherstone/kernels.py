@@ -846,7 +846,7 @@ def compute_link_velocity(
     m = I_m[0, 0]
 
     world_idx = body_world[child]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
     f_g = m * world_g
     f_g_s = wp.spatial_vector(f_g, wp.cross(x_com_s, f_g))
 

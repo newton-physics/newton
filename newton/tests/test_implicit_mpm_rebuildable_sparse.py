@@ -53,12 +53,14 @@ def _make_sparse_solver(
 
 
 def test_rebuildable_sparse_s2_is_enabled(test, device):
+    """Verify S2 collider bases enable rebuildable sparse grids."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
     solver = _make_sparse_solver(model, max_active_cell_count=4, collider_basis="S2")
     test.assertTrue(solver._sparse_rebuildable)
 
 
 def test_rebuildable_sparse_rejects_grid_warmstart(test, device):
+    """Verify rebuildable sparse grids reject grid-backed warm starts."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
     for warmstart_mode in ("grid", "smoothed"):
         with (
@@ -69,6 +71,7 @@ def test_rebuildable_sparse_rejects_grid_warmstart(test, device):
 
 
 def test_rebuildable_sparse_auto_uses_particle_warmstart(test, device):
+    """Verify automatic warm starts use particles for rebuildable sparse grids."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
 
     rebuildable = _make_sparse_solver(model, max_active_cell_count=4, warmstart_mode="auto")
@@ -81,6 +84,7 @@ def test_rebuildable_sparse_auto_uses_particle_warmstart(test, device):
 
 
 def test_rebuildable_sparse_refreshes_retained_topologies(test, device):
+    """Verify retained function-space topologies rebuild in place."""
     del test, device
     geometry = object()
     topologies = [SimpleNamespace(rebuild=mock.Mock()) for _ in range(3)]
@@ -110,6 +114,7 @@ def test_rebuildable_sparse_refreshes_retained_topologies(test, device):
 
 
 def test_rebuildable_sparse_node_capacity_validation(test, device):
+    """Verify rebuildable sparse-grid node capacities reject invalid values."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
     for name in ("max_leaf_node_count", "max_lower_node_count", "max_upper_node_count"):
         for value in (0, -2, True, 1.5):
@@ -118,6 +123,7 @@ def test_rebuildable_sparse_node_capacity_validation(test, device):
 
 
 def test_rebuildable_sparse_grid_reserves_explicit_hierarchy_capacity(test, device):
+    """Verify explicit sparse-grid hierarchy capacities are reserved."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
     solver = _make_sparse_solver(
         model,
@@ -135,6 +141,7 @@ def test_rebuildable_sparse_grid_reserves_explicit_hierarchy_capacity(test, devi
 
 
 def test_rebuildable_sparse_automatic_hierarchy_respects_explicit_leaf(test, device):
+    """Verify automatic internal-node capacities respect an explicit leaf capacity."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
     solver = _make_sparse_solver(model, max_active_cell_count=64, max_leaf_node_count=1)
 
@@ -145,6 +152,7 @@ def test_rebuildable_sparse_automatic_hierarchy_respects_explicit_leaf(test, dev
 
 
 def test_rebuildable_sparse_automatic_upper_capacity_respects_explicit_lower(test, device):
+    """Verify automatic upper-node capacity respects an explicit lower capacity."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
     solver = _make_sparse_solver(model, max_active_cell_count=64, max_lower_node_count=1)
 
@@ -155,6 +163,7 @@ def test_rebuildable_sparse_automatic_upper_capacity_respects_explicit_lower(tes
 
 
 def test_rebuildable_sparse_rejects_inconsistent_hierarchy_capacity(test, device):
+    """Verify inconsistent sparse-grid hierarchy capacities are rejected."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
     with test.assertRaisesRegex(ValueError, "capacity hierarchy"):
         _make_sparse_solver(
@@ -167,15 +176,17 @@ def test_rebuildable_sparse_rejects_inconsistent_hierarchy_capacity(test, device
 
 
 def test_rebuildable_sparse_grid_excludes_inactive_particles(test, device):
+    """Verify inactive particles do not contribute to sparse-grid construction."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01), (1000.01, 1000.01, 1000.01)], (1,))
     solver = _make_sparse_solver(model, max_active_cell_count=2)
 
     test.assertTrue(solver._sparse_rebuildable)
     test.assertEqual(solver._scratchpad.grid.cell_grid.get_active_stats().voxel_count, 1)
-    solver.check_status()
+    solver.check_sparse_grid_rebuild_status()
 
 
 def test_rebuildable_sparse_grid_excludes_deformable_collider_particles(test, device):
+    """Verify deformable collider particles are excluded from sparse-grid rebuilds."""
     positions = (
         (0.01, 0.01, 0.01),
         (0.02, 0.01, 0.01),
@@ -219,6 +230,7 @@ def test_rebuildable_sparse_grid_excludes_deformable_collider_particles(test, de
 
 
 def test_rebuildable_sparse_grid_excludes_nonfinite_particles_before_rebuild(test, device):
+    """Verify non-finite particles are excluded before sparse-grid rebuilds."""
     model = _make_particle_model(
         device,
         [(0.01, 0.01, 0.01), (1.01, 1.01, 1.01), (2.01, 2.01, 2.01), (3.01, 3.01, 3.01)],
@@ -249,6 +261,7 @@ def test_rebuildable_sparse_grid_excludes_nonfinite_particles_before_rebuild(tes
 
 
 def test_rebuildable_sparse_rebuild_uses_mpm_transfer_flags(test, device):
+    """Verify sparse-grid rebuilds use MPM transfer flags."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01), (1000.01, 1000.01, 1000.01)], (1,))
     solver = _make_sparse_solver(model, max_active_cell_count=2)
     state_in = model.state()
@@ -260,10 +273,11 @@ def test_rebuildable_sparse_rebuild_uses_mpm_transfer_flags(test, device):
     solver.step(state_in, state_out, None, None, 0.001)
 
     test.assertEqual(solver._scratchpad.grid.cell_grid.get_active_stats().voxel_count, 1)
-    solver.check_status()
+    solver.check_sparse_grid_rebuild_status()
 
 
 def test_rebuildable_sparse_grid_reserves_empty_capacity(test, device):
+    """Verify empty sparse grids retain their configured capacity."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01), (1.01, 1.01, 1.01)], (0, 1))
     solver = _make_sparse_solver(model, max_active_cell_count=4)
 
@@ -273,6 +287,7 @@ def test_rebuildable_sparse_grid_reserves_empty_capacity(test, device):
 
 
 def test_rebuildable_sparse_grid_reports_initial_overflow(test, device):
+    """Verify initial sparse-grid capacity overflow raises."""
     model = _make_particle_model(device, [(0.01, 0.01, 0.01), (1.01, 1.01, 1.01)])
 
     with test.assertRaisesRegex(RuntimeError, "sparse grid rebuild capacity"):
@@ -345,7 +360,7 @@ def _check_rebuildable_sparse_auto_gs_cuda_graph(test, device, collider_basis):
     for _ in range(2):
         wp.capture_launch(capture.graph)
 
-    solver.check_status()
+    solver.check_sparse_grid_rebuild_status()
     test.assertEqual(solver._scratchpad.grid.cell_grid.id, cell_grid_id)
     final_cell_count = grid.cell_grid.get_active_stats().voxel_count
     final_cells = {tuple(ijk) for ijk in grid.cell_grid.get_voxels().numpy()[:final_cell_count]}
@@ -362,6 +377,7 @@ def _check_rebuildable_sparse_auto_gs_cuda_graph(test, device, collider_basis):
 
 
 def test_rebuildable_sparse_auto_gs_cuda_graph(test, device):
+    """Verify automatic Gauss-Seidel matches eager execution under graph replay."""
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture requires the Warp memory pool")
 
@@ -371,6 +387,7 @@ def test_rebuildable_sparse_auto_gs_cuda_graph(test, device):
 
 
 def test_rebuildable_sparse_cuda_graph_reports_overflow(test, device):
+    """Verify CUDA graph replay reports sparse-grid capacity overflow."""
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture requires the Warp memory pool")
 
@@ -388,11 +405,11 @@ def test_rebuildable_sparse_cuda_graph_reports_overflow(test, device):
     wp.capture_launch(capture.graph)
 
     with test.assertRaisesRegex(RuntimeError, "sparse grid rebuild capacity"):
-        solver.check_status()
+        solver.check_sparse_grid_rebuild_status()
     status = int(solver._grid_accumulated_status.numpy()[0])
     test.assertTrue(status & wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
     solver._clear_sparse_grid_rebuild_status()
-    solver.check_status()
+    solver.check_sparse_grid_rebuild_status()
 
 
 class TestImplicitMPMRebuildableSparse(unittest.TestCase):
