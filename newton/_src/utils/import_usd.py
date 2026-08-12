@@ -84,6 +84,14 @@ _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pa
 _HARD_LIMIT_KE = 1.0e8
 
 
+def _interpret_usd_contact_parameter(value, _resolver=None) -> float | None:
+    """Interpret an unspecified USD contact response parameter as ``None``."""
+    if value is None:
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
 def _resolve_newton_limit_ke(
     limit_ke: float | None,
     fallback: float,
@@ -2632,10 +2640,14 @@ def parse_usd(
         prim = stage.GetPrimAtPath(sdf_path)
 
         def _resolve_contact_attr(key, _prim=prim):
-            val = R.get_value(_prim, prim_type=PrimType.MATERIAL, key=key, verbose=verbose)
-            if val is None:
-                return None
-            return float(val)
+            value = R.get_value(
+                _prim,
+                prim_type=PrimType.MATERIAL,
+                key=key,
+                verbose=verbose,
+                comparison_key=_interpret_usd_contact_parameter,
+            )
+            return _interpret_usd_contact_parameter(value)
 
         if not math.isfinite(desc.density):
             warnings.warn(

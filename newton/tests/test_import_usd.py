@@ -9818,6 +9818,52 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_material_ka.numpy()[idx], builder.default_shape_cfg.ka, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_response_schema_sentinels_do_not_warn_when_results_match(self):
+        """Suppress migration warnings when contact sentinels preserve results."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        material = UsdShade.Material.Define(stage, "/Materials/SchemaDefaults")
+        material_prim = material.GetPrim()
+        material_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(material_prim)
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        collider = UsdGeom.Cube.Define(stage, "/Body/Collider")
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+        UsdShade.MaterialBindingAPI.Apply(collider.GetPrim()).Bind(material, "physics")
+
+        policy_values = []
+        for policy_args in ({}, {"use_applied_schema_fallbacks": True}):
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "error",
+                    message=r".*schema fallbacks.*",
+                    category=DeprecationWarning,
+                )
+                result = builder.add_usd(stage, **policy_args)
+            model = builder.finalize()
+
+            shape_index = result["path_shape_map"]["/Body/Collider"]
+            values = (
+                float(model.shape_material_ke.numpy()[shape_index]),
+                float(model.shape_material_kd.numpy()[shape_index]),
+                float(model.shape_material_kf.numpy()[shape_index]),
+                float(model.shape_material_ka.numpy()[shape_index]),
+            )
+            defaults = builder.default_shape_cfg
+            np.testing.assert_allclose(values, (defaults.ke, defaults.kd, defaults.kf, defaults.ka))
+            policy_values.append(values)
+
+        self.assertEqual(policy_values[0], policy_values[1])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_response_legacy_shape_fallback(self):
         """Test deprecated newton:contact_ke/kd/kf/ka on shape prim with exact warnings."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
