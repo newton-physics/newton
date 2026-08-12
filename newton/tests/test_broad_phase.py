@@ -284,6 +284,64 @@ class TestBroadPhase(unittest.TestCase):
         )
         self.assertEqual(int(candidate_pair_count.numpy()[0]), 1)
 
+    def test_shape_sweep_length_validation(self):
+        """Reject shape sweeps whose length differs from the shape bounds."""
+        device = wp.get_device()
+        shape_lower = wp.zeros(2, dtype=wp.vec3, device=device)
+        shape_upper = wp.ones(2, dtype=wp.vec3, device=device)
+        shape_group = wp.ones(2, dtype=wp.int32, device=device)
+        shape_world = wp.zeros(2, dtype=wp.int32, device=device)
+        shape_sweep = wp.zeros(1, dtype=wp.vec3, device=device)
+        candidate_pair = wp.zeros(1, dtype=wp.vec2i, device=device)
+        candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+        for broad_phase in (
+            BroadPhaseAllPairs(shape_world, device=device),
+            BroadPhaseSAP(shape_world, device=device),
+        ):
+            with (
+                self.subTest(broad_phase=type(broad_phase).__name__),
+                self.assertRaisesRegex(ValueError, "shape_sweep length must match"),
+            ):
+                broad_phase.launch(
+                    shape_lower,
+                    shape_upper,
+                    None,
+                    shape_group,
+                    shape_world,
+                    2,
+                    candidate_pair,
+                    candidate_pair_count,
+                    device,
+                    shape_sweep=shape_sweep,
+                )
+
+        with self.assertRaisesRegex(ValueError, "shape_sweep length must match"):
+            BroadPhaseExplicit().launch(
+                shape_lower,
+                shape_upper,
+                None,
+                wp.array([(0, 1)], dtype=wp.vec2i, device=device),
+                1,
+                candidate_pair,
+                candidate_pair_count,
+                device,
+                shape_sweep=shape_sweep,
+            )
+
+        BroadPhaseSAP(shape_world, device=device).launch(
+            shape_lower,
+            shape_upper,
+            None,
+            shape_group,
+            shape_world,
+            1,
+            candidate_pair,
+            candidate_pair_count,
+            device,
+        )
+        self.assertEqual(int(candidate_pair_count.numpy()[0]), 0)
+
     def test_nxn_broadphase(self):
         verbose = False
 

@@ -98,12 +98,7 @@ def compute_contact_approach_speed(
     shape_linear_velocity: wp.array[wp.vec3],
     shape_angular_velocity: wp.array[wp.vec3],
 ) -> float:
-    """Return the closing speed of two shape points along a contact normal.
-
-    ``shape_linear_velocity`` is the world-space velocity of each shape
-    origin, not the body COM velocity. This makes the point-velocity
-    reconstruction exact even when a body's COM is offset from its origin.
-    """
+    """Return the closing speed of two shape points along a contact normal."""
     origin_a = wp.transform_get_translation(shape_transform[shape_a])
     origin_b = wp.transform_get_translation(shape_transform[shape_b])
     velocity_a = shape_linear_velocity[shape_a] + wp.cross(shape_angular_velocity[shape_a], point_a - origin_a)

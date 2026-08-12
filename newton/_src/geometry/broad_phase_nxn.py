@@ -299,7 +299,6 @@ class BroadPhaseAllPairs:
         self.world_index_map = wp.array(index_map_np, dtype=wp.int32, device=device)
         self.world_slice_ends = wp.array(slice_ends_np, dtype=wp.int32, device=device)
         self.world_cumsum_lower_tri = wp.array(world_cumsum_lower_tri_np, dtype=wp.int32, device=device)
-        self._empty_shape_sweep = wp.empty(0, dtype=wp.vec3, device=device)
 
         # Store total number of kernel threads needed (last element of cumsum)
         self.num_kernel_threads = int(world_cumsum_lower_tri_np[-1]) if world_count > 0 else 0
@@ -382,8 +381,10 @@ class BroadPhaseAllPairs:
             shape_body = wp.empty(0, dtype=wp.int32, device=device)
         if body_flags is None:
             body_flags = wp.empty(0, dtype=wp.int32, device=device)
-        if shape_sweep is None:
-            shape_sweep = self._empty_shape_sweep
+        if shape_sweep is not None and shape_sweep.shape[0] != shape_lower.shape[0]:
+            raise ValueError(
+                f"shape_sweep length must match the shape bounds ({shape_lower.shape[0]}), got {shape_sweep.shape[0]}"
+            )
 
         # Exclusion filter: empty array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
@@ -430,9 +431,6 @@ class BroadPhaseExplicit:
     The class checks for axis-aligned bounding box (AABB) overlaps between the specified geometry pairs,
     taking into account per-geometry cutoff distances.
     """
-
-    def __init__(self) -> None:
-        self._empty_shape_sweep = None
 
     def launch(
         self,
@@ -499,10 +497,10 @@ class BroadPhaseExplicit:
             shape_body = wp.empty(0, dtype=wp.int32, device=device)
         if body_flags is None:
             body_flags = wp.empty(0, dtype=wp.int32, device=device)
-        if shape_sweep is None:
-            if self._empty_shape_sweep is None or self._empty_shape_sweep.device != wp.get_device(device):
-                self._empty_shape_sweep = wp.empty(0, dtype=wp.vec3, device=device)
-            shape_sweep = self._empty_shape_sweep
+        if shape_sweep is not None and shape_sweep.shape[0] != shape_lower.shape[0]:
+            raise ValueError(
+                f"shape_sweep length must match the shape bounds ({shape_lower.shape[0]}), got {shape_sweep.shape[0]}"
+            )
 
         wp.launch(
             kernel=_nxn_broadphase_precomputed_pairs,

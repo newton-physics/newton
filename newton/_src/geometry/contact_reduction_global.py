@@ -1210,8 +1210,8 @@ def export_contact_to_buffer(
         if reducer_data.reclaimed_contact_head.shape[0] > 0:
             contact_id = _pop_reclaimed_contact_id(reducer_data)
         if contact_id == 0:
-            # Failed allocations remain above capacity so the difference is
-            # the drop count reported by buffer diagnostics.
+            # Undo the reservation because no buffer slot was available.
+            wp.atomic_add(reducer_data.contact_count, 0, -1)
             return -1
         # A successful reuse is not a dropped contact.
         wp.atomic_add(reducer_data.contact_count, 0, -1)

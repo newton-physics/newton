@@ -1185,11 +1185,12 @@ class CollisionPipeline:
             if self._speculative_enabled:
                 shape_flags_np = model.shape_flags.numpy()
                 is_hydroelastic = (shape_flags_np & int(ShapeFlags.HYDROELASTIC)) != 0
-                shape_pairs_np = model.shape_contact_pairs.numpy().reshape(-1, 2)
-                if np.any(is_hydroelastic[shape_pairs_np[:, 0]] & is_hydroelastic[shape_pairs_np[:, 1]]):
-                    raise NotImplementedError(
-                        "Speculative contact generation does not yet support hydroelastic SDF contacts"
-                    )
+                if model.shape_contact_pairs is not None:
+                    shape_pairs_np = model.shape_contact_pairs.numpy().reshape(-1, 2)
+                    if np.any(is_hydroelastic[shape_pairs_np[:, 0]] & is_hydroelastic[shape_pairs_np[:, 1]]):
+                        raise NotImplementedError(
+                            "Speculative contact generation does not yet support hydroelastic SDF contacts"
+                        )
 
             # Initialize SDF hydroelastic (returns None if no hydroelastic shape pairs in the model)
             hydroelastic_sdf = HydroelasticSDF._from_model(
@@ -1290,6 +1291,7 @@ class CollisionPipeline:
                 verify_buffers=verify_buffers,
                 contact_reduction_hashtable_size_factor=contact_reduction_hashtable_size_factor,
                 speculative=self._speculative_enabled,
+                contact_writer_supports_speculative=self._speculative_enabled,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
 

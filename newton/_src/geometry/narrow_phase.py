@@ -863,6 +863,15 @@ def create_narrow_phase_kernel_gjk_mpr(
                 bsphere_center_a, bsphere_radius_a = compute_bounding_sphere_from_aabb(aabb_a_lower, aabb_a_upper)
                 bsphere_center_b, bsphere_radius_b = compute_bounding_sphere_from_aabb(aabb_b_lower, aabb_b_upper)
 
+                # External AABBs describe the current geometry. Include both shapes' search
+                # extensions so relative translational motion cannot be culled before GJK.
+                if wp.static(external_aabb):
+                    pair_search_extension = shape_gap[shape_a] + shape_gap[shape_b]
+                    if is_infinite_plane_a:
+                        bsphere_radius_b += pair_search_extension
+                    else:
+                        bsphere_radius_a += pair_search_extension
+
                 if not check_infinite_plane_bsphere_overlap(
                     shape_data_a,
                     shape_data_b,
@@ -1592,6 +1601,7 @@ class NarrowPhase:
         verify_buffers: bool = True,
         contact_reduction_hashtable_size_factor: float = 0.25,
         speculative: bool = False,
+        contact_writer_supports_speculative: bool = False,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -1649,6 +1659,8 @@ class NarrowPhase:
                 warnings appear. Defaults to ``0.25`` for memory compatibility.
             speculative: Whether the caller provides velocity-expanded search
                 gaps and exact predictive-contact data. Defaults to False.
+            contact_writer_supports_speculative: Whether a custom contact writer performs exact speculative-contact
+                admission. Required when ``speculative`` and ``contact_writer_warp_func`` are both provided.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -1661,6 +1673,11 @@ class NarrowPhase:
         self.deterministic = deterministic
         self.verify_buffers = verify_buffers
         self.speculative = speculative
+        if speculative and contact_writer_warp_func is not None and not contact_writer_supports_speculative:
+            raise ValueError(
+                "A custom contact writer used with speculative=True must set "
+                "contact_writer_supports_speculative=True and perform exact speculative-contact admission"
+            )
         if speculative and hydroelastic_sdf is not None:
             raise NotImplementedError("Speculative contact generation does not yet support hydroelastic SDF contacts")
         device_obj = wp.get_device(device)

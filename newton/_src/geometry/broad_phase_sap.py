@@ -167,6 +167,7 @@ def _sap_project_kernel(
     world_index_map: wp.array[int],
     world_slice_ends: wp.array[int],
     max_shapes_per_world: int,
+    shape_count: int,
     # Outputs (1D arrays with manual indexing)
     sap_projection_lower_out: wp.array[float],
     sap_projection_upper_out: wp.array[float],
@@ -194,6 +195,11 @@ def _sap_project_kernel(
 
     # Map to actual geometry index
     shape_id = world_index_map[world_slice_start + local_shape_id]
+    if shape_id >= shape_count:
+        sap_projection_lower_out[idx] = 1e30
+        sap_projection_upper_out[idx] = 1e30
+        sap_sort_index_out[idx] = -1
+        return
 
     # Project AABB onto direction
     projection_range = _sap_project_aabb(
@@ -534,7 +540,6 @@ class BroadPhaseSAP:
         self.sap_sort_index = wp.zeros(2 * total_elements, dtype=wp.int32, device=device)
         self.sap_range = wp.zeros(total_elements, dtype=wp.int32, device=device)
         self.sap_cumulative_sum = wp.zeros(total_elements, dtype=wp.int32, device=device)
-        self._empty_shape_sweep = wp.empty(0, dtype=wp.vec3, device=device)
 
         # Segment indices for segmented sort (needed for graph capture)
         # [0, max_shapes_per_world, 2*max_shapes_per_world, ..., world_count*max_shapes_per_world]
@@ -581,7 +586,7 @@ class BroadPhaseSAP:
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
             shape_world: Array of world indices for each shape. Index -1 indicates global entities
                 that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
-            shape_count: Number of active bounding boxes to check (not used in world-based approach)
+            shape_count: Number of active bounding boxes to check.
             candidate_pair: Output array to store overlapping shape pairs
             candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
@@ -598,8 +603,9 @@ class BroadPhaseSAP:
             include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
                 ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
             shape_sweep: Optional world-space AABB translation over normalized time ``[0, 1]`` [m].
-            shape_sweep_projection_limit: Optional non-negative per-shape projection limit used only by the coarse
-                SAP sort [m]. The exact pair test continues to use the full relative sweep.
+            shape_sweep_projection_limit: Optional non-negative per-shape projection limit used by the SAP sort [m].
+                Limiting the projection is an approximation that may exclude pairs whose projected sweep exceeds
+                the limit. Candidate pairs retained by the sort are tested using the full relative sweep.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose worlds are
@@ -618,6 +624,9 @@ class BroadPhaseSAP:
         if device is None:
             device = shape_lower.device
 
+        if shape_count < 0 or shape_count > shape_lower.shape[0]:
+            raise ValueError(f"shape_count must be in [0, {shape_lower.shape[0]}], got {shape_count}")
+
         # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
         if shape_gap is None:
             shape_gap = wp.empty(0, dtype=wp.float32, device=device)
@@ -625,8 +634,10 @@ class BroadPhaseSAP:
             shape_body = wp.empty(0, dtype=wp.int32, device=device)
         if body_flags is None:
             body_flags = wp.empty(0, dtype=wp.int32, device=device)
-        if shape_sweep is None:
-            shape_sweep = self._empty_shape_sweep
+        if shape_sweep is not None and shape_sweep.shape[0] != shape_lower.shape[0]:
+            raise ValueError(
+                f"shape_sweep length must match the shape bounds ({shape_lower.shape[0]}), got {shape_sweep.shape[0]}"
+            )
         if shape_sweep_projection_limit is None:
             projection_limit = -1.0
         else:
@@ -659,6 +670,7 @@ class BroadPhaseSAP:
                 self.world_index_map,
                 self.world_slice_ends,
                 self.max_shapes_per_world,
+                shape_count,
                 self.sap_projection_lower,
                 self.sap_projection_upper,
                 self.sap_sort_index,

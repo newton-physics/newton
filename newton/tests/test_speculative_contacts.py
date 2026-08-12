@@ -5,6 +5,7 @@
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -648,6 +649,110 @@ def test_speculative_candidates_include_angular_motion(test, device):
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def test_speculative_cone_reaches_infinite_plane(test, device):
+    """Retain a swept GJK candidate before its current bounds reach an infinite plane."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.rigid_gap = 0.0
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+    builder.add_shape_cone(body, radius=0.1, half_height=0.1)
+    builder.body_qd[body] = (0.0, 0.0, -20.0, 0.0, 0.0, 0.0)
+    builder.add_shape_plane(width=0.0, length=0.0)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
+            collision_update_dt=0.03,
+            max_speculative_extension=0.75,
+        ),
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    test.assertGreater(int(pipeline.broad_phase_pair_count.numpy()[0]), 0)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+def test_stationary_contacts_match_non_speculative_pipeline(test, device):
+    """Match contacts for non-moving shapes with speculative generation on and off."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.rigid_gap = 0.0
+    body_a = builder.add_body()
+    builder.add_shape_box(body_a, hx=0.1, hy=0.1, hz=0.1)
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.15, 0.0, 0.0)))
+    builder.add_shape_box(
+        body_b,
+        hx=0.1,
+        hy=0.1,
+        hz=0.1,
+    )
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    pipelines = (
+        newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True),
+        newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            deterministic=True,
+            speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
+                collision_update_dt=0.03,
+                max_speculative_extension=0.25,
+            ),
+        ),
+    )
+    outputs = []
+    for pipeline in pipelines:
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        test.assertGreater(count, 0)
+        outputs.append(
+            (
+                contacts.rigid_contact_shape0.numpy()[:count],
+                contacts.rigid_contact_shape1.numpy()[:count],
+                contacts.rigid_contact_point0.numpy()[:count],
+                contacts.rigid_contact_point1.numpy()[:count],
+                contacts.rigid_contact_normal.numpy()[:count],
+                contacts.rigid_contact_margin0.numpy()[:count],
+                contacts.rigid_contact_margin1.numpy()[:count],
+            )
+        )
+
+    for regular, speculative in zip(*outputs, strict=True):
+        np.testing.assert_allclose(speculative, regular, rtol=0.0, atol=1.0e-6)
+
+
+def test_speculative_contacts_prevent_dynamic_tunneling(test, device):
+    """Prevent a fast dynamic sphere from crossing an infinite plane in one XPBD step."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.rigid_gap = 0.0
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+    builder.add_shape_sphere(body, radius=0.05)
+    builder.body_qd[body] = (0.0, 0.0, -20.0, 0.0, 0.0, 0.0)
+    builder.add_shape_plane(width=0.0, length=0.0)
+    model = builder.finalize(device=device)
+    dt = 0.03
+
+    def step(speculative):
+        config = None
+        if speculative:
+            config = newton.CollisionPipeline.SpeculativeContactConfig(
+                collision_update_dt=dt,
+                max_speculative_extension=0.75,
+            )
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_config=config)
+        contacts = pipeline.contacts()
+        state_in = model.state()
+        state_out = model.state()
+        pipeline.collide(state_in, contacts)
+        newton.solvers.SolverXPBD(model, iterations=5).step(state_in, state_out, None, contacts, dt)
+        return float(state_out.body_q.numpy()[body, 2])
+
+    test.assertLess(step(False), 0.0)
+    test.assertGreaterEqual(step(True), 0.04)
+
+
 def test_speculative_narrow_phase_launch(test, device):
     """Verify the public narrow-phase convenience API performs exact admission."""
     shape_transform = wp.array(
@@ -725,6 +830,17 @@ def test_speculative_narrow_phase_rejects_hydroelastic(test, device):
         )
 
 
+def test_speculative_narrow_phase_rejects_unmarked_custom_writer(test, device):
+    """Reject custom writers that do not explicitly implement speculative admission."""
+    with test.assertRaisesRegex(ValueError, "contact_writer_supports_speculative=True"):
+        NarrowPhase(
+            max_candidate_pairs=1,
+            device=device,
+            contact_writer_warp_func=write_contact_simple,
+            speculative=True,
+        )
+
+
 def test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction(test, device):
     """Reject speculative hydroelastic pairs before constructing their SDF pipeline."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -742,6 +858,17 @@ def test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction(test,
             model,
             speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
         )
+
+
+def test_speculative_pipeline_allows_missing_explicit_pairs(test, device):
+    """Allow non-explicit speculative pipelines when the model pair array is absent."""
+    model, _state = _build_spheres(device, velocity=0.0)
+    model.shape_contact_pairs = None
+    newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(),
+    )
 
 
 def test_speculative_mesh_sdf_candidates(test, device):
@@ -1086,14 +1213,28 @@ for _name, _test in (
     ("test_speculative_candidates_reject_common_motion", test_speculative_candidates_reject_common_motion),
     ("test_speculative_candidates_preserve_physical_geometry", test_speculative_candidates_preserve_physical_geometry),
     ("test_speculative_candidates_include_angular_motion", test_speculative_candidates_include_angular_motion),
+    ("test_speculative_cone_reaches_infinite_plane", test_speculative_cone_reaches_infinite_plane),
+    (
+        "test_stationary_contacts_match_non_speculative_pipeline",
+        test_stationary_contacts_match_non_speculative_pipeline,
+    ),
+    ("test_speculative_contacts_prevent_dynamic_tunneling", test_speculative_contacts_prevent_dynamic_tunneling),
     ("test_speculative_narrow_phase_launch", test_speculative_narrow_phase_launch),
     (
         "test_speculative_narrow_phase_rejects_hydroelastic",
         test_speculative_narrow_phase_rejects_hydroelastic,
     ),
     (
+        "test_speculative_narrow_phase_rejects_unmarked_custom_writer",
+        test_speculative_narrow_phase_rejects_unmarked_custom_writer,
+    ),
+    (
         "test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction",
         test_speculative_pipeline_rejects_hydroelastic_before_sdf_construction,
+    ),
+    (
+        "test_speculative_pipeline_allows_missing_explicit_pairs",
+        test_speculative_pipeline_allows_missing_explicit_pairs,
     ),
     (
         "test_predictive_reducer_reclamation_storage_is_opt_in",
