@@ -1143,6 +1143,12 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         gfx.CreateFaceVertexIndicesAttr([0, 1, 2])
         return gfx
 
+    @classmethod
+    def _add_volume_visual(cls, stage, body_path):
+        """Author one volume body with its default ``Skin`` graphics mesh."""
+        cls._add_volume_body(stage, body_path)
+        return cls._add_graphics_mesh(stage, f"{body_path}/Skin")
+
     def _import(self, stage, **kwargs):
         builder = newton.ModelBuilder()
         builder.add_usd(stage, **kwargs)
@@ -1153,8 +1159,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         visual mesh with USD ownership metadata, without any custom relationship
         and without return_deformable_results."""
         stage = self._stage()
-        self._add_volume_body(stage, "/World/Tire")
-        self._add_graphics_mesh(stage, "/World/Tire/Skin")
+        self._add_volume_visual(stage, "/World/Tire")
 
         builder = self._import(stage)
         model = builder.finalize()
@@ -1175,8 +1180,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
     def test_replicate_rebases_visual_ownership_paths(self):
         """Rebase imported visual identities and drivers into each replicated namespace."""
         stage = self._stage()
-        self._add_volume_body(stage, "/World/envs/env_0/Object")
-        self._add_graphics_mesh(stage, "/World/envs/env_0/Object/Skin")
+        self._add_volume_visual(stage, "/World/envs/env_0/Object")
         template = self._import(stage)
 
         scene = newton.ModelBuilder()
@@ -1205,10 +1209,8 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
     def test_replicate_rejects_visual_paths_outside_source_namespace(self):
         """Reject source-prefix lookalikes instead of retaining stale ownership paths."""
         stage = self._stage()
-        self._add_volume_body(stage, "/World/envs/env_0/Object")
-        self._add_graphics_mesh(stage, "/World/envs/env_0/Object/Skin")
-        self._add_volume_body(stage, "/World/envs/env_01/Object")
-        self._add_graphics_mesh(stage, "/World/envs/env_01/Object/Skin")
+        self._add_volume_visual(stage, "/World/envs/env_0/Object")
+        self._add_volume_visual(stage, "/World/envs/env_01/Object")
         template = self._import(stage)
 
         scene = newton.ModelBuilder()
