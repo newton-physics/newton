@@ -1,0 +1,1 @@
+Add the experimental `newton.selection.DeformableView` for label-pattern access to finalized curve, surface, and volume deformables, including batched state reads, indexed updates with independent source-row selection, uneven per-world partitions, and raw ranges for ragged groups. Use the same selection API for labeled native builder calls and USD imports.
