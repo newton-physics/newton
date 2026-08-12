@@ -99,7 +99,6 @@
 
 ### Fixed
 
-- Import MJCF compiler mass and inertia guard settings.
 - Make deterministic collision pipelines cover hydroelastic contact generation and reduction, including unique reduced-contact sort keys and overflow-safe fixed-point pressure accumulation.
 - Fix MPR returning scale-dependent, excessively deep contacts for small convex shapes on large mesh triangles while preserving triangle-specific shared-edge manifold witnesses. (#3766)
 - Make deterministic collision pipelines cover hydroelastic contact generation and reduction, including unique reduced-contact sort keys and overflow-safe fixed-point pressure accumulation. (#3661)
