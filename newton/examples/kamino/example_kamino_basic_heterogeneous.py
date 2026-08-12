@@ -20,6 +20,7 @@ from newton.tests.utils import basics
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        newton.use_coord_layout_targets = True
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.0025
@@ -67,6 +68,7 @@ class Example:
             basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
 
         # Create the model from the builder
+        builder.request_contact_attributes("force")  # For contact visualization
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Create and configure settings for SolverKamino and the collision detector

@@ -18,6 +18,7 @@ from newton._src.math import orthonormal_basis
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_body_particle_contact,
     _eval_soft_ef_contact,
+    _reset_world_selected,
     evaluate_body_particle_contact,
 )
 
@@ -1348,9 +1349,37 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 
 
 @wp.kernel
+def reset_particle_state(
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+    particle_world: wp.array[wp.int32],
+    model_particle_q: wp.array[wp.vec3],
+    model_particle_qd: wp.array[wp.vec3],
+    particle_q: wp.array[wp.vec3],
+    particle_qd: wp.array[wp.vec3],
+):
+    """Copy model-default particle state into selected worlds' particles.
+
+    A non-null ``particle_q`` / ``particle_qd`` output is the caller's request to
+    reset that field. The shared ``_reset_world_selected()`` predicate applies
+    the same per-world masking as the rigid reset, mapping global particles
+    (``particle_world == -1``) to the mask's final slot.
+    """
+    tid = wp.tid()
+    if not _reset_world_selected(particle_world[tid], world_mask, reset_all, world_count):
+        return
+    if particle_q:
+        particle_q[tid] = model_particle_q[tid]
+    if particle_qd:
+        particle_qd[tid] = model_particle_qd[tid]
+
+
+@wp.kernel
 def forward_step(
     dt: float,
     gravity: wp.array[wp.vec3],
+    particle_world: wp.array[wp.int32],
     pos_prev: wp.array[wp.vec3],
     pos: wp.array[wp.vec3],
     vel: wp.array[wp.vec3],
@@ -1368,7 +1397,9 @@ def forward_step(
         if displacements_out:
             displacements_out[particle] = wp.vec3(0.0, 0.0, 0.0)
         return
-    vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
+    world_idx = particle_world[particle]
+    world_g = gravity[world_idx]
+    vel_new = vel[particle] + (world_g + external_force[particle] * inv_mass[particle]) * dt
     inertia = pos[particle] + vel_new * dt
     inertia_out[particle] = inertia
     if displacements_out:

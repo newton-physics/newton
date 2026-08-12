@@ -754,8 +754,9 @@ class ArticulationView:
             raise ValueError("Articulations are not identical")
 
         self.root_joint_type = root_joint_types[0][0]
+        root_joint_dof_count = int(model_joint_qd_start[arti_joint_begin + 1] - model_joint_qd_start[arti_joint_begin])
         # fixed base means that all linear and angular degrees of freedom are locked at the root
-        self.is_fixed_base = self.root_joint_type == JointType.FIXED
+        self.is_fixed_base = root_joint_dof_count == 0
         # floating base means that all linear and angular degrees of freedom are unlocked at the root
         # (though there might be constraints like distance)
         self.is_floating_base = self.root_joint_type in (JointType.FREE, JointType.DISTANCE)

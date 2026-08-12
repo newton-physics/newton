@@ -160,7 +160,7 @@ def test_shapes_never_exceed_initial_z(test, device):
                 shape_type = shape_types[shape_index % len(shape_types)]
                 shape_index += 1
 
-                body = builder.add_body(xform=wp.transform(p=pos, q=wp.quat_identity()))
+                body = builder.add_link(xform=wp.transform(p=pos, q=wp.quat_identity()))
 
                 if shape_type == "sphere":
                     builder.add_shape_sphere(body, radius=0.3)
