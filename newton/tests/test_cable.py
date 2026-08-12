@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import unittest
 import warnings
 from typing import Any
@@ -3503,7 +3504,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
 
 
 def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
-    """Verify eval_fk preserves ROD child poses owned by VBD."""
+    """Verify eval_fk does not reconstruct ROD child poses from unsupported joint coordinates."""
     builder = newton.ModelBuilder()
     rod_bodies, rod_joints = builder.add_rod_graph(
         node_positions=[
@@ -5144,28 +5145,33 @@ def _joint_rod_api_deprecates_cable_names(test, device):
     """Verify deprecated cable joint names forward to the rod API."""
     test.assertEqual(newton.JointType.ROD.value, 7)
 
-    # Autocomplete and pydoc enumerate the alias, so listing it must stay silent;
-    # only retrieving it is deprecated.
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
-        test.assertIn("CABLE", dir(newton.JointType))
+        names = dir(newton.JointType)
+        members = newton.JointType.__members__
+        test.assertIn("CABLE", names)
+        test.assertIn("ROD", names)
+        test.assertIs(members["CABLE"], members["ROD"])
 
-    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD"):
+    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD") as caught:
         deprecated_joint_type = newton.JointType.CABLE
     test.assertIs(deprecated_joint_type, newton.JointType.ROD)
+    # Caller attribution ensures the example runner exposes in-tree misuse.
+    test.assertEqual(caught.filename, __file__)
 
-    # The alias is reachable by name lookup as well, which must warn too.
-    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD"):
+    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD") as caught:
         deprecated_by_name = newton.JointType["CABLE"]
     test.assertIs(deprecated_by_name, newton.JointType.ROD)
+    test.assertEqual(caught.filename, __file__)
 
-    # Resolving the underlying value is not deprecated and must stay silent.
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         rod_type = newton.JointType(7)
         test.assertIs(rod_type, newton.JointType.ROD)
-        test.assertEqual(rod_type.name, "ROD")
-        test.assertIn(newton.JointType.ROD, list(newton.JointType))
+        test.assertIs(newton.JointType["ROD"], rod_type)
+        test.assertEqual(rod_type.name, "CABLE")
+        test.assertIn("CABLE", repr(rod_type))
+        test.assertEqual([member.name for member in newton.JointType if member.value == 7], ["CABLE"])
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
@@ -5176,21 +5182,31 @@ def _joint_rod_api_deprecates_cable_names(test, device):
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     child = builder.add_link()
-    with test.assertWarnsRegex(DeprecationWarning, r"add_joint_cable.*add_joint_rod"):
+    with test.assertWarnsRegex(DeprecationWarning, r"add_joint_cable.*add_joint_rod") as caught:
         joint = builder.add_joint_cable(parent=-1, child=child)
     test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
+    test.assertEqual(caught.filename, __file__)
 
 
 def _cable_legacy_positional_arguments_preserve_binding(test, device):
-    """Verify legacy positional cable arguments retain their original meaning."""
-    expected_ke = [11.0, 11.0, 22.0, 22.0]
-    expected_kd = [0.1, 0.1, 0.2, 0.2]
+    """Verify Newton 1.5 cable arguments retain their positional meaning."""
+    test.assertEqual(
+        inspect.signature(newton.ModelBuilder.add_joint_cable),
+        inspect.signature(newton.ModelBuilder.add_joint_rod),
+    )
+
+    released_stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
+    expected_ke = [11.0, 22.0, 33.0, 44.0]
+    expected_kd = [0.1, 0.2, 0.3, 0.4]
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     child = builder.add_link()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", DeprecationWarning)
-        builder.add_joint_cable(-1, child, None, None, 11.0, 0.1, 22.0, 0.2)
+        builder.add_joint_cable(-1, child, None, None, *released_stiffness_args)
+    test.assertEqual(len(caught), 2)
+    test.assertTrue(all(issubclass(item.category, DeprecationWarning) for item in caught))
+    test.assertTrue(all(item.filename == __file__ for item in caught))
     warning_messages = [str(item.message) for item in caught]
     test.assertTrue(any("Passing" in message for message in warning_messages))
     test.assertTrue(any("add_joint_cable" in message for message in warning_messages))
@@ -5201,33 +5217,27 @@ def _cable_legacy_positional_arguments_preserve_binding(test, device):
     quaternions = [wp.quat_identity(), wp.quat_identity()]
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertWarns(DeprecationWarning):
+    with test.assertWarnsRegex(DeprecationWarning, r"Passing .* positionally to ModelBuilder\.add_rod"):
         builder.add_rod(
             points,
             quaternions,
             0.05,
             None,
-            11.0,
-            0.1,
-            22.0,
-            0.2,
-            body_frame_origin="start",
+            *released_stiffness_args,
+            body_frame_origin="com",
         )
     np.testing.assert_allclose(builder.joint_target_ke, expected_ke)
     np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertWarns(DeprecationWarning):
+    with test.assertWarnsRegex(DeprecationWarning, r"Passing .* positionally to ModelBuilder\.add_rod_graph"):
         builder.add_rod_graph(
             points,
             [(0, 1), (1, 2)],
             0.05,
             None,
-            11.0,
-            0.1,
-            22.0,
-            0.2,
-            body_frame_origin="start",
+            *released_stiffness_args,
+            body_frame_origin="com",
         )
     np.testing.assert_allclose(builder.joint_target_ke, expected_ke)
     np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
@@ -5235,13 +5245,27 @@ def _cable_legacy_positional_arguments_preserve_binding(test, device):
 
 def _cable_helper_api_deprecates_create_names(test, device):
     """Verify deprecated cable utility names forward to prefix-first cable names."""
+    helper_renames = (
+        ("create_cable_stiffness_from_elastic_moduli", "cable_stiffness_from_elastic_moduli"),
+        ("create_parallel_transport_cable_quaternions", "cable_parallel_transport_quaternions"),
+        ("create_straight_cable_points", "cable_straight_points"),
+        ("create_straight_cable_points_and_quaternions", "cable_straight_points_and_quaternions"),
+    )
+    for deprecated_name, canonical_name in helper_renames:
+        with test.subTest(deprecated_name=deprecated_name):
+            deprecated = getattr(newton.utils, deprecated_name)
+            canonical = getattr(newton.utils, canonical_name)
+            test.assertEqual(inspect.signature(deprecated), inspect.signature(canonical))
+
     start = wp.vec3(0.0, 0.0, 0.0)
     direction = wp.vec3(1.0, 0.0, 0.0)
 
     expected_points = newton.utils.cable_straight_points(start, direction, 1.0, 2)
-    with test.assertWarnsRegex(DeprecationWarning, "cable_straight_points"):
+    with test.assertWarnsRegex(DeprecationWarning, "cable_straight_points") as caught:
         points = newton.utils.create_straight_cable_points(start, direction, 1.0, 2)
     np.testing.assert_allclose(np.asarray(points), np.asarray(expected_points))
+    # Deprecation warnings should point to the caller.
+    test.assertEqual(caught.filename, __file__)
 
     expected_quaternions = newton.utils.cable_parallel_transport_quaternions(expected_points)
     with test.assertWarnsRegex(DeprecationWarning, "cable_parallel_transport_quaternions"):
@@ -6198,19 +6222,19 @@ add_function_test(
     TestCable,
     "test_joint_rod_api_deprecates_cable_names",
     _joint_rod_api_deprecates_cable_names,
-    devices=devices,
+    devices=None,
 )
 add_function_test(
     TestCable,
     "test_cable_legacy_positional_arguments_preserve_binding",
     _cable_legacy_positional_arguments_preserve_binding,
-    devices=devices,
+    devices=None,
 )
 add_function_test(
     TestCable,
     "test_cable_helper_api_deprecates_create_names",
     _cable_helper_api_deprecates_create_names,
-    devices=devices,
+    devices=None,
 )
 add_function_test(
     TestCable,

@@ -5186,8 +5186,8 @@ class ModelBuilder:
     ) -> int:
         """Adds a rod joint to the model.
 
-        Rod joints have split linear stretch/shear DoFs plus separate angular
-        bend and twist DoFs. When both ``shear_stiffness`` and
+        Rod joints have split linear stretch/shear material slots plus separate
+        angular bend and twist material slots. When both ``shear_stiffness`` and
         ``shear_damping`` are omitted, shear uses the stretch stiffness /
         damping, reproducing the isotropic linear energy while using the
         split layout. When both ``twist_stiffness`` and ``twist_damping`` are
@@ -5197,9 +5197,9 @@ class ModelBuilder:
         .. note::
 
             Rod joints are supported by :class:`newton.solvers.SolverVBD`, which uses an
-            AVBD backend for rigid bodies. Rods are represented in the
-            joint data model as VBD stretch, shear, bend, and twist constraint
-            slots rather than ``joint_q`` coordinates. Rod body transforms are
+            AVBD backend for rigid bodies. They are represented in the joint data
+            model as VBD stretch, shear, bend, and twist constraint slots rather
+            than ``joint_q`` coordinates. Rod body transforms are
             integrated directly by :class:`newton.solvers.SolverVBD`; they are
             not reconstructed by :func:`newton.eval_fk`.
 
@@ -5244,7 +5244,7 @@ class ModelBuilder:
             The index of the added joint.
 
         """
-        # Linear DOFs (stretch and shear). Default shear to stretch so omitted
+        # Linear material slots (stretch and shear). Default shear to stretch so omitted
         # shear reproduces the isotropic linear anchor energy in the split layout.
         stretch_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         stretch_kd = 0.0 if stretch_damping is None else stretch_damping
@@ -5257,7 +5257,7 @@ class ModelBuilder:
             shear_kd = 0.0 if shear_damping is None else shear_damping
         shear_axis = ModelBuilder.JointDofConfig(target_ke=shear_ke, target_kd=shear_kd)
 
-        # Angular DOFs (bend and twist). Default twist to bend so omitted twist
+        # Angular material slots (bend and twist). Default twist to bend so omitted twist
         # reproduces the isotropic angular energy in the split layout.
         bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
         bend_kd = 0.0 if bend_damping is None else bend_damping
@@ -5299,20 +5299,19 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        # Keep new parameters after the legacy ones so deprecated positional calls bind unchanged.
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
         **kwargs,
     ) -> int:
-        """Adds a rod joint to the model.
+        """Deprecated alias for :meth:`add_joint_rod`.
 
         .. deprecated:: 1.6
             Use :meth:`add_joint_rod` instead.
@@ -7691,25 +7690,24 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
         closed: bool = False,
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
-        # Keep new parameters after the legacy ones so deprecated positional calls bind unchanged.
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
 
         Constructs a chain of capsule bodies from the given centerline points and orientations.
         Each segment is a capsule aligned by the corresponding quaternion, and adjacent capsules
-        are connected by rod joints providing split linear stretch/shear and split angular
-        bend/twist degrees of freedom.
+        are connected by rod joints providing separate slots for linear stretch/shear and angular
+        bend/twist.
 
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the
@@ -7725,13 +7723,22 @@ class ModelBuilder:
                 If None, defaults to 1.0e5.
             stretch_damping: Stretch damping [N·s/m] for the rod joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
+            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
+                ``stretch_stiffness``.
+            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
+                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
             bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
                 If None, defaults to 0.0.
             bend_damping: Bend damping [N·m·s/rad] for the rod joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
+                ``bend_stiffness``.
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, and joints.
+            label: Optional label prefix for bodies, shapes, and joints. Generated joint labels
+                retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
@@ -7743,14 +7750,6 @@ class ModelBuilder:
                 body origin and COM coincide. If None, preserves ``"start"`` for now with a
                 :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
                 pass ``"start"`` or ``"com"`` explicitly.
-            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
-                ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
-                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
-                ``bend_stiffness``.
-            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
-                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
 
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
@@ -7921,19 +7920,18 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
         label: str | None = None,
         wrap_in_articulation: bool = True,
         quaternions: list[Quat] | None = None,
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
-        # Keep new parameters after the legacy ones so deprecated positional calls bind unchanged.
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod *graph* (supports junctions) from nodes + edges.
 
@@ -7967,10 +7965,19 @@ class ModelBuilder:
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
             stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
+            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
+                ``stretch_stiffness``.
+            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
+                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
             bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
                 Defaults to 0.0.
             bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations.
+            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
+                ``bend_stiffness``.
+            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
+                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
+            label: Optional label prefix for bodies, shapes, joints, and articulations. Generated
+                joint labels retain the historical ``{label}_cable_{n}`` form for compatibility.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
             quaternions: Optional per-edge orientations in world space. If provided, must have
@@ -7990,14 +7997,6 @@ class ModelBuilder:
                 origin and COM coincide. If None, preserves ``"start"`` for now with a
                 :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
                 pass ``"start"`` or ``"com"`` explicitly.
-            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
-                ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
-                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
-                ``bend_stiffness``.
-            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
-                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to

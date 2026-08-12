@@ -306,7 +306,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             result = builder.add_usd(stage, return_deformable_results=True)
             j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
-            # Stretch DOF target_ke is the authored 0.0, not add_rod's 1.0e5 default.
+            # The stretch-slot target_ke is the authored 0.0, not add_rod's 1.0e5 default.
             dof0 = builder.joint_qd_start[j0]
             self.assertEqual(builder.joint_target_ke[dof0], 0.0)
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["stretchStiffness"], 0.0)

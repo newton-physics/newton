@@ -656,7 +656,7 @@ def compute_geometric_cable_kappa_cached_z(
     kb_rest_local: wp.vec3,
     twist_rest: float,
 ) -> wp.vec3:
-    """Return the geometric strain residual for a rod joint with fixed local +Z."""
+    """Geometric rod-joint strain residual for fixed local +Z."""
     measure = _measure_cable_bend_twist_z(q_wp, q_wc)
     return _assemble_geometric_cable_kappa_z(q_wp, measure.kb_world, measure.twist, kb_rest_local, twist_rest)
 
@@ -3340,7 +3340,7 @@ def _cable_dahl_active_stiffness(
     joint_penalty_k: wp.array[float],
     joint_is_hard: wp.array[wp.int32],
 ) -> wp.vec3:
-    """Return current stiffness for soft rod bend/twist modes; hard modes return zero."""
+    """Current stiffness for soft rod bend/twist modes; hard modes return zero."""
     bend_idx = c_start + 2
     twist_idx = c_start + 3
 

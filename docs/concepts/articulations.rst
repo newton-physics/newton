@@ -50,11 +50,15 @@ Rod joints
 
 :attr:`newton.JointType.ROD` is represented in Newton's joint data model, but
 it is not a conventional generalized-coordinate joint. Its four entries are
-VBD constraint/material slots: two linear slots for stretch and shear, and two
-angular slots for bend and twist. These slots store per-rod stiffness and damping through
-:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`;
-they are not ``joint_q`` coordinates that uniquely reconstruct the child body
-pose.
+VBD constraint/material slots defined by
+:class:`~newton.solvers.SolverVBD.JointSlot`: stretch (``STRETCH``, slot 0),
+shear (``SHEAR``, slot 1), bend (``BEND``, slot 2), and
+twist (``TWIST``, slot 3). These slots store independent per-rod stiffness
+and damping through
+:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`.
+Generic joint storage allocates matching ``joint_q`` / ``joint_qd`` entries, but
+they are not generalized coordinates or velocities that reconstruct the child
+body pose.
 
 Rod body poses and velocities are maximal-coordinate state stored in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
@@ -321,18 +325,21 @@ Joint types
      - up to 6
      - up to 6
    * - ``JointType.ROD``
-     - Rod joint with 2 linear (stretch, shear) and 2 angular (bend, twist) constraint/material slots
+     - Rod joint with 2 linear material slots (stretch/shear) and 2 angular
+       material slots (bend/twist)
      - 4
      - 4
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
+For ``JointType.ROD``, both counts represent allocated material slots, not
+generalized coordinates or velocity DOFs; see `Rod joints`_.
 
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The :attr:`newton.Model.joint_q` array stores the default generalized joint positions
-for all joints in the model and is used to initialize :attr:`newton.State.joint_q`.
+for generalized-coordinate joints and is used to initialize :attr:`newton.State.joint_q`.
 Both arrays share the same per-joint layout.
 For scalar-coordinate joints (for example this D6 joint), the positional coordinates can be queried as follows:
 
@@ -378,7 +385,7 @@ Definition of ``joint_qd``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The :attr:`newton.Model.joint_qd` array stores the default generalized joint velocities
-for all joints in the model and is used to initialize :attr:`newton.State.joint_qd`.
+for generalized-coordinate joints and is used to initialize :attr:`newton.State.joint_qd`.
 The generalized joint forces at :attr:`newton.Control.joint_f` use the same DOF order.
 
 Several other arrays also use this same DOF-ordered layout, indexed from
@@ -395,9 +402,9 @@ The position targets at :attr:`newton.Control.joint_target_q` instead match
 indexed via :attr:`newton.Model.joint_qd_start` — see the
 :ref:`migration guide <joint-target-layout>` for details.
 
-For every joint, these per-DOF arrays are stored consecutively, with linear DOFs
-first and angular DOFs second. Use :attr:`newton.Model.joint_dof_dim` to query
-how many of each a joint has.
+For every generalized-coordinate joint, these per-DOF arrays are stored
+consecutively, with linear DOFs first and angular DOFs second. Use
+:attr:`newton.Model.joint_dof_dim` to query how many of each a joint has.
 
 The velocity DOFs for each joint can be queried as follows:
 

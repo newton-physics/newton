@@ -154,27 +154,28 @@ def _warn_joint_type_cable_deprecated() -> None:
     )
 
 
-class _JointTypeMeta(EnumMeta):
+class _DeprecatedJointTypeMeta(EnumMeta):
     def __getattribute__(cls, name: str):
+        # Defined members resolve before EnumMeta.__getattr__, so intercept deprecated access here.
         value = super().__getattribute__(name)
         if name == "CABLE":
             _warn_joint_type_cable_deprecated()
         return value
 
     def __getitem__(cls, name: str):
-        # Aliases are reachable by name lookup as well as attribute access.
+        value = super().__getitem__(name)
         if name == "CABLE":
             _warn_joint_type_cable_deprecated()
-        return super().__getitem__(name)
+        return value
 
     def __dir__(cls):
-        # Keep the released name discoverable throughout its deprecation window.
+        # EnumMeta.__dir__ omits aliases; keep the preferred ROD name discoverable.
         names = super().__dir__()
-        return names if "CABLE" in names else [*names, "CABLE"]
+        return names if "ROD" in names else [*names, "ROD"]
 
 
 # Types of joints linking rigid bodies
-class JointType(IntEnum, metaclass=_JointTypeMeta):
+class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
     """
     Enumeration of joint types supported in Newton.
     """
@@ -200,17 +201,16 @@ class JointType(IntEnum, metaclass=_JointTypeMeta):
     D6 = 6
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
-    ROD = 7
-    """Rod joint: four constraint slots for linear stretch/shear and angular bend/twist."""
-
-    # Keep the docstring inline so Sphinx's source analyzer marks the alias as
-    # deprecated without treating the whole enum as deprecated.
-    CABLE = ROD
-    """Deprecated alias for :attr:`ROD`.
+    # Keep CABLE as the canonical enum name throughout its 1.6 deprecation.
+    CABLE = 7
+    """Deprecated name for :attr:`ROD`.
 
     .. deprecated:: 1.6
         Use :attr:`ROD` instead.
     """
+
+    ROD = CABLE
+    """Rod joint: four VBD material slots for stretch, shear, bend, and twist."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """

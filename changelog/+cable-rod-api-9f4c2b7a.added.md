@@ -1,1 +1,1 @@
-Add `JointType.ROD` and `ModelBuilder.add_joint_rod()` as the canonical rod-joint names.
+Add `JointType.ROD` as the preferred rod-joint spelling and `ModelBuilder.add_joint_rod()` as the canonical builder method. For compatibility, value 7 retains `"CABLE"` as its canonical enum name during 1.6.

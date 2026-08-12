@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cable construction helpers for rod-element simulation."""
-
 from __future__ import annotations
 
 import math
@@ -16,7 +14,7 @@ from ..math import quat_between_vectors_robust
 
 
 class CableStiffness(NamedTuple):
-    """Per-joint stiffness converted from cable material properties.
+    """Per-joint Kirchhoff rod stiffness for a circular isotropic cross-section.
 
     Returned by :func:`cable_stiffness_from_elastic_moduli` when the caller
     supplies either ``poissons_ratio`` or ``shear_modulus``.
@@ -29,11 +27,10 @@ class CableStiffness(NamedTuple):
 
     For a circular cross-section the two bending axes are equivalent
     (``EI1 == EI2 == EI``); the single ``bend`` field is used for both axes
-    when assembling the per-joint rod-element stiffness vector.
+    when assembling the per-joint cable stiffness vector.
 
     No ``shear`` field, by design. Set a sufficiently large finite
-    ``shear_stiffness`` separately to approximate an unshearable Kirchhoff
-    rod-element representation.
+    ``shear_stiffness`` separately to approximate an unshearable Kirchhoff rod.
 
     Being a :class:`typing.NamedTuple`, instances support both attribute
     access (``stiffness.bend``) and tuple unpacking
@@ -73,31 +70,6 @@ def cable_stiffness_from_elastic_moduli(
 ) -> CableStiffness: ...
 
 
-# Fallbacks for callers holding an optional modulus. Typing the unused argument as
-# ``None`` keeps the runtime mutual exclusion statically enforced; a single
-# catch-all overload would silently accept supplying both.
-@overload
-def cable_stiffness_from_elastic_moduli(
-    youngs_modulus: float,
-    radius: float,
-    segment_length: float,
-    *,
-    poissons_ratio: float | None,
-    shear_modulus: None = None,
-) -> tuple[float, float] | CableStiffness: ...
-
-
-@overload
-def cable_stiffness_from_elastic_moduli(
-    youngs_modulus: float,
-    radius: float,
-    segment_length: float,
-    *,
-    poissons_ratio: None = None,
-    shear_modulus: float | None,
-) -> tuple[float, float] | CableStiffness: ...
-
-
 def cable_stiffness_from_elastic_moduli(
     youngs_modulus: float,
     radius: float,
@@ -106,7 +78,7 @@ def cable_stiffness_from_elastic_moduli(
     poissons_ratio: float | None = None,
     shear_modulus: float | None = None,
 ) -> tuple[float, float] | CableStiffness:
-    """Convert cable elastic moduli to per-joint rod-element stiffness.
+    """Create per-joint cable stiffness from elastic moduli.
 
     For a circular cross-section, this computes material stiffnesses and
     converts them to the per-joint stiffness values expected by
@@ -122,11 +94,10 @@ def cable_stiffness_from_elastic_moduli(
     ``L = segment_length``. For an isotropic material with Poisson's ratio
     ``nu``, the shear modulus is ``G = E / (2 * (1 + nu))``.
 
-    No separate transverse shear stiffness is returned. The split rod-element
-    joint API defaults ``shear_stiffness`` to ``stretch_stiffness`` when
-    omitted; pass an explicit ``shear_stiffness`` if that default is not
-    desired. The ``shear_modulus`` keyword supplies ``G`` for torsion/twist
-    only.
+    No separate transverse shear stiffness is returned. The split rod joint API
+    defaults ``shear_stiffness`` to ``stretch_stiffness`` when omitted; pass an
+    explicit ``shear_stiffness`` if that default is not desired. The
+    ``shear_modulus`` keyword supplies ``G`` for torsion/twist only.
 
     The return shape mirrors what the caller asks for:
 
@@ -226,7 +197,7 @@ def cable_straight_points(
     length: float,
     num_segments: int,
 ) -> list[wp.vec3]:
-    """Create straight cable polyline points for a rod-element representation.
+    """Create straight cable polyline points.
 
     The returned points form the ``positions`` input for
     :meth:`ModelBuilder.add_rod`.
@@ -240,10 +211,6 @@ def cable_straight_points(
 
     Returns:
         List of ``wp.vec3`` points of length ``num_segments + 1`` [m].
-
-    Raises:
-        ValueError: If ``num_segments`` is less than one, ``length`` is
-            non-finite or negative, or ``direction`` is zero.
     """
     if num_segments < 1:
         raise ValueError("num_segments must be >= 1")
@@ -283,10 +250,6 @@ def cable_parallel_transport_quaternions(
 
     Returns:
         List of ``wp.quat`` of length ``len(points) - 1``.
-
-    Raises:
-        ValueError: If fewer than two points are supplied or consecutive
-            points are duplicates.
     """
     if len(points) < 2:
         raise ValueError("points must have length >= 2")
@@ -337,16 +300,6 @@ def cable_straight_points_and_quaternions(
 
     * :func:`cable_straight_points`
     * :func:`cable_parallel_transport_quaternions`
-
-    Args:
-        start: First point in world space [m].
-        direction: World-space direction of the cable (need not be normalized).
-        length: Total length of the cable [m].
-        num_segments: Number of segments (edges).
-        twist_total: Total twist [rad] distributed along the cable.
-
-    Returns:
-        Cable points [m] and matching per-segment quaternions.
     """
     points = cable_straight_points(
         start=start,
@@ -386,28 +339,6 @@ def create_cable_stiffness_from_elastic_moduli(
 ) -> CableStiffness: ...
 
 
-@overload
-def create_cable_stiffness_from_elastic_moduli(
-    youngs_modulus: float,
-    radius: float,
-    segment_length: float,
-    *,
-    poissons_ratio: float | None,
-    shear_modulus: None = None,
-) -> tuple[float, float] | CableStiffness: ...
-
-
-@overload
-def create_cable_stiffness_from_elastic_moduli(
-    youngs_modulus: float,
-    radius: float,
-    segment_length: float,
-    *,
-    poissons_ratio: None = None,
-    shear_modulus: float | None,
-) -> tuple[float, float] | CableStiffness: ...
-
-
 def create_cable_stiffness_from_elastic_moduli(
     youngs_modulus: float,
     radius: float,
@@ -416,7 +347,7 @@ def create_cable_stiffness_from_elastic_moduli(
     poissons_ratio: float | None = None,
     shear_modulus: float | None = None,
 ) -> tuple[float, float] | CableStiffness:
-    """Create cable stiffness for the current rod-element representation.
+    """Deprecated alias for :func:`cable_stiffness_from_elastic_moduli`.
 
     .. deprecated:: 1.6
         Use :func:`cable_stiffness_from_elastic_moduli` instead.
@@ -442,7 +373,7 @@ def create_straight_cable_points(
     length: float,
     num_segments: int,
 ) -> list[wp.vec3]:
-    """Create cable points for the current rod-element representation.
+    """Deprecated alias for :func:`cable_straight_points`.
 
     .. deprecated:: 1.6
         Use :func:`cable_straight_points` instead.
@@ -460,7 +391,7 @@ def create_parallel_transport_cable_quaternions(
     *,
     twist_total: float = 0.0,
 ) -> list[wp.quat]:
-    """Create cable quaternions for the current rod-element representation.
+    """Deprecated alias for :func:`cable_parallel_transport_quaternions`.
 
     .. deprecated:: 1.6
         Use :func:`cable_parallel_transport_quaternions` instead.
@@ -482,7 +413,7 @@ def create_straight_cable_points_and_quaternions(
     *,
     twist_total: float = 0.0,
 ) -> tuple[list[wp.vec3], list[wp.quat]]:
-    """Create straight cable data for the current rod-element representation.
+    """Deprecated alias for :func:`cable_straight_points_and_quaternions`.
 
     .. deprecated:: 1.6
         Use :func:`cable_straight_points_and_quaternions` instead.

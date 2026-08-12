@@ -92,7 +92,6 @@ __all__ += [
     "create_straight_cable_points_and_quaternions",
 ]
 
-# Warning-only compatibility names consumed by ``docs/generate_api.py``.
 __deprecated_symbols__ = {
     "create_cable_stiffness_from_elastic_moduli": (
         "Deprecated in 1.6; use cable_stiffness_from_elastic_moduli instead."

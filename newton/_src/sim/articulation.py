@@ -1008,10 +1008,9 @@ def jcalc_motion_subspace(
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
 
-        ROD joints are not currently supported. ROD joints have complex,
-        configuration-dependent motion subspaces (dynamic stretch direction and
-        isotropic angular DOF) and are primarily designed for VBD solver.
-        If encountered, their Jacobian columns will remain zero.
+        ROD joints are not currently supported because their material slots do
+        not define generalized-coordinate motion subspaces. Their Jacobian
+        columns remain zero.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1501,7 +1500,7 @@ def eval_inverse_dynamics_force(
     ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
     ``joint_f`` is entirely in that world convention.
 
-    :attr:`~newton.JointType.ROD` joints are not supported because their DOF
+    :attr:`~newton.JointType.ROD` joints are not supported because their material
     slots are constraints rather than generalized coordinates for this
     inverse-dynamics formulation.
 
