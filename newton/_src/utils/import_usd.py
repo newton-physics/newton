@@ -1977,7 +1977,7 @@ def parse_usd(
                     d6_limit_gain_cache[cache_key] = fallback, source, builder_default
                 return d6_limit_gain_cache[cache_key]
 
-            def _effective_d6_limit_ke(value, _resolver):
+            def _interpret_usd_d6_limit_ke(value, _resolver):
                 return tuple(_resolve_newton_limit_ke(value, *_d6_limit_gain(dof, "ke"))[0] for dof in d6_free_dofs)
 
             limit_ke = R.get_value(
@@ -1986,10 +1986,10 @@ def parse_usd(
                 key="limit_ke",
                 default=None,
                 verbose=verbose,
-                comparison_key=_effective_d6_limit_ke,
+                comparison_key=_interpret_usd_d6_limit_ke,
             )
 
-            def _effective_d6_limit_kd(value, _resolver):
+            def _interpret_usd_d6_limit_kd(value, _resolver):
                 return tuple(
                     _resolve_newton_limit_kd(limit_ke, value, *_d6_limit_gain(dof, "kd"))[0] for dof in d6_free_dofs
                 )
@@ -2000,7 +2000,7 @@ def parse_usd(
                 key="limit_kd",
                 default=None,
                 verbose=verbose,
-                comparison_key=_effective_d6_limit_kd,
+                comparison_key=_interpret_usd_d6_limit_kd,
             )
             # print(joint_desc.jointLimits, joint_desc.jointDrives)
             # print(joint_desc.body0)
@@ -3623,7 +3623,7 @@ def parse_usd(
                         cache.append(0.0 if value is None else float(value))
                     return cache[0]
 
-                def _effective_margin(value, resolver):
+                def _interpret_usd_margin(value, resolver):
                     value = builder.default_shape_cfg.margin if value is None else value
                     if legacy_margin_gap and resolver is not None and resolver.name == "mjc":
                         value = float(value) - _get_legacy_mjc_gap()
@@ -3635,7 +3635,7 @@ def parse_usd(
                     key="margin",
                     default=builder.default_shape_cfg.margin,
                     verbose=verbose,
-                    comparison_key=_effective_margin,
+                    comparison_key=_interpret_usd_margin,
                 )
                 gap_val = R.get_value(
                     prim,
@@ -3653,7 +3653,7 @@ def parse_usd(
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
                 raw_margin_val = margin_val
-                margin_val = _effective_margin(raw_margin_val, margin_resolver)
+                margin_val = _interpret_usd_margin(raw_margin_val, margin_resolver)
                 if legacy_margin_gap and margin_resolver is not None and margin_resolver.name == "mjc":
                     # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
                     if margin_val < 0.0:
@@ -3732,7 +3732,7 @@ def parse_usd(
                 # Resolve target_voxel_size first because it overrides
                 # sdf_max_resolution and the two are mutually exclusive in
                 # ShapeConfig.validate().
-                def _effective_sdf_target_voxel_size(value, _resolver):
+                def _interpret_usd_sdf_target_voxel_size(value, _resolver):
                     if value == float("-inf") or (value is not None and value <= 0):
                         value = None
                     return builder.default_shape_cfg.sdf_target_voxel_size if value is None else value
@@ -3742,7 +3742,7 @@ def parse_usd(
                     prim_type=PrimType.SHAPE,
                     key="sdf_target_voxel_size",
                     verbose=verbose,
-                    comparison_key=_effective_sdf_target_voxel_size,
+                    comparison_key=_interpret_usd_sdf_target_voxel_size,
                 )
                 if (
                     raw_sdf_target_voxel_size is not None
@@ -3754,9 +3754,9 @@ def parse_usd(
                         f"(must be > 0); falling back to default.",
                         stacklevel=2,
                     )
-                sdf_target_voxel_size = _effective_sdf_target_voxel_size(raw_sdf_target_voxel_size, None)
+                sdf_target_voxel_size = _interpret_usd_sdf_target_voxel_size(raw_sdf_target_voxel_size, None)
 
-                def _effective_sdf_max_resolution(
+                def _interpret_usd_sdf_max_resolution(
                     value,
                     _resolver,
                     sdf_target_voxel_size=sdf_target_voxel_size,
@@ -3777,7 +3777,7 @@ def parse_usd(
                     prim_type=PrimType.SHAPE,
                     key="sdf_max_resolution",
                     verbose=verbose,
-                    comparison_key=_effective_sdf_max_resolution,
+                    comparison_key=_interpret_usd_sdf_max_resolution,
                 )
                 if (
                     raw_sdf_max_resolution is not None
@@ -3809,11 +3809,11 @@ def parse_usd(
                         f"are set; sdfTargetVoxelSize takes precedence.",
                         stacklevel=2,
                     )
-                sdf_max_resolution = _effective_sdf_max_resolution(raw_sdf_max_resolution, None)
+                sdf_max_resolution = _interpret_usd_sdf_max_resolution(raw_sdf_max_resolution, None)
 
                 default_nb = builder.default_shape_cfg.sdf_narrow_band_range
 
-                def _effective_sdf_narrow_band(value, _resolver, default):
+                def _interpret_usd_sdf_narrow_band(value, _resolver, default):
                     return default if value is None or value == float("-inf") else value
 
                 sdf_narrow_band_inner = R.get_value(
@@ -3821,26 +3821,26 @@ def parse_usd(
                     prim_type=PrimType.SHAPE,
                     key="sdf_narrow_band_inner",
                     verbose=verbose,
-                    comparison_key=lambda value, resolver, default=default_nb[0]: _effective_sdf_narrow_band(
+                    comparison_key=lambda value, resolver, default=default_nb[0]: _interpret_usd_sdf_narrow_band(
                         value, resolver, default
                     ),
                 )
-                sdf_narrow_band_inner = _effective_sdf_narrow_band(sdf_narrow_band_inner, None, default_nb[0])
+                sdf_narrow_band_inner = _interpret_usd_sdf_narrow_band(sdf_narrow_band_inner, None, default_nb[0])
                 sdf_narrow_band_outer = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="sdf_narrow_band_outer",
                     verbose=verbose,
-                    comparison_key=lambda value, resolver, default=default_nb[1]: _effective_sdf_narrow_band(
+                    comparison_key=lambda value, resolver, default=default_nb[1]: _interpret_usd_sdf_narrow_band(
                         value, resolver, default
                     ),
                 )
-                sdf_narrow_band_outer = _effective_sdf_narrow_band(sdf_narrow_band_outer, None, default_nb[1])
+                sdf_narrow_band_outer = _interpret_usd_sdf_narrow_band(sdf_narrow_band_outer, None, default_nb[1])
                 sdf_narrow_band_range = (sdf_narrow_band_inner, sdf_narrow_band_outer)
 
                 _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
 
-                def _effective_sdf_texture_format(value, _resolver, valid_formats=_valid_sdf_tex_fmts):
+                def _interpret_usd_sdf_texture_format(value, _resolver, valid_formats=_valid_sdf_tex_fmts):
                     if value is None or value not in valid_formats:
                         return builder.default_shape_cfg.sdf_texture_format
                     return value
@@ -3850,7 +3850,7 @@ def parse_usd(
                     prim_type=PrimType.SHAPE,
                     key="sdf_texture_format",
                     verbose=verbose,
-                    comparison_key=_effective_sdf_texture_format,
+                    comparison_key=_interpret_usd_sdf_texture_format,
                 )
                 if raw_sdf_texture_format is not None and raw_sdf_texture_format not in _valid_sdf_tex_fmts:
                     warnings.warn(
@@ -3858,9 +3858,9 @@ def parse_usd(
                         f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
                         stacklevel=2,
                     )
-                sdf_texture_format = _effective_sdf_texture_format(raw_sdf_texture_format, None)
+                sdf_texture_format = _interpret_usd_sdf_texture_format(raw_sdf_texture_format, None)
 
-                def _effective_sdf_padding(value, _resolver):
+                def _interpret_usd_sdf_padding(value, _resolver):
                     return None if value == float("-inf") or (value is not None and value < 0) else value
 
                 raw_sdf_padding = R.get_value(
@@ -3868,7 +3868,7 @@ def parse_usd(
                     prim_type=PrimType.SHAPE,
                     key="sdf_padding",
                     verbose=verbose,
-                    comparison_key=_effective_sdf_padding,
+                    comparison_key=_interpret_usd_sdf_padding,
                 )
                 if raw_sdf_padding is not None and raw_sdf_padding != float("-inf") and raw_sdf_padding < 0:
                     warnings.warn(
@@ -3876,9 +3876,9 @@ def parse_usd(
                         f"(must be >= 0); falling back to default.",
                         stacklevel=2,
                     )
-                sdf_padding = _effective_sdf_padding(raw_sdf_padding, None)
+                sdf_padding = _interpret_usd_sdf_padding(raw_sdf_padding, None)
 
-                def _effective_hydroelastic_enabled(value, _resolver, has_sdf_api=has_sdf_api):
+                def _interpret_usd_hydroelastic_enabled(value, _resolver, has_sdf_api=has_sdf_api):
                     if value is True or value is False:
                         return value
                     if has_sdf_api:
@@ -3890,11 +3890,11 @@ def parse_usd(
                     prim_type=PrimType.SHAPE,
                     key="hydroelastic_enabled",
                     verbose=verbose,
-                    comparison_key=_effective_hydroelastic_enabled,
+                    comparison_key=_interpret_usd_hydroelastic_enabled,
                 )
-                is_hydroelastic = _effective_hydroelastic_enabled(hydroelastic_enabled, None)
+                is_hydroelastic = _interpret_usd_hydroelastic_enabled(hydroelastic_enabled, None)
 
-                def _effective_hydroelastic_stiffness(value, _resolver):
+                def _interpret_usd_hydroelastic_stiffness(value, _resolver):
                     if value == float("-inf") or value is None or value <= 0:
                         return builder.default_shape_cfg.kh
                     return value
@@ -3904,7 +3904,7 @@ def parse_usd(
                     prim_type=PrimType.SHAPE,
                     key="kh",
                     verbose=verbose,
-                    comparison_key=_effective_hydroelastic_stiffness,
+                    comparison_key=_interpret_usd_hydroelastic_stiffness,
                 )
                 if raw_kh is not None and raw_kh != float("-inf") and raw_kh <= 0:
                     warnings.warn(
@@ -3912,7 +3912,7 @@ def parse_usd(
                         f"(must be > 0); falling back to default.",
                         stacklevel=2,
                     )
-                kh = _effective_hydroelastic_stiffness(raw_kh, None)
+                kh = _interpret_usd_hydroelastic_stiffness(raw_kh, None)
 
                 # Hydroelastic meshes need an SDF source. For primitives, a texture
                 # SDF is generated from a synthesized watertight mesh at finalize(),
