@@ -918,7 +918,7 @@ python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 
 ## Contributing and Development
 
-See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for instructions on how to contribute to Newton.
+See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md), [development guide](https://newton-physics.github.io/newton/latest/guide/development.html), and [source code guidelines](CODING_GUIDELINES.rst) for instructions on how to contribute to Newton.
 
 ## Support and Community Discussion
 

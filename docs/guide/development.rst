@@ -6,7 +6,7 @@ Development
 
 This document is a guide for developers who want to contribute to the project or understand its internal workings in more detail.
 
-Please refer to `CONTRIBUTING.md <https://github.com/newton-physics/governance/blob/main/CONTRIBUTING.md>`_ for how to best contribute to Newton and relevant legal information (CLA).
+Please refer to `CONTRIBUTING.md <https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md>`_ for how to best contribute to Newton and relevant legal information (CLA). All code contributions must follow the :doc:`source_code_guidelines`.
 
 Installation
 ------------
@@ -635,8 +635,9 @@ documented in the `changelog fragment guide
 Style Guide
 -----------
 
-- Follow PEP 8 for Python code.
-- Use Google-style docstrings (compatible with Napoleon extension).
+The :doc:`source_code_guidelines` are the canonical coding and public API
+standards for Newton contributors and reviewers.
+
 - Write clear, concise commit messages.
 - Keep pull requests focused on a single feature or bug fix.
 - Use kebab-case instead of snake_case for command line arguments, e.g. ``--use-cuda-graph`` instead of ``--use_cuda_graph``.
