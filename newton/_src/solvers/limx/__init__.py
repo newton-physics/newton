@@ -5,6 +5,7 @@
 
 from .affine_body import AffineBodyModel
 from .constraints import (
+    ConstraintAffineStaticPlaneContact,
     ConstraintAnchor,
     ConstraintDihedralBending,
     ConstraintDistance,
@@ -22,6 +23,7 @@ from .solver_newton import SolverLIMX
 __all__ = [
     "AffineBodyModel",
     "CompositeLinearOperator",
+    "ConstraintAffineStaticPlaneContact",
     "ConstraintAnchor",
     "ConstraintDihedralBending",
     "ConstraintDistance",

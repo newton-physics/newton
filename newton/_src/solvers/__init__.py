@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from .kamino import SolverKamino
     from .limx import (
         AffineBodyModel,
+        ConstraintAffineStaticPlaneContact,
         ConstraintAnchor,
         ConstraintDihedralBending,
         ConstraintDistance,
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AffineBodyModel",
+    "ConstraintAffineStaticPlaneContact",
     "ConstraintAnchor",
     "ConstraintDihedralBending",
     "ConstraintDistance",
@@ -59,6 +61,7 @@ __all__ = [
 # not pay the import cost of every solver backend.
 _LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
     "AffineBodyModel": (".limx", "AffineBodyModel"),
+    "ConstraintAffineStaticPlaneContact": (".limx", "ConstraintAffineStaticPlaneContact"),
     "ConstraintAnchor": (".limx", "ConstraintAnchor"),
     "ConstraintDihedralBending": (".limx", "ConstraintDihedralBending"),
     "ConstraintDistance": (".limx", "ConstraintDistance"),
