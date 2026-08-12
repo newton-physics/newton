@@ -1213,6 +1213,95 @@ class TestImportUsdJoints(unittest.TestCase):
         self.assertIn(shape_pair, builder.shape_collision_filter_pairs)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_explicit_self_collision_argument_overrides_usd(self):
+        """Let an explicit self-collision argument override authored USD."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        articulation = UsdGeom.Xform.Define(stage, "/World")
+        articulation_prim = articulation.GetPrim()
+        UsdPhysics.ArticulationRootAPI.Apply(articulation_prim)
+        self_collision_attr = articulation_prim.CreateAttribute(
+            "newton:selfCollisionEnabled",
+            Sdf.ValueTypeNames.Bool,
+        )
+
+        bodies = []
+        for name in ("Body0", "Body1"):
+            body = UsdGeom.Cube.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+            bodies.append(body)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.CreateBody0Rel().SetTargets([bodies[0].GetPath()])
+        joint.CreateBody1Rel().SetTargets([bodies[1].GetPath()])
+        joint.CreateCollisionEnabledAttr().Set(True)
+
+        for authored_value, override in ((True, False), (False, True)):
+            self_collision_attr.Set(authored_value)
+            default_builder = newton.ModelBuilder()
+            default_builder.add_usd(
+                stage,
+                use_applied_schema_fallbacks=True,
+            )
+            default_shape_pair = tuple(
+                sorted(default_builder.shape_label.index(str(body.GetPath())) for body in bodies)
+            )
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(
+                stage,
+                enable_self_collisions=override,
+                use_applied_schema_fallbacks=True,
+            )
+            shape_pair = tuple(sorted(builder.shape_label.index(str(body.GetPath())) for body in bodies))
+
+            self.assertEqual(
+                default_shape_pair in default_builder.shape_collision_filter_pairs,
+                not authored_value,
+            )
+            self.assertEqual(
+                shape_pair in builder.shape_collision_filter_pairs,
+                not override,
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_self_collision_argument_remains_a_default(self):
+        """Keep the self-collision argument as a default under legacy resolution."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        articulation = UsdGeom.Xform.Define(stage, "/World")
+        articulation_prim = articulation.GetPrim()
+        UsdPhysics.ArticulationRootAPI.Apply(articulation_prim)
+        articulation_prim.AddAppliedSchema("NewtonArticulationRootAPI")
+
+        bodies = []
+        for name in ("Body0", "Body1"):
+            body = UsdGeom.Cube.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+            bodies.append(body)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.CreateBody0Rel().SetTargets([bodies[0].GetPath()])
+        joint.CreateBody1Rel().SetTargets([bodies[1].GetPath()])
+        joint.CreateCollisionEnabledAttr().Set(True)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "error",
+                message=r".*schema fallbacks.*",
+                category=DeprecationWarning,
+            )
+            builder.add_usd(stage, enable_self_collisions=False)
+        shape_pair = tuple(sorted(builder.shape_label.index(str(body.GetPath())) for body in bodies))
+
+        self.assertIn(shape_pair, builder.shape_collision_filter_pairs)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_world_joint_does_not_filter_collisions(self):
         from pxr import Usd, UsdGeom, UsdPhysics
 

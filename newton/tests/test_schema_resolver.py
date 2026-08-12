@@ -37,12 +37,14 @@ import unittest
 import warnings
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest import mock
 
 import warp as wp
 
 from newton import Model, ModelBuilder, ShapeFlags
 from newton._src.usd.schema_resolver import (
     SchemaResolverManager,
+    _default_when_omitted,
     _reader_schema_attribute,
     _registered_attribute_fallbacks,
     _SchemaResolution,
@@ -156,6 +158,73 @@ class TestSchemaResolver(unittest.TestCase):
         resolver = SchemaResolverManager([OverrideResolver()])
 
         self.assertEqual(resolver.get_value(None, PrimType.JOINT, "armature"), 0.5)
+
+    def test_explicit_override_preserves_legacy_resolution(self):
+        """Apply overrides only under composed fallback resolution."""
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.CreateAttribute("newton:armature", Sdf.ValueTypeNames.Float).Set(0.5)
+
+        for use_applied_schema_fallbacks in (False, True):
+            with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
+                resolver = SchemaResolverManager(
+                    [SchemaResolverNewton()],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+                value = resolver.get_value(
+                    joint,
+                    PrimType.JOINT,
+                    "armature",
+                    default=_default_when_omitted(0.25),
+                    override=0.25,
+                )
+
+                self.assertEqual(value, 0.25 if use_applied_schema_fallbacks else 0.5)
+                self.assertIsNone(resolver._fallback_migration_warning())
+
+    def test_explicit_none_override_is_not_missing(self):
+        """Accept explicit None as an importer override."""
+        resolver = SchemaResolverManager(
+            [SchemaResolverNewton()],
+            use_applied_schema_fallbacks=True,
+        )
+
+        with mock.patch("builtins.print") as print_mock:
+            value = resolver.get_value(
+                None,
+                PrimType.JOINT,
+                "armature",
+                default=0.75,
+                override=None,
+                verbose=True,
+            )
+
+        self.assertIsNone(value)
+        print_mock.assert_not_called()
+
+    def test_omitted_none_default_is_not_no_default(self):
+        """Distinguish an omitted None default from no importer default."""
+
+        class CompatibilityResolver(SchemaResolver):
+            name = "compatibility"
+            mapping: ClassVar = {
+                PrimType.JOINT: {"armature": SchemaResolver.SchemaAttribute("compatibility:armature", 0.5)}
+            }
+
+        resolver = SchemaResolverManager(
+            [CompatibilityResolver()],
+            use_applied_schema_fallbacks=True,
+        )
+
+        self.assertEqual(resolver.get_value(None, PrimType.JOINT, "armature"), 0.5)
+        self.assertIsNone(
+            resolver.get_value(
+                None,
+                PrimType.JOINT,
+                "armature",
+                default=_default_when_omitted(None),
+            )
+        )
 
     def test_schema_application_controls_fallback_ownership(self):
         """Grant fallback ownership only when the schema is applied."""

@@ -372,7 +372,13 @@ On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArtic
      - ``self_collision_enabled``
      - Direct mapping
 
-The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` (in resolver priority order). The ``enable_self_collisions`` argument to :meth:`newton.ModelBuilder.add_usd` is used as the default when neither attribute is authored.
+The parser resolves ``self_collision_enabled`` from either
+``newton:selfCollisionEnabled`` or
+``physxArticulation:enabledSelfCollisions`` (in resolver priority order). When
+``enable_self_collisions`` is omitted from :meth:`newton.ModelBuilder.add_usd`,
+``True`` is the importer default. With ``use_applied_schema_fallbacks=True``,
+passing the argument explicitly overrides the resolved USD value. Legacy
+resolution continues to treat an explicit value as an importer default.
 
 **Newton Joint Attribute Remapping:**
 
@@ -469,6 +475,11 @@ Priority-Based Resolution
 When multiple physics solvers define conflicting attributes for the same property, the user can define which solver attributes should be preferred by configuring the resolver order.
 
 **Resolution Hierarchy:**
+
+With ``use_applied_schema_fallbacks=True``, an explicit importer override is
+returned before this hierarchy. For example, passing
+``enable_self_collisions=False`` forces self-collisions off even when a USD
+value or registered schema fallback enables them.
 
 By default, attribute resolution retains the compatibility hierarchy:
 

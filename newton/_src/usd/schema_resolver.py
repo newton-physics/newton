@@ -27,7 +27,37 @@ if TYPE_CHECKING:
 
 
 _MISSING_FALLBACK = object()
+_NO_OVERRIDE = object()
 _UNREGISTERED_SCHEMA = object()
+
+
+@dataclass(frozen=True)
+class _ImporterDefault:
+    """Carry an importer default that may be None."""
+
+    value: Any
+
+    def __repr__(self) -> str:
+        return f"<omitted; importer default={self.value!r}>"
+
+
+def _default_when_omitted(value: Any) -> Any:
+    """Mark a public importer argument's value as its omission default."""
+    return _ImporterDefault(value)
+
+
+def _interpret_import_argument(value: Any) -> tuple[Any, _ImporterDefault]:
+    """Preserve an argument's future override and legacy default roles."""
+    if isinstance(value, _ImporterDefault):
+        return _NO_OVERRIDE, value
+    return value, _ImporterDefault(value)
+
+
+def _importer_default(default: Any) -> tuple[bool, Any]:
+    """Return whether an importer default exists and its unwrapped value."""
+    if isinstance(default, _ImporterDefault):
+        return True, default.value
+    return default is not None, default
 
 
 @dataclass(frozen=True)
@@ -375,8 +405,9 @@ class _SchemaResolution:
                 elif fallback is not _MISSING_FALLBACK:
                     return _ResolvedValue(fallback, resolver, False)
 
-        if default is not None:
-            return _ResolvedValue(default, None, False)
+        has_importer_default, importer_default = _importer_default(default)
+        if has_importer_default:
+            return _ResolvedValue(importer_default, None, False)
 
         for resolver in self._resolvers:
             spec = resolver.mapping.get(prim_type, {}).get(key)
@@ -451,6 +482,7 @@ class SchemaResolverManager:
         default: Any = None,
         verbose: bool = False,
         *,
+        override: Any = _NO_OVERRIDE,
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
         legacy_value_transformer: Callable[[Any, SchemaResolver | None], Any] | None = None,
     ) -> Any:
@@ -462,6 +494,10 @@ class SchemaResolverManager:
             prim_type: Prim type (PrimType enum)
             key: Attribute key within the prim type
             default: Default value if not found
+            override: Explicit importer value that takes precedence over USD
+                resolution when composed fallback resolution is enabled. Under
+                legacy resolution, its paired importer default retains the
+                existing precedence and suppresses migration auditing.
             comparison_key: Convert a raw value and resolver into its
                 consumer-observable form for the compatibility audit.
             legacy_value_transformer: Convert values returned by the legacy
@@ -471,16 +507,20 @@ class SchemaResolverManager:
         Returns:
             Resolved value according to the precedence above.
         """
+        if override is not _NO_OVERRIDE and self._uses_composed_fallbacks:
+            return override
+
         value, _ = self._get_value_with_policy(
             prim,
             prim_type,
             key,
             default,
             compare_resolver=False,
+            audit_fallbacks=override is _NO_OVERRIDE,
             comparison_key=comparison_key,
             legacy_value_transformer=legacy_value_transformer,
         )
-        self._report_missing(prim, prim_type, key, value, verbose)
+        self._report_missing(prim, prim_type, key, value, verbose and override is _NO_OVERRIDE)
         return value
 
     def get_value_with_resolver(
@@ -491,20 +531,25 @@ class SchemaResolverManager:
         default: Any = None,
         verbose: bool = False,
         *,
+        override: Any = _NO_OVERRIDE,
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
         legacy_value_transformer: Callable[[Any, SchemaResolver | None], Any] | None = None,
     ) -> tuple[Any, SchemaResolver | None]:
         """Resolve a value and return the resolver that supplied it."""
+        if override is not _NO_OVERRIDE and self._uses_composed_fallbacks:
+            return override, None
+
         value, resolver = self._get_value_with_policy(
             prim,
             prim_type,
             key,
             default,
             compare_resolver=True,
+            audit_fallbacks=override is _NO_OVERRIDE,
             comparison_key=comparison_key,
             legacy_value_transformer=legacy_value_transformer,
         )
-        self._report_missing(prim, prim_type, key, value, verbose)
+        self._report_missing(prim, prim_type, key, value, verbose and override is _NO_OVERRIDE)
         return value, resolver
 
     @property
@@ -534,6 +579,7 @@ class SchemaResolverManager:
         default: Any,
         *,
         compare_resolver: bool,
+        audit_fallbacks: bool,
         comparison_key: Callable[[Any, SchemaResolver | None], Any] | None,
         legacy_value_transformer: Callable[[Any, SchemaResolver | None], Any] | None,
     ) -> tuple[Any, SchemaResolver | None]:
@@ -557,17 +603,18 @@ class SchemaResolverManager:
         value, resolver = self._get_legacy_value(prim, prim_type, key, default, read_value=read_value)
         if legacy_value_transformer is not None:
             value = legacy_value_transformer(value, resolver)
-        self._record_legacy_fallback(
-            prim,
-            prim_type,
-            key,
-            default,
-            value,
-            resolver,
-            compare_resolver=compare_resolver,
-            comparison_key=comparison_key,
-            read_value=read_value,
-        )
+        if audit_fallbacks:
+            self._record_legacy_fallback(
+                prim,
+                prim_type,
+                key,
+                default,
+                value,
+                resolver,
+                compare_resolver=compare_resolver,
+                comparison_key=comparison_key,
+                read_value=read_value,
+            )
         return value, resolver
 
     def _resolve_specialized_value(
@@ -620,8 +667,9 @@ class SchemaResolverManager:
             self._collect_on_first_use(resolver, prim)
             return value, resolver
 
-        if default is not None:
-            return default, None
+        has_importer_default, importer_default = _importer_default(default)
+        if has_importer_default:
+            return importer_default, None
 
         for resolver in self.resolvers:
             spec = resolver.mapping.get(prim_type, {}).get(key)
