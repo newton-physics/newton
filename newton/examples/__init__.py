@@ -96,7 +96,7 @@ def test_body_state(
     if indices is None:
         indices = np.arange(model.body_count, dtype=np.int32).tolist()
 
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def test_fn_kernel(
         body_q: wp.array[wp.transform],
         body_qd: wp.array[wp.spatial_vector],
@@ -168,7 +168,7 @@ def test_particle_state(
     if indices is None:
         indices = np.arange(state.particle_count, dtype=np.int32).tolist()
 
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def test_fn_kernel(
         particle_q: wp.array[wp.vec3],
         particle_qd: wp.array[wp.vec3],

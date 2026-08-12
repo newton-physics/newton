@@ -33,6 +33,7 @@ from ..geometry.contacts import ContactsKamino
 from ..kinematics.limits import LimitsKamino
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
+from .joints import gimbal_reciprocal_axes
 
 ###
 # Module interface
@@ -67,8 +68,10 @@ def build_full_joint_jacobian(
     bid_F: wp.int32,
     model_joints_X_Bj: wp.array[wp.mat33f],
     model_joints_X_Fj: wp.array[wp.mat33f],
+    model_joints_coords_offset: wp.array[wp.int32],
     state_joints_p: wp.array[wp.transformf],
     state_bodies_q: wp.array[wp.transformf],
+    state_joints_q: wp.array[wp.float32],
 ):
     """
     Computes the full (6x6) joint Jacobian (constraint and DoFs) for a specific joint.
@@ -101,15 +104,28 @@ def build_full_joint_jacobian(
         W_j_F = screw_transform_matrix_from_points(r_j, r_F_j)
 
         # General case: Compute the effective projector to joint frame and expand to 6D
-        if dof_type != JointDoFType.UNIVERSAL:
+        if (
+            dof_type != JointDoFType.UNIVERSAL
+            and dof_type != JointDoFType.GIMBAL
+            and dof_type != JointDoFType.GIMBAL_LEFT_HANDED
+        ):
             R_X_bar_j = expand6d(R_X_j)
         # Universal joint: replace R_X_j with the frame of the intermediate body for rotation constraints
-        else:
+        elif dof_type == JointDoFType.UNIVERSAL:
             j_q_j = compute_joint_relative_quaternion(
                 T_B_j, T_F_j, model_joints_X_Bj[joint_id], model_joints_X_Fj[joint_id]
             )
             R_intermediate = compute_intermediate_body_frame_universal_joint(j_q_j)
             R_X_bar_j = concat6d(R_X_j, R_X_j @ R_intermediate)
+        # Gimbal joint: replace R_X_j with the frame of the reciprocal axes
+        else:
+            third_axis_sign = -1.0 if dof_type == JointDoFType.GIMBAL_LEFT_HANDED else 1.0
+            coords_offset = model_joints_coords_offset[joint_id]
+            coords = wp.vec3f(
+                state_joints_q[coords_offset], state_joints_q[coords_offset + 1], state_joints_q[coords_offset + 2]
+            )
+            reciprocal = gimbal_reciprocal_axes(coords, third_axis_sign)
+            R_X_bar_j = concat6d(R_X_j, R_X_j @ reciprocal)
 
         # Compute the extended jacobians, i.e. without the selection-matrix multiplication
         JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
@@ -265,6 +281,15 @@ def store_joint_cts_jacobian_dense(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
 
+    elif dof_type == JointDoFType.GIMBAL:
+        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL.cts_axes))(
+            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
+        )
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL_LEFT_HANDED.cts_axes))(
+            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
+        )
+
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.CARTESIAN.cts_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
@@ -317,6 +342,15 @@ def store_joint_dofs_jacobian_dense(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
 
+    elif dof_type == JointDoFType.GIMBAL:
+        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL.dofs_axes))(
+            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
+        )
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL_LEFT_HANDED.dofs_axes))(
+            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
+        )
+
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.CARTESIAN.dofs_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
@@ -366,6 +400,15 @@ def store_joint_cts_jacobian_sparse(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
 
+    elif dof_type == JointDoFType.GIMBAL:
+        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL.cts_axes))(
+            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
+        )
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL_LEFT_HANDED.cts_axes))(
+            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
+        )
+
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.CARTESIAN.cts_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
@@ -412,6 +455,15 @@ def store_joint_dofs_jacobian_sparse(
 
     elif dof_type == JointDoFType.SPHERICAL:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.SPHERICAL.dofs_axes))(
+            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
+        )
+
+    elif dof_type == JointDoFType.GIMBAL:
+        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL.dofs_axes))(
+            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
+        )
+    elif dof_type == JointDoFType.GIMBAL_LEFT_HANDED:
+        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL_LEFT_HANDED.dofs_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
 
@@ -479,6 +531,7 @@ def _build_joint_jacobians_dense(
     model_info_joint_kinematic_cts_group_offset: wp.array[wp.int32],
     model_joints_wid: wp.array[wp.int32],
     model_joints_dof_type: wp.array[wp.int32],
+    model_joints_coords_offset: wp.array[wp.int32],
     model_joints_dofs_offset: wp.array[wp.int32],
     model_joints_num_dynamic_cts: wp.array[wp.int32],
     model_joints_dynamic_cts_offset: wp.array[wp.int32],
@@ -489,6 +542,7 @@ def _build_joint_jacobians_dense(
     model_joints_X_Fj: wp.array[wp.mat33f],
     state_joints_p: wp.array[wp.transformf],
     state_bodies_q: wp.array[wp.transformf],
+    state_joints_q: wp.array[wp.float32],
     jac_cts_offsets: wp.array[wp.int32],
     jac_dofs_offsets: wp.array[wp.int32],
     # Outputs
@@ -539,8 +593,10 @@ def _build_joint_jacobians_dense(
         bid_F,
         model_joints_X_Bj,
         model_joints_X_Fj,
+        model_joints_coords_offset,
         state_joints_p,
         state_bodies_q,
+        state_joints_q,
     )
 
     # Store joint dynamic constraint jacobians if applicable
@@ -573,6 +629,7 @@ def _configure_jacobians_sparse(
 def _build_joint_jacobians_sparse(
     # Inputs
     model_joints_dof_type: wp.array[wp.int32],
+    model_joints_coords_offset: wp.array[wp.int32],
     model_joints_num_dofs: wp.array[wp.int32],
     model_joints_num_dynamic_cts: wp.array[wp.int32],
     model_joints_bid_B: wp.array[wp.int32],
@@ -582,6 +639,7 @@ def _build_joint_jacobians_sparse(
     model_joints_dynamic_cts_offset: wp.array[wp.int32],
     state_joints_p: wp.array[wp.transformf],
     state_bodies_q: wp.array[wp.transformf],
+    state_joints_q: wp.array[wp.float32],
     jacobian_cts_nzb_offsets: wp.array[wp.int32],
     jacobian_dofs_nzb_offsets: wp.array[wp.int32],
     # Outputs
@@ -609,8 +667,10 @@ def _build_joint_jacobians_sparse(
         bid_F,
         model_joints_X_Bj,
         model_joints_X_Fj,
+        model_joints_coords_offset,
         state_joints_p,
         state_bodies_q,
+        state_joints_q,
     )
 
     # Store joint dynamic constraint jacobians if applicable
@@ -1410,6 +1470,7 @@ class DenseSystemJacobians:
                     model.info.joint_kinematic_cts_group_offset,
                     model.joints.wid,
                     model.joints.dof_type,
+                    model.joints.coords_offset,
                     model.joints.dofs_offset,
                     model.joints.num_dynamic_cts,
                     model.joints.dynamic_cts_offset,
@@ -1420,6 +1481,7 @@ class DenseSystemJacobians:
                     model.joints.X_Fj,
                     data.joints.p_j,
                     data.bodies.q_i,
+                    data.joints.q_j,
                     self._data.J_cts_offsets,
                     self._data.J_dofs_offsets,
                     # Outputs:
@@ -1797,6 +1859,7 @@ class SparseSystemJacobians:
                 inputs=[
                     # Inputs:
                     model.joints.dof_type,
+                    model.joints.coords_offset,
                     model.joints.num_dofs,
                     model.joints.num_dynamic_cts,
                     model.joints.bid_B,
@@ -1806,6 +1869,7 @@ class SparseSystemJacobians:
                     model.joints.dynamic_cts_offset,
                     data.joints.p_j,
                     data.bodies.q_i,
+                    data.joints.q_j,
                     self._J_cts_joint_nzb_offsets,
                     self._J_dofs_joint_nzb_offsets,
                     # Outputs:
