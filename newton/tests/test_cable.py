@@ -11,6 +11,7 @@ import newton
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _bishop_transport_quat,
     _cable_bend_twist_directional_derivatives_from_measure,
+    _cable_bend_twist_jacobian_z_from_measure,
     _finite_curvature_binormal,
     _finite_curvature_binormal_derivative,
     _measure_cable_bend_twist_z,
@@ -18,6 +19,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     compute_cable_dahl_parameters,
     compute_geometric_cable_kappa_cached_z,
     evaluate_cable_bend_twist_force_hessian_z,
+    evaluate_cable_stretch_shear_force_hessian,
     update_cable_dahl_state,
 )
 from newton._src.utils import is_graph_capture_allocation_enabled
@@ -1845,9 +1847,9 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     # Find the revolute joint and its DOF index after finalize().
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     rev_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.REVOLUTE))
-    dof_idx = int(joint_qd_start[rev_idx])
+    dof_idx = int(joint_target_q_start[rev_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -1975,9 +1977,9 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     model.set_gravity((0.0, 0.0, -9.81))
 
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     rev_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.REVOLUTE))
-    dof_idx = int(joint_qd_start[rev_idx])
+    dof_idx = int(joint_target_q_start[rev_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -2251,9 +2253,9 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     # Find the prismatic joint and its DOF index after finalize().
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     prismatic_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.PRISMATIC))
-    dof_idx = int(joint_qd_start[prismatic_idx])
+    dof_idx = int(joint_target_q_start[prismatic_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -2381,9 +2383,9 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     model.set_gravity((0.0, 0.0, -9.81))
 
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     prismatic_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.PRISMATIC))
-    dof_idx = int(joint_qd_start[prismatic_idx])
+    dof_idx = int(joint_target_q_start[prismatic_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -2972,9 +2974,9 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     # Find the D6 joint and its DOF indices after finalize().
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     d6_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.D6))
-    qd_s = int(joint_qd_start[d6_idx])
+    qd_s = int(joint_target_q_start[d6_idx])
     lin_dof_idx = qd_s
     ang_dof_idx = qd_s + 1
 
@@ -3132,9 +3134,9 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     model.set_gravity((0.0, 0.0, -9.81))
 
     joint_types = model.joint_type.numpy()
-    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     d6_idx = next(i for i in range(model.joint_count) if int(joint_types[i]) == int(newton.JointType.D6))
-    qd_s = int(joint_qd_start[d6_idx])
+    qd_s = int(joint_target_q_start[d6_idx])
 
     state0 = model.state()
     state1 = model.state()
@@ -4308,8 +4310,73 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
 
 
 # -----------------------------------------------------------------------------
-# Split cable bend/twist verification helpers
+# Split cable verification helpers
 # -----------------------------------------------------------------------------
+
+
+@wp.kernel
+def _eval_cable_stretch_shear_parent_hessian_error(errors: wp.array[wp.vec2]):
+    parent_pose = wp.transform(
+        wp.vec3(-0.31, 0.44, -0.19),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.4, 0.9, 0.2)), 1.1),
+    )
+    parent_com = wp.vec3(0.07, -0.11, 0.23)
+    X_wp = wp.transform(
+        wp.vec3(0.12, -0.05, 0.09),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7),
+    )
+    x_p = wp.transform_get_translation(X_wp)
+    X_wc = wp.transform(x_p + wp.vec3(0.21, -0.13, 0.17), wp.quat_identity())
+    x_c = wp.transform_get_translation(X_wc)
+    # Unequal stretch/shear stiffness, so extracting the maximum rather than the minimum common
+    # coefficient is observable; equal stiffness cannot distinguish them.
+    k_shear = float(7.0)
+    k_stretch = float(11.0)
+    damping = float(3.0)
+    dt = float(0.25)
+
+    X_wc_prev = wp.transform(
+        x_c + wp.vec3(-0.04, 0.06, 0.03),
+        wp.quat_identity(),
+    )
+    _force, _torque, _H_ll, H_al, H_aa = evaluate_cable_stretch_shear_force_hessian(
+        X_wp,
+        X_wc,
+        X_wp,
+        X_wc_prev,
+        parent_pose,
+        wp.transform_identity(),
+        parent_com,
+        wp.vec3(0.0),
+        True,
+        wp.vec3(k_shear, k_shear, k_stretch),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        wp.vec3(damping),
+        True,
+        dt,
+    )
+
+    identity = wp.identity(3, float)
+    t = wp.quat_rotate(wp.transform_get_rotation(X_wp), wp.vec3(0.0, 0.0, 1.0))
+    h_s = k_shear + damping / dt
+    h_z = k_stretch + damping / dt
+    K_eff = h_s * identity + (h_z - h_s) * wp.outer(t, t)
+    k_iso = wp.min(k_shear, k_stretch)
+    K_material = K_eff - k_iso * identity
+
+    com_w = wp.transform_point(parent_pose, parent_com)
+    rx_elastic = wp.skew(x_p - com_w)
+    rx_material = wp.skew(x_c - com_w)
+    H_al_ref = k_iso * rx_elastic + rx_material * K_material
+    H_aa_ref = k_iso * wp.transpose(rx_elastic) * rx_elastic
+    H_aa_ref = H_aa_ref + wp.transpose(rx_material) * K_material * rx_material
+    H_al_error = H_al - H_al_ref
+    H_aa_error = H_aa - H_aa_ref
+    errors[0] = wp.vec2(
+        wp.sqrt(wp.ddot(H_al_error, H_al_error)),
+        wp.sqrt(wp.ddot(H_aa_error, H_aa_error)),
+    )
 
 
 @wp.kernel
@@ -4769,7 +4836,8 @@ def _eval_geometric_sharp_turn_kernel(errors: wp.array[wp.vec3]):
 @wp.kernel
 def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     tid = wp.tid()
-    is_parent = tid == 0
+    is_parent = tid < 3
+    axis_id = tid % 3
 
     # Pre-curved rest exercises the rest-relative composition in the derivative,
     # not just the identity-rest special case.
@@ -4782,15 +4850,16 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     q_wp = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.7, -0.2)), 0.55) * q_wp_rest
     q_wc = wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.6, 0.2, 0.4)), 0.62) * q_wc_rest
 
-    omega = wp.vec3(0.21, -0.34, 0.27)
-    if not is_parent:
-        omega = wp.vec3(-0.18, 0.29, 0.2)
-    omega_len = wp.length(omega)
-    axis = omega / omega_len
+    axis = wp.vec3(1.0, 0.0, 0.0)
+    if axis_id == 1:
+        axis = wp.vec3(0.0, 1.0, 0.0)
+    elif axis_id == 2:
+        axis = wp.vec3(0.0, 0.0, 1.0)
 
     measure = _measure_cable_bend_twist_z(q_wp, q_wc)
-    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(q_wp, measure, omega, is_parent)
-    analytic = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
+    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(q_wp, measure, axis, is_parent)
+    directional = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
+    jacobian_action = _cable_bend_twist_jacobian_z_from_measure(measure, is_parent) * axis
 
     h = 1.0e-3
     q_wp_p = q_wp
@@ -4798,17 +4867,75 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     q_wc_p = q_wc
     q_wc_m = q_wc
     if is_parent:
-        q_wp_p = _quat_perturb_world(q_wp, axis, h * omega_len)
-        q_wp_m = _quat_perturb_world(q_wp, axis, -h * omega_len)
+        q_wp_p = _quat_perturb_world(q_wp, axis, h)
+        q_wp_m = _quat_perturb_world(q_wp, axis, -h)
     else:
-        q_wc_p = _quat_perturb_world(q_wc, axis, h * omega_len)
-        q_wc_m = _quat_perturb_world(q_wc, axis, -h * omega_len)
+        q_wc_p = _quat_perturb_world(q_wc, axis, h)
+        q_wc_m = _quat_perturb_world(q_wc, axis, -h)
 
     fd = (
         compute_geometric_cable_kappa_cached_z(q_wp_p, q_wc_p, kb_rest_local, rest.twist)
         - compute_geometric_cable_kappa_cached_z(q_wp_m, q_wc_m, kb_rest_local, rest.twist)
     ) / (2.0 * h)
-    errors[tid] = wp.vec3(wp.length(analytic - fd), wp.length(analytic), wp.length(fd))
+    equivalence_error = wp.length(jacobian_action - directional) / (1.0 + wp.length(directional))
+    # Store [Jacobian-vs-directional, Jacobian-vs-finite-difference, finite-difference signal].
+    errors[tid] = wp.vec3(equivalence_error, wp.length(jacobian_action - fd), wp.length(fd))
+
+
+@wp.kernel
+def _eval_bend_twist_jacobian_guard_branches_kernel(errors: wp.array[wp.vec3]):
+    tid = wp.tid()
+    is_parent = tid % 2 == 0
+
+    # Exercise capped curvature, the numerically directional twist path just
+    # outside an exact fold, and the exact-fold curvature/transport convention.
+    angle = 3.05
+    bend_axis = wp.vec3(1.0, 0.0, 0.0)
+    omega = wp.vec3(0.31, -0.27, 0.19)
+    if tid >= 4:
+        angle = wp.pi
+    elif tid >= 2:
+        # 1 + cos(pi - 1e-3) ~= 5e-7: above the residual's Bishop fallback
+        # threshold. Y-bend/X-perturbation reproduces the strongest observed
+        # float32 tangent-bisector error.
+        angle = wp.pi - 1.0e-3
+        bend_axis = wp.vec3(0.0, 1.0, 0.0)
+        omega = wp.vec3(1.0, 0.0, 0.0)
+
+    q_wp = wp.quat_identity()
+    q_wc = wp.quat_from_axis_angle(bend_axis, angle)
+    measure = _measure_cable_bend_twist_z(q_wp, q_wc)
+
+    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(q_wp, measure, omega, is_parent)
+    directional = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
+    jacobian_action = _cable_bend_twist_jacobian_z_from_measure(measure, is_parent) * omega
+    directional_error = wp.length(jacobian_action - directional) / (1.0 + wp.length(directional))
+
+    fd_error = 0.0
+    fd_signal = 0.0
+    if tid >= 2 and tid < 4:
+        h = 1.0e-5
+        q_wp_p = q_wp
+        q_wp_m = q_wp
+        q_wc_p = q_wc
+        q_wc_m = q_wc
+        if is_parent:
+            q_wp_p = _quat_perturb_world(q_wp, omega, h)
+            q_wp_m = _quat_perturb_world(q_wp, omega, -h)
+        else:
+            q_wc_p = _quat_perturb_world(q_wc, omega, h)
+            q_wc_m = _quat_perturb_world(q_wc, omega, -h)
+
+        kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp), measure.kb_world)
+        fd = (
+            compute_geometric_cable_kappa_cached_z(q_wp_p, q_wc_p, kb_rest_local, measure.twist)
+            - compute_geometric_cable_kappa_cached_z(q_wp_m, q_wc_m, kb_rest_local, measure.twist)
+        ) / (2.0 * h)
+        fd_error = wp.abs(jacobian_action[2] - fd[2]) / (1.0 + wp.abs(fd[2]))
+        fd_signal = wp.abs(fd[2])
+
+    # Store [Jacobian-vs-directional, near-fold twist-vs-FD, near-fold FD signal].
+    errors[tid] = wp.vec3(directional_error, fd_error, fd_signal)
 
 
 # DER-primitive unit tests: exercise the singular fallback paths and the
@@ -5357,6 +5484,18 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
 
 
+def _split_cable_parent_hessian_separates_elastic_and_damping_arms(test, device):
+    """Verify isotropic elasticity and damping use their intended parent lever arms."""
+    errors = wp.zeros(1, dtype=wp.vec2, device=device)
+    wp.launch(
+        _eval_cable_stretch_shear_parent_hessian_error,
+        dim=1,
+        outputs=[errors],
+        device=device,
+    )
+    np.testing.assert_allclose(errors.numpy(), 0.0, atol=1.0e-5)
+
+
 def _split_cable_material_force_law_matches_ei_gj(test, device):
     """Per-joint bend/twist torques should match EI/h and GJ/h stiffness inputs."""
     segment_length = 0.08
@@ -5717,20 +5856,45 @@ def _split_cable_geometric_sharp_turn_is_bounded(test, device):
 
 
 def _split_cable_bend_twist_deformation_derivative_matches_finite_difference(test, device):
-    """Rest-relative bend/twist derivative should match centered finite differences.
+    """Verify the bend/twist Jacobian against directional and finite-difference references.
 
-    Uses a pre-curved rest and checks both parent and child world rotations, so it
-    guards the rest composition in the analytic Jacobian, not just the identity-rest
-    special case.
+    Uses a pre-curved rest and checks every world-axis column for both bodies, so
+    it guards the matrix assembly and rest composition independently.
     """
-    errors = wp.zeros(2, dtype=wp.vec3, device=device)
-    wp.launch(_eval_bend_twist_deformation_derivative_kernel, dim=2, outputs=[errors], device=device)
+    errors = wp.zeros(6, dtype=wp.vec3, device=device)
+    wp.launch(_eval_bend_twist_deformation_derivative_kernel, dim=6, outputs=[errors], device=device)
 
     errors_np = errors.numpy()
-    max_error = float(np.max(errors_np[:, 0]))
-    max_signal = float(np.max(errors_np[:, 1:]))
-    test.assertLess(max_error, 5.0e-4, f"bend/twist derivative finite-difference mismatch: {errors_np}")
-    test.assertGreater(max_signal, 0.05, f"bend/twist derivative test is vacuous: {errors_np}")
+    max_equivalence_error = float(np.max(errors_np[:, 0]))
+    max_finite_difference_error = float(np.max(errors_np[:, 1]))
+    min_signal = float(np.min(errors_np[:, 2]))
+    test.assertLess(max_equivalence_error, 5.0e-6, f"bend/twist Jacobian changed directional derivative: {errors_np}")
+    test.assertLess(
+        max_finite_difference_error, 5.0e-4, f"bend/twist derivative finite-difference mismatch: {errors_np}"
+    )
+    test.assertGreater(min_signal, 0.05, f"bend/twist derivative test has a vacuous Jacobian column: {errors_np}")
+
+
+def _split_cable_bend_twist_jacobian_guard_branches_match_directional(test, device):
+    """Verify the guard-branch Jacobian against directional and finite-difference references."""
+    errors = wp.zeros(6, dtype=wp.vec3, device=device)
+    wp.launch(_eval_bend_twist_jacobian_guard_branches_kernel, dim=6, outputs=[errors], device=device)
+    errors_np = errors.numpy()
+    test.assertLess(
+        float(np.max(errors_np[:, 0])),
+        5.0e-6,
+        f"bend/twist Jacobian changed a capped or singular directional derivative: {errors_np}",
+    )
+    test.assertLess(
+        float(np.max(errors_np[2:4, 1])),
+        5.0e-4,
+        f"near-antiparallel twist Jacobian finite-difference mismatch: {errors_np}",
+    )
+    test.assertGreater(
+        float(np.min(errors_np[2:4, 2])),
+        100.0,
+        f"near-antiparallel twist finite-difference check is vacuous: {errors_np}",
+    )
 
 
 def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
@@ -6015,6 +6179,12 @@ add_function_test(
 )
 add_function_test(
     TestCable,
+    "test_split_cable_parent_hessian_separates_elastic_and_damping_arms",
+    _split_cable_parent_hessian_separates_elastic_and_damping_arms,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
     "test_split_cable_material_force_law_matches_ei_gj",
     _split_cable_material_force_law_matches_ei_gj,
     devices=devices,
@@ -6059,6 +6229,12 @@ add_function_test(
     TestCable,
     "test_split_cable_bend_twist_deformation_derivative_matches_finite_difference",
     _split_cable_bend_twist_deformation_derivative_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_bend_twist_jacobian_guard_branches_match_directional",
+    _split_cable_bend_twist_jacobian_guard_branches_match_directional,
     devices=devices,
 )
 add_function_test(

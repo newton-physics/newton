@@ -441,7 +441,12 @@ class TestHeightfield(unittest.TestCase):
             indices=np.asarray(indices, dtype=np.int32),
         )
 
-    def _build_mesh_vs_heightfield(self, mesh: newton.Mesh, mesh_z: float = 0.15):
+    def _build_mesh_vs_heightfield(
+        self,
+        mesh: newton.Mesh,
+        mesh_z: float = 0.15,
+        mesh_scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    ):
         """Build a model with a non-convex mesh above a flat heightfield."""
         builder = newton.ModelBuilder()
         nrow, ncol = 10, 10
@@ -449,7 +454,7 @@ class TestHeightfield(unittest.TestCase):
         hfield = Heightfield(data=elevation, nrow=nrow, ncol=ncol, hx=5.0, hy=5.0, min_z=0.0, max_z=1.0)
         builder.add_shape_heightfield(heightfield=hfield)
         mesh_body = builder.add_body(xform=wp.transform((0.0, 0.0, mesh_z), wp.quat_identity()))
-        builder.add_shape_mesh(body=mesh_body, mesh=mesh)
+        builder.add_shape_mesh(body=mesh_body, mesh=mesh, scale=mesh_scale)
         return builder.finalize(), mesh_body
 
     @unittest.skipUnless(_cuda_available, "mesh-heightfield collision requires CUDA")
@@ -460,6 +465,8 @@ class TestHeightfield(unittest.TestCase):
         state = model.state()
 
         pipeline = newton.CollisionPipeline(model)
+        self.assertFalse(pipeline.narrow_phase.mesh_sdf_texture_only)
+        self.assertFalse(pipeline.narrow_phase.mesh_sdf_identity_scale_only)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
 
@@ -475,11 +482,53 @@ class TestHeightfield(unittest.TestCase):
         state = model.state()
 
         pipeline = newton.CollisionPipeline(model)
+        self.assertTrue(pipeline.narrow_phase.mesh_sdf_texture_only)
+        self.assertTrue(pipeline.narrow_phase.mesh_sdf_identity_scale_only)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
 
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertGreater(contact_count, 0, "No contacts between SDF mesh and heightfield")
+        normals = contacts.rigid_contact_normal.numpy()[:contact_count]
+        self.assertTrue(np.isfinite(normals).all())
+        np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, rtol=0.0, atol=1.0e-6)
+        self.assertGreater(np.min(normals[:, 2]), 0.99)
+
+    @unittest.skipUnless(_cuda_available, "build_sdf requires CUDA")
+    def test_scaled_mesh_sdf_identity_scale_specialization(self):
+        """Select identity SDF scaling only for unit-scale or scale-baked meshes."""
+        mesh = self._create_non_convex_mesh()
+        mesh.build_sdf(max_resolution=16)
+
+        scaled_model, _mesh_body = self._build_mesh_vs_heightfield(
+            mesh,
+            mesh_z=0.2,
+            mesh_scale=(1.25, 1.0, 1.0),
+        )
+        scaled_pipeline = newton.CollisionPipeline(scaled_model)
+        self.assertTrue(scaled_pipeline.narrow_phase.mesh_sdf_texture_only)
+        self.assertFalse(scaled_pipeline.narrow_phase.mesh_sdf_identity_scale_only)
+        scaled_contacts = scaled_pipeline.contacts()
+        scaled_pipeline.collide(scaled_model.state(), scaled_contacts)
+        self.assertGreater(int(scaled_contacts.rigid_contact_count.numpy()[0]), 0)
+
+        baked_mesh = self._create_non_convex_mesh()
+        baked_mesh.build_sdf(max_resolution=16, scale=(1.25, 1.0, 1.0))
+        baked_model, _mesh_body = self._build_mesh_vs_heightfield(
+            baked_mesh,
+            mesh_z=0.2,
+            mesh_scale=(1.25, 1.0, 1.0),
+        )
+        baked_pipeline = newton.CollisionPipeline(baked_model)
+        self.assertTrue(baked_pipeline.narrow_phase.mesh_sdf_texture_only)
+        self.assertTrue(baked_pipeline.narrow_phase.mesh_sdf_identity_scale_only)
+        baked_contacts = baked_pipeline.contacts()
+        baked_pipeline.collide(baked_model.state(), baked_contacts)
+        self.assertGreater(int(baked_contacts.rigid_contact_count.numpy()[0]), 0)
+        baked_normals = baked_contacts.rigid_contact_normal.numpy()[
+            : int(baked_contacts.rigid_contact_count.numpy()[0])
+        ]
+        self.assertTrue(np.isfinite(baked_normals).all())
 
     @unittest.skipUnless(_cuda_available, "mesh-heightfield collision requires CUDA")
     def test_non_convex_mesh_vs_heightfield_no_contact(self):

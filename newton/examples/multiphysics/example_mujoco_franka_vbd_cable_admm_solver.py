@@ -108,6 +108,7 @@ def _find_label_index(labels: list[str], suffix: str) -> int:
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60

@@ -8,6 +8,12 @@ description: Use when drafting or reviewing Newton GitHub Release notes, release
 Draft concise GitHub Release notes that explain why a Newton release exists and
 what users should know. Do not reproduce the full changelog; link to it.
 
+Write for external users moving from the previous final release to the current
+artifact without assuming they followed development or release candidates.
+Final-release notes must not mention earlier RCs. Never mention or link internal
+release audits, audit gists, readiness reports, cutoff SHAs, bake durations,
+audit counts, or other audit-only metadata; use those sources as evidence only.
+
 ## Workflow
 
 1. Identify the artifact, target version, and release type:
@@ -23,8 +29,18 @@ what users should know. Do not reproduce the full changelog; link to it.
    - RCs: state that this is a release candidate and what needs validation.
      If drafting final-release text from an RC tag or release branch, do not
      mention the RC; use the RC only as the temporary source of truth.
-2. Read the matching `CHANGELOG.md` section from the release tag or release
-   branch. Do not rely on `main` unless the release is actually cut from `main`.
+2. Choose changelog source material from the authoritative release ref:
+   - After the Towncrier build or tagging, read the matching dated
+     `CHANGELOG.md` section from the release tag or release branch.
+   - Before the build, check out the release branch, validate its pending
+     fragments, and render a non-mutating preview:
+     ```bash
+     uvx --from towncrier==25.8.0 towncrier build --draft \
+       --version X.Y.Z --date YYYY-MM-DD
+     ```
+     Draft from the preview and legacy `[Unreleased]` entries during the first
+     Towncrier transition. Do not run a mutating build merely to draft notes.
+   Do not rely on `main` unless the release is actually cut from `main`.
 3. Determine the previous release tag:
    - Patch release `X.Y.Z`, `Z > 0`: use the highest earlier `vX.Y.<Z'>` tag.
    - Feature release `X.Y.0`: use the highest `vX.<Y-1>.*` tag. If `Y == 0`,
@@ -50,7 +66,11 @@ what users should know. Do not reproduce the full changelog; link to it.
 7. Draft a high-level overview and a short highlights list. Keep only
    consumer-relevant items. Omit CI, workflow, README layout, release-link
    pinning, and other internal/docs polish unless the user explicitly asks or it
-   affects library users.
+   affects library users. When a validated release review supplies the
+   highlights, preserve its release-defining conclusions, ordering, and public
+   wording unless publication rules require a change. Rewrite audit-oriented
+   framing, remove audit-only metadata, and adapt references to the release-note
+   format without weakening the user-facing claims.
 8. Keep a review-ready release-branch draft. After tagging, refresh it against
    the final tag and inspect the workflow-created draft GitHub Release. Publish
    only after verifying the final artifact and links per `docs/guide/release.rst`.
@@ -80,7 +100,10 @@ what users should know. Do not reproduce the full changelog; link to it.
 ## Style
 
 - Start with a short paragraph naming the version, release type, and purpose.
-- Use a `## Highlights` section with 3-6 grouped bullets.
+- Use a `## Highlights` section with typically 3-6 grouped bullets. Retain
+  additional release-defining highlights when the user explicitly requests them
+  or a validated release review establishes that they belong; do not drop a
+  significant theme merely to meet the usual count.
 - For bugfix releases, keep notes slim: no `## New features` section unless a
   genuinely notable capability shipped in the patch. The highlights are a
   categorized digest of fixes.

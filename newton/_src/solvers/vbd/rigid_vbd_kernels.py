@@ -71,6 +71,13 @@ _CABLE_TRANSPORT_DENOM_EPS = wp.constant(1.0e-8)
 This is larger than _CABLE_KB_FOLD_EPS because transport has no curvature cap;
 the closed-form expression must be left before it becomes ill-conditioned."""
 
+_CABLE_TWIST_JACOBIAN_DIRECTIONAL_DENOM = wp.constant(2.0e-2)
+"""Near-fold threshold for evaluating the twist Jacobian through directional derivatives.
+
+The tangent-bisector row is algebraically exact, but loses float32 consistency
+with the normalized transport residual as 1 + dot(t0, t1) approaches zero. This
+cutoff is approximately where the curvature-binormal cap starts to engage."""
+
 _CABLE_TWIST_ATAN2_DENOM_EPS = wp.constant(1.0e-12)
 """Floor on sin^2 + cos^2 in the transported-twist atan2 derivative."""
 
@@ -102,12 +109,10 @@ def _reset_world_selected(
     reset_all: bool,
     world_count: int,
 ):
-    """Query a public reset mask whose optional final entry selects unassigned entities."""
+    """Query a public reset mask whose final entry selects global entities."""
     if reset_all:
         return True
     if world < 0:
-        if world_mask.shape[0] == world_count:
-            return False
         world = world_count
     return world_mask[world]
 
@@ -562,22 +567,75 @@ def _cable_bend_twist_directional_derivatives_from_measure(
 
 
 @wp.func
-def _geometric_cable_strain_directional_derivative_z_from_measure(
-    q_wp: wp.quat,
+def _finite_curvature_binormal_jacobian(t0: wp.vec3, t1: wp.vec3, is_parent: bool) -> wp.mat33:
+    """Jacobian of the finite curvature binormal for one endpoint rotation.
+
+    This is the matrix form of ``_finite_curvature_binormal_derivative`` and
+    evaluates geometry shared by the three world-axis columns only once.
+    """
+    zero = wp.mat33(0.0)
+    raw_tangent_dot = wp.dot(t0, t1)
+    tangent_dot = wp.clamp(raw_tangent_dot, -1.0, 1.0)
+    tangent_cross = wp.cross(t0, t1)
+    denom = 1.0 + tangent_dot
+    cross_sq = wp.dot(tangent_cross, tangent_cross)
+    if denom <= _CABLE_KB_FOLD_EPS and cross_sq <= _CABLE_KB_FOLD_EPS:
+        return zero
+
+    identity = wp.identity(3, float)
+    if is_parent:
+        ddenom_domega = tangent_cross
+        dcross_domega = wp.outer(t0, t1) - raw_tangent_dot * identity
+    else:
+        ddenom_domega = -tangent_cross
+        dcross_domega = raw_tangent_dot * identity - wp.outer(t1, t0)
+
+    denom_safe = wp.max(_CABLE_KB_FOLD_EPS, denom)
+    inv_denom = 1.0 / denom_safe
+    kb_raw = (2.0 * inv_denom) * tangent_cross
+    dkb_domega = (2.0 * inv_denom) * dcross_domega
+    if denom > _CABLE_KB_FOLD_EPS:
+        dkb_domega = dkb_domega - (2.0 * inv_denom * inv_denom * wp.outer(tangent_cross, ddenom_domega))
+
+    kb_len = wp.length(kb_raw)
+    if kb_len > _CABLE_KB_CURVATURE_CAP:
+        inv_len = 1.0 / kb_len
+        projection = wp.identity(3, float) - (inv_len * inv_len) * wp.outer(kb_raw, kb_raw)
+        dkb_domega = (_CABLE_KB_CURVATURE_CAP * inv_len) * projection * dkb_domega
+
+    return dkb_domega
+
+
+@wp.func
+def _transported_twist_angle_jacobian_from_measure(
     measure: CableBendTwistMeasure,
-    omega_world: wp.vec3,
     is_parent: bool,
 ) -> wp.vec3:
-    """Directional derivative of [bend_x, bend_y, twist_z] for local +Z cables."""
-    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(
-        q_wp, measure, omega_world, is_parent
-    )
-    return wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
+    """Jacobian row of transported twist for one endpoint rotation.
+
+    Use the tangent-bisector closed form for well-conditioned tangents. Near a
+    fold, evaluate the full directional derivative along each world axis so the
+    Jacobian remains consistent with the float32 transport residual.
+    """
+    t0 = measure.t0
+    t1 = measure.t1
+    denom = 1.0 + wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
+    if denom <= _CABLE_TWIST_JACOBIAN_DIRECTIONAL_DENOM:
+        e0 = wp.vec3(1.0, 0.0, 0.0)
+        e1 = wp.vec3(0.0, 1.0, 0.0)
+        e2 = wp.vec3(0.0, 0.0, 1.0)
+        return wp.vec3(
+            _transported_twist_angle_derivative_from_measure(measure, e0, is_parent),
+            _transported_twist_angle_derivative_from_measure(measure, e1, is_parent),
+            _transported_twist_angle_derivative_from_measure(measure, e2, is_parent),
+        )
+
+    jacobian = (t0 + t1) / denom
+    return -jacobian if is_parent else jacobian
 
 
 @wp.func
 def _cable_bend_twist_jacobian_z_from_measure(
-    q_wp: wp.quat,
     measure: CableBendTwistMeasure,
     is_parent: bool,
 ) -> wp.mat33:
@@ -586,14 +644,16 @@ def _cable_bend_twist_jacobian_z_from_measure(
     The local residual is exactly ``[bend_x, bend_y, twist_z]``, so no bend
     projector or twist-axis vector is needed in this hot path.
     """
-    e0 = wp.vec3(1.0, 0.0, 0.0)
-    e1 = wp.vec3(0.0, 1.0, 0.0)
-    e2 = wp.vec3(0.0, 0.0, 1.0)
+    dkb_domega = _finite_curvature_binormal_jacobian(measure.t0, measure.t1, is_parent)
+    if is_parent:
+        dkb_domega = dkb_domega + wp.skew(measure.kb_world)
 
-    j0 = _geometric_cable_strain_directional_derivative_z_from_measure(q_wp, measure, e0, is_parent)
-    j1 = _geometric_cable_strain_directional_derivative_z_from_measure(q_wp, measure, e1, is_parent)
-    j2 = _geometric_cable_strain_directional_derivative_z_from_measure(q_wp, measure, e2, is_parent)
-    return wp.matrix_from_cols(j0, j1, j2)
+    parent_x_world = measure.m0
+    parent_y_world = wp.cross(measure.t0, measure.m0)
+    bend_jacobian_x = wp.transpose(dkb_domega) * parent_x_world
+    bend_jacobian_y = wp.transpose(dkb_domega) * parent_y_world
+    twist_jacobian = _transported_twist_angle_jacobian_from_measure(measure, is_parent)
+    return wp.matrix_from_rows(bend_jacobian_x, bend_jacobian_y, twist_jacobian)
 
 
 @wp.func
@@ -964,7 +1024,7 @@ def evaluate_cable_bend_twist_force_hessian_z(
         f_local = f_local + wp.cw_mul(K_damp_diag, dkappa_dt)
         H_local_diag = H_local_diag + inv_dt * K_damp_diag
 
-    J_body = _cable_bend_twist_jacobian_z_from_measure(q_wp, measure, is_parent)
+    J_body = _cable_bend_twist_jacobian_z_from_measure(measure, is_parent)
     # Gauss-Newton self Hessian: J^T diag(H_local_diag) J.
     H_aa = wp.transpose(J_body) * _diag_mul_mat33(H_local_diag, J_body)
     tau_world = -(wp.transpose(J_body) * f_local)
@@ -1090,8 +1150,10 @@ def evaluate_cable_stretch_shear_force_hessian(
     u = wp.quat_rotate_inv(q_wp, C_vec)
     psi = wp.cw_mul(k_diag, u) - C0_force_local + lambda_local
 
-    h_s = k_diag[0]
-    h_z = k_diag[2]
+    k_s = k_diag[0]
+    k_z = k_diag[2]
+    h_s = k_s
+    h_z = k_z
     if damping_active:
         inv_dt = 1.0 / dt
         x_p_prev = wp.transform_get_translation(X_wp_prev)
@@ -1105,11 +1167,24 @@ def evaluate_cable_stretch_shear_force_hessian(
     force = f_world if is_parent else -f_world
 
     t = _quat_rotate_local_z(q_wp)
-    K_eff = h_s * wp.identity(3, float) + (h_z - h_s) * wp.outer(t, t)
-    rx = wp.skew(r)
+    identity = wp.identity(3, float)
+    K_eff = h_s * identity + (h_z - h_s) * wp.outer(t, t)
     H_ll = K_eff
-    H_al = rx * K_eff
-    H_aa = wp.transpose(rx) * K_eff * rx
+    if is_parent:
+        # Isotropic elastic energy is frame-invariant, so it takes the parent-anchor arm that
+        # evaluate_linear_constraint_force_hessian also uses; min() extracts the largest such block
+        # leaving a PSD remainder. Damping keeps the material arm: u_prev is frozen one step back.
+        k_iso = wp.min(k_s, k_z)
+        K_material = K_eff - k_iso * identity
+        r_elastic = x_p - com_w
+        rx_material = wp.skew(r)
+        H_al = k_iso * wp.skew(r_elastic) + rx_material * K_material
+        H_aa = k_iso * (wp.length_sq(r_elastic) * identity - wp.outer(r_elastic, r_elastic))
+        H_aa = H_aa + wp.transpose(rx_material) * K_material * rx_material
+    else:
+        rx = wp.skew(r)
+        H_al = rx * K_eff
+        H_aa = wp.transpose(rx) * K_eff * rx
 
     torque = wp.cross(r, force)
     return force, torque, H_ll, H_al, H_aa
@@ -2731,7 +2806,7 @@ def forward_step_rigid_bodies(
     com_local = body_com[tid]
     I_local = body_inertia[tid]
     inv_I = body_inv_inertia[tid]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     # Integrate rigid body motion (semi-implicit Euler, no angular damping)
     q_new, qd_new = integrate_rigid_body(
