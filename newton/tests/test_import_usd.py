@@ -2078,7 +2078,7 @@ def Xform "Articulation" (
                 joint.CreateBody1Rel().SetTargets([body.GetPath()])
 
                 policy_gains = []
-                for use_applied_schema_fallbacks in (False, True):
+                for policy_args in ({}, {"use_applied_schema_fallbacks": True}):
                     builder = newton.ModelBuilder()
                     joint.GetPrim().GetAttribute("newton:armature").Set(builder.default_joint_cfg.armature)
                     joint.GetPrim().GetAttribute("newton:damping").Set(builder.default_joint_cfg.damping)
@@ -2091,10 +2091,7 @@ def Xform "Articulation" (
                             message=r".*schema fallbacks.*",
                             category=DeprecationWarning,
                         )
-                        builder.add_usd(
-                            stage,
-                            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
-                        )
+                        builder.add_usd(stage, **policy_args)
 
                     model = builder.finalize()
                     dof_start = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
@@ -11216,6 +11213,53 @@ def Xform "Articulation" (
             use_applied_schema_fallbacks=True,
         )
         self.assertEqual(builder.shape_source[0].maxhullvert, newton.Mesh.MAX_HULL_VERTICES)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_fallback_policy_distinguishes_omitted_and_explicit_false(self):
+        """Distinguish an omitted fallback policy from an explicit legacy choice."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 1, 3, 1, 2, 3, 0, 2, 3])
+        mesh.CreatePointsAttr().Set(
+            [
+                Gf.Vec3f(0, 0, 0),
+                Gf.Vec3f(1, 0, 0),
+                Gf.Vec3f(0.5, 1, 0),
+                Gf.Vec3f(0.5, 0.5, 1),
+            ]
+        )
+        mesh_prim = mesh.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(mesh_prim)
+        UsdPhysics.CollisionAPI.Apply(mesh_prim)
+        mesh_prim.ApplyAPI("NewtonMeshCollisionAPI")
+
+        omitted_builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(DeprecationWarning, "maxHullVertices"):
+            omitted_builder.add_usd(stage)
+        self.assertEqual(omitted_builder.shape_source[0].maxhullvert, newton.Mesh.MAX_HULL_VERTICES)
+
+        legacy_builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "error",
+                message=r".*schema fallbacks.*",
+                category=DeprecationWarning,
+            )
+            legacy_builder.add_usd(stage, use_applied_schema_fallbacks=False)
+        self.assertEqual(legacy_builder.shape_source[0].maxhullvert, newton.Mesh.MAX_HULL_VERTICES)
+
+        composed_builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "error",
+                message=r".*schema fallbacks.*",
+                category=DeprecationWarning,
+            )
+            composed_builder.add_usd(stage, use_applied_schema_fallbacks=True)
+        self.assertEqual(composed_builder.shape_source[0].maxhullvert, -1)
 
 
 class TestImportSampleAssetsComposition(unittest.TestCase):
