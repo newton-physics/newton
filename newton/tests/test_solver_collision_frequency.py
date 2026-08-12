@@ -395,6 +395,21 @@ def test_vbd_pipeline_parity_and_deprecations(test, device):
             particle_self_contact_radius=0.02,
             particle_self_contact_gap=0.01,
         )
+    with test.assertRaisesRegex(ValueError, "particle_self_contact_radius must be >= 0"):
+        SolverVBD(
+            _build_cloth_model(device),
+            iterations=1,
+            particle_enable_self_contact=True,
+            particle_self_contact_radius=-0.01,
+        )
+    with test.assertRaisesRegex(ValueError, "particle_self_contact_margin must be >= 0"):
+        SolverVBD(
+            _build_cloth_model(device),
+            iterations=1,
+            particle_enable_self_contact=True,
+            particle_self_contact_margin=-0.01,
+            particle_self_contact_gap=0.02,
+        )
 
 
 devices = get_test_devices()

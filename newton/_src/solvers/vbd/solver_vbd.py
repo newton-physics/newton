@@ -464,6 +464,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         if particle_self_contact_radius is not None:
             # Validate before warning: under warnings-as-errors (CI) a warning
             # emitted first would mask the ValueError with a DeprecationWarning.
+            if particle_self_contact_radius < 0.0:
+                raise ValueError(f"particle_self_contact_radius must be >= 0, got {particle_self_contact_radius}")
             if particle_self_contact_gap is not None:
                 raise ValueError(
                     "particle_self_contact_gap cannot be combined with the deprecated "
@@ -507,6 +509,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 _sc_gap = particle_self_contact_gap if particle_self_contact_gap is not None else 0.0
             if _sc_gap < 0.0:
                 raise ValueError(f"particle_self_contact_gap must be >= 0, got {_sc_gap}")
+        if _sc_margin < 0.0:
+            raise ValueError(f"particle_self_contact_margin must be >= 0, got {_sc_margin}")
 
         if particle_collision_detection_interval is not None:
             if (

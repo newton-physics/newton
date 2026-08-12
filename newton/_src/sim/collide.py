@@ -1409,6 +1409,8 @@ class CollisionPipeline:
 
     @soft_contact_margin.setter
     def soft_contact_margin(self, value: float) -> None:
+        if value < 0.0:
+            raise ValueError(f"soft_contact_margin must be >= 0, got {value}")
         warnings.warn(
             "CollisionPipeline.soft_contact_margin is deprecated; use soft_contact_gap.",
             DeprecationWarning,

@@ -1629,14 +1629,26 @@ def test_pipeline_soft_self_contact(test, device):
 
 def test_pipeline_soft_contact_gap_deprecated_aliases(test, device):
     """Keep deprecated soft-contact margin entry points mapped to the gap API."""
-    vertices, faces = get_data()
-    model, _detector_ref = init_model(vertices, faces, device, record_triangle_contacting_vertices=False)
+    builder = newton.ModelBuilder()
+    builder.add_particle(pos=(0.0, 0.0, 0.05), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.01)
+    builder.add_shape_box(
+        body=-1,
+        xform=wp.transform(wp.vec3(0.0, 0.0, -0.01), wp.quat_identity()),
+        hx=0.2,
+        hy=0.2,
+        hz=0.01,
+    )
+    model = builder.finalize(device=device)
     state = model.state()
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.0)
 
     # The per-call soft_contact_margin override is deprecated but still honored.
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 0)
     with test.assertWarns(DeprecationWarning):
-        pipeline.collide(state, pipeline.contacts(), soft_contact_margin=0.1)
+        pipeline.collide(state, contacts, soft_contact_margin=0.1)
+    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 1)
 
     # The constructor parameter and attribute are deprecated aliases of soft_contact_gap.
     with test.assertWarns(DeprecationWarning):
@@ -1647,6 +1659,8 @@ def test_pipeline_soft_contact_gap_deprecated_aliases(test, device):
     with test.assertWarns(DeprecationWarning):
         legacy.soft_contact_margin = 0.08
     test.assertEqual(legacy.soft_contact_gap, 0.08)
+    with test.assertRaisesRegex(ValueError, "soft_contact_margin must be >= 0"):
+        legacy.soft_contact_margin = -0.01
     with test.assertRaises(ValueError):
         newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.01, soft_contact_margin=0.02)
 
