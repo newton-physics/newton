@@ -12473,6 +12473,30 @@ def Xform "Body" (
         self.assertAlmostEqual(color[1], color[2], places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_color_used_without_bound_material(self):
+        """Verify primvars:displayColor is honored on a prim that binds no material.
+
+        displayColor was only consulted once a material had been resolved but supplied no
+        color, so it never reached prims with no material at all -- the case where it is
+        the only color the prim carries.
+        """
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.Xform.Define(stage, "/World")
+        cube = UsdGeom.Cube.Define(stage, "/World/Colored")
+        cube.GetDisplayColorAttr().Set([(0.463, 0.725, 0.0)])
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=True)
+        color = builder.shape_color[result["path_shape_map"]["/World/Colored"]]
+
+        expected = color_linear_to_srgb((0.463, 0.725, 0.0))
+        for channel, want in zip(color, expected, strict=True):
+            self.assertAlmostEqual(channel, want, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_fallback_with_material(self):
         """Colliders with material stay visible when the body has no other visual shapes."""
         stage = self._create_stage_with_pbr_collision_mesh(
