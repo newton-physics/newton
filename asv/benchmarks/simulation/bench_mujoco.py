@@ -19,10 +19,8 @@ from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_metrics import (
-    _SimulationMetricTracks,
-    collect_simulation_metrics,
-)
+from benchmark_metric_tracks import _SimulationMetricTracks
+from benchmark_metrics import collect_simulation_metrics
 
 
 class _SimulationMetricTracksMuJoCo(_SimulationMetricTracks):

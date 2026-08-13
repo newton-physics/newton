@@ -773,8 +773,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     capture resources internally. Run an uncaptured warm-up step for rheology
     modes that build an inner graph lazily, and keep model topology, solver
     configuration, captured buffers, and step arguments fixed across replays.
-    Keep :meth:`reset` outside capture and call :meth:`check_status` after
-    replay to report sparse-grid capacity failures.
+    Keep :meth:`reset` outside capture and call
+    :meth:`check_sparse_grid_rebuild_status` after replay to report
+    sparse-grid capacity failures.
 
     [1] https://doi.org/10.1145/2897824.2925877
 
@@ -846,8 +847,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         A positive value reserves persistent sparse-grid capacity and bounds
         active subsets of dense and fixed grids.
         ``-1`` retains per-step sparse-grid allocation and uses exact active
-        counts elsewhere. Call :meth:`check_status` after graph replay to
-        detect sparse-grid overflow.
+        counts elsewhere. Call :meth:`check_sparse_grid_rebuild_status` after
+        graph replay to detect sparse-grid overflow.
         """
         max_leaf_node_count: int = -1
         """Maximum NanoVDB leaf-node count across all worlds.
@@ -1334,12 +1335,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Grid voxel size used by the solver."""
         return self._mpm_model.voxel_size
 
-    def _check_sparse_grid_rebuild_status(self) -> None:
+    def check_sparse_grid_rebuild_status(self) -> None:
         """Raise if a rebuildable sparse grid exceeded its reserved capacity.
 
-        The check synchronizes the solver device and is therefore intended for
-        initialization diagnostics or calls made after graph replay, not
-        from inside graph capture.
+        Rebuildable sparse-grid failures accumulate until a valid
+        :meth:`reset`. Call this method outside graph capture after replay; the
+        check synchronizes the solver device. It is a no-op when the solver has
+        no asynchronous sparse-grid status buffer.
+
+        Raises:
+            RuntimeError: If rebuild status is inspected during graph capture,
+                or if a rebuild reported a capacity or topology failure.
         """
         if self._grid_status is None:
             return
@@ -1352,26 +1358,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if status != wp.Volume.REBUILD_SUCCESS:
             raise _sparse_grid_rebuild_error(status)
 
-    def check_status(self) -> None:
-        """Raise if a sparse-grid rebuild exceeded its reserved capacity.
-
-        Rebuildable sparse-grid failures accumulate until a valid
-        :meth:`reset`. Call this method outside graph capture after replay; the
-        check synchronizes the solver device. It is a no-op when the solver has
-        no asynchronous sparse-grid status buffer.
-
-        Raises:
-            RuntimeError: If rebuild status is inspected during graph capture,
-                or if a rebuild reported a capacity or topology failure.
-        """
-        self._check_sparse_grid_rebuild_status()
-
     def _clear_sparse_grid_rebuild_status(self) -> None:
         """Clear the latest and accumulated sparse-grid rebuild status.
 
         Call this outside graph capture after handling a reported rebuild
-        failure. A subsequent :meth:`check_status` then reports only failures
-        produced after this boundary.
+        failure. A subsequent :meth:`check_sparse_grid_rebuild_status` then
+        reports only failures produced after this boundary.
 
         Raises:
             RuntimeError: If called while the solver device is capturing a graph.
@@ -2120,7 +2112,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                             status=self._grid_status,
                             **capacity_kwargs,
                         )
-                        self._check_sparse_grid_rebuild_status()
+                        self.check_sparse_grid_rebuild_status()
                     else:
                         cell_ijks = [
                             voxel_coordinates(positions[begin:end], voxel_size, padding_voxels=padding_voxels)
@@ -2171,7 +2163,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         max_upper_node_count=self.max_upper_node_count,
                     )
                     if self._sparse_rebuildable:
-                        self._check_sparse_grid_rebuild_status()
+                        self.check_sparse_grid_rebuild_status()
                         grid = fem.Nanogrid(volume, temporary_store=temporary_store, rebuildable=True)
                     else:
                         grid = fem.Nanogrid(volume, temporary_store=temporary_store)

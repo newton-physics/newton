@@ -3559,6 +3559,8 @@ class ModelBuilder:
                   - The stage's Meters Per Unit (MPU) definition (1.0 by default)
                 * - ``"scene_attributes"``
                   - Dictionary of all attributes applied to the PhysicsScene prim
+                * - ``"physics_scene_path"``
+                  - Prim path of the PhysicsScene selected during import, or ``None`` if no PhysicsScene was found
                 * - ``"collapse_results"``
                   - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if ``collapse_fixed_joints`` is True, otherwise None.
                 * - ``"physics_dt"``
@@ -5184,8 +5186,8 @@ class ModelBuilder:
     ) -> int:
         """Adds a cable joint to the model.
 
-        Cable joints have split linear stretch/shear DoFs plus separate angular
-        bend and twist DoFs. When both ``shear_stiffness`` and
+        Cable joints have split linear stretch/shear material slots plus separate
+        angular bend and twist material slots. When both ``shear_stiffness`` and
         ``shear_damping`` are omitted, shear uses the stretch stiffness /
         damping, reproducing the isotropic linear energy while using the
         split layout. When both ``twist_stiffness`` and ``twist_damping`` are
@@ -6423,6 +6425,11 @@ class ModelBuilder:
             GeoType.GAUSSIAN,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
+            site_size_is_display = cfg.is_site and bool(
+                custom_attributes and custom_attributes.get("mujoco:site_size_is_display", False)
+            )
+            if type == GeoType.CYLINDER and not site_size_is_display and scale[2] != 0.0 and scale[2] < scale[1]:
+                raise ValueError(f"Cylinder barrel radius must be zero or at least the half-height; got scale={scale}.")
         elif type == GeoType.CONE:
             if float(scale[1]) < 0.0:
                 raise ValueError(
@@ -6881,6 +6888,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
+        barrel_radius: float = 0.0,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
@@ -6894,8 +6902,11 @@ class ModelBuilder:
         Args:
             body: The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform: The transform of the cylinder in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
-            radius: The radius of the cylinder. Defaults to `1.0`.
-            half_height: The half-length of the cylinder along the Z-axis. Defaults to `0.5`.
+            radius: The radius of the cylinder at its ends [m]. Defaults to `1.0`.
+            half_height: The half-length of the cylinder along the Z-axis [m]. Defaults to `0.5`.
+            barrel_radius: The radius of the symmetric circular arc revolved around the Z-axis to form
+                the cylinder's side [m]. Use `0.0` for a straight-sided cylinder. Nonzero values must be
+                at least `half_height`. Defaults to `0.0`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
@@ -6916,7 +6927,7 @@ class ModelBuilder:
         else:
             xform = wp.transform(*xform)
 
-        scale = wp.vec3(radius, half_height, 0.0)
+        scale = wp.vec3(radius, half_height, barrel_radius)
         return self.add_shape(
             body=body,
             type=GeoType.CYLINDER,
@@ -8591,6 +8602,18 @@ class ModelBuilder:
         if len(valid_inds) < len(areas):
             print("inverted or degenerate triangle elements")
 
+        filtered_custom_attributes = None
+        if custom_attributes:
+            filtered_custom_attributes = {}
+            for key, value in custom_attributes.items():
+                is_sequence = isinstance(value, (list, tuple)) or (isinstance(value, np.ndarray) and value.ndim != 0)
+                if is_sequence:
+                    if len(value) != len(areas):
+                        raise ValueError(f"Expected {len(areas)} values, got {len(value)}")
+                    filtered_custom_attributes[key] = [value[index] for index in valid_inds]
+                else:
+                    filtered_custom_attributes[key] = value
+
         D[areas == 0.0] = np.eye(2)[None, ...]
         inv_D = np.linalg.inv(D)
 
@@ -8626,18 +8649,18 @@ class ModelBuilder:
                 strict=False,
             )
         )
-        areas = areas.tolist()
-        self.tri_areas.extend(areas)
+        areas_list = areas.tolist()
+        self.tri_areas.extend(areas[valid_inds].tolist())
 
         # Process custom attributes
-        if custom_attributes and len(valid_inds) > 0:
+        if filtered_custom_attributes and len(valid_inds) > 0:
             tri_indices = list(range(tri_start, tri_start + len(valid_inds)))
             self._process_custom_attributes(
                 entity_index=tri_indices,
-                custom_attrs=custom_attributes,
+                custom_attrs=filtered_custom_attributes,
                 expected_frequency=Model.AttributeFrequency.TRIANGLE,
             )
-        return areas
+        return areas_list
 
     def add_tetrahedron(
         self,
@@ -11271,12 +11294,21 @@ class ModelBuilder:
 
                 return nx, ny, nz
 
+            site_display_size_attr = self.custom_attributes.get("mujoco:site_size_is_display")
             for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
                 zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
             ):
+                site_size_is_display = bool(
+                    site_display_size_attr
+                    and site_display_size_attr.values.get(_shape_idx, site_display_size_attr.default)
+                )
                 # Create cache key based on shape type and parameters
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
                     cache_key = (shape_type, id(shape_src), tuple(shape_scale))
+                elif shape_type == GeoType.CYLINDER and site_size_is_display:
+                    # MuJoCo cylinder sites may carry an unused third display-size component.
+                    # It is not Newton's barrel radius and does not affect their bounds.
+                    cache_key = (shape_type, (shape_scale[0], shape_scale[1], 0.0))
                 else:
                     cache_key = (shape_type, tuple(shape_scale))
 
@@ -11333,11 +11365,17 @@ class ModelBuilder:
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CYLINDER:
-                        # Cylinder: shape_scale = (radius, half_height, radius)
-                        # Cylinder is along Z axis (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height])
-                        aabb_upper = np.array([r, r, half_height])
+                        # Cylinder: shape_scale = (end_radius, half_height, barrel_radius)
+                        r, half_height, barrel_radius = shape_scale
+                        if site_size_is_display:
+                            barrel_radius = 0.0
+                        radial_extent = r
+                        if barrel_radius > 0.0:
+                            radial_extent += (half_height * half_height) / (
+                                barrel_radius + np.sqrt(barrel_radius * barrel_radius - half_height * half_height)
+                            )
+                        aabb_lower = np.array([-radial_extent, -radial_extent, -half_height])
+                        aabb_upper = np.array([radial_extent, radial_extent, half_height])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONE:
@@ -11723,6 +11761,8 @@ class ModelBuilder:
 
             shape_edge_ranges = []
             edge_chunks = []
+            edge_center_chunks = []
+            edge_half_chunks = []
             edge_offset = 0
             edge_cache = {}  # mesh python id → (start, count)
 
@@ -11733,11 +11773,13 @@ class ModelBuilder:
                     and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
                     mesh = generated_shape_sources[i]
+                    shape_scale = np.asarray(self.shape_scale[i], dtype=np.float32)
+                    scale_key = tuple(float(value) for value in shape_scale)
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
-                        mesh_key = ("deferred", id(deferred_edges))
+                        mesh_key = ("deferred", id(deferred_edges), scale_key)
                     else:
-                        mesh_key = id(mesh)
+                        mesh_key = (id(mesh), scale_key)
                     if mesh_key in edge_cache:
                         shape_edge_ranges.append(edge_cache[mesh_key])
                     else:
@@ -11753,6 +11795,30 @@ class ModelBuilder:
                         start = edge_offset
                         count = len(edges)
                         edge_chunks.append(edges)
+                        if count > 0:
+                            vertices = np.asarray(mesh.vertices, dtype=np.float32) * shape_scale
+                            edge_v0 = vertices[edges[:, 0]]
+                            edge_v1 = vertices[edges[:, 1]]
+                            edge_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)
+                            edge_centers = np.ascontiguousarray((edge_v0 + edge_v1) * 0.5, dtype=np.float32)
+                            edge_radii = np.linalg.norm(edge_halves, axis=1, keepdims=True)
+                            canonical_edges = mesh._canonical_vertex_ids()[edges].reshape(-1)
+                            endpoint_indices = np.arange(2 * count, dtype=np.int64)
+                            first_endpoint = np.full(int(canonical_edges.max()) + 1, 2 * count, dtype=np.int64)
+                            np.minimum.at(first_endpoint, canonical_edges, endpoint_indices)
+                            owns_endpoint = (first_endpoint[canonical_edges] == endpoint_indices).reshape(-1, 2)
+                            # Zero remains the legacy "both endpoints owned" encoding.
+                            corner_ownership = (
+                                4.0 + owns_endpoint[:, 0].astype(np.float32) + 2.0 * owns_endpoint[:, 1]
+                            ).reshape(-1, 1)
+                            edge_center_chunks.append(
+                                np.ascontiguousarray(
+                                    np.concatenate((edge_centers, edge_radii), axis=1), dtype=np.float32
+                                )
+                            )
+                            edge_half_chunks.append(
+                                np.ascontiguousarray(np.concatenate((edge_halves, corner_ownership), axis=1))
+                            )
                         edge_offset += count
                         entry = (start, count)
                         edge_cache[mesh_key] = entry
@@ -11767,8 +11833,18 @@ class ModelBuilder:
             )
             m.mesh_edge_indices = (
                 wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
-                if edge_chunks
+                if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec2i, device=device)
+            )
+            m.mesh_edge_centers = (
+                wp.array(np.concatenate(edge_center_chunks), dtype=wp.vec4, device=device)
+                if edge_offset > 0
+                else wp.zeros(1, dtype=wp.vec4, device=device)
+            )
+            m.mesh_edge_halves = (
+                wp.array(np.concatenate(edge_half_chunks), dtype=wp.vec4, device=device)
+                if edge_offset > 0
+                else wp.zeros(1, dtype=wp.vec4, device=device)
             )
 
             # ---------------------

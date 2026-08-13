@@ -118,16 +118,16 @@ def build_friction_grid(device, mus, angles_deg, contact_kf=0.0):
 
     box_ids = []
     for row, mu in enumerate(mus):
-        cfg = newton.ModelBuilder.ShapeConfig()
-        cfg.mu = mu
-        cfg.ke = 1.0e5
-        cfg.kd = 1.0e3
-        cfg.kf = contact_kf
-        cfg.gap = 0.0
-        cfg.color = _ROW_COLORS[row % len(_ROW_COLORS)]
-
         row_box_ids = []
         for col, angle_deg in enumerate(angles_deg):
+            cfg = newton.ModelBuilder.ShapeConfig(collision_group=col + len(mus) * row + 1)
+            cfg.mu = mu
+            cfg.ke = 1.0e5
+            cfg.kd = 1.0e3
+            cfg.kf = contact_kf
+            cfg.gap = 0.0
+            cfg.color = _ROW_COLORS[row % len(_ROW_COLORS)]
+
             angle = math.radians(angle_deg)
             ramp_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(angle))
             ramp_center = wp.vec3(float(col * COL_PITCH), float(row * ROW_PITCH), float(GRID_Z))
@@ -153,7 +153,11 @@ def build_friction_grid(device, mus, angles_deg, contact_kf=0.0):
         box_ids.append(row_box_ids)
 
     builder.color()  # required for VBD
-    return builder.finalize(device=device), box_ids
+    model = builder.finalize(device=device)
+    # Set conservative limit on number of contacts to avoid unnecessary allocations and work
+    total_boxes = sum(len(row) for row in box_ids)
+    model.rigid_contact_max = 8 * total_boxes
+    return model, box_ids
 
 
 def simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames):
@@ -233,7 +237,7 @@ def build_stopping_distance_scene(device):
 
     box_ids = []
     for i, mu in enumerate(STOPPING_MUS):
-        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg = newton.ModelBuilder.ShapeConfig(collision_group=i + 1)
         cfg.mu = mu
         cfg.ke = 1.0e5
         cfg.kd = 0.0
@@ -267,7 +271,10 @@ def build_stopping_distance_scene(device):
         box_ids.append(box_id)
 
     builder.color()  # required for VBD
-    return builder.finalize(device=device), box_ids
+    model = builder.finalize(device=device)
+    # Set conservative limit on number of contacts to avoid unnecessary allocations and work
+    model.rigid_contact_max = 8 * len(box_ids)
+    return model, box_ids
 
 
 def test_friction_stopping_distance(test, device, solver_fn, rel_tol, rest_speed_max, native_contacts=False):
@@ -446,6 +453,14 @@ _SOLVERS = {
         "stopping_distance_rel_tol": 0.02,
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
+    "kamino": {
+        "factory": newton.solvers.SolverKamino,
+        "mus": _DEFAULT_MUS,
+        "angles_deg": _DEFAULT_ANGLES_DEG,
+        "thresholds": _DEFAULT_THRESHOLDS,
+        "stopping_distance_rel_tol": 0.01,
+        "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
+    },
 }
 
 
@@ -463,6 +478,10 @@ class TestRigidFrictionRamp(unittest.TestCase):
         self._run_viewer("mujoco_warp")
 
     @unittest.skip("Visual debugging - run manually to view simulation")
+    def test_view_friction_grid_kamino(self):
+        self._run_viewer("kamino")
+
+    @unittest.skip("Visual debugging - run manually to view simulation")
     def test_view_stopping_distance_xpbd(self):
         self._run_stopping_distance_viewer("xpbd")
 
@@ -473,6 +492,10 @@ class TestRigidFrictionRamp(unittest.TestCase):
     @unittest.skip("Visual debugging - run manually to view simulation")
     def test_view_stopping_distance_mujoco_warp(self):
         self._run_stopping_distance_viewer("mujoco_warp")
+
+    @unittest.skip("Visual debugging - run manually to view simulation")
+    def test_view_stopping_distance_kamino(self):
+        self._run_stopping_distance_viewer("kamino")
 
     def _run_viewer(self, solver_name):
         device = wp.get_device("cuda:0")
