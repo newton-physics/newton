@@ -4,16 +4,14 @@
 """Effective inverse-mass response for articulated systems.
 
 :class:`ResponseOracle` owns the full inverse joint-space mass block for each
-articulation. There are three ways to update it:
+articulation. There are two ways to update it:
 
 - :meth:`ResponseOracle.refresh` assembles the mass matrix itself.
 - :meth:`ResponseOracle.refresh_from_solve` reuses a solver's own inertia
   without materializing it, so factorized solvers work too.
-- :meth:`ResponseOracle.refresh_from_mass_matrix` inverts a dense matrix a
-  solver has already assembled.
 
-All three use preallocated buffers and device kernels, so they can be captured
-in a CUDA graph.
+Both use preallocated buffers and device kernels, so they can be captured in a
+CUDA graph.
 """
 
 from __future__ import annotations
@@ -74,39 +72,6 @@ def _inverse_block_from_mass_matrix_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _gather_mass_matrix_kernel(
-    mass_matrix: wp.array3d[float],
-    dof_map: wp.array2d[wp.int32],
-    dofs_per_world: int,
-    dof_articulation: wp.array[wp.int32],
-    dof_local_index: wp.array[wp.int32],
-    H: wp.array3d[float],
-):
-    """Scatter a solver's per-world mass matrix into per-articulation blocks.
-
-    ``dof_map`` translates solver DOF indices to Newton ones; a null array means
-    the solver already uses Newton order. Entries coupling two articulations are
-    dropped -- the block layout has nowhere to put them, and a joint-space
-    inertia is block diagonal across separate kinematic trees anyway.
-    """
-    w, i, j = wp.tid()
-
-    ni = w * dofs_per_world + i
-    nj = w * dofs_per_world + j
-    if dof_map:
-        ni = dof_map[w, i]
-        nj = dof_map[w, j]
-    dof_count = dof_articulation.shape[0]
-    if ni < 0 or nj < 0 or ni >= dof_count or nj >= dof_count:
-        return
-
-    a = dof_articulation[ni]
-    if a < 0 or dof_articulation[nj] != a:
-        return
-    H[a, dof_local_index[ni], dof_local_index[nj]] = mass_matrix[w, i, j]
-
-
-@wp.kernel(enable_backward=False)
 def _add_armature_kernel(
     armature: wp.array[float],
     art_dof_start: wp.array[wp.int32],
@@ -145,7 +110,8 @@ def _scatter_inverse_column_kernel(
     """Scatter one solved column of ``M^-1`` into the per-articulation blocks.
 
     ``solution[w, i]`` is entry ``i`` of ``M^-1 e_column`` in world ``w``. Entries
-    coupling two articulations are dropped, as in :func:`_gather_mass_matrix_kernel`.
+    coupling two articulations are dropped: the block layout has nowhere to put
+    them, and a joint-space inertia is block diagonal across separate trees.
     """
     w, i = wp.tid()
 
@@ -172,9 +138,9 @@ class ResponseOracle:
     no entry have a zero response.
 
     :meth:`refresh` computes it from a mass matrix it assembles itself.
-    :meth:`refresh_from_solve` and :meth:`refresh_from_mass_matrix` reuse the
-    solver's own inertia, which is more faithful to the dynamics the effort is
-    fed into. All three run entirely in device kernels.
+    :meth:`refresh_from_solve` reuses the solver's own inertia, which is more
+    faithful to the dynamics the effort is fed into. Both run entirely in device
+    kernels.
     """
 
     def __init__(self, model):
@@ -252,8 +218,7 @@ class ResponseOracle:
         articulation, 0-padded beyond its DOF count). The implicit effort mode
         uses the submatrix indexed by the actuator group's DOFs.
 
-        Update it through :meth:`refresh`, :meth:`refresh_from_mass_matrix` or
-        :meth:`refresh_from_solve`. Writing into the array directly is not
+        Update it through :meth:`refresh` or :meth:`refresh_from_solve`. Writing into the array directly is not
         supported: the padding beyond each articulation's DOF count is assumed
         zero by the solve, and a partial write leaves no way to tell a stale
         response from a fresh one.
@@ -266,8 +231,7 @@ class ResponseOracle:
         Reads *state* without modifying it. Includes ``joint_armature`` but not
         joint damping, contacts, or constraint regularization; the response is
         therefore an upper bound, which under-drives rather than destabilizes the
-        solve. Use :meth:`refresh_from_mass_matrix` for a solver-faithful
-        response.
+        solve. Use :meth:`refresh_from_solve` for a solver-faithful response.
 
         Args:
             state: Simulation state providing ``joint_q`` / ``joint_qd``.
@@ -369,66 +333,6 @@ class ResponseOracle:
                 outputs=[self._inv_block],
                 device=model.device,
             )
-
-    def refresh_from_mass_matrix(
-        self,
-        mass_matrix: wp.array3d[float],
-        dof_map: wp.array2d[wp.int32] | None = None,
-    ) -> None:
-        """Recompute :attr:`inverse_blocks` from a mass matrix a solver assembled.
-
-        Prefer this over :meth:`refresh`: inverting the solver's own matrix keeps
-        the response consistent with the dynamics the effort is applied to.
-        Kernel-only, so CUDA-graph capturable.
-
-        For a solver that keeps its inertia factorized rather than dense, such
-        as :class:`~newton.solvers.SolverMuJoCo`, use
-        :meth:`refresh_from_solve` instead.
-
-        Args:
-            mass_matrix: Dense per-world joint-space inertia [kg or kg·m²], shape
-                [world_count, dof_count, dof_count]; rows and columns past the
-                mapped DOFs are ignored, so padded allocations are fine. Sparse
-                layouts, such as MuJoCo's ``qM`` when the model compiles to a
-                sparse Jacobian, are not supported.
-            dof_map: Mapping from solver ``[world, dof]`` to Newton DOF index,
-                negative where a solver DOF has no Newton counterpart. If
-                ``None``, the solver is assumed to use Newton DOF order with the
-                same DOF count in every world.
-        """
-        model = self.model
-        if mass_matrix.ndim != 3:
-            raise ValueError(f"mass_matrix must be indexed [world, dof, dof], got shape {mass_matrix.shape}")
-
-        dofs_per_world = 0
-        if dof_map is None:
-            if self._uniform_dofs_per_world is None:
-                raise ValueError(
-                    "dof_map is required when worlds do not all have the same DOF count, "
-                    "or when the model has global joints"
-                )
-            dofs_per_world = self._uniform_dofs_per_world
-            world_count, dof_count = model.world_count, dofs_per_world
-        else:
-            world_count, dof_count = dof_map.shape
-
-        if mass_matrix.shape[0] < world_count:
-            raise ValueError(f"mass_matrix covers {mass_matrix.shape[0]} worlds, expected at least {world_count}")
-        if mass_matrix.shape[1] < dof_count or mass_matrix.shape[2] < dof_count:
-            # A sparse layout also lands here: MuJoCo stores it as [world, 1, nM].
-            raise ValueError(
-                f"mass_matrix must be dense with at least {dof_count} rows and columns, got shape {mass_matrix.shape}"
-            )
-
-        self._H.zero_()
-        wp.launch(
-            _gather_mass_matrix_kernel,
-            dim=(world_count, dof_count, dof_count),
-            inputs=[mass_matrix, dof_map, dofs_per_world, self._dof_articulation, self._dof_local_index],
-            outputs=[self._H],
-            device=model.device,
-        )
-        self._invert_blocks()
 
     def _invert_blocks(self) -> None:
         """Invert the per-articulation blocks of ``self._H`` into :attr:`inverse_blocks`."""

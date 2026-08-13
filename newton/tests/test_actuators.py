@@ -2656,76 +2656,6 @@ class TestResponseOracle(unittest.TestCase):
             expected[sl] = np.linalg.solve(J, h * f0) / h
         np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-3, atol=1e-3)
 
-    def test_refresh_from_mass_matrix_in_newton_dof_order(self):
-        """Invert a mass matrix supplied in Newton DOF order (``dof_map=None``).
-
-        Feeds back the matrix behind the oracle's own response, so recovering that
-        response exercises the scatter and the block inverse without depending on
-        any solver's DOF layout.
-        """
-        device = wp.get_device()
-        model = _build_two_link(device)
-        n = model.joint_dof_count
-        state = model.state()
-        state.joint_q.assign(np.array([0.3, -0.8], dtype=np.float32))
-
-        reference = ResponseOracle(model)
-        reference.refresh(state)
-        expected = reference.inverse_blocks.numpy()[0, :n, :n]
-
-        mass_matrix = np.zeros((model.world_count, n, n), dtype=np.float32)
-        mass_matrix[0] = np.linalg.inv(expected)
-
-        oracle = ResponseOracle(model)
-        oracle.refresh_from_mass_matrix(wp.array(mass_matrix, dtype=float, device=device))
-        np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], expected, rtol=1e-4)
-
-    def test_refresh_from_mass_matrix_remaps_dof_order(self):
-        """Translate solver DOF indices through ``dof_map`` before inverting.
-
-        The two-link model compiles to identical MuJoCo and Newton DOF order, so
-        the mapping is exercised here with a permuted matrix and the inverse
-        permutation instead: both must cancel and reproduce the plain response.
-        """
-        device = wp.get_device()
-        model = _build_two_link(device)
-        n = model.joint_dof_count
-        state = model.state()
-        state.joint_q.assign(np.array([0.3, -0.8], dtype=np.float32))
-
-        reference = ResponseOracle(model)
-        reference.refresh(state)
-        expected = reference.inverse_blocks.numpy()[0, :n, :n]
-
-        permutation = np.arange(n - 1, -1, -1)
-        mass_matrix = np.zeros((model.world_count, n, n), dtype=np.float32)
-        mass_matrix[0] = np.linalg.inv(expected)[np.ix_(permutation, permutation)]
-
-        oracle = ResponseOracle(model)
-        oracle.refresh_from_mass_matrix(
-            wp.array(mass_matrix, dtype=float, device=device),
-            dof_map=wp.array(permutation[None, :], dtype=wp.int32, device=device),
-        )
-        np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], expected, rtol=1e-4)
-
-    def test_refresh_from_mass_matrix_rejects_non_dense(self):
-        """Reject mass matrices that are not dense per-world ``[world, dof, dof]``.
-
-        MuJoCo stores ``qM`` as ``[world, 1, nM]`` once a model compiles to a
-        sparse Jacobian, which must fail loudly instead of being read as a dense
-        block of the wrong extent.
-        """
-        device = wp.get_device()
-        model = _build_two_link(device)
-        n = model.joint_dof_count
-        oracle = ResponseOracle(model)
-
-        with self.assertRaises(ValueError):
-            oracle.refresh_from_mass_matrix(wp.zeros((n, n), dtype=float, device=device))
-        with self.assertRaises(ValueError):
-            sparse = wp.zeros((model.world_count, 1, n * (n + 1) // 2), dtype=float, device=device)
-            oracle.refresh_from_mass_matrix(sparse)
-
     def test_refresh_from_solve_captures_without_warmup(self):
         """refresh_from_solve captures and replays, with no warm-up call first.
 
@@ -2760,14 +2690,14 @@ class TestResponseOracle(unittest.TestCase):
             atol=1e-6,
         )
 
-    def test_response_from_mujoco_mass_matrix(self):
+    def test_response_from_mujoco_factorization(self):
         """Fill the oracle response from MuJoCo's per-step factorized inertia.
 
-        MuJoCo rebuilds ``qM`` at the step-start pose every step, so — unlike the
-        compile-time ``dof_invweight0`` — its complete inverse tracks inertial
-        coupling at the current configuration. Checks
+        MuJoCo refactorizes its inertia at the step-start pose every step, so --
+        unlike the compile-time, diagonal-only ``dof_invweight0`` -- the recovered
+        inverse tracks inertial coupling at the current configuration. Checks
         :meth:`ResponseOracle.refresh_from_solve` against a host-side
-        inverse-and-remap of that matrix, against the built-in oracle, and by
+        inverse-and-remap of that inertia, against the built-in oracle, and by
         driving the coupled implicit solve with it.
         """
         device = wp.get_device()
