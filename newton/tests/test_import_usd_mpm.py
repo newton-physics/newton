@@ -56,6 +56,56 @@ class TestMpmConfigUsdEntryGuards(unittest.TestCase):
             SolverImplicitMPM.Config.create_from_usd(scene)
 
 
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestImportUsdMPMFixtures(unittest.TestCase):
+    def test_imports_checked_in_two_prim_fixture(self):
+        """Parse the checked-in transformed, unit-scaled, two-material USDA fixture."""
+        fixture = pathlib.Path(__file__).parent / "assets" / "mpm_two_prims.usda"
+        builder = newton.ModelBuilder()
+
+        result = builder.add_usd(fixture.as_posix(), load_visual_shapes=False)
+
+        self.assertEqual(
+            result["path_particle_map"],
+            {"/World/TranslatedAndScaled/Sand": (0, 2), "/World/Snow": (2, 3)},
+        )
+        self.assertEqual(builder.particle_count, 3)
+        np.testing.assert_allclose(
+            np.asarray(builder.particle_q),
+            [[1.2, 0.0, 0.0], [1.4, 0.0, 0.0], [0.0, 0.1, 0.0]],
+            rtol=1.0e-6,
+            atol=1.0e-7,
+        )
+        np.testing.assert_allclose(
+            np.asarray(builder.particle_qd),
+            [[0.6, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.0]],
+            rtol=1.0e-6,
+            atol=1.0e-7,
+        )
+        np.testing.assert_allclose(builder.particle_radius, [0.05, 0.1, 0.1], rtol=1.0e-6)
+        np.testing.assert_allclose(builder.particle_mass, [2.0, 16.0, 8.0], rtol=1.0e-6)
+        np.testing.assert_allclose(np.asarray(builder.gravity), [0.0, 0.0, -9.81], rtol=1.0e-6)
+        self.assertAlmostEqual(result["mpm_config"].voxel_size, 0.05)
+
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.mpm.young_modulus.numpy(), [5.0, 5.0, 1.0e15], rtol=1.0e-6)
+        np.testing.assert_allclose(model.mpm.friction.numpy(), [0.6, 0.6, 0.2], rtol=1.0e-6)
+
+    def test_imports_checked_in_material_subset_fixture(self):
+        """Parse checked-in point-subset bindings and parent-material fallback."""
+        fixture = pathlib.Path(__file__).parent / "assets" / "mpm_material_subsets.usda"
+        builder = newton.ModelBuilder()
+
+        result = builder.add_usd(fixture.as_posix(), load_visual_shapes=False)
+
+        self.assertEqual(result["path_particle_map"], {"/World/Mixed": (0, 4)})
+        np.testing.assert_allclose(builder.particle_mass, [2000.0, 3000.0, 2000.0, 1000.0])
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.mpm.young_modulus.numpy(), [200.0, 300.0, 200.0, 100.0])
+        np.testing.assert_allclose(model.mpm.friction.numpy(), [0.2, 0.3, 0.2, 0.1])
+        np.testing.assert_allclose(model.state().mpm.particle_Jp.numpy(), [0.9, 0.8, 0.9, 1.0])
+
+
 @unittest.skipUnless(_has_mpm_schemas(), "Requires Newton USD schemas with MPM support")
 class TestImportUsdMPM(unittest.TestCase):
     @staticmethod
@@ -299,7 +349,7 @@ class TestImportUsdMPM(unittest.TestCase):
         values = {
             "newton:maxSolverIterations": 64,
             "newton:mpm:tolerance": 2.0e-5,
-            "newton:mpm:rheologySolvers": Vt.TokenArray(["cg", "gauss-seidel"]),
+            "newton:mpm:rheologySolvers": Vt.TokenArray(["conjugate-gradient", "gauss-seidel"]),
             "newton:mpm:voxelSize": 5.0,
             "newton:mpm:gridType": "fixed",
             "newton:mpm:gridPadding": 2,
@@ -329,6 +379,25 @@ class TestImportUsdMPM(unittest.TestCase):
         self.assertEqual(config.collider_basis, "pic")
         self.assertEqual(config.strain_basis, "Q1d")
         self.assertEqual(config.velocity_basis, "B2")
+
+    def test_config_maps_schema_rheology_solver_tokens(self):
+        """Map descriptive USD rheology tokens to Newton solver names."""
+        from pxr import Vt
+
+        _stage, scene = self._stage()
+        scene.GetAttribute("newton:mpm:rheologySolvers").Set(
+            Vt.TokenArray(
+                [
+                    "conjugate-gradient",
+                    "conjugate-residual",
+                    "generalized-minimal-residual",
+                ]
+            )
+        )
+
+        config = SolverImplicitMPM.Config.create_from_usd(scene)
+
+        self.assertEqual(config.solver, ("cg", "cr", "gmres"))
 
     def test_config_validates_split_basis_fields(self):
         """Compose multi-digit orders and reject unsupported basis combinations."""
@@ -694,53 +763,6 @@ class TestImportUsdMPM(unittest.TestCase):
                 )
 
         self.assertAlmostEqual(float(model.state().mpm.particle_Jp.numpy()[0]), 0.9)
-
-    def test_imports_checked_in_two_prim_fixture(self):
-        """Parse the checked-in transformed, unit-scaled, two-material USDA fixture."""
-        fixture = pathlib.Path(__file__).parent / "assets" / "mpm_two_prims.usda"
-        builder = newton.ModelBuilder()
-
-        result = builder.add_usd(fixture.as_posix(), load_visual_shapes=False)
-
-        self.assertEqual(
-            result["path_particle_map"],
-            {"/World/TranslatedAndScaled/Sand": (0, 2), "/World/Snow": (2, 3)},
-        )
-        self.assertEqual(builder.particle_count, 3)
-        np.testing.assert_allclose(
-            np.asarray(builder.particle_q),
-            [[1.2, 0.0, 0.0], [1.4, 0.0, 0.0], [0.0, 0.1, 0.0]],
-            rtol=1.0e-6,
-            atol=1.0e-7,
-        )
-        np.testing.assert_allclose(
-            np.asarray(builder.particle_qd),
-            [[0.6, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.0]],
-            rtol=1.0e-6,
-            atol=1.0e-7,
-        )
-        np.testing.assert_allclose(builder.particle_radius, [0.05, 0.1, 0.1], rtol=1.0e-6)
-        np.testing.assert_allclose(builder.particle_mass, [2.0, 16.0, 8.0], rtol=1.0e-6)
-        np.testing.assert_allclose(np.asarray(builder.gravity), [0.0, 0.0, -9.81], rtol=1.0e-6)
-        self.assertAlmostEqual(result["mpm_config"].voxel_size, 0.05)
-
-        model = builder.finalize(device="cpu")
-        np.testing.assert_allclose(model.mpm.young_modulus.numpy(), [5.0, 5.0, 1.0e15], rtol=1.0e-6)
-        np.testing.assert_allclose(model.mpm.friction.numpy(), [0.6, 0.6, 0.2], rtol=1.0e-6)
-
-    def test_imports_checked_in_material_subset_fixture(self):
-        """Parse checked-in point-subset bindings and parent-material fallback."""
-        fixture = pathlib.Path(__file__).parent / "assets" / "mpm_material_subsets.usda"
-        builder = newton.ModelBuilder()
-
-        result = builder.add_usd(fixture.as_posix(), load_visual_shapes=False)
-
-        self.assertEqual(result["path_particle_map"], {"/World/Mixed": (0, 4)})
-        np.testing.assert_allclose(builder.particle_mass, [2000.0, 3000.0, 2000.0, 1000.0])
-        model = builder.finalize(device="cpu")
-        np.testing.assert_allclose(model.mpm.young_modulus.numpy(), [200.0, 300.0, 200.0, 100.0])
-        np.testing.assert_allclose(model.mpm.friction.numpy(), [0.2, 0.3, 0.2, 0.1])
-        np.testing.assert_allclose(model.state().mpm.particle_Jp.numpy(), [0.9, 0.8, 0.9, 1.0])
 
     def test_validates_particle_array_lengths_before_mutation(self):
         """Reject malformed particle arrays before adding any particles."""
@@ -1376,6 +1398,25 @@ class TestImportUsdMPM(unittest.TestCase):
         self.assertTrue(any("Mixed rigid/collider and particle USD content" in message for message in messages))
         self.assertFalse(any("non-unit linear units are not supported" in message for message in messages))
         self.assertFalse(any("non-unit mass units are not supported" in message for message in messages))
+
+    def test_warns_for_mixed_units_before_particle_validation_error(self):
+        """Warn about mixed unit conversion before particle validation fails."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        stage, _scene = self._stage()
+        UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+        points = self._points(stage, "/World/Sand", [Gf.Vec3f()], widths=[1.0])
+        points.AddScaleOp().Set(Gf.Vec3f(1.0, 2.0, 1.0))
+        collider = UsdGeom.Cube.Define(stage, "/World/Collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with self.assertRaisesRegex(ValueError, "uniform, shear-free"):
+                newton.ModelBuilder().add_usd(stage, load_visual_shapes=False)
+
+        messages = [str(item.message) for item in caught]
+        self.assertTrue(any("Mixed rigid/collider and particle USD content" in message for message in messages))
 
     def test_warns_for_nonunit_mpm_with_deformable(self):
         """Warn when non-unit particles share a stage with another import path."""

@@ -1035,22 +1035,22 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             value = authored("newton:mpm:rheologySolvers")
             if value is not None:
                 solvers = tuple(str(item) for item in value)
-                allowed_solvers = {
-                    "auto",
-                    "gauss-seidel",
-                    "gauss-seidel-soa",
-                    "gauss-seidel-batched",
-                    "jacobi",
-                    "cg",
-                    "cr",
-                    "gmres",
+                solver_names = {
+                    "auto": "auto",
+                    "gauss-seidel": "gauss-seidel",
+                    "gauss-seidel-soa": "gauss-seidel-soa",
+                    "gauss-seidel-batched": "gauss-seidel-batched",
+                    "jacobi": "jacobi",
+                    "conjugate-gradient": "cg",
+                    "conjugate-residual": "cr",
+                    "generalized-minimal-residual": "gmres",
                 }
-                if not solvers or any(item not in allowed_solvers for item in solvers):
+                if not solvers or any(item not in solver_names for item in solvers):
                     raise ValueError(
                         f"{path}: newton:mpm:rheologySolvers must be a non-empty ordered array of supported tokens, "
                         f"got {solvers!r}."
                     )
-                config.solver = solvers
+                config.solver = tuple(solver_names[item] for item in solvers)
 
             token_fields = (
                 ("newton:mpm:gridType", "grid_type", {"sparse", "dense", "fixed"}),

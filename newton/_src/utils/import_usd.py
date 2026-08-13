@@ -51,7 +51,7 @@ from ..solvers.mujoco.utils import (
 )
 from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
-from ..usd.particles import import_particles
+from ..usd.particles import find_particle_prims, import_particles
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .import_usd_deformable_attachments import (
@@ -604,11 +604,14 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get linear unit: {e}")
+    has_nonunit_linear_units = not math.isclose(linear_unit, 1.0)
+    has_nonunit_mass_units = not math.isclose(mass_unit, 1.0)
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
     # LoadUsdPhysicsFromRange remains the native rigid/joint descriptor parser, so this
     # pre-pass supplies its deformable exclusions before it runs. The same walk also
     # collects static visual leaves when requested, avoiding a third stage traversal.
     root_prim = stage.GetPrimAtPath(root_path)
+    particle_prims = find_particle_prims(root_prim, ignore_paths)
     _deformable_prims = _scout_deformable_prims(
         root_prim,
         ignore_paths,
@@ -621,6 +624,49 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
     physics_scenes = usd._get_physics_scenes_from_results(stage, ret_dict)
     physics_scene_prim = physics_scenes[0].GetPrim() if physics_scenes else None
+
+    legacy_rigid_object_types = (
+        UsdPhysics.ObjectType.RigidBody,
+        UsdPhysics.ObjectType.SphereShape,
+        UsdPhysics.ObjectType.CubeShape,
+        UsdPhysics.ObjectType.CapsuleShape,
+        UsdPhysics.ObjectType.CylinderShape,
+        UsdPhysics.ObjectType.ConeShape,
+        UsdPhysics.ObjectType.MeshShape,
+        UsdPhysics.ObjectType.PlaneShape,
+    )
+    has_legacy_rigid_objects = any(kind in ret_dict for kind in legacy_rigid_object_types)
+    has_other_import_candidates = bool(
+        has_legacy_rigid_objects or _deformable_prims.has_candidates() or _deformable_prims.static_visuals
+    )
+    if particle_prims and has_legacy_rigid_objects and (has_nonunit_linear_units or has_nonunit_mass_units):
+        warnings.warn(
+            "Mixed rigid/collider and particle USD content with non-unit metersPerUnit or kilogramsPerUnit uses "
+            "different conversion paths: particles are converted to SI, while the legacy rigid/collider importer "
+            "still expects unit stage metadata. Author mixed stages with both units set to 1.0 until rigid import "
+            "gains complete unit conversion.",
+            stacklevel=_external_stacklevel(),
+        )
+    elif particle_prims and has_other_import_candidates and (has_nonunit_linear_units or has_nonunit_mass_units):
+        warnings.warn(
+            "Mixed particles and other imported USD content with non-unit metersPerUnit or kilogramsPerUnit may "
+            "use different conversion paths: particles are converted to SI, while other import paths may still "
+            "expect unit stage metadata. Author mixed stages with both units set to 1.0.",
+            stacklevel=_external_stacklevel(),
+        )
+    elif not particle_prims:
+        if has_nonunit_mass_units:
+            warnings.warn(
+                "USD stages with non-unit mass units are not supported. "
+                f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
+                stacklevel=_external_stacklevel(),
+            )
+        if has_nonunit_linear_units:
+            warnings.warn(
+                "USD stages with non-unit linear units are not supported. "
+                f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
+                stacklevel=_external_stacklevel(),
+            )
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
@@ -2509,6 +2555,7 @@ def parse_usd(
         linear_unit=linear_unit,
         mass_unit=mass_unit,
         scene_preflight=_preflight_mpm_scene,
+        particle_prims=particle_prims,
     )
     if imported_mpm_config is not None:
         mpm_config = imported_mpm_config
@@ -2526,20 +2573,6 @@ def parse_usd(
         from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
 
         mpm_config = SolverImplicitMPM.Config.create_from_usd(physics_scene_prim)
-    legacy_rigid_object_types = (
-        UsdPhysics.ObjectType.RigidBody,
-        UsdPhysics.ObjectType.SphereShape,
-        UsdPhysics.ObjectType.CubeShape,
-        UsdPhysics.ObjectType.CapsuleShape,
-        UsdPhysics.ObjectType.CylinderShape,
-        UsdPhysics.ObjectType.ConeShape,
-        UsdPhysics.ObjectType.MeshShape,
-        UsdPhysics.ObjectType.PlaneShape,
-    )
-    has_legacy_rigid_objects = any(kind in ret_dict for kind in legacy_rigid_object_types)
-    has_nonunit_linear_units = not math.isclose(linear_unit, 1.0)
-    has_nonunit_mass_units = not math.isclose(mass_unit, 1.0)
-
     if verbose:
         print(
             f"Scaling PD gains by (joint_drive_gains_scaling / DegreesToRadian) = {joint_drive_gains_scaling / DegreesToRadian}, default scale for joint_drive_gains_scaling=1 is 1.0/DegreesToRadian = {1.0 / DegreesToRadian}"
@@ -5133,40 +5166,6 @@ def parse_usd(
         actuator_count += 1
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
-
-    has_non_particle_imported_content = bool(
-        path_body_map or path_joint_map or path_shape_map or path_cable_map or path_cloth_map or path_soft_map
-    )
-    if path_particle_map and has_legacy_rigid_objects and (has_nonunit_linear_units or has_nonunit_mass_units):
-        warnings.warn(
-            "Mixed rigid/collider and particle USD content with non-unit metersPerUnit or kilogramsPerUnit uses "
-            "different conversion paths: particles are converted to SI, while the legacy rigid/collider importer "
-            "still expects unit stage metadata. Author mixed stages with both units set to 1.0 until rigid import "
-            "gains complete unit conversion.",
-            stacklevel=_external_stacklevel(),
-        )
-    elif (
-        path_particle_map and has_non_particle_imported_content and (has_nonunit_linear_units or has_nonunit_mass_units)
-    ):
-        warnings.warn(
-            "Mixed particles and other imported USD content with non-unit metersPerUnit or kilogramsPerUnit may "
-            "use different conversion paths: particles are converted to SI, while other import paths may still "
-            "expect unit stage metadata. Author mixed stages with both units set to 1.0.",
-            stacklevel=_external_stacklevel(),
-        )
-    elif not path_particle_map:
-        if has_nonunit_mass_units:
-            warnings.warn(
-                "USD stages with non-unit mass units are not supported. "
-                f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
-                stacklevel=_external_stacklevel(),
-            )
-        if has_nonunit_linear_units:
-            warnings.warn(
-                "USD stages with non-unit linear units are not supported. "
-                f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
-                stacklevel=_external_stacklevel(),
-            )
 
     result = {
         "fps": stage.GetFramesPerSecond(),

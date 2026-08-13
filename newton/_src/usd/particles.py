@@ -616,6 +616,30 @@ def _resolve_simulation_owner(prim, default_scene):
     return owner
 
 
+def find_particle_prims(root_prim, ignore_paths: list[str]) -> list[Any]:
+    """Find opted-in particle simulation geometry below a USD root prim.
+
+    Args:
+        root_prim: Root prim of the USD subtree to traverse.
+        ignore_paths: Regular expressions matching prim paths to ignore.
+
+    Returns:
+        Points prims carrying ``NewtonPointsDeformableSimAPI`` in traversal order.
+    """
+    from pxr import Usd, UsdGeom
+
+    if not root_prim or not root_prim.IsValid():
+        return []
+    particle_prims = []
+    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
+        path = str(prim.GetPath())
+        if any(re.match(pattern, path) for pattern in ignore_paths):
+            continue
+        if prim.IsA(UsdGeom.Points) and usd.has_applied_api_schema(prim, "NewtonPointsDeformableSimAPI"):
+            particle_prims.append(prim)
+    return particle_prims
+
+
 def import_particles(
     builder: ModelBuilder,
     root_prim,
@@ -626,8 +650,12 @@ def import_particles(
     linear_unit: float,
     mass_unit: float,
     scene_preflight: Callable[[Any], None] | None = None,
+    particle_prims: list[Any] | None = None,
 ) -> tuple[dict[str, tuple[int, int]], Any | None]:
     """Import opted-in particle Points and return ranges plus their MPM config.
+
+    Particle positions, widths, and radii are converted to meters [m],
+    velocities to meters per second [m/s], and masses to kilograms [kg].
 
     ``NewtonPointsDeformableSimAPI`` marks a Points simulation geometry. The
     governing ``PhysicsDeformableBodyAPI`` prim's ``physics:simulationOwner``
@@ -635,34 +663,43 @@ def import_particles(
     ``PhysicsScene`` carrying ``NewtonMPMSceneAPI``. Unauthored owner
     relationships use the first PhysicsScene in stage traversal order, matching
     the standard USD Physics ownership convention.
+
+    Args:
+        builder: Builder that receives the imported particles.
+        root_prim: Root prim of the USD subtree to import.
+        ignore_paths: Regular expressions matching prim paths to ignore.
+        xform_cache: USD transform cache used to resolve world transforms.
+        incoming_world_mat: Caller-provided world transform whose translation is in meters [m].
+        linear_unit: Stage length scale in meters per stage length unit [m].
+        mass_unit: Stage mass scale in kilograms per stage mass unit [kg].
+        scene_preflight: Optional callback that validates the resolved MPM scene before particle mutation.
+        particle_prims: Optional precomputed opted-in Points prims in traversal order.
+
+    Returns:
+        A tuple containing prim-path to half-open particle index ranges and the
+        resolved MPM solver configuration, or ``None`` when no MPM particles
+        are imported.
     """
-    from pxr import Usd, UsdGeom, UsdPhysics
+    from pxr import UsdPhysics
 
-    candidate_prims = []
-    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-        path = str(prim.GetPath())
-        if any(re.match(pattern, path) for pattern in ignore_paths):
-            continue
-        if not prim.IsA(UsdGeom.Points) or not usd.has_applied_api_schema(prim, "NewtonPointsDeformableSimAPI"):
-            continue
-        candidate_prims.append(prim)
-
-    if not candidate_prims:
+    if particle_prims is None:
+        particle_prims = find_particle_prims(root_prim, ignore_paths)
+    if not particle_prims:
         return {}, None
 
     stage = root_prim.GetStage()
     scene_prims = [prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.Scene)]
     default_scene = scene_prims[0] if scene_prims else None
-    particle_prims = []
+    imported_particle_prims = []
     particle_owners = []
-    for prim in candidate_prims:
+    for prim in particle_prims:
         owner = _resolve_simulation_owner(prim, default_scene)
         if owner is None or not usd.has_applied_api_schema(owner, "NewtonMPMSceneAPI"):
             continue
-        particle_prims.append(prim)
+        imported_particle_prims.append(prim)
         particle_owners.append(owner)
 
-    if not particle_prims:
+    if not imported_particle_prims:
         return {}, None
 
     scene_paths = {str(owner.GetPath()) for owner in particle_owners}
@@ -682,7 +719,7 @@ def import_particles(
         scene_preflight(scene_prim)
     SolverImplicitMPM.register_custom_attributes(builder)
     payloads: list[_ParticleData] = []
-    for prim in particle_prims:
+    for prim in imported_particle_prims:
         payloads.append(
             _read_particle_data(
                 builder,
@@ -708,4 +745,4 @@ def import_particles(
     return ranges, mpm_config
 
 
-__all__ = ["import_particles"]
+__all__ = ["find_particle_prims", "import_particles"]

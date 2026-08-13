@@ -42,7 +42,7 @@ Particle Simulation Geometry
 
 .. experimental::
 
-   Particle import currently requires a ``newton-usd-schemas`` build that registers
+   Particle import requires ``newton-usd-schemas`` 0.5.0 or newer, which registers
    ``NewtonPointsDeformableSimAPI``, ``NewtonMPMSceneAPI``, and
    ``NewtonMPMMaterialAPI``. These schemas may evolve while the AOUSD
    deformable-material proposal is being standardized.
