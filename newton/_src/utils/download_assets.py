@@ -26,6 +26,38 @@ MENAGERIE_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
 MENAGERIE_REF = "affef0836947b64cc06c4ab1cbf0152835693374"
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
+_HTTP_SERVER_ERROR_RE = re.compile(r"\bhttp 5\d\d\b", re.IGNORECASE)
+_GIT_DOWNLOAD_ATTEMPTS = 3
+_GIT_DOWNLOAD_RETRY_DELAY = 1.0
+_TRANSIENT_GIT_ERROR_PATTERNS = (
+    "rpc failed",
+    "early eof",
+    "the remote end hung up",
+    "error reading section header",
+    "expected 'packfile'",
+)
+_PERMANENT_GIT_ERROR_PATTERNS = (
+    "authentication failed",
+    "permission denied",
+    "repository not found",
+    "couldn't find remote ref",
+    "http 401",
+    "http 403",
+    "http 404",
+)
+
+
+def _is_transient_git_error(error: Exception) -> bool:
+    """Return whether a Git error indicates a transient network failure."""
+    stderr = getattr(error, "stderr", "") or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode(errors="replace")
+    details = stderr.lower()
+    if any(pattern in details for pattern in _PERMANENT_GIT_ERROR_PATTERNS):
+        return False
+    return bool(_HTTP_SERVER_ERROR_RE.search(details)) or any(
+        pattern in details for pattern in _TRANSIENT_GIT_ERROR_PATTERNS
+    )
 
 
 def _get_newton_cache_dir() -> str:
@@ -356,9 +388,6 @@ def download_git_folder(
     _cleanup_stale_temp_dirs(cache_path, base_prefix)
 
     try:
-        if temp_dir.exists():
-            _safe_rmtree(temp_dir)
-
         if cached is not None:
             print(
                 f"New version of {folder_path} found "
@@ -368,32 +397,44 @@ def download_git_folder(
         print(f"Cloning {git_url} (ref: {ref})...")
 
         is_sha = bool(_SHA_RE.fullmatch(ref))
-        if is_sha:
-            # Single fetch — skip the clone, which would download the
-            # default-branch tip only to throw it away.
-            repo = gitpython.Repo.init(temp_dir)
+        for attempt in range(_GIT_DOWNLOAD_ATTEMPTS):
             try:
-                repo.create_remote("origin", git_url)
-                repo.git.sparse_checkout("init")
-                repo.git.sparse_checkout("set", folder_path)
-                repo.git.fetch("origin", ref, "--depth=1", "--filter=blob:none")
-                repo.git.checkout("FETCH_HEAD")
-            finally:
-                repo.close()
-        else:
-            repo = gitpython.Repo.clone_from(
-                git_url,
-                temp_dir,
-                branch=ref,
-                depth=1,
-                no_checkout=True,
-                multi_options=["--filter=blob:none", "--sparse"],
-            )
-            try:
-                repo.git.sparse_checkout("set", folder_path)
-                repo.git.checkout(ref)
-            finally:
-                repo.close()
+                if temp_dir.exists():
+                    _safe_rmtree(temp_dir)
+
+                if is_sha:
+                    # Single fetch — skip the clone, which would download the
+                    # default-branch tip only to throw it away.
+                    repo = gitpython.Repo.init(temp_dir)
+                    try:
+                        repo.create_remote("origin", git_url)
+                        repo.git.sparse_checkout("init")
+                        repo.git.sparse_checkout("set", folder_path)
+                        repo.git.fetch("origin", ref, "--depth=1", "--filter=blob:none")
+                        repo.git.checkout("FETCH_HEAD")
+                    finally:
+                        repo.close()
+                else:
+                    repo = gitpython.Repo.clone_from(
+                        git_url,
+                        temp_dir,
+                        branch=ref,
+                        depth=1,
+                        no_checkout=True,
+                        multi_options=["--filter=blob:none", "--sparse"],
+                    )
+                    try:
+                        repo.git.sparse_checkout("set", folder_path)
+                        repo.git.checkout(ref)
+                    finally:
+                        repo.close()
+                break
+            except GitCommandError as e:
+                if attempt == _GIT_DOWNLOAD_ATTEMPTS - 1 or not _is_transient_git_error(e):
+                    raise
+                delay = _GIT_DOWNLOAD_RETRY_DELAY * 2**attempt
+                print(f"Transient Git error. Retrying in {delay:g} seconds...")
+                time.sleep(delay)
 
         temp_target = temp_dir / folder_path
         if not temp_target.exists():
