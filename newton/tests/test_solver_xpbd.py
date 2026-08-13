@@ -148,6 +148,39 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
     )
 
 
+def test_distance_joint_limits(test, device):
+    """Enforce distance-joint bounds from separated and coincident anchors."""
+
+    def solve(initial_distance, min_distance, max_distance):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(
+            xform=wp.transform(wp.vec3(initial_distance, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_shape_sphere(body, radius=0.1)
+        joint = builder.add_joint_distance(
+            -1,
+            body,
+            parent_xform=wp.transform(
+                wp.vec3(0.0),
+                wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
+            ),
+            min_distance=min_distance,
+            max_distance=max_distance,
+        )
+        builder.add_articulation([joint])
+
+        model = builder.finalize(device=device)
+        state_in = model.state()
+        state_out = model.state()
+        solver = newton.solvers.SolverXPBD(model, iterations=10)
+        solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+        return state_out.body_q.numpy()[body, :3]
+
+    test.assertGreaterEqual(np.linalg.norm(solve(0.25, 1.0, -1.0)), 0.99)
+    np.testing.assert_allclose(solve(0.0, 1.0, -1.0), (0.0, 1.0, 0.0), atol=0.01)
+    test.assertLessEqual(np.linalg.norm(solve(2.0, -1.0, 1.0)), 1.01)
+
+
 def test_ball_joint_recovers_from_large_anchor_separation(test, device):
     """Recover a ball joint from a large off-axis anchor separation."""
     capsule_radius = 0.0625
@@ -1818,6 +1851,14 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_particle_friction_uses_relative_velocity",
     test_particle_particle_friction_uses_relative_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_distance_joint_limits",
+    test_distance_joint_limits,
     devices=devices,
     check_output=False,
 )

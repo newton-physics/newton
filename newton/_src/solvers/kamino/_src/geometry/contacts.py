@@ -74,13 +74,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 # Constants
 ###
 
-DEFAULT_MODEL_MAX_CONTACTS: int = 1000
-"""
-The global default for maximum number of contacts per model.
-Used when allocating contact data without a specified capacity.
-Set to `1000`.
-"""
-
 DEFAULT_WORLD_MAX_CONTACTS: int = 128
 """
 The global default for maximum number of contacts per world.

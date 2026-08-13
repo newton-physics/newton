@@ -1606,11 +1606,11 @@ Example usage:
 Differentiable Contacts
 -----------------------
 
-When ``requires_grad=True``, the :class:`~newton.Contacts` object provides an
-additional set of **differentiable** rigid-contact arrays that participate in
-:class:`wp.Tape` autodiff.  These arrays give first-order gradients of contact
-distance and world-space contact points with respect to body poses
-(``state.body_q``).
+Use :func:`newton.eval_rigid_contact_kinematics` to reconstruct
+selected rigid-contact quantities in caller-provided arrays. When those arrays
+and ``state.body_q`` require gradients, the reconstruction participates in
+:class:`wp.Tape` autodiff and provides first-order gradients with respect to
+body poses.
 
 .. experimental::
 
@@ -1629,25 +1629,11 @@ through the differentiable ``body_q``.  The result is a first-order
 tangent-plane approximation that is cheap, stable, and sufficient for most
 gradient-based optimization and reinforcement-learning workflows.
 
-**Differentiable arrays** (allocated only when ``requires_grad=True``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Attribute
-     - Description
-   * - ``rigid_contact_diff_distance``
-     - Signed contact distance [m] (negative = penetration).
-   * - ``rigid_contact_diff_normal``
-     - World-space contact normal (A → B).
-   * - ``rigid_contact_diff_point0_world``
-     - World-space contact point on shape 0 [m].
-   * - ``rigid_contact_diff_point1_world``
-     - World-space contact point on shape 1 [m].
-
-Gradients flow through the contact points and distance; the normal direction is
-treated as a frozen constant.
+The optional outputs are signed contact distance and the two world-space
+support points. Pass ``None`` for outputs that are not needed. The frozen
+world-space normal is already available as
+:attr:`~newton.Contacts.rigid_contact_normal`; it is not duplicated by the
+helper and gradients do not flow through its direction.
 
 .. testsetup:: diff-contacts
 
@@ -1662,26 +1648,44 @@ treated as a frozen constant.
     builder.add_ground_plane()
     model = builder.finalize(requires_grad=True)
 
-    pipeline = newton.CollisionPipeline(model)
+    # Disable deprecated automatic rigid-contact outputs. This also disables
+    # soft-contact gradients, which are independent of the helper below.
+    pipeline = newton.CollisionPipeline(model, requires_grad=False)
     contacts = pipeline.contacts()
     state = model.state(requires_grad=True)
+    distance = wp.empty(
+        contacts.rigid_contact_max,
+        dtype=float,
+        requires_grad=True,
+    )
 
     with wp.Tape() as tape:
         pipeline.collide(state, contacts)
+        newton.eval_rigid_contact_kinematics(
+            model,
+            state,
+            contacts,
+            out_distance=distance,
+        )
 
-    # Backpropagate through differentiable distance
+    # Backpropagate through the active contact distances.
     tape.backward(grads={
-        contacts.rigid_contact_diff_distance: wp.ones(
+        distance: wp.ones(
             contacts.rigid_contact_max, dtype=float
         )
     })
     grad_body_q = tape.gradients[state.body_q]
 
-.. note::
-   The standard (non-differentiable) rigid-contact arrays
-   (``rigid_contact_point0``, ``rigid_contact_normal``, etc.) are unaffected and
-   remain available for solvers.  The ``rigid_contact_diff_*`` arrays are an
-   additional output intended for gradient-based optimization and ML workflows.
+Starting in Newton 1.6, the ``Contacts.rigid_contact_diff_*`` attributes are
+deprecated compatibility outputs. The distance and point arrays remain allocated
+and populated when the collision pipeline has ``requires_grad=True`` during the
+deprecation window.
+Allocate only the outputs you need and call
+:func:`newton.eval_rigid_contact_kinematics` explicitly to prepare
+for their removal. The deprecated ``rigid_contact_diff_normal`` attribute is
+already an alias for
+:attr:`~newton.Contacts.rigid_contact_normal` and does not allocate a duplicate
+array.
 
 .. _Creating Contacts:
 

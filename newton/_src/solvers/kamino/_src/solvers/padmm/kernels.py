@@ -59,6 +59,7 @@ __all__ = [
     "_make_project_dual_convergence_accel_kernel",
     "_project_to_feasible_cone",
     "_reset_solver_data",
+    "_scale_warmstart_forces",
     "_update_delassus_proximal_regularization",
     "_update_delassus_proximal_regularization_sparse",
     "_warmstart_contact_constraints",
@@ -161,6 +162,27 @@ def _warmstart_desaxce_correction(
 
     # Store De Saxce correction for this block
     solver_z[ccio_k + 2] = vn + mu * vt_norm
+
+
+@wp.kernel
+def _scale_warmstart_forces(
+    # Inputs:
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    solver_config: wp.array[PADMMConfigStruct],
+    # Outputs:
+    solver_x: wp.array[wp.float32],
+    solver_y: wp.array[wp.float32],
+):
+    """Scale cached constraint forces copied into the primal and slack iterates."""
+    wid, tid = wp.tid()
+    if tid >= problem_dim[wid]:
+        return
+
+    index = problem_vio[wid] + tid
+    scale = solver_config[wid].warmstart_scale
+    solver_x[index] *= scale
+    solver_y[index] *= scale
 
 
 def make_initialize_solver_kernel(use_acceleration: bool = False):
@@ -1392,7 +1414,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
 
         # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
         r_ncp_natmap, _ = compute_ncp_natural_map_residual(
-            nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
+            njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
         )
 
         # Compute the iterate residuals, or reuse the accelerated solver status
@@ -1573,7 +1595,7 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
 
         # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
         r_ncp_natmap, _ = compute_ncp_natural_map_residual(
-            nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
+            njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
         )
 
         # Compute the iterate residuals, or reuse the accelerated solver status

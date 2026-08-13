@@ -5186,8 +5186,8 @@ class ModelBuilder:
     ) -> int:
         """Adds a cable joint to the model.
 
-        Cable joints have split linear stretch/shear DoFs plus separate angular
-        bend and twist DoFs. When both ``shear_stiffness`` and
+        Cable joints have split linear stretch/shear material slots plus separate
+        angular bend and twist material slots. When both ``shear_stiffness`` and
         ``shear_damping`` are omitted, shear uses the stretch stiffness /
         damping, reproducing the isotropic linear energy while using the
         split layout. When both ``twist_stiffness`` and ``twist_damping`` are
