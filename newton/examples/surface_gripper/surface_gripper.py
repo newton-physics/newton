@@ -539,8 +539,8 @@ def _seat_body_pose(
     arranged around the contact perimeters of all pads gripping (or preparing to grip) body b.
     Using the Frame nomenclature defined in the module docstring, with the additional symbols:
     perimeterA = sample point in the pad frame
-    perimeterB = same point in the gripped mesh frame: perimeterB = (GB * T_bs)⁻¹ * SA * perimeterA
-    It makes sense to cache (GB * T_bs)⁻¹ * SA for each pad being considered.
+    perimeterB = same point in the gripped mesh frame: perimeterB = (GB * T_bs)^-1 * SA * perimeterA
+    It makes sense to cache (GB * T_bs)^-1 * SA for each pad being considered.
     For each sample point perimeterB we compute the signed distance using the sdf mesh.
     A least squares algorithm is employed to compute the pose of body b that
     minimises the rms of the signed distances of all sample points of all pads
@@ -569,7 +569,7 @@ def _seat_body_pose(
     R_bs = wp.transform_get_rotation(T_bs)
     tb = body_q[body_b]  # current pose estimate; refined by each Gauss-Newton iteration below
     for _ in range(iters):
-        # (GB · T_bs)^-1
+        # (GB * T_bs)^-1
         inv_mesh_world = wp.transform_inverse(tb * T_bs)
         jtj = _mat66()
         rhs = _vec6()
@@ -645,8 +645,10 @@ def _attach_seal_seated_kernel(
     fit only runs on the rising edge. Does not write ``pad_engaged_bs``."""
     pad = wp.tid()
     body_b = pad_engaged_bs_curr[pad][0]  # the body this pad is engaging to; the gate below keeps it valid
-    shape_b = pad_engaged_bs_curr[pad][1]
-    if body_b >= 0 and pad_engaged_bs_prev[pad][0] < 0:  # rising edge: seat and cache SB
+    shape_b = pad_engaged_bs_curr[pad][1]  # its collision shape, used to index shape_mesh_id below
+    # Both ids must be valid: shape_b indexes shape_mesh_id and shape_transform, so a negative one
+    # would read out of bounds even when body_b is a real body.
+    if body_b >= 0 and shape_b >= 0 and pad_engaged_bs_prev[pad][0] < 0:  # rising edge: seat and cache SB
         w = pad_world[pad]  # this pad's world; scan only that world's pads for body_b
         hold_pose_body_b = _seat_body_pose(
             body_b,
@@ -1082,7 +1084,7 @@ class SurfaceGripperStateOutput:
     pad_seal_load_unclamped: wp.array[
         wp.vec4
     ]  # before the caps; feeds the break metric (clamped values can never exceed their cap)
-    pad_anchor_b: wp.array[wp.transform]  # SB — see Frame nomenclature
+    pad_anchor_b: wp.array[wp.transform]  # SB -- see Frame nomenclature
     pad_perimeter_sdf0: wp.array[
         wp.float32
     ]  # seated perimeter signed distances cached at engagement (indexed by model.pad_perimeter_start)
@@ -1197,7 +1199,7 @@ def attach_seal_seated(
     ``gripper_state_output.pad_anchor_b``.
 
     The seated pose is the world pose of body B (GB0, see Frame nomenclature) that minimises the signed distances of the contact perimeter
-    sample points of **all pads gripping or preparing to grip body B** to its surface — i.e., the
+    sample points of **all pads gripping or preparing to grip body B** to its surface -- i.e., the
     pose where all those perimeters sit flush simultaneously. After the fit, ``SB = GB0^-1 * SA0`` is cached (see Frame
     nomenclature) and ``pad_perimeter_sdf0`` is written with the seated SDF baseline.
 
