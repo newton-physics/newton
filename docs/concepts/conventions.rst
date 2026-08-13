@@ -484,8 +484,8 @@ Newton defines collision primitives with consistent conventions across all shape
      - Extends along Z-axis; half_height excludes hemispherical caps
    * - **Cylinder**
      - Geometric center
-     - ``radius``, ``half_height``
-     - Extends along Z-axis
+     - ``radius``, ``half_height``, optional ``barrel_radius``
+     - Extends along Z-axis; ``barrel_radius`` curves the side as a symmetric circular arc
    * - **Cone**
      - Geometric center
      - ``radius`` (base), ``half_height``
@@ -502,6 +502,10 @@ Newton defines collision primitives with consistent conventions across all shape
 **Shape Orientation and Alignment**
 
 All Newton primitives that have a primary axis (capsule, cylinder, cone) are aligned along the Z-axis in their local coordinate frame. The shape's transform determines its final position and orientation in the world or parent body frame.
+
+For a cylinder, ``radius`` is the radius at both ends. Setting ``barrel_radius`` to a nonzero value replaces the
+straight side profile with a symmetric circular arc of that radius before revolving it around the Z-axis.
+``barrel_radius`` must then be at least ``half_height``. Its default value of zero selects a regular cylinder.
 
 **Center of Mass Considerations**
 
@@ -590,7 +594,7 @@ The following tables compare how different engines and formats define common col
      - **Parameter Convention**
      - **Notes**
    * - **Newton**
-     - ``radius``, ``half_height``
+     - ``radius``, ``half_height``, optional ``barrel_radius``
      - Extends along Z-axis
    * - **MuJoCo**
      - ``size[0]`` = radius, ``size[1]`` = half-length

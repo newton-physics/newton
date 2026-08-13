@@ -862,6 +862,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # region geom attributes
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="site_size_is_display",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.bool,
+                default=False,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="contype",
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
@@ -5540,7 +5550,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         body_world = model.body_world.numpy()
         shape_transform = model.shape_transform.numpy()
         shape_type = model.shape_type.numpy()
-        shape_size = model.shape_scale.numpy()
+        # MuJoCo requires every size component to be positive, so conversion below
+        # fills unused zero components. Keep those edits isolated from the model's
+        # CPU-backed Warp array, for which ``numpy()`` may return a writable view.
+        shape_size = model.shape_scale.numpy().copy()
         shape_flags = model.shape_flags.numpy()
         shape_collision_group = model.shape_collision_group.numpy()
         shape_world = model.shape_world.numpy()

@@ -1037,7 +1037,7 @@ class TestPipelinePrimitive(unittest.TestCase):
         self.assertIsNone(pipeline._device)
         self.assertEqual(pipeline._bvtype, BoundingVolumeType.AABB)
         self.assertEqual(pipeline._default_gap, DEFAULT_GEOM_PAIR_CONTACT_GAP)
-        self.assertRaises(RuntimeError, pipeline.collide, ModelKamino(), DataKamino(), ContactsKamino())
+        self.assertRaises(RuntimeError, pipeline.collide, DataKamino(), ContactsKamino())
 
     def test_02_make_and_collide(self):
         """
@@ -1064,7 +1064,6 @@ class TestPipelinePrimitive(unittest.TestCase):
         )
         model = builder.finalize(device=self.default_device)
         data = model.data()
-        state = model.state()
 
         # Create a contacts container
         max_contacts_per_pair = 12  # Conservative estimate based on max contacts for any supported shape pair
@@ -1076,7 +1075,7 @@ class TestPipelinePrimitive(unittest.TestCase):
         pipeline = CollisionPipelinePrimitive(model=model)
 
         # Run collision detection
-        pipeline.collide(data, state, contacts)
+        pipeline.collide(data, contacts)
 
         # Create a list of expected number of contacts per shape pair
         expected_contacts_per_pair: list[int] = list(nominal_expected_contacts_per_shape_pair.values())
@@ -1101,22 +1100,21 @@ class TestPipelinePrimitive(unittest.TestCase):
         builder = testing.make_shape_pairs_builder(shape_pairs=[("box", "box")])
         model = builder.finalize(device=self.default_device)
         data = model.data()
-        state = model.state()
         contacts_small = ContactsKamino(capacity=1, device=self.default_device)
         contacts_large = ContactsKamino(capacity=8, device=self.default_device)
         pipeline = CollisionPipelinePrimitive(model=model)
 
-        pipeline.collide(data, state, contacts_small)
+        pipeline.collide(data, contacts_small)
 
         self.assertEqual(int(contacts_small.model_active_contacts.numpy()[0]), 1)
         self.assertEqual(int(contacts_small.world_active_contacts.numpy()[0]), 1)
         self.assertEqual(int(pipeline._contact_overflow_warning_emitted.numpy()[0]), 1)
 
-        pipeline.collide(data, state, contacts_large)
+        pipeline.collide(data, contacts_large)
 
         self.assertEqual(int(pipeline._contact_overflow_warning_emitted.numpy()[0]), 0)
 
-        pipeline.collide(data, state, contacts_small)
+        pipeline.collide(data, contacts_small)
 
         self.assertEqual(int(pipeline._contact_overflow_warning_emitted.numpy()[0]), 1)
 

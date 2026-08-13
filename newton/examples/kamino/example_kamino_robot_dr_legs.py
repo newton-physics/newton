@@ -92,7 +92,8 @@ class Example:
         self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
         if self.dynamics_solver == "dvi":
             self.config.use_fk_solver = False
-            self.config.integrator = "moreau"
+            if self.use_kamino_contacts:
+                self.config.integrator = "moreau"
             self.config.constraints.alpha = 0.1
             self.config.constraints.beta = 0.011
             self.config.constraints.gamma = 0.015

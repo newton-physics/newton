@@ -268,7 +268,7 @@ practice:
   tune within that path rather than mixing assumptions from both. See
   :ref:`mujoco-collision-pipeline` for the exact selection behavior.
 - **Contact margin and gap.** In Newton collision generation, ``margin`` sets
-  the shifted contact surface and ``gap`` adds speculative detection distance.
+  the shifted contact surface and ``gap`` adds an early detection distance.
   Positive gaps increase detected contacts before they become active and can
   therefore affect capacity and cost. See :ref:`mujoco-margin-gap-mapping` for
   exact forwarding, import, inactive-contact, and native-CCD behavior.

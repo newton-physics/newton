@@ -20,6 +20,7 @@ from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield, sa
 from .contact_reduction_global import (
     GlobalContactReducerData,
     export_and_reduce_contact_centered_two_spatial_depths,
+    export_and_reduce_predictive_contact,
 )
 from .flags import MeshSignMethod
 from .kernels import mesh_query_point_sign, resolve_mesh_sign_method
@@ -460,7 +461,7 @@ def get_edge_from_mesh(
 
 
 @wp.func
-def get_edge_from_mesh_precomputed(
+def get_mesh_edge_precomputed(
     mesh_edge_halves: wp.array[wp.vec4],
     edge_range: wp.vec2i,
     X_mesh_ws: wp.transform,
@@ -479,7 +480,7 @@ def get_edge_from_mesh_precomputed(
     return center - half, center + half, int(packed_half[3])
 
 
-def _create_get_edge_from_mesh_func(use_precomputed_edge_data: bool):
+def _create_mesh_edge_accessor_func(use_precomputed_edge_data: bool):
     """Create a mesh-edge accessor with its storage path compiled in."""
 
     @wp.func
@@ -495,7 +496,7 @@ def _create_get_edge_from_mesh_func(use_precomputed_edge_data: bool):
         center_scaled: wp.vec3,
     ) -> tuple[wp.vec3, wp.vec3, int]:
         if wp.static(use_precomputed_edge_data):
-            return get_edge_from_mesh_precomputed(mesh_edge_halves, edge_range, X_mesh_ws, edge_idx, center_scaled)
+            return get_mesh_edge_precomputed(mesh_edge_halves, edge_range, X_mesh_ws, edge_idx, center_scaled)
         v0, v1 = get_edge_from_mesh(mesh_id, mesh_edge_indices, edge_range, mesh_scale, X_mesh_ws, edge_idx)
         return v0, v1, 0
 
@@ -1066,6 +1067,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     writer_func: Any,
     enable_heightfields: bool = True,
     reduce_contacts: bool = False,
+    speculative: bool = False,
     use_precomputed_edge_data: bool = False,
     use_texture_sdf_only: bool = False,
     use_identity_sdf_scale: bool = False,
@@ -1073,7 +1075,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     if use_identity_sdf_scale and not use_texture_sdf_only:
         raise ValueError("identity SDF scale specialization requires texture-only SDFs")
     do_edge_sdf_collision = _create_sdf_contact_funcs(enable_heightfields, use_texture_sdf_only)
-    get_edge_from_mesh_specialized = _create_get_edge_from_mesh_func(use_precomputed_edge_data)
+    get_mesh_edge_specialized = _create_mesh_edge_accessor_func(use_precomputed_edge_data)
     get_mesh_edge_bounding_sphere_specialized = _create_get_mesh_edge_bounding_sphere_func(use_precomputed_edge_data)
 
     # Derive a stable module name from the factory arguments so that
@@ -1085,7 +1087,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     # different floating-point results, breaking bit-exact reproducibility.
     _module = (
         f"sdf_contact_{writer_func.__name__}_{enable_heightfields}_{reduce_contacts}_"
-        f"{use_precomputed_edge_data}_{use_texture_sdf_only}_{use_identity_sdf_scale}"
+        f"{speculative}_{use_precomputed_edge_data}_{use_texture_sdf_only}_{use_identity_sdf_scale}"
     )
 
     @wp.kernel(enable_backward=False, module=_module)
@@ -1097,6 +1099,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_sdf_index: wp.array[wp.int32],
         shape_mesh_properties: wp.array[wp.int32],
         shape_gap: wp.array[float],
+        shape_base_gap: wp.array[float],
+        shape_linear_velocity: wp.array[wp.vec3],
+        shape_angular_velocity: wp.array[wp.vec3],
+        collision_update_dt: float,
+        max_speculative_extension: float,
         _shape_collision_aabb_lower: wp.array[wp.vec3],
         _shape_collision_aabb_upper: wp.array[wp.vec3],
         _shape_voxel_resolution: wp.array[wp.vec3i],
@@ -1135,6 +1142,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 pair = pair_encoded
 
             gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
+            base_gap_sum = shape_base_gap[pair[0]] + shape_base_gap[pair[1]]
 
             for mode in range(2):
                 tri_shape = pair[mode]
@@ -1365,7 +1373,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         my_edge_idx,
                                     )
                                 else:
-                                    v0s, v1s, corner_ownership = get_edge_from_mesh_specialized(
+                                    v0s, v1s, corner_ownership = get_mesh_edge_specialized(
                                         mesh_id_tri,
                                         mesh_edge_indices,
                                         mesh_edge_centers,
@@ -1377,7 +1385,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         cached_center_scaled,
                                     )
                             else:
-                                v0s, v1s, corner_ownership = get_edge_from_mesh_specialized(
+                                v0s, v1s, corner_ownership = get_mesh_edge_specialized(
                                     mesh_id_tri,
                                     mesh_edge_indices,
                                     mesh_edge_centers,
@@ -1502,7 +1510,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 contact_data.margin_b = sdf_mesh_margin
                                 contact_data.shape_a = pair[0]
                                 contact_data.shape_b = pair[1]
-                                contact_data.gap_sum = gap_sum
+                                if wp.static(speculative):
+                                    contact_data.gap_sum = base_gap_sum
+                                else:
+                                    contact_data.gap_sum = gap_sum
                                 contact_data.sort_sub_key = (my_edge_idx << 2) | (mode << 1)
 
                                 writer_func(contact_data, writer_data, -1)
@@ -1536,6 +1547,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_sdf_index: wp.array[wp.int32],
         shape_mesh_properties: wp.array[wp.int32],
         shape_gap: wp.array[float],
+        shape_base_gap: wp.array[float],
+        shape_linear_velocity: wp.array[wp.vec3],
+        shape_angular_velocity: wp.array[wp.vec3],
+        collision_update_dt: float,
+        max_speculative_extension: float,
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
         shape_voxel_resolution: wp.array[wp.vec3i],
@@ -1595,6 +1611,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 pair = pair_encoded
 
             gap_sum = shape_gap[pair[0]] + shape_gap[pair[1]]
+            base_gap_sum = shape_base_gap[pair[0]] + shape_base_gap[pair[1]]
 
             for mode in range(2):
                 tri_shape = pair[mode]
@@ -1806,7 +1823,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         my_edge_idx,
                                     )
                                 else:
-                                    v0s, v1s, corner_ownership = get_edge_from_mesh_specialized(
+                                    v0s, v1s, corner_ownership = get_mesh_edge_specialized(
                                         mesh_id_tri,
                                         mesh_edge_indices,
                                         mesh_edge_centers,
@@ -1818,7 +1835,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                         cached_center_scaled,
                                     )
                             else:
-                                v0s, v1s, corner_ownership = get_edge_from_mesh_specialized(
+                                v0s, v1s, corner_ownership = get_mesh_edge_specialized(
                                     mesh_id_tri,
                                     mesh_edge_indices,
                                     mesh_edge_centers,
@@ -1943,8 +1960,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 ) * 0.5
                                 inner_spatial_depth = margin_sum
                                 if use_texture_sdf_for_search:
-                                    inner_spatial_depth += wp.min(texture_voxel_radius * min_sdf_scale, gap_sum)
-                                export_and_reduce_contact_centered_two_spatial_depths(
+                                    inner_spatial_depth += wp.min(texture_voxel_radius * min_sdf_scale, base_gap_sum)
+                                outer_spatial_depth = margin_sum + gap_sum
+                                if wp.static(speculative):
+                                    # Keep velocity-expanded search candidates out of the regular
+                                    # normal bins so the predictive pair manifold remains bounded.
+                                    outer_spatial_depth = margin_sum + base_gap_sum
+                                contact_id = export_and_reduce_contact_centered_two_spatial_depths(
                                     pair[0],
                                     pair[1],
                                     point_world,
@@ -1953,13 +1975,33 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     (my_edge_idx << 2) | (mode << 1),
                                     point_world - midpoint,
                                     inner_spatial_depth,
-                                    margin_sum + gap_sum,
+                                    outer_spatial_depth,
                                     position_local_tri,
                                     aabb_lower_tri,
                                     aabb_upper_tri,
                                     voxel_res_tri,
                                     reducer_data,
                                 )
+                                if wp.static(speculative):
+                                    if dist >= inner_spatial_depth:
+                                        export_and_reduce_predictive_contact(
+                                            pair[0],
+                                            pair[1],
+                                            point_world,
+                                            contact_normal,
+                                            dist,
+                                            margin_sum,
+                                            0.0,
+                                            0.0,
+                                            (my_edge_idx << 2) | (mode << 1),
+                                            shape_transform,
+                                            shape_linear_velocity,
+                                            shape_angular_velocity,
+                                            collision_update_dt,
+                                            max_speculative_extension,
+                                            contact_id,
+                                            reducer_data,
+                                        )
 
                     # Defensive cooperative reset before the next outer
                     # iteration — see the matching ``tile_stack_clear``
