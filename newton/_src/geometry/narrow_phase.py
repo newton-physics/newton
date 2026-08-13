@@ -352,6 +352,12 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             is_cylinder_b = type_b == GeoType.CYLINDER
             is_box_b = type_b == GeoType.BOX
 
+            use_plane_cylinder = is_plane_a and is_cylinder_b
+            if use_plane_cylinder and scale_b[2] > 0.0:
+                plane_normal = wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0))
+                cylinder_axis = wp.quat_rotate(quat_b, wp.vec3(0.0, 0.0, 1.0))
+                use_plane_cylinder = wp.abs(wp.dot(plane_normal, cylinder_axis)) * scale_b[2] >= scale_b[1]
+
             # Compute effective radii for spheres and capsules
             # (radius that can be represented as Minkowski sum with a sphere)
             radius_eff_a = float(0.0)
@@ -449,7 +455,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             # Plane-Cylinder collision (type_a=PLANE=0, type_b=CYLINDER=5)
             # Produces up to 4 contacts
             # -----------------------------------------------------------------
-            elif is_plane_a and is_cylinder_b:
+            elif use_plane_cylinder:
                 plane_normal = wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0))
                 cylinder_axis = wp.quat_rotate(quat_b, wp.vec3(0.0, 0.0, 1.0))
                 cylinder_radius = scale_b[0]
@@ -504,7 +510,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             # -----------------------------------------------------------------
             # Sphere-Cylinder collision (type_a=SPHERE=2, type_b=CYLINDER=5)
             # -----------------------------------------------------------------
-            elif is_sphere_a and is_cylinder_b:
+            elif is_sphere_a and is_cylinder_b and scale_b[2] == 0.0:
                 sphere_radius = scale_a[0]
                 cylinder_axis = wp.quat_rotate(quat_b, wp.vec3(0.0, 0.0, 1.0))
                 cylinder_radius = scale_b[0]

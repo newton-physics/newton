@@ -2183,15 +2183,11 @@ def parse_usd(
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
         elif key == UsdPhysics.ObjectType.DistanceJoint:
-            if joint_desc.limit.enabled and joint_desc.minEnabled:
-                min_dist = joint_desc.limit.lower
-            else:
-                min_dist = -1.0  # no limit
-            if joint_desc.limit.enabled and joint_desc.maxEnabled:
-                max_dist = joint_desc.limit.upper
-            else:
-                max_dist = -1.0
-            joint_index = builder.add_joint_distance(**joint_params, min_distance=min_dist, max_distance=max_dist)
+            joint_index = builder.add_joint_distance(
+                **joint_params,
+                min_distance=joint_desc.limit.lower if joint_desc.minEnabled else -1.0,
+                max_distance=joint_desc.limit.upper if joint_desc.maxEnabled else -1.0,
+            )
         else:
             raise NotImplementedError(f"Unsupported joint type {key}")
 
@@ -4131,7 +4127,7 @@ def parse_usd(
                     builder.shape_material_kh[shape_id] = kh
                     if is_hydroelastic:
                         builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
-                    if not skip_mesh_approximation:
+                    if collider_is_enabled and not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:
                             if has_sdf_api and approximation.lower() != "none":

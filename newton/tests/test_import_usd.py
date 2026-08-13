@@ -1137,26 +1137,46 @@ def Xform "World"
 
 class TestImportUsdJoints(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_distance_joint_label(self):
+    def test_distance_joint(self):
+        """Import independently enabled distance-joint limits."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
-        stage = Usd.Stage.CreateInMemory()
-        articulation = UsdGeom.Xform.Define(stage, "/World")
-        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        def import_limits(min_distance=None, max_distance=None):
+            stage = Usd.Stage.CreateInMemory()
+            articulation = UsdGeom.Xform.Define(stage, "/World")
+            UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
 
-        body0 = UsdGeom.Xform.Define(stage, "/World/Body0")
-        UsdPhysics.RigidBodyAPI.Apply(body0.GetPrim())
-        body1 = UsdGeom.Xform.Define(stage, "/World/Body1")
-        UsdPhysics.RigidBodyAPI.Apply(body1.GetPrim())
+            body0 = UsdGeom.Xform.Define(stage, "/World/Body0")
+            UsdPhysics.RigidBodyAPI.Apply(body0.GetPrim())
+            body1 = UsdGeom.Xform.Define(stage, "/World/Body1")
+            UsdPhysics.RigidBodyAPI.Apply(body1.GetPrim())
 
-        joint = UsdPhysics.DistanceJoint.Define(stage, "/World/DistanceJoint")
-        joint.CreateBody0Rel().SetTargets([body0.GetPath()])
-        joint.CreateBody1Rel().SetTargets([body1.GetPath()])
+            joint = UsdPhysics.DistanceJoint.Define(stage, "/World/DistanceJoint")
+            joint.CreateBody0Rel().SetTargets([body0.GetPath()])
+            joint.CreateBody1Rel().SetTargets([body1.GetPath()])
+            if min_distance is not None:
+                joint.CreateMinDistanceAttr(min_distance)
+            if max_distance is not None:
+                joint.CreateMaxDistanceAttr(max_distance)
 
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
 
-        self.assertIn("/World/DistanceJoint", builder.joint_label)
+            joint_index = builder.joint_label.index("/World/DistanceJoint")
+            dof_index = builder.joint_qd_start[joint_index]
+            return builder.joint_limit_lower[dof_index], builder.joint_limit_upper[dof_index]
+
+        cases = (
+            ("no limits", None, None, -1.0, -1.0),
+            ("minimum only", 0.25, None, 0.25, -1.0),
+            ("maximum only", None, 1.5, -1.0, 1.5),
+            ("both limits", 0.25, 1.5, 0.25, 1.5),
+            ("disabled minimum", -0.25, None, -1.0, -1.0),
+            ("disabled maximum", None, -0.25, -1.0, -1.0),
+        )
+        for name, min_distance, max_distance, expected_min, expected_max in cases:
+            with self.subTest(name=name):
+                self.assertEqual(import_limits(min_distance, max_distance), (expected_min, expected_max))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_collision_enabled(self):
@@ -3602,6 +3622,48 @@ class TestImportUsdPhysics(unittest.TestCase):
             builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_disabled_mesh_collider_skips_approximation(self):
+        """Preserve the authored mesh for a disabled collider."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        box = newton.Mesh.create_box(
+            1.0,
+            1.0,
+            1.0,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/Mesh")
+        mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in box.vertices.tolist()])
+        mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+        mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+        collision = UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        collision.GetCollisionEnabledAttr().Set(False)
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).GetApproximationAttr().Set(
+            UsdPhysics.Tokens.convexDecomposition
+        )
+
+        builder = newton.ModelBuilder()
+        with mock.patch.object(builder, "approximate_meshes") as approximate_meshes:
+            shape = builder.add_usd(stage, load_visual_shapes=False)["path_shape_map"]["/Body/Mesh"]
+
+        approximate_meshes.assert_not_called()
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(builder.shape_type[shape], newton.GeoType.MESH)
+        assert_np_equal(builder.shape_source[shape].vertices, box.vertices)
+        assert_np_equal(builder.shape_source[shape].indices, box.indices)
+        self.assertFalse(builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(builder.shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):
