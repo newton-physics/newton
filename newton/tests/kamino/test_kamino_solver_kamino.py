@@ -20,6 +20,7 @@ from newton._src.solvers.kamino._src.core.state import StateKamino
 from newton._src.solvers.kamino._src.dynamics import DualProblem
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
+from newton._src.solvers.kamino._src.integrators import IntegratorEuler, IntegratorMoreauJean
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
@@ -446,6 +447,28 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         self.assertEqual(model.rigid_contact_max, solver._contacts_kamino.model_max_contacts_host)
         self.assertEqual(pipeline.rigid_contact_max, solver._contacts_kamino.model_max_contacts_host)
+
+    def test_moreau_uses_internal_detection(self):
+        """Verify Moreau-Jean is selected with internal collision detection."""
+        model = self._make_three_world_model()
+        solver = SolverKamino(
+            model,
+            config=SolverKamino.Config(integrator="moreau", use_collision_detector=True),
+        )
+
+        self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
+
+    def test_external_contacts_use_euler(self):
+        """Verify external-contact configurations warn and pick Euler."""
+        model = self._make_three_world_model()
+        with self.assertLogs(level="WARNING") as logs:
+            solver = SolverKamino(
+                model,
+                config=SolverKamino.Config(integrator="moreau", use_collision_detector=False),
+            )
+
+        self.assertIsInstance(solver._solver_kamino._integrator, IntegratorEuler)
+        self.assertTrue(any("Falling back to the 'euler' integrator" in message for message in logs.output))
 
     def test_external_collisions_preserve_explicit_rigid_contact_max(self):
         """Verify external collisions preserve an explicit contact capacity."""
