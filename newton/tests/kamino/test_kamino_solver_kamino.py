@@ -34,7 +34,7 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.sampling import sample_world_mask
 from newton.tests.utils import basics
-from newton.tests.utils.testing import build_all_joints_test
+from newton.tests.utils.testing import build_binary_revolute_joint_test
 
 ###
 # Module configs
@@ -463,7 +463,7 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         with self.assertNoLogs(level="WARNING"):
             solver.update_contacts(contacts, model.state())
 
-    def test_step_when_no_contacts_are_possible(self):
+    def test_step_with_zero_max_contacts(self):
         """Verify SolverKamino.step() succeeds when the model admits no possible contacts.
 
         The all-joints test model has no ground plane and no other geometry that
@@ -472,18 +472,22 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         """
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
-        build_all_joints_test(builder=builder)
+        build_binary_revolute_joint_test(builder=builder, ground=False)
         model = builder.finalize(device=self.default_device)
 
         solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
 
-        # No contacts pipeline/buffer should have been allocated since none are possible.
+        # Check that collision detector was initialized, but no collision pipeline or contacts were
+        # assigned.
+        self.assertIsNotNone(solver._collision_detector_kamino)
+        self.assertEqual(solver._collision_detector_kamino._model_max_contacts, 0)
+        self.assertIsNone(solver._collision_detector_kamino._unified_pipeline)
+        self.assertIsNone(solver._collision_detector_kamino._primitive_pipeline)
         self.assertIsNone(solver._contacts_kamino)
 
         state_in = model.state()
         state_out = model.state()
-        control = model.control()
-        solver.step(state_in, state_out, control, None, dt=1.0 / 60.0)
+        solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
 
 
 class TestSolverKaminoImpl(unittest.TestCase):
