@@ -5842,6 +5842,20 @@ class TestMuJoCoValidation(unittest.TestCase):
 
 
 class TestMuJoCoConversion(unittest.TestCase):
+    def test_setup_preserves_shape_scale(self):
+        """Preserve model shape scales while converting MuJoCo geometry sizes."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_cylinder(body, radius=0.1, half_height=0.5)
+        joint = builder.add_joint_free(body)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        expected_shape_scale = model.shape_scale.numpy().copy()
+
+        SolverMuJoCo(model, use_mujoco_cpu=True)
+
+        np.testing.assert_array_equal(model.shape_scale.numpy(), expected_shape_scale)
+
     def test_no_shapes_separate_worlds_false(self):
         """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=False."""
         builder = newton.ModelBuilder()

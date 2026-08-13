@@ -190,7 +190,7 @@ def _query_primitive_sdf(shape_type: wp.int32, shape_scale: wp.vec3, point: wp.v
     elif shape_type == GeoType.CAPSULE:
         signed_distance = sdf_capsule(point, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.CYLINDER:
-        signed_distance = sdf_cylinder(point, shape_scale[0], shape_scale[1], int(Axis.Z))
+        signed_distance = sdf_cylinder(point, shape_scale[0], shape_scale[1], int(Axis.Z), -1.0, shape_scale[2])
     elif shape_type == GeoType.ELLIPSOID:
         signed_distance = sdf_ellipsoid(point, shape_scale)
     elif shape_type == GeoType.CONE:

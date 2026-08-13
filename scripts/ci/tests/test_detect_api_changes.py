@@ -113,6 +113,147 @@ class Example:
             changed = next(item for item in report["diff"]["changed"] if item["path"] == "newton.Example")
             self.assertIn("constructors", {item["field"] for item in changed["changes"]})
 
+    def test_tracks_instance_attribute_to_property_conversion(self):
+        """Track a public constructor attribute when it becomes a property."""
+        base_source = """
+class Example:
+    def __init__(self, enabled: bool):
+        if enabled:
+            self.value = 1
+        else:
+            self.value = None
+"""
+        head_source = """
+class Example:
+    def __init__(self, enabled: bool):
+        if enabled:
+            self._value = 1
+        else:
+            self._value = None
+
+    @property
+    def value(self) -> int | None:
+        return self._value
+
+    @value.setter
+    def value(self, value: int | None) -> None:
+        self._value = value
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base, head = root / "base", root / "head"
+            common_init = "from ._src.api import Example\n__all__ = ['Example']\n"
+            for tree, source in ((base, base_source), (head, head_source)):
+                _write(
+                    tree,
+                    {
+                        "newton/__init__.py": common_init,
+                        "newton/_src/__init__.py": "",
+                        "newton/_src/api.py": source,
+                    },
+                )
+
+            report = _run(base, head)
+
+            self.assertEqual(report["decision"], "changed")
+            self.assertEqual(
+                report["diff"]["summary"], {"added_count": 0, "removed_count": 0, "changed_count": 1, "total": 1}
+            )
+            changed = report["diff"]["changed"][0]
+            self.assertEqual(changed["path"], "newton.Example.value")
+            kind = next(item for item in changed["changes"] if item["field"] == "kind")
+            self.assertEqual((kind["before"], kind["after"]), ("attribute", "property"))
+
+    def test_resolves_export_assigned_in_module_control_flow(self):
+        """Resolve an exported constant assigned inside module control flow."""
+        version_source = """
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("newton")
+except PackageNotFoundError:
+    __version__ = "unknown"
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base, head = root / "base", root / "head"
+            _write(
+                base,
+                {
+                    "newton/__init__.py": "from ._version import __version__\n__all__ = ['__version__']\n",
+                    "newton/_version.py": version_source,
+                },
+            )
+            _write(
+                head,
+                {
+                    "newton/__init__.py": (
+                        "from ._version import __version__\nVALUE = 1\n__all__ = ['__version__', 'VALUE']\n"
+                    ),
+                    "newton/_version.py": version_source,
+                },
+            )
+
+            symbols, notes = _snapshot(base)
+            report = _run(base, head)
+
+            self.assertIn("newton.__version__", symbols)
+            self.assertFalse(notes)
+            self.assertEqual(report["decision"], "changed")
+            self.assertFalse(report["has_analysis_warnings"])
+            self.assertEqual([item["path"] for item in report["diff"]["added"]], ["newton.VALUE"])
+
+    def test_ignores_inherited_base_implementation_changes(self):
+        """Ignore base implementation changes when inherited APIs stay stable."""
+        template = """
+class Base:
+    def run(self, value: int) -> int:
+        return {result}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base, head = root / "base", root / "head"
+            common = {
+                "newton/__init__.py": "from .derived import Derived\n__all__ = ['Derived']\n",
+                "newton/derived.py": "from ._src.base import Base\n__all__ = ['Derived']\nclass Derived(Base): ...\n",
+                "newton/_src/__init__.py": "",
+            }
+            for tree, result in ((base, 1), (head, 2)):
+                _write(tree, {**common, "newton/_src/base.py": template.format(result=result)})
+
+            report = _run(base, head)
+
+            self.assertEqual(report["decision"], "unchanged")
+            self.assertFalse(report["needs_review"])
+            self.assertFalse(report["has_analysis_warnings"])
+
+    def test_marks_inherited_base_api_changes_as_unknown(self):
+        """Request review when an inherited base API actually changes."""
+        template = """
+class Base:
+    def run(self, value: {annotation}) -> int:
+        return 1
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base, head = root / "base", root / "head"
+            common = {
+                "newton/__init__.py": "from .derived import Derived\n__all__ = ['Derived']\n",
+                "newton/derived.py": "from ._src.base import Base\n__all__ = ['Derived']\nclass Derived(Base): ...\n",
+                "newton/_src/__init__.py": "",
+            }
+            for tree, annotation in ((base, "int"), (head, "str")):
+                _write(tree, {**common, "newton/_src/base.py": template.format(annotation=annotation)})
+
+            report = _run(base, head)
+
+            self.assertEqual(report["decision"], "unknown")
+            self.assertTrue(report["needs_review"])
+            self.assertTrue(report["has_analysis_warnings"])
+            self.assertIn("Manual API review is requested.", report["comment"])
+            self.assertIn("<summary>Technical analyzer details</summary>", report["comment"])
+            self.assertIn("inherited members of newton.Derived are not expanded", report["comment"])
+
     def test_marks_changed_dynamic_exports_as_unknown(self):
         """Request review when a dependency of an unsupported export changes."""
         template = """
@@ -396,6 +537,17 @@ class SolverExample:
         self.assertIn("&lt;img", comment)
         self.assertIn("and 5 more", comment)
         self.assertLessEqual(len(comment), detector.MAX_COMMENT_CHARS)
+
+    def test_hides_uncertainty_details_when_changes_are_known(self):
+        """Hide analyzer uncertainty when concrete API changes request review."""
+        diff = detector.compare_symbols({}, {"newton.value": {"kind": "constant"}})
+        uncertainty = [{"key": "demo", "reason": "unsupported implementation detail"}]
+
+        comment = detector.format_comment(diff, "changed", uncertainty)
+
+        self.assertIn("Added: <code>newton.value</code>", comment)
+        self.assertNotIn("unsupported implementation detail", comment)
+        self.assertNotIn("Technical analyzer details", comment)
 
 
 if __name__ == "__main__":
