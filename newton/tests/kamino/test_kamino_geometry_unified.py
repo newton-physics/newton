@@ -17,7 +17,6 @@ from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import I_3
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.shapes import SphereShape
-from newton._src.solvers.kamino._src.core.state import StateKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.models.builders import basics, testing
@@ -110,7 +109,6 @@ def test_unified_pipeline(
     # Create a test model and data
     model: ModelKamino = builder.finalize(device)
     data: DataKamino = model.data()
-    state: StateKamino = model.state()
     contacts = ContactsKamino(model=model, device=device)
 
     # Run the narrow-phase test over each broad-phase backend
@@ -127,7 +125,7 @@ def test_unified_pipeline(
         )
 
         # Execute the unified collision detection pipeline
-        pipeline.collide(data, state, contacts)
+        pipeline.collide(data, contacts)
 
         # Optional verbose output
         msg.debug("[%s][%s]: bodies.q_i:\n%s", case, bp_mode, data.bodies.q_i)
@@ -565,7 +563,6 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
     def _run_pipeline(self, builder: ModelBuilderKamino, default_gap=0.0):
         model = builder.finalize(self.default_device)
         data = model.data()
-        state = model.state()
         pipeline = CollisionPipelineUnifiedKamino(
             model=model,
             broadphase="explicit",
@@ -575,7 +572,7 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
         capacity = 8 * ((n_geoms * (n_geoms - 1)) // 2)
         contacts = ContactsKamino(capacity=max(capacity, 8), device=self.default_device)
         contacts.clear()
-        pipeline.collide(data, state, contacts)
+        pipeline.collide(data, contacts)
         return contacts
 
     def test_00_touching_spheres_produces_contact(self):
@@ -723,7 +720,6 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
 
         model = builder.finalize(self.default_device)
         data = model.data()
-        state = model.state()
 
         pipeline = CollisionPipelineUnifiedKamino(
             model=model,
@@ -736,7 +732,7 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
         contacts = ContactsKamino(capacity=max(capacity, 12), device=self.default_device)
         contacts.clear()
 
-        pipeline.collide(data, state, contacts)
+        pipeline.collide(data, contacts)
 
         active = contacts.model_active_contacts.numpy()[0]
         self.assertEqual(active, 0, "Non-collidable groups must produce zero contacts via NXN")
@@ -751,7 +747,6 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
 
         model = builder.finalize(self.default_device)
         data = model.data()
-        state = model.state()
 
         pipeline = CollisionPipelineUnifiedKamino(
             model=model,
@@ -764,7 +759,7 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
         contacts = ContactsKamino(capacity=max(capacity, 12), device=self.default_device)
         contacts.clear()
 
-        pipeline.collide(data, state, contacts)
+        pipeline.collide(data, contacts)
 
         active = contacts.model_active_contacts.numpy()[0]
         self.assertEqual(active, 0, "Same-body shapes must not collide via NXN broadphase")

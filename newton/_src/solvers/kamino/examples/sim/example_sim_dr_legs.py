@@ -240,6 +240,7 @@ class Example:
         sparse = sparse or dynamics_solver == "dvi"
         config.solver.sparse_jacobian = sparse
         config.solver.sparse_dynamics = sparse
+        config.solver.use_collision_detector = True
         config.solver.integrator = "moreau"  # Select from {"euler", "moreau"}
         config.solver.constraints.alpha = 0.1
         config.solver.constraints.beta = 0.011
