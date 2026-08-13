@@ -1036,7 +1036,9 @@ class TestMuJoCoSliderCrankActuators(unittest.TestCase):
         """Preserve both slider-crank sites when ordinary sites are excluded."""
         builder = ModelBuilder()
         builder.add_mjcf(MJCF_SLIDERCRANK_ACTUATOR, ctrl_direct=True)
-        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True, include_sites=False)
+        model = builder.finalize()
+        source_trnid = model.mujoco.actuator_trnid.numpy()[0]
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, include_sites=False)
 
         mujoco, _ = SolverMuJoCo.import_mujoco()
         slidercrank_actuators = [
@@ -1046,8 +1048,15 @@ class TestMuJoCoSliderCrankActuators(unittest.TestCase):
         ]
         self.assertEqual(len(slidercrank_actuators), 1)
         trnid = solver.mj_model.actuator_trnid[slidercrank_actuators[0]]
-        self.assertGreaterEqual(int(trnid[0]), 0)
-        self.assertGreaterEqual(int(trnid[1]), 0)
+        expected_site_ids = [
+            mujoco.mj_name2id(
+                solver.mj_model,
+                mujoco.mjtObj.mjOBJ_SITE,
+                f"{model.shape_label[int(shape_id)]}_{int(shape_id)}",
+            )
+            for shape_id in source_trnid
+        ]
+        np.testing.assert_array_equal(trnid, expected_site_ids)
 
 
 class TestMuJoCoSiteActuators(unittest.TestCase):
