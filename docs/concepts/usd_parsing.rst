@@ -509,15 +509,14 @@ then follows four stages:
    use the resolver mapping's compatibility default only after the importer
    default. Unregistered schemas do not own fallbacks.
 
-The default hierarchy remains in place during the compatibility period. When
-``use_applied_schema_fallbacks`` is omitted, Newton emits one
-:exc:`DeprecationWarning` when registered schema ownership would select a
-different value or source; the warning lists the affected properties and prim
-paths. Pass ``True`` to adopt the future behavior without migration warnings,
-pass ``False`` explicitly to pin legacy behavior without migration warnings, or
-author the intended property values to preserve them across the transition.
-Newton does not copy PhysX or MuJoCo fallback catalogs when their schema plugins
-are unavailable.
+The legacy hierarchy selected by ``use_applied_schema_fallbacks=False`` is
+deprecated. During the compatibility period, Newton emits one
+:exc:`DeprecationWarning` when registered-schema precedence would change an
+effective value or source; the warning lists the affected properties and prim
+paths. Pass ``True`` to adopt registered schema fallback precedence, or author
+the intended property values to preserve them across the transition. Newton
+does not copy PhysX or MuJoCo fallback catalogs when their schema plugins are
+unavailable.
 
 **Configuring Resolver Priority:**
 

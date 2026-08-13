@@ -2009,8 +2009,8 @@ def Xform "Articulation" (
         self.assertEqual(resolver.velocity_read_count, 1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_applied_newton_joint_api_warns_before_fallback_change(self):
-        """Warn before registered Newton joint fallbacks change results."""
+    def test_legacy_policy_warns_before_fallback_change(self):
+        """Warn when legacy resolution differs from registered schema fallbacks."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -2025,26 +2025,31 @@ def Xform "Articulation" (
         joint.CreateLowerLimitAttr().Set(-45.0)
         joint.CreateUpperLimitAttr().Set(45.0)
 
-        builder = newton.ModelBuilder()
-        builder.default_joint_cfg.armature = 0.7
-        builder.default_joint_cfg.damping = 0.8
-        builder.default_joint_cfg.friction = 0.9
-        builder.default_joint_cfg.velocity_limit = 123.0
-        builder.default_joint_cfg.limit_ke = 7.0
-        builder.default_joint_cfg.limit_kd = 8.0
-        with self.assertWarnsRegex(DeprecationWarning, "NewtonJointAPI") as warning:
-            builder.add_usd(stage)
-        self.assertEqual(warning.filename, __file__)
-        self.assertIn("/World/Joint", str(warning.warning))
-        model = builder.finalize()
-        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
+        for policy_args in ({}, {"use_applied_schema_fallbacks": False}):
+            with self.subTest(policy_args=policy_args):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.armature = 0.7
+                builder.default_joint_cfg.damping = 0.8
+                builder.default_joint_cfg.friction = 0.9
+                builder.default_joint_cfg.velocity_limit = 123.0
+                builder.default_joint_cfg.limit_ke = 7.0
+                builder.default_joint_cfg.limit_kd = 8.0
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    builder.add_usd(stage, **policy_args)
+                migration_warnings = [item for item in caught if "NewtonJointAPI" in str(item.message)]
+                self.assertTrue(migration_warnings)
+                self.assertEqual(migration_warnings[0].filename, __file__)
+                self.assertIn("/World/Joint", str(migration_warnings[0].message))
+                model = builder.finalize()
+                dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 
-        self.assertAlmostEqual(float(model.joint_armature.numpy()[dof]), 0.7)
-        self.assertAlmostEqual(float(model.joint_damping.numpy()[dof]), 0.8)
-        self.assertAlmostEqual(float(model.joint_friction.numpy()[dof]), 0.9)
-        self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), 123.0)
-        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
-        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
+                self.assertAlmostEqual(float(model.joint_armature.numpy()[dof]), 0.7)
+                self.assertAlmostEqual(float(model.joint_damping.numpy()[dof]), 0.8)
+                self.assertAlmostEqual(float(model.joint_friction.numpy()[dof]), 0.9)
+                self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), 123.0)
+                self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
+                self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_limit_sentinels_do_not_warn_when_results_match(self):

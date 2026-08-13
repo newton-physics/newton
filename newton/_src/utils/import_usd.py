@@ -57,7 +57,6 @@ from ..usd.schema_resolver import (
     SchemaResolverManager,
     _default_when_omitted,
     _interpret_import_argument,
-    _interpret_schema_fallback_policy,
     _resolve_import_option,
 )
 from ..usd.schemas import SchemaResolverNewton
@@ -281,7 +280,7 @@ def parse_usd(
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = _default_when_omitted(Mesh.MAX_HULL_VERTICES),
     schema_resolvers: list[SchemaResolver] | None = None,
-    use_applied_schema_fallbacks: bool = _default_when_omitted(False),
+    use_applied_schema_fallbacks: bool = False,
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
@@ -432,12 +431,15 @@ def parse_usd(
 
                 The ``schema_resolvers`` and ``use_applied_schema_fallbacks``
                 arguments may change without prior notice.
-        use_applied_schema_fallbacks: When omitted, retain legacy resolution and
-            warn when registered schema fallbacks would change imported values.
-            Pass True to use registered schema fallbacks without migration
-            warnings. Pass False explicitly to retain legacy resolution without
-            migration warnings. Unregistered resolver defaults remain compatibility
-            defaults after importer defaults.
+        use_applied_schema_fallbacks: If True, use registered schema fallbacks
+            before importer defaults. False retains deprecated legacy precedence
+            and warns when the effective imported value or source would change.
+            Unregistered resolver defaults remain compatibility defaults after importer
+            defaults.
+
+            .. deprecated:: 1.6
+                Passing False selects deprecated legacy fallback precedence. Pass
+                True to adopt registered schema fallback precedence.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -656,10 +658,6 @@ def parse_usd(
         if physics_scene_prim is not None
         else None
     )
-    use_applied_schema_fallbacks, audit_applied_schema_fallbacks = _interpret_schema_fallback_policy(
-        use_applied_schema_fallbacks
-    )
-
     joint_drive_gains_scaling = _resolve_import_option(
         joint_drive_gains_scaling,
         authored_drive_gain_scaling,
@@ -680,7 +678,6 @@ def parse_usd(
     R = SchemaResolverManager(
         schema_resolvers,
         use_applied_schema_fallbacks=use_applied_schema_fallbacks,
-        audit_applied_schema_fallbacks=audit_applied_schema_fallbacks,
     )
 
     # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a

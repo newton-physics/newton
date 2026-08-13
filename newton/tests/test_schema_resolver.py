@@ -317,6 +317,7 @@ class TestSchemaResolver(unittest.TestCase):
                         resolver._legacy_fallback_failures,
                         {"NewtonJointAPI (newton:armature)": {"/joint"}},
                     )
+                    self.assertIsNone(resolver._fallback_migration_warning())
 
     def test_custom_getter_may_omit_primary_attribute_name(self):
         """Treat an omitted primary getter attribute as unauthored."""

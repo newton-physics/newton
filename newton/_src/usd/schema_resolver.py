@@ -53,13 +53,6 @@ def _interpret_import_argument(value: Any) -> tuple[Any, _ImporterDefault]:
     return value, _ImporterDefault(value)
 
 
-def _interpret_schema_fallback_policy(value: Any) -> tuple[bool, bool]:
-    """Return whether to use and audit registered schema fallbacks."""
-    if isinstance(value, _ImporterDefault):
-        return bool(value.value), True
-    return bool(value), False
-
-
 def _resolve_import_option(value: Any, authored_value: Any, *, use_explicit_overrides: bool) -> Any:
     """Resolve importer metadata while preserving legacy argument precedence."""
     override, default = _interpret_import_argument(value)
@@ -460,7 +453,6 @@ class SchemaResolverManager:
         resolvers: Sequence[SchemaResolver],
         *,
         use_applied_schema_fallbacks: bool = False,
-        audit_applied_schema_fallbacks: bool = True,
     ):
         """
         Initialize resolver manager with resolver instances in priority order.
@@ -471,12 +463,9 @@ class SchemaResolverManager:
                 before importer defaults. Only registered schema definitions supply
                 these fallbacks; unregistered resolver defaults remain after importer
                 defaults. Defaults to False.
-            audit_applied_schema_fallbacks: Compare legacy results with registered
-                schema fallbacks and collect migration diagnostics. Defaults to True.
         """
         self.resolvers = list(resolvers)
         self._use_applied_schema_fallbacks = use_applied_schema_fallbacks
-        self._audit_applied_schema_fallbacks = audit_applied_schema_fallbacks
         self._resolution = _SchemaResolution(self.resolvers)
         self._registered_schema_fallbacks: dict[tuple[str, str], dict[str, Any] | None] = {}
         self._legacy_fallback_properties: dict[str, set[str]] = {}
@@ -739,7 +728,7 @@ class SchemaResolverManager:
         read_value: Callable[[SchemaResolver, str], _ResolverValue] | None = None,
     ) -> None:
         """Record properties whose legacy and composed resolution diverge."""
-        if self._uses_composed_fallbacks or not self._audit_applied_schema_fallbacks:
+        if self._uses_composed_fallbacks:
             return
         if legacy_resolver is not None:
             for resolver in self.resolvers:
@@ -801,21 +790,19 @@ class SchemaResolverManager:
 
     def _fallback_migration_warning(self) -> str | None:
         """Build one actionable warning for audited registered-schema changes."""
-        details = []
-        if self._legacy_fallback_properties:
-            properties = self._format_fallback_locations(self._legacy_fallback_properties)
-            details.append(f"schema fallbacks will take precedence for {properties}")
+        if self._uses_composed_fallbacks or not self._legacy_fallback_properties:
+            return None
+
+        properties = self._format_fallback_locations(self._legacy_fallback_properties)
+        details = [f"schema fallbacks will take precedence for {properties}"]
         if self._legacy_fallback_failures:
             failures = self._format_fallback_locations(self._legacy_fallback_failures)
             details.append(f"schema fallbacks could not be audited for {failures}")
-        if not details:
-            return None
         return (
-            "This import retained legacy values for applied but unauthored USD schema properties; "
+            "This import used deprecated legacy precedence for applied but unauthored USD schema properties; "
             f"{' and '.join(details)}. In a future release, applied-schema fallbacks will take precedence; "
-            "pass use_applied_schema_fallbacks=True to adopt that behavior now, pass "
-            "use_applied_schema_fallbacks=False to pin legacy behavior without migration warnings, or author "
-            "the intended values explicitly to preserve them."
+            "pass use_applied_schema_fallbacks=True to adopt that behavior now, or author the intended values "
+            "explicitly to preserve them."
         )
 
     @staticmethod
