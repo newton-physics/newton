@@ -3335,7 +3335,6 @@ def parse_usd(
                 continue
             _load_visual_shapes_impl(-1, prim, recurse=False)
 
-    no_collision_shapes = set()
     collision_group_ids = {}
     rigid_body_mass_info_map = {}
     rigid_body_mass_fallback_density = {}
@@ -3765,6 +3764,8 @@ def parse_usd(
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
+                        has_shape_collision=collider_is_enabled,
+                        has_particle_collision=collider_is_enabled,
                         sdf_max_resolution=sdf_max_resolution,
                         sdf_narrow_band_range=sdf_narrow_band_range,
                         sdf_target_voxel_size=sdf_target_voxel_size,
@@ -3938,10 +3939,6 @@ def parse_usd(
 
                 _collect_filtered_pairs(prim)
 
-                if not collider_is_enabled:
-                    no_collision_shapes.add(shape_id)
-                    builder.shape_flags[shape_id] &= ~(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
-
     # Approximate meshes. ``physics:approximation`` belongs to
     # UsdPhysicsMeshCollisionAPI and is scoped to collision: it says which shape to
     # collide against, not which to draw. Approximating a prim that is viewport
@@ -3970,18 +3967,16 @@ def parse_usd(
     # Filtered pairs are applied after the deformable passes below, once every endpoint's
     # Newton shapes exist.
 
-    # apply collision filters to all shapes that have no collision
-    for shape_id in no_collision_shapes:
-        for other_shape_id in range(builder.shape_count):
-            if other_shape_id != shape_id:
-                builder.add_shape_collision_filter_pair(shape_id, other_shape_id)
-
     # apply collision filters from articulations that have self collisions disabled
     for art_id, bodies in articulation_bodies.items():
         if not articulation_has_self_collision[art_id]:
             for body1, body2 in itertools.combinations(bodies, 2):
                 for shape1 in builder.body_shapes[body1]:
+                    if not builder.shape_flags[shape1] & ShapeFlags.COLLIDE_SHAPES:
+                        continue
                     for shape2 in builder.body_shapes[body2]:
+                        if not builder.shape_flags[shape2] & ShapeFlags.COLLIDE_SHAPES:
+                            continue
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
     def _zero_mass_information():
