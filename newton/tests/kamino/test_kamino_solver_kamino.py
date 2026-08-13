@@ -519,12 +519,7 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
             solver.update_contacts(contacts, model.state())
 
     def test_step_with_zero_max_contacts(self):
-        """Verify SolverKamino.step() succeeds when the model admits no possible contacts.
-
-        The all-joints test model has no ground plane and no other geometry that
-        could ever generate a contact, so Kamino's internal collision detector
-        should skip pipeline/contacts allocation entirely rather than crash.
-        """
+        """Verify SolverKamino.step() succeeds when the model admits no possible contacts."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
         build_binary_revolute_joint_test(builder=builder, ground=False)

@@ -1015,7 +1015,6 @@ class SolverKamino(SolverBase, CouplingInterface):
                     friction_mix_mode=self._config.materials.friction_mix_mode,
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
                 )
-        # Otherwise, use Kamino's internal collision detector to generate contacts
         else:
             self._detector = None
             # Clear the internal contacts container to avoid using stale contacts from previous steps.
