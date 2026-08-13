@@ -32,10 +32,6 @@ import newton.viewer
 
 wp.init()
 
-SKIP_EXAMPLES = {
-    "robot_policy": "uses a non-standard constructor",
-}
-
 CUDA_REQUIRED_EXAMPLES = {
     "brick_stacking",
     "contacts_rj45_plug",
@@ -55,8 +51,6 @@ def _step_and_render(example, num_frames):
 
 
 def _get_skip_reason(name, cuda_available):
-    if name in SKIP_EXAMPLES:
-        return SKIP_EXAMPLES[name]
     if not cuda_available and name in CUDA_REQUIRED_EXAMPLES:
         return "requires CUDA"
     return None
