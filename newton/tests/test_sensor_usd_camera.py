@@ -197,6 +197,34 @@ class TestSensorCameraRays(unittest.TestCase):
         np.testing.assert_array_equal(got[0], np.zeros_like(got[0]))
         np.testing.assert_allclose(got[1], expected, atol=1e-6)
 
+    def test_opencv_pinhole_rejects_invalid_calibration(self):
+        """Verify invalid OpenCV pinhole calibration values are rejected."""
+        utils = _make_utils()
+        calibration = {
+            "width": 1,
+            "height": 1,
+            "fx": 1.0,
+            "fy": 1.0,
+            "cx": 0.5,
+            "cy": 0.5,
+            "image_width": 1.0,
+            "image_height": 1.0,
+        }
+
+        for name in ("fx", "fy"):
+            for value in (0.0, -1.0, math.nan, math.inf, -math.inf):
+                with self.subTest(name=name, value=value):
+                    invalid_calibration = calibration | {name: value}
+                    with self.assertRaisesRegex(ValueError, "fx and fy must be finite and positive"):
+                        utils.compute_camera_rays_pinhole_opencv(**invalid_calibration)
+
+        for name in ("image_width", "image_height"):
+            for value in (0.0, -1.0, math.nan, math.inf, -math.inf):
+                with self.subTest(name=name, value=value):
+                    invalid_calibration = calibration | {name: value}
+                    with self.assertRaisesRegex(ValueError, "image_width and image_height must be finite and positive"):
+                        utils.compute_camera_rays_pinhole_opencv(**invalid_calibration)
+
     def test_pinhole_rays_write_preallocated_camera_index(self):
         utils = _make_utils()
         width, height = 3, 3

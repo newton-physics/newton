@@ -740,9 +740,19 @@ class Utils:
         Returns:
             camera_rays: *out_rays* if provided, otherwise a new array with
                 shape ``(1, height, width, 2)`` and dtype ``vec3f``.
+
+        Raises:
+            ValueError: If focal lengths or calibration image dimensions are
+                non-finite or non-positive.
         """
         image_width = width if image_width is None else image_width
         image_height = height if image_height is None else image_height
+        if not (math.isfinite(fx) and math.isfinite(fy) and fx > 0.0 and fy > 0.0):
+            raise ValueError("fx and fy must be finite and positive.")
+        if not (
+            math.isfinite(image_width) and math.isfinite(image_height) and image_width > 0.0 and image_height > 0.0
+        ):
+            raise ValueError("image_width and image_height must be finite and positive.")
         out_rays, camera_index = camera_utils._validate_camera_ray_output(
             width, height, 1, out_rays, camera_index, self.__render_context.device
         )
