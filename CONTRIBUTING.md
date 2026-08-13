@@ -8,9 +8,9 @@ Please refer to [the contribution guidelines](https://github.com/newton-physics/
 
 # Contributing to Newton
 
-Newton welcomes contributions from the community. In order to avoid any surprises and to increase the chance of contributions being merged, we encourage contributors to communicate their plans proactively by opening a GitHub Issue or starting a Discussion in the corresponding repository.
+Newton welcomes contributions from the community. In order to avoid any surprises and to increase the chance of contributions being merged, we encourage contributors to communicate their plans proactively by opening a GitHub Issue or starting a Discussion in the corresponding repository. Keep each pull request focused on a single feature or bug fix, and write clear, concise commit messages.
 
-Please also refer to the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html). Code contributions must follow the [source code and public API guidelines](CODING_GUIDELINES.rst).
+Use the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for environment setup and development workflows. Code and public API changes must follow the [source code and public API guidelines](CODING_GUIDELINES.rst).
 
 There are several ways to participate in the Newton community:
 

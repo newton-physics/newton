@@ -11,6 +11,17 @@ contributors and reviewers. It applies prospectively to new code and to
 existing code that is being changed substantially. Do not request unrelated
 cleanup or break a supported API merely to make existing code conform.
 
+Its scope is limited to source-code and public-API conventions. Repository
+contribution and pull-request workflows are documented in
+`CONTRIBUTING.md <https://github.com/newton-physics/newton/blob/main/CONTRIBUTING.md>`__;
+environment setup and operational procedures are in the
+`development guide <https://newton-physics.github.io/newton/latest/guide/development.html>`__.
+General review concerns such as specification fidelity, project fit,
+reviewability, and maintenance burden are tracked separately in
+`issue #3509 <https://github.com/newton-physics/newton/issues/3509>`__.
+Release readiness is assessed by the
+`release-audit workflow <https://github.com/newton-physics/newton/tree/main/.claude/skills/release-audit>`__.
+
 In this document, *must* identifies a requirement, *should* identifies the
 normal choice from which a well-justified exception may be made, and *may*
 identifies an allowed choice. Breaking changes must follow Newton's deprecation
@@ -37,10 +48,10 @@ particular, ``newton._src`` is internal: examples and documentation must import
 through public modules such as :mod:`newton.geometry` and
 :mod:`newton.solvers`.
 
-The API reference is generated from public ``__all__`` declarations. Run
-``uv run python docs/generate_api.py`` whenever a public symbol or module is
-added, removed, or renamed, then include the generated changes in the same
-commit.
+The API reference is generated from public ``__all__`` declarations. Follow
+the `API documentation procedure
+<https://newton-physics.github.io/newton/latest/guide/development.html#api-documentation>`__
+whenever a public symbol or module is added, removed, or renamed.
 
 Keep namespaces shallow and purposeful
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -48,7 +59,11 @@ Keep namespaces shallow and purposeful
 Balance a discoverable top-level namespace against excessively deep import
 paths:
 
-- Reserve ``newton`` for foundational concepts used across the library.
+- Reserve ``newton`` for concepts broadly needed in ordinary simulation
+  workflows. Adding a root symbol requires justification that it belongs in
+  typical user code rather than a specialized domain.
+- Put families of related types in a public submodule, even when one member of
+  the family could plausibly be exposed at the root.
 - Put specialized APIs in stable domain modules such as ``newton.geometry``,
   ``newton.solvers``, and ``newton.viewer``.
 - Do not add nesting solely to categorize a small number of names. Additional
@@ -63,6 +78,28 @@ paths:
 An internal implementation may be deeply organized when that improves
 maintenance. These restrictions concern the public import path, not the layout
 under ``newton._src``.
+
+Keep public imports lightweight. Importing :mod:`newton` or a lightweight
+public module must not eagerly initialize optional backends or load heavy,
+provider-specific dependencies. Use lazy loading at optional-dependency and
+backend boundaries, and account for import-time cost when assigning a symbol
+to a public module.
+
+Mark experimental public API explicitly
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Mark every user-facing experimental API in the public docstring or concept
+page where users encounter it. The marker is part of the compatibility
+contract: it must identify the exact module, type, callable, parameter, or mode
+that may change without the normal deprecation period. Describe relevant
+limitations alongside the marker.
+
+Use a domain-local experimental namespace only for a cohesive new subsystem
+that can reasonably live behind an opt-in import path. Do not move an existing
+public type into an experimental namespace merely to describe implementation
+maturity. Follow the `experimental-feature documentation procedure
+<https://newton-physics.github.io/newton/latest/guide/development.html#experimental-features>`__
+for directive syntax and generated API documentation.
 
 Naming
 ------
@@ -112,6 +149,29 @@ When a new concept is necessary, the pull request should explain:
 Types and signatures
 --------------------
 
+Keep API families consistent
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When adding to or changing a family of related public types, methods, or
+functions, follow the vocabulary and signature structure already established
+by that family. In particular:
+
+- use the same parameter names for the same concepts rather than introducing
+  synonyms;
+- keep shared parameters in a consistent relative order and group
+  operation-specific parameters predictably;
+- support the family's common options when they apply, and document any
+  deliberate omission; and
+- use ``None`` for optional objects that must be constructed at call time,
+  especially mutable or runtime-owned objects, rather than constructing them
+  in the signature.
+
+For example, a new ``ModelBuilder.add_shape_*`` method should follow the
+existing shape methods' use and placement of terms such as ``body``,
+``xform``, and ``cfg``, along with applicable shared options. Existing family
+members are the detailed precedent; do not copy an example signature without
+checking the current API.
+
 Prefer enums for closed categories
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -120,6 +180,10 @@ family over a collection of module-level constants. Enums improve type safety,
 group related values, and produce clearer API documentation. Use an appropriate
 enum variant when integer interoperability or bitwise flags are part of the
 contract.
+
+When an integer enum includes a ``NONE`` sentinel, define ``NONE = 0`` first.
+Append later real values after existing values so their integer identities
+remain stable.
 
 This preference does not apply to numerical constants, default values,
 tolerances, or sentinels. It is also constrained by Warp code generation: until
@@ -172,14 +236,21 @@ Python source conventions
   ``wp.array2d[float]``, and ``wp.array[Any]``. Do not use the parenthesized
   ``wp.array(dtype=...)`` form. Use ``wp.array[X]`` for one-dimensional arrays,
   not ``wp.array1d[X]``.
+- Use kebab-case for command-line arguments, such as ``--use-cuda-graph``
+  rather than ``--use_cuda_graph``.
 - Avoid new required dependencies. Strongly prefer Warp, NumPy, or the standard
   library to a new optional dependency.
+- A pull request that introduces a required or optional dependency must
+  identify its license and verify that it is compatible with Newton's
+  distribution. Update license metadata and notices when required. Treat an
+  unknown or undeclared dependency license as requiring review before merge.
 
 Documentation and comments
 --------------------------
 
 - Use Google-style docstrings. Put types in annotations, not in docstrings, and
   write arguments as ``name: description`` under ``Args:``.
+- Put a dataclass field's docstring on the line immediately after the field.
 - Use the shortest useful Sphinx cross-reference target and prefer public API
   paths. Never reference ``newton._src`` from user-facing documentation.
 - State SI units for physical quantities in public API docstrings, for example
@@ -211,8 +282,8 @@ Tests and repository conventions
 - In SPDX copyright lines, use the year the file was first created. Do not use
   date ranges or update the year when modifying an existing file.
 
-Review checklist
-----------------
+Public API review checklist
+---------------------------
 
 When reviewing a new or substantially changed public API, check that:
 
@@ -221,6 +292,8 @@ When reviewing a new or substantially changed public API, check that:
 - the namespace is shallow, purposeful, and not unnecessarily added to
   ``newton``;
 - names cluster with their concept family and remain clear out of context;
+- members of an API family use consistent vocabulary, parameter grouping,
+  options, and safe defaults;
 - new categorical types use an enum where the execution boundary supports it;
 - new public nouns are necessary and have clear ownership;
 - optional parameters are keyword-only unless an established idiom justifies
