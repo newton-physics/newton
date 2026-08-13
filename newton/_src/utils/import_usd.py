@@ -53,6 +53,7 @@ from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from .color import color_linear_to_srgb
 from .import_usd_deformable_attachments import (
     _deformable_import_attachments,
     _deformable_import_element_collision_filters,
@@ -75,6 +76,12 @@ _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pa
 
 # Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
 _HARD_LIMIT_KE = 1.0e8
+
+# `UsdPreviewSurface`'s schema default for `diffuseColor`. A visual shape whose prim binds no
+# material is given this rather than left for ModelBuilder's per-shape debug palette, which
+# would render an unmaterialed scene in colours the asset never authored. Display-encoded to
+# match the colours that are resolved from a material.
+_UNMATERIALED_VISUAL_COLOR = color_linear_to_srgb((0.18, 0.18, 0.18))
 
 
 def _resolve_newton_limit_ke(
@@ -1361,6 +1368,8 @@ def parse_usd(
         visual_shape_cfg_for_prim.is_visible = is_site or _is_viewport_drawn(prim)
         material_props = _get_material_props_cached(prim)
         shape_color = material_props.get("color")
+        if shape_color is None and visual_shape_cfg_for_prim.is_visible:
+            shape_color = _UNMATERIALED_VISUAL_COLOR
 
         if path_name not in path_shape_map:
             if type_name == "cube":
@@ -3561,6 +3570,8 @@ def parse_usd(
                 shape_ka = shape_contact["ka"]
 
                 shape_color = material_props.get("color")
+                if shape_color is None and collider_is_visible:
+                    shape_color = _UNMATERIALED_VISUAL_COLOR
 
                 # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
                 # signal that SDF generation is configured for this shape.

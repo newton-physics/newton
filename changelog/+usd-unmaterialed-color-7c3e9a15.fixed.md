@@ -1,0 +1,1 @@
+Give imported visual shapes that bind no material the `UsdPreviewSurface` default color rather than a shape-index color from `ModelBuilder`'s debug palette, so a stage renders in the colors it authored instead of colors it never did.

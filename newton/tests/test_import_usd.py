@@ -32,6 +32,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.utils.color import color_linear_to_srgb
 from newton._src.utils.import_usd import _is_uniform_scale
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
@@ -12440,6 +12441,36 @@ def Xform "Body" (
         self.assertEqual(builder.shape_count, 2)
         drawn = [s for s in range(builder.shape_count) if builder.shape_flags[s] & ShapeFlags.VISIBLE]
         self.assertEqual(drawn, [path_shape_map["/Body/VisualSphere"]])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unmaterialed_visual_shape_uses_neutral_color(self):
+        """Verify a visual prim with no bound material gets the neutral default, not the palette.
+
+        ModelBuilder colors an uncolored shape from a per-shape debug palette, which suits
+        procedurally built scenes but makes an imported stage render in colors the asset
+        never authored. USD renderers draw an unmaterialed prim in UsdPreviewSurface's
+        ``diffuseColor`` default instead, so the importer supplies that.
+        """
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.Xform.Define(stage, "/World")
+        UsdGeom.Cube.Define(stage, "/World/Bare")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=True)
+        shape = result["path_shape_map"]["/World/Bare"]
+
+        self.assertTrue(builder.shape_flags[shape] & ShapeFlags.VISIBLE)
+        color = builder.shape_color[shape]
+        # 0.18 linear, display-encoded the same way an authored color would be.
+        expected = color_linear_to_srgb((0.18, 0.18, 0.18))
+        for channel, want in zip(color, expected, strict=True):
+            self.assertAlmostEqual(channel, want, places=5)
+        # Guard the actual defect: the palette varies with shape index, a neutral does not.
+        self.assertAlmostEqual(color[0], color[1], places=6)
+        self.assertAlmostEqual(color[1], color[2], places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_hide_collision_shapes_fallback_with_material(self):
