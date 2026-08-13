@@ -392,9 +392,7 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
     def test_04_multi_world_heightfield(self):
         """Multi-world sphere-on-heightfield: each world gets exactly 2 contacts (1 per triangle)."""
         num_worlds = 3
-        _, model, data = _finalize_and_get_kamino(
-            _build_multi_world_heightfield(num_worlds), self.default_device
-        )
+        _, model, data = _finalize_and_get_kamino(_build_multi_world_heightfield(num_worlds), self.default_device)
         contacts = _run_unified_pipeline(model, data, self.default_device)
 
         nc = int(contacts.model_active_contacts.numpy()[0])
