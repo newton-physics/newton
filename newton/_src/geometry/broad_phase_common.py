@@ -45,16 +45,16 @@ def check_aabb_overlap_moving(
     box_upper: wp.array[wp.vec3],
     cutoff1: float,
     cutoff2: float,
-    shape_sweep: wp.array[wp.vec3],
+    shape_displacement: wp.array[wp.vec3],
 ) -> bool:
     """Return static or continuous overlap according to the optional sweep array."""
-    if shape_sweep.shape[0] == 0:
+    if shape_displacement.shape[0] == 0:
         return check_aabb_overlap(
             box_lower[shape1], box_upper[shape1], cutoff1, box_lower[shape2], box_upper[shape2], cutoff2
         )
 
     cutoff_combined = cutoff1 + cutoff2
-    relative_sweep = shape_sweep[shape1] - shape_sweep[shape2]
+    relative_displacement = shape_displacement[shape1] - shape_displacement[shape2]
     lower_box1 = box_lower[shape1]
     upper_box1 = box_upper[shape1]
     lower_box2 = box_lower[shape2]
@@ -66,7 +66,7 @@ def check_aabb_overlap_moving(
         upper1 = upper_box1[axis]
         lower2 = lower_box2[axis] - cutoff_combined
         upper2 = upper_box2[axis] + cutoff_combined
-        delta = relative_sweep[axis]
+        delta = relative_displacement[axis]
         if delta == 0.0:
             if lower1 > upper2 or upper1 < lower2:
                 return False

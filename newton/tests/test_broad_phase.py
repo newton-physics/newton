@@ -213,7 +213,7 @@ class TestBroadPhase(unittest.TestCase):
         candidate_pair = wp.zeros(1, dtype=wp.vec2i, device=device)
         candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
 
-        def launch(broad_phase, lower, upper, sweep):
+        def launch(broad_phase, lower, upper, displacement):
             if isinstance(broad_phase, BroadPhaseExplicit):
                 broad_phase.launch(
                     lower,
@@ -224,7 +224,7 @@ class TestBroadPhase(unittest.TestCase):
                     candidate_pair,
                     candidate_pair_count,
                     device,
-                    shape_sweep=sweep,
+                    shape_displacement=displacement,
                 )
             else:
                 broad_phase.launch(
@@ -237,14 +237,14 @@ class TestBroadPhase(unittest.TestCase):
                     candidate_pair,
                     candidate_pair_count,
                     device,
-                    shape_sweep=sweep,
+                    shape_displacement=displacement,
                 )
             return int(candidate_pair_count.numpy()[0])
 
         half_extent = wp.vec3(0.1)
         lower = wp.array([-half_extent, wp.vec3(0.5, -0.5, 0.0) - half_extent], dtype=wp.vec3, device=device)
         upper = wp.array([half_extent, wp.vec3(0.5, -0.5, 0.0) + half_extent], dtype=wp.vec3, device=device)
-        same_sweep = wp.array([wp.vec3(1.0, 1.0, 0.0), wp.vec3(1.0, 1.0, 0.0)], dtype=wp.vec3, device=device)
+        same_displacement = wp.array([wp.vec3(1.0, 1.0, 0.0), wp.vec3(1.0, 1.0, 0.0)], dtype=wp.vec3, device=device)
         union_lower = wp.array([-half_extent, wp.vec3(0.5, -0.5, 0.0) - half_extent], dtype=wp.vec3, device=device)
         union_upper = wp.array(
             [wp.vec3(1.0, 1.0, 0.0) + half_extent, wp.vec3(1.5, 0.5, 0.0) + half_extent],
@@ -254,7 +254,7 @@ class TestBroadPhase(unittest.TestCase):
 
         colliding_lower = wp.array([-half_extent, wp.vec3(1.0, 1.0, 0.0) - half_extent], dtype=wp.vec3, device=device)
         colliding_upper = wp.array([half_extent, wp.vec3(1.0, 1.0, 0.0) + half_extent], dtype=wp.vec3, device=device)
-        colliding_sweep = wp.array([wp.vec3(1.0, 1.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
+        colliding_displacement = wp.array([wp.vec3(1.0, 1.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device)
 
         for broad_phase in (
             BroadPhaseAllPairs(shape_world, device=device),
@@ -263,12 +263,12 @@ class TestBroadPhase(unittest.TestCase):
         ):
             with self.subTest(broad_phase=type(broad_phase).__name__):
                 self.assertEqual(launch(broad_phase, union_lower, union_upper, None), 1)
-                self.assertEqual(launch(broad_phase, lower, upper, same_sweep), 0)
-                self.assertEqual(launch(broad_phase, colliding_lower, colliding_upper, colliding_sweep), 1)
+                self.assertEqual(launch(broad_phase, lower, upper, same_displacement), 0)
+                self.assertEqual(launch(broad_phase, colliding_lower, colliding_upper, colliding_displacement), 1)
 
         fast_lower = wp.array([-half_extent, wp.vec3(0.4, 0.0, 0.0) - half_extent], dtype=wp.vec3, device=device)
         fast_upper = wp.array([half_extent, wp.vec3(0.4, 0.0, 0.0) + half_extent], dtype=wp.vec3, device=device)
-        fast_sweep = wp.array([wp.vec3(2.0, 0.0, 0.0), wp.vec3(1.7, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        fast_displacement = wp.array([wp.vec3(2.0, 0.0, 0.0), wp.vec3(1.7, 0.0, 0.0)], dtype=wp.vec3, device=device)
         BroadPhaseSAP(shape_world, device=device).launch(
             fast_lower,
             fast_upper,
@@ -279,19 +279,19 @@ class TestBroadPhase(unittest.TestCase):
             candidate_pair,
             candidate_pair_count,
             device,
-            shape_sweep=fast_sweep,
-            shape_sweep_projection_limit=0.25,
+            shape_displacement=fast_displacement,
+            sort_axis_displacement_limit=0.25,
         )
         self.assertEqual(int(candidate_pair_count.numpy()[0]), 1)
 
-    def test_shape_sweep_length_validation(self):
-        """Reject shape sweeps whose length differs from the shape bounds."""
+    def test_shape_displacement_length_validation(self):
+        """Reject shape displacements whose length differs from the shape bounds."""
         device = wp.get_device()
         shape_lower = wp.zeros(2, dtype=wp.vec3, device=device)
         shape_upper = wp.ones(2, dtype=wp.vec3, device=device)
         shape_group = wp.ones(2, dtype=wp.int32, device=device)
         shape_world = wp.zeros(2, dtype=wp.int32, device=device)
-        shape_sweep = wp.zeros(1, dtype=wp.vec3, device=device)
+        shape_displacement = wp.zeros(1, dtype=wp.vec3, device=device)
         candidate_pair = wp.zeros(1, dtype=wp.vec2i, device=device)
         candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
 
@@ -301,7 +301,7 @@ class TestBroadPhase(unittest.TestCase):
         ):
             with (
                 self.subTest(broad_phase=type(broad_phase).__name__),
-                self.assertRaisesRegex(ValueError, "shape_sweep length must match"),
+                self.assertRaisesRegex(ValueError, "shape_displacement length must match"),
             ):
                 broad_phase.launch(
                     shape_lower,
@@ -313,10 +313,10 @@ class TestBroadPhase(unittest.TestCase):
                     candidate_pair,
                     candidate_pair_count,
                     device,
-                    shape_sweep=shape_sweep,
+                    shape_displacement=shape_displacement,
                 )
 
-        with self.assertRaisesRegex(ValueError, "shape_sweep length must match"):
+        with self.assertRaisesRegex(ValueError, "shape_displacement length must match"):
             BroadPhaseExplicit().launch(
                 shape_lower,
                 shape_upper,
@@ -326,7 +326,7 @@ class TestBroadPhase(unittest.TestCase):
                 candidate_pair,
                 candidate_pair_count,
                 device,
-                shape_sweep=shape_sweep,
+                shape_displacement=shape_displacement,
             )
 
         BroadPhaseSAP(shape_world, device=device).launch(

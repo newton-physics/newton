@@ -32,7 +32,7 @@ def _nxn_broadphase_precomputed_pairs(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    shape_sweep: wp.array[wp.vec3],  # Optional per-shape translation over normalized time [0, 1]
+    shape_displacement: wp.array[wp.vec3],  # Optional displacement over the collision-update interval [m]
     nxn_shape_pair: wp.array[wp.vec2i],
     shape_body: wp.array[int],
     body_flags: wp.array[int],
@@ -59,7 +59,7 @@ def _nxn_broadphase_precomputed_pairs(
         gap2 = shape_gap[shape2]
 
     if check_aabb_overlap_moving(
-        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_sweep
+        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_displacement
     ):
         write_pair(
             pair,
@@ -135,7 +135,7 @@ def _nxn_broadphase_kernel(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    shape_sweep: wp.array[wp.vec3],  # Optional per-shape translation over normalized time [0, 1]
+    shape_displacement: wp.array[wp.vec3],  # Optional displacement over the collision-update interval [m]
     collision_group: wp.array[int],  # per-shape
     shape_world: wp.array[int],  # per-shape world indices
     shape_body: wp.array[int],
@@ -205,7 +205,7 @@ def _nxn_broadphase_kernel(
         gap2 = shape_gap[shape2]
 
     if check_aabb_overlap_moving(
-        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_sweep
+        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_displacement
     ):
         # Skip explicitly excluded pairs (e.g. shape_collision_filter_pairs)
         if num_filter_pairs > 0 and is_pair_excluded(wp.vec2i(shape1, shape2), filter_pairs, num_filter_pairs):
@@ -325,7 +325,7 @@ class BroadPhaseAllPairs:
         shape_body: wp.array[int] | None = None,
         body_flags: wp.array[int] | None = None,
         include_static_kinematic_pairs: bool = True,
-        shape_sweep: wp.array[wp.vec3] | None = None,
+        shape_displacement: wp.array[wp.vec3] | None = None,
     ) -> None:
         """Launch the N x N broad phase collision detection.
 
@@ -359,7 +359,12 @@ class BroadPhaseAllPairs:
                 an all-static model when ``shape_body`` is provided.
             include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
                 ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
-            shape_sweep: Optional world-space AABB translation over normalized time ``[0, 1]`` [m].
+            shape_displacement: Optional world-space displacement of each shape over the collision-update interval
+                ``dt``,
+                used for speculative-contact swept-AABB tests [m]. See
+                :ref:`Speculative contacts <speculative-contacts>`. :class:`CollisionPipeline` computes it as the
+                shape-origin velocity, including the angular contribution from its COM offset, times ``dt``; angular
+                travel expands the supplied AABB separately.
 
         The method will populate candidate_pair with the indices of shape pairs (i,j) where i < j whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose world indices are
@@ -381,9 +386,10 @@ class BroadPhaseAllPairs:
             shape_body = wp.empty(0, dtype=wp.int32, device=device)
         if body_flags is None:
             body_flags = wp.empty(0, dtype=wp.int32, device=device)
-        if shape_sweep is not None and shape_sweep.shape[0] != shape_lower.shape[0]:
+        if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
             raise ValueError(
-                f"shape_sweep length must match the shape bounds ({shape_lower.shape[0]}), got {shape_sweep.shape[0]}"
+                "shape_displacement length must match the shape bounds "
+                f"({shape_lower.shape[0]}), got {shape_displacement.shape[0]}"
             )
 
         # Exclusion filter: empty array and 0 when not provided or empty
@@ -402,7 +408,7 @@ class BroadPhaseAllPairs:
                 shape_lower,
                 shape_upper,
                 shape_gap,
-                shape_sweep,
+                shape_displacement,
                 shape_collision_group,
                 shape_world,
                 shape_body,
@@ -448,7 +454,7 @@ class BroadPhaseExplicit:
         shape_body: wp.array[int] | None = None,
         body_flags: wp.array[int] | None = None,
         include_static_kinematic_pairs: bool = True,
-        shape_sweep: wp.array[wp.vec3] | None = None,
+        shape_displacement: wp.array[wp.vec3] | None = None,
     ) -> None:
         """Launch the explicit pairs broad phase collision detection.
 
@@ -476,7 +482,12 @@ class BroadPhaseExplicit:
                 an all-static model when ``shape_body`` is provided.
             include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
                 ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
-            shape_sweep: Optional world-space AABB translation over normalized time ``[0, 1]`` [m].
+            shape_displacement: Optional world-space displacement of each shape over the collision-update interval
+                ``dt``,
+                used for speculative-contact swept-AABB tests [m]. See
+                :ref:`Speculative contacts <speculative-contacts>`. :class:`CollisionPipeline` computes it as the
+                shape-origin velocity, including the angular contribution from its COM offset, times ``dt``; angular
+                travel expands the supplied AABB separately.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), but only checking the explicitly provided pairs.
@@ -497,9 +508,10 @@ class BroadPhaseExplicit:
             shape_body = wp.empty(0, dtype=wp.int32, device=device)
         if body_flags is None:
             body_flags = wp.empty(0, dtype=wp.int32, device=device)
-        if shape_sweep is not None and shape_sweep.shape[0] != shape_lower.shape[0]:
+        if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
             raise ValueError(
-                f"shape_sweep length must match the shape bounds ({shape_lower.shape[0]}), got {shape_sweep.shape[0]}"
+                "shape_displacement length must match the shape bounds "
+                f"({shape_lower.shape[0]}), got {shape_displacement.shape[0]}"
             )
 
         wp.launch(
@@ -509,7 +521,7 @@ class BroadPhaseExplicit:
                 shape_lower,
                 shape_upper,
                 shape_gap,
-                shape_sweep,
+                shape_displacement,
                 shape_pairs,
                 shape_body,
                 body_flags,

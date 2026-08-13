@@ -369,12 +369,15 @@ def compute_shape_velocities(
     shape_linear_velocity: wp.array[wp.vec3],
     shape_angular_velocity: wp.array[wp.vec3],
     shape_search_gap: wp.array[float],
-    shape_sweep: wp.array[wp.vec3],
+    shape_displacement: wp.array[wp.vec3],
     shape_aabb_lower: wp.array[wp.vec3],
     shape_aabb_upper: wp.array[wp.vec3],
 ):
     """Compute shape motion and expand its AABB over the prediction horizon.
 
+    ``shape_displacement`` is the world-space shape-origin velocity, including
+    the ``angular_velocity x COM_offset`` contribution, multiplied by
+    ``collision_update_dt``. Angular travel expands the AABB separately.
     ``angular_speed_bound`` is the resulting conservative linear speed [m/s]
     at the shape bound, not an angular speed [rad/s].
     """
@@ -384,7 +387,7 @@ def compute_shape_velocities(
         shape_linear_velocity[shape_id] = wp.vec3(0.0)
         shape_angular_velocity[shape_id] = wp.vec3(0.0)
         shape_search_gap[shape_id] = shape_gap[shape_id]
-        shape_sweep[shape_id] = wp.vec3(0.0)
+        shape_displacement[shape_id] = wp.vec3(0.0)
         return
 
     X_wb = body_q[body_id]
@@ -409,11 +412,11 @@ def compute_shape_velocities(
     )
     shape_search_gap[shape_id] = shape_gap[shape_id] + search_extension
 
-    swept_translation = shape_origin_velocity * collision_update_dt
+    displacement = shape_origin_velocity * collision_update_dt
     angular_extension = angular_speed_bound * collision_update_dt
     cap = wp.vec3(max_speculative_extension)
     # Preserve absolute motion so pairwise subtraction retains relative velocity.
-    shape_sweep[shape_id] = swept_translation
+    shape_displacement[shape_id] = displacement
     angular_extension_vec = wp.min(wp.vec3(angular_extension), cap)
     shape_aabb_lower[shape_id] = shape_aabb_lower[shape_id] - angular_extension_vec
     shape_aabb_upper[shape_id] = shape_aabb_upper[shape_id] + angular_extension_vec
@@ -1331,12 +1334,12 @@ class CollisionPipeline:
                 self._shape_linear_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
                 self._shape_search_gap = wp.zeros(shape_count, dtype=wp.float32, device=device)
-                self._shape_sweep = wp.zeros(shape_count, dtype=wp.vec3, device=device)
+                self._shape_displacement = wp.zeros(shape_count, dtype=wp.vec3, device=device)
             else:
                 self._shape_linear_velocity = wp.empty(0, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.empty(0, dtype=wp.vec3, device=device)
                 self._shape_search_gap = wp.empty(0, dtype=wp.float32, device=device)
-                self._shape_sweep = wp.empty(0, dtype=wp.vec3, device=device)
+                self._shape_displacement = wp.empty(0, dtype=wp.vec3, device=device)
 
         if (
             getattr(self.narrow_phase, "shape_aabb_lower", None) is None
@@ -1642,7 +1645,7 @@ class CollisionPipeline:
                     self._shape_linear_velocity,
                     self._shape_angular_velocity,
                     self._shape_search_gap,
-                    self._shape_sweep,
+                    self._shape_displacement,
                     self.narrow_phase.shape_aabb_lower,
                     self.narrow_phase.shape_aabb_upper,
                 ],
@@ -1668,7 +1671,7 @@ class CollisionPipeline:
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
-                shape_sweep=self._shape_sweep if speculative_active else None,
+                shape_displacement=self._shape_displacement if speculative_active else None,
             )
         elif isinstance(self.broad_phase, BroadPhaseSAP):
             self.broad_phase.launch(
@@ -1687,8 +1690,8 @@ class CollisionPipeline:
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
-                shape_sweep=self._shape_sweep if speculative_active else None,
-                shape_sweep_projection_limit=max_speculative_extension if speculative_active else None,
+                shape_displacement=self._shape_displacement if speculative_active else None,
+                sort_axis_displacement_limit=max_speculative_extension if speculative_active else None,
             )
         else:  # BroadPhaseExplicit
             self.broad_phase.launch(
@@ -1704,7 +1707,7 @@ class CollisionPipeline:
                 include_static_kinematic_pairs=self.include_static_kinematic_pairs,
                 device=self.device,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
-                shape_sweep=self._shape_sweep if speculative_active else None,
+                shape_displacement=self._shape_displacement if speculative_active else None,
             )
 
         # Create ContactWriterData struct for custom contact writing
