@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton._src.geometry.contact_reduction_global import (
     EXPORT_REDUCED_CONTACTS_BLOCK_DIM,
+    PREDICTIVE_BIN_ID,
     GlobalContactReducer,
     GlobalContactReducerData,
     create_export_reduced_contacts_kernel,
@@ -266,6 +267,20 @@ def _buffer_one_contact(reducer_data: GlobalContactReducerData):
 
 
 @wp.kernel
+def _buffer_separated_axial_contact(reducer_data: GlobalContactReducerData):
+    """Buffer one separated axial-shape contact produced by a mesh triangle."""
+    export_contact_to_buffer(
+        0,
+        1,
+        wp.vec3(0.0),
+        wp.vec3(1.0, 0.0, 0.0),
+        0.05,
+        7,
+        reducer_data,
+    )
+
+
+@wp.kernel
 def _replace_full_buffer_predictive_winner(
     reducer_data: GlobalContactReducerData,
     shape_transform: wp.array[wp.transform],
@@ -496,12 +511,11 @@ def _collide(model, state, speculative: bool):
     config = None
     if speculative:
         config = newton.CollisionPipeline.SpeculativeContactConfig(
-            collision_update_dt=0.02,
             max_speculative_extension=0.25,
         )
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_config=config)
     contacts = pipeline.contacts()
-    pipeline.collide(state, contacts)
+    pipeline.collide(state, contacts, dt=0.02)
     return contacts
 
 
@@ -568,22 +582,23 @@ def test_speculative_candidates_require_approach(test, device):
         test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
-def test_speculative_candidates_respect_dt_override(test, device):
-    """Suppress a configured candidate when a shorter per-call horizon cannot reach it."""
+def test_speculative_candidates_require_dt(test, device):
+    """Require a current horizon and suppress candidates that cannot reach it."""
     model, state = _build_spheres(device, velocity=10.0)
     config = newton.CollisionPipeline.SpeculativeContactConfig(
-        collision_update_dt=0.02,
         max_speculative_extension=0.25,
     )
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_config=config)
 
-    configured_contacts = pipeline.contacts()
-    pipeline.collide(state, configured_contacts)
-    test.assertGreater(int(configured_contacts.rigid_contact_count.numpy()[0]), 0)
+    contacts = pipeline.contacts()
+    with test.assertRaisesRegex(ValueError, "dt must be provided"):
+        pipeline.collide(state, contacts)
 
-    overridden_contacts = pipeline.contacts()
-    pipeline.collide(state, overridden_contacts, dt=0.005)
-    test.assertEqual(int(overridden_contacts.rigid_contact_count.numpy()[0]), 0)
+    pipeline.collide(state, contacts, dt=0.02)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+    pipeline.collide(state, contacts, dt=0.005)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
 def test_speculative_gap_uses_larger_fixed_or_velocity_distance(test, device):
@@ -630,7 +645,6 @@ def test_speculative_candidates_reject_common_motion(test, device):
     model = builder.finalize(device=device)
     shape_pairs = wp.array([wp.vec2i(0, 1)], dtype=wp.vec2i, device=device)
     config = newton.CollisionPipeline.SpeculativeContactConfig(
-        collision_update_dt=0.1,
         max_speculative_extension=0.25,
     )
 
@@ -643,7 +657,7 @@ def test_speculative_candidates_reject_common_motion(test, device):
                 speculative_config=config,
             )
             contacts = pipeline.contacts()
-            pipeline.collide(model.state(), contacts)
+            pipeline.collide(model.state(), contacts, dt=0.1)
             test.assertEqual(int(pipeline.broad_phase_pair_count.numpy()[0]), 0)
             test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
@@ -675,12 +689,11 @@ def test_speculative_candidates_include_angular_motion(test, device):
         model,
         broad_phase="nxn",
         speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            collision_update_dt=0.02,
             max_speculative_extension=0.25,
         ),
     )
     contacts = pipeline.contacts()
-    pipeline.collide(model.state(), contacts)
+    pipeline.collide(model.state(), contacts, dt=0.02)
     test.assertGreater(int(pipeline.broad_phase_pair_count.numpy()[0]), 0)
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
@@ -698,12 +711,11 @@ def test_speculative_cone_reaches_infinite_plane(test, device):
         model,
         broad_phase="nxn",
         speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            collision_update_dt=0.03,
             max_speculative_extension=0.75,
         ),
     )
     contacts = pipeline.contacts()
-    pipeline.collide(model.state(), contacts)
+    pipeline.collide(model.state(), contacts, dt=0.03)
 
     test.assertGreater(int(pipeline.broad_phase_pair_count.numpy()[0]), 0)
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
@@ -732,7 +744,6 @@ def test_stationary_contacts_match_non_speculative_pipeline(test, device):
             broad_phase="nxn",
             deterministic=True,
             speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-                collision_update_dt=0.03,
                 max_speculative_extension=0.25,
             ),
         ),
@@ -740,7 +751,7 @@ def test_stationary_contacts_match_non_speculative_pipeline(test, device):
     outputs = []
     for pipeline in pipelines:
         contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)
+        pipeline.collide(state, contacts, dt=0.03)
         count = int(contacts.rigid_contact_count.numpy()[0])
         test.assertGreater(count, 0)
         outputs.append(
@@ -774,14 +785,13 @@ def test_speculative_contacts_prevent_dynamic_tunneling(test, device):
         config = None
         if speculative:
             config = newton.CollisionPipeline.SpeculativeContactConfig(
-                collision_update_dt=dt,
                 max_speculative_extension=0.75,
             )
         pipeline = newton.CollisionPipeline(model, broad_phase="nxn", speculative_config=config)
         contacts = pipeline.contacts()
         state_in = model.state()
         state_out = model.state()
-        pipeline.collide(state_in, contacts)
+        pipeline.collide(state_in, contacts, dt=dt)
         newton.solvers.SolverXPBD(model, iterations=5).step(state_in, state_out, None, contacts, dt)
         return float(state_out.body_q.numpy()[body, 2])
 
@@ -926,6 +936,26 @@ def test_speculative_mesh_sdf_candidates(test, device):
     test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
 
 
+def test_speculative_axial_shapes_reach_triangle_mesh(test, device):
+    """Retain separated sphere and capsule contacts against a triangle mesh."""
+    for shape_type in ("sphere", "capsule"):
+        with test.subTest(shape_type=shape_type):
+            wall = newton.Mesh.create_box(0.02, 0.3, 0.3, compute_normals=False, compute_uvs=False)
+            builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+            builder.rigid_gap = 0.0
+            body = builder.add_body(xform=wp.transform(wp.vec3(-0.25, 0.0, 0.0)))
+            if shape_type == "sphere":
+                builder.add_shape_sphere(body, radius=0.1)
+            else:
+                builder.add_shape_capsule(body, radius=0.1, half_height=0.1)
+            builder.body_qd[body] = (10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            builder.add_shape_mesh(-1, mesh=wall)
+            model = builder.finalize(device=device)
+
+            contacts = _collide(model, model.state(), speculative=True)
+            test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
 def test_speculative_mesh_sdf_manifold_is_bounded(test, device):
     """Limit a separated mesh-SDF shape pair to seven predictive contacts."""
     projectile = newton.Mesh.create_sphere(
@@ -951,12 +981,11 @@ def test_speculative_mesh_sdf_manifold_is_bounded(test, device):
         model,
         broad_phase="nxn",
         speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            collision_update_dt=0.03,
             max_speculative_extension=0.25,
         ),
     )
     contacts = pipeline.contacts()
-    pipeline.collide(model.state(), contacts)
+    pipeline.collide(model.state(), contacts, dt=0.03)
 
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 0)
@@ -987,12 +1016,11 @@ def test_speculative_mesh_sdf_retains_rotating_leading_feature(test, device):
         model,
         broad_phase="nxn",
         speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            collision_update_dt=0.03,
             max_speculative_extension=0.15,
         ),
     )
     contacts = pipeline.contacts()
-    pipeline.collide(model.state(), contacts)
+    pipeline.collide(model.state(), contacts, dt=0.03)
 
     count = int(contacts.rigid_contact_count.numpy()[0])
     test.assertGreater(count, 1)
@@ -1062,6 +1090,38 @@ def test_speculative_buffered_reducer_uses_one_based_ids(test, device, determini
     test.assertEqual(exported_count, 1)
     for actual, expected in zip(positions[0], (0.25, -0.5, 0.75), strict=True):
         test.assertAlmostEqual(float(actual), expected, places=6)
+
+
+def test_speculative_buffered_axial_contacts_use_predictive_manifold(test, device):
+    """Route separated sphere and capsule mesh contacts by their physical clearance."""
+    for shape_type in (GeoType.SPHERE, GeoType.CAPSULE):
+        with test.subTest(shape_type=shape_type):
+            reducer = GlobalContactReducer(capacity=8, device=device)
+            wp.launch(_buffer_separated_axial_contact, dim=1, inputs=[reducer.get_data_struct()], device=device)
+
+            wp.launch(
+                reduce_buffered_contacts_speculative_kernel,
+                dim=1,
+                inputs=[
+                    reducer.get_data_struct(),
+                    wp.array([int(shape_type), int(GeoType.MESH)], dtype=wp.int32, device=device),
+                    wp.array([wp.vec4(0.1, 0.1, 0.1, 0.0), wp.vec4(0.0)], dtype=wp.vec4, device=device),
+                    wp.zeros(2, dtype=wp.float32, device=device),
+                    wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device),
+                    wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], dtype=wp.vec3, device=device),
+                    wp.zeros(2, dtype=wp.vec3, device=device),
+                    wp.full(2, wp.vec3(-1.0), dtype=wp.vec3, device=device),
+                    wp.full(2, wp.vec3(1.0), dtype=wp.vec3, device=device),
+                    wp.full(2, wp.vec3i(1), dtype=wp.vec3i, device=device),
+                    0.1,
+                    0.1,
+                    1,
+                ],
+                device=device,
+            )
+
+            bins = (reducer.hashtable.keys.numpy() >> np.uint64(55)) & np.uint64(0xFF)
+            test.assertIn(PREDICTIVE_BIN_ID, bins)
 
 
 def test_predictive_reducer_reclaims_replaced_reservation(test, device, deterministic):
@@ -1264,7 +1324,7 @@ class TestSpeculativeMeshContacts(unittest.TestCase):
 for _name, _test in (
     ("test_speculative_candidates_are_opt_in", test_speculative_candidates_are_opt_in),
     ("test_speculative_candidates_require_approach", test_speculative_candidates_require_approach),
-    ("test_speculative_candidates_respect_dt_override", test_speculative_candidates_respect_dt_override),
+    ("test_speculative_candidates_require_dt", test_speculative_candidates_require_dt),
     (
         "test_speculative_gap_uses_larger_fixed_or_velocity_distance",
         test_speculative_gap_uses_larger_fixed_or_velocity_distance,
@@ -1299,6 +1359,10 @@ for _name, _test in (
     (
         "test_predictive_reducer_reclamation_storage_is_opt_in",
         test_predictive_reducer_reclamation_storage_is_opt_in,
+    ),
+    (
+        "test_speculative_buffered_axial_contacts_use_predictive_manifold",
+        test_speculative_buffered_axial_contacts_use_predictive_manifold,
     ),
     (
         "test_predictive_reducer_reclaims_ids_without_duplicates",
@@ -1366,6 +1430,12 @@ for _deterministic in (False, True):
         deterministic=_deterministic,
     )
 
+add_function_test(
+    TestSpeculativeMeshContacts,
+    "test_speculative_axial_shapes_reach_triangle_mesh",
+    test_speculative_axial_shapes_reach_triangle_mesh,
+    devices=get_test_devices(),
+)
 add_function_test(
     TestSpeculativeMeshContacts,
     "test_speculative_mesh_sdf_candidates",

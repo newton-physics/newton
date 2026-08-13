@@ -876,18 +876,14 @@ class CollisionPipeline:
         See :ref:`Speculative contacts <speculative-contacts>`.
         """
 
-        collision_update_dt: float = 1.0 / 60.0
-        """Prediction horizon [s]. ``0.0`` disables velocity adaptation; :meth:`collide` can override it."""
-
         max_speculative_extension: float = 0.1
         """Upper bound on the velocity-based contact gap [m]. ``0.0`` disables velocity adaptation."""
 
         def __post_init__(self):
-            """Validate finite, non-negative physical parameters."""
-            for name in ("collision_update_dt", "max_speculative_extension"):
-                value = getattr(self, name)
-                if not np.isfinite(value) or value < 0.0:
-                    raise ValueError(f"{name} must be a non-negative finite number, got {value!r}")
+            """Validate the finite, non-negative extension limit."""
+            value = self.max_speculative_extension
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(f"max_speculative_extension must be a non-negative finite number, got {value!r}")
 
     def __init__(
         self,
@@ -1018,7 +1014,7 @@ class CollisionPipeline:
                 ``True``.  Overhead is one extra kernel launch per collision
                 pass; disable in hot loops or CUDA graph capture once buffer
                 sizes are known to be adequate.
-            speculative_config: Optional predictive-contact configuration.
+            speculative_config: Optional speculative-contact configuration.
                 ``None`` disables speculative contacts. When set, admits a
                 separated rigid-contact candidate if its normal-directed
                 contact-point velocity can close the separation within the
@@ -1524,10 +1520,9 @@ class CollisionPipeline:
                 If ``None``, uses the value from construction. The effective
                 contact threshold also incorporates per-shape margins from
                 ``model.shape_margin``.
-            dt: Optional collision-update horizon [s], overriding
-                :attr:`SpeculativeContactConfig.collision_update_dt` for this
-                call. ``0.0`` disables velocity adaptation for this call.
-                Ignored when speculative contacts are disabled. See
+            dt: Collision-update horizon [s]. Required when speculative
+                contacts are enabled. ``0.0`` disables velocity adaptation for
+                this call. Ignored when speculative contacts are disabled. See
                 :ref:`Speculative contacts <speculative-contacts>`.
         """
         # Keep the buffer's full-surface capability marker in sync with this pipeline on every call.
@@ -1549,7 +1544,9 @@ class CollisionPipeline:
         soft_contact_margin = soft_contact_margin if soft_contact_margin is not None else self.soft_contact_margin
         if self._speculative_enabled:
             config = self.speculative_config
-            collision_update_dt = config.collision_update_dt if dt is None else dt
+            if dt is None:
+                raise ValueError("dt must be provided when speculative contacts are enabled")
+            collision_update_dt = dt
             if not np.isfinite(collision_update_dt) or collision_update_dt < 0.0:
                 raise ValueError(f"dt must be a non-negative finite number, got {collision_update_dt!r}")
             max_speculative_extension = config.max_speculative_extension

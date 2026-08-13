@@ -1761,7 +1761,7 @@ def export_and_reduce_predictive_contact(
         position: Contact midpoint in world space [m].
         normal: Contact normal from the first shape to the second.
         depth: Centerline contact distance [m].
-        surface_offset_sum: Combined effective radii and collision margins [m].
+        surface_offset_sum: Combined collision margins [m].
         radius_eff_a: Effective radius of the first shape [m].
         radius_eff_b: Effective radius of the second shape [m].
         fingerprint: Deterministic contact identifier.
@@ -1769,7 +1769,7 @@ def export_and_reduce_predictive_contact(
         shape_linear_velocity: Shape-origin linear velocities [m/s].
         shape_angular_velocity: Shape angular velocities [rad/s].
         collision_update_dt: Collision prediction horizon [s].
-        max_speculative_extension: Maximum predictive clearance [m].
+        max_speculative_extension: Maximum speculative clearance [m].
         existing_contact_id: ``-1`` requests a provisional claim; a positive one-based ID updates an existing
             buffered contact.
         reducer_data: Global contact-reducer storage.
@@ -1972,7 +1972,7 @@ def reduce_buffered_contacts_speculative_kernel(
         pd = reducer_data.position_depth[contact_id]
         radius_eff_a = compute_effective_radius(shape_types[shape_a], shape_data[shape_a])
         radius_eff_b = compute_effective_radius(shape_types[shape_b], shape_data[shape_b])
-        surface_offset_sum = radius_eff_a + radius_eff_b + shape_data[shape_a][3] + shape_data[shape_b][3]
+        surface_offset_sum = shape_data[shape_a][3] + shape_data[shape_b][3]
         clearance = pd[3] - surface_offset_sum
         base_gap_sum = shape_gap[shape_a] + shape_gap[shape_b]
         if clearance <= base_gap_sum:

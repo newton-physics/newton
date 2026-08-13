@@ -1376,18 +1376,17 @@ Enable the feature with :class:`CollisionPipeline.SpeculativeContactConfig`:
     pipeline = newton.CollisionPipeline(
         model,
         speculative_config=newton.CollisionPipeline.SpeculativeContactConfig(
-            collision_update_dt=1.0 / 60.0,
             max_speculative_extension=0.1,
         ),
     )
 
     pipeline.collide(state, contacts, dt=1.0 / 60.0)
 
-``collision_update_dt`` is the default time [s] until the next collision pass.
-Set it to the time until the next planned :meth:`CollisionPipeline.collide` call,
-including skipped solver substeps. The per-call ``dt`` overrides it; ``dt=0.0`` uses
-only the fixed gaps. ``max_speculative_extension`` caps the velocity-based distance
-[m]; ``0.0`` also disables velocity adaptation.
+The per-call ``dt`` is the time [s] until the next planned
+:meth:`CollisionPipeline.collide` call, including skipped solver substeps, and is
+required when speculative contacts are enabled. ``dt=0.0`` uses only the fixed
+gaps. ``max_speculative_extension`` caps the velocity-based distance [m]; ``0.0``
+also disables velocity adaptation.
 
 Speculation changes when a contact is retained, not its geometry: contact points remain
 at their current separation rather than a predicted impact pose. Mesh and SDF contact

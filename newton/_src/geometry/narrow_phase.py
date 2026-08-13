@@ -735,7 +735,11 @@ def create_narrow_phase_primitive_kernel(writer_func: Any, speculative: bool = F
 
 
 def create_narrow_phase_kernel_gjk_mpr(
-    external_aabb: bool, writer_func: Any, support_func: Any = None, post_process_contact: Any = None
+    external_aabb: bool,
+    writer_func: Any,
+    support_func: Any = None,
+    post_process_contact: Any = None,
+    speculative: bool = False,
 ):
     """
     Create a GJK/MPR narrow phase kernel for complex convex shape collisions.
@@ -751,7 +755,7 @@ def create_narrow_phase_kernel_gjk_mpr(
     """
     _sf = support_func.__name__ if support_func is not None else "default"
     _ppc = post_process_contact.__name__ if post_process_contact is not None else "default"
-    _module = f"narrow_phase_gjk_mpr_{external_aabb}_{writer_func.__name__}_{_sf}_{_ppc}"
+    _module = f"narrow_phase_gjk_mpr_{external_aabb}_{speculative}_{writer_func.__name__}_{_sf}_{_ppc}"
 
     @wp.kernel(enable_backward=False, module=_module)
     def narrow_phase_kernel_gjk_mpr(
@@ -865,7 +869,7 @@ def create_narrow_phase_kernel_gjk_mpr(
 
                 # External AABBs describe the current geometry. Include both shapes' search
                 # extensions so relative translational motion cannot be culled before GJK.
-                if wp.static(external_aabb):
+                if wp.static(external_aabb and speculative):
                     pair_search_extension = shape_gap[shape_a] + shape_gap[shape_b]
                     if is_infinite_plane_a:
                         bsphere_radius_b += pair_search_extension
@@ -1658,7 +1662,7 @@ class NarrowPhase:
                 reduction hashtable. Increase this if hashtable fill/failure
                 warnings appear. Defaults to ``0.25`` for memory compatibility.
             speculative: Whether the caller provides velocity-expanded search
-                gaps and exact predictive-contact data. Defaults to False.
+                gaps and exact speculative-contact data. Defaults to False.
             contact_writer_supports_speculative: Whether a custom contact writer performs exact speculative-contact
                 admission. Required when ``speculative`` and ``contact_writer_warp_func`` are both provided.
         """
@@ -1744,9 +1748,12 @@ class NarrowPhase:
                 writer_func,
                 support_func=support_map_lean,
                 post_process_contact=post_process_minkowski_only,
+                speculative=speculative,
             )
         else:
-            self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(self.external_aabb, writer_func)
+            self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(
+                self.external_aabb, writer_func, speculative=speculative
+            )
         # Create triangle contacts kernel when meshes or heightfields are present
         if has_meshes or has_heightfields:
             self.mesh_triangle_contacts_kernel = create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func)
@@ -2017,7 +2024,7 @@ class NarrowPhase:
             shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.
             shape_angular_velocity: Shape angular velocities [rad/s]. Required in speculative mode.
             collision_update_dt: Collision prediction horizon [s].
-            max_speculative_extension: Maximum predictive clearance [m].
+            max_speculative_extension: Maximum speculative clearance [m].
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -2562,8 +2569,8 @@ class NarrowPhase:
             contact_count: Output array (single element) for contact count
             shape_linear_velocity: World-space shape-origin linear velocity [m/s].
             shape_angular_velocity: World-space shape angular velocity [rad/s].
-            collision_update_dt: Predictive collision horizon [s].
-            max_speculative_extension: Maximum predictive clearance [m].
+            collision_update_dt: Speculative collision horizon [s].
+            max_speculative_extension: Maximum speculative clearance [m].
             device: Device to launch on
         """
         if device is None:
