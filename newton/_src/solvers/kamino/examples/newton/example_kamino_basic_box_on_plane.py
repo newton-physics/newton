@@ -17,6 +17,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.solvers import SolverKamino
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
@@ -35,7 +36,7 @@ class Example:
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
+        SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
 
@@ -66,7 +67,7 @@ class Example:
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Create and configure settings for SolverKamino and the collision detector
-        solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        solver_config = SolverKamino.Config.from_model(self.model)
         solver_config.use_collision_detector = True
         solver_config.use_fk_solver = False
         solver_config.dynamics.preconditioning = True
@@ -80,7 +81,7 @@ class Example:
         solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
 
         # Create the Kamino solver for the given model
-        self.solver = newton.solvers.SolverKamino(model=self.model, config=solver_config)
+        self.solver = SolverKamino(model=self.model, config=solver_config)
 
         # Create state, control, and contacts data containers
         self.state_0 = self.model.state()
@@ -105,7 +106,10 @@ class Example:
         for w in range(self.world_count):
             q_base[w, :3] += np.array([0.0, 0.0, 0.2]) * float(w)
         self.base_q.assign(q_base)
-        self.solver.reset(state=self.state_0, base_q=self.base_q)
+        self.solver.reset(
+            state=self.state_0,
+            config=SolverKamino.ResetConfig(base_pose=SolverKamino.ResetConfig.FromBaseQ(self.base_q)),
+        )
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
