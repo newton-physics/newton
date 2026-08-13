@@ -314,6 +314,47 @@ class TestModelMesh(unittest.TestCase):
         shape_source_ptr = model.shape_source_ptr.numpy()
         self.assertEqual(shape_source_ptr[0], shape_source_ptr[1])
 
+    def test_finalize_deduplicates_convex_collision_vertices(self):
+        """Deduplicate exact convex vertices in the finalized collision mesh."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        indices = np.arange(6, dtype=np.int32)
+        mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+
+        builder = ModelBuilder()
+        builder.add_shape_convex_hull(body=-1, mesh=mesh)
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_array_equal(mesh.vertices, vertices)
+        self.assertIs(model.shape_source[0], mesh)
+        self.assertEqual(len(model._mesh_keep_alive), 1)
+        collision_mesh = model._mesh_keep_alive[0]
+        np.testing.assert_array_equal(
+            collision_mesh.points.numpy(),
+            np.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                dtype=np.float32,
+            ),
+        )
+        np.testing.assert_array_equal(
+            collision_mesh.indices.numpy(),
+            np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+        )
+
     def test_finalize_does_not_deduplicate_different_mesh_layouts(self):
         vertices_a = np.array(
             [

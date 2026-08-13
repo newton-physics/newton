@@ -101,6 +101,42 @@ not show up in builder-state comparisons or survive past either builder's lifeti
 """
 
 
+def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
+    """Build a collision-only mesh containing each exact vertex position once."""
+    vertices = source.vertices
+    _, first_indices, inverse = np.unique(vertices, axis=0, return_index=True, return_inverse=True)
+    if len(first_indices) == len(vertices):
+        return source
+
+    # Retain first-occurrence order so support-map tie breaking stays unchanged.
+    first_order = np.argsort(first_indices)
+    unique_remap = np.empty(len(first_indices), dtype=np.int32)
+    unique_remap[first_order] = np.arange(len(first_indices), dtype=np.int32)
+    vertex_remap = unique_remap[inverse]
+    collision_mesh = Mesh(
+        vertices=vertices[first_indices[first_order]],
+        indices=vertex_remap[source.indices],
+        compute_inertia=False,
+        is_solid=source.is_solid,
+        maxhullvert=source.maxhullvert,
+        sdf=source.sdf,
+    )
+    collision_mesh.mass = source.mass
+    collision_mesh.com = source.com
+    collision_mesh.inertia = source.inertia
+    collision_mesh.has_inertia = source.has_inertia
+
+    if source._collision_edges is not None:
+        collision_edges = vertex_remap[source._collision_edges]
+        collision_edges = collision_edges[collision_edges[:, 0] != collision_edges[:, 1]]
+        if len(collision_edges) > 0:
+            _, first_edges = np.unique(collision_edges, axis=0, return_index=True)
+            collision_edges = collision_edges[np.sort(first_edges)]
+        collision_mesh._collision_edges = collision_edges
+
+    return collision_mesh
+
+
 @dataclass(frozen=True)
 class _ShapeCollisionFilterBlock:
     """Compact replicated collision-filter block."""
@@ -1108,6 +1144,7 @@ class ModelBuilder:
         self,
         up_axis: AxisType = Axis.Z,
         gravity: float | Vec3 | None = None,
+        sdf_texture_paired_samples: bool = True,
     ):
         """
         Initializes a new ModelBuilder instance for constructing simulation models.
@@ -1118,9 +1155,18 @@ class ModelBuilder:
             gravity: Default gravity vector [m/s^2]. The deprecated scalar form
                 applies acceleration along ``up_axis``. If omitted, gravity
                 defaults to -9.81 along ``up_axis``.
+            sdf_texture_paired_samples: Store adjacent X samples together in
+                SDF textures for faster software interpolation. Disable to
+                halve SDF texture memory at the cost of slower hydroelastic
+                sampling. Every prebuilt mesh SDF added to this builder must
+                use the same layout, selected by the ``paired_samples``
+                argument to :meth:`Mesh.build_sdf`.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
+
+        self.sdf_texture_paired_samples = bool(sdf_texture_paired_samples)
+        """Whether generated SDF textures store adjacent X samples together."""
 
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
@@ -11041,6 +11087,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m._sdf_texture_paired_samples = self.sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
@@ -11102,6 +11149,18 @@ class ModelBuilder:
                 )
 
             generated_shape_sources = list(self.shape_source)
+            deduplicated_convex_sources = {}
+            for shape_idx, shape_type in enumerate(self.shape_type):
+                source = generated_shape_sources[shape_idx]
+                if shape_type != GeoType.CONVEX_MESH or not isinstance(source, Mesh):
+                    continue
+                source_identity = id(source)
+                if source_identity in deduplicated_convex_sources:
+                    generated_shape_sources[shape_idx] = deduplicated_convex_sources[source_identity]
+                    continue
+                deduplicated_source = _deduplicate_convex_collision_mesh(source)
+                deduplicated_convex_sources[source_identity] = deduplicated_source
+                generated_shape_sources[shape_idx] = deduplicated_source
             generated_sdf_edge_meshes = []
             unit_box_edge_mesh = None
             for shape_idx, shape_type in enumerate(self.shape_type):
@@ -11489,8 +11548,12 @@ class ModelBuilder:
                         sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
+                        sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
+                        # Convex collision geometry is deduplicated before finalization,
+                        # so build and cache its deferred SDF against that same topology.
+                        sdf_source = generated_shape_sources[i] if shape_type == GeoType.CONVEX_MESH else shape_src
                         deferred_key = (
-                            id(shape_src),
+                            id(sdf_source),
                             tuple(shape_scale),
                             tuple(sdf_narrow_band_range),
                             sdf_target_voxel_size,
@@ -11500,7 +11563,7 @@ class ModelBuilder:
                         )
                         mesh_sdf = deferred_mesh_sdf_cache.get(deferred_key)
                         if mesh_sdf is None:
-                            mesh_copy = shape_src.copy()
+                            mesh_copy = sdf_source.copy()
                             mesh_copy.build_sdf(**sdf_kwargs)
                             mesh_sdf = mesh_copy.sdf
                             deferred_mesh_sdf_cache[deferred_key] = mesh_sdf
@@ -11509,6 +11572,16 @@ class ModelBuilder:
                         if deferred_key in deferred_collision_edges_cache:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
+                        coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
+                        if coarse_texture is not None and (
+                            (coarse_texture.num_channels == 2) != self.sdf_texture_paired_samples
+                        ):
+                            mode = "paired" if self.sdf_texture_paired_samples else "scalar"
+                            raise ValueError(
+                                f"ModelBuilder requires {mode} SDF textures, but shape {i} uses a prebuilt SDF "
+                                "with a different layout. Rebuild it with mesh.build_sdf(paired_samples="
+                                f"{self.sdf_texture_paired_samples})."
+                            )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                 elif has_shape_collision and (
                     is_hydroelastic
@@ -11562,6 +11635,7 @@ class ModelBuilder:
                                     target_voxel_size=sdf_target_voxel_size,
                                     quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                     scale_baked=True,
+                                    paired_samples=self.sdf_texture_paired_samples,
                                     device=device,
                                 )
                             except NotImplementedError:
@@ -11648,6 +11722,7 @@ class ModelBuilder:
                             quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
                             scale_baked=False,
                             device=device,
+                            paired_samples=self.sdf_texture_paired_samples,
                         )
                     except Exception as e:
                         warnings.warn(

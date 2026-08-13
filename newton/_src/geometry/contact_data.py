@@ -88,6 +88,27 @@ def make_contact_sort_key(shape_a: int, shape_b: int, sort_sub_key: int) -> wp.i
 
 
 @wp.func
+def _contact_passes_gap_check_precomputed(
+    contact_data: ContactData,
+    contact_normal_a_to_b: wp.vec3,
+    total_separation_needed: float,
+) -> bool:
+    """Check a contact gap using manifold-invariant precomputed values."""
+    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
+    )
+    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
+    )
+
+    diff = b_contact_world - a_contact_world
+    distance = wp.dot(diff, contact_normal_a_to_b)
+    d = distance - total_separation_needed
+
+    return d <= contact_data.gap_sum
+
+
+@wp.func
 def contact_passes_gap_check(
     contact_data: ContactData,
 ) -> bool:
@@ -107,15 +128,8 @@ def contact_passes_gap_check(
     # Distance calculation matching box_plane_collision
     contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
 
-    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
+    return _contact_passes_gap_check_precomputed(
+        contact_data,
+        contact_normal_a_to_b,
+        total_separation_needed,
     )
-    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
-        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
-    )
-
-    diff = b_contact_world - a_contact_world
-    distance = wp.dot(diff, contact_normal_a_to_b)
-    d = distance - total_separation_needed
-
-    return d <= contact_data.gap_sum

@@ -28,6 +28,7 @@ from newton._src.geometry.sdf_texture import (
     create_texture_sdf_from_primitive,
     create_texture_sdf_from_volume,
     texture_sample_sdf,
+    texture_sample_sdf_at_voxel,
     texture_sample_sdf_grad,
     texture_sample_sdf_hw,
 )
@@ -180,6 +181,21 @@ def _sample_texture_sdf_kernel(
 ):
     tid = wp.tid()
     results[tid] = texture_sample_sdf(sdf, query_points[tid])
+
+
+@wp.kernel
+def _compare_integer_voxel_samples_kernel(
+    sdf: TextureSDFData,
+    voxel_coords: wp.array[wp.vec3i],
+    interpolated: wp.array[float],
+    direct: wp.array[float],
+):
+    """Sample identical integer voxel coordinates through both texture paths."""
+    tid = wp.tid()
+    coord = voxel_coords[tid]
+    local_pos = sdf.sdf_box_lower + wp.cw_mul(wp.vec3f(coord), sdf.voxel_size)
+    interpolated[tid] = texture_sample_sdf(sdf, local_pos)
+    direct[tid] = texture_sample_sdf_at_voxel(sdf, coord[0], coord[1], coord[2])
 
 
 @wp.kernel
@@ -411,6 +427,42 @@ def test_texture_sdf_construction(test, device):
     mesh_max = mesh.vertices.max(axis=0)
     test.assertTrue(np.all(box_lower <= mesh_min))
     test.assertTrue(np.all(box_upper >= mesh_max))
+
+
+def test_texture_sdf_integer_voxel_sampling(test, device):
+    """Match direct voxel reads to interpolation within float32 rounding."""
+    mesh = _create_box_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+    tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=64,
+        device=device,
+    )
+
+    lower = np.array(tex_sdf.sdf_box_lower, dtype=np.float32)
+    upper = np.array(tex_sdf.sdf_box_upper, dtype=np.float32)
+    voxel_size = np.array(tex_sdf.voxel_size, dtype=np.float32)
+    dims = np.rint((upper - lower) / voxel_size).astype(np.int32) + 1
+    rng = np.random.default_rng(2026)
+    coords = rng.integers(np.zeros(3, dtype=np.int32), dims, size=(256, 3), dtype=np.int32)
+
+    voxel_coords = wp.array(coords, dtype=wp.vec3i, device=device)
+    interpolated = wp.empty(len(coords), dtype=float, device=device)
+    direct = wp.empty(len(coords), dtype=float, device=device)
+    wp.launch(
+        _compare_integer_voxel_samples_kernel,
+        dim=len(coords),
+        inputs=[tex_sdf, voxel_coords, interpolated, direct],
+        device=device,
+    )
+
+    np.testing.assert_allclose(direct.numpy(), interpolated.numpy(), rtol=2.0e-5, atol=2.0e-6)
 
 
 def _compare_texture_vs_nanovdb(test, tex_sdf, nanovdb_data, query_points, narrow_band, device):
@@ -1610,6 +1662,12 @@ def test_texture_sdf_sign_mode_normal_open_mesh(test, device):
 # Register tests for CUDA devices
 devices = get_cuda_test_devices()
 add_function_test(TestTextureSDF, "test_texture_sdf_construction", test_texture_sdf_construction, devices=devices)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_integer_voxel_sampling",
+    test_texture_sdf_integer_voxel_sampling,
+    devices=devices,
+)
 add_function_test(
     TestTextureSDF, "test_texture_sdf_values_match_nanovdb", test_texture_sdf_values_match_nanovdb, devices=devices
 )

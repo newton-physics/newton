@@ -363,6 +363,7 @@ class SDF:
         texture_format: str = "uint16",
         sign_method: SignMethod = "auto",
         cache_dir: str | os.PathLike[str] | None = None,
+        paired_samples: bool = True,
     ) -> "SDF":
         """Create an SDF from a mesh in local mesh coordinates.
 
@@ -422,6 +423,9 @@ class SDF:
                 build. ``shape_margin`` is applied at sample time and
                 is *not* part of the cache key. Defaults to ``None``
                 (cache disabled).
+            paired_samples: Store each SDF sample with its positive-X
+                neighbor for faster software interpolation. Disable to halve
+                texture memory at the cost of slower hydroelastic sampling.
 
         Returns:
             A validated :class:`SDF` runtime handle.
@@ -505,7 +509,9 @@ class SDF:
         with wp.ScopedDevice(device):
             if loaded_sparse_data is not None:
                 sdf_device = str(wp.get_device())
-                sdf_params, coarse_texture, subgrid_texture = create_sparse_sdf_textures(loaded_sparse_data, sdf_device)
+                sdf_params, coarse_texture, subgrid_texture = create_sparse_sdf_textures(
+                    loaded_sparse_data, sdf_device, paired_samples
+                )
                 sdf_params.scale_baked = bake_scale
                 texture_data = sdf_params
             else:
@@ -536,6 +542,7 @@ class SDF:
                     scale_baked=bake_scale,
                     sign_mode=_sign_mode_map[sign_method_resolved],
                     return_sparse_data=want_sparse,
+                    paired_samples=paired_samples,
                 )
                 if want_sparse:
                     texture_data, coarse_texture, subgrid_texture, sparse_data = result
