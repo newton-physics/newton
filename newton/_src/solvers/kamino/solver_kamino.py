@@ -798,7 +798,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         if self._collision_detector_kamino is not None:
             self._contacts_kamino = self._collision_detector_kamino.contacts
             # Keep Newton's externally allocated contact buffer in sync with Kamino.
-            model.rigid_contact_max = self._contacts_kamino.model_max_contacts_host
+            # The contacts container is `None` if no contacts are possible.
+            model.rigid_contact_max = (
+                self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
+            )
         else:
             # If collision detector is disabled allocate contacts based on the capacity estimate from the Newton CollisionPipeline.
             world_count = self.model.world_count
@@ -1001,15 +1004,17 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._detector = self._collision_detector_kamino
         elif contacts is not None:
             self._detector = None
-            self._kamino.convert_contacts_newton_to_kamino(
-                model=self.model,
-                state=state_in,
-                contacts_in=contacts,
-                contacts_out=self._contacts_kamino,
-                convert_forces=False,
-                friction_mix_mode=self._config.materials.friction_mix_mode,
-                restitution_mix_mode=self._config.materials.restitution_mix_mode,
-            )
+            # The contacts container is `None` when the model admits no possible contacts.
+            if self._contacts_kamino is not None:
+                self._kamino.convert_contacts_newton_to_kamino(
+                    model=self.model,
+                    state=state_in,
+                    contacts_in=contacts,
+                    contacts_out=self._contacts_kamino,
+                    convert_forces=False,
+                    friction_mix_mode=self._config.materials.friction_mix_mode,
+                    restitution_mix_mode=self._config.materials.restitution_mix_mode,
+                )
         else:
             self._detector = None
             # Clear the internal contacts container to avoid using stale contacts from previous steps.
