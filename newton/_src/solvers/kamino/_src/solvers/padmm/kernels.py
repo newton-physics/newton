@@ -59,6 +59,7 @@ __all__ = [
     "_make_project_dual_convergence_accel_kernel",
     "_project_to_feasible_cone",
     "_reset_solver_data",
+    "_scale_warmstart_forces",
     "_update_delassus_proximal_regularization",
     "_update_delassus_proximal_regularization_sparse",
     "_warmstart_contact_constraints",
@@ -79,6 +80,20 @@ __all__ = [
 ###
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+
+###
+# Constants
+###
+
+# Bit flags packed into the per-world control code that the accelerated projection kernel
+# broadcasts from its leader thread to the whole block before the state writeback.
+
+CONTROL_RESTART = wp.constant(wp.int32(1))
+"""Control bit set when the restart criterion rejected the accelerated step."""
+
+CONTROL_CONVERGED = wp.constant(wp.int32(2))
+"""Control bit set when the world met all convergence tolerances."""
 
 
 ###
@@ -161,6 +176,27 @@ def _warmstart_desaxce_correction(
 
     # Store De Saxce correction for this block
     solver_z[ccio_k + 2] = vn + mu * vt_norm
+
+
+@wp.kernel
+def _scale_warmstart_forces(
+    # Inputs:
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    solver_config: wp.array[PADMMConfigStruct],
+    # Outputs:
+    solver_x: wp.array[wp.float32],
+    solver_y: wp.array[wp.float32],
+):
+    """Scale cached constraint forces copied into the primal and slack iterates."""
+    wid, tid = wp.tid()
+    if tid >= problem_dim[wid]:
+        return
+
+    index = problem_vio[wid] + tid
+    scale = solver_config[wid].warmstart_scale
+    solver_x[index] *= scale
+    solver_y[index] *= scale
 
 
 def make_initialize_solver_kernel(use_acceleration: bool = False):
@@ -780,10 +816,13 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         ncts = problem_dim[wid]
         vio = problem_vio[wid]
         status = solver_status[wid]
+        config = solver_config[wid]
 
-        # Already-converged worlds still refresh previous-state buffers so
-        # later status and info collection observe consistent iterates.
-        if status.converged:
+        # Worlds that converged or exhausted their iteration budget are frozen: they still
+        # refresh the previous-state buffers so later status and info collection observe
+        # consistent iterates, but skip the bookkeeping below so that the terminal state is
+        # never overwritten and `solver_state_done` is decremented exactly once per world.
+        if status.converged or status.iterations >= config.max_iterations:
             num_cache_iterations = (ncts + num_threads_per_block - 1) // num_threads_per_block
             for ii in range(num_cache_iterations):
                 local_id = tid + ii * num_threads_per_block
@@ -801,7 +840,6 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         lcgo = problem_lcgo[wid]
         ccgo = problem_ccgo[wid]
         cio = problem_cio[wid]
-        config = solver_config[wid]
         pen = solver_penalty[wid]
         rho = pen.rho
         inv_rho = 1.0 / rho
@@ -935,7 +973,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
             status.r_dx = wp.sqrt(r_dx_l2_sum)
             status.r_dy = wp.sqrt(r_dy_l2_sum)
             status.r_dz = wp.sqrt(r_dz_l2_sum)
-            status.r_a = rho * status.r_dy + (1.0 / rho) * status.r_dz
+            status.r_a = rho * r_dy_l2_sum + (1.0 / rho) * r_dz_l2_sum
 
             if (
                 status.iterations > 1
@@ -948,7 +986,9 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
             if status.converged or status.iterations >= config.max_iterations:
                 solver_state_done[0] -= 1
 
-            if status.r_a < config.restart_tolerance * status.r_a_p:
+            if status.converged:
+                status.restart = 0
+            elif status.r_a < config.restart_tolerance * status.r_a_p:
                 status.restart = 0
                 a_p = solver_state_a_p[wid]
                 a = (1.0 + wp.sqrt(1.0 + 4.0 * a_p * a_p)) / 2.0
@@ -973,7 +1013,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
         control_value = wp.int32(0)
         a_factor_value = wp.float32(0.0)
         if tid == 0:
-            control_value = status.restart + wp.int32(2) * status.converged
+            control_value = CONTROL_RESTART * status.restart + CONTROL_CONVERGED * status.converged
             a_factor_value = solver_state_a_factor[wid]
 
         wp.tile_scatter_masked(control_sync, 0, control_value, tid == 0)
@@ -981,6 +1021,9 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
 
         control = control_sync[0]
         a_factor = a_factor_sync[0]
+
+        restarted = (control & CONTROL_RESTART) != 0
+        converged = (control & CONTROL_CONVERGED) != 0
 
         # Update accelerated auxiliary variables for active worlds, then cache
         # current iterates as the previous state for the next iteration.
@@ -994,11 +1037,14 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                 y_p = solver_state_y_p[vid]
                 z_p = solver_state_z_p[vid]
 
-                if control < wp.int32(2):
-                    if control == wp.int32(0):
+                if not converged:
+                    if not restarted:
                         solver_state_y_hat_out[vid] = y + a_factor * (y - y_p)
                         solver_state_z_hat_out[vid] = z + a_factor * (z - z_p)
                     else:
+                        # Drop the momentum by rewinding the extrapolation to the previous
+                        # iterate. The current iterate is still kept, as in the Fast ADMM
+                        # restart rule of Goldstein et al. cited in the module docstring.
                         solver_state_y_hat_out[vid] = y_p
                         solver_state_z_hat_out[vid] = z_p
 
@@ -1392,7 +1438,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
 
         # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
         r_ncp_natmap, _ = compute_ncp_natural_map_residual(
-            nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
+            njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
         )
 
         # Compute the iterate residuals, or reuse the accelerated solver status
@@ -1573,7 +1619,7 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
 
         # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
         r_ncp_natmap, _ = compute_ncp_natural_map_residual(
-            nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
+            njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, solver_info_v_aug, solver_info_lambdas
         )
 
         # Compute the iterate residuals, or reuse the accelerated solver status

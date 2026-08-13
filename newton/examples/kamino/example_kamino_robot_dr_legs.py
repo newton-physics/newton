@@ -92,7 +92,8 @@ class Example:
         self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
         if self.dynamics_solver == "dvi":
             self.config.use_fk_solver = False
-            self.config.integrator = "moreau"
+            if self.use_kamino_contacts:
+                self.config.integrator = "moreau"
             self.config.constraints.alpha = 0.1
             self.config.constraints.beta = 0.011
             self.config.constraints.gamma = 0.015
@@ -106,7 +107,7 @@ class Example:
             self.config.dvi.max_alternating_iterations = 4
             self.config.dvi.inequality_sweeps_per_iteration = 3
             self.config.dvi.bilateral_solve_interval = 1
-            self.config.dvi.contact_warmstart_method = "key_and_position_with_net_force_backup"
+            self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Set joint armature and viscous damping for better
