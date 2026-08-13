@@ -4886,6 +4886,58 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
 
 class TestImportMjcfActuatorsFrames(unittest.TestCase):
+    def test_multiple_actuator_sections(self):
+        """Import actuators from every top-level actuator section."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="link">
+            <joint name="joint"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <motor name="first" joint="joint"/>
+    </actuator>
+    <actuator>
+        <motor name="second" joint="joint"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(len(model.mujoco.actuator_trntype), 2)
+
+    def test_multiple_equality_sections(self):
+        """Import constraints from every top-level equality section."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="first">
+            <joint name="first_joint"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="second">
+            <joint name="second_joint"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <equality>
+        <joint name="first_equality" joint1="first_joint" joint2="second_joint"/>
+    </equality>
+    <equality>
+        <joint name="second_equality" joint1="second_joint"/>
+    </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
+
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
