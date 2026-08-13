@@ -963,6 +963,14 @@ class TestMuJoCoSliderCrankActuators(unittest.TestCase):
         self.assertGreaterEqual(int(trnid[1]), 0)
         np.testing.assert_allclose(model.mujoco.actuator_cranklength.numpy(), [0.08])
 
+    def test_slidercrank_actuator_scales_crank_length(self):
+        """Scale crank length consistently with the referenced sites."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_SLIDERCRANK_ACTUATOR, ctrl_direct=True, scale=2.0)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.mujoco.actuator_cranklength.numpy(), [0.16])
+
     def test_slidercrank_actuator_matches_native_mujoco(self):
         """Match native MuJoCo slider-crank kinematics."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
@@ -1019,6 +1027,27 @@ class TestMuJoCoSliderCrankActuators(unittest.TestCase):
         zero_length_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranklength="0.08"', 'cranklength="0"')
         with self.assertRaisesRegex(ValueError, "cranklength must be positive"):
             ModelBuilder().add_mjcf(zero_length_mjcf, ctrl_direct=True)
+
+        nan_length_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranklength="0.08"', 'cranklength="nan"')
+        with self.assertRaisesRegex(ValueError, "cranklength must be positive"):
+            ModelBuilder().add_mjcf(nan_length_mjcf, ctrl_direct=True)
+
+    def test_slidercrank_actuator_with_include_sites_false(self):
+        """Preserve both slider-crank sites when ordinary sites are excluded."""
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_SLIDERCRANK_ACTUATOR, ctrl_direct=True)
+        solver = SolverMuJoCo(builder.finalize(), iterations=1, disable_contacts=True, include_sites=False)
+
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        slidercrank_actuators = [
+            index
+            for index in range(solver.mj_model.nu)
+            if solver.mj_model.actuator_trntype[index] == mujoco.mjtTrn.mjTRN_SLIDERCRANK
+        ]
+        self.assertEqual(len(slidercrank_actuators), 1)
+        trnid = solver.mj_model.actuator_trnid[slidercrank_actuators[0]]
+        self.assertGreaterEqual(int(trnid[0]), 0)
+        self.assertGreaterEqual(int(trnid[1]), 0)
 
 
 class TestMuJoCoSiteActuators(unittest.TestCase):

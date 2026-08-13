@@ -3122,6 +3122,7 @@ def parse_mjcf(
             trntype = 0  # Default: joint
             target_name_for_log = ""
             target_idx_alt = 0
+            crank_length = None
             qd_start = -1
             total_dofs = 0
 
@@ -3134,8 +3135,8 @@ def parse_mjcf(
                     raise ValueError(f"MJCF slider-crank actuator references unknown cranksite '{crank_site_name}'.")
                 if slider_site_idx is None:
                     raise ValueError(f"MJCF slider-crank actuator references unknown slidersite '{slider_site_name}'.")
-                crank_length = parse_float(merged_attrib, "cranklength", 0.0)
-                if crank_length <= 0.0:
+                crank_length = parse_float(merged_attrib, "cranklength", 0.0) * scale
+                if not np.isfinite(crank_length) or crank_length <= 0.0:
                     raise ValueError("MJCF slider-crank actuator cranklength must be positive.")
                 target_idx = crank_site_idx
                 target_idx_alt = slider_site_idx
@@ -3292,6 +3293,8 @@ def parse_mjcf(
 
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
+            if crank_length is not None:
+                parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
             # Set implicit type defaults per actuator shortcut type.
             # MuJoCo shortcut elements (position, velocity, etc.) implicitly set
