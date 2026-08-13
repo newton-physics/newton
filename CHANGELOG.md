@@ -103,7 +103,6 @@
 - Make deterministic collision pipelines cover hydroelastic contact generation and reduction, including unique reduced-contact sort keys and overflow-safe fixed-point pressure accumulation. (#3661)
 - Fix `SolverMuJoCo` retaining an invalid external-contact cache when its first step is captured in a CUDA graph. (#3768; fixes #3767)
 - Preserve box-box face contact manifolds under sub-microradian solver drift. (#3776)
-- Keep Newton joint-limit stiffness and damping defaults when importing MJCF instead of deriving generic gains from MuJoCo's `solreflimit`; preserve native values through MuJoCo-specific attributes. (#3762)
 - Fix `SolverMuJoCo` overflowing MuJoCo's signed 32-bit collision masks when graph coloring requires the highest supported color; all 32 mask bits are now used before falling back to default collision masks for additional colors.
 - Convert `newton:mimicCoef0` from degrees to radians when the mimic follower joint is angular. Assets authored against the old behavior need the value rescaled to degrees.
 - Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
