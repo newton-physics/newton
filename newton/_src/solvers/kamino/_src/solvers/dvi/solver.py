@@ -24,6 +24,7 @@ from ..common import (
     warmstart_limit_constraints,
 )
 from .kernels import (
+    _FUSED_INEQUALITY_BLOCK,
     _build_bilateral_rhs,
     _compute_dvi_desaxce_corrections,
     _compute_dvi_solution_vectors,
@@ -33,6 +34,7 @@ from .kernels import (
     _initialize_dvi_status,
     _reset_dvi_solver_data,
     _reset_dvi_status,
+    _scale_dvi_tangential_warmstart,
     _scatter_bilateral_solution,
     _set_dvi_bilateral_active_dim,
     _set_dvi_direct_status_iterations,
@@ -619,7 +621,8 @@ class DVISolver:
             device=self.device,
         )
         threads_per_world = 64 if self.device.is_cuda else 1
-        for block_iteration in range(self._max_alternating_iterations):
+        # Inequality-only solves need no host work between PGS blocks.
+        for block_iteration in (_FUSED_INEQUALITY_BLOCK,):
             wp.launch(
                 kernel=_solve_dvi_inequalities_colored_pgs,
                 dim=self._size.num_worlds * threads_per_world,
@@ -892,6 +895,20 @@ class DVISolver:
                     self._data.solution.lambdas,
                     self._data.solution.lambdas,
                     self._data.solution.v_plus,
+                ],
+                device=self.device,
+            )
+            wp.launch(
+                kernel=_scale_dvi_tangential_warmstart,
+                dim=contacts.model_max_contacts_host,
+                inputs=[
+                    model.info.total_cts_offset,
+                    data.info.contact_cts_group_offset,
+                    contacts.model_active_contacts,
+                    contacts.wid,
+                    contacts.cid,
+                    self._data.config,
+                    self._data.solution.lambdas,
                 ],
                 device=self.device,
             )

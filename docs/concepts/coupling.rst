@@ -379,6 +379,11 @@ The coupled-solver framework is useful today, but it is still experimental:
   custom hook is available.
 - USD ownership, automatic coupled-solver construction, and high-level tuning
   guidance are not part of the experimental public API yet.
+- Full-surface (edge/face) rigid-soft contacts are consumed by
+  :class:`~newton.solvers.SolverVBD` only. The per-entry contact filter drops
+  them for other sub-solvers while preserving particle contacts, and keeps them
+  for VBD only when the entry owns every referenced corner. A record spanning
+  two entries is dropped by both. Proxy particles do not support them at all.
 
 Treat coupled solvers as an advanced feature for controlled experiments and
 solver integration work. Prefer focused regression tests and explicit scene

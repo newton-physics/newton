@@ -962,7 +962,7 @@ def _compute_dual_problem_metrics(
 
     # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
     r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
-        nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
+        njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
     )
 
     # Store the computed metrics in the output arrays
@@ -1059,7 +1059,7 @@ def _compute_dual_problem_metrics_sparse(
 
     # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
     r_ncp_natmap, r_ncp_natmap_argmax = compute_ncp_natural_map_residual(
-        nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
+        njc, nl, nc, vio, lcgo, ccgo, cio, problem_mu, buffer_v, solution_lambdas
     )
 
     # Store the computed metrics in the output arrays

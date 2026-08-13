@@ -80,7 +80,7 @@ def compute_vertex_normals(
 
     Args:
         points: Vertex positions (wp.vec3 array or Nx3 NumPy array).
-        indices: Triangle indices (flattened or Nx3). Warp arrays are expected to be flattened.
+        indices: Triangle indices (flattened or Nx3).
         normals: Optional output array to reuse (Warp or NumPy to match ``points``).
         device: Warp device to run on. NumPy inputs default to CPU.
         normalize: Whether to normalize the accumulated normals.
@@ -96,11 +96,19 @@ def compute_vertex_normals(
         if isinstance(indices, np.ndarray):
             indices_np = np.asarray(indices, dtype=np.int32)
             if indices_np.ndim == 2:
+                if indices_np.shape[1] != 3:
+                    raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
                 indices_np = indices_np.reshape(-1)
             elif indices_np.ndim != 1:
                 raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
             indices_wp = wp.array(indices_np, dtype=wp.int32, device=device_obj)
         indices_wp = cast(wp.array, indices_wp)
+        if indices_wp.ndim == 2:
+            if indices_wp.shape[1] != 3:
+                raise ValueError("indices must be flat or (N, 3) for Warp inputs.")
+            indices_wp = indices_wp.flatten()
+        elif indices_wp.ndim != 1:
+            raise ValueError("indices must be flat or (N, 3) for Warp inputs.")
         if normals is None:
             normals_wp = wp.zeros_like(points)
         else:
@@ -123,6 +131,8 @@ def compute_vertex_normals(
     points_np = np.asarray(points, dtype=np.float32).reshape(-1, 3)
     indices_np = np.asarray(indices, dtype=np.int32)
     if indices_np.ndim == 2:
+        if indices_np.shape[1] != 3:
+            raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
         indices_np = indices_np.reshape(-1)
     elif indices_np.ndim != 1:
         raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")

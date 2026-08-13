@@ -429,6 +429,12 @@ class SolverKamino(SolverBase, CouplingInterface):
                     "The DVI solver currently requires `dynamics.preconditioning=False` so convergence checks and "
                     "contact cone updates stay in physical constraint units."
                 )
+            if (
+                self.dynamics_solver == "padmm"
+                and not self.sparse_dynamics
+                and self.padmm.penalty_update_method != "fixed"
+            ):
+                raise ValueError("Adaptive PADMM penalty updates require `sparse_dynamics=True`.")
 
             # Conversion to JointCorrectionMode will raise an error if the input string is invalid.
             JointCorrectionMode.from_string(self.rotation_correction)
@@ -728,6 +734,9 @@ class SolverKamino(SolverBase, CouplingInterface):
         # found on the model, so `self._config` will always be fully initialized after this step.
         if config is None:
             config = self.Config.from_model(model)
+        else:
+            # Validate the user-provided config. Protects against modifying the config after initialization.
+            config.validate()
         self._config = config
 
         # Create a Kamino model from the Newton model
@@ -743,9 +752,18 @@ class SolverKamino(SolverBase, CouplingInterface):
             device=model.device,
         )
 
+        built_massless_np = (model.body_inv_mass.numpy() == 0.0) | np.all(
+            model.body_inv_inertia.numpy() == 0.0, axis=(1, 2)
+        )
+        self._built_massless = wp.array(
+            built_massless_np.astype(np.int32),
+            dtype=wp.int32,
+            device=model.device,
+        )
+
         # Scratch array for notify validation
         self._notify_violations = wp.empty(
-            len(self._kamino.JointUpdateViolation),
+            len(self._kamino.StructuralUpdateViolation),
             dtype=wp.int32,
             device=model.device,
         )
@@ -777,6 +795,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._contacts_kamino = None
         if self._collision_detector_kamino is not None:
             self._contacts_kamino = self._collision_detector_kamino.contacts
+            # Keep Newton's externally allocated contact buffer in sync with Kamino.
+            model.rigid_contact_max = self._contacts_kamino.model_max_contacts_host
         else:
             # If collision detector is disabled allocate contacts based on the capacity estimate from the Newton CollisionPipeline.
             world_count = self.model.world_count
@@ -1218,6 +1238,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - triangles, edges, tetrahedra
         - muscles
         - distance or cable joints
+        - bodies with singular inertial properties that are attached to movable bodies
 
         Args:
             model: The Newton model to validate.
@@ -1258,12 +1279,92 @@ class SolverKamino(SolverBase, CouplingInterface):
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
 
+        singular_bodies = SolverKamino._find_unsupported_singular_inertia_bodies(model)
+        if len(singular_bodies) > 0:
+            unsupported_features.append(
+                "bodies with singular inertial properties that are attached to movable bodies:\n"
+                + "\n".join(f"      - {desc}" for desc in singular_bodies)
+                + "\n    Import with `collapse_fixed_joints=True` to merge these bodies into their neighbors,"
+                "\n    or give them a non-zero mass and inertia."
+            )
+
         # If any unsupported features were found, raise an error
         if len(unsupported_features) > 0:
             error_msg = "SolverKamino cannot simulate this model due to unsupported features:"
             for feature in unsupported_features:
                 error_msg += "\n  - " + feature
             raise ValueError(error_msg)
+
+    @staticmethod
+    def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
+        """Finds bodies whose singular inertial properties make them unsafe to simulate.
+
+        A body with singular inverse mass or inertia cannot respond to all applied wrenches in the
+        dual formulation. Such a body is only safe in two situations:
+
+        - It is welded to the world, so a permanently frozen velocity is the correct answer.
+        - It only has a free joint to the world, and is not attached to any other bodies.
+          It then stays at its initial velocity.
+
+        Otherwise its missing response propagates through its joints and prevents physically
+        meaningful motion of attached bodies.
+
+        Args:
+            model: The Newton model to validate.
+
+        Returns:
+            A human-readable description of each offending body, empty if the model is supported.
+        """
+        if model.body_count == 0:
+            return []
+
+        inv_mass = model.body_inv_mass.numpy()
+        inv_inertia = model.body_inv_inertia.numpy()
+        singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
+        singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
+        if not singular:
+            return []
+
+        # `-1` denotes the world.
+        welded_neighbors: dict[int, list[int]] = {}
+        coupling_joints = [0] * model.body_count
+        if model.joint_count > 0:
+            joint_type = model.joint_type.numpy()
+            joint_parent = model.joint_parent.numpy()
+            joint_child = model.joint_child.numpy()
+            for j in range(model.joint_count):
+                joint = int(joint_type[j])
+                parent, child = int(joint_parent[j]), int(joint_child[j])
+                if joint == JointType.FIXED:
+                    welded_neighbors.setdefault(parent, []).append(child)
+                    welded_neighbors.setdefault(child, []).append(parent)
+                elif joint == JointType.FREE and parent == -1:
+                    # Imposes no constraint, so it cannot transmit a frozen velocity.
+                    continue
+                for endpoint in (parent, child):
+                    if endpoint >= 0:
+                        coupling_joints[endpoint] += 1
+
+        welded_to_world = {-1}
+        stack = [-1]
+        while stack:
+            for neighbor in welded_neighbors.get(stack.pop(), ()):
+                if neighbor not in welded_to_world:
+                    welded_to_world.add(neighbor)
+                    stack.append(neighbor)
+
+        descriptions = []
+        for b in singular:
+            if b in welded_to_world or coupling_joints[b] == 0:
+                continue
+            reasons = []
+            if inv_mass[b] == 0.0:
+                reasons.append("zero inverse mass")
+            if singular_inertia[b]:
+                reasons.append("singular inverse inertia")
+            label = model.body_label[b] if model.body_label else f"body {b}"
+            descriptions.append(f"'{label}' (index {b}): {' and '.join(reasons)}")
+        return descriptions
 
     def _validate_structural_invariants(self, flags: ModelFlags | int) -> None:
         """Raise if a runtime edit changes a structural decision frozen at build.
@@ -1278,25 +1379,29 @@ class SolverKamino(SolverBase, CouplingInterface):
         check_dof = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
         check_actuation = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES))
         check_axes = check_dof
-        if not check_dof and not check_actuation and not check_axes:
+        check_inertial = bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES)
+        if not check_dof and not check_actuation and not check_axes and not check_inertial:
             return
 
-        sentinel = self._kamino.validate_model_joint_updates(
+        sentinel = self._kamino.validate_model_structural_updates(
             self.model,
             self._model_kamino.joints,
             self._built_limit_finite,
+            self._built_massless,
             self._notify_violations,
             check_dof=check_dof,
             check_actuation=check_actuation,
             check_axes=check_axes,
+            check_inertial=check_inertial,
         )
         violations = self._notify_violations.numpy()
-        dynamic_joint = violations[self._kamino.JointUpdateViolation.DYNAMIC_CTS]
-        limit_dof = violations[self._kamino.JointUpdateViolation.LIMIT_FINITE]
-        actuation_joint = violations[self._kamino.JointUpdateViolation.ACTUATION_PARTITION]
-        invalid_joint = violations[self._kamino.JointUpdateViolation.INVALID_TARGET_MODE]
-        axis_joint = violations[self._kamino.JointUpdateViolation.NONORTHONORMAL_AXES]
-        gimbal_handedness_joint = violations[self._kamino.JointUpdateViolation.GIMBAL_HANDEDNESS]
+        dynamic_joint = violations[self._kamino.StructuralUpdateViolation.DYNAMIC_CTS]
+        limit_dof = violations[self._kamino.StructuralUpdateViolation.LIMIT_FINITE]
+        actuation_joint = violations[self._kamino.StructuralUpdateViolation.ACTUATION_PARTITION]
+        invalid_joint = violations[self._kamino.StructuralUpdateViolation.INVALID_TARGET_MODE]
+        axis_joint = violations[self._kamino.StructuralUpdateViolation.NONORTHONORMAL_AXES]
+        gimbal_handedness_joint = violations[self._kamino.StructuralUpdateViolation.GIMBAL_HANDEDNESS]
+        massless_body = violations[self._kamino.StructuralUpdateViolation.MASSLESS]
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
@@ -1339,6 +1444,13 @@ class SolverKamino(SolverBase, CouplingInterface):
                 f"Invalid joint configuration for SolverKamino:\n"
                 f"  - joint {joint} ({self.model.joint_label[joint]!r}): "
                 "gimbal axes must preserve the solver's original handedness"
+            )
+
+        if massless_body != sentinel:
+            body = int(massless_body)
+            label = self.model.body_label[body] if self.model.body_label else f"body {body}"
+            raise RuntimeError(
+                f"Making body {body} ({label!r}) massless is not supported; recreate SolverKamino to apply the change."
             )
 
     def _update_actuation_types(self) -> None:

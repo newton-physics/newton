@@ -104,7 +104,7 @@ class CollisionDetectorConfig(ConfigBase):
     initialization.\n
     When ``max_contacts_per_world`` is None, the geometry-based estimate is
     capped at this value; otherwise this field is ignored.\n
-    Defaults to ``DEFAULT_MODEL_MAX_CONTACTS`` (``1000``) if unspecified.
+    Defaults to ``None``, leaving the geometry-based estimate uncapped.
     """
 
     max_contacts_per_world: int | None = None
@@ -181,7 +181,6 @@ class CollisionDetectorConfig(ConfigBase):
         from ._src.geometry.contacts import (  # noqa: PLC0415
             DEFAULT_GEOM_PAIR_CONTACT_GAP,
             DEFAULT_GEOM_PAIR_MAX_CONTACTS,
-            DEFAULT_MODEL_MAX_CONTACTS,
             DEFAULT_TRIANGLE_MAX_PAIRS,
         )
 
@@ -209,8 +208,6 @@ class CollisionDetectorConfig(ConfigBase):
             raise ValueError(f"Invalid max_triangle_pairs: {self.max_triangle_pairs}. Must be non-negative.")
 
         # Check if optional arguments are specified and override with defaults if not
-        if self.max_contacts is None:
-            self.max_contacts = DEFAULT_MODEL_MAX_CONTACTS
         if self.max_contacts_per_pair is None:
             self.max_contacts_per_pair = DEFAULT_GEOM_PAIR_MAX_CONTACTS
         if self.max_triangle_pairs is None:
@@ -587,6 +584,16 @@ class PADMMSolverConfig:
     Defaults to `containers` to warmstart from the solver data containers.
     """
 
+    warmstart_scale: float = 0.9
+    """
+    Scale applied to cached constraint forces during warm-starting.\n
+    Must be in the range [0, 1]. Defaults to `0.9`.
+
+    PADMM converges to a minimum-norm deviation from its initial guess. Scaling
+    the warm-start forces makes null-space forces converge to the overall
+    minimum-norm solution.
+    """
+
     contact_warmstart_method: Literal[
         "key_and_position",
         "geom_pair_net_force",
@@ -763,6 +770,8 @@ class PADMMSolverConfig:
             raise ValueError(
                 f"Invalid linear solver tolerance ratio: {self.linear_solver_tolerance_ratio}. Must be non-negative."
             )
+        if not 0.0 <= self.warmstart_scale <= 1.0:
+            raise ValueError(f"Invalid warmstart scale: {self.warmstart_scale}. Must be in the range [0, 1].")
 
         # Ensure that the enum-valued parameters are valid options
         # Conversion to enum-type configs will raise an error
@@ -801,19 +810,19 @@ class DVISolverConfig:
     Must be in the range `(0, 2]`. Defaults to `1.0`.
     """
 
-    max_alternating_iterations: int = 20
+    max_alternating_iterations: int = 24
     """
     Maximum number of outer DVI iterations alternating direct bilateral
     solves with projected inequality solves. Must be greater than zero.
     This schedule is also used when no bilateral constraints are present;
-    in that case, the bilateral solve is skipped. Defaults to `20`.
+    in that case, the bilateral solve is skipped. Defaults to `24`.
     """
 
-    inequality_sweeps_per_iteration: int = 1
+    inequality_sweeps_per_iteration: int = 2
     """
     Number of projected Gauss-Seidel sweeps used for unilateral inequalities
     during each alternating DVI iteration. Contacts use graph-colored sweeps
-    on CUDA. Must be greater than zero. Defaults to `1`.
+    on CUDA. Must be greater than zero. Defaults to `2`.
     """
 
     bilateral_solve_interval: int = 1
@@ -821,6 +830,13 @@ class DVISolverConfig:
     Number of alternating DVI iterations between repeated direct bilateral solves.
     A value of `1` re-solves after every projected inequality block, preserving
     the standard direct-block schedule. Must be greater than zero. Defaults to `1`.
+    """
+
+    tangential_warmstart_scale: float = 0.97
+    """
+    Scale applied to cached tangential contact reactions before a DVI solve.
+    Normal reactions remain fully warm-started. Must be in the range `[0, 1]`.
+    Defaults to `0.97`.
     """
 
     bilateral_solver_type: Literal["LLTB", "LLTBRCM"] = "LLTB"
@@ -847,11 +863,12 @@ class DVISolverConfig:
         "key_and_position",
         "geom_pair_net_force",
         "key_and_position_with_net_force_backup",
-    ] = "key_and_position_with_net_force_backup"
+        "key_and_position_with_tangential_net_force",
+    ] = "key_and_position_with_tangential_net_force"
     """
     The contact warmstart method used when `warmstart_mode` is `containers`.
     See :class:`WarmstarterContacts.Method` for available options.
-    Defaults to `key_and_position_with_net_force_backup`.
+    Defaults to `key_and_position_with_tangential_net_force`.
     """
 
     @override
@@ -907,6 +924,10 @@ class DVISolverConfig:
             raise ValueError(
                 f"Invalid bilateral solve interval: {self.bilateral_solve_interval}. Must be a positive integer."
             )
+        if self.tangential_warmstart_scale < 0.0 or self.tangential_warmstart_scale > 1.0:
+            raise ValueError(
+                f"Invalid tangential warmstart scale: {self.tangential_warmstart_scale}. Must be in the range [0, 1]."
+            )
         if self.bilateral_solver_type not in {"LLTB", "LLTBRCM"}:
             raise ValueError(
                 f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM']."
@@ -917,6 +938,7 @@ class DVISolverConfig:
             "key_and_position",
             "geom_pair_net_force",
             "key_and_position_with_net_force_backup",
+            "key_and_position_with_tangential_net_force",
         }
         if self.contact_warmstart_method not in implemented_contact_warmstart_methods:
             raise ValueError(

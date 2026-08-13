@@ -35,6 +35,7 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
+        robot_builder.request_contact_attributes("force")  # For contact visualization
 
         # Load the Anymal D USD and add it to the builder
         asset_path = newton.utils.download_asset("anybotics_anymal_d")
@@ -62,6 +63,7 @@ class Example:
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
         self.config.use_collision_detector = self.use_kamino_contacts
+        self.config.padmm.warmstart_mode = "none"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -84,7 +86,9 @@ class Example:
         # Warm-start the simulation
         if not self.use_kamino_contacts:
             self.collision_pipeline.collide(self.state_0, self.contacts)
-        self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+        else:
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
         self.solver.reset(self.state_0)
 
         # Reset the simulation state to a valid initial configuration above the ground

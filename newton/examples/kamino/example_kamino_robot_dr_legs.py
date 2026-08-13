@@ -42,6 +42,7 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = dvi_contact_margin
         robot_builder.default_shape_cfg.gap = 1e-2
+        robot_builder.request_contact_attributes("force")  # For contact visualization
 
         # Load the DR Legs USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
@@ -105,7 +106,7 @@ class Example:
             self.config.dvi.max_alternating_iterations = 4
             self.config.dvi.inequality_sweeps_per_iteration = 3
             self.config.dvi.bilateral_solve_interval = 1
-            self.config.dvi.contact_warmstart_method = "key_and_position_with_net_force_backup"
+            self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Set joint armature and viscous damping for better
