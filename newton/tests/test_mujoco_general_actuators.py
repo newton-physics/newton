@@ -979,6 +979,8 @@ class TestMuJoCoJointInParentActuators(unittest.TestCase):
 
     def test_jointinparent_actuator_does_not_apply_inheritrange(self):
         """Do not inherit a control range for a joint-in-parent transmission."""
+        self.assertIn('<joint name="ball" type="ball"/>', MJCF_JOINT_IN_PARENT_ACTUATOR)
+        self.assertIn('<general name="parent_motor"', MJCF_JOINT_IN_PARENT_ACTUATOR)
         mjcf = MJCF_JOINT_IN_PARENT_ACTUATOR.replace(
             '<joint name="ball" type="ball"/>',
             '<joint name="ball" type="ball" limited="true" range="0 90"/>',
@@ -986,6 +988,9 @@ class TestMuJoCoJointInParentActuators(unittest.TestCase):
             '<general name="parent_motor"',
             '<position name="parent_motor" inheritrange="1"',
         )
+        self.assertIn('limited="true" range="0 90"', mjcf)
+        self.assertIn('inheritrange="1"', mjcf)
+        self.assertIn('jointinparent="ball"', mjcf)
         builder = ModelBuilder()
         builder.add_mjcf(mjcf, ctrl_direct=True)
         model = builder.finalize()
