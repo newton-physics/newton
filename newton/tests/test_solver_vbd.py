@@ -3308,6 +3308,69 @@ def _body_particle_attachment_deformable_under_load(test, device, deformable_kin
     test.assertLess(np.mean(particle_q[1:, 2]), np.mean(initial_q[1:, 2]))
 
 
+def _body_particle_attachment_to_cable_capsule(test, device):
+    """Transfer attachment forces between a particle and a VBD cable capsule.
+
+    The rod is free-floating under zero gravity, so the only force in the scene is the
+    attachment. Both endpoints must therefore move toward each other, which verifies that
+    a cable capsule is a usable rigid endpoint and that the reaction reaches the rod.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.density = 100.0
+
+    points = newton.utils.create_straight_cable_points(
+        start=wp.vec3(0.0, 0.0, 0.0),
+        direction=wp.vec3(1.0, 0.0, 0.0),
+        length=0.4,
+        num_segments=4,
+    )
+    quaternions = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=0.0)
+    bodies, _joints = builder.add_rod(
+        positions=points,
+        quaternions=quaternions,
+        radius=0.01,
+        cfg=cfg,
+        stretch_stiffness=1.0e6,
+        stretch_damping=1.0e-4,
+        bend_stiffness=1.0e-4,
+        bend_damping=1.0e-4,
+        label="cable",
+        body_frame_origin="com",
+    )
+    capsule = int(bodies[-1])
+    # Comparable to one capsule's mass so both endpoints move measurably.
+    particle = builder.add_particle(pos=wp.vec3(0.4, 0.0, 0.1), vel=wp.vec3(), mass=0.005)
+    builder.add_attachment_body_particle(capsule, particle, stiffness=2.0e2, damping=1.0)
+    builder.color(balance_colors=False)
+    model = builder.finalize(device=device)
+
+    state_in = model.state()
+    state_out = model.state()
+    control = model.control()
+    initial_particle_pos = state_in.particle_q.numpy()[particle].copy()
+    initial_anchor_pos = _transform_point_np(state_in.body_q.numpy()[capsule], np.zeros(3))
+    initial_gap = float(np.linalg.norm(initial_particle_pos - initial_anchor_pos))
+
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+    dt = 2.0e-3
+    for _ in range(40):
+        state_in.clear_forces()
+        solver.step(state_in, state_out, control, None, dt)
+        state_in, state_out = state_out, state_in
+
+    particle_q = state_in.particle_q.numpy()
+    body_q = state_in.body_q.numpy()
+    anchor_pos = _transform_point_np(body_q[capsule], np.zeros(3))
+
+    test.assertTrue(np.isfinite(particle_q).all())
+    test.assertTrue(np.isfinite(body_q).all())
+    test.assertLess(float(np.linalg.norm(particle_q[particle] - anchor_pos)), 0.05 * initial_gap)
+    # Both endpoints have to move: the reaction reaches the rod, not only the particle.
+    test.assertGreater(float(np.linalg.norm(anchor_pos - initial_anchor_pos)), 1.0e-3)
+    test.assertGreater(float(np.linalg.norm(particle_q[particle] - initial_particle_pos)), 1.0e-3)
+
+
 class TestSolverVBD(unittest.TestCase):
     pass
 
@@ -3361,6 +3424,12 @@ add_function_test(
     _body_particle_attachment_deformable_under_load,
     devices=devices,
     deformable_kind="solid",
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_attachment_to_cable_capsule",
+    _body_particle_attachment_to_cable_capsule,
+    devices=devices,
 )
 add_function_test(
     TestSolverVBD,
