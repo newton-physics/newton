@@ -414,7 +414,10 @@ class TestModelConversions(unittest.TestCase):
             "B_r_Bj",  # TODO: Investigate if the difference is expected or not
             "q_j_0",  # TODO: Investigate if the difference is expected or not
         ]
-        rtol = {"inv_i_I_i": 1e-5}
+        # Inverting a float32 inertia tensor amplifies rounding, and the two paths reach it
+        # by different arithmetic, so the result is not bit-identical across platforms. On
+        # macOS arm64 the worst element lands at 1.1e-5 relative.
+        rtol = {"inv_i_I_i": 1e-4}
         atol = {"inv_i_I_i": 1e-6}
         test_util_checks.assert_model_equal(
             self,
