@@ -441,6 +441,9 @@ def parse_mjcf(
     inertia_group_range = tuple(int(value) for value in compiler_attribs.get("inertiagrouprange", "0 5").split())
     if len(inertia_group_range) != 2:
         raise ValueError("MJCF compiler inertiagrouprange must contain exactly 2 integers.")
+    # MuJoCo treats a non-positive settotalmass as "no rescale", so the disabled
+    # state and an absent attribute collapse to the same sentinel here.
+    set_total_mass = float(compiler_attribs.get("settotalmass", "-1"))
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -2642,6 +2645,7 @@ def parse_mjcf(
     visual_shapes = []
     collider_shapes = []
     start_shape_count = len(builder.shape_type)
+    start_body_count = len(builder.body_mass)
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
     # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
@@ -3443,6 +3447,31 @@ def parse_mjcf(
                 parent_body=-1,
                 articulation_label=label,
             )
+
+    # MJCF `<compiler settotalmass>` rescales the compiled model so its body masses
+    # sum to the requested value, with inertia taking the same linear factor.
+    # Only the bodies this import created participate: the attribute describes the
+    # imported model, not whatever the destination builder already held. Applied
+    # before any fixed-joint collapse, while those bodies still occupy a contiguous
+    # index range — a uniform scale commutes with the collapse's additive merge, so
+    # the ordering is a matter of index stability rather than of result.
+    if set_total_mass > 0.0:
+        imported_bodies = range(start_body_count, len(builder.body_mass))
+        current_total = sum(builder.body_mass[i] for i in imported_bodies)
+        # A massless import has no well-defined factor. MuJoCo leaves such a model
+        # untouched rather than failing; a *moving* body with zero mass never gets
+        # this far, being rejected earlier against mjMINVAL for unrelated reasons.
+        if current_total > 0.0:
+            mass_scale = set_total_mass / current_total
+            inv_scale = 1.0 / mass_scale
+            for i in imported_bodies:
+                builder.body_mass[i] *= mass_scale
+                builder.body_inertia[i] = builder.body_inertia[i] * mass_scale
+                # Scale the inverses rather than recomputing them: 1/(m*k) is
+                # exactly inv_mass/k, and this leaves the zero placeholders that
+                # mark static bodies and degenerate inertias undisturbed.
+                builder.body_inv_mass[i] *= inv_scale
+                builder.body_inv_inertia[i] = builder.body_inv_inertia[i] * inv_scale
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
