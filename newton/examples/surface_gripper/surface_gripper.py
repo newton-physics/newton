@@ -726,6 +726,8 @@ def _seal_quality_kernel(
     else:
         body_b = pad_preparing_bs[pad][0]  # preparing: the crate being approached
         shape_b = pad_preparing_bs[pad][1]
+    if shape_b < 0:
+        return  # shape_b indexes shape_mesh_id and shape_transform below; pad_rms stays -1
     gripper_id = pad_gripper[pad]
     seal_world = body_q[gripper_body_id[gripper_id]] * gripper_xform[gripper_id] * pad_xform[pad]
     mesh_b = shape_mesh_id[shape_b]
