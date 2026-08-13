@@ -2884,7 +2884,8 @@ def parse_mjcf(
             tendon_section: XML element containing tendon definitions.
         """
         for fixed in tendon_section.findall("fixed"):
-            tendon_name = fixed.attrib.get("name", "")
+            merged_attrib = resolve_element_attrib(fixed, "tendon")
+            tendon_name = merged_attrib.get("name", "")
 
             # Parse joint elements within this fixed tendon
             joint_entries = []
@@ -2915,7 +2916,7 @@ def parse_mjcf(
                 continue
 
             # Parse tendon-level attributes using the standard custom attribute parsing
-            tendon_attrs = parse_custom_attributes(fixed.attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
+            tendon_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
 
             # Determine wrap array start index
             tendon_joint_attr = builder.custom_attributes.get("mujoco:tendon_joint")

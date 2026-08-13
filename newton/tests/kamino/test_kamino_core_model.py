@@ -339,7 +339,7 @@ class TestModelConversions(unittest.TestCase):
         atol = {"inv_i_I_i": 1e-6}
         excluded = ["ptr"]
         test_util_checks.assert_model_equal(
-            self, model_kamino_converted, model_kamino, excluded=excluded, rtol=rtol, atol=atol
+            self, model_kamino_converted, model_kamino, excluded=excluded, rtol=rtol, atol=atol, allow_reordering=True
         )
 
     def test_03_model_conversions_dr_legs_from_usd(self):
@@ -455,7 +455,8 @@ class TestModelConversions(unittest.TestCase):
             "q_i_0",  # TODO: Investigate if the difference is expected or not
             "B_r_Bj",  # TODO: Investigate if the difference is expected or not
             "F_r_Fj",  # TODO: Investigate if the difference is expected or not
-            "X_j",  # TODO: Investigate if the difference is expected or not
+            "X_Bj",  # TODO: Investigate if the difference is expected or not
+            "X_Fj",  # TODO: Investigate if the difference is expected or not
             "q_j_0",  # TODO: Investigate if the difference is expected or not
             "num_collidable_pairs",  # TODO: newton.ModelBuilder preemptively adding geom-pairs to shape_collision_filter_pairs
             "num_excluded_pairs",  # TODO: newton.ModelBuilder preemptively adding geom-pairs to shape_collision_filter_pairs

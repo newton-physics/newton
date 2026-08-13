@@ -181,6 +181,9 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
         r_vi_natmap_i = 0.0
+        for jid in range(num_joint_cts[mat_id]):
+            r_vi_natmap_i = max(r_vi_natmap_i, np.abs(v_aug_i[jid]))
+
         for lid in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + lid
             v_l = v_aug_i[lcio]
