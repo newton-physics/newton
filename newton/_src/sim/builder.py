@@ -10625,13 +10625,25 @@ class ModelBuilder:
 
         def _topology_array(name: str, values: list, expected_shape: tuple[int, ...]) -> np.ndarray:
             try:
+                source = np.asarray(values)
+                if np.iscomplexobj(source):
+                    raise ValueError
                 array = np.asarray(values, dtype=np.int64)
+                if not np.array_equal(source, array):
+                    raise ValueError
             except (OverflowError, TypeError, ValueError) as exc:
-                raise ValueError(f"Invalid {name}: expected integer indices with shape {expected_shape}.") from exc
+                raise ValueError(
+                    f"Invalid {name}: expected integer indices representable as int32 with shape {expected_shape}."
+                ) from exc
             if array.size == 0 and expected_shape[0] == 0:
                 return array.reshape(expected_shape)
             if array.shape != expected_shape:
                 raise ValueError(f"Invalid {name} shape: expected {expected_shape}, got {array.shape}.")
+            int32_info = np.iinfo(np.int32)
+            if array.size > 0 and (int(array.min()) < int32_info.min or int(array.max()) > int32_info.max):
+                raise ValueError(
+                    f"Invalid {name}: expected integer indices representable as int32 with shape {expected_shape}."
+                )
             return array
 
         def _validate_particle_topology(name: str, indices: np.ndarray) -> None:

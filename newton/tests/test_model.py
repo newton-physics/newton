@@ -221,6 +221,22 @@ class TestModelMesh(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     newton.Mesh(vertices, indices)
 
+    def test_mesh_rejects_lossy_triangle_indices(self):
+        """Reject triangle indices that cannot be represented losslessly."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+        for indices in ([0, 1, 2.9], np.array([0, 1, 4294967298], dtype=np.int64)):
+            with self.subTest(indices=indices):
+                with self.assertRaisesRegex(ValueError, "integer indices"):
+                    newton.Mesh(vertices, indices, compute_inertia=False)
+
     def test_mesh_accepts_empty_triangle_indices(self):
         """Accept an empty mesh without evaluating index bounds."""
         mesh = newton.Mesh(np.empty((0, 3), dtype=np.float32), [], compute_inertia=False)
@@ -1876,6 +1892,19 @@ class TestModelMesh(unittest.TestCase):
         for name, builder in cases:
             with self.subTest(topology=name):
                 with self.assertRaisesRegex(ValueError, rf"{name}.*particle count"):
+                    builder.finalize(device="cpu")
+
+    def test_validate_structure_rejects_lossy_particle_topology(self):
+        """Reject particle references that cannot be represented losslessly."""
+        for index in (2.9, 4294967298):
+            with self.subTest(index=index):
+                builder = ModelBuilder()
+                for i in range(3):
+                    builder.add_particle(wp.vec3(float(i == 1), float(i == 2), 0.0), wp.vec3(), mass=1.0)
+                builder.add_triangle(0, 1, 2)
+                builder.tri_indices[0] = (0, 1, index)
+
+                with self.assertRaisesRegex(ValueError, "tri_indices.*integer indices"):
                     builder.finalize(device="cpu")
 
     def test_validate_structure_accepts_edge_boundary_sentinels(self):

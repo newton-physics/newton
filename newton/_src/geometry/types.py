@@ -207,7 +207,7 @@ class Mesh:
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
 
         self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
-        self._indices = np.array(indices, dtype=np.int32).flatten()
+        self._indices = self._normalize_indices(indices)
         self._validate_indices(self._vertices, self._indices)
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
@@ -245,6 +245,24 @@ class Mesh:
             self.com = wp.vec3()
 
     @staticmethod
+    def _normalize_indices(indices: Sequence[int] | np.ndarray) -> np.ndarray:
+        """Convert triangle connectivity to int32 without changing values."""
+        try:
+            source = np.asarray(indices)
+            if np.iscomplexobj(source):
+                raise ValueError
+            normalized = np.asarray(indices, dtype=np.int64)
+            if not np.array_equal(source, normalized):
+                raise ValueError
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError("indices must contain integer indices representable as int32.") from exc
+
+        int32_info = np.iinfo(np.int32)
+        if normalized.size > 0 and (int(normalized.min()) < int32_info.min or int(normalized.max()) > int32_info.max):
+            raise ValueError("indices must contain integer indices representable as int32.")
+        return normalized.astype(np.int32).flatten()
+
+    @staticmethod
     def _validate_indices(vertices: np.ndarray, indices: np.ndarray) -> None:
         """Validate flattened triangle connectivity against the vertex array."""
         if len(indices) % 3 != 0:
@@ -264,7 +282,7 @@ class Mesh:
     def _replace_geometry(self, vertices: Sequence[Vec3] | np.ndarray, indices: Sequence[int] | np.ndarray) -> None:
         """Replace vertices and indices as one validated geometry update."""
         normalized_vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
-        normalized_indices = np.array(indices, dtype=np.int32).flatten()
+        normalized_indices = self._normalize_indices(indices)
         self._validate_indices(normalized_vertices, normalized_indices)
         self._vertices = normalized_vertices
         self._indices = normalized_indices
@@ -1113,7 +1131,7 @@ class Mesh:
 
     @indices.setter
     def indices(self, value):
-        indices = np.array(value, dtype=np.int32).flatten()
+        indices = self._normalize_indices(value)
         self._validate_indices(self._vertices, indices)
         self._indices = indices
         self.invalidate_cache()
