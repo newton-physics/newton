@@ -34,7 +34,6 @@ from .....core.types import override
 from ...config import CollisionDetectorConfig
 from ..core.data import DataKamino
 from ..core.model import ModelKamino
-from ..core.state import StateKamino
 from ..geometry.contacts import ContactsKamino
 from ..geometry.primitive import CollisionPipelinePrimitive
 from ..geometry.unified import CollisionPipelineUnifiedKamino
@@ -423,7 +422,7 @@ class CollisionDetector:
                 case _:
                     raise ValueError(f"Unsupported CollisionPipelineType: {self._pipeline_type}")
 
-    def collide(self, data: DataKamino, state: StateKamino, contacts: ContactsKamino | None = None):
+    def collide(self, data: DataKamino, contacts: ContactsKamino | None = None):
         """
         Executes collision detection given a model and its associated data.
 
@@ -432,7 +431,10 @@ class CollisionDetector:
 
         Args:
             data: The solver data container holding solver-specific internal geome/shape data.
-            state: The state container holding the time-varying state of simulation.
+                Body poses are sourced from ``data.bodies.q_i`` so that detection follows the
+                configuration the integrator is currently working at. Under a mid-point scheme
+                such as :class:`IntegratorMoreauJean` this is the mid-step pose, whereas under
+                :class:`IntegratorEuler` it still equals the pose at the start of the time-step.
             contacts: An optional ContactsKamino container to store the generated contacts.
                 If `None`, uses the internal ContactsKamino container managed by the CollisionDetector.
         """
@@ -456,17 +458,11 @@ class CollisionDetector:
         if not isinstance(data, DataKamino):
             raise TypeError(f"Cannot perform collision detection: expected DataKamino, got {type(data)}")
 
-        # Ensure that the state is valid
-        if state is None:
-            raise ValueError("Cannot perform collision detection: state is None")
-        if not isinstance(state, StateKamino):
-            raise TypeError(f"Cannot perform collision detection: expected StateKamino, got {type(state)}")
-
         # Execute the configured collision detection pipeline
         match self._pipeline_type:
             case CollisionPipelineType.PRIMITIVE:
-                self._primitive_pipeline.collide(data, state, _contacts)
+                self._primitive_pipeline.collide(data, _contacts)
             case CollisionPipelineType.UNIFIED:
-                self._unified_pipeline.collide(data, state, _contacts)
+                self._unified_pipeline.collide(data, _contacts)
             case _:
                 raise ValueError(f"Unsupported CollisionPipelineType: {self._pipeline_type}")

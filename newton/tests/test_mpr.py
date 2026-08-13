@@ -212,7 +212,7 @@ class TestMPRTriangleInitialization(unittest.TestCase):
             triangle_b=[[100.0, 320.0, 0.0]],
             triangle_c=[[0.0, 320.0, 0.0]],
             shape_type=GeoType.CYLINDER,
-            shape_scale=(radius, half_height, radius),
+            shape_scale=(radius, half_height, 0.0),
             shape_positions=[cylinder_position],
             shape_orientations=[cylinder_orientation],
         )
@@ -244,7 +244,7 @@ class TestMPRTriangleInitialization(unittest.TestCase):
             triangle_b=[[100.0, 320.0, 0.0]],
             triangle_c=[[0.0, 320.0, 0.0]],
             shape_type=GeoType.CYLINDER,
-            shape_scale=(radius, half_height, radius),
+            shape_scale=(radius, half_height, 0.0),
             shape_positions=[cylinder_position],
             shape_orientations=[cylinder_orientation],
         )

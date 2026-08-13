@@ -1543,6 +1543,7 @@ def parse_mjcf(
                 scale=site_size,
                 label=site_label,
                 visible=visible,
+                custom_attributes={"mujoco:site_size_is_display": True} if site_type == "cylinder" else None,
             )
             site_shapes.append(s)
             site_name_to_idx[site_name] = s
@@ -2884,7 +2885,8 @@ def parse_mjcf(
             tendon_section: XML element containing tendon definitions.
         """
         for fixed in tendon_section.findall("fixed"):
-            tendon_name = fixed.attrib.get("name", "")
+            merged_attrib = resolve_element_attrib(fixed, "tendon")
+            tendon_name = merged_attrib.get("name", "")
 
             # Parse joint elements within this fixed tendon
             joint_entries = []
@@ -2915,7 +2917,7 @@ def parse_mjcf(
                 continue
 
             # Parse tendon-level attributes using the standard custom attribute parsing
-            tendon_attrs = parse_custom_attributes(fixed.attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
+            tendon_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
 
             # Determine wrap array start index
             tendon_joint_attr = builder.custom_attributes.get("mujoco:tendon_joint")

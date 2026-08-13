@@ -1515,6 +1515,36 @@ def test_create_texture_sdf_from_primitive_validates_inputs(test, device):
                 create_texture_sdf_from_primitive(GeoType.SPHERE, invalid_scale, max_resolution=8, device=device)
 
 
+def test_create_texture_sdf_from_barrel_cylinder(test, device):
+    """Preserve the barrel bulge in a primitive texture SDF."""
+    radius = 0.5
+    half_height = 1.0
+    barrel_radius = 2.0
+    equator_radius = radius + barrel_radius - np.sqrt(barrel_radius**2 - half_height**2)
+    texture_sdf, coarse_texture, subgrid_texture = create_texture_sdf_from_primitive(
+        GeoType.CYLINDER,
+        (radius, half_height, barrel_radius),
+        margin=0.1,
+        max_resolution=48,
+        scale_baked=True,
+        device=device,
+    )
+    query_points = wp.array([[equator_radius, 0.0, 0.0], [0.6, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    results = wp.empty(2, dtype=float, device=device)
+    wp.launch(
+        _sample_texture_sdf_kernel,
+        dim=2,
+        inputs=[texture_sdf, query_points],
+        outputs=[results],
+        device=device,
+    )
+    distances = results.numpy()
+    test.assertAlmostEqual(float(distances[0]), 0.0, delta=0.06)
+    test.assertLess(float(distances[1]), -0.05)
+    test.assertIsNotNone(coarse_texture)
+    test.assertIsNotNone(subgrid_texture)
+
+
 def test_build_sparse_sdf_from_primitive_validates_inputs(test, device):
     """Low-level primitive sparse-SDF construction must reject invalid inputs."""
     cell_size = np.array([0.1, 0.1, 0.1], dtype=float)
@@ -1686,6 +1716,12 @@ add_function_test(
     TestTextureSDF,
     "test_create_texture_sdf_from_primitive_validates_inputs",
     test_create_texture_sdf_from_primitive_validates_inputs,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_create_texture_sdf_from_barrel_cylinder",
+    test_create_texture_sdf_from_barrel_cylinder,
     devices=devices,
 )
 add_function_test(

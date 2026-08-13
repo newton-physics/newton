@@ -29,7 +29,6 @@ from .....geometry.types import GeoType
 from ..core.data import DataKamino
 from ..core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION, make_get_material_pair_properties
 from ..core.model import ModelKamino
-from ..core.state import StateKamino
 from ..core.types import (
     to_warp_int32_array,
 )
@@ -580,13 +579,12 @@ class CollisionPipelineUnifiedKamino:
     # Operations
     ###
 
-    def collide(self, data: DataKamino, state: StateKamino, contacts: ContactsKamino):
+    def collide(self, data: DataKamino, contacts: ContactsKamino):
         """
         Runs the unified collision detection pipeline to generate discrete contacts.
 
         Args:
             data: The data container holding the time-varying state of the simulation.
-            state: The state container holding the current simulation state.
             contacts: Output contacts container (will be cleared and populated).
         """
         # Check if contacts is allocated on the same device
@@ -605,7 +603,7 @@ class CollisionPipelineUnifiedKamino:
         self._contact_overflow_warning_emitted.zero_()
 
         # Update geometry poses from body states and compute respective AABBs
-        self._update_geom_data(data, state)
+        self._update_geom_data(data)
 
         # Run broad-phase collision detection to get candidate shape pairs
         self._run_broadphase()
@@ -645,13 +643,12 @@ class CollisionPipelineUnifiedKamino:
         if self._model.geoms.collision_radius is not None:
             self.collision_radius.assign(self._model.geoms.collision_radius)
 
-    def _update_geom_data(self, data: DataKamino, state: StateKamino):
+    def _update_geom_data(self, data: DataKamino):
         """
         Updates geometry poses from corresponding body states and computes respective AABBs.
 
         Args:
             data: The data container holding the time-varying state of the simulation.
-            state: The state container holding the current simulation state.
         """
         wp.launch(
             kernel=_update_geom_poses_and_compute_aabbs,
@@ -665,7 +662,7 @@ class CollisionPipelineUnifiedKamino:
                 self._model.geoms.gap,
                 self.geom_data,
                 self.collision_radius,
-                state.q_i,
+                data.bodies.q_i,
             ],
             outputs=[
                 data.geoms.pose,

@@ -249,7 +249,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         integrator: Literal["euler", "moreau"] = "euler"
         """
-        The time-integrator to use for state integration.\n
+        The time-integrator to use for state integration. The ``"moreau"`` option requires
+        ``use_collision_detector=True``.\n
+
         See available options in the `integrators` module.\n
         Defaults to `"euler"`.
         """
@@ -966,10 +968,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         Simulate the model for a given time step using the given control input.
 
-        When ``contacts`` is not ``None`` (i.e. populated by :meth:`~newton.CollisionPipeline.collide`),
-        those contacts are converted to Kamino's internal format and used directly,
-        bypassing Kamino's own collision detector.  When ``contacts`` is ``None``,
-        Kamino's internal collision pipeline runs as a fallback.
+        Contact source is selected when the solver is constructed. When
+        :attr:`Config.use_collision_detector` is enabled, Kamino's internal collision pipeline
+        generates contacts on every step and ``contacts`` is ignored. Otherwise, non-``None``
+        contacts (for example, populated by :meth:`~newton.CollisionPipeline.collide`) are
+        converted to Kamino's internal format and used directly.
 
         Args:
             state_in: The input state.
@@ -977,8 +980,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             control: The control input.
                 Defaults to `None` which means the control values from the
                 :class:`Model` are used.
-            contacts: The contact information from Newton's collision
-                pipeline, or ``None`` to use Kamino's internal collision detector.
+            contacts: The contact information from Newton's collision pipeline. Ignored when
+                :attr:`Config.use_collision_detector` is enabled.
             dt: The time step (typically in seconds).
         """
         # Interface the input state containers to Kamino's equivalents
@@ -993,8 +996,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             control = self.model.control(clone_variables=False)
         self._control_kamino.from_newton(control, self._model_kamino)
 
-        # If contacts are provided, use them directly, bypassing Kamino's collision detector
-        if contacts is not None:
+        # Internal detection is authoritative when enabled for this solver.
+        if self._config.use_collision_detector:
+            self._detector = self._collision_detector_kamino
+        elif contacts is not None:
             self._detector = None
             self._kamino.convert_contacts_newton_to_kamino(
                 model=self.model,
@@ -1005,9 +1010,10 @@ class SolverKamino(SolverBase, CouplingInterface):
                 friction_mix_mode=self._config.materials.friction_mix_mode,
                 restitution_mix_mode=self._config.materials.restitution_mix_mode,
             )
-        # Otherwise, use Kamino's internal collision detector to generate contacts
         else:
-            self._detector = self._collision_detector_kamino
+            self._detector = None
+            # Clear the internal contacts container to avoid using stale contacts from previous steps.
+            self._contacts_kamino.clear()
 
         # Convert Newton body-frame poses to Kamino CoM-frame poses
         self._kamino.convert_body_origin_to_com(

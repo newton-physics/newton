@@ -4,6 +4,7 @@
 """Unit tests for the Proximal-ADMM Solver."""
 
 import unittest
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -16,6 +17,7 @@ from newton._src.solvers.kamino._src.linalg import ConjugateResidualSolver, LLTB
 from newton._src.solvers.kamino._src.linalg.utils.matrix import SquareSymmetricMatrixProperties
 from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaussian_elimination
 from newton._src.solvers.kamino._src.models.builders import basics
+from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
@@ -185,6 +187,126 @@ def check_padmm_solution(
         # between in-solver residual and true residual.
         test.assertLessEqual(error_dual_abs_l2, solver.config[w].dual_tolerance * 4.0)
         test.assertLessEqual(error_dual_abs_inf, solver.config[w].dual_tolerance * 4.0)
+
+
+def solve_apadmm_bilateral_reference(
+    D: np.ndarray,
+    v_f: np.ndarray,
+    P: np.ndarray,
+    config: PADMMSolver.Config,
+) -> dict[str, Any]:
+    """Solve a bilateral APADMM problem with a NumPy iteration reference.
+
+    This mirrors the accelerated PADMM state transitions for one dense,
+    preconditioned bilateral problem. The bilateral feasible set is all of
+    :math:`R^n`, so the production solver's projection is the identity:
+    ``y = x - z_hat / rho``. It consequently does not model unilateral limit
+    or contact projection, De Saxce corrections, or complementarity residuals.
+
+    The reference also omits production features that are irrelevant to this
+    fixed-iteration regression: multiple worlds, sparse/iterative linear
+    solves, adaptive penalty updates, and convergence-based early termination.
+    It instead solves the fixed dense system with NumPy and executes exactly
+    ``max_iterations`` iterations, recording the state-derived quantities
+    exposed through ``PADMMInfo`` for comparison.
+    """
+    dtype = D.dtype
+    eta = dtype.type(config.eta)
+    rho = dtype.type(config.rho_0)
+    restart_tolerance = dtype.type(config.restart_tolerance)
+    a_0 = dtype.type(config.a_0)
+    lhs = D + (eta + rho) * np.eye(D.shape[0], dtype=dtype)
+
+    x = np.zeros_like(v_f)
+    y = np.zeros_like(v_f)
+    z = np.zeros_like(v_f)
+    x_p = np.zeros_like(v_f)
+    y_p = np.zeros_like(v_f)
+    z_p = np.zeros_like(v_f)
+    y_hat = np.zeros_like(v_f)
+    z_hat = np.zeros_like(v_f)
+    a_p = a_0
+    r_a_p = dtype.type(np.finfo(dtype).max)
+    restart = 0
+    num_restarts = 0
+    history = {
+        "a": [],
+        "norm_x": [],
+        "norm_y": [],
+        "norm_z": [],
+        "r_dx": [],
+        "r_dy": [],
+        "r_dz": [],
+        "r_comb": [],
+        "r_comb_ratio": [],
+        "num_restarts": [],
+    }
+
+    for _ in range(config.max_iterations):
+        x_candidate = np.linalg.solve(lhs, -v_f + eta * x_p + rho * y_hat + z_hat)
+        y_candidate = x_candidate - z_hat / rho
+        z_candidate = z_hat + rho * (y_candidate - x_candidate)
+
+        dx = P * (x_candidate - x_p)
+        dy = P * (y_candidate - y_hat)
+        dz = (z_candidate - z_hat) / P
+        r_a = rho * np.dot(dy, dy) + np.dot(dz, dz) / rho
+
+        if r_a < restart_tolerance * r_a_p:
+            restart = 0
+            a = dtype.type((1.0 + np.sqrt(1.0 + 4.0 * a_p * a_p)) / 2.0)
+            factor = dtype.type((a_p - 1.0) / a)
+            x = x_candidate
+            y = y_candidate
+            z = z_candidate
+            y_hat = y + factor * (y - y_p)
+            z_hat = z + factor * (z - z_p)
+            x_p = x.copy()
+            y_p = y.copy()
+            z_p = z.copy()
+        else:
+            # A restart drops the momentum but keeps the current iterate.
+            restart = 1
+            num_restarts += 1
+            r_a = r_a_p / restart_tolerance
+            a = a_0
+            y_hat = y_p.copy()
+            z_hat = z_p.copy()
+            x = x_candidate
+            y = y_candidate
+            z = z_candidate
+            x_p = x.copy()
+            y_p = y.copy()
+            z_p = z.copy()
+
+        a_p = a
+        r_a_pp = r_a_p
+        r_a_p = dtype.type(r_a)
+
+        history["a"].append(a)
+        history["norm_x"].append(np.linalg.norm(x))
+        history["norm_y"].append(np.linalg.norm(y))
+        history["norm_z"].append(np.linalg.norm(z))
+        history["r_dx"].append(np.linalg.norm(dx))
+        history["r_dy"].append(np.linalg.norm(dy))
+        history["r_dz"].append(np.linalg.norm(dz))
+        history["r_comb"].append(r_a)
+        history["r_comb_ratio"].append(r_a / r_a_pp)
+        history["num_restarts"].append(num_restarts)
+
+    return {
+        "x": x,
+        "y": y,
+        "z": z,
+        "x_p": x_p,
+        "y_p": y_p,
+        "z_p": z_p,
+        "y_hat": y_hat,
+        "z_hat": z_hat,
+        "restart": restart,
+        "num_restarts": num_restarts,
+        "history": {key: np.asarray(values, dtype=dtype) for key, values in history.items()},
+    }
 
 
 def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool = False):
@@ -687,6 +809,181 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Check solution
         check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+
+    def test_09_apadmm_restart_matches_bilateral_reference(self):
+        """Match a NumPy reference across an APADMM solve whose final iteration restarts.
+
+        The restart tolerance is tight enough to reject every step, so this pins the
+        combined-residual formula, the restart bookkeeping, and the rule that a restart
+        rewinds only the extrapolation while keeping the current iterate.
+        """
+        test = TestSetup(
+            builder_fn=basics.build_box_pendulum,
+            max_world_contacts=1,
+            device=self.default_device,
+            ground=False,
+        )
+        config = PADMMSolver.Config(
+            primal_tolerance=0.0,
+            dual_tolerance=0.0,
+            compl_tolerance=0.0,
+            restart_tolerance=1.0e-6,
+            max_iterations=6,
+        )
+
+        test.build()
+        D = extract_delassus(test.problem.delassus, only_active_dims=True)[0]
+        v_f = extract_problem_vector(
+            test.problem.delassus,
+            test.problem.data.v_f.numpy(),
+            only_active_dims=True,
+        )[0]
+        P = extract_problem_vector(
+            test.problem.delassus,
+            test.problem.data.P.numpy(),
+            only_active_dims=True,
+        )[0]
+        reference = solve_apadmm_bilateral_reference(D, v_f, P, config)
+
+        solver = PADMMSolver(
+            model=test.model,
+            config=config,
+            warmstart=PADMMWarmStartMode.NONE,
+            use_acceleration=True,
+            use_graph_conditionals=False,
+            collect_info=True,
+        )
+        solver.coldstart()
+        solver.solve(problem=test.problem)
+
+        status = solver.data.status.numpy()[0]
+        self.assertEqual(int(status[11]), reference["restart"])
+        self.assertEqual(int(status[12]), reference["num_restarts"])
+
+        # The tight restart tolerance makes the solve alternate between accepted and
+        # restarted steps, so both writeback branches run and the run ends on a restart.
+        self.assertEqual(reference["restart"], 1)
+        self.assertEqual(reference["num_restarts"], 3)
+
+        iterations = int(status[1])
+        reference_history = reference["history"]
+        solver_history = {
+            "a": solver.data.info.a.numpy()[:iterations],
+            "norm_x": solver.data.info.norm_x.numpy()[:iterations],
+            "norm_y": solver.data.info.norm_y.numpy()[:iterations],
+            "norm_z": solver.data.info.norm_z.numpy()[:iterations],
+            "r_dx": solver.data.info.r_dx.numpy()[:iterations],
+            "r_dy": solver.data.info.r_dy.numpy()[:iterations],
+            "r_dz": solver.data.info.r_dz.numpy()[:iterations],
+            "r_comb": solver.data.info.r_comb.numpy()[:iterations],
+            "r_comb_ratio": solver.data.info.r_comb_ratio.numpy()[:iterations],
+            "num_restarts": solver.data.info.num_restarts.numpy()[:iterations],
+        }
+        for name, values in solver_history.items():
+            np.testing.assert_allclose(values, reference_history[name], rtol=1e-5, atol=1e-6, err_msg=name)
+
+        ncts = D.shape[0]
+        np.testing.assert_allclose(solver.data.state.x_p.numpy()[:ncts], reference["x_p"], rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(solver.data.state.y_p.numpy()[:ncts], reference["y_p"], rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(solver.data.state.z_p.numpy()[:ncts], reference["z_p"], rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(solver.data.state.y_hat.numpy()[:ncts], reference["y_hat"], rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(solver.data.state.z_hat.numpy()[:ncts], reference["z_hat"], rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(
+            solver.data.solution.lambdas.numpy()[:ncts],
+            P * reference["y"],
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            solver.data.solution.v_plus.numpy()[:ncts],
+            reference["z"] / P,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+    def test_10_apadmm_converged_iteration_does_not_restart(self):
+        """Suppress the acceleration restart on the iteration that converges.
+
+        The restart tolerance is tight enough that every iteration past the first fails the
+        combined-residual test, while the convergence tolerances are loose enough that the
+        solve converges on that same iteration. The restart must then be suppressed, so that
+        a solve reported as converged never also reports a restart it never acted on.
+        """
+        test = TestSetup(
+            builder_fn=basics.build_box_pendulum,
+            max_world_contacts=1,
+            device=self.default_device,
+            ground=False,
+        )
+        config = PADMMSolver.Config(
+            primal_tolerance=1.0e3,
+            dual_tolerance=1.0e3,
+            compl_tolerance=1.0e3,
+            restart_tolerance=1.0e-6,
+            max_iterations=8,
+        )
+
+        test.build()
+        solver = PADMMSolver(
+            model=test.model,
+            config=config,
+            warmstart=PADMMWarmStartMode.NONE,
+            use_acceleration=True,
+            use_graph_conditionals=False,
+        )
+        solver.coldstart()
+        solver.solve(problem=test.problem)
+
+        status = solver.data.status.numpy()[0]
+        self.assertEqual(int(status[0]), 1)
+        # Convergence is gated on having completed more than one iteration.
+        self.assertEqual(int(status[1]), 2)
+        self.assertEqual(int(status[11]), 0)
+        self.assertEqual(int(status[12]), 0)
+
+    def test_11_apadmm_honors_per_world_iteration_budgets(self):
+        """Give each world exactly its own iteration budget when the budgets differ.
+
+        A world that exhausts its budget must stop advancing rather than keep stepping on
+        the shared loop, and must release the shared completion counter only once, so that
+        a world with a larger budget is not terminated early alongside it.
+        """
+        budgets = [3, 8]
+        modes = [False, True] if self.default_device.is_cuda else [False]
+
+        for use_graph_conditionals in modes:
+            with self.subTest(use_graph_conditionals=use_graph_conditionals):
+                test = TestSetup(
+                    builder_fn=make_homogeneous_builder,
+                    max_world_contacts=1,
+                    device=self.default_device,
+                    num_worlds=len(budgets),
+                    build_fn=basics.build_box_pendulum,
+                    ground=False,
+                )
+                configs = [
+                    PADMMSolver.Config(
+                        primal_tolerance=0.0,
+                        dual_tolerance=0.0,
+                        compl_tolerance=0.0,
+                        max_iterations=budget,
+                    )
+                    for budget in budgets
+                ]
+
+                test.build()
+                solver = PADMMSolver(
+                    model=test.model,
+                    config=configs,
+                    warmstart=PADMMWarmStartMode.NONE,
+                    use_acceleration=True,
+                    use_graph_conditionals=use_graph_conditionals,
+                )
+                solver.coldstart()
+                solver.solve(problem=test.problem)
+
+                status = solver.data.status.numpy()
+                self.assertEqual([int(status[w][1]) for w in range(len(budgets))], budgets)
 
 
 ###
