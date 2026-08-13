@@ -1114,6 +1114,7 @@ class TestPADMMSolver(unittest.TestCase):
         self.assertLess(primal_error.max(), 1.0e-6)
         self.assertLess(dual_error.max(), 1.0e-6)
 
+
 ###
 # Test execution
 ###

@@ -90,7 +90,7 @@ def project_to_coulomb_dual_cone(x: wp.vec3f, mu: wp.float32, epsilon: wp.float3
     xt_norm = wp.sqrt(x[0] * x[0] + x[1] * x[1])
     y = wp.vec3f(0.0)
     # The membership test must precede the polar-cone test: at mu = 0 the dual
-    # cone degenerates to the half-space xn >= 0, testing xt_norm > -mu * xn first 
+    # cone degenerates to the half-space xn >= 0, testing xt_norm > -mu * xn first
     # would map the feasible point (0, 0, +xn) to zero.
     if mu * xt_norm <= xn + epsilon:
         y = x
