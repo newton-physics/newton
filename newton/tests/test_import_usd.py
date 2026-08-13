@@ -1250,12 +1250,24 @@ class TestImportUsdJoints(unittest.TestCase):
         joint.CreateBody1Rel().SetTargets([bodies[1].GetPath()])
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, enable_self_collisions=False)
+        builder.add_usd(
+            stage,
+            enable_self_collisions=False,
+            load_visual_shapes=False,
+        )
 
+        expected_colliding = {
+            builder.shape_label.index("/World/Body0/Collider"),
+            builder.shape_label.index("/World/Body1/Collider"),
+        }
         colliding = {
             shape for shape in range(builder.shape_count) if builder.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES
         }
-        self.assertEqual(len(colliding), 2)
+        self.assertEqual(colliding, expected_colliding)
+        particle_colliding = {
+            shape for shape in range(builder.shape_count) if builder.shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES
+        }
+        self.assertEqual(particle_colliding, expected_colliding)
         filter_pairs = set(builder.shape_collision_filter_pairs)
         self.assertEqual(filter_pairs, {tuple(sorted(colliding))})
         for pair in filter_pairs:
