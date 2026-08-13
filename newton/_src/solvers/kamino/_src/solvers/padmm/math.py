@@ -670,7 +670,7 @@ def compute_preconditioned_iterate_residual(
     ncts: wp.int32, vio: wp.int32, P: wp.array[wp.float32], x: wp.array[wp.float32], x_p: wp.array[wp.float32]
 ) -> wp.float32:
     """
-    Computes the iterate residual as: `r_dx := || P @ (x - x_p) ||_inf`
+    Computes the iterate residual as: `r_dx := || P @ (x - x_p) ||_2`
 
     Args:
         ncts: The number of active constraints in the world.
@@ -679,17 +679,18 @@ def compute_preconditioned_iterate_residual(
         x_p: The previous solution vector.
 
     Returns:
-        The maximum iterate residual across all active constraints, computed as the infinity norm.
+        The iterate residual across all active constraints, computed as the L2 norm.
     """
     # Initialize the iterate residual
-    r_dx = float(0.0)
+    r_dx_squared = float(0.0)
     for i in range(ncts):
         # Compute the index offset of the vector block of the world
         v_i = vio + i
         # Update the iterate and proximal-point residuals
-        r_dx = wp.max(r_dx, P[v_i] * wp.abs(x[v_i] - x_p[v_i]))
-    # Return the maximum iterate residual
-    return r_dx
+        delta = P[v_i] * (x[v_i] - x_p[v_i])
+        r_dx_squared += delta * delta
+    # Return the iterate residual
+    return wp.sqrt(r_dx_squared)
 
 
 @wp.func
@@ -697,7 +698,7 @@ def compute_inverse_preconditioned_iterate_residual(
     ncts: wp.int32, vio: wp.int32, P: wp.array[wp.float32], x: wp.array[wp.float32], x_p: wp.array[wp.float32]
 ) -> wp.float32:
     """
-    Computes the iterate residual as: `r_dx := || P^{-1} @ (x - x_p) ||_inf`
+    Computes the iterate residual as: `r_dx := || P^{-1} @ (x - x_p) ||_2`
 
     Args:
         ncts: The number of active constraints in the world.
@@ -706,14 +707,15 @@ def compute_inverse_preconditioned_iterate_residual(
         x_p: The previous solution vector.
 
     Returns:
-        The maximum iterate residual across all active constraints, computed as the infinity norm.
+        The iterate residual across all active constraints, computed as the L2 norm.
     """
     # Initialize the iterate residual
-    r_dx = float(0.0)
+    r_dx_squared = float(0.0)
     for i in range(ncts):
         # Compute the index offset of the vector block of the world
         v_i = vio + i
         # Update the iterate and proximal-point residuals
-        r_dx = wp.max(r_dx, (1.0 / P[v_i]) * wp.abs(x[v_i] - x_p[v_i]))
-    # Return the maximum iterate residual
-    return r_dx
+        delta = (1.0 / P[v_i]) * (x[v_i] - x_p[v_i])
+        r_dx_squared += delta * delta
+    # Return the iterate residual
+    return wp.sqrt(r_dx_squared)
