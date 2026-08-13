@@ -12416,5 +12416,32 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_RAW)
 
 
+class TestMuJoCoLinesearchBlockDim(unittest.TestCase):
+    def test_linesearch_block_dim_is_left_to_mujoco_warp(self):
+        """Leave MuJoCo Warp's line-search block dimension untouched.
+
+        Newton forced ``linesearch_iterative = 32`` after ``put_model()`` to work
+        around a CUDA registers-per-block failure that MuJoCo Warp has since capped
+        upstream. Upstream only assigns the field when ``nv > 500``, so a model over
+        that threshold is the only one whose value differs from the default and
+        therefore the only one that can detect the override coming back.
+        """
+        import mujoco_warp
+
+        builder = newton.ModelBuilder()
+        # Each free joint contributes 6 DOF, so 100 bodies clears nv > 500.
+        for i in range(100):
+            body = builder.add_body(xform=wp.transform(wp.vec3(i * 0.5, 0.0, 1.0), wp.quat_identity()), mass=1.0)
+            builder.add_shape_sphere(body, radius=0.1)
+            builder.add_joint_free(body)
+        solver = SolverMuJoCo(builder.finalize())
+
+        self.assertGreater(solver.mj_model.nv, 500)
+        # Compare against upstream's own choice rather than a hard-coded 256, so the
+        # test keeps its meaning if MuJoCo Warp retunes the value.
+        expected = mujoco_warp.put_model(solver.mj_model).block_dim.linesearch_iterative
+        self.assertEqual(solver.mjw_model.block_dim.linesearch_iterative, expected)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
