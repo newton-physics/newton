@@ -38,6 +38,7 @@ except ImportError:
 
 from .camera import Camera
 from .picking import Picking
+from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID
 from .viewer_gui import ViewerGui
 from .viewer_usd import ViewerUSD, _compute_segment_xform
@@ -189,6 +190,7 @@ class ViewerRTX(ViewerUSD):
         self._rtx = None
         self._render_result = None
         self._render_products = None
+        self._uses_fractional_opacity = False
         self._transform_binding = None
         self._async = async_rendering
 
@@ -569,6 +571,8 @@ void main() {
         rp.CreateAttribute("omni:rtx:reflections:denoiser:enabled", Sdf.ValueTypeNames.Bool).Set(False)
         rp.CreateAttribute("omni:rtx:rt:ambientLight:color", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.1, 0.1, 0.1))
         rp.CreateAttribute("omni:rtx:rt:demoire", Sdf.ValueTypeNames.Bool).Set(False)
+        if self._uses_fractional_opacity:
+            rp.CreateAttribute("omni:rtx:rt:fractionalOpacity", Sdf.ValueTypeNames.Bool).Set(True)
         rp.CreateAttribute("omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts", Sdf.ValueTypeNames.Bool).Set(
             True
         )
@@ -1415,6 +1419,28 @@ void main() {
             self._update_ovrtx_mesh_points()
             self._render_and_display()
 
+    # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
+    # build phase. RTX fractional opacity is evaluated per ray hit, so the
+    # authored material opacity is lower than the requested object opacity.
+    _PREVIEW_SURFACE_OPACITY_LAYERS = 4.0
+
+    @override
+    def _preview_surface_opacity_value(self, requested_opacity: float) -> float:
+        """Map object opacity to RTX PreviewSurface per-hit opacity."""
+        requested_opacity = float(np.clip(requested_opacity, 0.0, 1.0))
+        if requested_opacity < OPAQUE_OPACITY_THRESHOLD:
+            self._uses_fractional_opacity = True
+        if requested_opacity <= 0.0 or requested_opacity >= OPAQUE_OPACITY_THRESHOLD:
+            return requested_opacity
+        return 1.0 - math.pow(1.0 - requested_opacity, 1.0 / self._PREVIEW_SURFACE_OPACITY_LAYERS)
+
+    @override
+    def _preview_surface_ior_value(self, requested_opacity: float) -> float | None:
+        if requested_opacity < OPAQUE_OPACITY_THRESHOLD:
+            # Avoid the default glass-like IOR so opacity behaves like viewer alpha.
+            return 1.0
+        return None
+
     @override
     def log_mesh(
         self,
@@ -1429,6 +1455,7 @@ void main() {
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        opacity: float | None = None,
     ) -> None:
         """Log a mesh for rendering.
 
@@ -1447,6 +1474,7 @@ void main() {
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            opacity: Optional display opacity in [0, 1].
         """
         name = self._qualify(name)
 
@@ -1460,6 +1488,7 @@ void main() {
                 texture,
                 hidden,
                 backface_culling,
+                opacity=opacity,
                 color=color,
                 roughness=roughness,
                 metallic=metallic,
@@ -1489,6 +1518,7 @@ void main() {
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ) -> None:
         """Log a batch of mesh instances for rendering.
 
@@ -1500,12 +1530,22 @@ void main() {
             colors: Array of colors.
             materials: Array of materials.
             hidden: Whether the instances are hidden.
+            opacities: Optional per-instance opacity values.
         """
         name = self._qualify(name)
         mesh = self._qualify(mesh)
 
         if self._phase == self._PHASE_BUILD:
-            super().log_instances(name, mesh, xforms, scales, colors, materials, hidden)
+            super().log_instances(
+                name,
+                mesh,
+                xforms,
+                scales,
+                colors,
+                materials,
+                opacities=opacities,
+                hidden=hidden,
+            )
             if xforms is not None:
                 count = len(xforms)
                 paths = [self._get_path(name) + f"/instance_{i}" for i in range(count)]

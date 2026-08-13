@@ -1729,6 +1729,7 @@ def get_mesh(
         maxhullvert=maxhullvert,
         compute_inertia=compute_inertia,
         color=material_props.get("color"),
+        opacity=material_props.get("opacity"),
         texture=material_props.get("texture"),
         metallic=material_props.get("metallic"),
         roughness=material_props.get("roughness"),
@@ -1748,6 +1749,7 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
         "orientation",
         "purpose",
         "visibility",
+        "displayOpacity",
         "xformOpOrder",
         "proxyPrim",
         # Standard UsdGeom.PointBased attributes (velocities, accelerations, normals): importing them
@@ -1969,6 +1971,8 @@ def get_tetmesh(
         # density too; a plain rigid-style physics material is a valid source.
         density = _get_physics_material_density(material_prim)
 
+    material_props = resolve_material_properties_for_prim(prim)
+
     if not _load_custom_attributes:
         return TetMesh(
             vertices=vertices,
@@ -1976,6 +1980,7 @@ def get_tetmesh(
             k_mu=k_mu,
             k_lambda=k_lambda,
             density=density,
+            opacity=material_props.get("opacity"),
         )
 
     # Read custom primvars and attributes (per-vertex, per-tet, etc.)
@@ -1998,7 +2003,7 @@ def get_tetmesh(
     primvars_api = UsdGeom.PrimvarsAPI(prim)
     for primvar in primvars_api.GetPrimvarsWithValues():
         name = primvar.GetPrimvarName()
-        if name in ("st", "normals"):
+        if name in ("st", "normals", "displayColor", "displayOpacity"):
             continue  # skip well-known primvars handled elsewhere
         val = primvar.ComputeFlattened()
         if val is not None:
@@ -2041,6 +2046,7 @@ def get_tetmesh(
         k_mu=k_mu,
         k_lambda=k_lambda,
         density=density,
+        opacity=material_props.get("opacity"),
     )
     tri_count = len(result.surface_tri_indices) // 3
     for name, value in custom_attributes.items():
@@ -2593,7 +2599,7 @@ def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> 
 
 def _empty_material_properties() -> dict[str, Any]:
     """Return an empty material properties dictionary."""
-    return {"color": None, "metallic": None, "roughness": None, "texture": None}
+    return {"color": None, "opacity": None, "metallic": None, "roughness": None, "texture": None}
 
 
 def _coerce_color(value: Any) -> tuple[float, float, float] | None:
@@ -2616,6 +2622,73 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _coerce_opacity(value: Any, *, warn_on_multiple: bool = False) -> float | None:
+    """Coerce an opacity value to a clamped scalar, or None if not possible."""
+    if value is None:
+        return None
+    try:
+        value_np = np.array(value, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        value_np = np.asarray([_coerce_float(value)], dtype=np.float32)
+    if value_np.size == 0:
+        return None
+    if value_np.size > 1 and warn_on_multiple:
+        warnings.warn(
+            f"Opacity data contains {value_np.size} values; using the first value as the shape opacity.",
+            stacklevel=2,
+        )
+    opacity = float(value_np[0])
+    if not np.isfinite(opacity):
+        warnings.warn(f"Ignoring non-finite imported opacity {opacity!r}.", stacklevel=2)
+        return None
+    clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
+    if clamped_opacity != opacity:
+        warnings.warn(
+            f"Clamping imported opacity {opacity!r} to {clamped_opacity!r}.",
+            stacklevel=2,
+        )
+    return clamped_opacity
+
+
+def _coerce_color_opacity(value: Any) -> float | None:
+    """Extract alpha only from a single four-component color value."""
+    if value is None:
+        return None
+    try:
+        value_np = np.array(value, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if value_np.size != 4:
+        return None
+    return _coerce_opacity(value_np[3])
+
+
+def _extract_display_primvar_properties(prim: Usd.Prim) -> dict[str, Any]:
+    """Extract displayColor/displayOpacity primvars from a prim."""
+    properties = _empty_material_properties()
+    primvars_api = UsdGeom.PrimvarsAPI(prim)
+
+    display_color = primvars_api.GetPrimvar("displayColor")
+    if display_color:
+        color_value = display_color.Get()
+        color = _coerce_color(color_value)
+        if color is not None:
+            properties["color"] = _color_to_display_space(color, display_color.GetAttr())
+
+    display_opacity = primvars_api.GetPrimvar("displayOpacity")
+    if display_opacity:
+        opacity = _coerce_opacity(display_opacity.Get(), warn_on_multiple=True)
+        if opacity is not None:
+            properties["opacity"] = opacity
+
+    if properties["opacity"] is None:
+        attr = prim.GetAttribute("displayOpacity")
+        if attr:
+            properties["opacity"] = _coerce_opacity(attr.Get(), warn_on_multiple=True)
+
+    return properties
+
+
 def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract material properties from a UsdPreviewSurface shader.
 
@@ -2624,7 +2697,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with ``color``, ``opacity``, ``metallic``, ``roughness``, and ``texture``.
     """
     properties = _empty_material_properties()
     if shader is None:
@@ -2654,10 +2727,29 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                 coerced_color = _coerce_color(color_value)
                 if coerced_color is not None:
                     properties["color"] = _color_to_display_space(coerced_color, color_attr)
+                if properties["opacity"] is None:
+                    properties["opacity"] = _coerce_color_opacity(color_value)
         else:
-            coerced_color = _coerce_color(color_input.Get())
+            color_value = color_input.Get()
+            coerced_color = _coerce_color(color_value)
             if coerced_color is not None:
                 properties["color"] = _color_to_display_space(coerced_color, color_input.GetAttr())
+            if properties["opacity"] is None:
+                properties["opacity"] = _coerce_color_opacity(color_value)
+
+    opacity_input = shader.GetInput("opacity") or shader.GetInput("alpha")
+    if opacity_input:
+        try:
+            has_opacity_source = opacity_input.HasConnectedSource()
+        except Exception:
+            has_opacity_source = False
+        if has_opacity_source:
+            source = opacity_input.GetConnectedSource()
+            source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
+            opacity_value = _get_input_value(source_shader, ("opacity", "alpha", "opacity_constant", "alpha_constant"))
+            properties["opacity"] = _coerce_opacity(opacity_value)
+        else:
+            properties["opacity"] = _coerce_opacity(opacity_input.Get())
 
     metallic_input = shader.GetInput("metallic")
     if metallic_input:
@@ -2780,7 +2872,7 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with ``color``, ``opacity``, ``metallic``, ``roughness``, and ``texture``.
     """
     properties = _extract_preview_surface_properties(shader, prim)
     if shader is None:
@@ -2806,6 +2898,14 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         color = _coerce_color(color_value)
         if color is not None:
             properties["color"] = _color_to_display_space(color, color_attr)
+        if properties["opacity"] is None:
+            properties["opacity"] = _coerce_color_opacity(color_value)
+    if properties["opacity"] is None:
+        opacity_value = _get_input_value(
+            shader,
+            ("opacity", "alpha", "displayOpacity", "opacity_constant", "alpha_constant"),
+        )
+        properties["opacity"] = _coerce_opacity(opacity_value)
     if properties["metallic"] is None:
         metallic_value = _get_input_value(shader, ("metallic_constant", "metallic"))
         properties["metallic"] = _coerce_float(metallic_value)
@@ -2861,6 +2961,20 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             color = _coerce_color(value)
             if color is not None:
                 properties["color"] = _color_to_display_space(color, inp.GetAttr())
+                if properties["opacity"] is None:
+                    properties["opacity"] = _coerce_color_opacity(value)
+                continue
+
+        if properties["opacity"] is None and name_lower in (
+            "opacity",
+            "alpha",
+            "displayopacity",
+            "opacity_constant",
+            "alpha_constant",
+        ):
+            opacity = _coerce_opacity(value)
+            if opacity is not None:
+                properties["opacity"] = opacity
                 continue
 
         if properties["metallic"] is None and name_lower in ("metallic", "metallic_constant"):
@@ -2937,15 +3051,14 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     # it has fallback logic for common shader input names.
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
-    for key in ("texture", "color", "metallic", "roughness"):
+    for key in ("texture", "color", "opacity", "metallic", "roughness"):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
-    if properties["color"] is None and properties["texture"] is None:
-        display_color = UsdGeom.PrimvarsAPI(target_prim).GetPrimvar("displayColor")
-        if display_color:
-            color = _coerce_color(display_color.Get())
-            if color is not None:
-                properties["color"] = _color_to_display_space(color, display_color.GetAttr())
+    display_props = _extract_display_primvar_properties(target_prim)
+    if properties["color"] is None and properties["texture"] is None and display_props.get("color") is not None:
+        properties["color"] = display_props["color"]
+    if properties["opacity"] is None and display_props.get("opacity") is not None:
+        properties["opacity"] = display_props["opacity"]
 
     return properties
 
@@ -2957,7 +3070,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
         prim: The prim whose bound material should be inspected.
 
     Returns:
-        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+        Dictionary with ``color``, ``opacity``, ``metallic``, ``roughness``, and ``texture``.
     """
     if not prim or not prim.IsValid():
         return _empty_material_properties()
@@ -2996,12 +3109,20 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
                 subset_props = _resolve_prim_material_properties(child)
                 if subset_props is None:
                     continue
-                if subset_props.get("texture") is not None or subset_props.get("color") is not None:
+                if (
+                    subset_props.get("texture") is not None
+                    or subset_props.get("color") is not None
+                    or subset_props.get("opacity") is not None
+                ):
                     return subset_props
                 if fallback_props is None:
                     fallback_props = subset_props
             if fallback_props is not None:
                 return fallback_props
+
+    display_props = _extract_display_primvar_properties(prim)
+    if display_props.get("color") is not None or display_props.get("opacity") is not None:
+        return display_props
 
     return _empty_material_properties()
 
