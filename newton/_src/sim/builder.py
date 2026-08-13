@@ -8387,6 +8387,9 @@ class ModelBuilder:
                 distributed evenly so the frame field closes up.
             twist_total: Total intrinsic twist [rad] distributed uniformly along the cable. For
                 closed cables this must be a multiple of ``2*pi`` (whole turns of stored twist).
+                With ``straight_rest_shape=True`` the rest configuration is untwisted, so the
+                twist appears only in the posed geometry written into the state and becomes
+                live strain.
             normal_hint: Optional direction seeding the first cross-section normal (its
                 component orthogonal to the first segment is used). If ``None`` or nearly
                 parallel to the first segment, a world axis is chosen automatically.
