@@ -10493,7 +10493,7 @@ class TestMjcfPrimitiveColors(unittest.TestCase):
         np.testing.assert_allclose(builder.shape_color[0], [0.0, 1.0, 0.0], atol=1.0e-6)
 
 
-def _settotalmass_mjcf(compiler: str, bodies: str) -> str:
+def _mjcf_settotalmass(compiler: str, bodies: str) -> str:
     return f"<mujoco>{compiler}<worldbody>{bodies}</worldbody></mujoco>"
 
 
@@ -10516,14 +10516,14 @@ class TestImportMjcfSetTotalMass(unittest.TestCase):
     def test_settotalmass_rescales_body_mass(self):
         """Rescale a single imported body to the requested total."""
         builder = newton.ModelBuilder()
-        builder.add_mjcf(_settotalmass_mjcf('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
 
         self.assertAlmostEqual(builder.body_mass[0], 10.0, places=5)
 
     def test_settotalmass_absent_preserves_authored_mass(self):
         """Leave authored masses untouched when no settotalmass is given."""
         builder = newton.ModelBuilder()
-        builder.add_mjcf(_settotalmass_mjcf("", _ONE_DYNAMIC_BODY))
+        builder.add_mjcf(_mjcf_settotalmass("", _ONE_DYNAMIC_BODY))
 
         self.assertAlmostEqual(builder.body_mass[0], 2.0, places=5)
 
@@ -10532,7 +10532,7 @@ class TestImportMjcfSetTotalMass(unittest.TestCase):
         for value in ("0", "-1"):
             with self.subTest(settotalmass=value):
                 builder = newton.ModelBuilder()
-                builder.add_mjcf(_settotalmass_mjcf(f'<compiler settotalmass="{value}"/>', _ONE_DYNAMIC_BODY))
+                builder.add_mjcf(_mjcf_settotalmass(f'<compiler settotalmass="{value}"/>', _ONE_DYNAMIC_BODY))
 
                 self.assertAlmostEqual(builder.body_mass[0], 2.0, places=5)
 
@@ -10544,7 +10544,7 @@ class TestImportMjcfSetTotalMass(unittest.TestCase):
         the factor instead would yield 0.2 and pass any mass-only assertion.
         """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(_settotalmass_mjcf('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
 
         self.assertAlmostEqual(builder.body_mass[0], 10.0, places=5)
         np.testing.assert_allclose(np.diag(np.array(builder.body_inertia[0]).reshape(3, 3)), [0.04] * 3, rtol=1e-4)
@@ -10557,7 +10557,7 @@ class TestImportMjcfSetTotalMass(unittest.TestCase):
         silently corrupt the dynamics while every mass assertion still passes.
         """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(_settotalmass_mjcf('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
 
         self.assertAlmostEqual(builder.body_inv_mass[0], 1.0 / builder.body_mass[0], places=5)
 
@@ -10577,7 +10577,7 @@ class TestImportMjcfSetTotalMass(unittest.TestCase):
             <body name="dyn"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
         """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(_settotalmass_mjcf('<compiler settotalmass="10"/>', bodies))
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', bodies))
 
         np.testing.assert_allclose(sorted(builder.body_mass), [2.5, 7.5], rtol=1e-4)
 
@@ -10592,7 +10592,7 @@ class TestImportMjcfSetTotalMass(unittest.TestCase):
             </body>
         """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(_settotalmass_mjcf('<compiler settotalmass="8"/>', bodies), ignore_inertial_definitions=False)
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="8"/>', bodies), ignore_inertial_definitions=False)
 
         np.testing.assert_allclose(sorted(builder.body_mass), [2.0, 6.0], rtol=1e-4)
 
@@ -10604,7 +10604,7 @@ class TestImportMjcfSetTotalMass(unittest.TestCase):
         """
         builder = newton.ModelBuilder()
         pre_existing = builder.add_body(mass=7.0)
-        builder.add_mjcf(_settotalmass_mjcf('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
 
         self.assertAlmostEqual(builder.body_mass[pre_existing], 7.0, places=5)
         self.assertAlmostEqual(builder.body_mass[pre_existing + 1], 10.0, places=5)
@@ -10613,7 +10613,7 @@ class TestImportMjcfSetTotalMass(unittest.TestCase):
         """Skip the rescale when the imported total is zero rather than dividing by it."""
         bodies = '<body name="static"><geom type="sphere" size="0.1" mass="0"/></body>'
         builder = newton.ModelBuilder()
-        builder.add_mjcf(_settotalmass_mjcf('<compiler settotalmass="10"/>', bodies))
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', bodies))
 
         self.assertAlmostEqual(builder.body_mass[0], 0.0, places=5)
 
@@ -10627,7 +10627,7 @@ class TestImportMjcfSetTotalMass(unittest.TestCase):
             </body>
         """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(_settotalmass_mjcf('<compiler settotalmass="10"/>', bodies), collapse_fixed_joints=True)
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', bodies), collapse_fixed_joints=True)
 
         self.assertAlmostEqual(sum(builder.body_mass), 10.0, places=4)
 

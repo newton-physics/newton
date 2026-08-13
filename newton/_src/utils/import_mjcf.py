@@ -441,7 +441,8 @@ def parse_mjcf(
     inertia_group_range = tuple(int(value) for value in compiler_attribs.get("inertiagrouprange", "0 5").split())
     if len(inertia_group_range) != 2:
         raise ValueError("MJCF compiler inertiagrouprange must contain exactly 2 integers.")
-    # Non-positive means "no rescale" in MuJoCo, so absent and disabled share a sentinel.
+    # Match MuJoCo: any non-positive settotalmass disables rescaling, so an absent
+    # attribute can default to one without needing a separate "unset" state.
     set_total_mass = float(compiler_attribs.get("settotalmass", "-1"))
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
