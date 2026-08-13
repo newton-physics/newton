@@ -109,6 +109,21 @@ def reorder_rows_kernel_col_vector(
         dst[batch_id, i, 0] = src[batch_id, src_row, 0]
 
 
+@wp.kernel
+def reorder_rows_kernel_col_vector_multi_rhs(
+    src: wp.array3d[float],
+    dst: wp.array3d[float],
+    ordering: wp.array2d[int],
+    n_rows_arr: wp.array[int],
+    batch_mask: wp.array[wp.bool],
+):
+    batch_id, i, rhs_id = wp.tid()
+    n_rows = n_rows_arr[batch_id]
+    if i < n_rows and batch_mask[batch_id]:
+        src_row = ordering[batch_id, i]
+        dst[batch_id, i, rhs_id] = src[batch_id, src_row, rhs_id]
+
+
 def to_binary_matrix(M):
     return (M != 0).astype(int)
 
@@ -392,6 +407,75 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
     return blocked_cholesky_solve_kernel
 
 
+@cache
+def create_blocked_cholesky_solve_multi_rhs_kernel(block_size: int):
+    @wp.kernel
+    def blocked_cholesky_solve_multi_rhs_kernel(
+        L_batched: wp.array3d[float],
+        L_tile_pattern_batched: wp.array3d[int],
+        b_batched: wp.array3d[float],
+        x_batched: wp.array3d[float],
+        y_batched: wp.array3d[float],
+        active_matrix_size_arr: wp.array[int],
+        batch_mask: wp.array[wp.bool],
+    ):
+        """Solve several right-hand sides against each shared Cholesky factor."""
+        batch_id, rhs_id, _tid_block = wp.tid()
+
+        if not batch_mask[batch_id]:
+            return
+
+        L = L_batched[batch_id]
+        b = b_batched[batch_id]
+        x = x_batched[batch_id]
+        y = y_batched[batch_id]
+        L_tile_pattern = L_tile_pattern_batched[batch_id]
+        active_matrix_size = active_matrix_size_arr[batch_id]
+        n = ((active_matrix_size + block_size - 1) // block_size) * block_size
+
+        for i in range(0, n, block_size):
+            tile_i = i // block_size
+            if L_tile_pattern[tile_i, tile_i] == 0:
+                continue
+
+            rhs_tile = wp.tile_load(b, shape=(block_size, 1), offset=(i, rhs_id))
+            L_diag = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
+            if i > 0:
+                for j in range(0, i, block_size):
+                    tile_j = j // block_size
+                    if L_tile_pattern[tile_i, tile_j] == 0:
+                        continue
+                    L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
+                    y_block = wp.tile_load(y, shape=(block_size, 1), offset=(j, rhs_id))
+                    wp.tile_matmul(L_block, y_block, rhs_tile, alpha=-1.0)
+            wp.tile_lower_solve_inplace(L_diag, rhs_tile)
+            wp.tile_store(y, rhs_tile, offset=(i, rhs_id))
+
+        for i in range(n - block_size, -1, -block_size):
+            tile_i = i // block_size
+            if L_tile_pattern[tile_i, tile_i] == 0:
+                continue
+
+            i_end = i + block_size
+            rhs_tile = wp.tile_load(y, shape=(block_size, 1), offset=(i, rhs_id))
+            L_diag = wp.tile_load(L, shape=(block_size, block_size), offset=(i, i))
+            if i_end < n:
+                for j in range(i_end, n, block_size):
+                    tile_j = j // block_size
+                    if L_tile_pattern[tile_j, tile_i] == 0:
+                        continue
+                    L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i))
+                    x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, rhs_id))
+                    if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                        wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
+                    else:
+                        wp.tile_matmul(wp.tile_transpose(L_tile), x_tile, rhs_tile, alpha=-1.0)
+            wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)
+            wp.tile_store(x, rhs_tile, offset=(i, rhs_id))
+
+    return blocked_cholesky_solve_multi_rhs_kernel
+
+
 class SemiSparseBlockCholeskySolverBatched:
     """
     Batched solver for linear systems using block Cholesky factorization.
@@ -411,6 +495,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self.block_size = block_size
         self.cholesky_kernel = create_blocked_cholesky_kernel(block_size)
         self.solve_kernel = create_blocked_cholesky_solve_kernel(block_size)
+        self.solve_multi_rhs_kernel = create_blocked_cholesky_solve_multi_rhs_kernel(block_size)
 
         # Allocate workspace arrays for factorization and solve
         # Compute padded size rounded up to next multiple of block size
@@ -433,6 +518,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self.rhs_swizzled = wp.zeros(
             shape=(num_batches, self.padded_num_equations, 1), dtype=float, device=self.device
         )  # temp memory
+        self._multi_rhs_workspaces: dict[int, tuple[wp.array, wp.array, wp.array]] = {}
 
         self.num_tiles = (self.padded_num_equations + self.block_size - 1) // self.block_size
         self.L_tile_pattern = wp.zeros(
@@ -589,7 +675,6 @@ class SemiSparseBlockCholeskySolverBatched:
 
             rhs = self.rhs_swizzled
 
-        # Then solve the system using blocked_cholesky_solve kernel
         wp.launch_tiled(
             self.solve_kernel,
             dim=self.num_batches,
@@ -599,10 +684,81 @@ class SemiSparseBlockCholeskySolverBatched:
         )
 
         if self.enable_reordering:
-            # Undo reordering
             wp.launch(
                 reorder_rows_kernel_col_vector,
                 dim=[self.num_batches, self.max_num_equations],
                 inputs=[R, result, self.inverse_ordering, self.num_active_equations, batch_mask],
+                device=self.device,
+            )
+
+    def solve_multi_rhs(
+        self,
+        rhs: wp.array3d[float],
+        result: wp.array3d[float],
+        batch_mask: wp.array[wp.bool],
+    ):
+        """Solve multiple right-hand sides using the most recent factorization.
+
+        Args:
+            rhs: Right-hand sides with shape ``(batch_count, n, rhs_count)``.
+            result: Solutions with the same shape as ``rhs``.
+            batch_mask: Flags selecting matrices to solve.
+        """
+        if rhs.shape != result.shape:
+            raise ValueError("rhs and result must have identical shapes")
+        if rhs.ndim != 3 or rhs.shape[0] != self.num_batches:
+            raise ValueError("rhs must have shape (batch_count, n, rhs_count)")
+
+        rhs_count = rhs.shape[2]
+        workspace = self._multi_rhs_workspaces.get(rhs_count)
+        if workspace is None:
+            shape = (self.num_batches, self.padded_num_equations, rhs_count)
+            workspace = (
+                wp.zeros(shape=shape, dtype=float, device=self.device),
+                wp.zeros(shape=shape, dtype=float, device=self.device),
+                wp.zeros(shape=shape, dtype=float, device=self.device),
+            )
+            self._multi_rhs_workspaces[rhs_count] = workspace
+        rhs_swizzled, result_swizzled, y = workspace
+
+        solve_rhs = rhs
+        solve_result = result
+        if self.enable_reordering:
+            wp.launch(
+                reorder_rows_kernel_col_vector_multi_rhs,
+                dim=[self.num_batches, self.max_num_equations, rhs_count],
+                inputs=[rhs, rhs_swizzled, self.ordering, self.num_active_equations, batch_mask],
+                device=self.device,
+            )
+            solve_rhs = rhs_swizzled
+            solve_result = result_swizzled
+
+        wp.launch_tiled(
+            self.solve_multi_rhs_kernel,
+            dim=(self.num_batches, rhs_count),
+            inputs=[
+                self.L,
+                self.L_tile_pattern,
+                solve_rhs,
+                solve_result,
+                y,
+                self.num_active_equations,
+                batch_mask,
+            ],
+            block_dim=self.num_threads_per_block_solve,
+            device=self.device,
+        )
+
+        if self.enable_reordering:
+            wp.launch(
+                reorder_rows_kernel_col_vector_multi_rhs,
+                dim=[self.num_batches, self.max_num_equations, rhs_count],
+                inputs=[
+                    solve_result,
+                    result,
+                    self.inverse_ordering,
+                    self.num_active_equations,
+                    batch_mask,
+                ],
                 device=self.device,
             )

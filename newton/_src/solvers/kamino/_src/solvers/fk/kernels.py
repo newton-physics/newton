@@ -509,6 +509,25 @@ def _eval_fk_actuated_dofs_or_coords(
             fk_actuated_dofs[fk_dof_id] = model_base_dofs[base_dof_id]
 
 
+@wp.kernel
+def _eval_fk_actuated_dofs_multi_rhs(
+    model_base_dofs: wp.array2d[wp.spatial_vectorf],
+    model_actuated_dofs: wp.array2d[wp.float32],
+    actuated_dofs_map: wp.array[wp.int32],
+    fk_actuated_dofs: wp.array2d[wp.float32],
+):
+    rhs_id, fk_dof_id = wp.tid()
+    if rhs_id < fk_actuated_dofs.shape[0] and fk_dof_id < fk_actuated_dofs.shape[1]:
+        model_dof_id = actuated_dofs_map[fk_dof_id]
+        if model_dof_id >= 0:
+            fk_actuated_dofs[rhs_id, fk_dof_id] = model_actuated_dofs[rhs_id, model_dof_id]
+        else:
+            base_dof_id = -(model_dof_id + 1)
+            world_id = base_dof_id // 6
+            component = base_dof_id - 6 * world_id
+            fk_actuated_dofs[rhs_id, fk_dof_id] = model_base_dofs[rhs_id, world_id][component]
+
+
 def _make_typed_joint_transform_to_coords_func(dof_type: JointDoFType):
     """Factory returning a function extracting joint coords from joint transform, for a single joint type."""
     num_coords = dof_type.num_coords
@@ -2179,6 +2198,73 @@ def _eval_target_constraint_velocities(
 
 
 @wp.kernel
+def _eval_target_constraint_velocities_multi_rhs(
+    num_joints: wp.array[wp.int32],
+    first_joint_id: wp.array[wp.int32],
+    joints_dof_type: wp.array[wp.int32],
+    joints_act_type: wp.array[wp.int32],
+    actuated_coords_offset: wp.array[wp.int32],
+    actuated_dofs_offset: wp.array[wp.int32],
+    ct_full_to_red_map: wp.array[wp.int32],
+    actuators_q: wp.array[wp.float32],
+    actuators_u: wp.array2d[wp.float32],
+    world_mask: wp.array[wp.bool],
+    target_cts_u: wp.array3d[wp.float32],
+):
+    rhs_id, wd_id, jt_id_loc = wp.tid()
+    if wd_id >= world_mask.shape[0] or not world_mask[wd_id] or jt_id_loc >= num_joints[wd_id]:
+        return
+
+    jt_id_tot = first_joint_id[wd_id] + jt_id_loc
+    if joints_act_type[jt_id_tot] == JointActuationType.PASSIVE:
+        return
+    dof_type_j = joints_dof_type[jt_id_tot]
+    offset_q_j = actuated_coords_offset[jt_id_tot]
+    offset_u_j = actuated_dofs_offset[jt_id_tot]
+    offset_cts_j = ct_full_to_red_map[6 * jt_id_tot]
+
+    if dof_type_j == FKJointDoFType.CARTESIAN:
+        target_cts_u[wd_id, offset_cts_j, rhs_id] = actuators_u[rhs_id, offset_u_j]
+        target_cts_u[wd_id, offset_cts_j + 1, rhs_id] = actuators_u[rhs_id, offset_u_j + 1]
+        target_cts_u[wd_id, offset_cts_j + 2, rhs_id] = actuators_u[rhs_id, offset_u_j + 2]
+    elif dof_type_j == FKJointDoFType.CYLINDRICAL:
+        target_cts_u[wd_id, offset_cts_j, rhs_id] = actuators_u[rhs_id, offset_u_j]
+        target_cts_u[wd_id, offset_cts_j + 3, rhs_id] = actuators_u[rhs_id, offset_u_j + 1]
+    elif dof_type_j == FKJointDoFType.FIXED:
+        pass
+    elif dof_type_j == FKJointDoFType.FREE:
+        for i in range(6):
+            target_cts_u[wd_id, offset_cts_j + i, rhs_id] = actuators_u[rhs_id, offset_u_j + i]
+    elif dof_type_j == FKJointDoFType.PRISMATIC:
+        target_cts_u[wd_id, offset_cts_j, rhs_id] = actuators_u[rhs_id, offset_u_j]
+    elif dof_type_j == FKJointDoFType.REVOLUTE:
+        target_cts_u[wd_id, offset_cts_j + 3, rhs_id] = actuators_u[rhs_id, offset_u_j]
+    elif dof_type_j == FKJointDoFType.SPHERICAL:
+        for i in range(3):
+            target_cts_u[wd_id, offset_cts_j + 3 + i, rhs_id] = actuators_u[rhs_id, offset_u_j + i]
+    elif dof_type_j == FKJointDoFType.GIMBAL or dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+        third_axis_sign = 1.0
+        if dof_type_j == FKJointDoFType.GIMBAL_LEFT_HANDED:
+            third_axis_sign = -1.0
+        axes = gimbal_transported_axes(
+            wp.vec3f(actuators_q[offset_q_j], actuators_q[offset_q_j + 1], actuators_q[offset_q_j + 2]),
+            third_axis_sign,
+        )
+        omega = (
+            wp.vec3f(axes[:, 0]) * actuators_u[rhs_id, offset_u_j]
+            + wp.vec3f(axes[:, 1]) * actuators_u[rhs_id, offset_u_j + 1]
+            + wp.vec3f(axes[:, 2]) * actuators_u[rhs_id, offset_u_j + 2]
+        )
+        for i in range(3):
+            target_cts_u[wd_id, offset_cts_j + 3 + i, rhs_id] = omega[i]
+    elif dof_type_j == FKJointDoFType.UNIVERSAL:
+        target_cts_u[wd_id, offset_cts_j + 3, rhs_id] = actuators_u[rhs_id, offset_u_j]
+        target_cts_u[wd_id, offset_cts_j + 4, rhs_id] = actuators_u[rhs_id, offset_u_j + 1]
+    else:
+        assert False, "Unexpected actuator dof type"  # noqa: B011
+
+
+@wp.kernel
 def _correct_universal_constraint_velocities(
     # Inputs
     num_joints: wp.array[wp.int32],
@@ -2257,6 +2343,73 @@ def _correct_universal_constraint_velocities(
 
 
 @wp.kernel
+def _correct_universal_constraint_velocities_multi_rhs(
+    num_joints: wp.array[wp.int32],
+    first_joint_id: wp.array[wp.int32],
+    joints_dof_type: wp.array[wp.int32],
+    joints_act_type: wp.array[wp.int32],
+    joints_bid_B: wp.array[wp.int32],
+    joints_bid_F: wp.array[wp.int32],
+    joints_X_Bj: wp.array[wp.mat33f],
+    joints_X_Fj: wp.array[wp.mat33f],
+    ct_full_to_red_map: wp.array[wp.int32],
+    bodies_q: wp.array[wp.transformf],
+    world_mask: wp.array[wp.bool],
+    target_cts_u: wp.array3d[wp.float32],
+):
+    rhs_id, wd_id, jt_id_loc = wp.tid()
+    if wd_id >= world_mask.shape[0] or not world_mask[wd_id] or jt_id_loc >= num_joints[wd_id]:
+        return
+
+    jt_id_tot = first_joint_id[wd_id] + jt_id_loc
+    if (
+        joints_act_type[jt_id_tot] == JointActuationType.PASSIVE
+        or joints_dof_type[jt_id_tot] != FKJointDoFType.UNIVERSAL
+    ):
+        return
+
+    offset_cts_j = ct_full_to_red_map[6 * jt_id_tot]
+    omega_curr = wp.vec3f(
+        target_cts_u[wd_id, offset_cts_j + 3, rhs_id],
+        target_cts_u[wd_id, offset_cts_j + 4, rhs_id],
+        0.0,
+    )
+    bid_B = joints_bid_B[jt_id_tot]
+    bid_F = joints_bid_F[jt_id_tot]
+    q_B = wp.quatf(0.0, 0.0, 0.0, 1.0) if bid_B < 0 else wp.transform_get_rotation(bodies_q[bid_B])
+    q_F = wp.transform_get_rotation(bodies_q[bid_F])
+    q_X_B = wp.quat_from_matrix(joints_X_Bj[jt_id_tot])
+    q_X_F = wp.quat_from_matrix(joints_X_Fj[jt_id_tot])
+    q_rel = wp.quat_inverse(q_B * q_X_B) * q_F * q_X_F
+
+    a_x = wp.vec3f(1.0, 0.0, 0.0)
+    a_y_raw = wp.quat_rotate(q_rel, wp.vec3f(0.0, 1.0, 0.0))
+    a_y = wp.normalize(a_y_raw - wp.dot(a_y_raw, a_x) * a_x)
+    a_z = wp.cross(a_x, a_y)
+    omega = omega_curr[0] * a_x + omega_curr[1] * a_y + omega_curr[2] * a_z
+    for i in range(3):
+        target_cts_u[wd_id, offset_cts_j + 3 + i, rhs_id] = omega[i]
+
+
+@wp.kernel
+def _eval_jacobian_T_constraints_multi_rhs(
+    constraints_jacobian: wp.array3d[wp.float32],
+    constraints: wp.array3d[wp.float32],
+    num_constraints: wp.array[wp.int32],
+    num_states: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
+    jacobian_T_constraints: wp.array3d[wp.float32],
+):
+    wd_id, state_id, rhs_id = wp.tid()
+    if not world_mask[wd_id] or state_id >= num_states[wd_id]:
+        return
+    value = float(0.0)
+    for constraint_id in range(num_constraints[wd_id]):
+        value += constraints_jacobian[wd_id, constraint_id, state_id] * constraints[wd_id, constraint_id, rhs_id]
+    jacobian_T_constraints[wd_id, state_id, rhs_id] = value
+
+
+@wp.kernel
 def _eval_body_velocities(
     # Inputs
     num_bodies: wp.array[wp.int32],
@@ -2303,6 +2456,36 @@ def _eval_body_velocities(
         bodies_u[rb_id_tot][3] = omega[0]
         bodies_u[rb_id_tot][4] = omega[1]
         bodies_u[rb_id_tot][5] = omega[2]
+
+
+@wp.kernel
+def _eval_body_velocities_multi_rhs(
+    num_bodies: wp.array[wp.int32],
+    first_body_id: wp.array[wp.int32],
+    bodies_q: wp.array[wp.transformf],
+    bodies_q_dot: wp.array3d[wp.float32],
+    world_mask: wp.array[wp.bool],
+    bodies_u: wp.array2d[wp.spatial_vectorf],
+):
+    rhs_id, wd_id, rb_id_loc = wp.tid()
+    if not world_mask[wd_id] or rb_id_loc >= num_bodies[wd_id]:
+        return
+
+    rb_id_tot = first_body_id[wd_id] + rb_id_loc
+    offset_q_dot = 7 * rb_id_loc
+    linear = wp.vec3f(
+        bodies_q_dot[wd_id, offset_q_dot, rhs_id],
+        bodies_q_dot[wd_id, offset_q_dot + 1, rhs_id],
+        bodies_q_dot[wd_id, offset_q_dot + 2, rhs_id],
+    )
+    q_dot = wp.vec4f(
+        bodies_q_dot[wd_id, offset_q_dot + 3, rhs_id],
+        bodies_q_dot[wd_id, offset_q_dot + 4, rhs_id],
+        bodies_q_dot[wd_id, offset_q_dot + 5, rhs_id],
+        bodies_q_dot[wd_id, offset_q_dot + 6, rhs_id],
+    )
+    omega = 2.0 * (G_of(wp.transform_get_rotation(bodies_q[rb_id_tot])) * q_dot)
+    bodies_u[rhs_id, rb_id_tot] = wp.spatial_vector(linear, omega)
 
 
 @wp.kernel

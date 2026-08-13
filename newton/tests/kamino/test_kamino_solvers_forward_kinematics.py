@@ -959,6 +959,70 @@ class ForwardKinematicsWarnings(unittest.TestCase):
         self.assertTrue(any("no free-floating base body" in message for message in logs.output))
 
 
+class MultiRhsVelocityForwardKinematics(unittest.TestCase):
+    """Verify shared-factorization velocity FK."""
+
+    def setUp(self):
+        """Initialize the shared Kamino test device."""
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        """Release the test device reference."""
+        self.default_device = None
+
+    def test_multi_rhs_matches_repeated_velocity_solves(self):
+        """Match every multi-RHS body twist to an independent velocity solve."""
+        builder = build_boxes_fourbar(
+            fixedbase=False,
+            floatingbase=True,
+            limits=False,
+            ground=False,
+            verbose=False,
+            dynamic_joints=False,
+            implicit_pd=False,
+            actuator_ids=[1],
+        )
+        model = builder.finalize(device=self.default_device)
+        solver = ForwardKinematicsSolver(model=model)
+        bodies_q = wp.clone(model.bodies.q_i_0)
+
+        rhs_count = 4
+        actuator_count = model.size.sum_of_num_fk_actuated_joint_dofs
+        actuator_u_np = np.linspace(-0.7, 0.8, rhs_count * actuator_count, dtype=np.float32).reshape(
+            rhs_count, actuator_count
+        )
+        base_u_np = np.array(
+            [
+                [0.1, -0.2, 0.3, 0.0, 0.1, -0.1],
+                [0.0, 0.0, 0.0, 0.2, -0.1, 0.3],
+                [-0.3, 0.1, 0.0, -0.2, 0.0, 0.1],
+                [0.2, 0.2, -0.1, 0.0, -0.3, 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+        expected = []
+        for rhs_index in range(rhs_count):
+            actuator_u = wp.array(actuator_u_np[rhs_index], dtype=wp.float32, device=self.default_device)
+            base_u = wp.array(
+                base_u_np[rhs_index : rhs_index + 1], dtype=wp.spatial_vectorf, device=self.default_device
+            )
+            bodies_u = wp.zeros(model.size.sum_of_num_bodies, dtype=wp.spatial_vectorf, device=self.default_device)
+            solver.solve_for_body_velocities(actuator_u, bodies_q, bodies_u, base_u=base_u)
+            expected.append(bodies_u.numpy())
+
+        actuator_u = wp.array(actuator_u_np, dtype=wp.float32, device=self.default_device)
+        base_u = wp.array(base_u_np[:, None, :], dtype=wp.spatial_vectorf, device=self.default_device)
+        bodies_u = wp.zeros(
+            (rhs_count, model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf, device=self.default_device
+        )
+        solver.solve_for_body_velocities_multi_rhs(actuator_u, bodies_q, bodies_u, base_u=base_u)
+
+        np.testing.assert_allclose(bodies_u.numpy(), np.asarray(expected), rtol=2.0e-4, atol=2.0e-4)
+
+
 ###
 # Test execution
 ###
