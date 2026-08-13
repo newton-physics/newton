@@ -56,6 +56,7 @@ from ..usd.schema_resolver import (
     SchemaResolver,
     SchemaResolverManager,
     _default_when_omitted,
+    _ImporterDefault,
     _interpret_import_argument,
     _resolve_import_option,
 )
@@ -941,7 +942,9 @@ def parse_usd(
             prim,
             prim_type=PrimType.JOINT,
             key="velocity_limit",
-            default=None,
+            # Apply the builder value later because angular USD limits need unit
+            # conversion, but reserve importer-default precedence here.
+            default=_ImporterDefault(None),
             verbose=verbose,
             comparison_key=lambda value, resolver: (
                 default_joint_velocity_limit if _interpret_usd_joint_velocity_limit(value, resolver) is None else value

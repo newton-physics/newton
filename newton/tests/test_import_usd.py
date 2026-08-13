@@ -2000,36 +2000,79 @@ def Xform "Articulation" (
         from pxr import Usd, UsdGeom, UsdPhysics
 
         for merged in (False, True):
-            with self.subTest(merged=merged):
-                stage = Usd.Stage.CreateInMemory()
-                root = UsdGeom.Xform.Define(stage, "/World")
-                UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
-                body = UsdGeom.Xform.Define(stage, "/World/Body")
-                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            for use_applied_schema_fallbacks in (False, True):
+                with self.subTest(
+                    merged=merged,
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                ):
+                    stage = Usd.Stage.CreateInMemory()
+                    root = UsdGeom.Xform.Define(stage, "/World")
+                    UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                    body = UsdGeom.Xform.Define(stage, "/World/Body")
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
 
-                joint_specs = (
-                    (("slide", UsdPhysics.PrismaticJoint, "X"), ("hinge", UsdPhysics.RevoluteJoint, "Z"))
-                    if merged
-                    else (("hinge", UsdPhysics.RevoluteJoint, "Z"),)
-                )
-                for name, joint_type, axis in joint_specs:
-                    joint = joint_type.Define(stage, f"/World/{name}")
-                    joint.GetPrim().ApplyAPI("NewtonJointAPI")
-                    joint.CreateBody1Rel().SetTargets([body.GetPath()])
-                    joint.CreateAxisAttr().Set(axis)
+                    joint_specs = (
+                        (("slide", UsdPhysics.PrismaticJoint, "X"), ("hinge", UsdPhysics.RevoluteJoint, "Z"))
+                        if merged
+                        else (("hinge", UsdPhysics.RevoluteJoint, "Z"),)
+                    )
+                    for name, joint_type, axis in joint_specs:
+                        joint = joint_type.Define(stage, f"/World/{name}")
+                        joint.GetPrim().ApplyAPI("NewtonJointAPI")
+                        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+                        joint.CreateAxisAttr().Set(axis)
 
-                builder = newton.ModelBuilder()
-                builder.default_joint_cfg.velocity_limit = 123.0
-                stdout = io.StringIO()
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always", DeprecationWarning)
-                    with contextlib.redirect_stdout(stdout):
-                        builder.add_usd(stage, verbose=True, load_visual_shapes=False)
+                    builder = newton.ModelBuilder()
+                    builder.default_joint_cfg.velocity_limit = 123.0
+                    stdout = io.StringIO()
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always", DeprecationWarning)
+                        with contextlib.redirect_stdout(stdout):
+                            builder.add_usd(
+                                stage,
+                                verbose=True,
+                                load_visual_shapes=False,
+                                use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                            )
 
-                self.assertNotIn("Cannot resolve value for 'joint:velocity_limit'", stdout.getvalue())
-                self.assertFalse(any("newton:velocityLimit" in str(item.message) for item in caught))
-                model = builder.finalize()
-                self.assertEqual(model.joint_velocity_limit.numpy().tolist(), [123.0] * len(joint_specs))
+                    self.assertNotIn("Cannot resolve value for 'joint:velocity_limit'", stdout.getvalue())
+                    self.assertFalse(any("newton:velocityLimit" in str(item.message) for item in caught))
+                    model = builder.finalize()
+                    self.assertEqual(model.joint_velocity_limit.numpy().tolist(), [123.0] * len(joint_specs))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_velocity_importer_default_precedes_compatibility_default(self):
+        """Prefer the velocity importer default over an unowned resolver default."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        class SchemaResolverCompatibility(usd.SchemaResolver):
+            name = "compatibility"
+            mapping: ClassVar = {
+                usd.PrimType.JOINT: {
+                    "velocity_limit": usd.SchemaResolver.SchemaAttribute("compat:velocityLimit", 456.0)
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.PrismaticJoint.Define(stage, "/World/Joint")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+        joint.CreateAxisAttr().Set("X")
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.velocity_limit = 123.0
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverCompatibility()],
+            use_applied_schema_fallbacks=True,
+            load_visual_shapes=False,
+        )
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_velocity_limit.numpy().tolist(), [123.0])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_velocity_fallback_audit_reuses_authored_read(self):

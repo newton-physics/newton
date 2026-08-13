@@ -538,7 +538,7 @@ class SchemaResolverManager:
             comparison_key=comparison_key,
             legacy_value_transformer=legacy_value_transformer,
         )
-        self._report_missing(prim, prim_type, key, value, verbose and override is _NO_OVERRIDE)
+        self._report_missing(prim, prim_type, key, value, default, verbose and override is _NO_OVERRIDE)
         return value
 
     def get_value_with_resolver(
@@ -567,7 +567,7 @@ class SchemaResolverManager:
             comparison_key=comparison_key,
             legacy_value_transformer=legacy_value_transformer,
         )
-        self._report_missing(prim, prim_type, key, value, verbose and override is _NO_OVERRIDE)
+        self._report_missing(prim, prim_type, key, value, default, verbose and override is _NO_OVERRIDE)
         return value, resolver
 
     @property
@@ -814,8 +814,16 @@ class SchemaResolverManager:
         )
 
     @staticmethod
-    def _report_missing(prim: Usd.Prim, prim_type: PrimType, key: str, value: Any, verbose: bool) -> None:
-        if value is not None or not verbose:
+    def _report_missing(
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        value: Any,
+        default: Any,
+        verbose: bool,
+    ) -> None:
+        has_importer_default, _ = _importer_default(default)
+        if value is not None or has_importer_default or not verbose:
             return
         prim_path = SchemaResolverManager._prim_path(prim)
         print(
