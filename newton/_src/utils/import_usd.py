@@ -99,6 +99,11 @@ def _interpret_usd_max_hull_vertices(value, resolver) -> int | None:
     return value
 
 
+def _interpret_usd_joint_velocity_limit(value, _resolver=None) -> float | None:
+    """Interpret an unlimited USD joint velocity as ``None``."""
+    return None if value == float("inf") else value
+
+
 def _resolve_newton_limit_ke(
     limit_ke: float | None,
     fallback: float,
@@ -932,15 +937,17 @@ def parse_usd(
         return builder_default if resolved.value is None else resolved.value, "mjc_default"
 
     def _resolve_joint_velocity_limit(prim: Usd.Prim) -> float | None:
-        return R.get_value(
+        value = R.get_value(
             prim,
             prim_type=PrimType.JOINT,
             key="velocity_limit",
             default=None,
             verbose=verbose,
-            legacy_value_transformer=lambda value, _resolver: None if value == float("inf") else value,
-            comparison_key=lambda value, _resolver: default_joint_velocity_limit if value is None else value,
+            comparison_key=lambda value, resolver: (
+                default_joint_velocity_limit if _interpret_usd_joint_velocity_limit(value, resolver) is None else value
+            ),
         )
+        return _interpret_usd_joint_velocity_limit(value)
 
     def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
         """Choose MuJoCo limit-solref semantics from the resolved gain sources."""

@@ -122,6 +122,8 @@ class SchemaResolver:
             usd_value_transformer: Optional function to transform the raw value into the format expected by Newton.
             usd_value_getter: Optional function (prim) -> value used instead of reading a single attribute (e.g. to compute gap from contactOffset - restOffset).
             attribute_names: When set, names used for collect_prim_attrs; otherwise [name] is used.
+            fallback_is_unset: Optional predicate that returns ``True`` when a registered schema fallback expresses
+                no opinion and resolution should continue.
         """
 
         name: str
@@ -129,6 +131,7 @@ class SchemaResolver:
         usd_value_transformer: Callable[[Any], Any] | None = None
         usd_value_getter: Callable[[Usd.Prim], Any] | None = None
         attribute_names: Sequence[str] = ()
+        fallback_is_unset: Callable[[Any], bool] | None = None
         _reader_value_getter: Callable[[Callable[[str], Any | None]], Any] | None = field(
             default=None,
             init=False,
@@ -413,7 +416,8 @@ class _SchemaResolution:
                 if fallback is _UNREGISTERED_SCHEMA:
                     compatibility_fallbacks.add(id(resolver))
                 elif fallback is not _MISSING_FALLBACK:
-                    return _ResolvedValue(fallback, resolver, False)
+                    if spec.fallback_is_unset is None or not spec.fallback_is_unset(fallback):
+                        return _ResolvedValue(fallback, resolver, False)
 
         has_importer_default, importer_default = _importer_default(default)
         if has_importer_default:

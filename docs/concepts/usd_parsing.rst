@@ -501,8 +501,10 @@ then follows four stages:
 1. **Authored Value**: Read the current resolver's authored property value.
 2. **Registered Schema Fallback**: If that resolver's schema is applied and the
    property is unauthored and unblocked, read its fallback from the composed prim
-   definition in ``Usd.SchemaRegistry``. Repeat stages 1 and 2 for each
-   resolver in priority order.
+   definition in ``Usd.SchemaRegistry``. A resolver may mark a fallback as an
+   unset sentinel, meaning that the schema has no opinion for that property.
+   Skip those sentinels and repeat stages 1 and 2 for each resolver in priority
+   order.
 3. **Importer Default**: Use the property-specific importer fallback after no
    resolver supplies an authored value or registered schema fallback.
 4. **Resolver Compatibility Default**: For an applied but unregistered schema,

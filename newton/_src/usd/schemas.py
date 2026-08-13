@@ -24,6 +24,18 @@ SchemaAttribute = SchemaResolver.SchemaAttribute
 _AttributeReader = Callable[[str], Any | None]
 
 
+def _fallback_is_negative_infinity(value: Any) -> bool:
+    return value == float("-inf")
+
+
+def _fallback_is_positive_infinity(value: Any) -> bool:
+    return value == float("inf")
+
+
+def _fallback_is_negative_one(value: Any) -> bool:
+    return value == -1
+
+
 def _physx_gap_from_reader(read_attribute: _AttributeReader) -> float | None:
     """Compute Newton gap from PhysX: contactOffset - restOffset [m].
 
@@ -156,9 +168,21 @@ class SchemaResolverNewton(SchemaResolver):
             "armature": SchemaAttribute("newton:armature", 0.0),
             "damping": SchemaAttribute("newton:damping", None),
             "friction": SchemaAttribute("newton:friction", 0.0),
-            "limit_ke": SchemaAttribute("newton:limitStiffness", None),
-            "limit_kd": SchemaAttribute("newton:limitDamping", None),
-            "velocity_limit": SchemaAttribute("newton:velocityLimit", float("inf")),
+            "limit_ke": SchemaAttribute(
+                "newton:limitStiffness",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "limit_kd": SchemaAttribute(
+                "newton:limitDamping",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "velocity_limit": SchemaAttribute(
+                "newton:velocityLimit",
+                float("inf"),
+                fallback_is_unset=_fallback_is_positive_infinity,
+            ),
             # Non-schema per-DOF limit attrs (deprecated; use newton:limitStiffness / newton:limitDamping)
             "limit_linear_ke": SchemaAttribute(
                 "newton:linear:limitStiffness",
@@ -268,10 +292,18 @@ class SchemaResolverNewton(SchemaResolver):
         },
         PrimType.SHAPE: {
             # Mesh
-            "max_hull_vertices": SchemaAttribute("newton:maxHullVertices", -1),
+            "max_hull_vertices": SchemaAttribute(
+                "newton:maxHullVertices",
+                -1,
+                fallback_is_unset=_fallback_is_negative_one,
+            ),
             # Collisions: newton margin == newton:contactMargin, newton gap == newton:contactGap
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
-            "gap": SchemaAttribute("newton:contactGap", float("-inf")),
+            "gap": SchemaAttribute(
+                "newton:contactGap",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
             # Legacy per-shape contact attrs (deprecated; use NewtonMaterialAPI instead)
             "ke": SchemaAttribute(
                 "newton:contact_ke",
@@ -298,15 +330,27 @@ class SchemaResolverNewton(SchemaResolver):
             "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", float("-inf")),
             "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", float("-inf")),
             "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", float("-inf")),
-            "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", float("-inf")),
+            "sdf_target_voxel_size": SchemaAttribute(
+                "newton:sdfTargetVoxelSize",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
             "sdf_texture_format": SchemaAttribute("newton:sdfTextureFormat", None),
-            "sdf_padding": SchemaAttribute("newton:sdfPadding", float("-inf")),
+            "sdf_padding": SchemaAttribute(
+                "newton:sdfPadding",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
             # Hydroelastic contacts — folded into NewtonSDFCollisionAPI
             "hydroelastic_enabled": SchemaAttribute("newton:hydroelasticEnabled", None),
             "kh": SchemaAttribute("newton:hydroelasticStiffness", float("-inf")),
             # Mass model
             "mass_model": SchemaAttribute("newton:massModel", "solid"),
-            "shell_thickness": SchemaAttribute("newton:shellThickness", float("-inf")),
+            "shell_thickness": SchemaAttribute(
+                "newton:shellThickness",
+                float("-inf"),
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
@@ -315,10 +359,26 @@ class SchemaResolverNewton(SchemaResolver):
         PrimType.MATERIAL: {
             "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.25),
             "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0005),
-            "ke": SchemaAttribute("newton:contactStiffness", None),
-            "kd": SchemaAttribute("newton:contactDamping", None),
-            "kf": SchemaAttribute("newton:contactFrictionGain", None),
-            "ka": SchemaAttribute("newton:contactAdhesion", None),
+            "ke": SchemaAttribute(
+                "newton:contactStiffness",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "kd": SchemaAttribute(
+                "newton:contactDamping",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "kf": SchemaAttribute(
+                "newton:contactFrictionGain",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
+            "ka": SchemaAttribute(
+                "newton:contactAdhesion",
+                None,
+                fallback_is_unset=_fallback_is_negative_infinity,
+            ),
         },
         PrimType.ACTUATOR: {},
     }

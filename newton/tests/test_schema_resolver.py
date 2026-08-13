@@ -144,6 +144,52 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertIs(fallback.resolver, resolver)
         self.assertFalse(fallback.authored)
 
+    def test_resolution_skips_registered_unset_fallbacks(self):
+        """Skip registered fallbacks marked as unset without skipping authored values."""
+
+        class SentinelResolver(SchemaResolver):
+            name = "sentinel"
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute(
+                        "sentinel:armature",
+                        fallback_is_unset=lambda value: value == -1,
+                    )
+                }
+            }
+
+        class BackupResolver(SchemaResolver):
+            name = "backup"
+            mapping: ClassVar = {PrimType.JOINT: {"armature": SchemaResolver.SchemaAttribute("backup:armature")}}
+
+        sentinel = SentinelResolver()
+        backup = BackupResolver()
+        resolution = _SchemaResolution([sentinel, backup])
+
+        resolved = resolution._resolve_value(
+            lambda _resolver, _key: None,
+            lambda _resolver, _key: True,
+            lambda resolver, _key: -1 if resolver is sentinel else 0.25,
+            PrimType.JOINT,
+            "armature",
+        )
+
+        self.assertEqual(resolved.value, 0.25)
+        self.assertIs(resolved.resolver, backup)
+        self.assertFalse(resolved.authored)
+
+        authored = resolution._resolve_value(
+            lambda resolver, _key: -1 if resolver is sentinel else None,
+            lambda _resolver, _key: True,
+            lambda _resolver, _key: 0.25,
+            PrimType.JOINT,
+            "armature",
+        )
+
+        self.assertEqual(authored.value, -1)
+        self.assertIs(authored.resolver, sentinel)
+        self.assertTrue(authored.authored)
+
     def test_get_value_override_accepts_missing_prim(self):
         """Honor custom resolver getters when no PXR prim is available."""
 
