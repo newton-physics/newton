@@ -458,6 +458,38 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
+    def test_moreau_detects_midpoint_contact(self):
+        """Verify Moreau-Jean detects contacts created at the midpoint."""
+        # Start the sphere surface 0.3 m above the zero-gap ground plane.
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        basics.build_sphere_on_plane(builder=builder, z_offset=0.3)
+        model = builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+        config = SolverKamino.Config(integrator="moreau", use_collision_detector=True)
+        solver = SolverKamino(model, config=config)
+
+        detector = solver._collision_detector_kamino
+        contacts = solver._contacts_kamino
+        assert detector is not None
+        assert contacts is not None
+        assert contacts.model_active_contacts is not None
+
+        # Establish that the step-start configuration has no contacts.
+        detector.collide(data=solver._solver_kamino._data, contacts=contacts)
+        self.assertEqual(int(contacts.model_active_contacts.numpy()[0]), 0)
+
+        state_in = model.state()
+        state_out = model.state()
+        assert state_in.body_qd is not None
+        # Over the first half-step, the sphere moves 0.35 m down and penetrates the plane.
+        state_in.body_qd.assign(np.array([[0.0, 0.0, -7.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+
+        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+
+        # This contact exists only if detection uses the midpoint rather than state_in.
+        self.assertGreater(int(contacts.model_active_contacts.numpy()[0]), 0)
+
     def test_external_contacts_use_euler(self):
         """Verify external-contact configurations warn and pick Euler."""
         model = self._make_three_world_model()
