@@ -420,8 +420,8 @@ class TestSchemaResolver(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "invalid fallback"):
             resolver.get_value(joint, PrimType.JOINT, "armature")
 
-    def test_composed_fallback_may_transform_to_none(self):
-        """Preserve fallback provenance when transformation returns None."""
+    def test_composed_resolution_skips_values_transformed_to_none(self):
+        """Fall through authored and fallback values transformed to ``None``."""
 
         class SentinelResolver(SchemaResolver):
             name = "sentinel"
@@ -435,26 +435,30 @@ class TestSchemaResolver(unittest.TestCase):
                 }
             }
 
+        class BackupResolver(SchemaResolver):
+            name = "backup"
+            mapping: ClassVar = {PrimType.SHAPE: {"gap": SchemaResolver.SchemaAttribute("backup:contactGap", 0.25)}}
+
         stage = Usd.Stage.CreateInMemory()
         collider = UsdGeom.Cube.Define(stage, "/collider").GetPrim()
         collider.AddAppliedSchema("NewtonCollisionAPI")
         resolver = SchemaResolverManager(
-            [SentinelResolver()],
+            [SentinelResolver(), BackupResolver()],
             use_applied_schema_fallbacks=True,
         )
 
         resolved = resolver._resolve_value(collider, PrimType.SHAPE, "gap")
 
-        self.assertIsNone(resolved.value)
-        self.assertIsInstance(resolved.resolver, SentinelResolver)
+        self.assertEqual(resolved.value, 0.25)
+        self.assertIsNone(resolved.resolver)
         self.assertFalse(resolved.authored)
 
         collider.CreateAttribute("newton:contactGap", Sdf.ValueTypeNames.Float).Set(float("-inf"))
         resolved = resolver._resolve_value(collider, PrimType.SHAPE, "gap")
 
-        self.assertIsNone(resolved.value)
-        self.assertIsInstance(resolved.resolver, SentinelResolver)
-        self.assertTrue(resolved.authored)
+        self.assertEqual(resolved.value, 0.25)
+        self.assertIsNone(resolved.resolver)
+        self.assertFalse(resolved.authored)
 
     def test_composed_value_block_suppresses_schema_fallback(self):
         """Suppress schema fallbacks for blocked property values."""

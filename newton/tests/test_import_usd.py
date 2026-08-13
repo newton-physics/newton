@@ -2447,6 +2447,54 @@ def Xform "Articulation" (
         np.testing.assert_allclose(policy_gains[0], policy_gains[1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_limit_unset_falls_through_to_physx(self):
+        """Fall through an unauthored Newton sentinel to authored PhysX gains."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.GetPrim().ApplyAPI("NewtonJointAPI")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateLowerLimitAttr().Set(-45.0)
+        joint.CreateUpperLimitAttr().Set(45.0)
+        joint.GetPrim().CreateAttribute("physxLimit:angular:stiffness", Sdf.ValueTypeNames.Float).Set(777.0)
+        joint.GetPrim().CreateAttribute("physxLimit:angular:damping", Sdf.ValueTypeNames.Float).Set(33.0)
+
+        policy_gains = []
+        for use_applied_schema_fallbacks in (False, True):
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", DeprecationWarning)
+                builder.add_usd(
+                    stage,
+                    schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
+            model = builder.finalize()
+
+            dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
+            policy_gains.append(
+                (
+                    float(model.joint_limit_ke.numpy()[dof]),
+                    float(model.joint_limit_kd.numpy()[dof]),
+                )
+            )
+            self.assertFalse(any("newton:limit" in str(item.message) for item in caught))
+
+        np.testing.assert_allclose(policy_gains[0], policy_gains[1])
+        np.testing.assert_allclose(
+            policy_gains[1],
+            (777.0 / (math.pi / 180.0), 33.0 / (math.pi / 180.0)),
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
         builder_dfs = newton.ModelBuilder()
         builder_dfs.add_usd(
@@ -4140,13 +4188,14 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(limit_kd[dof3]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(solreflimit_mode[dof3]), SOLREF_MODE_FORCE_SPACE)
 
-        # Joint4: authored raw [0, 0] remains raw but cannot be converted to gains,
-        # so the MuJoCo [0.02, 1] default supplies ke=1/0.02^2 and kd=2/0.02.
+        # Joint4: authored raw [0, 0] is preserved for provenance but cannot be
+        # converted to gains, so composed resolution falls through to the
+        # importer defaults.
         dof4 = joint_qd_start[joint4_idx]
-        self.assertAlmostEqual(float(limit_ke[dof4]), 2500.0, places=4)
-        self.assertAlmostEqual(float(limit_kd[dof4]), 100.0, places=4)
+        self.assertAlmostEqual(float(limit_ke[dof4]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof4]), builder.default_joint_cfg.limit_kd, places=4)
         np.testing.assert_array_equal(raw_solreflimit[dof4], [0.0, 0.0])
-        self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
+        self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_FORCE_SPACE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_unregistered_physx_limit_api_uses_importer_defaults(self):

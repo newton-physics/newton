@@ -76,6 +76,10 @@ class _ResolverValue:
     authored: bool
     blocked: bool = False
 
+    @property
+    def usable(self) -> bool:
+        return self.value is not None
+
 
 class _SchemaFallbackError(Exception):
     """Base class for expected composed-fallback audit failures."""
@@ -408,14 +412,14 @@ class _SchemaResolution:
             value = read_value(resolver, key)
             if not isinstance(value, _ResolverValue):
                 value = _ResolverValue(value, value is not None)
-            if value.authored:
+            if value.authored and value.usable:
                 return _ResolvedValue(value.value, resolver, True)
 
             if not value.blocked and schema_is_applied(resolver, key):
                 fallback = read_fallback(resolver, key)
                 if fallback is _UNREGISTERED_SCHEMA:
                     compatibility_fallbacks.add(id(resolver))
-                elif fallback is not _MISSING_FALLBACK:
+                elif fallback is not _MISSING_FALLBACK and fallback is not None:
                     if spec.fallback_is_unset is None or not spec.fallback_is_unset(fallback):
                         return _ResolvedValue(fallback, resolver, False)
 
