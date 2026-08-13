@@ -232,7 +232,11 @@ class TestSDFDiskCachePure(unittest.TestCase):
         }
 
     def _save_fake_sparse_data(self, sparse_data: dict | None = None) -> tuple[str, Path]:
-        """Save fake sparse data and return its hash and cache path."""
+        """Save fake sparse data and return its hash and cache path.
+
+        Args:
+            sparse_data: Sparse data to save. Uses the default fixture when omitted.
+        """
         if sparse_data is None:
             sparse_data = self._fake_sparse_data()
         cache_hash = _sdf_cache.hash_inputs(**_common_hash_kwargs(self.vertices, self.indices))
@@ -241,7 +245,12 @@ class TestSDFDiskCachePure(unittest.TestCase):
 
     @staticmethod
     def _replace_cache_entry(npz_path: Path, **overrides: np.ndarray | None) -> None:
-        """Replace selected arrays in an existing cache entry."""
+        """Replace selected arrays in an existing cache entry.
+
+        Args:
+            npz_path: Path to the cache archive.
+            overrides: Cache members to replace; ``None`` removes a member.
+        """
         with np.load(npz_path, allow_pickle=False) as npz:
             contents = {key: npz[key] for key in npz.files}
         for key, value in overrides.items():
@@ -250,6 +259,12 @@ class TestSDFDiskCachePure(unittest.TestCase):
             else:
                 contents[key] = value
         np.savez(npz_path, **contents)
+
+    def test_cache_entry_rewrite_preserves_validity(self) -> None:
+        """Keep a cache entry loadable after an unmodified rewrite."""
+        cache_hash, npz_path = self._save_fake_sparse_data()
+        self._replace_cache_entry(npz_path)
+        self.assertIsNotNone(_sdf_cache.try_load_sparse_data(self.cache_dir, cache_hash))
 
     def test_malformed_array_schema_is_miss(self) -> None:
         """Treat cache arrays with invalid dtypes, ranks, or shapes as misses."""
@@ -307,6 +322,11 @@ class TestSDFDiskCachePure(unittest.TestCase):
         invalid_scalars = {
             "zero coarse dimension": {"coarse_dims": np.array([0, 2, 2], dtype=np.int32)},
             "negative subgrid count": {"num_subgrids": np.array(-1, dtype=np.int32)},
+            "too many subgrids": {"num_subgrids": np.array(9, dtype=np.int32)},
+            "zero subgrid texture size": {
+                "subgrid_tex_size": np.array(0, dtype=np.int32),
+                "subgrid_data": np.zeros((0, 0, 0), dtype=np.float32),
+            },
             "zero subgrid size": {"subgrid_size": np.array(0, dtype=np.int32)},
             "unknown quantization": {"quantization_mode": np.array(99, dtype=np.int32)},
             "nonfinite range": {"subgrids_sdf_value_range": np.array(np.inf, dtype=np.float32)},

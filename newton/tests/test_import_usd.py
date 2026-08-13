@@ -14777,6 +14777,61 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
         self._assert_rejected_reference_removed(result, "../secret.usd")
 
+    def test_reference_list_rejects_escaping_entries(self):
+        """Reject escaping entries while preserving safe references in a list."""
+        safe_url = "https://example.com/assets/safe.usd"
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": """#usda 1.0
+def Xform "Root" (
+    references = [@safe.usd@, @../secret.usd@]
+)
+{
+}
+""",
+            safe_url: "",
+        }
+
+        result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+
+        self.assertEqual(
+            downloaded_urls,
+            ["https://example.com/assets/scene.usd", safe_url],
+        )
+        with open(result) as f:
+            rewritten_layer = f.read()
+        self.assertIn("@safe.usd@", rewritten_layer)
+        self.assertNotIn("@../secret.usd@", rewritten_layer)
+        if USD_AVAILABLE:
+            from pxr import Sdf
+
+            layer = Sdf.Layer.CreateAnonymous()
+            self.assertTrue(layer.ImportFromString(rewritten_layer))
+
+    def test_rejected_reference_with_prim_path_is_neutralized(self):
+        """Remove the prim path when rejecting a singular reference."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": """#usda 1.0
+def Xform "Root" (
+    references = @../secret.usd@</Root>
+)
+{
+}
+""",
+        }
+
+        result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+
+        self.assertEqual(downloaded_urls, ["https://example.com/assets/scene.usd"])
+        with open(result) as f:
+            rewritten_layer = f.read()
+        self.assertIn("references = []", rewritten_layer)
+        self.assertNotIn("</Root>", rewritten_layer)
+        if USD_AVAILABLE:
+            from pxr import Sdf
+
+            layer = Sdf.Layer.CreateAnonymous()
+            self.assertTrue(layer.ImportFromString(rewritten_layer))
+
     def test_windows_reference_escapes_are_rejected(self):
         """Reject Windows and mixed-separator references that escape the cache."""
         malicious_references = (

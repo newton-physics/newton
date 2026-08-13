@@ -5318,38 +5318,64 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
 
     def _extract_references(layer_str, parent_url_folder, parent_local_folder):
         """Extract references, queue downloads, and return rewritten layer text."""
-        rewritten_layer_str = layer_str
+        reference_assignment_pattern = re.compile(
+            r"(?P<prefix>references\s*=\s*)"
+            r"(?P<value>@[^@]*@(?:<[^>]*>)?(?:\s*\([^)]*\))?|\[[^]]*\])",
+            re.DOTALL,
+        )
+        reference_item_pattern = re.compile(r"@(?P<path>[^@]*)@(?P<suffix>(?:<[^>]*>)?(?:\s*\([^)]*\))?)")
 
-        def _neutralize_rejected_reference(match, raw_ref):
-            """Replace a rejected reference assignment with an empty list."""
-            nonlocal rewritten_layer_str
-            rewritten_layer_str = rewritten_layer_str.replace(match.group(0), "references = []", 1)
-            print(f"Skipping reference that escapes target folder: {raw_ref}")
+        def _rewrite_reference_assignment(match):
+            """Validate and rewrite every item in a reference assignment."""
+            value = match.group("value")
+            reference_items = list(reference_item_pattern.finditer(value))
+            if not reference_items:
+                return match.group(0)
 
-        for match in re.finditer(r"references.=.@(.*?)@", layer_str):
-            raw_ref = match.group(1)
+            rewritten_items = []
+            for item in reference_items:
+                raw_ref = item.group("path")
+                rewritten_ref = raw_ref
+                raw_ref_scheme = urlparse(raw_ref).scheme
+                if raw_ref_scheme in {"http", "https"}:
+                    rewritten_ref, ref_url, local_path = _prepare_reference(raw_ref)
+                else:
+                    try:
+                        rewritten_ref, ref_url, local_path = _prepare_reference(raw_ref)
+                    except ValueError:
+                        print(f"Skipping reference that escapes target folder: {raw_ref}")
+                        continue
+                try:
+                    _resolve_usd_cache_path(target_folder_name, local_path)
+                except ValueError:
+                    print(f"Skipping reference that escapes target folder: {raw_ref}")
+                    continue
+                if ref_url not in downloaded_urls:
+                    pending.append((ref_url, local_path))
+                rewritten_items.append(f"@{rewritten_ref}@{item.group('suffix')}")
+
+            if value.startswith("["):
+                rewritten_value = f"[{', '.join(rewritten_items)}]"
+            else:
+                rewritten_value = rewritten_items[0] if rewritten_items else "[]"
+            return match.group("prefix") + rewritten_value
+
+        def _prepare_reference(raw_ref):
+            """Return the rewritten path, source URL, and cache-relative path."""
             raw_ref_scheme = urlparse(raw_ref).scheme
             if raw_ref_scheme in {"http", "https"}:
                 ref_url = urljoin(parent_url_folder + "/", raw_ref)
                 _validate_https_usd_url(ref_url)
                 local_path = _cache_path_for_absolute_usd_reference(ref_url)
-                rewritten_layer_str = rewritten_layer_str.replace(f"@{raw_ref}@", f"@{local_path}@")
+                rewritten_ref = local_path
             else:
-                try:
-                    _reject_windows_rooted_usd_path(raw_ref)
-                    local_path = _normalize_usd_cache_relative_path(posixpath.join(parent_local_folder, raw_ref))
-                except ValueError:
-                    _neutralize_rejected_reference(match, raw_ref)
-                    continue
+                _reject_windows_rooted_usd_path(raw_ref)
+                local_path = _normalize_usd_cache_relative_path(posixpath.join(parent_local_folder, raw_ref))
                 ref_url = urljoin(parent_url_folder + "/", raw_ref.replace("\\", "/"))
-            try:
-                _resolve_usd_cache_path(target_folder_name, local_path)
-            except ValueError:
-                _neutralize_rejected_reference(match, raw_ref)
-                continue
-            if ref_url not in downloaded_urls:
-                pending.append((ref_url, local_path))
-        return rewritten_layer_str
+                rewritten_ref = raw_ref
+            return rewritten_ref, ref_url, local_path
+
+        return reference_assignment_pattern.sub(_rewrite_reference_assignment, layer_str)
 
     rewritten_stage_str = _extract_references(stage_str, url_folder, "")
     if rewritten_stage_str != stage_str:
