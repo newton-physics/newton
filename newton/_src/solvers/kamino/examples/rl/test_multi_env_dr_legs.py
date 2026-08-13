@@ -30,6 +30,7 @@ wp.set_module_options({"enable_backward": False})
 def make_settings(sim_dt: float = 0.004) -> Simulator.Config:
     settings = Simulator.Config()
     settings.dt = sim_dt
+    settings.solver.use_collision_detector = True
     settings.solver.integrator = "moreau"
     settings.solver.constraints.alpha = 0.1
     settings.solver.padmm.primal_tolerance = 1e-6

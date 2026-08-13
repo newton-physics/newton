@@ -384,11 +384,12 @@ class Mesh:
         up_axis: Axis = Axis.Y,
         segments: int = 32,
         top_radius: float | None = None,
+        barrel_radius: float = 0.0,
         compute_normals: bool = True,
         compute_uvs: bool = True,
         compute_inertia: bool = True,
     ) -> "Mesh":
-        """Create a cylinder or truncated cone mesh.
+        """Create a cylinder, barrel cylinder, or truncated cone mesh.
 
         Args:
             radius [m]: Bottom radius.
@@ -396,6 +397,9 @@ class Mesh:
             up_axis: Long axis as a ``newton.Axis`` value.
             segments: Circumferential tessellation resolution.
             top_radius [m]: Optional top radius. If ``None``, equals ``radius``.
+            barrel_radius [m]: Radius of the symmetric circular side-profile arc. Use ``0.0`` for
+                straight sides. Nonzero values must be at least ``half_height`` and cannot be
+                combined with a different ``top_radius``.
             compute_normals: If ``True``, generate per-vertex normals.
             compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
@@ -411,6 +415,7 @@ class Mesh:
             up_axis=int(up_axis),
             segments=segments,
             top_radius=top_radius,
+            barrel_radius=barrel_radius,
             compute_normals=compute_normals,
             compute_uvs=compute_uvs,
         )

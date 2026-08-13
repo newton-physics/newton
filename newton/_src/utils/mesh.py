@@ -1740,12 +1740,17 @@ def create_mesh_cylinder(
     up_axis: int = 1,
     segments: int = default_num_segments,
     top_radius: float | None = None,
+    barrel_radius: float = 0.0,
     compute_normals: bool = True,
     compute_uvs: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
-    """Create cylinder/truncated cone geometry data with optional normals/UVs."""
+    """Create cylinder, barrel cylinder, or truncated cone geometry data."""
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
+    if barrel_radius != 0.0 and barrel_radius < half_height:
+        raise ValueError("barrel_radius must be zero or at least half_height")
+    if barrel_radius != 0.0 and top_radius is not None and top_radius != radius:
+        raise ValueError("barrel_radius cannot be combined with a different top_radius")
 
     x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
     if top_radius is None:
@@ -1767,46 +1772,58 @@ def create_mesh_cylinder(
             uvs.append([0.0, 0.0] if uv is None else [uv[0], uv[1]])
         return idx
 
-    side_radial_component = 2.0 * half_height
-    side_axial_component = radius - top_radius
-
-    # Side vertices first (contiguous layout for robust indexing).
-    side_bottom_indices = []
-    for i in range(segments):
-        theta = 2 * np.pi * i / segments
-        cos_theta = np.cos(theta)
-        sin_theta = np.sin(theta)
-
-        position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
-        position = position[[x_dir, y_dir, z_dir]]
-
-        side_normal = None
-        if compute_normals:
-            side_normal = np.array(
-                [
-                    side_radial_component * cos_theta,
-                    side_axial_component,
-                    side_radial_component * sin_theta,
-                ],
-                dtype=np.float32,
-            )
-            normal_length = np.linalg.norm(side_normal)
-            if normal_length > 0.0:
-                side_normal = side_normal / normal_length
-            side_normal = side_normal[[x_dir, y_dir, z_dir]]
-
-        side_uv = (i / max(segments - 1, 1), 0.0) if compute_uvs else None
-        side_bottom_indices.append(add_vertex(position, side_normal, side_uv))
-
-    side_top_indices = []
+    side_ring_indices = []
     side_apex_index: int | None = None
-    if top_radius > 0.0:
+
+    if barrel_radius > 0.0:
+        profile_segments = max(2, segments // 2)
+        end_offset = np.sqrt(barrel_radius * barrel_radius - half_height * half_height)
+        for j in range(profile_segments + 1):
+            v = j / profile_segments
+            axial_position = -half_height + 2.0 * half_height * v
+            profile_offset = np.sqrt(max(barrel_radius * barrel_radius - axial_position * axial_position, 0.0))
+            offset_sum = profile_offset + end_offset
+            ring_radius = radius
+            if offset_sum > 0.0:
+                ring_radius += (half_height * half_height - axial_position * axial_position) / offset_sum
+
+            ring_indices = []
+            for i in range(segments):
+                theta = 2.0 * np.pi * i / segments
+                cos_theta = np.cos(theta)
+                sin_theta = np.sin(theta)
+                position = np.array(
+                    [ring_radius * cos_theta, axial_position, ring_radius * sin_theta], dtype=np.float32
+                )
+                position = position[[x_dir, y_dir, z_dir]]
+
+                side_normal = None
+                if compute_normals:
+                    side_normal = np.array(
+                        [
+                            profile_offset * cos_theta / barrel_radius,
+                            axial_position / barrel_radius,
+                            profile_offset * sin_theta / barrel_radius,
+                        ],
+                        dtype=np.float32,
+                    )[[x_dir, y_dir, z_dir]]
+
+                side_uv = (i / max(segments - 1, 1), v) if compute_uvs else None
+                ring_indices.append(add_vertex(position, side_normal, side_uv))
+            side_ring_indices.append(ring_indices)
+
+    else:
+        side_radial_component = 2.0 * half_height
+        side_axial_component = radius - top_radius
+
+        # Side vertices first (contiguous layout for robust indexing).
+        side_bottom_indices = []
         for i in range(segments):
             theta = 2 * np.pi * i / segments
             cos_theta = np.cos(theta)
             sin_theta = np.sin(theta)
 
-            position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
+            position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
             position = position[[x_dir, y_dir, z_dir]]
 
             side_normal = None
@@ -1824,14 +1841,42 @@ def create_mesh_cylinder(
                     side_normal = side_normal / normal_length
                 side_normal = side_normal[[x_dir, y_dir, z_dir]]
 
-            side_uv = (i / max(segments - 1, 1), 1.0) if compute_uvs else None
-            side_top_indices.append(add_vertex(position, side_normal, side_uv))
-    else:
-        apex_position = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-        apex_normal = None
-        if compute_normals:
-            apex_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-        side_apex_index = add_vertex(apex_position, apex_normal, (0.5, 1.0) if compute_uvs else None)
+            side_uv = (i / max(segments - 1, 1), 0.0) if compute_uvs else None
+            side_bottom_indices.append(add_vertex(position, side_normal, side_uv))
+
+        side_top_indices = []
+        if top_radius > 0.0:
+            for i in range(segments):
+                theta = 2 * np.pi * i / segments
+                cos_theta = np.cos(theta)
+                sin_theta = np.sin(theta)
+
+                position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
+                position = position[[x_dir, y_dir, z_dir]]
+
+                side_normal = None
+                if compute_normals:
+                    side_normal = np.array(
+                        [
+                            side_radial_component * cos_theta,
+                            side_axial_component,
+                            side_radial_component * sin_theta,
+                        ],
+                        dtype=np.float32,
+                    )
+                    normal_length = np.linalg.norm(side_normal)
+                    if normal_length > 0.0:
+                        side_normal = side_normal / normal_length
+                    side_normal = side_normal[[x_dir, y_dir, z_dir]]
+
+                side_uv = (i / max(segments - 1, 1), 1.0) if compute_uvs else None
+                side_top_indices.append(add_vertex(position, side_normal, side_uv))
+        else:
+            apex_position = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+            apex_normal = None
+            if compute_normals:
+                apex_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+            side_apex_index = add_vertex(apex_position, apex_normal, (0.5, 1.0) if compute_uvs else None)
 
     # Cap vertices after side vertices (also contiguous per cap).
     cap_center_bottom_idx: int | None = None
@@ -1894,17 +1939,28 @@ def create_mesh_cylinder(
             indices.extend([cap_center_top_idx, i1, i0])
 
     # Side faces
-    for i in range(segments):
-        bottom_i = side_bottom_indices[i]
-        bottom_next = side_bottom_indices[(i + 1) % segments]
+    if barrel_radius > 0.0:
+        for ring_index in range(len(side_ring_indices) - 1):
+            bottom_ring = side_ring_indices[ring_index]
+            top_ring = side_ring_indices[ring_index + 1]
+            for i in range(segments):
+                bottom_i = bottom_ring[i]
+                bottom_next = bottom_ring[(i + 1) % segments]
+                top_i = top_ring[i]
+                top_next = top_ring[(i + 1) % segments]
+                indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
+    else:
+        for i in range(segments):
+            bottom_i = side_bottom_indices[i]
+            bottom_next = side_bottom_indices[(i + 1) % segments]
 
-        if top_radius > 0.0:
-            top_i = side_top_indices[i]
-            top_next = side_top_indices[(i + 1) % segments]
-            indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
-        else:
-            assert side_apex_index is not None
-            indices.extend([side_apex_index, bottom_next, bottom_i])
+            if top_radius > 0.0:
+                top_i = side_top_indices[i]
+                top_next = side_top_indices[(i + 1) % segments]
+                indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
+            else:
+                assert side_apex_index is not None
+                indices.extend([side_apex_index, bottom_next, bottom_i])
 
     return (
         np.asarray(positions, dtype=np.float32),

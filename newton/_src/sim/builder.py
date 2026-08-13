@@ -481,9 +481,9 @@ class ModelBuilder:
         on the solver constructor for this field to take effect.
         """
         mu_torsional: float = 0.005
-        """The coefficient of torsional friction (resistance to spinning at contact point)."""
+        """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
-        """The coefficient of rolling friction (resistance to rolling motion)."""
+        """The coefficient of rolling friction [m] (resistance to rolling motion)."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -6453,6 +6453,11 @@ class ModelBuilder:
             GeoType.GAUSSIAN,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
+            site_size_is_display = cfg.is_site and bool(
+                custom_attributes and custom_attributes.get("mujoco:site_size_is_display", False)
+            )
+            if type == GeoType.CYLINDER and not site_size_is_display and scale[2] != 0.0 and scale[2] < scale[1]:
+                raise ValueError(f"Cylinder barrel radius must be zero or at least the half-height; got scale={scale}.")
         elif type == GeoType.CONE:
             if float(scale[1]) < 0.0:
                 raise ValueError(
@@ -6911,6 +6916,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
+        barrel_radius: float = 0.0,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
         color: Vec3 | None = None,
@@ -6924,8 +6930,11 @@ class ModelBuilder:
         Args:
             body: The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform: The transform of the cylinder in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
-            radius: The radius of the cylinder. Defaults to `1.0`.
-            half_height: The half-length of the cylinder along the Z-axis. Defaults to `0.5`.
+            radius: The radius of the cylinder at its ends [m]. Defaults to `1.0`.
+            half_height: The half-length of the cylinder along the Z-axis [m]. Defaults to `0.5`.
+            barrel_radius: The radius of the symmetric circular arc revolved around the Z-axis to form
+                the cylinder's side [m]. Use `0.0` for a straight-sided cylinder. Nonzero values must be
+                at least `half_height`. Defaults to `0.0`.
             cfg: The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site: If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             color: Optional display RGB color with values in [0, 1]. If ``None``, uses the per-shape palette color.
@@ -6946,7 +6955,7 @@ class ModelBuilder:
         else:
             xform = wp.transform(*xform)
 
-        scale = wp.vec3(radius, half_height, 0.0)
+        scale = wp.vec3(radius, half_height, barrel_radius)
         return self.add_shape(
             body=body,
             type=GeoType.CYLINDER,
@@ -11313,12 +11322,21 @@ class ModelBuilder:
 
                 return nx, ny, nz
 
+            site_display_size_attr = self.custom_attributes.get("mujoco:site_size_is_display")
             for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
                 zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
             ):
+                site_size_is_display = bool(
+                    site_display_size_attr
+                    and site_display_size_attr.values.get(_shape_idx, site_display_size_attr.default)
+                )
                 # Create cache key based on shape type and parameters
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
                     cache_key = (shape_type, id(shape_src), tuple(shape_scale))
+                elif shape_type == GeoType.CYLINDER and site_size_is_display:
+                    # MuJoCo cylinder sites may carry an unused third display-size component.
+                    # It is not Newton's barrel radius and does not affect their bounds.
+                    cache_key = (shape_type, (shape_scale[0], shape_scale[1], 0.0))
                 else:
                     cache_key = (shape_type, tuple(shape_scale))
 
@@ -11375,11 +11393,17 @@ class ModelBuilder:
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CYLINDER:
-                        # Cylinder: shape_scale = (radius, half_height, radius)
-                        # Cylinder is along Z axis (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height])
-                        aabb_upper = np.array([r, r, half_height])
+                        # Cylinder: shape_scale = (end_radius, half_height, barrel_radius)
+                        r, half_height, barrel_radius = shape_scale
+                        if site_size_is_display:
+                            barrel_radius = 0.0
+                        radial_extent = r
+                        if barrel_radius > 0.0:
+                            radial_extent += (half_height * half_height) / (
+                                barrel_radius + np.sqrt(barrel_radius * barrel_radius - half_height * half_height)
+                            )
+                        aabb_lower = np.array([-radial_extent, -radial_extent, -half_height])
+                        aabb_upper = np.array([radial_extent, radial_extent, half_height])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONE:
