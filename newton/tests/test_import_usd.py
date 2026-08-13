@@ -6197,6 +6197,47 @@ def Xform "Articulation" (
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_damping_respects_schema_resolver_priority(self):
+        """Honor resolver priority when multiple damping schemas are authored."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        parent = UsdGeom.Xform.Define(stage, "/World/Articulation/Parent")
+        child = UsdGeom.Xform.Define(stage, "/World/Articulation/Child")
+        UsdPhysics.RigidBodyAPI.Apply(parent.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(child.GetPrim())
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint")
+        joint.CreateBody0Rel().SetTargets([parent.GetPath()])
+        joint.CreateBody1Rel().SetTargets([child.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0))
+        joint.GetPrim().CreateAttribute("newton:damping", Sdf.ValueTypeNames.Float, custom=True).Set(2.0)
+        joint.GetPrim().CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Float, custom=True).Set(7.0)
+
+        cases = (
+            ((usd.SchemaResolverNewton, usd.SchemaResolverMjc), math.degrees(2.0)),
+            ((usd.SchemaResolverMjc, usd.SchemaResolverNewton), 7.0),
+        )
+        for resolver_types, expected_damping in cases:
+            with self.subTest(resolvers=[resolver_type.name for resolver_type in resolver_types]):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage, schema_resolvers=[resolver_type() for resolver_type in resolver_types])
+                with mock.patch("newton.use_coord_layout_targets", True):
+                    model = builder.finalize()
+
+                joint_index = model.joint_label.index("/World/Articulation/Joint")
+                dof_start = int(model.joint_qd_start.numpy()[joint_index])
+                self.assertAlmostEqual(float(model.joint_damping.numpy()[dof_start]), expected_damping, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_damping_from_spherical_joint_via_schema_resolver(self):
         """Verify MuJoCo USD damping reaches every spherical-joint DOF."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics

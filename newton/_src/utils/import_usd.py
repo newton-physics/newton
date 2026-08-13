@@ -1617,15 +1617,14 @@ def parse_usd(
         Returns:
             The linear and angular damping values in Newton units.
         """
-        damping = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose)
-        damping_per_rad = R.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="damping_per_rad", default=None, verbose=verbose
-        )
-        if damping_per_rad is not None:
-            return damping_per_rad, damping_per_rad
-        if damping is None:
-            return default_joint_damping, default_joint_damping
-        return damping, damping / DegreesToRadian
+        for resolver in R.resolvers:
+            for key, angular_scale in (("damping", 1.0 / DegreesToRadian), ("damping_per_rad", 1.0)):
+                damping = resolver.get_value(jp_prim, PrimType.JOINT, key)
+                if damping is not None:
+                    R._collect_on_first_use(resolver, jp_prim)
+                    damping = float(damping)
+                    return damping, damping * angular_scale
+        return default_joint_damping, default_joint_damping
 
     def resolve_dof_params(jp_prim: Usd.Prim, jd: UsdPhysics.JointDesc, is_revolute: bool) -> _DofParams:
         """Resolve limits, drive, and initial state for one revolute/prismatic DOF.

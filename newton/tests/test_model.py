@@ -37,6 +37,21 @@ def _eq_set_value(builder, name, idx, value):
 
 
 class TestModelAttributeSpecs(unittest.TestCase):
+    def test_attribute_namespace_deprecated_alias_api(self):
+        """Retain deprecated namespace aliases through their compatibility window."""
+        namespace = newton.Model.AttributeNamespace("test")
+        target = wp.array([1.0], dtype=wp.float32, device="cpu")
+
+        with self.assertWarnsRegex(DeprecationWarning, r"AttributeNamespace\.add_deprecated_alias"):
+            namespace.add_deprecated_alias("legacy", lambda: target, "Use 'canonical' instead.")
+
+        with self.assertWarnsRegex(DeprecationWarning, "Use 'canonical' instead"):
+            self.assertIs(namespace.legacy, target)
+
+        with self.assertWarnsRegex(DeprecationWarning, "Use 'canonical' instead"):
+            namespace.legacy = [2.0]
+        np.testing.assert_array_equal(target.numpy(), [2.0])
+
     def test_attribute_frequencies_have_count_metadata(self):
         model = newton.Model(device="cpu")
         frequency = newton.Model.AttributeFrequency
