@@ -253,7 +253,7 @@ per-articulation inverse mass rather than a per-DOF scalar.
 It omits joint damping, contacts and constraint regularization, so the response
 is too large and the actuator under-drives the joint. Reuse the solver's own
 inertia instead. MuJoCo keeps it factorized, so
-:meth:`~newton.actuators.ResponseOracle.refresh_from_inertia` recovers the
+:meth:`~newton.actuators.ResponseOracle.refresh_from_solve` recovers the
 response by back-substituting unit vectors:
 
 .. code-block:: python
@@ -263,7 +263,7 @@ response by back-substituting unit vectors:
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
    # Simulation loop, in place of oracle.refresh(state)
-   oracle.refresh_from_inertia(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+   oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
 
 Both refresh paths only launch kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.

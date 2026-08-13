@@ -2726,8 +2726,8 @@ class TestResponseOracle(unittest.TestCase):
             sparse = wp.zeros((model.world_count, 1, n * (n + 1) // 2), dtype=float, device=device)
             oracle.refresh_from_mass_matrix(sparse)
 
-    def test_refresh_from_inertia_captures_without_warmup(self):
-        """refresh_from_inertia captures and replays, with no warm-up call first.
+    def test_refresh_from_solve_captures_without_warmup(self):
+        """refresh_from_solve captures and replays, with no warm-up call first.
 
         Deliberately captures straight after constructing the oracle, so the whole
         path -- scratch setup, the per-column solves and the scatter -- has to be
@@ -2748,7 +2748,7 @@ class TestResponseOracle(unittest.TestCase):
 
         oracle = ResponseOracle(model)  # fresh: nothing allocated by a prior call
         with wp.ScopedCapture(device) as capture:
-            oracle.refresh_from_inertia(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+            oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
         wp.capture_launch(capture.graph)
 
         reference = ResponseOracle(model)
@@ -2766,7 +2766,7 @@ class TestResponseOracle(unittest.TestCase):
         MuJoCo rebuilds ``qM`` at the step-start pose every step, so — unlike the
         compile-time ``dof_invweight0`` — its complete inverse tracks inertial
         coupling at the current configuration. Checks
-        :meth:`ResponseOracle.refresh_from_inertia` against a host-side
+        :meth:`ResponseOracle.refresh_from_solve` against a host-side
         inverse-and-remap of that matrix, against the built-in oracle, and by
         driving the coupled implicit solve with it.
         """
@@ -2793,7 +2793,7 @@ class TestResponseOracle(unittest.TestCase):
         self.assertEqual(nv, n)
 
         mjc_oracle = ResponseOracle(model)
-        mjc_oracle.refresh_from_inertia(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
+        mjc_oracle.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
         response_newton = mjc_oracle.inverse_blocks.numpy()[0, :n, :n]
 
         # The solver's mass matrix must agree with the oracle's own dense recompute.
@@ -2808,7 +2808,7 @@ class TestResponseOracle(unittest.TestCase):
             kp=wp.array(kp, dtype=float, device=device),
             kd=wp.array(kd, dtype=float, device=device),
         )
-        oracle.refresh_from_inertia(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
+        oracle.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof)
         np.testing.assert_allclose(oracle.inverse_blocks.numpy()[0, :n, :n], response_newton, rtol=1e-4)
         control.joint_f.zero_()
         actuator.step(state, control, dt=h)
@@ -2822,7 +2822,7 @@ class TestResponseOracle(unittest.TestCase):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
 
         Runs the same simulation twice, updating the oracle response every step
-        either from the solver's own factorization (``refresh_from_inertia`` --
+        either from the solver's own factorization (``refresh_from_solve`` --
         the "solver-owned oracle" path) or with the built-in ``oracle.refresh()``.
         The refresh is scheduled at the same one-step-stale phase as the
         factorization, so the trajectories must coincide. On CUDA the
@@ -2859,7 +2859,7 @@ class TestResponseOracle(unittest.TestCase):
                 if use_qm:
                     # Full inverse response from the solver's factorization at the
                     # pose of the step that just ran — same staleness as refresh().
-                    oracle.refresh_from_inertia(solve_m, dof_map=solver.mjc_dof_to_newton_dof)
+                    oracle.refresh_from_solve(solve_m, dof_map=solver.mjc_dof_to_newton_dof)
                 else:
                     oracle.refresh(state_prev)
 

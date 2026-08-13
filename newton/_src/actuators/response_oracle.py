@@ -7,14 +7,13 @@
 articulation. There are three ways to update it:
 
 - :meth:`ResponseOracle.refresh` assembles the mass matrix itself.
-- :meth:`ResponseOracle.refresh_from_inertia` reuses a solver's own inertia
+- :meth:`ResponseOracle.refresh_from_solve` reuses a solver's own inertia
   without materializing it, so factorized solvers work too.
 - :meth:`ResponseOracle.refresh_from_mass_matrix` inverts a dense matrix a
   solver has already assembled.
 
 All three use preallocated buffers and device kernels, so they can be captured
-in a CUDA graph. The buffer is also writable, so a response computed elsewhere
-can be assigned directly.
+in a CUDA graph.
 """
 
 from __future__ import annotations
@@ -173,7 +172,7 @@ class ResponseOracle:
     no entry have a zero response.
 
     :meth:`refresh` computes it from a mass matrix it assembles itself.
-    :meth:`refresh_from_inertia` and :meth:`refresh_from_mass_matrix` reuse the
+    :meth:`refresh_from_solve` and :meth:`refresh_from_mass_matrix` reuse the
     solver's own inertia, which is more faithful to the dynamics the effort is
     fed into. All three run entirely in device kernels.
     """
@@ -238,7 +237,7 @@ class ResponseOracle:
             if len(counts) == 1 and n_global == 0 and sum(counts) * model.world_count == model.joint_dof_count:
                 self._uniform_dofs_per_world = counts.pop()
 
-        # Sized for the model's own layout so refresh_from_inertia() can be captured
+        # Sized for the model's own layout so refresh_from_solve() can be captured
         # straight away; a dof_map of a different width resizes it on first use.
         width = self._uniform_dofs_per_world or model.joint_dof_count
         self._rhs = wp.zeros((model.world_count, width), dtype=float, device=device)
@@ -246,12 +245,18 @@ class ResponseOracle:
 
     @property
     def inverse_blocks(self) -> wp.array3d[float]:
-        """Per-articulation inverse mass blocks, shape [art_count, max_dofs, max_dofs].
+        """Read-only per-articulation inverse mass blocks, shape [art_count, max_dofs, max_dofs].
 
         ``inverse_blocks[a, i, j]`` is the ``(i, j)`` entry of articulation
         ``a``'s inverse mass matrix ``H_a^{-1}`` (indices local to the
         articulation, 0-padded beyond its DOF count). The implicit effort mode
         uses the submatrix indexed by the actuator group's DOFs.
+
+        Update it through :meth:`refresh`, :meth:`refresh_from_mass_matrix` or
+        :meth:`refresh_from_solve`. Writing into the array directly is not
+        supported: the padding beyond each articulation's DOF count is assumed
+        zero by the solve, and a partial write leaves no way to tell a stale
+        response from a fresh one.
         """
         return self._inv_block
 
@@ -287,7 +292,7 @@ class ResponseOracle:
             )
         self._invert_blocks()
 
-    def refresh_from_inertia(
+    def refresh_from_solve(
         self,
         solve_inverse: Callable[[wp.array2d[float], wp.array2d[float]], None],
         dof_map: wp.array2d[wp.int32] | None = None,
@@ -313,7 +318,7 @@ class ResponseOracle:
 
 
             # Simulation loop
-            oracle.refresh_from_inertia(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+            oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
 
         Args:
             solve_inverse: Callable ``(x, y)`` writing ``x = M^-1 y``, both shaped
@@ -378,7 +383,7 @@ class ResponseOracle:
 
         For a solver that keeps its inertia factorized rather than dense, such
         as :class:`~newton.solvers.SolverMuJoCo`, use
-        :meth:`refresh_from_inertia` instead.
+        :meth:`refresh_from_solve` instead.
 
         Args:
             mass_matrix: Dense per-world joint-space inertia [kg or kg·m²], shape
