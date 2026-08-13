@@ -23,6 +23,8 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
+    _alm_relaxed_ascent,
+    _compliant_alm_coefficients,
     _contact_tangent_conditioning_scale,
     _joint_angular_rho_seed,
     build_body_body_contact_lists,
@@ -262,6 +264,18 @@ def _eval_self_contact_norm_kernel(
     dEdD, d2E = evaluate_self_contact_force_norm(distances[i], collision_radius, k)
     dEdD_out[i] = dEdD
     d2E_out[i] = d2E
+
+
+@wp.kernel
+def _eval_compliant_alm_coefficients_kernel(
+    material_k: wp.array[float],
+    rho: wp.array[float],
+    result: wp.array[wp.vec4],
+):
+    i = wp.tid()
+    s, k_eff, a = _compliant_alm_coefficients(material_k[i], rho[i])
+    lambda_next = _alm_relaxed_ascent(2.0, 0.25, material_k[i], rho[i])
+    result[i] = wp.vec4(s, k_eff, a, lambda_next)
 
 
 @wp.kernel
@@ -988,6 +1002,44 @@ def _rigid_compliant_sliding_contact_has_solve_metric(test, device):
         np.testing.assert_array_less(0.0, hessian_np[0, 0])
 
 
+def _assert_rigid_compliant_alm_coefficients(device):
+    pairs = np.asarray(
+        [(1.0e6, 9.0e6), (1.0e3, 1.0e5), (1.0e5, 1.0e3), (10.0, 10.0), (0.0, 1.0), (1.0, 0.0)],
+        dtype=np.float32,
+    )
+    positive_count = 4
+
+    with wp.ScopedDevice(device):
+        material_k = wp.array(pairs[:, 0], dtype=float, device=device)
+        rho = wp.array(pairs[:, 1], dtype=float, device=device)
+        result = wp.empty(len(pairs), dtype=wp.vec4, device=device)
+        wp.launch(
+            _eval_compliant_alm_coefficients_kernel,
+            dim=len(pairs),
+            inputs=[material_k, rho],
+            outputs=[result],
+            device=device,
+        )
+        actual = result.numpy()
+
+    material_k_ref = pairs[:positive_count, 0].astype(np.float64)
+    rho_ref = pairs[:positive_count, 1].astype(np.float64)
+    denominator = material_k_ref + rho_ref
+    s_ref = material_k_ref / denominator
+    a_ref = rho_ref / denominator
+    expected = np.column_stack(
+        (
+            s_ref,
+            material_k_ref * a_ref,
+            a_ref,
+            s_ref * (2.0 + rho_ref * 0.25),
+        )
+    )
+
+    np.testing.assert_allclose(actual[:positive_count], expected, rtol=1.0e-6, atol=1.0e-6)
+    np.testing.assert_array_equal(actual[positive_count:], [[0.0, 0.0, 1.0, 0.0]] * 2)
+
+
 def _rigid_contact_structural_support_conditions_tangent_rho(test, device):
     """Verify step setup caps tangent rho with structural support, not D+S."""
     with wp.ScopedDevice(device):
@@ -1308,7 +1360,7 @@ def _rigid_contact_stick_eps_are_deprecated(test, device):
 
 
 def _rigid_compliant_alm_omission_warns_at_caller(test, device):
-    """The migration warning must identify the SolverVBD call site."""
+    """Verify the migration warning identifies the SolverVBD call site."""
     builder = newton.ModelBuilder()
     builder.add_body()
     builder.color()
@@ -1320,7 +1372,8 @@ def _rigid_compliant_alm_omission_warns_at_caller(test, device):
 
 
 def _rigid_contact_dual_update_computes_lambda(test, device):
-    """Compliant ALM dual update ascends lambda_n and cone-clips lambda_t."""
+    """Verify finite-material coefficients and projected contact dual updates."""
+    _assert_rigid_compliant_alm_coefficients(device)
     del test
     with wp.ScopedDevice(device):
         # Two contacts, cold-start lambda=0, K=rho_n=rho_t=10, mu=0.5, C_n=0.1
@@ -2156,7 +2209,7 @@ def _d6_fully_free_structural_slots_are_inactive(test, device):
 
 
 def _rigid_compliant_drive_preserves_material_equilibrium(test, device):
-    """A compliant drive should preserve F=K(q-target) and reset its scalar state."""
+    """Verify a compliant drive preserves F=K(q-target) and resets its scalar state."""
     builder = newton.ModelBuilder()
     body = builder.add_link(xform=wp.transform_identity(), mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -2206,7 +2259,7 @@ def _rigid_compliant_drive_preserves_material_equilibrium(test, device):
 
 
 def _rigid_compliant_alm_validates_drive_limit_damping(test, device):
-    """Constructor damping clamps negatives; authored DOF damping stays physical."""
+    """Verify constructor damping clamps negatives and authored DOF damping stays physical."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -2251,7 +2304,7 @@ def _rigid_compliant_alm_validates_drive_limit_damping(test, device):
 
 
 def _rigid_compliant_alm_validates_contact_materials(test, device):
-    """Compliant contact rejects invalid physical stiffness, damping, and friction."""
+    """Verify compliant contact rejects invalid physical stiffness, damping, and friction."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -2278,7 +2331,7 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
 
 
 def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
-    """The warning must distinguish compliant behavior from the legacy path."""
+    """Verify the warning distinguishes compliant behavior from the legacy path."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverVBD.register_custom_attributes(builder)
     body = builder.add_link(mass=1.0)
@@ -2295,7 +2348,7 @@ def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
 
 
 def _rigid_velocity_drive_preserves_legacy_damping_and_adds_compliant_support(test, device):
-    """A damping-only drive acts in both modes and gains ALM state only in the new path."""
+    """Verify a damping-only drive acts in both modes and gains ALM state only in the new path."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -2336,7 +2389,7 @@ def _rigid_velocity_drive_preserves_legacy_damping_and_adds_compliant_support(te
 
 
 def _rigid_drive_ignores_disabled_limit_bounds(test, device):
-    """Finite bounds without limit material must not clamp a drive target."""
+    """Verify finite bounds without limit material do not clamp a drive target."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0)
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -3080,7 +3133,7 @@ def _rigid_reset_replays_captured_step(test, device):
 
 
 def _rigid_contact_reset_lifecycle(test, device):
-    """Legacy AVBD: a reset cold-starts only selected-world contacts, once, on the next refresh."""
+    """Verify legacy contact-history reset and matching provenance."""
     cfg = newton.ModelBuilder.ShapeConfig(ke=100.0, kd=0.0, mu=0.5)
     template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body(
@@ -3192,6 +3245,14 @@ def _rigid_contact_reset_lifecycle(test, device):
     lam3 = solver.body_body_contact_lambda.numpy()[:n3]
     expected3 = np.where(rw3[:, None] == 0, normal3 * 6.0, normal3 * 9.0)
     np.testing.assert_allclose(lam3, expected3, atol=1.0e-3)
+
+    # A disabled pipeline does not overwrite an allocated match-index array, so
+    # SolverVBD must reject the buffer instead of restoring stale history.
+    disabled_pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    disabled_pipeline.collide(state_in, contacts)
+    test.assertEqual(contacts.contact_matching_mode, "disabled")
+    with test.assertRaisesRegex(RuntimeError, "valid contact-matching provenance"):
+        advance(contacts)
 
 
 def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
@@ -3346,7 +3407,7 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         test.assertEqual(prev_penalty.numpy()[2], 0.0)
 
 
-def _capsule_axial_spin_dissipates_via_friction(test, device):
+def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True, rigid_compliant_alm=False):
     """An axially-spinning capsule on its side must dissipate spin via Coulomb friction.
 
     Lays a capsule on the ground (long axis along world X), gives it pure angular
@@ -3375,7 +3436,8 @@ def _capsule_axial_spin_dissipates_via_friction(test, device):
         solver = newton.solvers.SolverVBD(
             model,
             iterations=10,
-            rigid_compliant_alm=True,
+            rigid_compliant_alm=rigid_compliant_alm,
+            rigid_contact_hard=hard_contact,
         )
         state_0 = model.state()
         state_1 = model.state()
@@ -3403,11 +3465,12 @@ def _capsule_axial_spin_dissipates_via_friction(test, device):
     test.assertLess(omega_x, 4.0, f"axial spin failed to dissipate (omega_x={omega_x:.4f}, v_y={v_y:.4f})")
 
 
-def _yawed_cable_does_not_inject_energy(test, device):
+def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True, rigid_compliant_alm=False):
     """A yawed finite-radius cable settling on a plane must not gain kinetic energy.
 
     With zero friction there is no energy source, so kinetic energy must decay to rest. A
-    non-conservative contact response would instead pump energy and blow the cable up.
+    non-conservative contact response would instead pump energy and blow the cable up
+    (checked for both the hard and soft contact paths).
     """
     num_segments = 12
     segment_length = 0.5 / 19.0
@@ -3454,7 +3517,8 @@ def _yawed_cable_does_not_inject_energy(test, device):
         solver = newton.solvers.SolverVBD(
             model,
             iterations=20,
-            rigid_compliant_alm=True,
+            rigid_compliant_alm=rigid_compliant_alm,
+            rigid_contact_hard=hard_contact,
         )
         state_0 = model.state()
         state_1 = model.state()
@@ -3960,15 +4024,45 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_capsule_axial_spin_dissipates_via_friction",
+    "test_capsule_axial_spin_dissipates_via_friction_hard",
     _capsule_axial_spin_dissipates_via_friction,
     devices=devices,
+    hard_contact=True,
 )
 add_function_test(
     TestSolverVBD,
-    "test_yawed_cable_does_not_inject_energy",
+    "test_capsule_axial_spin_dissipates_via_friction_soft",
+    _capsule_axial_spin_dissipates_via_friction,
+    devices=devices,
+    hard_contact=False,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_capsule_axial_spin_dissipates_via_friction_alm",
+    _capsule_axial_spin_dissipates_via_friction,
+    devices=devices,
+    rigid_compliant_alm=True,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_yawed_cable_does_not_inject_energy_hard",
     _yawed_cable_does_not_inject_energy,
     devices=devices,
+    hard_contact=True,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_yawed_cable_does_not_inject_energy_soft",
+    _yawed_cable_does_not_inject_energy,
+    devices=devices,
+    hard_contact=False,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_yawed_cable_does_not_inject_energy_alm",
+    _yawed_cable_does_not_inject_energy,
+    devices=devices,
+    rigid_compliant_alm=True,
 )
 add_function_test(
     TestSolverVBD,

@@ -8,7 +8,6 @@
 
 ### Added
 
-- Add opt-in unified compliant ALM for experimental `SolverVBD` rigid contacts, structural joints, drives, and limits with `rigid_compliant_alm=True`. Authored finite stiffness controls physical compliance while `SolverVBD` selects numerical conditioning automatically. Re-tune stiffness values previously used only as legacy penalty ceilings.
 - Import MJCF mesh assets authored with inline vertex, face, normal, and texture-coordinate data.
 - Break the viewer's shape count down into visual and collision shapes. The two are listed under `Shapes` in the stats overlay and need not sum to the total, since a shape can be both.
 - Add selection of the shapes included in model shape BVHs through `Model.bvh_build_shapes(shape_flags=...)` and `ModelBuilder.default_bvh_cfg.shape_flags`, e.g. `ShapeFlags.VISIBLE | ShapeFlags.COLLIDE_SHAPES` to also include collision shapes.
@@ -83,8 +82,6 @@
 
 ### Deprecated
 
-- Deprecate the legacy non-ALM rigid path in experimental `SolverVBD`. When `SolverVBD` integrates rigid bodies, omitting `rigid_compliant_alm` emits a `DeprecationWarning` because the default will change from legacy AVBD (`False`) to unified compliant ALM (`True`). Pass `rigid_compliant_alm=True` to adopt compliant ALM now, or `rigid_compliant_alm=False` to keep the legacy path during the migration window.
-- Deprecate the per-slot joint hard/soft switch in experimental `SolverVBD` (`set_joint_constraint_mode` and `vbd:joint_is_hard`). Pass `rigid_compliant_alm=True` and author finite stiffness for compliance instead; under compliant ALM those hard/soft controls have no mode effect. The distinction will be removed with the legacy non-ALM path.
 - Deprecate scalar `ModelBuilder.gravity`; pass a three-component gravity vector instead. (#3324)
 - Deprecate local-only `SolverBase.reset()` world masks in favor of masks with shape `(world_count + 1,)`; append a final entry that selects global entities in world `-1`. (#3726; fixes #3374)
 - Deprecate and ignore `SolverVBD`'s `rigid_contact_stick_motion_eps`, `rigid_contact_stick_freeze_translation_eps`, and `rigid_contact_stick_freeze_angular_eps`; use collision-pipeline sticky matching for persistent geometry. The SolverVBD body deadzone was removed without replacement. (#3652)

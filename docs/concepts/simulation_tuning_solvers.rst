@@ -171,10 +171,10 @@ repository examples spend tuning effort, not a shared solver API.
        legacy AVBD path during the migration window. ``rigid_contact_hard``
        selects contact behavior only on that legacy path.
 
-       For compliant rigid rows, tune authored stiffness and damping,
-       timestep/substeps, and ``iterations``. ``rigid_avbd_beta`` and
-       ``*_k_start`` control legacy penalties; they do not tune the internal ALM
-       metric. Alpha is an advanced stabilization override.
+       ``rigid_avbd_beta`` and ``*_k_start`` apply only to the legacy path.
+       Simulations relying on those controls or on legacy hard constraints may
+       require stiffness retuning when enabling compliant ALM. Alpha remains an
+       advanced stabilization override.
 
        Optional numeric contact warm-starting with
        ``rigid_contact_history=True`` requires

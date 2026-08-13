@@ -99,8 +99,7 @@ _COMPLIANT_ALM_BILATERAL_MIN_RHO_OVER_K = wp.constant(
 )
 """Floor on ``rho/K`` realizing that fraction, inverted from ``k_eff = K*rho/(K+rho)``.
 
-Bilateral rows only, which here means every joint row: structural slots and
-drives. :func:`_limit_auto_rho` records why the unilateral rows stay unfloored.
+Applied to bilateral structural and drive rows.
 """
 
 # ---------------------------------
@@ -4660,16 +4659,17 @@ def step_body_body_contact_C0_lambda(
 ):
     """Per-step contact penalty decay, lambda retention, C0, and ALM rho.
 
-    Retention needs a compressive warm-start (``lambda·n > 0``), a live row
-    (``ke > 0``, and under ALM ``rho_n > 0``), and ``lambda_retention > 0``.
-    Host sets retention to ``gamma`` (ALM) or ``alpha*gamma`` (legacy). ALM rho
-    is automatic from support and independent of history. C0 is refreshed for
-    legacy hard and ALM contacts.
+    ALM retention needs a compressive warm-start (``lambda·n > 0``), a live row
+    (``ke > 0`` and ``rho_n > 0``), and positive ``lambda_retention``. Legacy
+    AVBD applies its ``alpha*gamma`` retention to the full multiplier vector
+    without those gates. ALM rho is automatic from support and independent of
+    history. C0 is refreshed for legacy hard and ALM contacts.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
         return
 
+    contact_normal_rho[i] = 0.0
     contact_tangent_rho[i] = 0.0
 
     ke = contact_material_ke[i]
@@ -4681,7 +4681,6 @@ def step_body_body_contact_C0_lambda(
     # Snapshot the fresh residual before validating warm-start support; the
     # dual uses it to release truly separated rows.
     n = rigid_contact_normal[i]
-    C0_n = float(0.0)
     if legacy_hard_contacts == 1 or contact_compliant_alm == 1:
         b0 = shape_body[s0] if s0 >= 0 else -1
         b1 = shape_body[s1] if s1 >= 0 else -1
@@ -4698,58 +4697,58 @@ def step_body_body_contact_C0_lambda(
         C0_t = -(d_surf - n * wp.dot(n, d_surf))
         contact_C0[i] = n * C0_n + C0_t
 
-    # Contact normal rho is row-history-independent. Resolve it before retention because
-    # a nonpositive automatic result invalidates retained history.
-    contact_normal_rho[i] = 0.0
-    if contact_compliant_alm == 1:
-        normal_support = _contact_conditioning_scale(
-            s0,
-            s1,
-            rigid_contact_point0[i],
-            rigid_contact_point1[i],
-            rigid_contact_normal[i],
-            shape_body,
-            body_q,
-            body_com,
-            body_inv_mass,
-            body_inv_inertia,
-            body_structural_k,
-            inv_dt_sq,
-        )
-        contact_normal_rho[i] = _contact_auto_normal_rho(normal_support, ke)
-        tangent_support = _contact_tangent_conditioning_scale(
-            s0,
-            s1,
-            anchor0_local,
-            anchor1_local,
-            n,
-            shape_body,
-            body_q,
-            body_com,
-            body_inv_mass,
-            body_inv_inertia,
-            inv_dt_sq,
-        )
-        structural_support = _contact_pair_structural_scale(
-            b0,
-            b1,
-            body_flags,
-            body_inv_mass,
-            body_structural_k,
-            proxy_flag,
-        )
-        contact_tangent_rho[i] = _contact_auto_tangent_rho(
-            tangent_support,
-            contact_normal_rho[i],
-            structural_support,
-        )
+        if contact_compliant_alm == 1:
+            # Resolve rho before using it to validate retained history.
+            normal_support = _contact_conditioning_scale(
+                s0,
+                s1,
+                p0,
+                p1,
+                n,
+                shape_body,
+                body_q,
+                body_com,
+                body_inv_mass,
+                body_inv_inertia,
+                body_structural_k,
+                inv_dt_sq,
+            )
+            contact_normal_rho[i] = _contact_auto_normal_rho(normal_support, ke)
+            tangent_support = _contact_tangent_conditioning_scale(
+                s0,
+                s1,
+                anchor0_local,
+                anchor1_local,
+                n,
+                shape_body,
+                body_q,
+                body_com,
+                body_inv_mass,
+                body_inv_inertia,
+                inv_dt_sq,
+            )
+            structural_support = _contact_pair_structural_scale(
+                b0,
+                b1,
+                body_flags,
+                body_inv_mass,
+                body_structural_k,
+                proxy_flag,
+            )
+            contact_tangent_rho[i] = _contact_auto_tangent_rho(
+                tangent_support,
+                contact_normal_rho[i],
+                structural_support,
+            )
 
     lam = contact_lambda[i]
-    has_compressive_warmstart = wp.dot(lam, n) > 0.0
-    live = ke > 0.0
-    if contact_compliant_alm == 1 and contact_normal_rho[i] <= 0.0:
-        live = False
+    if contact_compliant_alm == 0:
+        # Preserve legacy full-vector retention.
+        contact_lambda[i] = lam * lambda_retention
+        return
 
+    has_compressive_warmstart = wp.dot(lam, n) > 0.0
+    live = ke > 0.0 and contact_normal_rho[i] > 0.0
     if has_compressive_warmstart and live and lambda_retention > 0.0:
         contact_lambda[i] = lam * lambda_retention
     else:

@@ -332,7 +332,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         stepping policy. The factory is called as ``solver(view)`` with the
         per-entry :class:`ModelView` and must return a configured
         :class:`SolverBase`. Bind any extra constructor arguments in the
-        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10)``).
+        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10, rigid_compliant_alm=True)``).
         Entry names must be unique. In-place stepping is only valid for solvers
         that explicitly support it. Shape ids remain in the parent model
         namespace so all entries can consume shared contact buffers.

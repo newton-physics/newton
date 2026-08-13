@@ -373,9 +373,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 future release). Pass ``True`` to adopt compliant ALM now, or ``False``
                 to keep the legacy path during the migration window. Finite authored
                 coefficients define the material response, while ``SolverVBD`` selects
-                ``rho`` internally for numerical conditioning. Re-tune stiffness values
-                previously used only as legacy penalty ceilings. Values must be finite
-                and representable in float32; infinity is unsupported.
+                ``rho`` internally for numerical conditioning. Values used with legacy
+                hard constraints may require retuning for the desired deformation.
+                Values must be finite and representable in float32; infinity is unsupported.
             rigid_avbd_alpha: C0 stabilization strength (``C_stab = C - alpha * C0``). Range: [0, 1].
                 Controls both joints and body-body contacts when neither class-specific
                 override (``rigid_avbd_joint_alpha`` / ``rigid_avbd_contact_alpha``) is set.
@@ -1935,7 +1935,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             SolverVBD.register_custom_attributes(builder)  # before adding joints
             builder.add_joint_fixed(..., custom_attributes={"vbd:joint_is_hard": 0})
             model = builder.finalize()
-            solver = SolverVBD(model, ...)
+            solver = SolverVBD(model, rigid_compliant_alm=False)
 
         Args:
             joint_index: Index of the joint to modify.
@@ -2109,8 +2109,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         before stepping; contact invalidation instead waits for a fresh refresh.
         VBD cold-starts its numeric contact state for reset-selected worlds.
         Frame-to-frame correspondence and sticky contact geometry remain owned by
-        :class:`~newton.CollisionPipeline`; construct a new pipeline to discard
-        that history after a discontinuous episode reset. Reset does not change
+        :class:`~newton.CollisionPipeline`; after a discontinuous episode reset,
+        call :meth:`~newton.CollisionPipeline.reset_contact_matching` with the
+        same world mask to discard that history. Reset does not change
         ``set_rigid_history_update()``; leave rigid history refresh enabled for the
         next contact-bearing step. Reusing contacts
         (``set_rigid_history_update(False)``) is unsupported only while contact
@@ -2468,12 +2469,16 @@ class SolverVBD(SolverBase, CouplingInterface):
 
                     # Restore AVBD body-body contact state from history and pre-compute material properties
                     if self.rigid_contact_history and contact_launch_dim > 0:
-                        if contacts.rigid_contact_match_index is None:
+                        if contacts.rigid_contact_match_index is None or contacts.contact_matching_mode not in (
+                            "latest",
+                            "sticky",
+                        ):
                             raise RuntimeError(
                                 "SolverVBD(rigid_contact_history=True) requires Contacts with "
-                                "rigid_contact_match_index populated. Use "
+                                "valid contact-matching provenance. Use "
                                 'CollisionPipeline(contact_matching="latest") or '
-                                'CollisionPipeline(contact_matching="sticky"), or set rigid_contact_history=False.'
+                                'CollisionPipeline(contact_matching="sticky"), or set rigid_contact_history=False. '
+                                f"Got contact_matching_mode={contacts.contact_matching_mode!r}."
                             )
 
                         history_required = contact_launch_dim

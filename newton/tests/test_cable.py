@@ -741,7 +741,7 @@ def _cable_loop_connectivity_impl(test: unittest.TestCase, device):
             )
 
 
-def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
+def _cable_bend_stiffness_impl(test: unittest.TestCase, device, rigid_compliant_alm=True):
     """Cable VBD: bend stiffness sweep should have a noticeable effect on tip position."""
     # From soft to stiff. Build multiple cables in one model.
     bend_values = [5.0e1, 5.0e2, 5.0e3]
@@ -787,7 +787,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -882,7 +882,7 @@ def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     test.assertTrue(np.all(z_final < upper_bound))
 
 
-def _cable_twist_response_impl(test: unittest.TestCase, device):
+def _cable_twist_response_impl(test: unittest.TestCase, device, rigid_compliant_alm=True):
     """Cable VBD: twisting the anchored capsule should induce rotation in the child while preserving attachment."""
     segment_length = 0.2
 
@@ -933,7 +933,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     # Disable gravity to isolate twist response
     model.set_gravity((0.0, 0.0, 0.0))
@@ -1042,7 +1042,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     )
 
 
-def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
+def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device, rigid_compliant_alm=True):
     """Cable VBD: two-layer straight cable pile should form two vertical layers.
 
     Creates a 2x2 cable pile (2 cables per layer, 2 layers) forming a sharp/cross
@@ -1143,7 +1143,12 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, friction_epsilon=0.1, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        friction_epsilon=0.1,
+        rigid_compliant_alm=rigid_compliant_alm,
+    )
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
     sim_dt = frame_dt / sim_substeps
@@ -3045,7 +3050,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     )
 
 
-def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
+def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_alm=True):
     """Cable VBD: D6 drive with limits should clamp DOFs within bounds.
 
     Vertical cable hanging -Z from a static kinematic anchor. D6 joint with
@@ -3153,7 +3158,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     tp[qd_s + 1] = target_angle
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -4096,7 +4101,7 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
             )
 
 
-def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
+def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_alm=True):
     """VBD: disabling a joint lets the cable detach; re-enabling pulls it back.
 
     Uses a BALL joint between a kinematic anchor sphere and a short cable (rod).
@@ -4162,7 +4167,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     sim_dt = 1.0 / 60.0 / 4
 
@@ -6284,6 +6289,22 @@ add_function_test(
     _split_cable_dahl_full_step_state_stays_in_active_subspace,
     devices=devices,
 )
+
+# Retain representative coverage for the deprecated legacy path.
+for test_name, test_func in (
+    ("test_cable_bend_stiffness", _cable_bend_stiffness_impl),
+    ("test_cable_twist_response", _cable_twist_response_impl),
+    ("test_two_layer_cable_pile_collision", _two_layer_cable_pile_collision_impl),
+    ("test_cable_d6_drive_limit", _cable_d6_drive_limit_impl),
+    ("test_joint_enabled_toggle", _joint_enabled_toggle_impl),
+):
+    add_function_test(
+        TestCable,
+        f"{test_name}_legacy",
+        test_func,
+        devices=devices,
+        rigid_compliant_alm=False,
+    )
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
