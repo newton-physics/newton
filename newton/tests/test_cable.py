@@ -5971,7 +5971,7 @@ def _helix_control_points(num_points: int = 20, turns: float = 2.0) -> list[wp.v
 
 
 def _cable_spline_points_open_impl(test: unittest.TestCase, device):
-    """Open spline: endpoint interpolation, control-point proximity, arc-length uniformity."""
+    """Verify open-spline endpoint interpolation, control-point proximity, and arc-length uniformity."""
     control_points = _helix_control_points()
     num_segments = 50
     points = newton.utils.create_cable_spline_points(control_points, num_segments=num_segments)
@@ -6003,7 +6003,7 @@ def _cable_spline_points_open_impl(test: unittest.TestCase, device):
 
 
 def _cable_spline_points_closed_impl(test: unittest.TestCase, device):
-    """Closed spline: loop closure, uniformity, and input validation."""
+    """Verify closed-spline loop closure, segment uniformity, and input validation."""
     ts = np.linspace(0.0, 2.0 * np.pi, 13)[:-1]
     control_points = [wp.vec3(float(np.cos(t)), float(np.sin(t)), 0.0) for t in ts]
 
@@ -6035,7 +6035,7 @@ def _cable_spline_points_closed_impl(test: unittest.TestCase, device):
 
 
 def _rmf_quaternion_alignment_impl(test: unittest.TestCase, device):
-    """RMF quaternions: unit norm, +Z along chords, orthonormal frames."""
+    """Verify RMF quaternions are unit norm, align +Z with chords, and form orthonormal frames."""
     points = newton.utils.create_cable_spline_points(_helix_control_points(), num_segments=40)
     quats = newton.utils.create_rotation_minimizing_cable_quaternions(points)
     test.assertEqual(len(quats), len(points) - 1)
@@ -6052,7 +6052,7 @@ def _rmf_quaternion_alignment_impl(test: unittest.TestCase, device):
 
 
 def _rmf_planar_curve_no_flip_impl(test: unittest.TestCase, device):
-    """RMF on a planar S-curve: the cross-section normal must stay constant through inflections.
+    """Verify the RMF cross-section normal stays constant through planar inflections.
 
     This is exactly where the Frenet frame is undefined (zero curvature) and flips 180 degrees.
     """
@@ -6068,7 +6068,7 @@ def _rmf_planar_curve_no_flip_impl(test: unittest.TestCase, device):
 
 
 def _rmf_discretization_convergence_impl(test: unittest.TestCase, device):
-    """The RMF is a property of the curve: coarse and fine discretizations must agree.
+    """Verify coarse and fine RMF discretizations of the same curve agree.
 
     The final frame of a coarse sampling is compared against a much finer sampling of the same
     spline; the double reflection method should agree to a small roll angle.
@@ -6089,7 +6089,7 @@ def _rmf_discretization_convergence_impl(test: unittest.TestCase, device):
 
 
 def _rmf_closed_loop_holonomy_impl(test: unittest.TestCase, device):
-    """Closed non-planar loop: the frame field must close up (holonomy distributed evenly)."""
+    """Verify the frame field of a closed non-planar loop closes up with holonomy distributed evenly."""
     ts = np.linspace(0.0, 2.0 * np.pi, 17)[:-1]
     # Saddle-shaped loop: substantial out-of-plane variation gives a non-trivial holonomy.
     control_points = [wp.vec3(float(np.cos(t)), float(np.sin(t)), float(0.4 * np.sin(2.0 * t))) for t in ts]
@@ -6124,7 +6124,7 @@ def _rmf_closed_loop_holonomy_impl(test: unittest.TestCase, device):
 
 
 def _rmf_twist_distribution_impl(test: unittest.TestCase, device):
-    """Uniform twist: on a straight cable, frame k is rolled by (k+1) * twist_total / N."""
+    """Verify uniform twist distribution: frame k of a straight cable is rolled by k * twist_total / N."""
     num_segments = 20
     points = newton.utils.create_straight_cable_points(
         start=wp.vec3(0.0, 0.0, 0.0), direction=wp.vec3(1.0, 0.0, 0.0), length=2.0, num_segments=num_segments
@@ -6142,7 +6142,7 @@ def _rmf_twist_distribution_impl(test: unittest.TestCase, device):
 
 
 def _add_cable_spline_builder_impl(test: unittest.TestCase, device):
-    """add_cable_spline: body/joint counts, labels, rest-pose consistency, validation."""
+    """Verify add_cable_spline body/joint counts, labels, and input validation."""
     control_points = _helix_control_points()
 
     builder = newton.ModelBuilder()
@@ -6180,7 +6180,7 @@ def _add_cable_spline_builder_impl(test: unittest.TestCase, device):
 
 
 def _add_cable_spline_holds_rest_shape_impl(test: unittest.TestCase, device):
-    """A spline cable simulated without gravity must hold its curved rest shape."""
+    """Verify a spline cable simulated without gravity holds its curved rest shape."""
     control_points = _helix_control_points(num_points=12, turns=1.0)
 
     builder = newton.ModelBuilder()
@@ -6230,7 +6230,7 @@ def _add_cable_spline_holds_rest_shape_impl(test: unittest.TestCase, device):
 
 
 def _cable_spline_shape_straight_rest_impl(test: unittest.TestCase, device):
-    """Straight-rest shape generation: matched segment lengths, collinear open rest, circular closed rest."""
+    """Verify straight-rest shape generation: matched segment lengths, collinear open rest, circular closed rest."""
     control_points = _helix_control_points(num_points=12, turns=1.0)
     shape = newton.utils.create_cable_spline_shape(control_points, num_segments=24, straight_rest_shape=True)
 
@@ -6269,7 +6269,7 @@ def _cable_spline_shape_straight_rest_impl(test: unittest.TestCase, device):
 
 
 def _cable_body_transforms_impl(test: unittest.TestCase, device):
-    """create_cable_body_transforms places body origins at segment midpoints or start points."""
+    """Verify create_cable_body_transforms places body origins at segment midpoints or start points."""
     points = newton.utils.create_straight_cable_points(
         start=wp.vec3(0.0, 0.0, 0.0), direction=wp.vec3(1.0, 0.0, 0.0), length=1.0, num_segments=4
     )
@@ -6290,7 +6290,7 @@ def _cable_body_transforms_impl(test: unittest.TestCase, device):
 
 
 def _add_cable_spline_straight_rest_relaxes_impl(test: unittest.TestCase, device):
-    """A cable built with straight_rest_shape=True but posed curved must relax toward straight.
+    """Verify a cable built with straight_rest_shape=True but posed curved relaxes toward straight.
 
     Builds the rod at the straight rest configuration, writes the curved spline pose into the
     simulation state (the routing workflow), and verifies the end-to-end distance grows toward
