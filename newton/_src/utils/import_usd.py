@@ -93,6 +93,13 @@ def _interpret_usd_contact_parameter(value, _resolver=None) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _interpret_usd_max_hull_vertices(value, resolver) -> int | None:
+    """Interpret the schema's unset hull sentinel as Newton's default limit."""
+    if resolver is not None and value == -1:
+        return Mesh.MAX_HULL_VERTICES
+    return value
+
+
 def _resolve_newton_limit_ke(
     limit_ke: float | None,
     fallback: float,
@@ -4081,13 +4088,18 @@ def parse_usd(
                         mesh = _get_mesh_with_visual_material(prim, path_name=path)
                     else:
                         mesh = _get_mesh_cached(prim)
-                    mesh.maxhullvert = R.get_value(
+                    max_hull_vertices, max_hull_vertices_resolver = R.get_value_with_resolver(
                         prim,
                         prim_type=PrimType.SHAPE,
                         key="max_hull_vertices",
                         default=max_hull_vertices_default,
                         verbose=verbose,
                         override=max_hull_vertices_override,
+                        comparison_key=_interpret_usd_max_hull_vertices,
+                    )
+                    mesh.maxhullvert = _interpret_usd_max_hull_vertices(
+                        max_hull_vertices,
+                        max_hull_vertices_resolver,
                     )
                     # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
                     # write the SDF intent to the builder lists, deferring the build to finalize().

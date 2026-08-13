@@ -11215,8 +11215,8 @@ def Xform "Articulation" (
         self.assertEqual(builder.shape_source[0].maxhullvert, newton.Mesh.MAX_HULL_VERTICES)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_fallback_policy_distinguishes_omitted_and_explicit_false(self):
-        """Distinguish an omitted fallback policy from an explicit legacy choice."""
+    def test_schema_hull_sentinel_uses_importer_limit(self):
+        """Interpret schema hull sentinels without changing explicit overrides."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -11236,30 +11236,30 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(mesh_prim)
         mesh_prim.ApplyAPI("NewtonMeshCollisionAPI")
 
-        omitted_builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(DeprecationWarning, "maxHullVertices"):
-            omitted_builder.add_usd(stage)
-        self.assertEqual(omitted_builder.shape_source[0].maxhullvert, newton.Mesh.MAX_HULL_VERTICES)
+        for policy_args in ({}, {"use_applied_schema_fallbacks": True}):
+            with self.subTest(policy_args=policy_args):
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "error",
+                        message=r".*schema fallbacks.*",
+                        category=DeprecationWarning,
+                    )
+                    builder.add_usd(stage, **policy_args)
+                self.assertEqual(builder.shape_source[0].maxhullvert, newton.Mesh.MAX_HULL_VERTICES)
 
-        legacy_builder = newton.ModelBuilder()
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "error",
-                message=r".*schema fallbacks.*",
-                category=DeprecationWarning,
-            )
-            legacy_builder.add_usd(stage, use_applied_schema_fallbacks=False)
-        self.assertEqual(legacy_builder.shape_source[0].maxhullvert, newton.Mesh.MAX_HULL_VERTICES)
+        unlimited_builder = newton.ModelBuilder()
+        unlimited_builder.add_usd(
+            stage,
+            mesh_maxhullvert=0,
+            use_applied_schema_fallbacks=True,
+        )
+        self.assertEqual(unlimited_builder.shape_source[0].maxhullvert, 0)
 
-        composed_builder = newton.ModelBuilder()
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "error",
-                message=r".*schema fallbacks.*",
-                category=DeprecationWarning,
-            )
-            composed_builder.add_usd(stage, use_applied_schema_fallbacks=True)
-        self.assertEqual(composed_builder.shape_source[0].maxhullvert, -1)
+        mesh_prim.GetAttribute("newton:maxHullVertices").Set(0)
+        authored_unlimited_builder = newton.ModelBuilder()
+        authored_unlimited_builder.add_usd(stage, use_applied_schema_fallbacks=True)
+        self.assertEqual(authored_unlimited_builder.shape_source[0].maxhullvert, 0)
 
 
 class TestImportSampleAssetsComposition(unittest.TestCase):
