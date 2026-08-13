@@ -977,6 +977,22 @@ class TestMuJoCoJointInParentActuators(unittest.TestCase):
         mujoco.mj_forward(solver.mj_model, solver.mj_data)
         np.testing.assert_allclose(solver.mj_data.actuator_moment, native_data.actuator_moment, atol=1.0e-7)
 
+    def test_jointinparent_actuator_does_not_apply_inheritrange(self):
+        """Do not inherit a control range for a joint-in-parent transmission."""
+        mjcf = MJCF_JOINT_IN_PARENT_ACTUATOR.replace(
+            '<joint name="ball" type="ball"/>',
+            '<joint name="ball" type="ball" limited="true" range="0 90"/>',
+        ).replace(
+            '<general name="parent_motor"',
+            '<position name="parent_motor" inheritrange="1"',
+        )
+        builder = ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.mujoco.actuator_ctrllimited.numpy(), [2])
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), [[0.0, 0.0]])
+
 
 class TestMuJoCoSiteActuators(unittest.TestCase):
     """Tests for site-targeted actuator support in SolverMuJoCo."""

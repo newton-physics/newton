@@ -3201,7 +3201,7 @@ def parse_mjcf(
                 # Uses only the first DOF (qd_start) since inheritrange is only
                 # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
-                if inheritrange > 0 and target_joint_name and qd_start >= 0:
+                if inheritrange > 0 and joint_name and qd_start >= 0:
                     lower = builder.joint_limit_lower[qd_start]
                     upper = builder.joint_limit_upper[qd_start]
                     if lower < upper:
