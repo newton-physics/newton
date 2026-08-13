@@ -31,7 +31,12 @@ from .kernels import (
     sdf_sphere,
     sdf_sphere_grad,
 )
-from .sdf_texture import TextureSDFData, texture_sample_sdf_grad
+from .sdf_texture import (
+    TextureSDFData,
+    texture_sample_sdf_grad,
+    texture_sample_sdf_grad_only,
+    texture_sample_sdf_value_only,
+)
 from .types import Axis, GeoType
 
 # Fixed iteration counts -> data-independent loops -> CUDA-graph-capturable. Passed as kernel args
@@ -134,6 +139,112 @@ def eval_shape_sdf(
 
 
 @wp.func
+def eval_shape_sdf_lower(
+    geo: wp.int32,
+    scale: wp.vec3,
+    x_local: wp.vec3,
+    shape_sdf_index: wp.int32,
+    texture_sdf_table: wp.array[TextureSDFData],
+) -> float:
+    """Return only the conservative SDF lower bound used for search and culling."""
+    if geo == GeoType.SPHERE:
+        return sdf_sphere(x_local, scale[0])
+    if geo == GeoType.BOX:
+        return sdf_box(x_local, scale[0], scale[1], scale[2])
+    if geo == GeoType.CAPSULE:
+        return sdf_capsule(x_local, scale[0], scale[1], int(Axis.Z))
+    if geo == GeoType.CYLINDER:
+        return sdf_cylinder(x_local, scale[0], scale[1], int(Axis.Z), -1.0, scale[2])
+    if geo == GeoType.CONE:
+        return sdf_cone(x_local, scale[0], scale[1], int(Axis.Z))
+    if geo == GeoType.ELLIPSOID:
+        return sdf_ellipsoid(x_local, scale)
+    if geo == GeoType.PLANE:
+        return sdf_plane(x_local, scale[0] * 0.5, scale[1] * 0.5)
+
+    tex = texture_sdf_table[shape_sdf_index]
+    if tex.scale_baked:
+        return texture_sample_sdf_value_only(tex, x_local)
+    dist = texture_sample_sdf_value_only(tex, wp.cw_div(x_local, scale))
+    return dist * wp.min(wp.abs(scale))
+
+
+@wp.func
+def eval_shape_sdf_grad(
+    geo: wp.int32,
+    scale: wp.vec3,
+    x_local: wp.vec3,
+    shape_sdf_index: wp.int32,
+    texture_sdf_table: wp.array[TextureSDFData],
+) -> wp.vec3:
+    """Return only the shape-local SDF gradient used by Frank-Wolfe."""
+    if geo == GeoType.SPHERE:
+        return sdf_sphere_grad(x_local, scale[0])
+    if geo == GeoType.BOX:
+        return sdf_box_grad(x_local, scale[0], scale[1], scale[2])
+    if geo == GeoType.CAPSULE:
+        return sdf_capsule_grad(x_local, scale[0], scale[1], int(Axis.Z))
+    if geo == GeoType.CYLINDER:
+        return sdf_cylinder_grad(x_local, scale[0], scale[1], int(Axis.Z), -1.0, scale[2])
+    if geo == GeoType.CONE:
+        return sdf_cone_grad(x_local, scale[0], scale[1], int(Axis.Z))
+    if geo == GeoType.ELLIPSOID:
+        return sdf_ellipsoid_grad(x_local, scale)
+    if geo == GeoType.PLANE:
+        return wp.vec3(0.0, 0.0, 1.0)
+
+    tex = texture_sdf_table[shape_sdf_index]
+    if tex.scale_baked:
+        return texture_sample_sdf_grad_only(tex, x_local)
+    inv_scale = wp.vec3(1.0 / scale[0], 1.0 / scale[1], 1.0 / scale[2])
+    grad = texture_sample_sdf_grad_only(tex, wp.cw_div(x_local, scale))
+    grad_norm = wp.length(grad)
+    if grad_norm > 0.0:
+        grad = grad / grad_norm
+    scaled_grad = wp.cw_mul(grad, inv_scale)
+    grad_len = wp.length(scaled_grad)
+    if grad_len > 0.0:
+        scaled_grad = scaled_grad / grad_len
+    else:
+        scaled_grad = grad
+    return scaled_grad
+
+
+@wp.func
+def optimize_edge_sdf_gamma(
+    geo: wp.int32,
+    scale: wp.vec3,
+    p: wp.vec3,
+    q: wp.vec3,
+    shape_sdf_index: wp.int32,
+    texture_sdf_table: wp.array[TextureSDFData],
+    n_iter: wp.int32,
+) -> float:
+    """Return the minimizing edge parameter using golden-section search."""
+    inv_phi = float(0.6180339887498949)  # 1 / golden ratio
+    lo = float(0.0)
+    hi = float(1.0)
+    c = hi - (hi - lo) * inv_phi
+    d = lo + (hi - lo) * inv_phi
+    fc = eval_shape_sdf_lower(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
+    fd = eval_shape_sdf_lower(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+    for _i in range(n_iter):
+        if fc < fd:
+            hi = d
+            d = c
+            fd = fc
+            c = hi - (hi - lo) * inv_phi
+            fc = eval_shape_sdf_lower(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
+        else:
+            lo = c
+            c = d
+            fc = fd
+            d = lo + (hi - lo) * inv_phi
+            fd = eval_shape_sdf_lower(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+    return 0.5 * (lo + hi)
+
+
+@wp.func
 def optimize_edge_sdf(
     geo: wp.int32,
     scale: wp.vec3,
@@ -146,29 +257,10 @@ def optimize_edge_sdf(
     """argmin_{u in [0,1]} phi((1-u) p + u q) by golden-section search (Macklin sec. 4).
 
     Fixed ``n_iter`` iterations -> graph-capturable. Returns ``(u, x_local, phi, grad)`` at the
-    minimizing point. Also used as the line search inside :func:`optimize_face_sdf`.
+    minimizing point. The face optimizer uses the result-only :func:`optimize_edge_sdf_gamma`
+    variant for its internal line search.
     """
-    inv_phi = float(0.6180339887498949)  # 1 / golden ratio
-    lo = float(0.0)
-    hi = float(1.0)
-    c = hi - (hi - lo) * inv_phi
-    d = lo + (hi - lo) * inv_phi
-    fc, _fc_a, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
-    fd, _fd_a, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
-    for _i in range(n_iter):
-        if fc < fd:
-            hi = d
-            d = c
-            fd = fc
-            c = hi - (hi - lo) * inv_phi
-            fc, _fc_a, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
-        else:
-            lo = c
-            c = d
-            fc = fd
-            d = lo + (hi - lo) * inv_phi
-            fd, _fd_a, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
-    u = 0.5 * (lo + hi)
+    u = optimize_edge_sdf_gamma(geo, scale, p, q, shape_sdf_index, texture_sdf_table, n_iter)
     x = (1.0 - u) * p + u * q
     _phi_l, phi, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
     return u, x, phi, grad
@@ -199,7 +291,7 @@ def optimize_face_sdf(
 
     for _i in range(n_iter):
         x = bary[0] * a + bary[1] * b + bary[2] * c
-        _phi_l, _phi_x, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
+        grad = eval_shape_sdf_grad(geo, scale, x, shape_sdf_index, texture_sdf_table)
         # Frank-Wolfe vertex: argmin_k grad . corner_k (Macklin eq. 4).
         da = wp.dot(grad, a)
         db = wp.dot(grad, b)
@@ -210,9 +302,7 @@ def optimize_face_sdf(
         elif dc <= da and dc <= db:
             s = wp.vec3(0.0, 0.0, 1.0)
         target = s[0] * a + s[1] * b + s[2] * c
-        gamma, _lx, _lphi, _lgrad = optimize_edge_sdf(
-            geo, scale, x, target, shape_sdf_index, texture_sdf_table, ls_iter
-        )
+        gamma = optimize_edge_sdf_gamma(geo, scale, x, target, shape_sdf_index, texture_sdf_table, ls_iter)
         bary = (1.0 - gamma) * bary + gamma * s
 
     x = bary[0] * a + bary[1] * b + bary[2] * c
@@ -236,6 +326,81 @@ def _shape_frames(
     X_ws = wp.transform_multiply(X_wb, X_bs)
     X_sw = wp.transform_inverse(X_ws)
     return X_bs, X_ws, X_sw
+
+
+@wp.func
+def _shape_world_frame(
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    X_bs: wp.transform,
+    shape_index: wp.int32,
+) -> wp.transform:
+    """Return the shape-local-to-world transform for a supplied body-local frame."""
+    rigid_body = shape_body[shape_index]
+    X_wb = wp.transform_identity()
+    if rigid_body >= 0:
+        X_wb = body_q[rigid_body]
+    return wp.transform_multiply(X_wb, X_bs)
+
+
+@wp.func
+def _soft_feature_aabb_misses_shape(
+    shape_index: wp.int32,
+    shape_type: wp.array[wp.int32],
+    shape_gap: wp.array[float],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
+    feature_lower: wp.vec3,
+    feature_upper: wp.vec3,
+    margin: float,
+    radius: float,
+) -> bool:
+    """Return whether an expanded soft-feature AABB is disjoint from the rigid-shape AABB."""
+    if shape_aabb_lower.shape[0] == 0 or shape_type[shape_index] == GeoType.PLANE:
+        return False
+
+    return _soft_feature_aabb_misses_analytic_shape(
+        shape_index,
+        shape_gap,
+        shape_aabb_lower,
+        shape_aabb_upper,
+        feature_lower,
+        feature_upper,
+        margin,
+        radius,
+    )
+
+
+@wp.func
+def _soft_feature_aabb_misses_analytic_shape(
+    shape_index: wp.int32,
+    shape_gap: wp.array[float],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
+    feature_lower: wp.vec3,
+    feature_upper: wp.vec3,
+    margin: float,
+    radius: float,
+) -> bool:
+    """Analytic non-plane variant of :func:`_soft_feature_aabb_misses_shape`."""
+    if shape_aabb_lower.shape[0] == 0:
+        return False
+
+    gap = shape_gap[shape_index]
+    expansion = margin + radius + wp.max(0.0, -gap)
+    expansion_vec = wp.vec3(expansion, expansion, expansion)
+    feature_lower = feature_lower - expansion_vec
+    feature_upper = feature_upper + expansion_vec
+    rigid_lower = shape_aabb_lower[shape_index]
+    rigid_upper = shape_aabb_upper[shape_index]
+    return (
+        feature_upper[0] < rigid_lower[0]
+        or feature_upper[1] < rigid_lower[1]
+        or feature_upper[2] < rigid_lower[2]
+        or feature_lower[0] > rigid_upper[0]
+        or feature_lower[1] > rigid_upper[1]
+        or feature_lower[2] > rigid_upper[2]
+    )
 
 
 @wp.func
@@ -296,6 +461,9 @@ def create_soft_face_contacts(
     shape_sdf_index: wp.array[wp.int32],
     texture_sdf_table: wp.array[TextureSDFData],
     shape_margin: wp.array[float],
+    shape_gap: wp.array[float],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
     sdf_face_iters: wp.int32,
     sdf_ls_iters: wp.int32,
     margin: float,
@@ -334,18 +502,45 @@ def create_soft_face_contacts(
     c_idx = tri_indices[t, 2]
     radius = wp.max(particle_radius[a_idx], wp.max(particle_radius[b_idx], particle_radius[c_idx]))
 
+    a_w = particle_q[a_idx]
+    b_w = particle_q[b_idx]
+    c_w = particle_q[c_idx]
+    feature_lower = wp.vec3(
+        wp.min(a_w[0], wp.min(b_w[0], c_w[0])),
+        wp.min(a_w[1], wp.min(b_w[1], c_w[1])),
+        wp.min(a_w[2], wp.min(b_w[2], c_w[2])),
+    )
+    feature_upper = wp.vec3(
+        wp.max(a_w[0], wp.max(b_w[0], c_w[0])),
+        wp.max(a_w[1], wp.max(b_w[1], c_w[1])),
+        wp.max(a_w[2], wp.max(b_w[2], c_w[2])),
+    )
+    if _soft_feature_aabb_misses_shape(
+        shape_index,
+        shape_type,
+        shape_gap,
+        shape_aabb_lower,
+        shape_aabb_upper,
+        feature_lower,
+        feature_upper,
+        margin,
+        radius,
+    ):
+        return
+
     # _s suffix = shape-local frame (matching the X_*s transforms: b = body, w = world, s = shape).
-    X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
-    a_s = wp.transform_point(X_sw, particle_q[a_idx])
-    b_s = wp.transform_point(X_sw, particle_q[b_idx])
-    c_s = wp.transform_point(X_sw, particle_q[c_idx])
+    X_ws_for_inverse = _shape_world_frame(shape_body, body_q, shape_transform[shape_index], shape_index)
+    X_sw = wp.transform_inverse(X_ws_for_inverse)
+    a_s = wp.transform_point(X_sw, a_w)
+    b_s = wp.transform_point(X_sw, b_w)
+    c_s = wp.transform_point(X_sw, c_w)
     scale = shape_scale[shape_index]
     # Per-shape contact margin (#2994), same threshold term as the legacy particle pass.
     s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
     threshold = margin + s_margin + radius
 
     centroid_s = (a_s + b_s + c_s) / 3.0
-    phi_c, _phi_c_a, _grad_c = eval_shape_sdf(geo, scale, centroid_s, sdf_idx, texture_sdf_table)
+    phi_c = eval_shape_sdf_lower(geo, scale, centroid_s, sdf_idx, texture_sdf_table)
     # Conservative cull: the SDF is ~1-Lipschitz, so the triangle's minimum is >= phi_c minus the
     # farthest centroid-to-point distance, which is always a vertex. circumradius can be smaller than
     # that for non-equilateral triangles (e.g. 3-4-5: R=2.5 vs 2.85) and would drop valid contacts.
@@ -358,6 +553,11 @@ def create_soft_face_contacts(
     )
     if phi < threshold:
         y = x - phi * grad
+        X_bs = shape_transform[shape_index]
+        X_ws = _shape_world_frame(shape_body, body_q, X_bs, shape_index)
+        out_a_idx = tri_indices[t, 0]
+        out_b_idx = tri_indices[t, 1]
+        out_c_idx = tri_indices[t, 2]
         _emit_soft_ef_contact(
             tid,
             tid_base,
@@ -371,7 +571,7 @@ def create_soft_face_contacts(
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
-            wp.vec3i(a_idx, b_idx, c_idx),
+            wp.vec3i(out_a_idx, out_b_idx, out_c_idx),
             bary,
             shape_index,
             wp.transform_point(X_bs, y),
@@ -395,6 +595,9 @@ def create_soft_edge_contacts(
     shape_sdf_index: wp.array[wp.int32],
     texture_sdf_table: wp.array[TextureSDFData],
     shape_margin: wp.array[float],
+    shape_gap: wp.array[float],
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
     sdf_edge_iters: wp.int32,
     margin: float,
     tid_base: wp.int32,
@@ -431,23 +634,53 @@ def create_soft_edge_contacts(
     v1 = edge_indices[e, 3]
     radius = wp.max(particle_radius[v0], particle_radius[v1])
 
+    p_w = particle_q[v0]
+    q_w = particle_q[v1]
+    feature_lower = wp.vec3(
+        wp.min(p_w[0], q_w[0]),
+        wp.min(p_w[1], q_w[1]),
+        wp.min(p_w[2], q_w[2]),
+    )
+    feature_upper = wp.vec3(
+        wp.max(p_w[0], q_w[0]),
+        wp.max(p_w[1], q_w[1]),
+        wp.max(p_w[2], q_w[2]),
+    )
+    if _soft_feature_aabb_misses_shape(
+        shape_index,
+        shape_type,
+        shape_gap,
+        shape_aabb_lower,
+        shape_aabb_upper,
+        feature_lower,
+        feature_upper,
+        margin,
+        radius,
+    ):
+        return
+
     # _s suffix = shape-local frame (matching the X_*s transforms: b = body, w = world, s = shape).
-    X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
-    p_s = wp.transform_point(X_sw, particle_q[v0])
-    q_s = wp.transform_point(X_sw, particle_q[v1])
+    X_ws_for_inverse = _shape_world_frame(shape_body, body_q, shape_transform[shape_index], shape_index)
+    X_sw = wp.transform_inverse(X_ws_for_inverse)
+    p_s = wp.transform_point(X_sw, p_w)
+    q_s = wp.transform_point(X_sw, q_w)
     scale = shape_scale[shape_index]
     # Per-shape contact margin (#2994), same threshold term as the legacy particle pass.
     s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
     threshold = margin + s_margin + radius
 
     mid_s = 0.5 * (p_s + q_s)
-    phi_m, _phi_m_a, _grad_m = eval_shape_sdf(geo, scale, mid_s, sdf_idx, texture_sdf_table)
+    phi_m = eval_shape_sdf_lower(geo, scale, mid_s, sdf_idx, texture_sdf_table)
     if phi_m > threshold + 0.5 * wp.length(q_s - p_s):
         return
 
     u, x, phi, grad = optimize_edge_sdf(geo, scale, p_s, q_s, sdf_idx, texture_sdf_table, sdf_edge_iters)
     if phi < threshold:
         y = x - phi * grad
+        X_bs = shape_transform[shape_index]
+        X_ws = _shape_world_frame(shape_body, body_q, X_bs, shape_index)
+        out_v0 = edge_indices[e, 2]
+        out_v1 = edge_indices[e, 3]
         # optimize_edge_sdf parameterizes x = (1 - u) * p_s + u * q_s, so v0 carries weight 1 - u.
         _emit_soft_ef_contact(
             tid,
@@ -462,7 +695,7 @@ def create_soft_edge_contacts(
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
-            wp.vec3i(v0, v1, -1),
+            wp.vec3i(out_v0, out_v1, -1),
             wp.vec3(1.0 - u, u, 0.0),
             shape_index,
             wp.transform_point(X_bs, y),
@@ -471,7 +704,19 @@ def create_soft_edge_contacts(
         )
 
 
-def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, edge_pairs, face_pairs, n_particle_pairs):
+def launch_soft_ef_contacts(
+    *,
+    model,
+    state,
+    contacts,
+    margin: float,
+    device,
+    edge_pairs,
+    face_pairs,
+    n_particle_pairs,
+    shape_aabb_lower=None,
+    shape_aabb_upper=None,
+):
     """Launch the soft EDGE and FACE passes (the soft-particle pass is the legacy kernel).
 
     ``edge_pairs`` / ``face_pairs`` are precomputed world-compatible (soft feature, shape) index
@@ -490,6 +735,14 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, ed
     if n_edge_pairs == 0 and n_face_pairs == 0:
         return
 
+    if (shape_aabb_lower is None) != (shape_aabb_upper is None):
+        raise ValueError("shape_aabb_lower and shape_aabb_upper must be provided together")
+    if shape_aabb_lower is None:
+        # Isolated kernel tests can intentionally disable the broad rejection. Production collision
+        # always supplies the current narrow-phase AABBs, so graph capture never allocates here.
+        shape_aabb_lower = wp.empty(0, dtype=wp.vec3, device=device)
+        shape_aabb_upper = wp.empty(0, dtype=wp.vec3, device=device)
+
     shape_args = [
         model.shape_body,
         model.shape_type,
@@ -500,6 +753,9 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, ed
         model._shape_sdf_index,
         model._texture_sdf_data,
         model.shape_margin,
+        model.shape_gap,
+        shape_aabb_lower,
+        shape_aabb_upper,
     ]
     outputs = [
         contacts.soft_contact_count,
@@ -513,7 +769,7 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, ed
         contacts.soft_contact_normal,
     ]
 
-    if n_edge_pairs > 0:
+    if n_edge_pairs:
         wp.launch(
             create_soft_edge_contacts,
             dim=n_edge_pairs,
@@ -531,7 +787,7 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, ed
             outputs=outputs,
             device=device,
         )
-    if n_face_pairs > 0:
+    if n_face_pairs:
         wp.launch(
             create_soft_face_contacts,
             dim=n_face_pairs,
