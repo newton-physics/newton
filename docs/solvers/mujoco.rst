@@ -820,11 +820,11 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **User data and arbitrary custom elements** (``<custom>``, ``<numeric>``,
   ``<text>``) — not imported. Newton-specific user data should use the
   Newton custom-attribute system instead.
-- **Actuator transmissions** — only ``joint``, ``tendon``, ``site``, and
-  ``body`` transmissions are supported (see
+- **Actuator transmissions** — ``joint``, ``tendon``, ``site``, ``body``, and
+  ``slidercrank`` transmissions are supported (see
   :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum). MuJoCo's
-  ``jointinparent`` and ``slidercrank`` transmissions are not converted;
-  actuators using them are skipped at construction with a warning.
+  ``jointinparent`` transmission is not converted; actuators using it are
+  skipped at construction with a warning.
 
 Smaller limitations are documented inline where they are most relevant —
 see `Caveats`_ below for collision-radius, convex-hull fallback, and

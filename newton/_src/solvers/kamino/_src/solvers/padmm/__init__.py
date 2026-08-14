@@ -11,7 +11,7 @@ et al in [2]. It solves the Lagrange dual of the constrained forward dynamics pr
 in constraint reactions (i.e. impulses) and post-event constraint-space velocities. The
 diagonal preconditioner strategy described in [3] is also implemented to improve
 numerical conditioning. This version also incorporates Nesterov-style gradient
-acceleration with adaptive restarts based on the work of O'Donoghue and Candes in [4].
+acceleration with the Fast ADMM restart rule of Goldstein et al. in [4].
 
 Notes
 ----

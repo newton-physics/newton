@@ -3691,6 +3691,34 @@ def test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign(test, device):
     test.assertGreater(float(grad_mir[0]), 0.0, "mirrored gradient must still point outward (+x)")
 
 
+def test_eval_shape_sdf_barrel_cylinder(test, device):
+    """Evaluate the bulged cylinder profile in the soft-contact SDF path."""
+    radius = 0.5
+    half_height = 1.0
+    barrel_radius = 2.0
+    equator_radius = radius + barrel_radius - np.sqrt(barrel_radius**2 - half_height**2)
+    table = wp.empty(0, dtype=TextureSDFData, device=device)
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_grad = wp.zeros(1, dtype=wp.vec3, device=device)
+
+    wp.launch(
+        _eval_shape_sdf_kernel,
+        dim=1,
+        inputs=[
+            int(GeoType.CYLINDER),
+            wp.vec3(radius, half_height, barrel_radius),
+            wp.vec3(equator_radius, 0.0, 0.0),
+            -1,
+            table,
+        ],
+        outputs=[out_phi, out_grad],
+        device=device,
+    )
+
+    test.assertAlmostEqual(float(out_phi.numpy()[0]), 0.0, delta=1.0e-5)
+    np.testing.assert_allclose(out_grad.numpy()[0], np.array([1.0, 0.0, 0.0]), atol=1.0e-5)
+
+
 def test_full_surface_empty_sdf_descriptor_rejected(test, device):
     """A participating mesh whose shape_sdf_index points at an empty placeholder descriptor (coarse
     texture None, e.g. a mesh-mesh BVH fallback) is rejected by the full-surface guard rather than
@@ -3872,6 +3900,7 @@ for _name, _fn in (
     ("test_full_surface_finite_plane_falls_back", test_full_surface_finite_plane_falls_back),
     ("test_full_surface_heightfield_falls_back", test_full_surface_heightfield_falls_back),
     ("test_full_surface_allows_infinite_plane", test_full_surface_allows_infinite_plane),
+    ("test_eval_shape_sdf_barrel_cylinder", test_eval_shape_sdf_barrel_cylinder),
 ):
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
 

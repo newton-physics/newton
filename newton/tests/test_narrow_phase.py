@@ -1211,6 +1211,67 @@ class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
             # If contact generated, should have positive penetration (separation)
             self.assertGreater(penetrations[0], 0.0, "Separated should have positive penetration")
 
+    def test_barrel_cylinder_sphere(self):
+        """Verify a sphere contacts the curved barrel through GJK/MPR."""
+        geom_list = [
+            {
+                "type": GeoType.CYLINDER,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.5, 1.0, 1.0], 0.0),
+            },
+            {
+                "type": GeoType.SPHERE,
+                "transform": ([1.7, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.25, 0.0, 0.0], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, _normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0)
+        self.assertLess(penetrations[0], 0.0)
+
+    def test_plane_barrel_cylinder(self):
+        """Verify a plane contacts the curved barrel through GJK/MPR."""
+        sin_half_angle = np.sqrt(0.5)
+        geom_list = [
+            {
+                "type": GeoType.PLANE,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.0, 0.0, 0.0], 0.0),
+            },
+            {
+                "type": GeoType.CYLINDER,
+                "transform": ([0.0, 0.0, 1.45], [0.0, sin_half_angle, 0.0, sin_half_angle]),
+                "data": ([0.5, 1.0, 1.0], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, _normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0)
+        self.assertLess(penetrations[0], 0.0)
+
+    def test_plane_barrel_cylinder_cap_manifold(self):
+        """Generate a stable contact manifold for a barrel cylinder resting on its cap."""
+        geom_list = [
+            {
+                "type": GeoType.PLANE,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.0, 0.0, 0.0], 0.0),
+            },
+            {
+                "type": GeoType.CYLINDER,
+                "transform": ([0.0, 0.0, 0.99], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.5, 1.0, 1.5], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, _normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreaterEqual(count, 3)
+        self.assertTrue(np.all(penetrations[:count] < 0.0))
+
     def test_no_self_collision(self):
         """Test that narrow phase doesn't generate self-collisions."""
         geom_list = [
@@ -2047,7 +2108,7 @@ class TestExtremeMeshTriangles(unittest.TestCase):
         (GeoType.SPHERE, [0.3, 0.3, 0.3], "sphere"),
         (GeoType.BOX, [0.2, 0.2, 0.2], "box"),
         (GeoType.CAPSULE, [0.15, 0.2, 0.15], "capsule"),
-        (GeoType.CYLINDER, [0.15, 0.25, 0.15], "cylinder"),
+        (GeoType.CYLINDER, [0.15, 0.25, 0.0], "cylinder"),
         (GeoType.CONE, [0.15, 0.25, 0.15], "cone"),
         (GeoType.ELLIPSOID, [0.25, 0.15, 0.2], "ellipsoid"),
     ]

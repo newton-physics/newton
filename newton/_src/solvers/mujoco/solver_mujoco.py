@@ -862,6 +862,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # region geom attributes
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="site_size_is_display",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.bool,
+                default=False,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="contype",
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
@@ -3219,6 +3229,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             target_idx = int(actuator_trnid[mujoco_act_idx, 0])
             target_idx_alt = int(actuator_trnid[mujoco_act_idx, 1])
+            slider_site_name = None
+            refsite_name = None
 
             # Determine target type from trntype enum (JOINT, TENDON, SITE, BODY, ...).
             trntype = int(trntype_arr[mujoco_act_idx]) if trntype_arr is not None else 0
@@ -3301,13 +3313,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         )
                     continue
                 target_name = site_name
+                if target_idx_alt >= 0:
+                    refsite_name = site_mapping.get(target_idx_alt)
+                    if refsite_name is None:
+                        if wp.config.log_level <= wp.LOG_DEBUG:
+                            print(
+                                f"Warning: MuJoCo actuator {mujoco_act_idx} references site {target_idx_alt} "
+                                "as refsite, but it is not present in the MuJoCo export."
+                            )
+                        continue
+            elif trntype == int(SolverMuJoCo.TrnType.SLIDERCRANK):
+                target_name = site_mapping.get(target_idx)
+                slider_site_name = site_mapping.get(target_idx_alt)
+                if target_name is None or slider_site_name is None:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
+                        print(
+                            f"Warning: MuJoCo slider-crank actuator {mujoco_act_idx} references "
+                            f"unavailable sites {target_idx}, {target_idx_alt}"
+                        )
+                    continue
             else:
-                # TODO: Support slidercrank and jointinparent transmission types
+                # TODO: Support jointinparent transmission types
                 if wp.config.log_level <= wp.LOG_DEBUG:
                     print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
                 continue
 
             general_args = dict(actuator_args)
+            if slider_site_name is not None:
+                general_args["slidersite"] = slider_site_name
 
             # Get custom attributes for this MuJoCo actuator
             if hasattr(mujoco_attrs, "actuator_gainprm"):
@@ -3393,6 +3426,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 int(SolverMuJoCo.TrnType.SLIDERCRANK): mujoco.mjtTrn.mjTRN_SLIDERCRANK,
             }.get(trntype, mujoco.mjtTrn.mjTRN_JOINT)
             general_args["trntype"] = trntype_enum
+            if refsite_name is not None:
+                general_args["refsite"] = refsite_name
             act = spec.add_actuator(target=target_name, **general_args)
             if shortcut == "position":
                 act.set_to_position(**shortcut_args)
@@ -5540,7 +5575,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         body_world = model.body_world.numpy()
         shape_transform = model.shape_transform.numpy()
         shape_type = model.shape_type.numpy()
-        shape_size = model.shape_scale.numpy()
+        # MuJoCo requires every size component to be positive, so conversion below
+        # fills unused zero components. Keep those edits isolated from the model's
+        # CPU-backed Warp array, for which ``numpy()`` may return a writable view.
+        shape_size = model.shape_scale.numpy().copy()
         shape_flags = model.shape_flags.numpy()
         shape_collision_group = model.shape_collision_group.numpy()
         shape_world = model.shape_world.numpy()
@@ -5950,6 +5988,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # contributes its trnid as a required shape.
                 site_trntype_mask = template_mask & (act_trntype_np == int(SolverMuJoCo.TrnType.SITE))
                 trnid_targets = act_trnid_np[site_trntype_mask, 0]
+                actuator_required_shapes.update(trnid_targets[trnid_targets >= 0].tolist())
+                refsite_targets = act_trnid_np[site_trntype_mask, 1]
+                actuator_required_shapes.update(refsite_targets[refsite_targets >= 0].tolist())
+                slidercrank_mask = template_mask & (act_trntype_np == int(SolverMuJoCo.TrnType.SLIDERCRANK))
+                trnid_targets = act_trnid_np[slidercrank_mask]
                 actuator_required_shapes.update(trnid_targets[trnid_targets >= 0].tolist())
                 # Vectorized: USD-deferred actuators reference sites by label.
                 # Intersect template-world target labels with the site label

@@ -1677,9 +1677,10 @@ def parse_mjcf(
                 scale=site_size,
                 label=site_label,
                 visible=visible,
+                custom_attributes={"mujoco:site_size_is_display": True} if site_type == "cylinder" else None,
             )
             site_shapes.append(s)
-            site_name_to_idx[site_name] = s
+            site_name_to_idx[sanitize_name(site_name)] = s
 
         return site_shapes
 
@@ -2490,11 +2491,12 @@ def parse_mjcf(
             Returns:
                 Tuple of (body_idx, anchor_position) or None if site not found or not a site.
             """
-            if site_name not in site_name_to_idx:
+            site_key = sanitize_name(site_name)
+            if site_key not in site_name_to_idx:
                 if verbose:
                     print(f"Warning: Site '{site_name}' not found")
                 return None
-            site_idx = site_name_to_idx[site_name]
+            site_idx = site_name_to_idx[site_key]
             if not (builder.shape_flags[site_idx] & ShapeFlags.SITE):
                 if verbose:
                     print(f"Warning: Shape '{site_name}' is not a site")
@@ -2867,9 +2869,9 @@ def parse_mjcf(
     # -----------------
     # add equality constraints
 
-    equality = root.find("equality")
-    if equality is not None and not skip_equality_constraints:
-        parse_equality_constraints(equality)
+    if not skip_equality_constraints:
+        for equality in root.findall("equality"):
+            parse_equality_constraints(equality)
 
     # -----------------
     # parse contact pairs
@@ -3234,6 +3236,9 @@ def parse_mjcf(
             body_name = merged_attrib.get("body")
             tendon_name = merged_attrib.get("tendon")
             site_name = merged_attrib.get("site")
+            crank_site_name = merged_attrib.get("cranksite")
+            slider_site_name = merged_attrib.get("slidersite")
+            refsite_name = merged_attrib.get("refsite")
 
             # Sanitize names to match how they were stored in the builder
             if joint_name:
@@ -3244,14 +3249,53 @@ def parse_mjcf(
                 tendon_name = sanitize_name(tendon_name)
             if site_name:
                 site_name = sanitize_name(site_name)
+            if crank_site_name:
+                crank_site_name = sanitize_name(crank_site_name)
+            if slider_site_name:
+                slider_site_name = sanitize_name(slider_site_name)
+            if refsite_name:
+                refsite_name = sanitize_name(refsite_name)
 
             # Determine transmission type and target
             trntype = 0  # Default: joint
             target_name_for_log = ""
+            target_idx_alt = 0
+            crank_length = None
             qd_start = -1
             total_dofs = 0
 
-            if joint_name:
+            if crank_site_name or slider_site_name:
+                if not crank_site_name or not slider_site_name:
+                    if verbose:
+                        print(
+                            f"Warning: {actuator_type} slider-crank actuator requires both cranksite and "
+                            "slidersite, skipping"
+                        )
+                    continue
+                crank_site_idx = site_name_to_idx.get(crank_site_name)
+                slider_site_idx = site_name_to_idx.get(slider_site_name)
+                if crank_site_idx is None:
+                    if verbose:
+                        print(
+                            f"Warning: {actuator_type} slider-crank actuator references unknown "
+                            f"cranksite '{crank_site_name}', skipping"
+                        )
+                    continue
+                if slider_site_idx is None:
+                    if verbose:
+                        print(
+                            f"Warning: {actuator_type} slider-crank actuator references unknown "
+                            f"slidersite '{slider_site_name}', skipping"
+                        )
+                    continue
+                crank_length = parse_float(merged_attrib, "cranklength", 0.0) * scale
+                if not np.isfinite(crank_length) or crank_length <= 0.0:
+                    raise ValueError("MJCF slider-crank actuator cranklength must be positive.")
+                target_idx = crank_site_idx
+                target_idx_alt = slider_site_idx
+                target_name_for_log = crank_site_name
+                trntype = int(SolverMuJoCo.TrnType.SLIDERCRANK)
+            elif joint_name:
                 # Joint transmission (trntype=0)
                 # First check per-MJCF-joint mapping (for targeting specific DOFs in combined joints)
                 if joint_name in mjcf_joint_name_to_dof:
@@ -3301,11 +3345,22 @@ def parse_mjcf(
                         print(f"Warning: {actuator_type} actuator references unknown site '{site_name}'")
                     continue
                 target_idx = site_idx
+                target_idx_alt = -1
+                if refsite_name:
+                    refsite_idx = site_name_to_idx.get(refsite_name)
+                    if refsite_idx is None:
+                        if verbose:
+                            print(f"Warning: {actuator_type} actuator references unknown refsite '{refsite_name}'")
+                        continue
+                    target_idx_alt = refsite_idx
                 target_name_for_log = site_name
                 trntype = 3  # TrnType.SITE
             else:
                 if verbose:
-                    print(f"Warning: {actuator_type} actuator has no joint, body, site, or tendon target, skipping")
+                    print(
+                        f"Warning: {actuator_type} actuator has no joint, body, site, tendon, or slider-crank "
+                        "target, skipping"
+                    )
                 continue
 
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
@@ -3402,6 +3457,8 @@ def parse_mjcf(
 
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
+            if crank_length is not None:
+                parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
             # Set implicit type defaults per actuator shortcut type.
             # MuJoCo shortcut elements (position, velocity, etc.) implicitly set
@@ -3442,7 +3499,7 @@ def parse_mjcf(
             actuator_values["mujoco:ctrl_type"] = ctrl_type_val
             actuator_values["mujoco:actuator_gainprm"] = gainprm
             actuator_values["mujoco:actuator_biasprm"] = biasprm
-            actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, 0)
+            actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, target_idx_alt)
             actuator_values["mujoco:actuator_trntype"] = trntype
             actuator_values["mujoco:actuator_world"] = builder.current_world
 
@@ -3452,7 +3509,7 @@ def parse_mjcf(
                 source_name = (
                     "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
                 )
-                trn_name = {0: "joint", 2: "tendon", 4: "body"}.get(trntype, "unknown")
+                trn_name = {0: "joint", 2: "tendon", 3: "site", 4: "body", 5: "slidercrank"}.get(trntype, "unknown")
                 print(
                     f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
                     f"trntype={trntype}, source={source_name}"
@@ -3466,8 +3523,7 @@ def parse_mjcf(
         for tendon_section in tendon_sections:
             parse_tendons(tendon_section)
 
-    actuator_section = root.find("actuator")
-    if actuator_section is not None:
+    for actuator_section in root.findall("actuator"):
         parse_actuators(actuator_section)
 
     # -----------------
