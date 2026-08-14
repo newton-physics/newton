@@ -535,10 +535,10 @@ After running the script, rebuild the documentation to verify the result (see
 .. note::
 
     Only symbols listed in a Newton public module's ``__all__`` are supported
-    public API. ``docs/generate_api.py`` has a fallback for modules without
-    ``__all__``, but that fallback does not replace the coding-guide
-    requirement. Export a user-facing symbol from ``newton/_src/`` through its
-    canonical public module before generating the API pages.
+    public API. ``docs/generate_api.py`` rejects modules that do not define
+    ``__all__`` as a list or tuple so undeclared attributes cannot be published
+    accidentally. Export a user-facing symbol from ``newton/_src/`` through
+    its canonical public module before generating the API pages.
 
 .. _experimental-features:
 
