@@ -350,6 +350,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 )
 
         rep = curve_recs[comp_paths[0]]
+        contact_properties = {p: usd._get_physics_material_contact_properties(curve_recs[p].prim) for p in comp_paths}
         # add_rod_graph applies one scalar radius/density/stiffness to the whole component, so a
         # welded graph necessarily flattens its curves to a single representative material. Warn
         # when the welded curves disagree so the flattening is explicit rather than silent.
@@ -362,12 +363,15 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                     curve_recs[p].material.get("shearStiffness"),
                     curve_recs[p].material.get("bendStiffness"),
                     curve_recs[p].material.get("twistStiffness"),
+                    contact_properties[p].get("mu"),
+                    contact_properties[p].get("restitution"),
                 )
                 for p in comp_paths
             }
             if len(sigs) > 1:
                 warnings.warn(
-                    f"cable graph '{cid}': welded curves have differing radius/density/stiffness; "
+                    f"cable graph '{cid}': welded curves have differing "
+                    f"radius/density/stiffness/contact properties; "
                     f"using '{comp_paths[0]}' as the representative material for the whole component.",
                     stacklevel=2,
                 )
@@ -399,6 +403,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             density=graph_weight_density,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
+            **contact_properties[comp_paths[0]],
         )
         # Unlike single cables, the graph junction spanning tree is intrinsic topology, not a
         # caller choice, and only a tree (not the all-incident-edges joint set produced when
@@ -626,6 +631,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             density=_mass_weight_density(prim, resolved_cable_density, deformable_read),
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
+            **usd._get_physics_material_contact_properties(prim),
         )
 
         cable_bodies: list[int] = []

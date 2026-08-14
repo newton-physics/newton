@@ -2204,6 +2204,41 @@ def _get_physics_material_density(material_prim) -> float | None:
     return None
 
 
+def _get_physics_material_contact_properties(prim: Usd.Prim) -> dict[str, float]:
+    """Read authored contact properties from a prim's bound physics material.
+
+    Newton exposes one sliding-friction coefficient per shape, so the authored
+    dynamic friction is used. Unauthored attributes preserve the builder's shape
+    defaults instead of applying USD schema fallback values.
+    """
+    from pxr import UsdPhysics
+
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None or not (
+        material_prim.HasAPI(UsdPhysics.MaterialAPI) or has_applied_api_schema(material_prim, "PhysicsMaterialAPI")
+    ):
+        return {}
+
+    material_api = UsdPhysics.MaterialAPI(material_prim)
+    properties: dict[str, float] = {}
+    for attribute, key, upper_bound in (
+        (material_api.GetDynamicFrictionAttr(), "mu", None),
+        (material_api.GetRestitutionAttr(), "restitution", 1.0),
+    ):
+        if not attribute or not attribute.HasAuthoredValue():
+            continue
+        value = float(attribute.Get())
+        if math.isfinite(value) and value >= 0.0 and (upper_bound is None or value <= upper_bound):
+            properties[key] = value
+            continue
+        expected = ">= 0" if upper_bound is None else f"within [0, {upper_bound:g}]"
+        warnings.warn(
+            f"{material_prim.GetPath()}: invalid {attribute.GetName()} {value}; expected {expected}, ignoring it.",
+            stacklevel=2,
+        )
+    return properties
+
+
 def _deformable_body_ancestor(prim: Usd.Prim) -> Usd.Prim | None:
     """Find the deformable body whose subtree contains ``prim`` (ownership, not governance).
 
