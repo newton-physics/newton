@@ -78,7 +78,7 @@ Rationale: `CODING_GUIDELINES.rst` forbids examples and docs from importing `new
 
 ### ⬆️ Missing migration guidance (Newton-specific)
 
-`CODING_GUIDELINES.rst` and `REVIEW_GUIDELINES.rst`: for `Deprecated`, `Changed`, and `Removed` entries, include migration guidance such as "Deprecate `Model.geo_meshes` in favor of `Model.shapes`."
+`changelog/README.md`: for `Deprecated`, `Changed`, and `Removed` entries, include migration guidance such as "Deprecate `Model.geo_meshes` in favor of `Model.shapes`."
 
 Flag `### Deprecated`, `### Removed`, and `### Changed` entries that name a rename / removal / reorder but do NOT express migration direction. Direction can be expressed with one of these phrases (case-insensitive): `use`, `in favor of`, `renamed to`, `replaced by`, `switch to`, `migrate to`, `prefer`. Direction can also be expressed structurally — an imperative `Rename X to Y`, an arrow `X → Y`, or a parameter-rename table — which counts as migration guidance even when none of the listed phrases appear verbatim (see the `ModelBuilder.add_shape_ellipsoid` example below).
 

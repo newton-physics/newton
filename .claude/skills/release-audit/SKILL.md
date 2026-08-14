@@ -279,7 +279,7 @@ For each CHANGELOG entry in Changed / Removed / Deprecated (plus any "capability
 - For semantic-only changes (no signature shift) where the prose describes a rename / reorder / behavioral flip: skip the diff block; include the backing commit's URL and the full CHANGELOG text.
 - For Removed entries: show the old signature on a `-` line; omit `+`.
 
-**Deprecation-window lookup for Removed entries.** Newton's policy (per `CODING_GUIDELINES.rst` and `REVIEW_GUIDELINES.rst`) is: *breaking changes require a deprecation first*. Every Removed entry needs evidence of a deprecation in a prior release. Start with the released CHANGELOG, then fall back to code-level runtime-warning evidence at the base ref. For every Removed entry (and every Changed entry whose prose describes a removal), search CHANGELOG.md for the matching prior Deprecated entry:
+**Deprecation-window lookup for Removed entries.** Newton's policy (per `CODING_GUIDELINES.rst`) is: *breaking changes require a deprecation first*. Every Removed entry needs evidence of a deprecation in a prior release. Start with the released CHANGELOG, then fall back to code-level runtime-warning evidence at the base ref. For every Removed entry (and every Changed entry whose prose describes a removal), search CHANGELOG.md for the matching prior Deprecated entry:
 
 1. Extract distinctive tokens from the Removed entry: the named symbol(s) in backticks and, if the entry carries a GH ref, that ref number.
 2. Scan the appropriate released-version sections of CHANGELOG.md for a `### Deprecated` bullet that names the same symbol(s) OR the same GH ref. The search scope depends on mode:
@@ -373,7 +373,7 @@ Read `references/language-review-examples.md`. For EACH CHANGELOG entry, apply L
 - **🗣️ Internal language**: internal module paths (`newton._src.*`), private identifiers with a leading underscore, Warp-internal types (`wp.types.*` that are not documented user types), implementation-detail verbs ("refactor", "reorganize", "rewrite") without a user-visible outcome.
 - **📝 Too terse**: under ~10 words with no context, or missing migration guidance in a Deprecated / Changed entry that names a rename or removal.
 - **🕵️ Private-only symbol**: the CHANGELOG `### Added` entry names a symbol that exists only in `newton._src.*` at HEAD and is not re-exported through a public module. See Phase 4a.
-- **⬆️ Missing migration guidance** (Newton-specific): entries in `### Deprecated`, `### Removed`, or `### Changed` (where the prose indicates rename / reorder / removal) MUST include migration guidance per `CODING_GUIDELINES.rst` and `REVIEW_GUIDELINES.rst` ("Use `Y` instead", "in favor of `Y`", "switch to `Y`"). Flag entries that rename or remove symbols without pointing to the replacement.
+- **⬆️ Missing migration guidance** (Newton-specific): entries in `### Deprecated`, `### Removed`, or `### Changed` (where the prose indicates rename / reorder / removal) MUST include migration guidance per `changelog/README.md` ("Use `Y` instead", "in favor of `Y`", "switch to `Y`"). Flag entries that rename or remove symbols without pointing to the replacement.
 - **🏷️ Naming-convention drift** (Newton-specific): new public symbols in `### Added` whose names violate Newton's prefix-first convention (e.g., `PDActuator` should be `ActuatorPD`; `add_sphere_shape()` should be `add_shape_sphere()`). See `CODING_GUIDELINES.rst`.
 
 Record flagged entries. Keep the FULL entry text in the audit table — do not truncate.

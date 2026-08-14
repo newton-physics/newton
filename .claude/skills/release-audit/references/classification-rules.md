@@ -79,7 +79,7 @@ When Phase 4d / 5a encounter these patterns, treat them as migration-required ch
 
 ## Deprecation policy (Phase 4d)
 
-`CODING_GUIDELINES.rst` and `REVIEW_GUIDELINES.rst`: breaking changes require a deprecation first. A prior released `### Deprecated` entry is the preferred evidence. A matching runtime `DeprecationWarning` at the base ref also proves that users received a deprecation window, even if the released CHANGELOG omitted it. The warning may be emitted directly or by a shared helper / decorator that clearly applies to the removed API or behavior.
+`CODING_GUIDELINES.rst`: breaking changes require a deprecation first. A prior released `### Deprecated` entry is the preferred evidence. A matching runtime `DeprecationWarning` at the base ref also proves that users received a deprecation window, even if the released CHANGELOG omitted it. The warning may be emitted directly or by a shared helper / decorator that clearly applies to the removed API or behavior.
 
 When Phase 4d cannot find the prior Deprecated entry:
 - Resolve the symbol or legacy behavior in code at the base ref.
