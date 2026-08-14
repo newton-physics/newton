@@ -862,6 +862,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # region geom attributes
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="site_size_is_display",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.bool,
+                default=False,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="contype",
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
@@ -5026,16 +5036,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if selected_shapes.shape[0] > NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT:
             return compile_newton_collision_graph(groups)
 
-        # The compiler derives group-based edges itself. Map only explicit
-        # exclusions whose two endpoints are in this solver's shape selection.
-        filter_pairs = model.shape_collision_filter_pairs_array()
-        if filter_pairs.shape[0]:
-            to_local = np.full(model.shape_count, -1, dtype=np.int64)
-            to_local[selected_shapes] = np.arange(selected_shapes.shape[0], dtype=np.int64)
-            local_filter_pairs = to_local[filter_pairs]
-            local_filter_pairs = local_filter_pairs[np.all(local_filter_pairs >= 0, axis=1)]
-        else:
-            local_filter_pairs = np.empty((0, 2), dtype=np.int64)
+        # Query only the bounded selected-shape graph. Materializing the global
+        # sparse pair array scales this template conversion with replicated worlds.
+        shape_a, shape_b = np.triu_indices(selected_shapes.shape[0], k=1)
+        candidate_pairs = np.column_stack((selected_shapes[shape_a], selected_shapes[shape_b]))
+        filtered = model.shape_collision_filter_mask(candidate_pairs)
+        local_filter_pairs = np.column_stack((shape_a[filtered], shape_b[filtered]))
         return compile_newton_collision_graph(groups, excluded_pairs=local_filter_pairs)
 
     @staticmethod
@@ -5544,7 +5550,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         body_world = model.body_world.numpy()
         shape_transform = model.shape_transform.numpy()
         shape_type = model.shape_type.numpy()
-        shape_size = model.shape_scale.numpy()
+        # MuJoCo requires every size component to be positive, so conversion below
+        # fills unused zero components. Keep those edits isolated from the model's
+        # CPU-backed Warp array, for which ``numpy()`` may return a writable view.
+        shape_size = model.shape_scale.numpy().copy()
         shape_flags = model.shape_flags.numpy()
         shape_collision_group = model.shape_collision_group.numpy()
         shape_world = model.shape_world.numpy()

@@ -2562,6 +2562,47 @@ f 4 5 8
                 msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
 
+    def test_fixed_tendon_inherits_default_class(self):
+        """Apply tendon default classes to fixed tendons with explicit overrides."""
+        mjcf = """
+<mujoco>
+    <default>
+        <tendon damping="3" limited="true" range="0 2"/>
+        <default class="stiff">
+            <tendon stiffness="12"/>
+        </default>
+    </default>
+    <worldbody>
+        <body>
+            <joint name="joint" type="slide"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+    <tendon>
+        <fixed name="global">
+            <joint joint="joint" coef="0.5"/>
+        </fixed>
+        <fixed name="inherited" class="stiff">
+            <joint joint="joint" coef="1"/>
+        </fixed>
+        <fixed name="overridden" class="stiff" stiffness="7" range="-1 1">
+            <joint joint="joint" coef="2"/>
+        </fixed>
+    </tendon>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.mujoco.tendon_stiffness.numpy(), [0.0, 12.0, 7.0])
+        np.testing.assert_allclose(model.mujoco.tendon_damping.numpy(), [3.0, 3.0, 3.0])
+        np.testing.assert_array_equal(model.mujoco.tendon_limited.numpy(), [1, 1, 1])
+        np.testing.assert_allclose(
+            model.mujoco.tendon_range.numpy(),
+            [[0.0, 2.0], [0.0, 2.0], [-1.0, 1.0]],
+        )
+
     def test_single_mujoco_fixed_tendon_limit_parsing(self):
         """Test that tendon limits are correctly parsed."""
         mjcf = """<?xml version="1.0" ?>
@@ -4845,6 +4886,58 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
 
 class TestImportMjcfActuatorsFrames(unittest.TestCase):
+    def test_multiple_actuator_sections(self):
+        """Import actuators from every top-level actuator section."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="link">
+            <joint name="joint"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <motor name="first" joint="joint"/>
+    </actuator>
+    <actuator>
+        <motor name="second" joint="joint"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        self.assertEqual(len(model.mujoco.actuator_trntype), 2)
+
+    def test_multiple_equality_sections(self):
+        """Import constraints from every top-level equality section."""
+        mjcf = """
+<mujoco>
+    <worldbody>
+        <body name="first">
+            <joint name="first_joint"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="second">
+            <joint name="second_joint"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <equality>
+        <joint name="first_equality" joint1="first_joint" joint2="second_joint"/>
+    </equality>
+    <equality>
+        <joint name="second_equality" joint1="second_joint"/>
+    </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
+
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -10067,6 +10160,18 @@ class TestSiteFromto(unittest.TestCase):
         np.testing.assert_allclose(
             builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/cylinder")],
             [0.1, 1.0, 0.3],
+            atol=1.0e-6,
+        )
+        model = builder.finalize(device="cpu")
+        cylinder_idx = builder.shape_label.index("site_fromto/worldbody/cylinder")
+        np.testing.assert_allclose(
+            model.shape_collision_aabb_lower.numpy()[cylinder_idx],
+            [-0.1, -0.1, -1.0],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            model.shape_collision_aabb_upper.numpy()[cylinder_idx],
+            [0.1, 0.1, 1.0],
             atol=1.0e-6,
         )
         np.testing.assert_allclose(
