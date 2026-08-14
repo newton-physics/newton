@@ -51,12 +51,6 @@ _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 _NUM_CONTACT_THREADS_PER_BODY = wp.constant(4)
 """Threads per body for contact accumulation using strided iteration"""
 
-_STICK_FLAG_ANCHOR = wp.constant(1)
-"""contact_stick_flag value: frozen anchor (sticking kinematic/static contacts)"""
-
-_STICK_FLAG_DEADZONE = wp.constant(2)
-"""contact_stick_flag value: anti-creep deadzone (sticking dynamic-dynamic contacts)"""
-
 # DER bend-twist strain measure tolerances (curvature binormal + Bishop transport).
 _CABLE_KB_FOLD_EPS = wp.constant(1.0e-12)
 """Degenerate-fold scale and denominator floor for the DER curvature binormal.
@@ -77,6 +71,13 @@ _CABLE_TRANSPORT_DENOM_EPS = wp.constant(1.0e-8)
 This is larger than _CABLE_KB_FOLD_EPS because transport has no curvature cap;
 the closed-form expression must be left before it becomes ill-conditioned."""
 
+_CABLE_TWIST_JACOBIAN_DIRECTIONAL_DENOM = wp.constant(2.0e-2)
+"""Near-fold threshold for evaluating the twist Jacobian through directional derivatives.
+
+The tangent-bisector row is algebraically exact, but loses float32 consistency
+with the normalized transport residual as 1 + dot(t0, t1) approaches zero. This
+cutoff is approximately where the curvature-binormal cap starts to engage."""
+
 _CABLE_TWIST_ATAN2_DENOM_EPS = wp.constant(1.0e-12)
 """Floor on sin^2 + cos^2 in the transported-twist atan2 derivative."""
 
@@ -88,12 +89,7 @@ _CABLE_TWIST_ATAN2_DENOM_EPS = wp.constant(1.0e-12)
 @wp.struct
 class RigidContactHistory:
     lambda_: wp.array[wp.vec3]
-    stick_flag: wp.array[wp.int32]
     penalty_k: wp.array[float]
-    point0: wp.array[wp.vec3]
-    point1: wp.array[wp.vec3]
-    offset0: wp.array[wp.vec3]
-    offset1: wp.array[wp.vec3]
     normal: wp.array[wp.vec3]
 
 
@@ -113,12 +109,10 @@ def _reset_world_selected(
     reset_all: bool,
     world_count: int,
 ):
-    """Query a public reset mask whose optional final entry selects unassigned entities."""
+    """Query a public reset mask whose final entry selects global entities."""
     if reset_all:
         return True
     if world < 0:
-        if world_mask.shape[0] == world_count:
-            return False
         world = world_count
     return world_mask[world]
 
@@ -573,22 +567,75 @@ def _cable_bend_twist_directional_derivatives_from_measure(
 
 
 @wp.func
-def _geometric_cable_strain_directional_derivative_z_from_measure(
-    q_wp: wp.quat,
+def _finite_curvature_binormal_jacobian(t0: wp.vec3, t1: wp.vec3, is_parent: bool) -> wp.mat33:
+    """Jacobian of the finite curvature binormal for one endpoint rotation.
+
+    This is the matrix form of ``_finite_curvature_binormal_derivative`` and
+    evaluates geometry shared by the three world-axis columns only once.
+    """
+    zero = wp.mat33(0.0)
+    raw_tangent_dot = wp.dot(t0, t1)
+    tangent_dot = wp.clamp(raw_tangent_dot, -1.0, 1.0)
+    tangent_cross = wp.cross(t0, t1)
+    denom = 1.0 + tangent_dot
+    cross_sq = wp.dot(tangent_cross, tangent_cross)
+    if denom <= _CABLE_KB_FOLD_EPS and cross_sq <= _CABLE_KB_FOLD_EPS:
+        return zero
+
+    identity = wp.identity(3, float)
+    if is_parent:
+        ddenom_domega = tangent_cross
+        dcross_domega = wp.outer(t0, t1) - raw_tangent_dot * identity
+    else:
+        ddenom_domega = -tangent_cross
+        dcross_domega = raw_tangent_dot * identity - wp.outer(t1, t0)
+
+    denom_safe = wp.max(_CABLE_KB_FOLD_EPS, denom)
+    inv_denom = 1.0 / denom_safe
+    kb_raw = (2.0 * inv_denom) * tangent_cross
+    dkb_domega = (2.0 * inv_denom) * dcross_domega
+    if denom > _CABLE_KB_FOLD_EPS:
+        dkb_domega = dkb_domega - (2.0 * inv_denom * inv_denom * wp.outer(tangent_cross, ddenom_domega))
+
+    kb_len = wp.length(kb_raw)
+    if kb_len > _CABLE_KB_CURVATURE_CAP:
+        inv_len = 1.0 / kb_len
+        projection = wp.identity(3, float) - (inv_len * inv_len) * wp.outer(kb_raw, kb_raw)
+        dkb_domega = (_CABLE_KB_CURVATURE_CAP * inv_len) * projection * dkb_domega
+
+    return dkb_domega
+
+
+@wp.func
+def _transported_twist_angle_jacobian_from_measure(
     measure: CableBendTwistMeasure,
-    omega_world: wp.vec3,
     is_parent: bool,
 ) -> wp.vec3:
-    """Directional derivative of [bend_x, bend_y, twist_z] for local +Z cables."""
-    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(
-        q_wp, measure, omega_world, is_parent
-    )
-    return wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
+    """Jacobian row of transported twist for one endpoint rotation.
+
+    Use the tangent-bisector closed form for well-conditioned tangents. Near a
+    fold, evaluate the full directional derivative along each world axis so the
+    Jacobian remains consistent with the float32 transport residual.
+    """
+    t0 = measure.t0
+    t1 = measure.t1
+    denom = 1.0 + wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
+    if denom <= _CABLE_TWIST_JACOBIAN_DIRECTIONAL_DENOM:
+        e0 = wp.vec3(1.0, 0.0, 0.0)
+        e1 = wp.vec3(0.0, 1.0, 0.0)
+        e2 = wp.vec3(0.0, 0.0, 1.0)
+        return wp.vec3(
+            _transported_twist_angle_derivative_from_measure(measure, e0, is_parent),
+            _transported_twist_angle_derivative_from_measure(measure, e1, is_parent),
+            _transported_twist_angle_derivative_from_measure(measure, e2, is_parent),
+        )
+
+    jacobian = (t0 + t1) / denom
+    return -jacobian if is_parent else jacobian
 
 
 @wp.func
 def _cable_bend_twist_jacobian_z_from_measure(
-    q_wp: wp.quat,
     measure: CableBendTwistMeasure,
     is_parent: bool,
 ) -> wp.mat33:
@@ -597,14 +644,16 @@ def _cable_bend_twist_jacobian_z_from_measure(
     The local residual is exactly ``[bend_x, bend_y, twist_z]``, so no bend
     projector or twist-axis vector is needed in this hot path.
     """
-    e0 = wp.vec3(1.0, 0.0, 0.0)
-    e1 = wp.vec3(0.0, 1.0, 0.0)
-    e2 = wp.vec3(0.0, 0.0, 1.0)
+    dkb_domega = _finite_curvature_binormal_jacobian(measure.t0, measure.t1, is_parent)
+    if is_parent:
+        dkb_domega = dkb_domega + wp.skew(measure.kb_world)
 
-    j0 = _geometric_cable_strain_directional_derivative_z_from_measure(q_wp, measure, e0, is_parent)
-    j1 = _geometric_cable_strain_directional_derivative_z_from_measure(q_wp, measure, e1, is_parent)
-    j2 = _geometric_cable_strain_directional_derivative_z_from_measure(q_wp, measure, e2, is_parent)
-    return wp.matrix_from_cols(j0, j1, j2)
+    parent_x_world = measure.m0
+    parent_y_world = wp.cross(measure.t0, measure.m0)
+    bend_jacobian_x = wp.transpose(dkb_domega) * parent_x_world
+    bend_jacobian_y = wp.transpose(dkb_domega) * parent_y_world
+    twist_jacobian = _transported_twist_angle_jacobian_from_measure(measure, is_parent)
+    return wp.matrix_from_rows(bend_jacobian_x, bend_jacobian_y, twist_jacobian)
 
 
 @wp.func
@@ -975,7 +1024,7 @@ def evaluate_cable_bend_twist_force_hessian_z(
         f_local = f_local + wp.cw_mul(K_damp_diag, dkappa_dt)
         H_local_diag = H_local_diag + inv_dt * K_damp_diag
 
-    J_body = _cable_bend_twist_jacobian_z_from_measure(q_wp, measure, is_parent)
+    J_body = _cable_bend_twist_jacobian_z_from_measure(measure, is_parent)
     # Gauss-Newton self Hessian: J^T diag(H_local_diag) J.
     H_aa = wp.transpose(J_body) * _diag_mul_mat33(H_local_diag, J_body)
     tau_world = -(wp.transpose(J_body) * f_local)
@@ -1101,8 +1150,10 @@ def evaluate_cable_stretch_shear_force_hessian(
     u = wp.quat_rotate_inv(q_wp, C_vec)
     psi = wp.cw_mul(k_diag, u) - C0_force_local + lambda_local
 
-    h_s = k_diag[0]
-    h_z = k_diag[2]
+    k_s = k_diag[0]
+    k_z = k_diag[2]
+    h_s = k_s
+    h_z = k_z
     if damping_active:
         inv_dt = 1.0 / dt
         x_p_prev = wp.transform_get_translation(X_wp_prev)
@@ -1116,11 +1167,24 @@ def evaluate_cable_stretch_shear_force_hessian(
     force = f_world if is_parent else -f_world
 
     t = _quat_rotate_local_z(q_wp)
-    K_eff = h_s * wp.identity(3, float) + (h_z - h_s) * wp.outer(t, t)
-    rx = wp.skew(r)
+    identity = wp.identity(3, float)
+    K_eff = h_s * identity + (h_z - h_s) * wp.outer(t, t)
     H_ll = K_eff
-    H_al = rx * K_eff
-    H_aa = wp.transpose(rx) * K_eff * rx
+    if is_parent:
+        # Isotropic elastic energy is frame-invariant, so it takes the parent-anchor arm that
+        # evaluate_linear_constraint_force_hessian also uses; min() extracts the largest such block
+        # leaving a PSD remainder. Damping keeps the material arm: u_prev is frozen one step back.
+        k_iso = wp.min(k_s, k_z)
+        K_material = K_eff - k_iso * identity
+        r_elastic = x_p - com_w
+        rx_material = wp.skew(r)
+        H_al = k_iso * wp.skew(r_elastic) + rx_material * K_material
+        H_aa = k_iso * (wp.length_sq(r_elastic) * identity - wp.outer(r_elastic, r_elastic))
+        H_aa = H_aa + wp.transpose(rx_material) * K_material * rx_material
+    else:
+        rx = wp.skew(r)
+        H_al = rx * K_eff
+        H_aa = wp.transpose(rx) * K_eff * rx
 
     torque = wp.cross(r, force)
     return force, torque, H_ll, H_al, H_aa
@@ -2742,7 +2806,7 @@ def forward_step_rigid_bodies(
     com_local = body_com[tid]
     I_local = body_inertia[tid]
     inv_I = body_inv_inertia[tid]
-    world_g = gravity[wp.max(world_idx, 0)]
+    world_g = gravity[world_idx]
 
     # Integrate rigid body motion (semi-implicit Euler, no angular damping)
     q_new, qd_new = integrate_rigid_body(
@@ -3128,11 +3192,6 @@ def init_body_body_contacts_avbd(
     body_world: wp.array[wp.int32],
     # Scalar parameters
     k_start: float,
-    # In/out: replayed only for matched hard contacts that were sticking.
-    rigid_contact_point0: wp.array[wp.vec3],
-    rigid_contact_point1: wp.array[wp.vec3],
-    rigid_contact_offset0: wp.array[wp.vec3],
-    rigid_contact_offset1: wp.array[wp.vec3],
     # Outputs
     contact_penalty_k: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
@@ -3142,13 +3201,13 @@ def init_body_body_contacts_avbd(
 ):
     """Restore body-body contact state from match indices.
 
-    For hard contacts: restores lambda (rotated from old to new contact frame),
-    penalty_k, and stick-anchor points when the previous matched contact stuck.
-    For soft contacts: restores penalty_k only; lambda stays zero because the
-    soft path is penalty-only.
-    Sticky hard contacts may overwrite rigid_contact_point0/1 and
-    rigid_contact_offset0/1 in place with the previously saved contact anchors.
-    C0 and decay are handled by step_body_body_contact_C0_lambda.
+    For hard contacts, restores lambda (rotated from the previous to the current
+    contact frame) and penalty_k. For soft contacts, restores penalty_k only;
+    lambda stays zero because the soft path is penalty-only. Contact geometry is
+    owned entirely by the collision pipeline: ``"latest"`` matching supplies
+    fresh geometry and ``"sticky"`` matching replays persistent geometry before
+    the solver runs. C0 and decay are handled by
+    :func:`step_body_body_contact_C0_lambda`.
 
     match_index[i] addresses saved contact rows from the last snapshot.
     Negative values (-1 unmatched, -2 broken) cold-start identically.
@@ -3192,16 +3251,6 @@ def init_body_body_contacts_avbd(
             lam_t_old = lam_hist - n_old * lam_n
             lam_t_new = lam_t_old - n_new * wp.dot(lam_t_old, n_new)
             contact_lambda[i] = n_new * lam_n + lam_t_new
-
-            stick_flag = history.stick_flag[slot]
-            # Replay saved points and offsets only for contacts whose saved
-            # state was sticking. Point and offset must move together; the
-            # surface anchor is ``point + offset``.
-            if stick_flag == _STICK_FLAG_ANCHOR or stick_flag == _STICK_FLAG_DEADZONE:
-                rigid_contact_point0[i] = history.point0[slot]
-                rigid_contact_point1[i] = history.point1[slot]
-                rigid_contact_offset0[i] = history.offset0[slot]
-                rigid_contact_offset1[i] = history.offset1[slot]
         else:
             contact_lambda[i] = wp.vec3(0.0)
     else:
@@ -3212,22 +3261,12 @@ def init_body_body_contacts_avbd(
 @wp.kernel
 def snapshot_body_body_contact_history(
     rigid_contact_count: wp.array[int],
-    rigid_contact_point0: wp.array[wp.vec3],
-    rigid_contact_point1: wp.array[wp.vec3],
-    rigid_contact_offset0: wp.array[wp.vec3],
-    rigid_contact_offset1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
     contact_lambda: wp.array[wp.vec3],
-    contact_stick_flag: wp.array[wp.int32],
     contact_penalty_k: wp.array[float],
     # Persistent outputs, in RigidContactHistory order
     prev_lambda: wp.array[wp.vec3],
-    prev_stick_flag: wp.array[wp.int32],
     prev_penalty_k: wp.array[float],
-    prev_point0: wp.array[wp.vec3],
-    prev_point1: wp.array[wp.vec3],
-    prev_offset0: wp.array[wp.vec3],
-    prev_offset1: wp.array[wp.vec3],
     prev_normal: wp.array[wp.vec3],
 ):
     """Snapshot converged contact state by contact row.
@@ -3240,12 +3279,7 @@ def snapshot_body_body_contact_history(
         return
 
     prev_lambda[i] = contact_lambda[i]
-    prev_stick_flag[i] = contact_stick_flag[i]
     prev_penalty_k[i] = contact_penalty_k[i]
-    prev_point0[i] = rigid_contact_point0[i]
-    prev_point1[i] = rigid_contact_point1[i]
-    prev_offset0[i] = rigid_contact_offset0[i]
-    prev_offset1[i] = rigid_contact_offset1[i]
     prev_normal[i] = rigid_contact_normal[i]
 
 
@@ -4811,16 +4845,12 @@ def update_duals_body_body_contacts(
     contact_material_mu: wp.array[float],
     contact_C0: wp.array[wp.vec3],
     avbd_alpha: float,
-    stick_motion_eps: float,
     hard_contacts: int,
-    body_inv_mass: wp.array[float],
     contact_material_ke: wp.array[float],
     beta: float,
     # Input/output
     contact_penalty_k: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
-    # Output
-    contact_stick_flag: wp.array[wp.int32],
 ):
     """
     Update AVBD augmented-Lagrangian duals for contact constraints (per-iteration).
@@ -4896,24 +4926,6 @@ def update_duals_body_body_contacts(
         if lam_t_len > cone_limit and lam_t_len > 0.0:
             lam_t_new = lam_t_new * (cone_limit / lam_t_len)
         contact_lambda[idx] = n * lam_n_new + lam_t_new
-
-        has_kinematic = int(0)
-        if body_id_0 < 0 or body_id_1 < 0:
-            has_kinematic = int(1)
-        elif body_id_0 >= 0 and body_inv_mass[body_id_0] == 0.0:
-            has_kinematic = int(1)
-        elif body_id_1 >= 0 and body_inv_mass[body_id_1] == 0.0:
-            has_kinematic = int(1)
-
-        flag = int(0)
-        if lam_n_new > 0.0 and lam_t_len <= cone_limit and wp.length(tangent_residual) < stick_motion_eps:
-            if has_kinematic == 1:
-                flag = _STICK_FLAG_ANCHOR
-            else:
-                flag = _STICK_FLAG_DEADZONE
-        contact_stick_flag[idx] = flag
-    else:
-        contact_stick_flag[idx] = int(0)
 
     C_n = -contact_surface_separation(p0_world, p1_world, n, rigid_contact_margin0[idx], rigid_contact_margin1[idx])
     if C_n > 0.0:
@@ -4998,13 +5010,6 @@ def update_body_velocity(
     dt: float,
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
-    body_contact_buffer_pre_alloc: int,
-    body_contact_counts: wp.array[wp.int32],
-    body_contact_indices: wp.array[wp.int32],
-    contact_stick_flag: wp.array[wp.int32],
-    apply_stick_deadzone: int,
-    stick_freeze_translation_eps: float,
-    stick_freeze_angular_eps: float,
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_qd_mirror: wp.array[wp.spatial_vector],
@@ -5013,8 +5018,6 @@ def update_body_velocity(
     """
     Update body velocities from position changes (world frame).
 
-    Optionally applies a tiny body-level stick-contact deadzone before
-    finite-difference velocity computation.
     Computes linear and angular velocities using finite differences.
     Also transfers the final body poses to body_q_out (fused copy from
     the in-place Gauss-Seidel iteration buffer to state_out).
@@ -5026,15 +5029,6 @@ def update_body_velocity(
         dt: Time step.
         body_q: Current body transforms (world), from state_in (in-place iteration buffer).
         body_com: Center of mass offsets (local frame).
-        body_contact_buffer_pre_alloc: Per-body contact-list capacity.
-        body_contact_counts: Number of body-body contacts adjacent to each body.
-        body_contact_indices: Flat per-body contact index lists.
-        contact_stick_flag: Per-contact flag (0=none, ANCHOR=sticking kinematic/static,
-            DEADZONE=sticking dynamic-dynamic).
-        apply_stick_deadzone: If nonzero, enable anti-creep deadzone for bodies whose
-            contacts carry DEADZONE but not ANCHOR.
-        stick_freeze_translation_eps: Translation deadzone [m] for anti-creep snapping.
-        stick_freeze_angular_eps: Angular deadzone [rad] for anti-creep snapping.
         body_q_prev: Previous body transforms (input/output), advanced to the
             current pose for the next step. ``SolverVBD.reset()`` is the supported
             way to establish a new baseline after a discontinuous pose change.
@@ -5054,27 +5048,6 @@ def update_body_velocity(
     x_prev = wp.transform_get_translation(pose_prev)
     q = wp.transform_get_rotation(pose)
     q_prev = wp.transform_get_rotation(pose_prev)
-
-    if apply_stick_deadzone != 0:
-        count = wp.min(body_contact_counts[tid], body_contact_buffer_pre_alloc)
-        offset = tid * body_contact_buffer_pre_alloc
-        has_anchor = int(0)
-        has_deadzone = int(0)
-        for i in range(count):
-            contact_idx = body_contact_indices[offset + i]
-            f = contact_stick_flag[contact_idx]
-            if f == _STICK_FLAG_ANCHOR:
-                has_anchor = int(1)
-            elif f == _STICK_FLAG_DEADZONE:
-                has_deadzone = int(1)
-
-        if has_deadzone != 0 and has_anchor == 0:
-            translation_delta = wp.length(x - x_prev)
-            angular_delta = wp.length(quat_velocity(q, q_prev, 1.0))  # dt=1 gives angular displacement [rad]
-            if translation_delta < stick_freeze_translation_eps and angular_delta < stick_freeze_angular_eps:
-                pose = pose_prev
-                x = x_prev
-                q = q_prev
 
     # Compute COM positions
     com_local = body_com[tid]

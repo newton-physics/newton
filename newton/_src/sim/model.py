@@ -18,6 +18,8 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, override
+from ..geometry.flags import ShapeFlags
+from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
@@ -819,9 +821,9 @@ class Model:
         self.shape_material_restitution: wp.array[wp.float32] | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
         self.shape_material_mu_torsional: wp.array[wp.float32] | None = None
-        """Shape torsional friction coefficient [dimensionless] (resistance to spinning at contact point), shape [shape_count], float."""
+        """Shape torsional friction coefficient [m] (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_mu_rolling: wp.array[wp.float32] | None = None
-        """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
+        """Shape rolling friction coefficient [m] (resistance to rolling motion), shape [shape_count], float."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Under the default linear pressure law, contact force scales with
@@ -895,7 +897,7 @@ class Model:
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
-        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
+        """BVH over selected shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
@@ -924,11 +926,22 @@ class Model:
         self.heightfield_meshes: list[wp.Mesh] = []
         """wp.Mesh objects built from heightfield shapes, kept alive for the model's lifetime."""
 
-        # Mesh edge data (packed array + per-shape slice)
+        self._mesh_keep_alive: list[wp.Mesh] = []
+        """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
+
+        # Mesh edge data (packed arrays + per-shape slice)
         self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
+        self.mesh_edge_centers: wp.array[wp.vec4] | None = None
+        """Packed shape-scaled collision-edge centers and radii, shape [total_edge_count, 4] [m]."""
+        self.mesh_edge_halves: wp.array[wp.vec4] | None = None
+        """Packed collision-edge half-vectors and corner ownership, shape [total_edge_count, 4].
+
+        Components ``xyz`` are shape-scaled half-vectors [m]. Component ``w``
+        is a unitless internal endpoint-ownership code.
+        """
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
-        """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
+        """Per-shape (start, count) into mesh edge arrays, shape [shape_count]. (-1,0) if no edges."""
         self._shape_mesh_properties: wp.array[wp.int32] | None = None
         """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
 
@@ -943,6 +956,8 @@ class Model:
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""
 
         # Texture SDF storage
+        self._sdf_texture_paired_samples: bool = True
+        """Whether every texture SDF stores adjacent X samples together."""
         self._texture_sdf_data = None
         """Compact array of TextureSDFData structs, shape [num_sdfs]."""
         self._texture_sdf_coarse_textures: list = []
@@ -1085,16 +1100,14 @@ class Model:
 
         Shape matches :attr:`joint_q` (``joint_coord_count``) when
         :attr:`newton.use_coord_layout_targets` is ``True``; otherwise the array
-        is shaped ``(joint_dof_count,)`` for backward compatibility with the
-        deprecated :attr:`joint_target_pos` alias. Index via
+        is shaped ``(joint_dof_count,)`` (legacy layout). Index via
         :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
         :attr:`joint_qd_start` to match the active layout.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type] used to initialize :attr:`newton.Control.joint_target_qd`, shape [joint_dof_count], float.
 
-        Matches the layout of :attr:`joint_qd`. Replaces the deprecated
-        :attr:`joint_target_vel`.
+        Matches the layout of :attr:`joint_qd`.
         """
         self.joint_act: wp.array[wp.float32] | None = None
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
@@ -1276,7 +1289,13 @@ class Model:
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity: wp.array[wp.vec3] | None = None
-        """Per-world gravity vectors [m/s²], shape [world_count, 3], dtype :class:`vec3`."""
+        """Local-world and global gravity vectors [m/s²], dtype :class:`vec3`.
+
+        Models with explicit local worlds have shape [world_count + 1], where
+        the final element is the gravity for global world ``-1``. Legacy
+        implicit single-world models have shape [1], shared by world ``0``
+        and global world ``-1``.
+        """
 
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
         """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
@@ -1364,17 +1383,6 @@ class Model:
         """
 
         self.attribute_specs["joint_target_q"] = Model.AttributeSpec(target_q_freq)
-        if not self.use_coord_layout_targets:
-            self.attribute_specs["joint_target_pos"] = Model.AttributeSpec(
-                target_q_freq,
-                deprecated=True,
-                alias_of="joint_target_q",
-            )
-            self.attribute_specs["joint_target_vel"] = Model.AttributeSpec(
-                Model.AttributeFrequency.JOINT_DOF,
-                deprecated=True,
-                alias_of="joint_target_qd",
-            )
 
         # Extended state attributes live on State and are allocated only when
         # explicitly requested via request_state_attributes().
@@ -1558,6 +1566,13 @@ class Model:
             return references
         raise ValueError(f"Unknown custom attribute reference frequency {references!r}")
 
+    # ----- Removed joint-target aliases -------------------------------------
+    # Tombstones so that assigning the 1.3-era names fails loudly instead of
+    # creating an unused instance attribute whose targets are never applied.
+
+    joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
+    joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
+
     @property
     def joint_target_q_start(self) -> wp.array | None:
         """Per-joint start index into :attr:`joint_target_q`, shape
@@ -1567,81 +1582,13 @@ class Model:
         """
         return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
 
-    @property
-    def joint_target_pos(self) -> wp.array | None:
-        """Deprecated alias for :attr:`joint_target_q` (DOF-shape only).
-        Raises :class:`AttributeError` when this Model was built under
-        :attr:`use_coord_layout_targets` ``True``.
-
-        .. deprecated:: 1.3
-            Use :attr:`joint_target_q` instead.
-        """
-        import warnings  # noqa: PLC0415
-
-        from .control import _JOINT_TARGET_POS_DEPRECATION_MSG, _JOINT_TARGET_POS_UNAVAILABLE_MSG  # noqa: PLC0415
-
-        if self.use_coord_layout_targets:
-            raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG.replace("Control.", "Model."))
-        warnings.warn(
-            _JOINT_TARGET_POS_DEPRECATION_MSG.replace("Control.", "Model."),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.joint_target_q
-
-    @joint_target_pos.setter
-    def joint_target_pos(self, value: wp.array | None) -> None:
-        import warnings  # noqa: PLC0415
-
-        from .control import _JOINT_TARGET_POS_DEPRECATION_MSG, _JOINT_TARGET_POS_UNAVAILABLE_MSG  # noqa: PLC0415
-
-        if self.use_coord_layout_targets:
-            raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG.replace("Control.", "Model."))
-        warnings.warn(
-            _JOINT_TARGET_POS_DEPRECATION_MSG.replace("Control.", "Model."),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.joint_target_q = value
-
-    @property
-    def joint_target_vel(self) -> wp.array | None:
-        """Deprecated alias for :attr:`joint_target_qd`. Raises
-        :class:`AttributeError` when this Model was built under
-        :attr:`use_coord_layout_targets` ``True``.
-
-        .. deprecated:: 1.3
-            Use :attr:`joint_target_qd` instead.
-        """
-        import warnings  # noqa: PLC0415
-
-        from .control import _JOINT_TARGET_VEL_DEPRECATION_MSG, _JOINT_TARGET_VEL_UNAVAILABLE_MSG  # noqa: PLC0415
-
-        if self.use_coord_layout_targets:
-            raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG.replace("Control.", "Model."))
-        warnings.warn(
-            _JOINT_TARGET_VEL_DEPRECATION_MSG.replace("Control.", "Model."),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.joint_target_qd
-
-    @joint_target_vel.setter
-    def joint_target_vel(self, value: wp.array | None) -> None:
-        import warnings  # noqa: PLC0415
-
-        from .control import _JOINT_TARGET_VEL_DEPRECATION_MSG, _JOINT_TARGET_VEL_UNAVAILABLE_MSG  # noqa: PLC0415
-
-        if self.use_coord_layout_targets:
-            raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG.replace("Control.", "Model."))
-        warnings.warn(
-            _JOINT_TARGET_VEL_DEPRECATION_MSG.replace("Control.", "Model."),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.joint_target_qd = value
-
-    def bvh_build_shapes(self, state: State, *, bvh_constructor: str | None = None) -> None:
+    def bvh_build_shapes(
+        self,
+        state: State,
+        *,
+        bvh_constructor: str | None = None,
+        shape_flags: ShapeFlags = ShapeFlags.VISIBLE,
+    ) -> None:
         """Build or rebuild the shape BVH stored on this model.
 
         Allocates :attr:`bvh_shapes` and related fields from the current
@@ -1655,6 +1602,8 @@ class Model:
             bvh_constructor: Warp BVH construction algorithm. Valid choices
                 are ``"sah"``, ``"median"``, ``"lbvh"``, or ``None`` to use
                 Warp's device-dependent default.
+            shape_flags: Mask of :class:`~newton.ShapeFlags`; a shape is
+                included in the BVH if any of its flags are set in the mask.
         """
         from ..geometry.bvh import (  # noqa: PLC0415
             compute_bvh_group_roots,
@@ -1692,6 +1641,7 @@ class Model:
             inputs=[
                 self.shape_type,
                 self.shape_flags,
+                int(shape_flags),
                 self.bvh_shape_enabled,
                 num_enabled,
             ],
@@ -1701,6 +1651,9 @@ class Model:
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
 
         if self.bvh_shape_count_enabled == 0:
+            # drop any BVH from a previous build, it would index stale shapes
+            self.bvh_shapes = None
+            self.bvh_shapes_group_roots = None
             return
 
         compute_shape_world_transforms_launch(self, state)
@@ -1911,7 +1864,6 @@ class Model:
             The initialized control object.
         """
         c = Control()
-        c._use_coord_layout_targets = self.use_coord_layout_targets
         if requires_grad is None:
             requires_grad = self.requires_grad
         if clone_variables:
@@ -1951,31 +1903,41 @@ class Model:
         Set gravity for runtime modification.
 
         Args:
-            gravity: Gravity vector (3,) or per-world array (world_count, 3).
-            world: If provided, set gravity only for this world.
+            gravity: A single gravity vector [m/s²], one vector per local world, or one
+                vector per local world plus a final global vector. A single vector
+                updates every local world and the global world. Local-world-only
+                inputs preserve a distinct global gravity entry.
+            world: If provided, set gravity only for this world. Use ``-1`` for the
+                global world.
 
         Note:
             Call ``solver.notify_model_changed(ModelFlags.MODEL_PROPERTIES)`` after.
-
-            Global entities (particles/bodies not assigned to a specific world) use
-            gravity from world 0.
         """
         gravity_np = np.asarray(gravity, dtype=np.float32)
 
         if world is not None:
             if gravity_np.shape != (3,):
                 raise ValueError("Expected single gravity vector (3,) when world is specified")
-            if world < 0 or world >= self.world_count:
-                raise IndexError(f"world {world} out of range [0, {self.world_count})")
+            if world < -1 or world >= self.world_count:
+                raise IndexError(f"world {world} out of range; expected -1 or [0, {self.world_count})")
             current = self.gravity.numpy()
             current[world] = gravity_np
             self.gravity.assign(current)
         elif gravity_np.ndim == 1:
+            if gravity_np.shape != (3,):
+                raise ValueError(f"Expected gravity with shape (3,), got {gravity_np.shape}")
             self.gravity.fill_(gravity_np)
         else:
-            if len(gravity_np) != self.world_count:
-                raise ValueError(f"Expected {self.world_count} gravity vectors, got {len(gravity_np)}")
-            self.gravity.assign(gravity_np)
+            local_shape = (self.world_count, 3)
+            full_shape = (self.gravity.shape[0], 3)
+            if gravity_np.shape == full_shape:
+                self.gravity.assign(gravity_np)
+            elif gravity_np.shape == local_shape:
+                current = self.gravity.numpy()
+                current[: self.world_count] = gravity_np
+                self.gravity.assign(current)
+            else:
+                raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
 
     def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
         """

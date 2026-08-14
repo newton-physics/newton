@@ -1604,7 +1604,7 @@ def solve_body_joints(
     rel_p = wp.transform_get_translation(rel_pose)
 
     # joint connection points
-    # x_p = wp.transform_get_translation(X_wp)
+    x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
 
     linear_compliance = joint_linear_compliance
@@ -1620,28 +1620,33 @@ def solve_body_joints(
 
     # handle positional constraints
     if type == JointType.DISTANCE:
-        r_p = wp.transform_get_translation(X_wp) - world_com_p
-        r_c = wp.transform_get_translation(X_wc) - world_com_c
+        r_p = x_p - world_com_p
+        r_c = x_c - world_com_c
         lower = joint_limit_lower[axis_start]
         upper = joint_limit_upper[axis_start]
         if lower < 0.0 and upper < 0.0:
             # no limits
             return
-        d = wp.length(rel_p)
+        anchor_delta = x_c - x_p
+        d = wp.length(anchor_delta)
         err = 0.0
         if lower >= 0.0 and d < lower:
             err = d - lower
-            # use a more descriptive direction vector for the constraint
-            # in case the joint parent and child anchors are very close
-            rel_p = err * wp.normalize(world_com_c - world_com_p)
         elif upper >= 0.0 and d > upper:
             err = d - upper
 
         if wp.abs(err) > 1e-9:
             # compute gradients
-            linear_c = rel_p
+            if d > 1e-9:
+                linear_c = anchor_delta / d
+            else:
+                com_delta = world_com_c - world_com_p
+                if wp.length_sq(com_delta) > 1e-18:
+                    linear_c = wp.normalize(com_delta)
+                else:
+                    # The parent joint frame supplies a stable direction when the geometry cannot.
+                    linear_c = wp.transform_vector(X_wp, wp.vec3(1.0, 0.0, 0.0))
             linear_p = -linear_c
-            r_c = x_c - world_com_c
             angular_p = -wp.cross(r_p, linear_c)
             angular_c = wp.cross(r_c, linear_c)
             # constraint time derivative
@@ -1745,10 +1750,28 @@ def solve_body_joints(
         axis_limits_lower = wp.spatial_top(axis_limits)
         axis_limits_upper = wp.spatial_bottom(axis_limits)
 
+        # A relative offset can contain both valid joint motion and error. For example,
+        # a prismatic joint may be 0.5 m along its free axis and 1 m off it.
+        # Start from the current offset so unconstrained coordinates keep their extension.
+        projected_rel_p = rel_p
+        for dim in range(3):
+            lower = axis_limits_lower[dim]
+            upper = axis_limits_upper[dim]
+            # Limit violations project to the nearest admissible boundary.
+            if rel_p[dim] < lower:
+                projected_rel_p[dim] = lower
+            elif rel_p[dim] > upper:
+                projected_rel_p[dim] = upper
+            # A position-driven coordinate projects to its target. Locked coordinates
+            # have zero-width limits above and therefore already project to zero.
+            elif axis_stiffness[dim] > 0.0:
+                projected_rel_p[dim] = wp.clamp(axis_target_pos[dim], lower, upper)
+
         frame_p = wp.quat_to_matrix(wp.transform_get_rotation(X_wp))
-        # note that x_c appearing in both is correct
-        r_p = x_c - world_com_p
-        r_c = x_c - wp.transform_point(pose_c, com_c)
+        # Use the admissible point for the parent lever arm: the parent anchor would
+        # discard valid extension, while the child anchor would include separation error.
+        r_p = wp.transform_point(X_wp, projected_rel_p) - world_com_p
+        r_c = x_c - world_com_c
 
         # for loop will be unrolled, so we can modify local variables
         for dim in range(3):
@@ -2659,7 +2682,7 @@ def apply_rigid_restitution(
     rxn_b = wp.vec3(0.0)
     if body_a >= 0:
         world_idx_a = body_world[body_a]
-        world_a_g = gravity[wp.max(world_idx_a, 0)]
+        world_a_g = gravity[world_idx_a]
         v_a = velocity_at_point(body_qd_prev[body_a], r_a) + world_a_g * dt
         v_a_new = velocity_at_point(body_qd[body_a], r_a)
         q_a = wp.transform_get_rotation(X_wb_a_prev)
@@ -2669,7 +2692,7 @@ def apply_rigid_restitution(
         inv_mass += inv_mass_a
     if body_b >= 0:
         world_idx_b = body_world[body_b]
-        world_b_g = gravity[wp.max(world_idx_b, 0)]
+        world_b_g = gravity[world_idx_b]
         v_b = velocity_at_point(body_qd_prev[body_b], r_b) + world_b_g * dt
         v_b_new = velocity_at_point(body_qd[body_b], r_b)
         q_b = wp.transform_get_rotation(X_wb_b_prev)

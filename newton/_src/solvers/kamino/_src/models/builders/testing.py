@@ -1363,6 +1363,7 @@ def build_all_joints_test_model(
         base_joint = copy.deepcopy(builder.joints[0][0])
         if make_floating_base:
             base_joint.dof_type = JointDoFType.FREE
+            base_joint.__post_init__()  # Will correctly populate joint dynamics etc.
         builder_alt.add_joint_descriptor(base_joint)
         joint = copy.deepcopy(builder.joints[0][1])
         if make_actuated:

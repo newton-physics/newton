@@ -345,12 +345,84 @@ def sdf_capsule_grad(point: wp.vec3, radius: float, half_height: float, up_axis:
 
 
 @wp.func
+def _sdf_barrel_cylinder_data_z(point: wp.vec3, radius: float, half_height: float, barrel_radius: float):
+    """Compute the exact SDF and closest boundary point of a Z-up barrel cylinder."""
+    radial = wp.length(wp.vec2(point[0], point[1]))
+    z_abs = wp.abs(point[2])
+    end_radial_offset = wp.sqrt(wp.max(barrel_radius * barrel_radius - half_height * half_height, 0.0))
+    center = radius - end_radial_offset
+
+    # Closest point on the circular side arc in the radial/axial plane.
+    arc_delta = wp.vec2(radial - center, z_abs)
+    arc_delta_len = wp.length(arc_delta)
+    arc_radial = center + barrel_radius
+    arc_z = 0.0
+    if arc_delta_len > 1.0e-8:
+        arc_radial = center + barrel_radius * arc_delta[0] / arc_delta_len
+        arc_z = barrel_radius * arc_delta[1] / arc_delta_len
+    if arc_radial - center < end_radial_offset:
+        arc_radial = radius
+        arc_z = half_height
+
+    arc_offset = wp.vec2(radial - arc_radial, z_abs - arc_z)
+    arc_distance = wp.length(arc_offset)
+
+    # The other boundary segment is the end disk.
+    cap_radial = wp.min(radial, radius)
+    cap_offset = wp.vec2(radial - cap_radial, z_abs - half_height)
+    cap_distance = wp.length(cap_offset)
+    use_cap = cap_distance < arc_distance
+    boundary_radial = wp.where(use_cap, cap_radial, arc_radial)
+    boundary_z = wp.where(use_cap, half_height, arc_z)
+    distance = wp.min(cap_distance, arc_distance)
+
+    profile_radius = center + wp.sqrt(wp.max(barrel_radius * barrel_radius - z_abs * z_abs, 0.0))
+    inside = z_abs <= half_height and radial <= profile_radius
+    signed_distance = wp.where(inside, -distance, distance)
+    return wp.vec4(signed_distance, boundary_radial, boundary_z, wp.where(use_cap, 1.0, 0.0))
+
+
+@wp.func
+def _sdf_barrel_cylinder_z(point: wp.vec3, radius: float, half_height: float, barrel_radius: float):
+    return _sdf_barrel_cylinder_data_z(point, radius, half_height, barrel_radius)[0]
+
+
+@wp.func
+def _sdf_barrel_cylinder_grad_z(point: wp.vec3, radius: float, half_height: float, barrel_radius: float):
+    data = _sdf_barrel_cylinder_data_z(point, radius, half_height, barrel_radius)
+    signed_distance = data[0]
+    boundary_radial = data[1]
+    boundary_z = data[2]
+    use_cap = data[3] > 0.5
+    radial = wp.length(wp.vec2(point[0], point[1]))
+    z_abs = wp.abs(point[2])
+    center = radius - wp.sqrt(wp.max(barrel_radius * barrel_radius - half_height * half_height, 0.0))
+
+    radial_direction = wp.vec3(1.0, 0.0, 0.0)
+    if radial > 1.0e-8:
+        radial_direction = wp.vec3(point[0] / radial, point[1] / radial, 0.0)
+    z_sign = wp.where(point[2] < 0.0, -1.0, 1.0)
+    offset = radial_direction * (radial - boundary_radial) + wp.vec3(0.0, 0.0, z_sign * (z_abs - boundary_z))
+    if signed_distance < 0.0:
+        offset = -offset
+    offset_len = wp.length(offset)
+    if offset_len > 1.0e-8:
+        return offset / offset_len
+    if use_cap:
+        return wp.vec3(0.0, 0.0, z_sign)
+    return radial_direction * ((boundary_radial - center) / barrel_radius) + wp.vec3(
+        0.0, 0.0, z_sign * boundary_z / barrel_radius
+    )
+
+
+@wp.func
 def sdf_cylinder(
     point: wp.vec3,
     radius: float,
     half_height: float,
     up_axis: int = int(Axis.Y),
     top_radius: float = -1.0,
+    barrel_radius: float = 0.0,
 ):
     """Compute signed distance to ``Mesh.create_cylinder`` geometry.
 
@@ -360,11 +432,15 @@ def sdf_cylinder(
         half_height [m]: Half-height along the cylinder axis.
         up_axis: Cylinder long axis as ``int(newton.Axis.*)``.
         top_radius [m]: Top radius. Negative values use ``radius``.
+        barrel_radius [m]: Radius of the circular side profile. Zero creates straight sides. Nonzero
+            values must be at least ``half_height`` and take precedence over ``top_radius``.
 
     Returns:
         Signed distance [m], negative inside, zero on surface, positive outside.
     """
     point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if barrel_radius > 0.0:
+        return _sdf_barrel_cylinder_z(point_z_up, radius, half_height, barrel_radius)
     if top_radius < 0.0 or wp.abs(top_radius - radius) <= 1.0e-6:
         dx = wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0)) - radius
         dy = wp.abs(point_z_up[2]) - half_height
@@ -379,6 +455,7 @@ def sdf_cylinder_grad(
     half_height: float,
     up_axis: int = int(Axis.Y),
     top_radius: float = -1.0,
+    barrel_radius: float = 0.0,
 ):
     """Compute outward SDF gradient for ``sdf_cylinder``.
 
@@ -388,12 +465,17 @@ def sdf_cylinder_grad(
         half_height [m]: Half-height along the cylinder axis.
         up_axis: Cylinder long axis as ``int(newton.Axis.*)``.
         top_radius [m]: Top radius. Negative values use ``radius``.
+        barrel_radius [m]: Radius of the circular side profile. Zero creates straight sides. Nonzero
+            values must be at least ``half_height`` and take precedence over ``top_radius``.
 
     Returns:
         Unit-length outward gradient direction in local frame.
     """
     eps = 1.0e-8
     point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if barrel_radius > 0.0:
+        grad_z_up = _sdf_barrel_cylinder_grad_z(point_z_up, radius, half_height, barrel_radius)
+        return _sdf_vector_from_z_up(grad_z_up, up_axis)
     if top_radius >= 0.0 and wp.abs(top_radius - radius) > 1.0e-6:
         # Use finite-difference gradient of the tapered capped-cone SDF.
         fd_eps = 1.0e-4
@@ -1107,8 +1189,8 @@ def create_soft_contacts(
         n = sdf_capsule_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
 
     if geo_type == GeoType.CYLINDER:
-        d = sdf_cylinder(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
-        n = sdf_cylinder_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+        d = sdf_cylinder(x_local, geo_scale[0], geo_scale[1], int(Axis.Z), -1.0, geo_scale[2])
+        n = sdf_cylinder_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z), -1.0, geo_scale[2])
 
     if geo_type == GeoType.CONE:
         d = sdf_cone(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))

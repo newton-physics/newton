@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..core import MAXVAL
-from .flags import ShapeFlags
 from .types import Gaussian, GeoType
 
 if TYPE_CHECKING:
@@ -97,7 +96,13 @@ def compute_capsule_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp
 def compute_cylinder_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     radius = size[0]
     half_length = size[1]
-    extent = wp.vec3f(radius, radius, half_length)
+    barrel_radius = size[2]
+    radial_extent = radius
+    if barrel_radius > 0.0:
+        radial_extent += (half_length * half_length) / (
+            barrel_radius + wp.sqrt(barrel_radius * barrel_radius - half_length * half_length)
+        )
+    extent = wp.vec3f(radial_extent, radial_extent, half_length)
     return compute_box_bounds(transform, extent)
 
 
@@ -169,12 +174,13 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
 def compute_enabled_shapes(
     shape_type: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
+    shape_flags_mask: wp.int32,
     out_shape_enabled: wp.array[wp.uint32],
     out_shape_enabled_count: wp.array[wp.int32],
 ):
     tid = wp.tid()
 
-    if not bool(shape_flags[tid] & ShapeFlags.VISIBLE):
+    if not bool(shape_flags[tid] & shape_flags_mask):
         return
 
     if not is_supported_shape_type(shape_type[tid]):

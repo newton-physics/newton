@@ -26,6 +26,40 @@ def _resolve_file_url(path: str) -> str:
     return unquote(parsed.path)
 
 
+def _is_usd_package_path(path: str) -> bool:
+    """Return whether *path* addresses an asset inside a USD package (e.g. ``scene.usdz[tex.png]``)."""
+    # Cheap bracket check first so the pxr import is only paid for real packages.
+    if "[" not in path:
+        return False
+    try:
+        from pxr import Ar
+    except ImportError:
+        return False
+    return Ar.IsPackageRelativePath(path)
+
+
+def _read_usd_package_asset_bytes(path: str) -> bytes | None:
+    """Read the raw bytes of an asset packaged inside a USD file (e.g. a texture in a ``.usdz``).
+
+    ``.usdz`` archives address their contents with package-relative paths of the
+    form ``archive.usdz[inner/path.png]``, which are not valid filesystem paths.
+    Resolve them through USD's asset resolver, which also handles nested packages.
+    """
+    try:
+        from pxr import Ar
+    except ImportError:
+        return None
+    try:
+        asset = Ar.GetResolver().OpenAsset(Ar.ResolvedPath(path))
+        if not asset:
+            warnings.warn(f"Failed to read packaged texture image: {path} (not found in package)", stacklevel=3)
+            return None
+        return bytes(asset.GetBuffer())
+    except Exception as exc:
+        warnings.warn(f"Failed to read packaged texture image: {path} ({exc})", stacklevel=3)
+        return None
+
+
 def _download_texture_from_file_bytes(url: str) -> bytes | None:
     if url in _texture_url_cache:
         return _texture_url_cache[url]
@@ -55,6 +89,14 @@ def load_texture_from_file(texture_path: str | None) -> np.ndarray | None:
 
         if _is_http_url(texture_path):
             data = _download_texture_from_file_bytes(texture_path)
+            if data is None:
+                return None
+            with Image.open(io.BytesIO(data)) as source_img:
+                img = source_img.convert("RGBA")
+                return np.array(img)
+
+        if _is_usd_package_path(texture_path):
+            data = _read_usd_package_asset_bytes(texture_path)
             if data is None:
                 return None
             with Image.open(io.BytesIO(data)) as source_img:

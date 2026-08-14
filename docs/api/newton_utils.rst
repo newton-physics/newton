@@ -39,6 +39,7 @@ newton.utils
    load_texture
    normalize_texture
    plot_graph
+   rasterize_mesh_to_heightfield
    remesh_mesh
    run_benchmark
    solidify_mesh
