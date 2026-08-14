@@ -460,7 +460,7 @@ class NewtonTestCase(unittest.TestCase):
         if result is None:
             return False
 
-        for issue_list in (result.failures, result.errors):
+        for issue_list in (result.failures, result.errors, result.skipped):
             if any(test is self for test, _ in issue_list):
                 return True
 

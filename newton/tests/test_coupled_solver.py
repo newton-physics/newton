@@ -697,7 +697,8 @@ class TestSolverCoupledContactsAndMPM(unittest.TestCase):
 
         self.assertFalse(hasattr(SolverImplicitMPM, "supports_graph_capture"))
         self.assertFalse(hasattr(SolverImplicitMPM, "prepare_graph_capture"))
-        self.assertTrue(hasattr(SolverImplicitMPM, "check_status"))
+        self.assertFalse(hasattr(SolverImplicitMPM, "check_status"))
+        self.assertTrue(hasattr(SolverImplicitMPM, "check_sparse_grid_rebuild_status"))
 
     def test_implicit_mpm_reset_syncs_namespaced_non_in_place_state(self):
         """Verify coupled reset mirrors MPM history into the non-in-place output state."""

@@ -961,7 +961,24 @@ class TestComputeOffsetMesh(unittest.TestCase):
             pz = max(-hh, min(float(v[2]), hh))
             return np.linalg.norm(v - np.array([0, 0, pz])) - r
         if shape_type == GeoType.CYLINDER:
-            r, hh = shape_scale[0], shape_scale[1]
+            r, hh, barrel_radius = shape_scale
+            if barrel_radius > 0.0:
+                radial = np.linalg.norm(v[:2])
+                z_abs = abs(v[2])
+                end_offset = np.sqrt(barrel_radius**2 - hh**2)
+                center = r - end_offset
+                delta = np.array([radial - center, z_abs])
+                side = np.array([center + barrel_radius, 0.0])
+                if np.linalg.norm(delta) > 0.0:
+                    side = np.array([center, 0.0]) + barrel_radius * delta / np.linalg.norm(delta)
+                if side[0] - center < end_offset:
+                    side = np.array([r, hh])
+                cap = np.array([min(radial, r), hh])
+                distance = min(
+                    np.linalg.norm(np.array([radial, z_abs]) - side), np.linalg.norm(np.array([radial, z_abs]) - cap)
+                )
+                profile = center + np.sqrt(max(barrel_radius**2 - z_abs**2, 0.0))
+                return -distance if z_abs <= hh and radial <= profile else distance
             dxy = np.linalg.norm(v[:2]) - r
             dz = abs(v[2]) - hh
             return float(np.linalg.norm(np.maximum([dxy, dz], 0.0)) + min(max(dxy, dz), 0.0))
@@ -1050,6 +1067,14 @@ class TestComputeOffsetMesh(unittest.TestCase):
         mesh = compute_offset_mesh(GeoType.CYLINDER, shape_scale=(r, hh, 0.0), offset=off, device=self.device)
         self.assertIsNotNone(mesh)
         self._assert_vertices_at_offset(mesh, GeoType.CYLINDER, (r, hh, 0.0), off)
+
+    def test_barrel_cylinder_offset(self):
+        """Offset a barrel cylinder using its bulged analytical SDF."""
+        scale = (0.3, 0.5, 0.8)
+        offset = 0.15
+        mesh = compute_offset_mesh(GeoType.CYLINDER, shape_scale=scale, offset=offset, device=self.device)
+        self.assertIsNotNone(mesh)
+        self._assert_vertices_at_offset(mesh, GeoType.CYLINDER, scale, offset, atol=0.04)
 
     def test_plane_returns_none(self):
         """Plane should return None (not supported)."""

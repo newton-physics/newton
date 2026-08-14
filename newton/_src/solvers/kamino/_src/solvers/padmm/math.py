@@ -586,6 +586,7 @@ def compute_ncp_complementarity_residual(
 
 @wp.func
 def compute_ncp_natural_map_residual(
+    njc: wp.int32,
     nl: wp.int32,
     nc: wp.int32,
     vio: wp.int32,
@@ -599,7 +600,13 @@ def compute_ncp_natural_map_residual(
     """
     Computes the natural-map residuals as: `r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf`
 
+    Notes:
+    - For joint constraints, the cone is all of `R^njc`, so the natural-map residual is `abs(v_aug)`.
+    - For limit constraints, the cone is defined as `K_l := { lambda | lambda >= 0 }`.
+    - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`.
+
     Args:
+        njc: The number of joint constraints.
         nl: The number of active limit constraints.
         nc: The number of active contact constraints.
         vio: The vector index offset (i.e. start index) for the constraints.
@@ -618,6 +625,14 @@ def compute_ncp_natural_map_residual(
     # Initialize the natural-map residual
     r_ncp_natmap = float(0.0)
     r_ncp_natmap_argmax = wp.int32(-1)
+
+    for jid in range(njc):
+        jcio_j = vio + jid
+        v_j = v_aug[jcio_j]
+        r_j = wp.abs(v_j)
+        r_ncp_natmap = wp.max(r_ncp_natmap, r_j)
+        if r_ncp_natmap == r_j:
+            r_ncp_natmap_argmax = jid
 
     for lid in range(nl):
         # Compute the limit constraint index offset

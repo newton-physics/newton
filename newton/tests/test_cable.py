@@ -11,6 +11,7 @@ import newton
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _bishop_transport_quat,
     _cable_bend_twist_directional_derivatives_from_measure,
+    _cable_bend_twist_jacobian_z_from_measure,
     _finite_curvature_binormal,
     _finite_curvature_binormal_derivative,
     _measure_cable_bend_twist_z,
@@ -4835,7 +4836,8 @@ def _eval_geometric_sharp_turn_kernel(errors: wp.array[wp.vec3]):
 @wp.kernel
 def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     tid = wp.tid()
-    is_parent = tid == 0
+    is_parent = tid < 3
+    axis_id = tid % 3
 
     # Pre-curved rest exercises the rest-relative composition in the derivative,
     # not just the identity-rest special case.
@@ -4848,15 +4850,16 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     q_wp = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.7, -0.2)), 0.55) * q_wp_rest
     q_wc = wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.6, 0.2, 0.4)), 0.62) * q_wc_rest
 
-    omega = wp.vec3(0.21, -0.34, 0.27)
-    if not is_parent:
-        omega = wp.vec3(-0.18, 0.29, 0.2)
-    omega_len = wp.length(omega)
-    axis = omega / omega_len
+    axis = wp.vec3(1.0, 0.0, 0.0)
+    if axis_id == 1:
+        axis = wp.vec3(0.0, 1.0, 0.0)
+    elif axis_id == 2:
+        axis = wp.vec3(0.0, 0.0, 1.0)
 
     measure = _measure_cable_bend_twist_z(q_wp, q_wc)
-    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(q_wp, measure, omega, is_parent)
-    analytic = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
+    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(q_wp, measure, axis, is_parent)
+    directional = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
+    jacobian_action = _cable_bend_twist_jacobian_z_from_measure(measure, is_parent) * axis
 
     h = 1.0e-3
     q_wp_p = q_wp
@@ -4864,17 +4867,75 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     q_wc_p = q_wc
     q_wc_m = q_wc
     if is_parent:
-        q_wp_p = _quat_perturb_world(q_wp, axis, h * omega_len)
-        q_wp_m = _quat_perturb_world(q_wp, axis, -h * omega_len)
+        q_wp_p = _quat_perturb_world(q_wp, axis, h)
+        q_wp_m = _quat_perturb_world(q_wp, axis, -h)
     else:
-        q_wc_p = _quat_perturb_world(q_wc, axis, h * omega_len)
-        q_wc_m = _quat_perturb_world(q_wc, axis, -h * omega_len)
+        q_wc_p = _quat_perturb_world(q_wc, axis, h)
+        q_wc_m = _quat_perturb_world(q_wc, axis, -h)
 
     fd = (
         compute_geometric_cable_kappa_cached_z(q_wp_p, q_wc_p, kb_rest_local, rest.twist)
         - compute_geometric_cable_kappa_cached_z(q_wp_m, q_wc_m, kb_rest_local, rest.twist)
     ) / (2.0 * h)
-    errors[tid] = wp.vec3(wp.length(analytic - fd), wp.length(analytic), wp.length(fd))
+    equivalence_error = wp.length(jacobian_action - directional) / (1.0 + wp.length(directional))
+    # Store [Jacobian-vs-directional, Jacobian-vs-finite-difference, finite-difference signal].
+    errors[tid] = wp.vec3(equivalence_error, wp.length(jacobian_action - fd), wp.length(fd))
+
+
+@wp.kernel
+def _eval_bend_twist_jacobian_guard_branches_kernel(errors: wp.array[wp.vec3]):
+    tid = wp.tid()
+    is_parent = tid % 2 == 0
+
+    # Exercise capped curvature, the numerically directional twist path just
+    # outside an exact fold, and the exact-fold curvature/transport convention.
+    angle = 3.05
+    bend_axis = wp.vec3(1.0, 0.0, 0.0)
+    omega = wp.vec3(0.31, -0.27, 0.19)
+    if tid >= 4:
+        angle = wp.pi
+    elif tid >= 2:
+        # 1 + cos(pi - 1e-3) ~= 5e-7: above the residual's Bishop fallback
+        # threshold. Y-bend/X-perturbation reproduces the strongest observed
+        # float32 tangent-bisector error.
+        angle = wp.pi - 1.0e-3
+        bend_axis = wp.vec3(0.0, 1.0, 0.0)
+        omega = wp.vec3(1.0, 0.0, 0.0)
+
+    q_wp = wp.quat_identity()
+    q_wc = wp.quat_from_axis_angle(bend_axis, angle)
+    measure = _measure_cable_bend_twist_z(q_wp, q_wc)
+
+    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(q_wp, measure, omega, is_parent)
+    directional = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
+    jacobian_action = _cable_bend_twist_jacobian_z_from_measure(measure, is_parent) * omega
+    directional_error = wp.length(jacobian_action - directional) / (1.0 + wp.length(directional))
+
+    fd_error = 0.0
+    fd_signal = 0.0
+    if tid >= 2 and tid < 4:
+        h = 1.0e-5
+        q_wp_p = q_wp
+        q_wp_m = q_wp
+        q_wc_p = q_wc
+        q_wc_m = q_wc
+        if is_parent:
+            q_wp_p = _quat_perturb_world(q_wp, omega, h)
+            q_wp_m = _quat_perturb_world(q_wp, omega, -h)
+        else:
+            q_wc_p = _quat_perturb_world(q_wc, omega, h)
+            q_wc_m = _quat_perturb_world(q_wc, omega, -h)
+
+        kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp), measure.kb_world)
+        fd = (
+            compute_geometric_cable_kappa_cached_z(q_wp_p, q_wc_p, kb_rest_local, measure.twist)
+            - compute_geometric_cable_kappa_cached_z(q_wp_m, q_wc_m, kb_rest_local, measure.twist)
+        ) / (2.0 * h)
+        fd_error = wp.abs(jacobian_action[2] - fd[2]) / (1.0 + wp.abs(fd[2]))
+        fd_signal = wp.abs(fd[2])
+
+    # Store [Jacobian-vs-directional, near-fold twist-vs-FD, near-fold FD signal].
+    errors[tid] = wp.vec3(directional_error, fd_error, fd_signal)
 
 
 # DER-primitive unit tests: exercise the singular fallback paths and the
@@ -5795,20 +5856,45 @@ def _split_cable_geometric_sharp_turn_is_bounded(test, device):
 
 
 def _split_cable_bend_twist_deformation_derivative_matches_finite_difference(test, device):
-    """Rest-relative bend/twist derivative should match centered finite differences.
+    """Verify the bend/twist Jacobian against directional and finite-difference references.
 
-    Uses a pre-curved rest and checks both parent and child world rotations, so it
-    guards the rest composition in the analytic Jacobian, not just the identity-rest
-    special case.
+    Uses a pre-curved rest and checks every world-axis column for both bodies, so
+    it guards the matrix assembly and rest composition independently.
     """
-    errors = wp.zeros(2, dtype=wp.vec3, device=device)
-    wp.launch(_eval_bend_twist_deformation_derivative_kernel, dim=2, outputs=[errors], device=device)
+    errors = wp.zeros(6, dtype=wp.vec3, device=device)
+    wp.launch(_eval_bend_twist_deformation_derivative_kernel, dim=6, outputs=[errors], device=device)
 
     errors_np = errors.numpy()
-    max_error = float(np.max(errors_np[:, 0]))
-    max_signal = float(np.max(errors_np[:, 1:]))
-    test.assertLess(max_error, 5.0e-4, f"bend/twist derivative finite-difference mismatch: {errors_np}")
-    test.assertGreater(max_signal, 0.05, f"bend/twist derivative test is vacuous: {errors_np}")
+    max_equivalence_error = float(np.max(errors_np[:, 0]))
+    max_finite_difference_error = float(np.max(errors_np[:, 1]))
+    min_signal = float(np.min(errors_np[:, 2]))
+    test.assertLess(max_equivalence_error, 5.0e-6, f"bend/twist Jacobian changed directional derivative: {errors_np}")
+    test.assertLess(
+        max_finite_difference_error, 5.0e-4, f"bend/twist derivative finite-difference mismatch: {errors_np}"
+    )
+    test.assertGreater(min_signal, 0.05, f"bend/twist derivative test has a vacuous Jacobian column: {errors_np}")
+
+
+def _split_cable_bend_twist_jacobian_guard_branches_match_directional(test, device):
+    """Verify the guard-branch Jacobian against directional and finite-difference references."""
+    errors = wp.zeros(6, dtype=wp.vec3, device=device)
+    wp.launch(_eval_bend_twist_jacobian_guard_branches_kernel, dim=6, outputs=[errors], device=device)
+    errors_np = errors.numpy()
+    test.assertLess(
+        float(np.max(errors_np[:, 0])),
+        5.0e-6,
+        f"bend/twist Jacobian changed a capped or singular directional derivative: {errors_np}",
+    )
+    test.assertLess(
+        float(np.max(errors_np[2:4, 1])),
+        5.0e-4,
+        f"near-antiparallel twist Jacobian finite-difference mismatch: {errors_np}",
+    )
+    test.assertGreater(
+        float(np.min(errors_np[2:4, 2])),
+        100.0,
+        f"near-antiparallel twist finite-difference check is vacuous: {errors_np}",
+    )
 
 
 def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
@@ -6143,6 +6229,12 @@ add_function_test(
     TestCable,
     "test_split_cable_bend_twist_deformation_derivative_matches_finite_difference",
     _split_cable_bend_twist_deformation_derivative_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_bend_twist_jacobian_guard_branches_match_directional",
+    _split_cable_bend_twist_jacobian_guard_branches_match_directional,
     devices=devices,
 )
 add_function_test(
