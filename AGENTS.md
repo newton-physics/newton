@@ -1,6 +1,6 @@
 # Newton Development Guidelines
 
-Read and follow the canonical [source code and public API guidelines](CODING_GUIDELINES.rst) before changing or reviewing Newton code. This file contains agent-specific workflow instructions; the linked guide is authoritative for coding and API design.
+Read and apply the [source code and public API guidelines](CODING_GUIDELINES.rst) before changing or reviewing Newton code. For reviews, also read and apply the [review guidelines](REVIEW_GUIDELINES.rst) and follow `.claude/skills/code-review-newton/SKILL.md`.
 
 - Create a feature branch on your fork before committing—never commit directly to `main`. Give the pull request a concise, descriptive title.
 - Use imperative mood in commit messages ("Fix X", not "Fixed X"), with a roughly 50-character subject and a body wrapped at 72 characters that explains what and why.
