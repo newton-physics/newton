@@ -2322,13 +2322,6 @@ def _rigid_compliant_alm_validates_contact_materials(test, device):
                 newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
         array.assign(original)
 
-    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
-    values = model.shape_material_ke.numpy()
-    values[0] = np.inf
-    model.shape_material_ke.assign(values)
-    with test.assertRaisesRegex(ValueError, "model.shape_material_ke"):
-        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
-
 
 def _joint_hard_soft_deprecation_describes_legacy_behavior(test, device):
     """Verify the warning distinguishes compliant behavior from the legacy path."""

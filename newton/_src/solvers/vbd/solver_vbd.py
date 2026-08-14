@@ -396,12 +396,26 @@ class SolverVBD(SolverBase, CouplingInterface):
                 internal compliant-ALM ``rho`` for converted rigid rows. Note: linear
                 (meters) and angular (radians) constraints have different units, so the
                 overrides should be used for production tuning.
+
+                .. deprecated:: 1.6
+                    Penalty ramping is deprecated for all uses. Body-particle contacts
+                    continue to honor this control during migration; keep the effective beta
+                    at ``0`` (the default behavior) and author fixed material stiffness instead.
             rigid_avbd_linear_beta: Legacy linear beta override for linear constraints
                 (meters). ``None`` (default) uses ``rigid_avbd_beta``. Does not tune
                 compliant-ALM ``rho``.
+
+                .. deprecated:: 1.6
+                    Penalty ramping is deprecated for all uses. Body-particle contacts
+                    continue to honor this control during migration; keep the effective beta
+                    at ``0`` (the default behavior) and author fixed material stiffness instead.
             rigid_avbd_angular_beta: Legacy angular beta override for angular constraints
                 (radians). ``None`` (default) uses ``rigid_avbd_beta``. Does not tune
                 compliant-ALM ``rho``.
+
+                .. deprecated:: 1.6
+                    Penalty ramping is deprecated. Keep the effective beta at ``0`` (the
+                    default behavior) and author fixed material stiffness instead.
             rigid_avbd_gamma: Per-step decay factor for penalty k and persisted lambda.
                 Compliant ALM joints and validated contacts retain lambda by ``gamma``;
                 the legacy path retains lambda by ``alpha * gamma``. Lower values
@@ -410,6 +424,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ``rigid_compliant_alm=True``, contacts use the ALM path. With
                 ``rigid_compliant_alm=False``, ``True`` selects legacy hard AVBD contact
                 and ``False`` selects legacy penalty-only contact.
+
+                .. deprecated:: 1.6
+                    Use ``rigid_compliant_alm=True`` and author finite contact stiffness.
             rigid_contact_history: Whether to persist body-body numeric contact state
                 across steps using ``Contacts.rigid_contact_match_index``. Compliant ALM
                 restores the normal multiplier for matched rows. With latest
@@ -441,6 +458,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                 legacy AVBD ramping [N/m]. Used when ``rigid_avbd_linear_beta`` (or
                 ``rigid_avbd_beta`` fallback) is greater than zero. When the linear beta
                 is 0, k is fixed at the contact stiffness regardless of this value.
+
+                .. deprecated:: 1.6
+                    Penalty ramping is deprecated for all uses. Body-particle contacts
+                    continue to honor this control during migration; keep the effective beta
+                    at ``0`` (the default behavior) and author fixed contact stiffness instead.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
             rigid_body_particle_contact_buffer_size: Max body-particle soft contacts tracked per rigid
                 body, covering both particle-vs-surface and full-surface edge/face contacts.
@@ -449,9 +471,17 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_joint_linear_k_start: Linear penalty seed for legacy AVBD ramping [N/m]. Used when
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the joint stiffness regardless of this value.
+
+                .. deprecated:: 1.6
+                    Penalty ramping is deprecated. Keep the effective beta at ``0`` (the
+                    default behavior) and author fixed joint stiffness instead.
             rigid_joint_angular_k_start: Angular penalty seed for legacy AVBD ramping [N·m/rad]. Used when
                 ``rigid_avbd_angular_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the angular beta is 0, k is fixed at the joint stiffness regardless of this value.
+
+                .. deprecated:: 1.6
+                    Penalty ramping is deprecated. Keep the effective beta at ``0`` (the
+                    default behavior) and author fixed joint stiffness instead.
             rigid_joint_linear_kd: Damping coefficient for non-cable linear joint constraints [N·s/m].
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Damping coefficient for non-cable angular joint constraints [N·m·s/rad].
@@ -997,11 +1027,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
-        if self.rigid_compliant_alm:
-            if flags & ModelFlags.SHAPE_PROPERTIES:
-                self._validate_compliant_contact_materials()
-            if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-                self._validate_compliant_joint_dof_materials()
         if refresh_structural_k:
             self._refresh_structural_k()
         if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
