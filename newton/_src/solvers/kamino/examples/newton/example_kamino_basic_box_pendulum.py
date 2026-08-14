@@ -31,6 +31,7 @@ class Example:
         self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
+        self.actuated = args.actuated if args else False
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -61,6 +62,14 @@ class Example:
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
+        # Enable implicit PD control if actuation is enabled
+        if self.actuated:
+            builder.joint_target_mode = [
+                mode if mode == newton.JointTargetMode.NONE else newton.JointTargetMode.VELOCITY
+                for mode in builder.joint_target_mode
+            ]
+            builder.joint_target_kd = [10.0] * len(builder.joint_target_kd)
+
         # Create the model from the builder
         self.model = builder.finalize(skip_validation_joints=True)
 
@@ -87,6 +96,10 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+
+        # Apply constant velocity as animation target
+        if self.actuated:
+            self.control.joint_target_qd.fill_(1.0)
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -169,6 +182,12 @@ class Example:
             action=argparse.BooleanOptionalAction,
             default=True,
             help="Load the basic box pendulum from USD.",
+        )
+        parser.add_argument(
+            "--actuated",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Actuate the pendulum with a fixed velocity target.",
         )
         return parser
 

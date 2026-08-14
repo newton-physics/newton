@@ -31,6 +31,8 @@ class Example:
         self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
+        self.actuated = args.actuated if args else False
+        self.time = wp.zeros((self.world_count,), device=self.device)
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -118,6 +120,9 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            if self.actuated:
+                self._advance_time()
+                self._apply_actuation()
             self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.solver.update_contacts(self.contacts, self.state_0)
@@ -159,6 +164,56 @@ class Example:
                 ),  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
             )
 
+    def _advance_time(self):
+        """Advances the current simulation time by ``dt``."""
+
+        @wp.kernel
+        def advance_time_kernel(dt: wp.float32, time: wp.array[wp.float32]):
+            """Advance the time in each world."""
+            wid = wp.tid()
+            time[wid] += dt
+
+        wp.launch(
+            advance_time_kernel,
+            dim=self.model.world_count,
+            inputs=[self.sim_dt, self.time],
+            device=self.device,
+        )
+
+    def _apply_actuation(self):
+        """Apply actuation to each world."""
+
+        @wp.kernel
+        def actuation_kernel(
+            time: wp.array[wp.float32],
+            joint_f: wp.array[wp.float32],
+        ):
+            # Retrieve the world index from the thread ID
+            wid = wp.tid()
+
+            # Define the time window for the active external force profile
+            t_start = wp.float32(2.0)
+            t_end = wp.float32(2.5)
+            t_loop = wp.float32(5.0)
+
+            # Apply a time-dependent force
+            t = time[wid]
+            t -= wp.floor(t / t_loop) * t_loop
+            if t > t_start and t < t_end:
+                joint_f[wid] = -3.0
+            else:
+                joint_f[wid] = 0.0
+
+        wp.launch(
+            actuation_kernel,
+            dim=self.model.world_count,
+            inputs=[
+                self.time,
+                self.control.joint_f,
+            ],
+            device=self.device,
+        )
+
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
@@ -169,6 +224,12 @@ class Example:
             action=argparse.BooleanOptionalAction,
             default=True,
             help="Load the basic boxes hinged from USD.",
+        )
+        parser.add_argument(
+            "--actuated",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Actuate the model with predefined inputs.",
         )
         return parser
 
