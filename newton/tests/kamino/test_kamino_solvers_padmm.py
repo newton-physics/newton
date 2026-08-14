@@ -989,9 +989,7 @@ class TestPADMMSolver(unittest.TestCase):
                 status = solver.data.status.numpy()
                 self.assertEqual([int(status[w][1]) for w in range(len(budgets))], budgets)
 
-    def assert_coulomb_cone_projection(
-        self, cone: str, case: str, mu: float, x: list[float], expected: list[float]
-    ):
+    def assert_coulomb_cone_projection(self, cone: str, case: str, mu: float, x: list[float], expected: list[float]):
         """Assert one primal or dual Coulomb cone projection."""
         is_primal = cone == "primal"
 
