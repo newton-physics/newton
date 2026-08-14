@@ -2251,6 +2251,8 @@ def parse_usd(
             sibling_dof_attrs = usd.get_custom_attribute_values(jp_prim, dof_freq_attrs, context={"builder": builder})
             if _should_write_solreflimit_mode():
                 sibling_dof_attrs[solreflimit_mode_key] = dof.limit_solref_mode
+            if _should_write_solreflimit_gain_baseline():
+                sibling_dof_attrs[solreflimit_gain_baseline_key] = wp.vec2(dof.limit_ke, dof.limit_kd)
 
             if is_revolute:
                 angular_axes.append(ax)

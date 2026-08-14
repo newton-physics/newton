@@ -1618,6 +1618,103 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(damping[qd_start + 1]), 3.0, places=6)  # angular DOF
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_merged_joint_gain_edit_before_solver_construction(self):
+        """Verify that pre-solver gain edits promote merged USD joints to force space."""
+        from pxr import Usd
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "World" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Cube "Body0" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+    )
+    {
+        double size = 0.2
+    }
+
+    def Cube "Body1" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"]
+    )
+    {
+        double size = 0.2
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsPrismaticJoint "slide" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </World/Body0>
+        rel physics:body1 = </World/Body1>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+    }
+
+    def PhysicsRevoluteJoint "hinge" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </World/Body0>
+        rel physics:body1 = </World/Body1>
+        token physics:axis = "Z"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        result = builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()], load_visual_shapes=False)
+        model = builder.finalize(device="cpu")
+
+        merged_joint = result["path_joint_map"]["/World/hinge"]
+        self.assertEqual(result["path_joint_map"]["/World/slide"], merged_joint)
+        self.assertEqual(model.joint_type.numpy()[merged_joint], newton.JointType.D6)
+        dof_start = int(model.joint_qd_start.numpy()[merged_joint])
+        dof_slice = slice(dof_start, dof_start + 2)
+        np.testing.assert_array_equal(
+            model.mujoco.solreflimit_mode.numpy()[dof_slice],
+            [SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_MJCF_DEFAULT],
+        )
+        np.testing.assert_allclose(
+            model.mujoco.solreflimit_gain_baseline.numpy()[dof_slice],
+            [[builder.default_joint_cfg.limit_ke, builder.default_joint_cfg.limit_kd]] * 2,
+            rtol=0.0,
+            atol=0.0,
+        )
+
+        limit_ke = model.joint_limit_ke.numpy()
+        limit_kd = model.joint_limit_kd.numpy()
+        limit_ke[dof_slice] = [5000.0, 6000.0]
+        limit_kd[dof_slice] = [50.0, 60.0]
+        model.joint_limit_ke.assign(limit_ke)
+        model.joint_limit_kd.assign(limit_kd)
+        SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
+
+        np.testing.assert_array_equal(
+            model.mujoco.solreflimit_mode.numpy()[dof_slice],
+            [SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_FORCE_SPACE],
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_d6(self):
         """NewtonJointAPI attributes broadcast uniformly across a D6 joint's linear and angular DOFs."""
         from pxr import Usd
