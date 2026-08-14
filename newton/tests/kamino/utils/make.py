@@ -180,7 +180,7 @@ def update_containers(
 
     # Run collision detection to generate active contacts
     if detector is not None:
-        detector.collide(data=data, state=state)
+        detector.collide(data)
         wp.synchronize()
 
     # Update the constraint state info
@@ -271,7 +271,7 @@ def make_test_problem(
 
     # Run collision detection to generate active contacts
     if with_contacts:
-        detector.collide(data, state)
+        detector.collide(data)
         wp.synchronize()
         if verbose:
             print(f"contacts.world_active_contacts: {detector.contacts.world_active_contacts}")

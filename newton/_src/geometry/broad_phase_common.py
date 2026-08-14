@@ -38,6 +38,53 @@ def check_aabb_overlap(
 
 
 @wp.func
+def check_aabb_overlap_moving(
+    shape1: int,
+    shape2: int,
+    box_lower: wp.array[wp.vec3],
+    box_upper: wp.array[wp.vec3],
+    cutoff1: float,
+    cutoff2: float,
+    shape_displacement: wp.array[wp.vec3],
+) -> bool:
+    """Return static or continuous overlap according to the optional sweep array."""
+    if shape_displacement.shape[0] == 0:
+        return check_aabb_overlap(
+            box_lower[shape1], box_upper[shape1], cutoff1, box_lower[shape2], box_upper[shape2], cutoff2
+        )
+
+    cutoff_combined = cutoff1 + cutoff2
+    relative_displacement = shape_displacement[shape1] - shape_displacement[shape2]
+    lower_box1 = box_lower[shape1]
+    upper_box1 = box_upper[shape1]
+    lower_box2 = box_lower[shape2]
+    upper_box2 = box_upper[shape2]
+    enter = float(0.0)
+    exit_time = float(1.0)
+    for axis in range(3):
+        lower1 = lower_box1[axis]
+        upper1 = upper_box1[axis]
+        lower2 = lower_box2[axis] - cutoff_combined
+        upper2 = upper_box2[axis] + cutoff_combined
+        delta = relative_displacement[axis]
+        if delta == 0.0:
+            if lower1 > upper2 or upper1 < lower2:
+                return False
+        else:
+            axis_enter = (lower2 - upper1) / delta
+            axis_exit = (upper2 - lower1) / delta
+            if axis_enter > axis_exit:
+                tmp = axis_enter
+                axis_enter = axis_exit
+                axis_exit = tmp
+            enter = wp.max(enter, axis_enter)
+            exit_time = wp.min(exit_time, axis_exit)
+            if enter > exit_time:
+                return False
+    return True
+
+
+@wp.func
 def binary_search(values: wp.array[Any], value: Any, lower: int, upper: int) -> int:
     while lower < upper:
         mid = (lower + upper) >> 1
