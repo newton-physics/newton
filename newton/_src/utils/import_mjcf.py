@@ -1543,6 +1543,7 @@ def parse_mjcf(
                 scale=site_size,
                 label=site_label,
                 visible=visible,
+                custom_attributes={"mujoco:site_size_is_display": True} if site_type == "cylinder" else None,
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s
@@ -2734,9 +2735,9 @@ def parse_mjcf(
     # -----------------
     # add equality constraints
 
-    equality = root.find("equality")
-    if equality is not None and not skip_equality_constraints:
-        parse_equality_constraints(equality)
+    if not skip_equality_constraints:
+        for equality in root.findall("equality"):
+            parse_equality_constraints(equality)
 
     # -----------------
     # parse contact pairs
@@ -3359,8 +3360,7 @@ def parse_mjcf(
         for tendon_section in tendon_sections:
             parse_tendons(tendon_section)
 
-    actuator_section = root.find("actuator")
-    if actuator_section is not None:
+    for actuator_section in root.findall("actuator"):
         parse_actuators(actuator_section)
 
     # -----------------
