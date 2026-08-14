@@ -273,8 +273,8 @@ class TestImportMjcfBasic(unittest.TestCase):
             for i in range(1, 4):
                 mesh_path = os.path.join(tmpdir, f"mesh{i}.obj")
                 with open(mesh_path, "w") as f:
-                    # Simple triangle mesh
-                    f.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+                    # Closed tetrahedron mesh
+                    f.write("v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n")
 
             with open(mjcf_path, "w") as f:
                 f.write(mjcf_content)
@@ -1160,14 +1160,14 @@ class TestImportMjcfBasic(unittest.TestCase):
 class TestImportMjcfMeshScale(unittest.TestCase):
     """Tests for MJCF mesh scale resolution from default classes."""
 
-    _OBJ_TRIANGLE = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+    _OBJ_TETRAHEDRON = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n"
 
     def _build(self, mjcf_content: str) -> newton.ModelBuilder:
         with tempfile.TemporaryDirectory() as tmpdir:
             mjcf_path = os.path.join(tmpdir, "test.xml")
             mesh_path = os.path.join(tmpdir, "mesh.obj")
             with open(mesh_path, "w") as f:
-                f.write(self._OBJ_TRIANGLE)
+                f.write(self._OBJ_TETRAHEDRON)
             with open(mjcf_path, "w") as f:
                 f.write(mjcf_content)
             builder = newton.ModelBuilder()
@@ -3122,7 +3122,17 @@ f 4 5 8
                 extents=(0.4, 0.4, 0.8),
                 transform=trimesh.transformations.translation_matrix((0.7, 0.2, 0.15)),
             )
-            trimesh.util.concatenate((left_box, right_box)).export(mesh_path)
+            left_box.visual = trimesh.visual.TextureVisuals(
+                material=trimesh.visual.material.SimpleMaterial(name="left", diffuse=[255, 0, 0, 255])
+            )
+            right_box.visual = trimesh.visual.TextureVisuals(
+                material=trimesh.visual.material.SimpleMaterial(name="right", diffuse=[0, 0, 255, 255])
+            )
+            trimesh.Scene({"left": left_box, "right": right_box}).export(mesh_path)
+            with open(mesh_path, encoding="utf-8") as mesh_file:
+                mesh_contents = mesh_file.readlines()
+            with open(mesh_path, "w", encoding="utf-8") as mesh_file:
+                mesh_file.writelines(line for line in mesh_contents if not line.startswith("o "))
 
             cases = {
                 "convex": ("", 'inertia="convex"'),
@@ -3132,6 +3142,7 @@ f 4 5 8
                 "default legacy": ("", ""),
                 "inherited shell": ('<default><mesh inertia="shell"/></default>', ""),
             }
+            masses = {}
             vertex_counts = {}
             for case_name, (default_xml, inertia_attrib) in cases.items():
                 with self.subTest(case=case_name):
@@ -3144,7 +3155,7 @@ f 4 5 8
   <worldbody>
     <body name="mesh_body">
       <freejoint/>
-      <geom type="mesh" mesh="nonconvex" density="1"/>
+      <geom type="mesh" mesh="nonconvex" density="2.3"/>
     </body>
   </worldbody>
 </mujoco>
@@ -3157,7 +3168,9 @@ f 4 5 8
 
                     builder = newton.ModelBuilder()
                     builder.add_mjcf(mjcf)
-                    vertex_counts[case_name] = len(builder.shape_source[0].vertices)
+                    self.assertEqual(builder.shape_count, 2)
+                    masses[case_name] = builder.body_mass[0]
+                    vertex_counts[case_name] = sum(len(mesh.vertices) for mesh in builder.shape_source)
 
                     self.assertAlmostEqual(builder.body_mass[0], native_model.body_mass[1], places=6)
                     np.testing.assert_allclose(builder.body_com[0], native_model.body_ipos[1], atol=1e-6)
@@ -3168,6 +3181,10 @@ f 4 5 8
                     )
 
             self.assertEqual(vertex_counts["convex"], vertex_counts["exact"])
+            self.assertNotAlmostEqual(masses["convex"], masses["exact"], places=6)
+            self.assertNotAlmostEqual(masses["shell"], masses["exact"], places=6)
+            self.assertAlmostEqual(masses["default legacy"], masses["legacy"], places=9)
+            self.assertAlmostEqual(masses["inherited shell"], masses["shell"], places=9)
 
     def test_compiler_inertiagrouprange(self):
         """Test that only geom groups in the compiler range contribute inertia."""

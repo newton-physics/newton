@@ -77,6 +77,24 @@ def _compute_mjcf_mesh_inertia(
     maxhullvert: int,
 ) -> tuple[float, wp.vec3, wp.mat33]:
     """Compute unit-density mesh mass properties using MuJoCo's algorithms."""
+
+    def _triangle_metrics(
+        mesh_vertices: np.ndarray,
+        mesh_faces: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        triangles = mesh_vertices[mesh_faces]
+        centers = np.mean(triangles, axis=1)
+        cross_products = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+        cross_norms = np.linalg.norm(cross_products, axis=1)
+        areas = 0.5 * cross_norms
+        normals = np.divide(
+            cross_products,
+            cross_norms[:, None],
+            out=np.zeros_like(cross_products),
+            where=cross_norms[:, None] > 0.0,
+        )
+        return triangles, centers, areas, normals
+
     vertices = []
     faces = []
     vertex_offset = 0
@@ -90,11 +108,7 @@ def _compute_mjcf_mesh_inertia(
     vertices = np.concatenate(vertices)
     faces = np.concatenate(faces)
 
-    triangles = vertices[faces]
-    centers = np.mean(triangles, axis=1)
-    cross_products = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
-    cross_norms = np.linalg.norm(cross_products, axis=1)
-    areas = 0.5 * cross_norms
+    _, centers, areas, _ = _triangle_metrics(vertices, faces)
     total_area = np.sum(areas)
     if total_area <= 0.0:
         raise ValueError("MJCF mesh surface area is too small to compute inertia")
@@ -108,17 +122,7 @@ def _compute_mjcf_mesh_inertia(
         inertia_vertices = vertices
         inertia_faces = faces
 
-    triangles = inertia_vertices[inertia_faces]
-    centers = np.mean(triangles, axis=1)
-    cross_products = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
-    cross_norms = np.linalg.norm(cross_products, axis=1)
-    areas = 0.5 * cross_norms
-    normals = np.divide(
-        cross_products,
-        cross_norms[:, None],
-        out=np.zeros_like(cross_products),
-        where=cross_norms[:, None] > 0.0,
-    )
+    _, centers, areas, normals = _triangle_metrics(inertia_vertices, inertia_faces)
 
     if mode == "shell":
         weights = areas
@@ -133,20 +137,7 @@ def _compute_mjcf_mesh_inertia(
         raise ValueError(f"MJCF mesh volume is {qualifier}; check triangle orientation or use inertia='shell'")
     com = np.sum(weights[:, None] * (0.75 * centers + 0.25 * face_centroid), axis=0) / total_measure
 
-    centered_triangles = (inertia_vertices - com)[inertia_faces]
-    centers = np.mean(centered_triangles, axis=1)
-    cross_products = np.cross(
-        centered_triangles[:, 1] - centered_triangles[:, 0],
-        centered_triangles[:, 2] - centered_triangles[:, 0],
-    )
-    cross_norms = np.linalg.norm(cross_products, axis=1)
-    areas = 0.5 * cross_norms
-    normals = np.divide(
-        cross_products,
-        cross_norms[:, None],
-        out=np.zeros_like(cross_products),
-        where=cross_norms[:, None] > 0.0,
-    )
+    centered_triangles, centers, areas, normals = _triangle_metrics(inertia_vertices - com, inertia_faces)
     if mode == "shell":
         weights = areas
         denominator = 12.0
@@ -840,6 +831,7 @@ def parse_mjcf(
                 maxhullvert=maxhullvert,
                 override_color=override_color,
                 override_texture=override_texture,
+                preserve_submeshes=True,
             )
 
         refquat = mesh_asset["refquat"]
@@ -1356,16 +1348,17 @@ def parse_mjcf(
                     override_color=material_color,
                     override_texture=texture,
                 )
+                mass_mesh = m_meshes[0]
                 inertia_mode = mesh_assets[geom_attrib["mesh"]]["inertia"]
                 mesh_mass, mesh_com, mesh_inertia = _compute_mjcf_mesh_inertia(
                     m_meshes,
                     inertia_mode,
                     maxhullvert,
                 )
-                mass_mesh = m_meshes[0]
                 mass_mesh.mass = mesh_mass
                 mass_mesh.com = mesh_com
                 mass_mesh.inertia = mesh_inertia
+                mass_mesh.has_inertia = True
                 for m_mesh in m_meshes:
                     m_mesh.is_solid = shape_cfg.is_solid
 
