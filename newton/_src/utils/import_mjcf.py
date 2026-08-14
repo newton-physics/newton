@@ -3129,13 +3129,28 @@ def parse_mjcf(
 
             if crank_site_name or slider_site_name:
                 if not crank_site_name or not slider_site_name:
-                    raise ValueError("MJCF slider-crank actuators require both cranksite and slidersite.")
+                    if verbose:
+                        print(
+                            f"Warning: {actuator_type} slider-crank actuator requires both cranksite and "
+                            "slidersite, skipping"
+                        )
+                    continue
                 crank_site_idx = site_name_to_idx.get(crank_site_name)
                 slider_site_idx = site_name_to_idx.get(slider_site_name)
                 if crank_site_idx is None:
-                    raise ValueError(f"MJCF slider-crank actuator references unknown cranksite '{crank_site_name}'.")
+                    if verbose:
+                        print(
+                            f"Warning: {actuator_type} slider-crank actuator references unknown "
+                            f"cranksite '{crank_site_name}', skipping"
+                        )
+                    continue
                 if slider_site_idx is None:
-                    raise ValueError(f"MJCF slider-crank actuator references unknown slidersite '{slider_site_name}'.")
+                    if verbose:
+                        print(
+                            f"Warning: {actuator_type} slider-crank actuator references unknown "
+                            f"slidersite '{slider_site_name}', skipping"
+                        )
+                    continue
                 crank_length = parse_float(merged_attrib, "cranklength", 0.0) * scale
                 if not np.isfinite(crank_length) or crank_length <= 0.0:
                     raise ValueError("MJCF slider-crank actuator cranklength must be positive.")
@@ -3197,7 +3212,10 @@ def parse_mjcf(
                 trntype = 3  # TrnType.SITE
             else:
                 if verbose:
-                    print(f"Warning: {actuator_type} actuator has no joint, body, site, or tendon target, skipping")
+                    print(
+                        f"Warning: {actuator_type} actuator has no joint, body, site, tendon, or slider-crank "
+                        "target, skipping"
+                    )
                 continue
 
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")

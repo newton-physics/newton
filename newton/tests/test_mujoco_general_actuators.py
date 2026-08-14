@@ -3,6 +3,8 @@
 
 """Tests for MuJoCo actuator parsing and propagation."""
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -1008,21 +1010,37 @@ class TestMuJoCoSliderCrankActuators(unittest.TestCase):
         self.assertGreaterEqual(int(trnid[0]), 0)
         self.assertGreaterEqual(int(trnid[1]), 0)
 
-    def test_slidercrank_actuator_rejects_invalid_parameters(self):
-        """Reject unresolved or incomplete sites and nonpositive crank lengths."""
-        unknown_slider_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('slidersite="slider"', 'slidersite="missing"')
-        with self.assertRaisesRegex(ValueError, "unknown slidersite"):
-            ModelBuilder().add_mjcf(unknown_slider_mjcf, ctrl_direct=True)
+    def test_slidercrank_actuator_skips_invalid_sites(self):
+        """Warn and skip slider-crank actuators with invalid sites."""
+        invalid_sites = (
+            ('slidersite="slider"', 'slidersite="missing"', "unknown slidersite 'missing'"),
+            ('cranksite="crank"', 'cranksite="missing"', "unknown cranksite 'missing'"),
+            ('cranksite="crank"', "", "requires both cranksite and slidersite"),
+            ('slidersite="slider"', "", "requires both cranksite and slidersite"),
+        )
+        for old, new, warning in invalid_sites:
+            with self.subTest(warning=warning):
+                builder = ModelBuilder()
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    builder.add_mjcf(MJCF_SLIDERCRANK_ACTUATOR.replace(old, new), ctrl_direct=True, verbose=True)
 
-        unknown_crank_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranksite="crank"', 'cranksite="missing"')
-        with self.assertRaisesRegex(ValueError, "unknown cranksite"):
-            ModelBuilder().add_mjcf(unknown_crank_mjcf, ctrl_direct=True)
+                self.assertIn(warning, stdout.getvalue())
+                model = builder.finalize()
+                self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 0)
 
-        for missing_attrib in ('cranksite="crank"', 'slidersite="slider"'):
-            with self.subTest(missing=missing_attrib):
-                single_site_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace(missing_attrib, "")
-                with self.assertRaisesRegex(ValueError, "require both cranksite and slidersite"):
-                    ModelBuilder().add_mjcf(single_site_mjcf, ctrl_direct=True)
+    def test_slidercrank_actuator_warns_without_target(self):
+        """Mention slider-crank transmissions when no actuator target is provided."""
+        mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranksite="crank"', "")
+        mjcf = mjcf.replace('slidersite="slider"', "")
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            ModelBuilder().add_mjcf(mjcf, ctrl_direct=True, verbose=True)
+
+        self.assertIn("or slider-crank target, skipping", stdout.getvalue())
+
+    def test_slidercrank_actuator_rejects_invalid_crank_length(self):
+        """Reject nonpositive or nonfinite slider-crank lengths."""
 
         zero_length_mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranklength="0.08"', 'cranklength="0"')
         with self.assertRaisesRegex(ValueError, "cranklength must be positive"):
