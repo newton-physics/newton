@@ -130,10 +130,6 @@ class SensorCamera:
         )
         """Render settings used by :meth:`update` when its ``render_config`` argument is ``None``."""
 
-        # Cached identity mapping ``arange(n)`` used when :meth:`update` is not
-        # given ``world_indices``; grown on demand and sliced to the view count.
-        self._default_world_indices: wp.array[wp.int32] | None = None
-
         self._render_context = None
         if model is not None:
             from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
@@ -146,10 +142,17 @@ class SensorCamera:
         return self._get_render_context().model.device
 
     def utils(self, view_count: int) -> Utils:
-        """Renderer utility helpers (``to_rgba``/``flatten``/depth conversion) for ``view_count`` views."""
+        """Return post-processing helpers (``to_rgba``/``flatten``/depth conversion) for ``view_count`` views.
+
+        Args:
+            view_count: Number of views the processed images carry (their leading dimension).
+
+        Returns:
+            A :class:`~newton.sensors.SensorCamera.Utils` bound to ``view_count`` and the model device.
+        """
         return Utils(view_count=int(view_count), device=self.device)
 
-    def create_image_output(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array:
+    def create_image_output(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
         """Create an output image array with shape ``(view_count, height, width)``."""
         return wp.zeros((int(view_count), int(height), int(width)), dtype=dtype, device=self.device)
 
@@ -195,7 +198,29 @@ class SensorCamera:
         out_rays: wp.array3d[wp.vec3f] | None = None,
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
-        """Compute camera-space rays for one pinhole camera."""
+        """Compute camera-space rays for one pinhole camera.
+
+        Provide either ``camera_fov`` or the aperture triple (``focal_length``,
+        ``horizontal_aperture``, ``vertical_aperture``), not both. The focal
+        length and apertures share consistent units; only their ratios affect
+        the ray directions.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_fov: Horizontal field of view [rad], in ``(0, pi)``. Mutually
+                exclusive with the aperture parameters.
+            focal_length: Lens focal length; must be positive.
+            horizontal_aperture: Horizontal sensor aperture; must be positive.
+            vertical_aperture: Vertical sensor aperture; must be positive.
+            horizontal_aperture_offset: Horizontal principal-point offset.
+            vertical_aperture_offset: Vertical principal-point offset.
+            out_rays: Optional output buffer, shape ``(height, width, 2)`` of ``vec3f``.
+            device: Device for the ray bundle. Defaults to the current Warp device.
+
+        Returns:
+            Ray origins and directions, shape ``(height, width, 2)`` of ``vec3f``.
+        """
         from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
@@ -206,6 +231,8 @@ class SensorCamera:
                 raise ValueError("camera_fov cannot be provided with aperture parameters.")
             if focal_length is None or horizontal_aperture is None or vertical_aperture is None:
                 raise ValueError("focal_length, horizontal_aperture, and vertical_aperture must be provided together.")
+            if float(focal_length) <= 0.0 or float(horizontal_aperture) <= 0.0 or float(vertical_aperture) <= 0.0:
+                raise ValueError("focal_length, horizontal_aperture, and vertical_aperture must be positive.")
 
             wp.launch(
                 kernel=camera_utils.compute_camera_rays_pinhole_from_aperture_kernel,
@@ -227,6 +254,8 @@ class SensorCamera:
 
         if camera_fov is None:
             raise ValueError("camera_fov must be provided when aperture parameters are not used.")
+        if not 0.0 < float(camera_fov) < math.pi:
+            raise ValueError(f"camera_fov must be in (0, pi) radians, got {float(camera_fov)}.")
 
         wp.launch(
             kernel=camera_utils.compute_camera_rays_pinhole,
@@ -416,7 +445,7 @@ class SensorCamera:
 
     def _get_render_context(self) -> RenderContext:
         if self._render_context is None:
-            raise RuntimeError("SensorCamera has no model; construct it with SensorCamera(rays, model).")
+            raise RuntimeError("SensorCamera has no model; construct it with SensorCamera(model).")
         return self._render_context
 
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None) -> None:
@@ -446,6 +475,20 @@ class SensorCamera:
         self._get_render_context().assign_checkerboard_material(
             shape_indices=shape_indices, resolution=resolution, checker_size=checker_size
         )
+
+    def sync_transforms(self, state: State) -> None:
+        """Synchronize render-only state (deformable triangle meshes) from *state*.
+
+        Call this before :meth:`update` on any frame whose geometry changed; the
+        ray tracer reads the synchronized mesh points. Rigid-only scenes need no
+        sync (this is a no-op for them). Shape and particle BVHs are refit
+        separately via :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles`.
+
+        Args:
+            state: Current simulation state with particle positions.
+        """
+        self._get_render_context().update(state)
 
     @staticmethod
     def _validate_render_array(name: str, array: Any, dtype: Any, device: wp.Device) -> None:
@@ -479,6 +522,14 @@ class SensorCamera:
         The number of views is inferred from ``camera_transforms.shape[0]``; all
         non-``None`` output arrays must have shape ``(view_count, height, width)``
         matching the ``camera_rays`` image dimensions.
+
+        Before calling this on any frame whose geometry moved, call
+        :meth:`sync_transforms` to synchronize render-only state (deformable
+        triangle meshes) from *state*, and refit the model's shape and particle
+        BVHs with :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` (both are built initially by
+        :meth:`~newton.ModelBuilder.finalize`); otherwise the render reads stale
+        points and bounds.
 
         Args:
             state: Simulation state with body and particle transforms.
@@ -518,22 +569,16 @@ class SensorCamera:
             raise ValueError(f"camera_rays must have shape (height, width, 2), got {tuple(camera_rays.shape)}.")
 
         view_count = int(camera_transforms.shape[0])
-        if world_indices is None:
-            # Default to the identity mapping (view ``i`` renders world ``i``).
-            # The cache is reused across calls and only grown when a larger view
-            # count is seen; render() reads just the first ``view_count`` entries,
-            # so a larger cache is sliced (a zero-copy view) to the exact shape.
-            cache = self._default_world_indices
-            if cache is None or cache.shape[0] < view_count:
-                cache = wp.array(np.arange(view_count, dtype=np.int32), dtype=wp.int32, device=model.device)
-                self._default_world_indices = cache
-            world_indices = cache[:view_count]
+        # Without an explicit mapping the renderer uses ``world_index == view_index``
+        # (no array is built), which is only valid when there are at least as many
+        # worlds as views; otherwise it would index past the model's per-world data.
+        if world_indices is None and view_count > int(model.world_count):
+            raise ValueError(
+                f"view_count ({view_count}) exceeds model.world_count ({int(model.world_count)}); "
+                "pass an explicit world_indices mapping for the extra views."
+            )
 
         with wp.ScopedTimer("Newton::SensorCamera::update", active=PROFILE_ENABLED, use_nvtx=True, synchronize=True):
-            # Sync render-only state (e.g. deformable triangle meshes) from the
-            # current simulation state before tracing.
-            render_context.update(state)
-
             render_context.render(
                 state,
                 camera_transforms=camera_transforms,

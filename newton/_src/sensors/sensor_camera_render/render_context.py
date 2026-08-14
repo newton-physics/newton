@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import warp as wp
@@ -24,6 +24,7 @@ class RenderContext:
 
         num_gaussians: int = 0
         has_particles: bool = False
+        has_world_indices: bool = False
         render_color: bool = False
         render_depth: bool = False
         render_forward_depth: bool = False
@@ -54,7 +55,7 @@ class RenderContext:
         self._model = model
         self._render_state = RenderContext.RenderState()
 
-        self._kernel_cache: dict[int, wp.Kernel] = {}
+        self._kernel_cache: dict[tuple, wp.Kernel] = {}
 
         self._triangle_mesh: wp.Mesh | None = None
         self._triangle_mesh_group_roots: wp.array[wp.int32] = wp.full(
@@ -230,7 +231,7 @@ class RenderContext:
         *,
         camera_transforms: wp.array[wp.transformf],
         camera_rays: wp.array3d[wp.vec3f],
-        world_indices: wp.array[wp.int32],
+        world_indices: wp.array[wp.int32] | None = None,
         color_image: wp.array3d[wp.uint32] | None = None,
         hdr_color_image: wp.array3d[wp.vec3f] | None = None,
         depth_image: wp.array3d[wp.float32] | None = None,
@@ -262,12 +263,15 @@ class RenderContext:
                 ``(view_count,)``.
             camera_rays: Ray origins and directions, shape
                 ``(height, width, 2)``.
-            world_indices: Per-view world selector, shape ``(view_count,)``,
-                dtype ``int32``. A non-negative entry is the model world index
-                rendered for that view; a negative entry disables the view using
-                a :class:`~newton.sensors.SensorCamera.WorldRenderFlag` sentinel
+            world_indices: Optional per-view world selector, shape
+                ``(view_count,)``, dtype ``int32``. A non-negative entry is the
+                model world index rendered for that view; a negative entry
+                disables the view using a
+                :class:`~newton.sensors.SensorCamera.WorldRenderFlag` sentinel
                 (``DISABLE_PRESERVE`` / ``DISABLE_CLEAR``). World indices must be
-                in ``[0, world_count)``.
+                in ``[0, world_count)``. If ``None``, each view renders its own
+                world (``world_index == view_index``), which requires
+                ``view_count <= world_count``.
             color_image: Output RGBA color buffer (packed ``uint32``).
             depth_image: Output depth buffer [m].
             forward_depth_image: Output forward-depth buffer [m].
@@ -278,7 +282,7 @@ class RenderContext:
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
             hdr_color_image: Output linear HDR color buffer.
             config: Render settings for this render call. If ``None``, uses
-                default :class:`Config` settings.
+                default :class:`RenderConfig` settings.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
@@ -316,6 +320,7 @@ class RenderContext:
             if clear_data is None:
                 clear_data = RenderContext.DEFAULT_CLEAR_DATA
 
+            self._render_state.has_world_indices = world_indices is not None
             self._render_state.render_color = color_image is not None
             self._render_state.render_depth = depth_image is not None
             self._render_state.render_forward_depth = forward_depth_image is not None
@@ -327,47 +332,35 @@ class RenderContext:
             # One view per camera transform; independent of the model world count.
             view_count = camera_transforms.shape[0]
 
-            assert camera_rays.shape == (height, width, 2), f"camera_rays size must match {height} x {width} x 2"
+            # Validate caller-owned arrays explicitly rather than with ``assert``:
+            # asserts are stripped under ``python -O``, which would let a bad shape,
+            # dtype, or device reach the kernel as an out-of-bounds device access.
+            expected = (view_count, height, width)
+            render_device = wp.get_device(self.device)
 
-            assert world_indices.shape == (view_count,), f"world_indices size must match view count {view_count}"
-            assert world_indices.dtype == wp.int32, f"world_indices dtype must be int32, got {world_indices.dtype}"
-            assert world_indices.device == wp.get_device(self.device), (
-                f"world_indices device must match {wp.get_device(self.device)}"
-            )
+            def _check_output(name: str, image):
+                if image is not None and image.shape != expected:
+                    raise ValueError(f"{name} shape must be {expected}, got {tuple(image.shape)}")
 
-            if color_image is not None:
-                assert color_image.shape == (view_count, height, width), (
-                    f"color_image size must match {view_count} x {height} x {width}"
-                )
+            if camera_rays.shape != (height, width, 2):
+                raise ValueError(f"camera_rays shape must be ({height}, {width}, 2), got {tuple(camera_rays.shape)}")
+            # ``world_indices`` is optional: when ``None`` each view renders its own
+            # world (``world_index == view_index``); otherwise validate the mapping.
+            if world_indices is not None:
+                if world_indices.shape != (view_count,):
+                    raise ValueError(f"world_indices shape must be ({view_count},), got {tuple(world_indices.shape)}")
+                if world_indices.dtype != wp.int32:
+                    raise ValueError(f"world_indices dtype must be int32, got {world_indices.dtype}")
+                if world_indices.device != render_device:
+                    raise ValueError(f"world_indices device must be {render_device}, got {world_indices.device}")
 
-            if depth_image is not None:
-                assert depth_image.shape == (view_count, height, width), (
-                    f"depth_image size must match {view_count} x {height} x {width}"
-                )
-
-            if forward_depth_image is not None:
-                assert forward_depth_image.shape == (view_count, height, width), (
-                    f"forward_depth_image size must match {view_count} x {height} x {width}"
-                )
-
-            if shape_index_image is not None:
-                assert shape_index_image.shape == (view_count, height, width), (
-                    f"shape_index_image size must match {view_count} x {height} x {width}"
-                )
-
-            if normal_image is not None:
-                assert normal_image.shape == (view_count, height, width), (
-                    f"normal_image size must match {view_count} x {height} x {width}"
-                )
-
-            if albedo_image is not None:
-                assert albedo_image.shape == (view_count, height, width), (
-                    f"albedo_image size must match {view_count} x {height} x {width}"
-                )
-            if hdr_color_image is not None:
-                assert hdr_color_image.shape == (view_count, height, width), (
-                    f"hdr_color_image size must match {view_count} x {height} x {width}"
-                )
+            _check_output("color_image", color_image)
+            _check_output("depth_image", depth_image)
+            _check_output("forward_depth_image", forward_depth_image)
+            _check_output("shape_index_image", shape_index_image)
+            _check_output("normal_image", normal_image)
+            _check_output("albedo_image", albedo_image)
+            _check_output("hdr_color_image", hdr_color_image)
 
             total_pixels = view_count * width * height
 
@@ -387,11 +380,14 @@ class RenderContext:
             if hdr_color_image is not None:
                 hdr_color_image = hdr_color_image.reshape(total_pixels)
 
-            kernel_cache_key = hash((config, self._render_state, clear_data))
-            render_kernel = self._kernel_cache.get(kernel_cache_key)
+            # Key the cache on the value tuple itself (dict hashes AND compares by
+            # equality), so two configs that merely share a hash cannot collide onto
+            # one kernel. Store snapshots on insert since config/state/clear_data are
+            # mutable (``unsafe_hash``); a later mutation must not alter a stored key.
+            render_kernel = self._kernel_cache.get((config, self._render_state, clear_data))
             if render_kernel is None:
                 render_kernel = create_kernel(config, self._render_state, clear_data)
-                self._kernel_cache[kernel_cache_key] = render_kernel
+                self._kernel_cache[(replace(config), replace(self._render_state), replace(clear_data))] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
 

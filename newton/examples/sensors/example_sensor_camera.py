@@ -331,6 +331,7 @@ class Example:
         camera_transforms = self._update_camera_transforms(sensor_camera)
         self.model.bvh_refit_shapes(self.state)
         self.model.bvh_refit_particles(self.state)
+        sensor_camera.sync_transforms(self.state)
         self._update_world_indices()
         sensor_camera.update(
             self.state,

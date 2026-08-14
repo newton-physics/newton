@@ -156,22 +156,27 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         pixels_per_view = img_width * img_height
         out_index = view_index * pixels_per_view + py * img_width + px
 
-        # A non-negative entry is the world index to render for this view;
-        # a negative entry is a disable sentinel (see WorldRenderFlag).
-        world_index = world_indices[view_index]
-        if world_index < 0:
-            if world_index == wp.static(int(WorldRenderFlag.DISABLE_CLEAR)):
-                write_clear_outputs(
-                    out_index,
-                    out_color,
-                    out_depth,
-                    out_forward_depth,
-                    out_shape_index,
-                    out_normal,
-                    out_albedo,
-                    out_hdr_color,
-                )
-            return
+        # With an explicit mapping, a non-negative entry is the world index to
+        # render for this view and a negative entry is a disable sentinel (see
+        # WorldRenderFlag). Without one (``world_indices is None``), each view
+        # renders its own world (``world_index == view_index``).
+        if wp.static(state.has_world_indices):
+            world_index = world_indices[view_index]
+            if world_index < 0:
+                if world_index == wp.static(int(WorldRenderFlag.DISABLE_CLEAR)):
+                    write_clear_outputs(
+                        out_index,
+                        out_color,
+                        out_depth,
+                        out_forward_depth,
+                        out_shape_index,
+                        out_normal,
+                        out_albedo,
+                        out_hdr_color,
+                    )
+                return
+        else:
+            world_index = view_index
 
         camera_transform = camera_transforms[view_index]
         ray_origin_world = wp.transform_point(camera_transform, camera_rays[py, px, 0])

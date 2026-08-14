@@ -46,13 +46,22 @@ strict_warnings = False
 warp_config_overrides: list[str] = []
 
 
+def _restore_warning_filters(saved: list) -> None:
+    warnings.filters[:] = saved
+
+
 def ignore_sensor_tiled_camera_deprecation() -> None:
     """Silence the whole-class ``SensorTiledCamera`` deprecation warning.
 
     ``SensorTiledCamera`` is deprecated in favor of ``newton.sensors.SensorCamera``.
     The tests that still exercise it call this from ``setUpModule`` so its
     construction warning does not escalate to an error under ``--strict-warnings``.
+
+    The suppression is scoped to the calling module: the previous global filter
+    state is restored after ``tearDownModule`` so it does not leak into later
+    test modules.
     """
+    unittest.addModuleCleanup(_restore_warning_filters, warnings.filters[:])
     warnings.filterwarnings(
         "ignore",
         message="SensorTiledCamera is deprecated",

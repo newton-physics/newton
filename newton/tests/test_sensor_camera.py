@@ -54,7 +54,7 @@ class TestSensorCamera(unittest.TestCase):
         return model, camera
 
     @staticmethod
-    def _identity_transforms(view_count: int, device: str = "cpu") -> wp.array:
+    def _identity_transforms(view_count: int, device: str = "cpu") -> wp.array[wp.transformf]:
         """World-space identity camera poses, shape ``(view_count,)``."""
         return wp.array(np.tile(_IDENTITY_XFORM, (view_count, 1)), dtype=wp.transformf, device=device)
 
@@ -258,6 +258,17 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "out_rays must have shape"):
             SensorCamera.compute_camera_rays_pinhole(width, height, math.radians(45.0), out_rays=out_rays)
 
+    def test_pinhole_rays_reject_out_of_range_parameters(self) -> None:
+        """Verify pinhole ray generation rejects non-positive focal length and out-of-range fov."""
+        width, height = 4, 3
+        for bad_fov in (0.0, math.pi, -0.1, math.pi + 0.1):
+            with self.assertRaisesRegex(ValueError, r"camera_fov must be in \(0, pi\)"):
+                SensorCamera.compute_camera_rays_pinhole(width, height, bad_fov, device="cpu")
+        with self.assertRaisesRegex(ValueError, "must be positive"):
+            SensorCamera.compute_camera_rays_pinhole(
+                width, height, focal_length=0.0, horizontal_aperture=2.0, vertical_aperture=2.0, device="cpu"
+            )
+
     def test_update_validates_rays_and_transforms(self) -> None:
         """Verify update rejects mistyped or misshaped rays and camera transforms."""
         width, height = 8, 6
@@ -276,6 +287,35 @@ class TestSensorCamera(unittest.TestCase):
             camera.update(state, camera_transforms, rays.reshape((1, height, width, 2)))
         with self.assertRaises(TypeError):
             camera.update(state, camera_transforms, np.zeros((height, width, 2), dtype=np.float32))
+
+    def test_sync_transforms_is_explicit_and_not_called_by_update(self) -> None:
+        """Verify update() no longer synchronizes render state; sync_transforms does it explicitly."""
+        width, height = 8, 6
+        model, camera = self._build_sphere_scene()
+        state = model.state()
+        rays = self._rays(width, height)
+        transforms = self._identity_transforms(model.world_count)
+        depth = wp.zeros((model.world_count, height, width), dtype=wp.float32, device="cpu")
+
+        # A model-less camera cannot sync.
+        with self.assertRaisesRegex(RuntimeError, "no model"):
+            SensorCamera().sync_transforms(state)
+
+        # Spy on the internal render-context sync to observe who triggers it.
+        calls = []
+        real_update = camera._render_context.update
+        camera._render_context.update = calls.append
+        try:
+            camera.update(state, transforms, rays, depth_image=depth)
+            self.assertEqual(calls, [], "update() must not synchronize render state")
+
+            camera.sync_transforms(state)
+            self.assertEqual(len(calls), 1, "sync_transforms() must synchronize render state")
+        finally:
+            camera._render_context.update = real_update
+
+        # The render still produced a valid frame (rigid scene needs no sync).
+        self.assertGreater(float(depth.numpy()[0, height // 2, width // 2]), 0.0)
 
     def test_model_required_for_outputs_and_utils(self) -> None:
         """Verify output and utility helpers require a model, and report the model device."""
@@ -468,48 +508,23 @@ class TestSensorCamera(unittest.TestCase):
         center = (height // 2, width // 2)
         self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(view_count)))
 
-    def test_default_world_indices_cache_is_reused_and_grown(self) -> None:
-        """Verify the default world-indices cache is reused across calls and grown only when needed."""
+    def test_update_without_world_indices_maps_view_to_world(self) -> None:
+        """Verify omitting world_indices renders view i into world i, with no cached mapping array."""
         width, height = 8, 6
         model, camera = self._build_sphere_scene(world_count=5)
         state = model.state()
         rays = self._rays(width, height)
+        center = (height // 2, width // 2)
 
-        def render(view_count: int) -> None:
+        # The sensor holds no default-mapping array; the renderer uses the view index.
+        self.assertFalse(hasattr(camera, "_default_world_indices"))
+
+        # Rendering different view counts (each <= world_count) works with no mapping;
+        # each view renders its own world, so every view sees its sphere.
+        for view_count in (3, 5, 2, 4):
             depth = wp.zeros((view_count, height, width), dtype=wp.float32, device="cpu")
             camera.update(state, self._identity_transforms(view_count), rays, depth_image=depth)
-
-        # Allocated lazily on the first update that needs a default.
-        self.assertIsNone(camera._default_world_indices)
-
-        render(3)
-        cache = camera._default_world_indices
-        self.assertIsNotNone(cache)
-        self.assertEqual(cache.shape, (3,))
-        np.testing.assert_array_equal(cache.numpy(), np.arange(3, dtype=np.int32))
-
-        # Same or smaller view counts reuse the cached array (sliced to fit).
-        render(3)
-        self.assertIs(camera._default_world_indices, cache)
-        render(2)
-        self.assertIs(camera._default_world_indices, cache)
-
-        # A larger view count grows the cache to the new maximum.
-        render(5)
-        grown = camera._default_world_indices
-        self.assertIsNot(grown, cache)
-        self.assertEqual(grown.shape, (5,))
-        np.testing.assert_array_equal(grown.numpy(), np.arange(5, dtype=np.int32))
-
-        # Below the maximum, the grown cache is reused, not reallocated.
-        render(4)
-        self.assertIs(camera._default_world_indices, grown)
-
-        # Explicit world_indices bypass the cache entirely.
-        depth = wp.zeros((5, height, width), dtype=wp.float32, device="cpu")
-        explicit = wp.array(np.zeros(5, dtype=np.int32), dtype=wp.int32, device="cpu")
-        camera.update(state, self._identity_transforms(5), rays, depth_image=depth, world_indices=explicit)
-        self.assertIs(camera._default_world_indices, grown)
+            self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(view_count)))
 
     def test_world_indices_decouple_views_from_worlds(self) -> None:
         """Verify multiple views can render one shared world from different poses."""
@@ -536,6 +551,24 @@ class TestSensorCamera(unittest.TestCase):
         self.assertTrue(all(float(d[v][center]) > 0.0 for v in range(3)))
         # The closer camera measures a smaller hit distance.
         self.assertGreater(float(d[0][center]), float(d[2][center]))
+
+    def test_update_rejects_default_world_indices_exceeding_world_count(self) -> None:
+        """Verify the default identity mapping is rejected when there are more views than worlds."""
+        width, height = 8, 6
+        model, camera = self._build_sphere_scene()  # 1 world
+        state = model.state()
+        rays = self._rays(width, height)
+        # Two views on a one-world model with no explicit mapping would index world 1.
+        camera_transforms = self._identity_transforms(2)
+        depth = wp.zeros((2, height, width), dtype=wp.float32, device="cpu")
+        with self.assertRaisesRegex(ValueError, "exceeds model.world_count"):
+            camera.update(state, camera_transforms, rays, depth_image=depth)
+
+        # An explicit mapping to the valid world renders both views.
+        world_indices = wp.array(np.zeros(2, dtype=np.int32), dtype=wp.int32, device="cpu")
+        camera.update(state, camera_transforms, rays, depth_image=depth, world_indices=world_indices)
+        center = (height // 2, width // 2)
+        self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(2)))
 
     def test_texture_projection_modes_texture_uvless_shapes(self) -> None:
         """Verify cubic and triplanar projection texture UV-less shapes and differ.

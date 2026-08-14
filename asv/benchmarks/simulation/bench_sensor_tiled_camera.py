@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rendering benchmarks for the site-backed camera sensor.
+"""Rendering benchmarks for the tiled camera sensor.
 
-``FastSensorCamera`` and ``FastSensorCameraPixel`` measure Isaac Lab's Franka
-cabinet scene with tiled and pixel-priority rendering in CI. The other scene
-benchmarks cover varying visual complexity and are intended for hill-climbing
-renderer performance:
+``FastSensorTiledCamera`` and ``FastSensorTiledCameraPixel`` measure Isaac
+Lab's Franka cabinet scene with tiled and pixel-priority rendering in CI. The
+other scene benchmarks cover varying visual complexity and are intended for
+hill-climbing renderer performance:
 
 - ``franka_cabinet``: Isaac Lab's Franka cabinet (open-drawer) scene.
 - ``quadruped``: an ANYmal D quadruped in its nominal standing pose.
@@ -19,8 +19,8 @@ previews show exactly what is benchmarked.
 Run directly to benchmark, or to write PNG previews of each scene (a
 single-world view and a 4x4 grid of 16 worlds)::
 
-    uv run asv/benchmarks/simulation/bench_sensor_camera.py
-    uv run asv/benchmarks/simulation/bench_sensor_camera.py --preview
+    uv run asv/benchmarks/simulation/bench_sensor_tiled_camera.py
+    uv run asv/benchmarks/simulation/bench_sensor_tiled_camera.py --preview
 """
 
 import warp as wp
@@ -41,7 +41,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton import ShapeFlags
-from newton.sensors import SensorCamera
+from newton.sensors import SensorTiledCamera
 
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_SEKTION_CABINET_FOLDER = "assets/urdf/sektion_cabinet_model"
@@ -53,7 +53,7 @@ ISAACGYM_ENVS_COMMIT = "aeed298638a1f7b5421b38f5f3cc2d1079b6d9c3"
 # traversal order with 8x8 pixel tiles.
 BVH_CONSTRUCTOR = "sah"
 KERNEL_BLOCK_DIM = 64
-RENDER_ORDER = SensorCamera.RenderOrder.TILED
+RENDER_ORDER = SensorTiledCamera.RenderOrder.TILED
 RENDER_TILE_WIDTH = 8
 RENDER_TILE_HEIGHT = 8
 
@@ -244,21 +244,19 @@ def _look_at_transform(
     return wp.transformf(wp.vec3f(*eye), wp.quat_from_matrix(wp.mat33f(rotation.flatten())))
 
 
-class _SensorCameraSceneRig:
-    """A scene replicated across worlds with a camera sensor ready to render."""
+class _TiledCameraSceneRig:
+    """A scene replicated across worlds with a tiled camera sensor ready to render."""
 
     def __init__(
         self,
         preset: ScenePreset,
         world_count: int,
         resolution: int,
-        render_order: SensorCamera.RenderOrder,
+        render_order: SensorTiledCamera.RenderOrder,
         camera_fov_deg: float = 45.0,
     ):
         world = preset.build()
         _disable_collision_handling(world)
-
-        camera = _look_at_transform(preset.camera_eye, preset.camera_target)
 
         scene = newton.ModelBuilder()
         scene.default_bvh_cfg.mesh_constructor = "cubql"
@@ -270,38 +268,32 @@ class _SensorCameraSceneRig:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
         light_direction = wp.vec3f(*preset.light_direction) if preset.light_direction is not None else None
-        self.sensor = SensorCamera(self.model)
-        self.sensor.create_default_light(enable_shadows=True, direction=light_direction)
-        self.sensor.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count, dtype=np.int32))
+        self.sensor = SensorTiledCamera(model=self.model)
         self.sensor.default_render_config.render_order = render_order
         self.sensor.default_render_config.tile_width = RENDER_TILE_WIDTH
         self.sensor.default_render_config.tile_height = RENDER_TILE_HEIGHT
         self.sensor.default_render_config.enable_shadows = True
         self.sensor.default_render_config.enable_textures = True
+        self.sensor.utils.create_default_light(enable_shadows=True, direction=light_direction)
+        self.sensor.utils.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count, dtype=np.int32))
 
-        # The caller owns the rays and the per-view transforms passed to update().
-        self.rays = SensorCamera.compute_camera_rays_pinhole(
-            resolution, resolution, camera_fov=math.radians(camera_fov_deg), device=self.model.device
+        camera = _look_at_transform(preset.camera_eye, preset.camera_target)
+        self.camera_transforms = wp.array([[camera] * world_count], dtype=wp.transformf)
+        self.camera_rays = self.sensor.utils.compute_camera_rays_pinhole(
+            resolution, resolution, camera_fovs=math.radians(camera_fov_deg)
         )
-        # World-fixed camera: point every world's view from the same look-at pose.
-        camera_row = np.array([camera[i] for i in range(7)], dtype=np.float32)
-        self.camera_transforms = wp.array(
-            np.tile(camera_row, (world_count, 1)), dtype=wp.transformf, device=self.model.device
-        )
-
-        self.color_image = self.sensor.create_color_image_output(world_count, resolution, resolution)
-        self.depth_image = self.sensor.create_depth_image_output(world_count, resolution, resolution)
+        self.color_image = self.sensor.utils.create_color_image_output(resolution, resolution)
+        self.depth_image = self.sensor.utils.create_depth_image_output(resolution, resolution)
 
         self.model.bvh_build_shapes(self.state, bvh_constructor=BVH_CONSTRUCTOR)
         self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)
-        # Static benchmark scene: synchronize render-only state once up front.
         self.sensor.sync_transforms(self.state)
 
     def render(self, color: bool = True, depth: bool = True):
         self.sensor.update(
             self.state,
             self.camera_transforms,
-            self.rays,
+            self.camera_rays,
             color_image=self.color_image if color else None,
             depth_image=self.depth_image if depth else None,
             kernel_block_dim=KERNEL_BLOCK_DIM,
@@ -316,7 +308,7 @@ class _SceneBenchmark:
     render_order = RENDER_ORDER
 
     def setup(self, resolution: int, world_count: int, iterations: int):
-        self.rig = _SensorCameraSceneRig(SCENES[self.scene], world_count, resolution, self.render_order)
+        self.rig = _TiledCameraSceneRig(SCENES[self.scene], world_count, resolution, self.render_order)
         # Compile and warm the render kernels for every output combination measured below.
         for color, depth in ((True, True), (True, False), (False, True)):
             self.rig.render(color=color, depth=depth)
@@ -341,23 +333,23 @@ class _SceneBenchmark:
         wp.synchronize()
 
 
-class SensorCameraQuadruped(_SceneBenchmark):
+class TiledCameraQuadruped(_SceneBenchmark):
     scene = "quadruped"
     params = ([64], [4096], [50])
 
 
-class FastSensorCamera(_SceneBenchmark):
+class FastSensorTiledCamera(_SceneBenchmark):
     scene = "franka_cabinet"
     params = ([64], [4096], [50])
 
 
-class FastSensorCameraPixel(_SceneBenchmark):
+class FastSensorTiledCameraPixel(_SceneBenchmark):
     scene = "franka_cabinet"
-    render_order = SensorCamera.RenderOrder.PIXEL_PRIORITY
+    render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
     params = ([64], [4096], [50])
 
 
-class SensorCameraShapes256(_SceneBenchmark):
+class TiledCameraShapes256(_SceneBenchmark):
     scene = "shapes_256"
     params = ([64], [4096], [50])
 
@@ -380,11 +372,9 @@ def write_preview_images(scene_names: list[str], output_dir: Path, image_size: i
     for name in scene_names:
         for world_count in PREVIEW_WORLD_COUNTS:
             worlds_per_row = math.isqrt(world_count)
-            rig = _SensorCameraSceneRig(SCENES[name], world_count, image_size // worlds_per_row, RENDER_ORDER)
+            rig = _TiledCameraSceneRig(SCENES[name], world_count, image_size // worlds_per_row, RENDER_ORDER)
             rig.render(color=True, depth=False)
-            rgba = rig.sensor.utils(world_count).flatten_color_image_to_rgba(
-                rig.color_image, worlds_per_row=worlds_per_row
-            )
+            rgba = rig.sensor.utils.flatten_color_image_to_rgba(rig.color_image, worlds_per_row=worlds_per_row)
             path = output_dir / f"{name}_{world_count}_world{'s' if world_count > 1 else ''}.png"
             # Drop alpha: background pixels have alpha 0 and would turn transparent.
             Image.fromarray(rgba.numpy()[..., :3]).save(path)
@@ -393,13 +383,15 @@ def write_preview_images(scene_names: list[str], output_dir: Path, image_size: i
 
 
 def print_fps(name: str, duration: float, resolution: int, world_count: int, iterations: int):
+    camera_count = 1
+
     title = f"{name}"
     if iterations > 1:
         title += " average"
 
     average = f"{duration * 1000.0 / iterations:.2f} ms"
 
-    fps = f"({(1.0 / (duration / iterations) * world_count):,.2f} fps)"
+    fps = f"({(1.0 / (duration / iterations) * (world_count * camera_count)):,.2f} fps)"
     print(f"{title} {'.' * (50 - len(title) - len(average))} {average} {fps if iterations > 1 else ''}")
 
 
@@ -417,10 +409,10 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "FastSensorCamera": FastSensorCamera,
-        "FastSensorCameraPixel": FastSensorCameraPixel,
-        "SensorCameraQuadruped": SensorCameraQuadruped,
-        "SensorCameraShapes256": SensorCameraShapes256,
+        "FastSensorTiledCamera": FastSensorTiledCamera,
+        "FastSensorTiledCameraPixel": FastSensorTiledCameraPixel,
+        "TiledCameraQuadruped": TiledCameraQuadruped,
+        "TiledCameraShapes256": TiledCameraShapes256,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -440,7 +432,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--preview-dir",
         type=Path,
-        default=Path("sensor_camera_previews"),
+        default=Path("tiled_camera_previews"),
         help="Directory for preview images.",
     )
     parser.add_argument(

@@ -59,9 +59,11 @@ def tid_to_coord_view_priority(tid: wp.int32, width: wp.int32, height: wp.int32)
 @wp.func
 def pack_rgba_to_uint32(rgb: wp.vec3f, alpha: wp.float32) -> wp.uint32:
     """Pack RGBA values into a single uint32 for efficient memory access."""
-    return (
-        (wp.clamp(wp.uint32(alpha * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(24))
-        | (wp.clamp(wp.uint32(rgb[2] * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(16))
-        | (wp.clamp(wp.uint32(rgb[1] * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(8))
-        | wp.clamp(wp.uint32(rgb[0] * 255.0), wp.uint32(0), wp.uint32(255))
-    )
+    # Clamp in floating point before the uint32 cast: casting a negative component
+    # first wraps to a large unsigned value that clamp() then saturates to 255,
+    # turning e.g. a black pixel white.
+    r = wp.uint32(wp.clamp(rgb[0], 0.0, 1.0) * 255.0)
+    g = wp.uint32(wp.clamp(rgb[1], 0.0, 1.0) * 255.0)
+    b = wp.uint32(wp.clamp(rgb[2], 0.0, 1.0) * 255.0)
+    a = wp.uint32(wp.clamp(alpha, 0.0, 1.0) * 255.0)
+    return (a << wp.uint32(24)) | (b << wp.uint32(16)) | (g << wp.uint32(8)) | r

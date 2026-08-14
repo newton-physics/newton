@@ -131,10 +131,15 @@ class ClearData:
     """Default values written to output images before rendering."""
 
     clear_color: int = 0
+    """Packed RGBA value written to the color output."""
     clear_depth: float = 0.0
+    """Depth value written to the depth and forward-depth outputs [m]."""
     clear_shape_index: int = 0xFFFFFFFF
+    """Shape-index sentinel written to the shape-index output."""
     clear_normal: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """Normal vector written to the normal output."""
     clear_albedo: int = 0
+    """Packed RGBA value written to the albedo output."""
 
 
 @wp.struct

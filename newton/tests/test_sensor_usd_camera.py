@@ -238,7 +238,6 @@ class TestSensorCameraRays(unittest.TestCase):
         got_prim = SensorCamera.compute_camera_rays_usd_pinhole(width, height, camera.GetPrim(), device="cpu")
         got_camera = SensorCamera.compute_camera_rays_usd_pinhole(width, height, camera, device="cpu")
 
-        # SensorCamera produces a single-camera (height, width, 2) vec3f ray bundle.
         self.assertEqual(got_prim.shape, (height, width, 2))
         self.assertEqual(got_prim.dtype, wp.vec3f)
         np.testing.assert_allclose(got_prim.numpy(), expected, atol=1e-6)

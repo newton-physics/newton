@@ -55,9 +55,11 @@ def flatten_normal_image(
     py = row * height + y
     normal = normal_image[world_id, y, x] * 0.5 + wp.vec3f(0.5)
 
-    buffer[py, px, 0] = wp.uint8(normal[0] * 255.0)
-    buffer[py, px, 1] = wp.uint8(normal[1] * 255.0)
-    buffer[py, px, 2] = wp.uint8(normal[2] * 255.0)
+    # Clamp before the uint8 cast: non-unit normals map outside [0, 1] and would
+    # otherwise wrap (matches unpack_normal_to_rgba_kernel).
+    buffer[py, px, 0] = wp.uint8(wp.clamp(normal[0], 0.0, 1.0) * 255.0)
+    buffer[py, px, 1] = wp.uint8(wp.clamp(normal[1], 0.0, 1.0) * 255.0)
+    buffer[py, px, 2] = wp.uint8(wp.clamp(normal[2], 0.0, 1.0) * 255.0)
     buffer[py, px, 3] = wp.uint8(255)
 
 
@@ -96,7 +98,9 @@ def flatten_depth_image(
     buffer[py, px, 0] = value
     buffer[py, px, 1] = value
     buffer[py, px, 2] = value
-    buffer[py, px, 3] = value
+    # Opaque alpha (matches unpack_depth_to_rgba_kernel); writing `value` would
+    # make miss/far pixels transparent.
+    buffer[py, px, 3] = wp.uint8(255)
 
 
 @wp.kernel(enable_backward=False)
@@ -299,6 +303,15 @@ class Utils:
         view_count, height, width = self.__image_shape("convert_ray_depth_to_forward_depth", depth_image)
         device = self.__device
 
+        # The kernel indexes camera_transforms[world] and camera_rays[py, px, 1]
+        # directly; validate on the host to avoid out-of-bounds device reads.
+        if camera_transforms.shape != (view_count,):
+            raise ValueError(f"camera_transforms shape must be ({view_count},), got {tuple(camera_transforms.shape)}")
+        if camera_rays.shape != (height, width, 2):
+            raise ValueError(f"camera_rays shape must be ({height}, {width}, 2), got {tuple(camera_rays.shape)}")
+        if camera_transforms.device != device or camera_rays.device != device:
+            raise ValueError("camera_transforms and camera_rays must be on the same device as the depth image")
+
         if out_depth is None:
             out_depth = wp.empty_like(depth_image, device=device)
 
@@ -449,6 +462,8 @@ class Utils:
             depth_range_arr = wp.array([MAXVAL, 0.0], dtype=wp.float32, device=device)
             wp.launch(find_depth_range, image.shape, [image, depth_range_arr], device=device)
         elif isinstance(depth_range, wp.array):
+            if depth_range.shape != (2,):
+                raise ValueError(f"depth_range array must have shape (2,), got {tuple(depth_range.shape)}")
             depth_range_arr = depth_range
         else:
             near, far = float(depth_range[0]), float(depth_range[1])
@@ -511,6 +526,14 @@ class Utils:
                 device=device,
             )
         else:
+            # The kernel reads colors[i, 0..2] directly, so validate on the host
+            # (Warp does not bounds-check device reads under optimized builds).
+            if colors.ndim != 2 or colors.shape[1] < 3:
+                raise ValueError(f"colors must have shape (num_entries, 3), got {tuple(colors.shape)}")
+            if colors.dtype != wp.uint8:
+                raise ValueError(f"colors must have dtype uint8, got {colors.dtype}")
+            if colors.device != device:
+                raise ValueError(f"colors must be on device {device}, got {colors.device}")
             wp.launch(
                 colorize_shape_index_with_palette_kernel,
                 dim=(view_count, h, w),
