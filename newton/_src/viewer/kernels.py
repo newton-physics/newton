@@ -93,18 +93,21 @@ def apply_picking_force_kernel(
     pick_vel = velocity_at_point(body_qd[pick_body], offset)
 
     # Command an acceleration of the pick point so gains are mass-independent,
-    # then scale by the body's effective mass.
+    # then scale by the picked body's mass.
     pick_accel = pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (
         pick_state[0].pick_damping * pick_vel
     )
 
-    # Clamp acceleration magnitude to prevent runaway divergence on light objects (#2361).
     max_acceleration = pick_state[0].pick_max_acceleration * 9.81
-    accel_mag = wp.length(pick_accel)
-    if accel_mag > max_acceleration:
-        pick_accel = pick_accel * (max_acceleration / accel_mag)
+    pick_force = pick_accel * body_mass[pick_body]
 
-    pick_force = pick_accel * pick_effective_mass[pick_body]
+    # Clamp force magnitude to prevent runaway divergence on light objects.
+    # The articulation total bounds the force so picking a light link can still
+    # move the whole chain.
+    max_force = max_acceleration * pick_effective_mass[pick_body]
+    force_mag = wp.length(pick_force)
+    if force_mag > max_force:
+        pick_force = pick_force * (max_force / force_mag)
 
     pick_torque = wp.cross(offset, pick_force)
 

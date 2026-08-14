@@ -266,13 +266,15 @@ def test_picking_setup_device(test: TestPickingSetup, device):
     test.assertEqual(picking.pick_body.numpy()[0], -1)
 
 
-def _apply_picking_target(picking: Picking, state: newton.State, target: tuple[float, float, float]) -> np.ndarray:
+def _apply_picking_target(
+    picking: Picking, state: newton.State, target: tuple[float, float, float], body: int = 0
+) -> np.ndarray:
     pick_state = picking.pick_state.numpy()
     pick_state[0]["picking_target_world"] = target
     picking.pick_state.assign(pick_state)
     state.body_f.zero_()
     picking._apply_picking_force(state)
-    return state.body_f.numpy()[0].copy()
+    return state.body_f.numpy()[body].copy()
 
 
 def test_picking_torque_limit(test: TestPickingSetup, device):
@@ -313,21 +315,58 @@ def test_picking_torque_limit_is_noop_below_limit(test: TestPickingSetup, device
     assert_np_equal(wrench, np.concatenate((expected_force, expected_torque)), tol=1.0e-5)
 
 
-def test_picking_acceleration_mass_independent(test: TestPickingSetup, device):
-    """Below the clamp, picking commands the same acceleration regardless of body mass."""
-    accelerations = []
+def _mass_independence_cases(device):
+    """Yield (model, ray_start, ray_dir) spanning free bodies and an articulated link."""
     for mass in (1.0, 1.0e-3):
         model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0), mass=mass)
+        yield model, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0)
+    for arm_mass in (1.0, 10.0):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_MJCF_ARM_AND_FINGER.format(arm_mass=arm_mass))
+        yield builder.finalize(device=device), wp.vec3(0.4, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0)
+
+
+def test_picking_acceleration_mass_independent(test: TestPickingSetup, device):
+    """Below the clamp, picking commands the same acceleration regardless of body mass."""
+    stiffness, displacement = 100.0, 0.01
+    accelerations = []
+    mass_bounds = []
+    for model, ray_start, ray_dir in _mass_independence_cases(device):
         state = model.state()
-        picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
-        picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
+        picking = Picking(model, pick_stiffness=stiffness, pick_damping=0.0, pick_max_acceleration=5.0)
+        picking.pick(state, ray_start, ray_dir)
         test.assertTrue(picking.is_picking())
-        wrench = _apply_picking_target(picking, state, (0.01, 0.0, -0.5))
-        accelerations.append(wrench[:3] / mass)
+
+        body = int(picking.pick_body.numpy()[0])
+        mass = model.body_mass.numpy()[body]
+        mass_bounds.append((picking._pick_effective_mass.numpy()[body], mass))
+
+        picked = np.array(picking.pick_state.numpy()[0]["picked_point_world"], dtype=float)
+        target = tuple(picked + np.array([displacement, 0.0, 0.0]))
+        accelerations.append(_apply_picking_target(picking, state, target, body=body)[:3] / mass)
+
+    # An articulated case must be present, or the articulation total could scale
+    # the commanded acceleration undetected.
+    test.assertTrue(any(bound > 5.0 * mass for bound, mass in mass_bounds))
 
     # accel = pick_stiffness * displacement, independent of mass
     for accel in accelerations:
-        assert_np_equal(accel, np.array([100.0 * 0.01, 0.0, 0.0]), tol=1.0e-4)
+        assert_np_equal(accel, np.array([stiffness * displacement, 0.0, 0.0]), tol=1.0e-4)
+
+
+_MJCF_ARM_AND_FINGER = """<mujoco>
+  <worldbody>
+    <body name="arm" pos="0 0 0">
+      <joint name="j1" type="hinge" axis="0 0 1"/>
+      <geom type="box" size="0.2 0.05 0.05" mass="{arm_mass}"/>
+      <body name="finger" pos="0.4 0 0">
+        <joint name="j2" type="hinge" axis="0 0 1"/>
+        <geom type="box" size="0.05 0.02 0.02" mass="0.1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
 
 
 def test_picking_torque_limit_rotates_with_inertia(test: TestPickingSetup, device):

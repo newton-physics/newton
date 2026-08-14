@@ -38,7 +38,9 @@ class Picking:
             model: The model to pick from.
             pick_stiffness: Stiffness of the picking spring, in acceleration per unit
                 displacement [1/s^2]. The commanded acceleration is scaled by the
-                picked body's effective mass, so gains are mass-independent.
+                picked body's mass, so gains are mass-independent. For a body in an
+                articulation the rest of the chain resists, so the pick point
+                accelerates less than commanded.
             pick_damping: Damping of the picking spring, in acceleration per unit
                 velocity of the pick point [1/s].
             pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
@@ -116,11 +118,14 @@ class Picking:
 
     @staticmethod
     def _compute_effective_mass(model: newton.Model) -> wp.array[float]:
-        """Compute per-body effective mass for picking force clamping.
+        """Compute the per-body mass bound used to clamp the picking force.
 
         For bodies in an articulation, returns the total mass of that
         articulation so that picking a light link still allows enough
         force to move the whole chain.  Free bodies get their own mass.
+
+        This bounds the force only; the commanded acceleration is scaled by the
+        picked body's own mass.
         """
         if model is None:
             return wp.zeros(1, dtype=float)

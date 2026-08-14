@@ -1,0 +1,1 @@
+Change viewer mouse-picking to command an acceleration of the pick point, scaled by the picked body's mass, instead of a mass-heuristic force; picking gains are now mass-independent (`pick_stiffness` [1/s²], `pick_damping` [1/s]). Retune custom `Picking` gains that were tuned for the previous force-based formula; the defaults are unchanged.
