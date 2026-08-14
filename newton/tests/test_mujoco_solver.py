@@ -12474,8 +12474,10 @@ class TestMuJoCoLinesearchBlockDim(unittest.TestCase):
 
         state_0, state_1 = model.state(), model.state()
         control = model.control()
-        contacts = model.collide(state_0)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         for _ in range(5):
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
             state_0, state_1 = state_1, state_0
         # Launch failures surface asynchronously, so force them to be raised here.
