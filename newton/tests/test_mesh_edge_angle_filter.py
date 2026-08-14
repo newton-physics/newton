@@ -14,11 +14,13 @@ import itertools
 import math
 import unittest
 from collections import Counter
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.edge_inward_filter import filter_fully_inward_edges
 
 # ``Mesh.build_sdf`` requires CUDA because the SDF cook only runs on GPU.
 _cuda_available = wp.is_cuda_available()
@@ -403,6 +405,42 @@ class TestBuildCollisionEdges(unittest.TestCase):
             self._build(mesh, half_normal_abs=-1.0)
         with self.assertRaisesRegex(ValueError, "non-negative"):
             self._build(mesh, half_lateral_rel=-1.0)
+
+    def test_default_reuses_edge_topology(self):
+        """Reuse canonical IDs and edge-slot topology across default filters."""
+        mesh = _dimpled_box_mesh()
+
+        with (
+            mock.patch.object(mesh, "_canonical_vertex_ids", wraps=mesh._canonical_vertex_ids) as canonical,
+            mock.patch.object(mesh, "_build_edge_slot_topology", wraps=mesh._build_edge_slot_topology) as topology,
+        ):
+            self._build(mesh)
+
+        self.assertEqual(canonical.call_count, 1)
+        self.assertEqual(topology.call_count, 1)
+
+    def test_without_absorption_skips_dihedral_diagnostics(self):
+        """Skip dihedral diagnostic arrays when box absorption is disabled."""
+        mesh = _dimpled_box_mesh()
+
+        with mock.patch.object(
+            mesh, "_filter_edges_by_dihedral_angle", wraps=mesh._filter_edges_by_dihedral_angle
+        ) as edge_filter:
+            self._build(mesh, enable_inward_filter=False)
+
+        self.assertFalse(edge_filter.call_args.kwargs.get("return_diagnostics", False))
+
+    def test_reused_topology_preserves_filter_output(self):
+        """Preserve exact default output when reusing topology between filters."""
+        mesh = _dimpled_box_mesh()
+        expected = filter_fully_inward_edges(
+            mesh,
+            mesh._filter_edges_by_dihedral_angle(math.radians(0.1)),
+        )
+
+        actual = self._build(mesh)
+
+        np.testing.assert_array_equal(actual, expected)
 
     def test_boundary_edges_preserved_without_absorption(self):
         # Open-top box has 4 boundary edges that must survive the build_sdf

@@ -51,7 +51,6 @@ class TestContactAggregation(unittest.TestCase):
         builder = make_homogeneous_builder(num_worlds=3, build_fn=self.build_func)
         model = builder.finalize(self.default_device)
         data = model.data()
-        state = model.state()
 
         # Create a collision detector with primitive pipeline
         config = CollisionDetector.Config(
@@ -66,7 +65,7 @@ class TestContactAggregation(unittest.TestCase):
         aggregator = ContactAggregation(model=model, contacts=detector.contacts)
 
         # Run collision detection and aggregate per-body and per-geom contacts
-        detector.collide(data, state)
+        detector.collide(data)
 
         # Set contact reactions to known values for testing aggregation results
         model_active_nc = int(detector.contacts.model_active_contacts.numpy()[0])
