@@ -1368,9 +1368,11 @@ def parse_usd(
         visual_shape_cfg_for_prim.is_visible = is_site or _is_viewport_drawn(prim)
         material_props = _get_material_props_cached(prim)
         shape_color = material_props.get("color")
-        # A textured prim also resolves no scalar color, deliberately, so that the texture
-        # is not tinted. Substituting the neutral there would multiply into every texel.
-        if shape_color is None and material_props.get("texture") is None and visual_shape_cfg_for_prim.is_visible:
+        # A textured mesh resolves no scalar color on purpose, so the texture is not tinted;
+        # the mesh path gives it white. Geometry that never receives the texture still wants
+        # the neutral, otherwise it falls through to a palette color.
+        carries_texture = material_props.get("texture") is not None and type_name == "mesh"
+        if shape_color is None and not carries_texture and visual_shape_cfg_for_prim.is_visible:
             shape_color = _UNMATERIALED_VISUAL_COLOR
 
         if path_name not in path_shape_map:
@@ -3572,7 +3574,8 @@ def parse_usd(
                 shape_ka = shape_contact["ka"]
 
                 shape_color = material_props.get("color")
-                if shape_color is None and material_props.get("texture") is None and collider_is_visible:
+                carries_texture = material_props.get("texture") is not None and key == UsdPhysics.ObjectType.MeshShape
+                if shape_color is None and not carries_texture and collider_is_visible:
                     shape_color = _UNMATERIALED_VISUAL_COLOR
 
                 # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
