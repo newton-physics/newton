@@ -717,7 +717,11 @@ If you run the examples from a source checkout with uv, use
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mujoco_franka_vbd_cable_admm_solver.jpg" alt="MuJoCo Franka VBD Cable ADMM">
       </a>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_franka_cloth_ik_lift.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_franka_cloth_ik_lift.jpg" alt="Franka Cloth IK Lift">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -726,6 +730,24 @@ If you run the examples from a source checkout with uv, use
     <td align="center" width="33%">
       <code>python -m newton.examples mujoco_franka_vbd_cable_admm_solver</code>
     </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples franka_cloth_ik_lift</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_franka_soft_ik_lift.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_franka_soft_ik_lift.jpg" alt="Franka Soft IK Lift">
+      </a>
+    </td>
+    <td></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples franka_soft_ik_lift</code>
+    </td>
+    <td></td>
     <td></td>
   </tr>
   <tr>
