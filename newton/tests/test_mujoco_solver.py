@@ -12416,5 +12416,73 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_RAW)
 
 
+def _large_nv_mjcf(cone: str) -> str:
+    """Build an MJCF whose free joints put it over MuJoCo Warp's nv > 500 threshold."""
+    bodies = "".join(
+        f'<body name="b{i}" pos="{i * 0.5} 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>'
+        for i in range(100)
+    )
+    return f'<mujoco><option cone="{cone}"/><worldbody>{bodies}</worldbody></mujoco>'
+
+
+class TestMuJoCoLinesearchBlockDim(unittest.TestCase):
+    def test_linesearch_block_dim_is_left_to_mujoco_warp(self):
+        """Leave MuJoCo Warp's line-search block dimension untouched.
+
+        Newton forced ``linesearch_iterative = 32`` after ``put_model()`` to work
+        around a CUDA registers-per-block failure that MuJoCo Warp has since capped
+        upstream. Upstream only assigns the field when ``nv > 500``, so a model over
+        that threshold is the only one whose value differs from the default and
+        therefore the only one that can detect the override coming back.
+        """
+        try:
+            _, mujoco_warp = SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_large_nv_mjcf("pyramidal"))
+        solver = SolverMuJoCo(builder.finalize())
+
+        self.assertGreater(solver.mj_model.nv, 500)
+        # Compare against upstream's own choice rather than a hard-coded 256, so the
+        # test keeps its meaning if MuJoCo Warp retunes the value.
+        expected = mujoco_warp.put_model(solver.mj_model).block_dim.linesearch_iterative
+        self.assertEqual(solver.mjw_model.block_dim.linesearch_iterative, expected)
+
+    def test_large_elliptic_model_steps_on_cuda(self):
+        """Step a large elliptic-cone model on CUDA without a kernel-launch failure.
+
+        The sizing assertion above cannot catch a runtime fault: the block dimension
+        only matters once the kernel launches. The original failure was CUDA error
+        701 in the elliptic line-search kernel, so this runs that path on a model
+        over the threshold. It exercises one architecture, not every architecture
+        that originally hit the limit.
+        """
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+        if not wp.get_device().is_cuda:
+            self.skipTest("block dimensions only constrain CUDA kernel launches")
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_large_nv_mjcf("elliptic"))
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        self.assertGreater(solver.mj_model.nv, 500)
+
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        for _ in range(5):
+            collision_pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+            state_0, state_1 = state_1, state_0
+        # Launch failures surface asynchronously, so force them to be raised here.
+        wp.synchronize()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

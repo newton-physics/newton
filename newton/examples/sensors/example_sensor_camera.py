@@ -101,6 +101,11 @@ def fill_body_camera_transforms(
 
 class Example:
     def __init__(self, viewer: ViewerGL, args):
+        # Opt into the coordinate-layout joint targets before building the model;
+        # the scattered free-floating bodies otherwise trip the legacy-layout
+        # DeprecationWarning (which CI escalates to an error).
+        newton.use_coord_layout_targets = True
+
         self.worlds_per_row = 6
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col

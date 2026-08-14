@@ -494,6 +494,10 @@ class SchemaResolverMjc(SchemaResolver):
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("mjc:armature", 0.0),
+            # MuJoCo damping is authored in SI units (per radian for angular
+            # DOFs), unlike the USD per-degree convention behind the plain
+            # "damping" key, so it resolves through the _per_rad variant.
+            "damping_per_rad": SchemaAttribute("mjc:damping", None),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
             # Per-axis aliases mapped to solreflimit (MjcJointAPI authors joint limit solref here)
             "limit_transX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
