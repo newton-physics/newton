@@ -3104,6 +3104,7 @@ def parse_mjcf(
             site_name = merged_attrib.get("site")
             crank_site_name = merged_attrib.get("cranksite")
             slider_site_name = merged_attrib.get("slidersite")
+            refsite_name = merged_attrib.get("refsite")
 
             # Sanitize names to match how they were stored in the builder
             if joint_name:
@@ -3118,6 +3119,8 @@ def parse_mjcf(
                 crank_site_name = sanitize_name(crank_site_name)
             if slider_site_name:
                 slider_site_name = sanitize_name(slider_site_name)
+            if refsite_name:
+                refsite_name = sanitize_name(refsite_name)
 
             # Determine transmission type and target
             trntype = 0  # Default: joint
@@ -3208,6 +3211,14 @@ def parse_mjcf(
                         print(f"Warning: {actuator_type} actuator references unknown site '{site_name}'")
                     continue
                 target_idx = site_idx
+                target_idx_alt = -1
+                if refsite_name:
+                    refsite_idx = site_name_to_idx.get(refsite_name)
+                    if refsite_idx is None:
+                        if verbose:
+                            print(f"Warning: {actuator_type} actuator references unknown refsite '{refsite_name}'")
+                        continue
+                    target_idx_alt = refsite_idx
                 target_name_for_log = site_name
                 trntype = 3  # TrnType.SITE
             else:
