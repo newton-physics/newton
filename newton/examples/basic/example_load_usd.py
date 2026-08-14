@@ -111,7 +111,14 @@ class Example:
         builder = newton.ModelBuilder(up_axis=up_axis)
         for _ in range(args.world_count):
             builder.add_world(articulation)
-        if args.ground:
+        # A stage that authors its own collision plane does not want a second one: two
+        # overlapping half-spaces collide against each other, and ours would sit above
+        # theirs and clip whatever the scene placed below it.
+        has_ground = any(
+            shape_type == newton.GeoType.PLANE and flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
+            for shape_type, flags in zip(builder.shape_type, builder.shape_flags, strict=True)
+        )
+        if not has_ground if args.ground is None else args.ground:
             builder.add_ground_plane()
 
         # Build into locals so a failure part-way through leaves the instance on the
@@ -325,8 +332,9 @@ class Example:
         parser.add_argument(
             "--ground",
             action=argparse.BooleanOptionalAction,
-            default=True,
-            help="Add a ground plane to the scene.",
+            default=None,
+            help="Add a ground plane to the scene. Left unset, one is added only when the "
+            "USD does not already provide a collision plane of its own.",
         )
         parser.add_argument(
             "--height",
