@@ -652,7 +652,7 @@ def import_particles(
     scene_preflight: Callable[[Any], None] | None = None,
     particle_prims: list[Any] | None = None,
 ) -> tuple[dict[str, tuple[int, int]], Any | None]:
-    """Import opted-in particle Points and return ranges plus their MPM config.
+    """Import opted-in particle Points and return ranges plus their owner scene.
 
     Particle positions, widths, and radii are converted to meters [m],
     velocities to meters per second [m/s], and masses to kilograms [kg].
@@ -677,8 +677,8 @@ def import_particles(
 
     Returns:
         A tuple containing prim-path to half-open particle index ranges and the
-        resolved MPM solver configuration, or ``None`` when no MPM particles
-        are imported.
+        governing ``UsdPhysics.Scene`` prim, or ``None`` when no particles are
+        imported.
     """
     from pxr import UsdPhysics
 
@@ -714,7 +714,6 @@ def import_particles(
 
     from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
 
-    mpm_config = SolverImplicitMPM.Config.create_from_usd(scene_prim)
     if scene_preflight is not None:
         scene_preflight(scene_prim)
     SolverImplicitMPM.register_custom_attributes(builder)
@@ -742,7 +741,7 @@ def import_particles(
             custom_attributes=payload.material,
         )
         ranges[payload.path] = (start, builder.particle_count)
-    return ranges, mpm_config
+    return ranges, scene_prim
 
 
 __all__ = ["find_particle_prims", "import_particles"]

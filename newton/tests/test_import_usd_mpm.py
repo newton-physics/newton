@@ -85,7 +85,9 @@ class TestImportUsdMPMFixtures(unittest.TestCase):
         np.testing.assert_allclose(builder.particle_radius, [0.05, 0.1, 0.1], rtol=1.0e-6)
         np.testing.assert_allclose(builder.particle_mass, [2.0, 16.0, 8.0], rtol=1.0e-6)
         np.testing.assert_allclose(np.asarray(builder.gravity), [0.0, 0.0, -9.81], rtol=1.0e-6)
-        self.assertAlmostEqual(result["mpm_config"].voxel_size, 0.05)
+        self.assertNotIn("mpm_config", result)
+        mpm_config = SolverImplicitMPM.Config.create_from_usd(result["particle_scene_prim"])
+        self.assertAlmostEqual(mpm_config.voxel_size, 0.05)
 
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.mpm.young_modulus.numpy(), [5.0, 5.0, 1.0e15], rtol=1.0e-6)
@@ -586,7 +588,9 @@ class TestImportUsdMPM(unittest.TestCase):
         result = builder.add_usd(stage, root_path="/World/Sand", load_visual_shapes=False)
 
         self.assertEqual(result["path_particle_map"], {"/World/Sand": (0, 1)})
-        self.assertAlmostEqual(result["mpm_config"].tolerance, 2.5e-5)
+        self.assertEqual(str(result["particle_scene_prim"].GetPath()), "/World/PhysicsScene")
+        mpm_config = SolverImplicitMPM.Config.create_from_usd(result["particle_scene_prim"])
+        self.assertAlmostEqual(mpm_config.tolerance, 2.5e-5)
         np.testing.assert_allclose(np.asarray(builder.gravity), [0.0, 0.0, -9.81], rtol=1.0e-6)
 
     def test_converts_default_and_authored_mpm_gravity_to_si(self):
@@ -625,8 +629,8 @@ class TestImportUsdMPM(unittest.TestCase):
 
         self.assertEqual(builder.particle_count, 1)
 
-    def test_preserves_multiple_scene_behavior_without_mpm_points(self):
-        """Keep legacy first-scene config handling when no Points are imported."""
+    def test_omits_particle_scene_without_imported_points(self):
+        """Return no particle owner scene when no Points are imported."""
         from pxr import UsdPhysics
 
         stage, _scene = self._stage()
@@ -635,7 +639,8 @@ class TestImportUsdMPM(unittest.TestCase):
         result = newton.ModelBuilder().add_usd(stage, load_visual_shapes=False)
 
         self.assertEqual(result["path_particle_map"], {})
-        self.assertIsInstance(result["mpm_config"], SolverImplicitMPM.Config)
+        self.assertIsNone(result["particle_scene_prim"])
+        self.assertNotIn("mpm_config", result)
 
     def test_imports_opted_in_points_materials_and_ranges(self):
         """Import only opted-in Points with transforms, units, and bound materials."""
@@ -688,7 +693,8 @@ class TestImportUsdMPM(unittest.TestCase):
         )
 
         self.assertEqual(result["path_particle_map"], {"/World/Sand": (1, 3), "/World/Snow": (3, 4)})
-        self.assertIsInstance(result["mpm_config"], SolverImplicitMPM.Config)
+        self.assertEqual(str(result["particle_scene_prim"].GetPath()), "/World/PhysicsScene")
+        self.assertNotIn("mpm_config", result)
         self.assertEqual(builder.particle_count, 4)
         np.testing.assert_allclose(np.asarray(builder.particle_q[1]), [5.2, 0.0, 0.0], rtol=1.0e-6)
         np.testing.assert_allclose(np.asarray(builder.particle_qd[1]), [0.6, 0.0, 0.0], rtol=1.0e-6)

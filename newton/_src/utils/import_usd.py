@@ -67,7 +67,6 @@ from .import_usd_deformable_utils import (
     _scout_deformable_prims,
 )
 from .import_usd_deformable_volume import _deformable_import_volume
-from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
 
@@ -438,10 +437,9 @@ def parse_usd(
         Unbound Points use Newton's registered material defaults and
         ``ModelBuilder.default_shape_cfg`` density. All Points imported by one
         call must resolve to the same MPM scene; unrelated PhysicsScenes
-        and particle systems are ignored. ``mpm_config`` contains the owner's
-        validated :class:`SolverImplicitMPM.Config`. Without imported
-        Points, it contains the parser-selected PhysicsScene config only when
-        that scene carries ``NewtonMPMSceneAPI``; otherwise it is ``None``.
+        and particle systems are ignored. ``particle_scene_prim`` contains the
+        governing ``UsdPhysics.Scene`` prim, or ``None`` when no particles are
+        imported.
 
         Particle widths are diameters. Newton converts each radius as
         ``width / 2`` after applying stage units and the prim's uniform world
@@ -507,8 +505,8 @@ def parse_usd(
               - Dictionary of collected per-prim schema attributes (dict)
             * - ``"max_solver_iterations"``
               - The resolved maximum solver iterations (int or None)
-            * - ``"mpm_config"``
-              - Validated :class:`SolverImplicitMPM.Config` for the resolved MPM owner scene; with no imported Points, the parser-selected PhysicsScene config only when that scene carries ``NewtonMPMSceneAPI``, otherwise ``None``
+            * - ``"particle_scene_prim"``
+              - Governing ``UsdPhysics.Scene`` prim for imported particle simulation geometry, or ``None`` when no particles are imported
             * - ``"path_body_relative_transform"``
               - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
             * - ``"path_original_body_map"``
@@ -725,7 +723,7 @@ def parse_usd(
 
     physics_dt = None
     max_solver_iters = None
-    mpm_config = None
+    particle_scene_prim = None
 
     visual_shape_cfg = ModelBuilder.ShapeConfig(
         density=0.0,
@@ -2546,7 +2544,7 @@ def parse_usd(
             raise ValueError(f"{scene_path}: transformed gravity must contain only finite SI values.")
         resolved_mpm_gravity = gravity
 
-    path_particle_map, imported_mpm_config = import_particles(
+    path_particle_map, particle_scene_prim = import_particles(
         builder,
         root_prim,
         ignore_paths=ignore_paths,
@@ -2557,22 +2555,13 @@ def parse_usd(
         scene_preflight=_preflight_mpm_scene,
         particle_prims=particle_prims,
     )
-    if imported_mpm_config is not None:
-        mpm_config = imported_mpm_config
+    if particle_scene_prim is not None:
         if resolved_mpm_gravity is None:
-            raise RuntimeError("MPM scene preflight did not resolve gravity.")
+            raise RuntimeError("Particle scene preflight did not resolve gravity.")
         if builder.current_world >= 0:
             builder.world_gravity[builder.current_world] = resolved_mpm_gravity
         else:
             builder.gravity = resolved_mpm_gravity
-    elif physics_scene_prim is not None and _has_api_schema(physics_scene_prim, "NewtonMPMSceneAPI"):
-        # Preserve the legacy config-only behavior when no opted-in Points
-        # are imported. Imported particles resolve their owner across the
-        # entire stage inside import_particles(), including when the
-        # selected root_path does not contain that PhysicsScene.
-        from ..solvers.implicit_mpm import SolverImplicitMPM  # noqa: PLC0415
-
-        mpm_config = SolverImplicitMPM.Config.create_from_usd(physics_scene_prim)
     if verbose:
         print(
             f"Scaling PD gains by (joint_drive_gains_scaling / DegreesToRadian) = {joint_drive_gains_scaling / DegreesToRadian}, default scale for joint_drive_gains_scaling=1 is 1.0/DegreesToRadian = {1.0 / DegreesToRadian}"
@@ -5187,7 +5176,7 @@ def parse_usd(
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
-        "mpm_config": mpm_config,
+        "particle_scene_prim": particle_scene_prim,
         "actuator_count": actuator_count,
     }
 

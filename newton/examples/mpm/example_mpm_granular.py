@@ -36,9 +36,10 @@ class Example:
                 newton.examples.get_asset("mpm_sand.usda"),
                 load_visual_shapes=False,
             )
-            mpm_options = import_result["mpm_config"]
-            if mpm_options is None:
+            particle_scene_prim = import_result["particle_scene_prim"]
+            if particle_scene_prim is None:
                 raise ValueError("mpm_sand.usda must author NewtonMPMSceneAPI")
+            mpm_options = SolverImplicitMPM.Config.create_from_usd(particle_scene_prim)
         else:
             Example.emit_particles(builder, args)
             mpm_options = SolverImplicitMPM.Config()
