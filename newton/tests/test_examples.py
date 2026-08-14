@@ -330,9 +330,8 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
 
 
 def add_strict_example_test(cls, **kwargs):
-    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
-    allow_output_regexes = [*_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
-    add_example_test(cls, allow_output_regexes=allow_output_regexes, **kwargs)
+    """Register an example with strict subprocess output checking."""
+    add_example_test(cls, **kwargs)
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
@@ -363,6 +362,7 @@ class TestExampleOutputRegexes(unittest.TestCase):
         self.assertEqual(unmatched_output, unexpected_output)
 
     def test_newton_asset_download_output_does_not_consume_trailing_output(self):
+        """Keep unmatched text after a Newton asset download message."""
         unexpected_output = "unexpected output\n"
         output = (
             "Cloning https://github.com/newton-physics/newton-assets.git "
@@ -375,6 +375,7 @@ class TestExampleOutputRegexes(unittest.TestCase):
         self.assertEqual(unmatched_output, unexpected_output)
 
     def test_selection_summary_output_does_not_consume_trailing_output(self):
+        """Keep unmatched text after a selection articulation summary."""
         unexpected_output = "unexpected output\n"
         output = (
             "Articulation 'robot': 1\n"
