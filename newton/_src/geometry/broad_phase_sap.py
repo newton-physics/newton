@@ -20,7 +20,7 @@ import warp as wp
 from ..core.types import Devicelike
 from .broad_phase_common import (
     binary_search,
-    check_aabb_overlap,
+    check_aabb_overlap_moving,
     is_pair_excluded,
     is_shape_pair_immovable_filtered,
     precompute_world_map,
@@ -48,6 +48,8 @@ def _sap_project_aabb(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_displacement: wp.array[wp.vec3],  # Optional displacement over the collision-update interval [m]
+    sort_axis_displacement_limit: float,
 ) -> wp.vec2:
     lower = shape_bounding_box_lower[elementid]
     upper = shape_bounding_box_upper[elementid]
@@ -59,9 +61,21 @@ def _sap_project_aabb(
 
     half_size = 0.5 * (upper - lower)
     half_size = wp.vec3(half_size[0] + gap, half_size[1] + gap, half_size[2] + gap)
-    radius = wp.dot(direction, half_size)
+    radius = wp.dot(wp.abs(direction), half_size)
     center = wp.dot(direction, 0.5 * (lower + upper))
-    return wp.vec2(center - radius, center + radius)
+    projection_lower = center - radius
+    projection_upper = center + radius
+    if shape_displacement.shape[0] > 0:
+        projected_displacement = wp.dot(direction, shape_displacement[elementid])
+        if sort_axis_displacement_limit >= 0.0:
+            projected_displacement = wp.clamp(
+                projected_displacement,
+                -sort_axis_displacement_limit,
+                sort_axis_displacement_limit,
+            )
+        projection_lower += wp.min(projected_displacement, 0.0)
+        projection_upper += wp.max(projected_displacement, 0.0)
+    return wp.vec2(projection_lower, projection_upper)
 
 
 @wp.func
@@ -148,9 +162,12 @@ def _sap_project_kernel(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_displacement: wp.array[wp.vec3],  # Optional displacement over the collision-update interval [m]
+    sort_axis_displacement_limit: float,
     world_index_map: wp.array[int],
     world_slice_ends: wp.array[int],
     max_shapes_per_world: int,
+    shape_count: int,
     # Outputs (1D arrays with manual indexing)
     sap_projection_lower_out: wp.array[float],
     sap_projection_upper_out: wp.array[float],
@@ -178,12 +195,25 @@ def _sap_project_kernel(
 
     # Map to actual geometry index
     shape_id = world_index_map[world_slice_start + local_shape_id]
+    if shape_id >= shape_count:
+        sap_projection_lower_out[idx] = 1e30
+        sap_projection_upper_out[idx] = 1e30
+        sap_sort_index_out[idx] = -1
+        return
 
     # Project AABB onto direction
-    range = _sap_project_aabb(shape_id, direction, shape_bounding_box_lower, shape_bounding_box_upper, shape_gap)
+    projection_range = _sap_project_aabb(
+        shape_id,
+        direction,
+        shape_bounding_box_lower,
+        shape_bounding_box_upper,
+        shape_gap,
+        shape_displacement,
+        sort_axis_displacement_limit,
+    )
 
-    sap_projection_lower_out[idx] = range[0]
-    sap_projection_upper_out[idx] = range[1]
+    sap_projection_lower_out[idx] = projection_range[0]
+    sap_projection_upper_out[idx] = projection_range[1]
     sap_sort_index_out[idx] = local_shape_id
 
 
@@ -246,6 +276,7 @@ def _process_single_sap_pair(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_displacement: wp.array[wp.vec3],  # Optional displacement over the collision-update interval [m]
     candidate_pair: wp.array[wp.vec2i],
     candidate_pair_count: wp.array[int],  # Size one array
     max_candidate_pair: int,
@@ -272,13 +303,8 @@ def _process_single_sap_pair(
         gap1 = shape_gap[shape1]
         gap2 = shape_gap[shape2]
 
-    if check_aabb_overlap(
-        shape_bounding_box_lower[shape1],
-        shape_bounding_box_upper[shape1],
-        gap1,
-        shape_bounding_box_lower[shape2],
-        shape_bounding_box_upper[shape2],
-        gap2,
+    if check_aabb_overlap_moving(
+        shape1, shape2, shape_bounding_box_lower, shape_bounding_box_upper, gap1, gap2, shape_displacement
     ):
         write_pair(
             pair,
@@ -294,6 +320,7 @@ def _sap_broadphase_kernel(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
+    shape_displacement: wp.array[wp.vec3],  # Optional displacement over the collision-update interval [m]
     collision_group: wp.array[int],
     shape_world: wp.array[int],  # World indices
     world_index_map: wp.array[int],
@@ -394,6 +421,7 @@ def _sap_broadphase_kernel(
                 shape_bounding_box_lower,
                 shape_bounding_box_upper,
                 shape_gap,
+                shape_displacement,
                 candidate_pair,
                 candidate_pair_count,
                 max_candidate_pair,
@@ -539,6 +567,8 @@ class BroadPhaseSAP:
         shape_body: wp.array[int] | None = None,
         body_flags: wp.array[int] | None = None,
         include_static_kinematic_pairs: bool = True,
+        shape_displacement: wp.array[wp.vec3] | None = None,
+        sort_axis_displacement_limit: float | None = None,
     ) -> None:
         """Launch the sweep and prune broad phase collision detection with per-world segmented sort.
 
@@ -556,7 +586,7 @@ class BroadPhaseSAP:
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
             shape_world: Array of world indices for each shape. Index -1 indicates global entities
                 that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
-            shape_count: Number of active bounding boxes to check (not used in world-based approach)
+            shape_count: Number of active bounding boxes to check.
             candidate_pair: Output array to store overlapping shape pairs
             candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
@@ -572,6 +602,15 @@ class BroadPhaseSAP:
                 an all-static model when ``shape_body`` is provided.
             include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
                 ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
+            shape_displacement: Optional world-space displacement of each shape over the collision-update interval
+                ``dt``,
+                used for speculative-contact swept-AABB tests [m]. See
+                :ref:`Speculative contacts <speculative-contacts>`. :class:`CollisionPipeline` computes it as the
+                shape-origin velocity, including the angular contribution from its COM offset, times ``dt``; angular
+                travel expands the supplied AABB separately.
+            sort_axis_displacement_limit: Optional non-negative cap on each displacement projected onto the SAP sort
+                axis [m]. This cap affects only candidate search; retained pairs are tested using the uncapped
+                displacement. Displacements beyond the cap may cause pairs to be missed.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose worlds are
@@ -590,6 +629,9 @@ class BroadPhaseSAP:
         if device is None:
             device = shape_lower.device
 
+        if shape_count < 0 or shape_count > shape_lower.shape[0]:
+            raise ValueError(f"shape_count must be in [0, {shape_lower.shape[0]}], got {shape_count}")
+
         # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
         if shape_gap is None:
             shape_gap = wp.empty(0, dtype=wp.float32, device=device)
@@ -597,6 +639,20 @@ class BroadPhaseSAP:
             shape_body = wp.empty(0, dtype=wp.int32, device=device)
         if body_flags is None:
             body_flags = wp.empty(0, dtype=wp.int32, device=device)
+        if shape_displacement is not None and shape_displacement.shape[0] != shape_lower.shape[0]:
+            raise ValueError(
+                "shape_displacement length must match the shape bounds "
+                f"({shape_lower.shape[0]}), got {shape_displacement.shape[0]}"
+            )
+        if sort_axis_displacement_limit is None:
+            projection_limit = -1.0
+        else:
+            if not np.isfinite(sort_axis_displacement_limit) or sort_axis_displacement_limit < 0.0:
+                raise ValueError(
+                    "sort_axis_displacement_limit must be a non-negative finite number, "
+                    f"got {sort_axis_displacement_limit!r}"
+                )
+            projection_limit = sort_axis_displacement_limit
 
         # Exclusion filter: empty array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
@@ -615,9 +671,12 @@ class BroadPhaseSAP:
                 shape_lower,
                 shape_upper,
                 shape_gap,
+                shape_displacement,
+                projection_limit,
                 self.world_index_map,
                 self.world_slice_ends,
                 self.max_shapes_per_world,
+                shape_count,
                 self.sap_projection_lower,
                 self.sap_projection_upper,
                 self.sap_sort_index,
@@ -683,6 +742,7 @@ class BroadPhaseSAP:
                 shape_lower,
                 shape_upper,
                 shape_gap,
+                shape_displacement,
                 shape_collision_group,
                 shape_world,
                 self.world_index_map,

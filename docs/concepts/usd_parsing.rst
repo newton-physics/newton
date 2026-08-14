@@ -53,7 +53,7 @@ Deformable Bodies
 
 :meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
 Deformables proposal
-<https://github.com/aousd/OpenUSD-proposals/blob/5d89c0ed46a26de92f4d3fefef3bfad6500c07ce/proposals/physics_deformables/wp_deformable_physics.md>`_,
+<https://github.com/aousd/OpenUSD-proposals/blob/61d83b54b7efbe97ad2f480de885255cd1e593be/proposals/physics_deformables/wp_deformable_physics.md>`_,
 across three families:
 
 * **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI``
@@ -87,11 +87,18 @@ Supported subset
 The first release deliberately supports a narrow, predictable set of inputs:
 
 * Valid, enabled, **dynamic** cable, cloth, and volume simulation prims that use the AOUSD
-  deformable APIs. A bound simulation material supplies thickness, stiffness, and density;
-  unauthored material properties fall back to documented builder defaults.
+  deformable APIs. A bound simulation material supplies thickness, stiffness, and density.
+  For cables, each authored ``physics:curves*Stiffness`` is a structural stiffness; an
+  unauthored mode is derived instead from ``physics:youngsModulus``, ``physics:poissonsRatio``,
+  and ``physics:curvesThickness``, each of which falls back to the proposal's assumed 1 MPa,
+  0.3, and 1 mm when it is itself unauthored.
+  Newton divides each resolved structural stiffness by that joint's own dual rest length
+  ``0.5 * (L_parent + L_child)``, so unevenly sampled curves keep per-joint accuracy.
+  The earlier unprefixed cable material attributes remain accepted with their former modulus
+  interpretation during a deprecation window and emit a ``DeprecationWarning``.
 * The points and topology **as currently authored**. Newton builds the deformable at that pose;
-  a standalone cable's ``restShapePoints`` may affect stiffness normalization but never
-  establishes an initial strain state.
+  a cable's ``restShapePoints`` may affect stiffness normalization but never establishes an
+  initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any
   geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
@@ -123,12 +130,12 @@ Limitations
 Known gaps of the experimental importer, tracked as follow-ups:
 
 * **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
-  configuration. Cloth and volume rest attributes are ignored with a warning, and welded cable
-  graphs drop ``restShapePoints``. For a standalone cable, a valid ``restShapePoints`` supplies
-  only the segment lengths used to convert the material moduli into joint stiffness; the rod
-  itself is still built relaxed at the current ``points`` pose, and mass distribution also uses
-  the current geometry. A body saved in a deformed pose therefore resumes relaxed at that pose
-  instead of springing back.
+  configuration. Cloth and volume rest attributes are ignored with a warning. For a cable,
+  including one in a welded graph, valid ``restShapePoints`` supplies only the segment lengths
+  used to discretize material stiffness into joint stiffness; invalid values warn and fall back
+  to the current ``points`` lengths. The rod itself is still built relaxed at the current
+  ``points`` pose, and mass distribution also uses the current geometry. A body saved in a
+  deformed pose therefore resumes relaxed at that pose instead of springing back.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
@@ -156,15 +163,21 @@ Known gaps of the experimental importer, tracked as follow-ups:
   (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
-* **Cable frames and stiffness** -- if per-point normals are missing, segment orientation is
-  synthesized. One stiffness value, computed from the mean segment length, applies to a whole
-  curve or graph, so curves with very uneven segment lengths lose per-segment accuracy. When a
-  standalone cable authors valid ``restShapePoints``, its segment lengths are used for this
-  conversion; the current ``points`` still define the rod's constructed and relaxed pose.
-* **Thickness fallbacks** -- without an authored thickness the importer assumes a default
-  (2 mm cloth shell thickness, 2.5 mm cable radius) for the mass, stiffness, and
-  collision-radius conversions, and warns with the assumed value. Author
-  ``physics:thickness`` on the material to override.
+* **Cable frames** -- if per-point normals are missing, segment orientation is synthesized.
+* **Thickness fallbacks** -- for cloth that needs a thickness to convert volumetric density or
+  stiffness, the importer warns and assumes a 2 mm shell thickness if none resolves. A cable
+  without a valid thickness instead uses AOUSD's 1 mm diameter when the bound material follows
+  the current ``physics:curves*`` contract described above; when no curve material is bound or
+  it uses only the deprecated unprefixed attributes, Newton retains its previous 2.5 mm radius.
+  The assumed size affects mass, collision geometry, and stiffness derived from material
+  moduli. At the 1 mm cable diameter, the smallest principal moment of
+  short segments at typical densities may fall below :class:`~newton.ModelBuilder`'s inertia-validation
+  floor, causing their inertia to be corrected during finalization. Explicitly authored
+  comparably thin cables can do the same. Set
+  :attr:`~newton.ModelBuilder.validate_inertia_detailed` before finalization to identify corrected
+  bodies. To override the fallback, author ``physics:thickness`` for cloth (or configure
+  ``newton:massModel = "shell"`` with ``newton:shellThickness``) or
+  ``physics:curvesThickness`` for cables.
 * **Single-segment curves** -- an open two-point curve (one segment) is warned and skipped;
   the rod representation needs at least two segments. A periodic two-point curve closes into
   two segments and imports.
@@ -227,12 +240,13 @@ close a loop, so they stay outside the articulation.
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to its attributes exactly
 as authored, independent of any solver. The cable and cloth entries expose the parsed
-``material`` moduli and the ``resolved_density``. The volume entry exposes the
+authored ``material`` values and the ``resolved_density``. The volume entry exposes the
 ``resolved_density`` (a volume material's ``youngsModulus`` / ``poissonsRatio`` are applied to
-the built soft body and not repeated there). The cable and cloth ``material`` keeps moduli the
-imported rod and membrane cannot express -- for example cable ``shearStiffness`` /
-``twistStiffness`` -- so a solver with a richer cable or surface model can rebuild the
-deformable from the import without re-parsing the stage. A cable entry carries a
+the built soft body and not repeated there). A cable entry preserves authored
+``curvesThickness``, ``youngsModulus``, ``poissonsRatio``, and the per-mode structural
+stiffnesses, plus any earlier unprefixed attributes the material still authors during the
+deprecation window; a cloth entry keeps moduli its isotropic membrane cannot express. This
+lets another solver rebuild the deformable without re-parsing the stage. A cable entry carries a
 ``graph_component`` identifier only when the curve was welded into a rod graph; curves of one
 graph share it, and independent or fallback cables have no such key.
 

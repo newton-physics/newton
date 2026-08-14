@@ -221,6 +221,7 @@ class Example:
             return lambda v: SolverVBD(
                 model=v,
                 iterations=vbd_iterations,
+                rigid_compliant_alm=True,
                 rigid_contact_history=False,
             )
         if self.payload_kind == "xpbd-chain":
