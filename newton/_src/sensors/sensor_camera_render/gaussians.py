@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..geometry import Gaussian
-from ..geometry.bvh import compute_ellipsoid_bounds
-from ..geometry.raycast import map_ray_to_local
-from ..math import safe_div
+from ...geometry import Gaussian
+from ...geometry.bvh import compute_ellipsoid_bounds
+from ...geometry.raycast import map_ray_to_local
+from ...math import safe_div
 from .types import GaussianRenderMode, RenderConfig
 
 if TYPE_CHECKING:

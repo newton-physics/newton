@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..core import MAXVAL
+from ...core import MAXVAL
 from . import raytrace
 from .types import RenderConfig
 

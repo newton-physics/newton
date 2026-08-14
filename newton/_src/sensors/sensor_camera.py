@@ -4,20 +4,32 @@
 from __future__ import annotations
 
 import math
+import os
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from ..render.types import (
+from .sensor_camera_render import Utils
+from .sensor_camera_render.types import (
     ClearData,
+    GaussianRenderMode,
+    LightType,
     RenderConfig,
+    RenderOrder,
+    TextureProjectionMode,
+    WorldRenderFlag,
 )
 
 if TYPE_CHECKING:
-    from ..render.render_context import RenderContext
+    from ..sim.model import Model
     from ..sim.state import State
+    from .sensor_camera_render.render_context import RenderContext
+
+# Enable NVTX ranges / timing around SensorCamera.update() when NEWTON_PROFILE is set.
+PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 
 
 def _resolve_fisheye_image_size(
@@ -65,152 +77,109 @@ def _validate_camera_ray_output(
 
 
 class SensorCamera:
-    """Raytraced camera sensor rendered through a shared :class:`RenderContext`.
+    """Raytraced camera sensor that renders a Newton model.
 
-    A camera sensor holds the camera-space rays (the image model) and renders
-    one view per entry of the ``camera_transforms`` array passed to
-    :meth:`update`. The caller owns those world-space camera poses; the sensor
-    only owns the ray bundle, the per-view :attr:`world_indices` selector, and
-    the render settings.
+    A camera sensor owns an internal renderer built for a model plus the default
+    render settings (:attr:`default_clear_data`, :attr:`default_render_config`)
+    used when :meth:`update` is not given per-call overrides. The caller supplies
+    the camera-space rays, the world-space per-view camera transforms, and the
+    output image buffers to :meth:`update`; the number of views is inferred from
+    the leading dimension of the camera transforms.
+
+    The render configuration types are exposed as nested attributes (e.g.
+    ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
+    ``SensorCamera.WorldRenderFlag``); they are not part of the top-level
+    ``newton`` namespace.
     """
+
+    ClearData = ClearData
+    GaussianRenderMode = GaussianRenderMode
+    LightType = LightType
+    RenderConfig = RenderConfig
+    RenderOrder = RenderOrder
+    TextureProjectionMode = TextureProjectionMode
+    Utils = Utils
+    WorldRenderFlag = WorldRenderFlag
 
     def __init__(
         self,
-        rays: wp.array | np.ndarray,
-        render_context: RenderContext | None = None,
+        model: Model | None = None,
         *,
-        view_count: int | None = None,
+        default_clear_data: ClearData | None = None,
+        default_render_config: RenderConfig | None = None,
+        load_textures: bool = True,
     ):
-        """Construct a camera sensor from a ray bundle.
+        """Construct a camera sensor for a model.
 
         Args:
-            rays: Camera-space ray origins and directions, shape
-                ``(height, width, 2)`` of ``vec3f``.
-            render_context: Render context used by :meth:`update`. It is
-                read-only after construction. When provided, the rays are moved
-                to the model device and ``view_count`` defaults to the model's
-                world count.
-            view_count: Number of render views, i.e. the required leading
-                dimension of the ``camera_transforms`` passed to :meth:`update`
-                and of the output images. Defaults to the render context's
-                ``model.world_count``.
+            model: Newton simulation model to render. The sensor builds its
+                internal renderer for the model. :meth:`update` requires a model.
+            default_clear_data: Clear values used by :meth:`update` when its
+                ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
+            default_render_config: Render settings used by :meth:`update` when
+                its ``render_config`` argument is ``None``. Defaults to
+                ``RenderConfig()``.
+            load_textures: Load mesh textures from disk. Set ``False`` for
+                checkerboard or custom-texture workflows (see
+                :meth:`assign_checkerboard_material`).
         """
-        self.rays = self._coerce_rays(rays)
-        self._render_context = render_context
+        self.default_clear_data: ClearData = default_clear_data if default_clear_data is not None else ClearData()
+        """Clear values used by :meth:`update` when its ``clear_data`` argument is ``None``."""
+        self.default_render_config: RenderConfig = (
+            default_render_config if default_render_config is not None else RenderConfig()
+        )
+        """Render settings used by :meth:`update` when its ``render_config`` argument is ``None``."""
 
-        self.world_indices: wp.array[wp.int32] | None = None
-        """Per-view world selector, shape ``(view_count,)``. A non-negative entry is the model world index rendered
-        for that view; a negative :class:`~newton.WorldRenderFlag` sentinel disables it. Defaults to the identity
-        mapping (view ``i`` renders world ``i``)."""
+        # Cached identity mapping ``arange(n)`` used when :meth:`update` is not
+        # given ``world_indices``; grown on demand and sliced to the view count.
+        self._default_world_indices: wp.array[wp.int32] | None = None
 
-        self.clear_data: ClearData | None = ClearData()
-        """Values used to clear output images before rendering."""
-        self.render_config: RenderConfig | None = RenderConfig()
-        """Render settings used by :meth:`update`."""
+        self._render_context = None
+        if model is not None:
+            from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
 
-        if view_count is not None and int(view_count) <= 0:
-            raise ValueError(f"view_count must be positive, got {view_count}.")
-
-        if render_context is not None:
-            device = wp.get_device(render_context.model.device)
-            if self.rays.device != device:
-                self.rays = wp.clone(self.rays, device=device)
-            default_view_count = int(render_context.model.world_count)
-        else:
-            default_view_count = 0
-
-        self._view_count = int(view_count) if view_count is not None else default_view_count
-        if self._view_count > 0:
-            self.world_indices = wp.array(
-                np.arange(self._view_count, dtype=np.int32), dtype=wp.int32, device=self.rays.device
-            )
-
-    @property
-    def render_context(self) -> RenderContext | None:
-        """Render context used by :meth:`update` (read-only; set in the constructor)."""
-        return self._render_context
-
-    @property
-    def width(self) -> int:
-        """Image width [px]."""
-        return int(self.rays.shape[1])
-
-    @property
-    def height(self) -> int:
-        """Image height [px]."""
-        return int(self.rays.shape[0])
-
-    @property
-    def view_count(self) -> int:
-        """Number of render views produced by this camera sensor."""
-        return self._view_count
+            self._render_context = RenderContext(model, load_textures=load_textures)
 
     @property
     def device(self) -> wp.Device:
-        """Device storing this camera sensor's rays."""
-        return self.rays.device
+        """Device of the model this sensor renders."""
+        return self._get_render_context().model.device
 
-    @property
-    def utils(self):
-        """Renderer utility helpers for this camera sensor."""
-        self._ensure_ready()
+    def utils(self, view_count: int) -> Utils:
+        """Renderer utility helpers (``to_rgba``/``flatten``/depth conversion) for ``view_count`` views."""
+        return Utils(view_count=int(view_count), device=self.device)
 
-        from ..render import Utils  # noqa: PLC0415
-
-        return Utils(view_count=self.view_count, device=self.device)
-
-    def _ensure_ready(self) -> None:
-        if self._view_count <= 0:
-            raise RuntimeError(
-                "SensorCamera has no views; construct it with a render context or an explicit view_count."
-            )
-
-    def create_image_output(self, dtype: Any) -> wp.array:
+    def create_image_output(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array:
         """Create an output image array with shape ``(view_count, height, width)``."""
-        self._ensure_ready()
-        return wp.zeros((self.view_count, self.height, self.width), dtype=dtype, device=self.device)
+        return wp.zeros((int(view_count), int(height), int(width)), dtype=dtype, device=self.device)
 
-    def create_color_image_output(self) -> wp.array3d[wp.uint32]:
-        """Create a color output array for this camera sensor."""
-        return self.create_image_output(wp.uint32)
+    def create_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Create an RGBA color output array (packed ``uint32``), shape ``(view_count, height, width)``."""
+        return self.create_image_output(view_count, width, height, wp.uint32)
 
-    def create_depth_image_output(self) -> wp.array3d[wp.float32]:
-        """Create a depth output array for this camera sensor [m]."""
-        return self.create_image_output(wp.float32)
+    def create_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+        """Create a depth output array [m], shape ``(view_count, height, width)``."""
+        return self.create_image_output(view_count, width, height, wp.float32)
 
-    def create_forward_depth_image_output(self) -> wp.array3d[wp.float32]:
-        """Create a forward-depth output array for this camera sensor [m]."""
-        return self.create_depth_image_output()
+    def create_forward_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+        """Create a forward-depth output array [m], shape ``(view_count, height, width)``."""
+        return self.create_depth_image_output(view_count, width, height)
 
-    def create_shape_index_image_output(self) -> wp.array3d[wp.uint32]:
-        """Create a shape-index output array for this camera sensor."""
-        return self.create_image_output(wp.uint32)
+    def create_shape_index_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Create a shape-index output array, shape ``(view_count, height, width)``."""
+        return self.create_image_output(view_count, width, height, wp.uint32)
 
-    def create_normal_image_output(self) -> wp.array3d[wp.vec3f]:
-        """Create a normal output array for this camera sensor."""
-        return self.create_image_output(wp.vec3f)
+    def create_normal_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+        """Create a world-space surface-normal output array (``vec3f``), shape ``(view_count, height, width)``."""
+        return self.create_image_output(view_count, width, height, wp.vec3f)
 
-    def create_albedo_image_output(self) -> wp.array3d[wp.uint32]:
-        """Create an albedo output array for this camera sensor."""
-        return self.create_image_output(wp.uint32)
+    def create_albedo_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Create an RGBA albedo output array (packed ``uint32``), shape ``(view_count, height, width)``."""
+        return self.create_image_output(view_count, width, height, wp.uint32)
 
-    def create_hdr_color_image_output(self) -> wp.array3d[wp.vec3f]:
-        """Create a linear HDR color output array for this camera sensor."""
-        return self.create_image_output(wp.vec3f)
-
-    def _coerce_rays(self, rays: wp.array | np.ndarray) -> wp.array3d[wp.vec3f]:
-        if isinstance(rays, np.ndarray):
-            rays = wp.array(np.ascontiguousarray(rays, dtype=np.float32), dtype=wp.vec3f)
-
-        if not isinstance(rays, wp.array):
-            raise TypeError(f"rays must be a Warp or NumPy array, got {type(rays).__name__}")
-        if rays.dtype != wp.vec3f:
-            raise ValueError(f"SensorCamera rays must have dtype vec3f, got {rays.dtype}")
-
-        if rays.ndim != 3 or rays.shape[0] <= 0 or rays.shape[1] <= 0 or rays.shape[2] != 2:
-            raise ValueError(f"SensorCamera rays must have shape (height, width, 2), got {rays.shape}")
-
-        return rays
+    def create_hdr_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+        """Create a linear HDR color output array, shape ``(view_count, height, width)``."""
+        return self.create_image_output(view_count, width, height, wp.vec3f)
 
     @staticmethod
     def compute_camera_rays_pinhole(
@@ -227,7 +196,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one pinhole camera."""
-        from ..render import camera_utils  # noqa: PLC0415
+        from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
 
@@ -284,7 +253,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one USD pinhole camera."""
-        from ..render import camera_utils  # noqa: PLC0415
+        from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         camera_utils.compute_camera_rays_usd_pinhole(
@@ -317,7 +286,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one OpenCV fisheye camera."""
-        from ..render import camera_utils  # noqa: PLC0415
+        from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         image_width = float(width) if image_width is None else float(image_width)
@@ -368,7 +337,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one F-theta fisheye camera."""
-        from ..render import camera_utils  # noqa: PLC0415
+        from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
@@ -417,7 +386,7 @@ class SensorCamera:
         device: Devicelike = None,
     ) -> wp.array3d[wp.vec3f]:
         """Compute camera-space rays for one Kannala-Brandt fisheye camera."""
-        from ..render import camera_utils  # noqa: PLC0415
+        from .sensor_camera_render import camera_utils  # noqa: PLC0415
 
         width, height, out_rays, device = _validate_camera_ray_output(width, height, out_rays, device)
         image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
@@ -446,14 +415,52 @@ class SensorCamera:
         return out_rays
 
     def _get_render_context(self) -> RenderContext:
-        if self.render_context is None:
-            raise RuntimeError("SensorCamera.update() requires a RenderContext.")
-        return self.render_context
+        if self._render_context is None:
+            raise RuntimeError("SensorCamera has no model; construct it with SensorCamera(rays, model).")
+        return self._render_context
+
+    def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None) -> None:
+        """Create a default directional light for the rendered scene.
+
+        Args:
+            enable_shadows: Enable shadow casting for this light.
+            direction: Normalized light direction. If ``None``, defaults to
+                normalized ``(-1, 1, -1)``.
+        """
+        self._get_render_context().create_default_light(enable_shadows=enable_shadows, direction=direction)
+
+    def assign_checkerboard_material(
+        self,
+        *,
+        shape_indices: Sequence[int] | np.ndarray,
+        resolution: int = 64,
+        checker_size: int = 32,
+    ) -> None:
+        """Assign a gray checkerboard texture material to selected shapes.
+
+        Args:
+            shape_indices: Shape indices that should use the checkerboard texture.
+            resolution: Texture resolution [px] (square texture).
+            checker_size: Size of each checkerboard square [px].
+        """
+        self._get_render_context().assign_checkerboard_material(
+            shape_indices=shape_indices, resolution=resolution, checker_size=checker_size
+        )
+
+    @staticmethod
+    def _validate_render_array(name: str, array: Any, dtype: Any, device: wp.Device) -> None:
+        if not isinstance(array, wp.array):
+            raise TypeError(f"{name} must be a Warp array, got {type(array).__name__}.")
+        if array.dtype != dtype:
+            raise ValueError(f"{name} must have dtype {dtype}, got {array.dtype}.")
+        if array.device != device:
+            raise RuntimeError(f"{name} must be on the model device ({device}), got {array.device}.")
 
     def update(
         self,
         state: State,
         camera_transforms: wp.array[wp.transformf],
+        camera_rays: wp.array3d[wp.vec3f],
         *,
         color_image: wp.array3d[wp.uint32] | None = None,
         depth_image: wp.array3d[wp.float32] | None = None,
@@ -463,16 +470,22 @@ class SensorCamera:
         albedo_image: wp.array3d[wp.uint32] | None = None,
         hdr_color_image: wp.array3d[wp.vec3f] | None = None,
         world_indices: wp.array[wp.int32] | None = None,
+        clear_data: ClearData | None = None,
+        render_config: RenderConfig | None = None,
         kernel_block_dim: int = 64,
     ) -> None:
-        """Render this camera sensor from the given camera transforms.
+        """Render this camera sensor.
 
-        Output arrays must have shape ``(view_count, height, width)``.
+        The number of views is inferred from ``camera_transforms.shape[0]``; all
+        non-``None`` output arrays must have shape ``(view_count, height, width)``
+        matching the ``camera_rays`` image dimensions.
 
         Args:
             state: Simulation state with body and particle transforms.
             camera_transforms: World-space camera transform per view [m, rad],
                 shape ``(view_count,)`` of ``transformf``, on the model device.
+            camera_rays: Camera-space ray origins and directions, shape
+                ``(height, width, 2)`` of ``vec3f``, on the model device.
             color_image: Output RGBA color buffer (packed ``uint32``).
             depth_image: Output depth buffer [m].
             forward_depth_image: Output forward-depth buffer [m].
@@ -481,46 +494,59 @@ class SensorCamera:
             albedo_image: Output albedo buffer (packed ``uint32``).
             hdr_color_image: Output linear HDR color buffer.
             world_indices: Optional per-view world selector, shape
-                ``(view_count,)``. Defaults to :attr:`world_indices`. A
-                non-negative entry is the world index rendered for that view; a
-                negative :class:`~newton.WorldRenderFlag` sentinel disables it
-                (``DISABLE_CLEAR`` clears the outputs, ``DISABLE_PRESERVE``
-                leaves them unchanged).
+                ``(view_count,)``. Defaults to the identity mapping (view ``i``
+                renders world ``i``). A non-negative entry is the world index
+                rendered for that view; a negative
+                :class:`~newton.sensors.SensorCamera.WorldRenderFlag` sentinel
+                disables it (``DISABLE_CLEAR`` clears the outputs,
+                ``DISABLE_PRESERVE`` leaves them unchanged).
+            clear_data: Clear values for this call. Defaults to
+                :attr:`default_clear_data`.
+            render_config: Render settings for this call. Defaults to
+                :attr:`default_render_config`.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``.
         """
         render_context = self._get_render_context()
         model = render_context.model
-        if camera_transforms.dtype != wp.transformf:
-            raise ValueError(f"camera_transforms must have dtype transformf, got {camera_transforms.dtype}.")
-        if camera_transforms.shape != (self._view_count,):
-            raise ValueError(
-                f"camera_transforms must have shape ({self._view_count},), got {tuple(camera_transforms.shape)}."
-            )
-        if self.rays.device != model.device:
-            raise RuntimeError(
-                "SensorCamera rays are not on the model device; construct it with this model's render context."
-            )
-        if camera_transforms.device != model.device:
-            raise RuntimeError(
-                f"camera_transforms must be on the model device ({model.device}), got {camera_transforms.device}."
-            )
 
+        self._validate_render_array("camera_transforms", camera_transforms, wp.transformf, model.device)
+        if camera_transforms.ndim != 1 or camera_transforms.shape[0] <= 0:
+            raise ValueError(f"camera_transforms must have shape (view_count,), got {tuple(camera_transforms.shape)}.")
+
+        self._validate_render_array("camera_rays", camera_rays, wp.vec3f, model.device)
+        if camera_rays.ndim != 3 or camera_rays.shape[0] <= 0 or camera_rays.shape[1] <= 0 or camera_rays.shape[2] != 2:
+            raise ValueError(f"camera_rays must have shape (height, width, 2), got {tuple(camera_rays.shape)}.")
+
+        view_count = int(camera_transforms.shape[0])
         if world_indices is None:
-            world_indices = self.world_indices
+            # Default to the identity mapping (view ``i`` renders world ``i``).
+            # The cache is reused across calls and only grown when a larger view
+            # count is seen; render() reads just the first ``view_count`` entries,
+            # so a larger cache is sliced (a zero-copy view) to the exact shape.
+            cache = self._default_world_indices
+            if cache is None or cache.shape[0] < view_count:
+                cache = wp.array(np.arange(view_count, dtype=np.int32), dtype=wp.int32, device=model.device)
+                self._default_world_indices = cache
+            world_indices = cache[:view_count]
 
-        render_context.render(
-            state,
-            camera_transforms=camera_transforms,
-            camera_rays=self.rays,
-            world_indices=world_indices,
-            color_image=color_image,
-            hdr_color_image=hdr_color_image,
-            depth_image=depth_image,
-            forward_depth_image=forward_depth_image,
-            shape_index_image=shape_index_image,
-            normal_image=normal_image,
-            albedo_image=albedo_image,
-            clear_data=self.clear_data,
-            config=self.render_config,
-            kernel_block_dim=kernel_block_dim,
-        )
+        with wp.ScopedTimer("Newton::SensorCamera::update", active=PROFILE_ENABLED, use_nvtx=True, synchronize=True):
+            # Sync render-only state (e.g. deformable triangle meshes) from the
+            # current simulation state before tracing.
+            render_context.update(state)
+
+            render_context.render(
+                state,
+                camera_transforms=camera_transforms,
+                camera_rays=camera_rays,
+                world_indices=world_indices,
+                color_image=color_image,
+                hdr_color_image=hdr_color_image,
+                depth_image=depth_image,
+                forward_depth_image=forward_depth_image,
+                shape_index_image=shape_index_image,
+                normal_image=normal_image,
+                albedo_image=albedo_image,
+                clear_data=clear_data if clear_data is not None else self.default_clear_data,
+                config=render_config if render_config is not None else self.default_render_config,
+                kernel_block_dim=kernel_block_dim,
+            )

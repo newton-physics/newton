@@ -8,7 +8,7 @@ from typing import Any
 
 import warp as wp
 
-from ..core import MAXVAL
+from ...core import MAXVAL
 
 # Knuth multiplicative hash constant (2^32 / golden ratio).
 # Typed uint32 so kernel codegen doesn't overflow an int32 constant.
@@ -237,9 +237,23 @@ def _validate_rgba_out_buffer(
 
 
 class Utils:
-    """Utility functions for a SensorCamera."""
+    """Post-processing helpers for :class:`~newton.sensors.SensorCamera` render outputs.
+
+    Converts raw render buffers into display-ready RGBA (``to_rgba_*``), tiles
+    per-view images into a single grid buffer (``flatten_*_to_rgba``), and
+    projects ray-distance depth onto the camera forward axis
+    (``convert_ray_depth_to_forward_depth``). Obtain one via
+    :meth:`SensorCamera.utils`; it validates that image leading dimensions match
+    ``view_count`` and that arrays live on ``device``.
+    """
 
     def __init__(self, view_count: int, device: wp.Device):
+        """Create post-processing helpers for ``view_count`` views on ``device``.
+
+        Args:
+            view_count: Number of views the processed images carry (their leading dimension).
+            device: Device the render outputs and produced buffers live on.
+        """
         self.__view_count = int(view_count)
         self.__device = device
 
@@ -247,9 +261,7 @@ class Utils:
         view_count = self.__view_count
         device = self.__device
         if image.shape[0] != view_count:
-            raise ValueError(
-                f"{name}: image leading dimension {image.shape[0]} must match SensorCamera.view_count {view_count}"
-            )
+            raise ValueError(f"{name}: image leading dimension {image.shape[0]} must match the view count {view_count}")
         if image.device != device:
             raise ValueError(f"{name}: image is on {image.device} but SensorCamera is on {device}")
         return view_count, image.shape[1], image.shape[2]

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from ..utils.color import ColorSpace
+from ...utils.color import ColorSpace
 
 
 class LightType(enum.IntEnum):

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..geometry import Gaussian, GeoType, raycast
+from ...geometry import Gaussian, GeoType, raycast
 from . import gaussians
 from .types import MeshData, RenderConfig
 

@@ -14,10 +14,10 @@ _FROZEN_DIR = Path(newton.__file__).resolve().parent / "_src" / "sensors" / "war
 #
 # This directory is FROZEN: it exists only to support SensorTiledCamera through
 # its deprecation window and is intentionally NOT kept in sync with the active
-# renderer in ``newton/_src/render``. If this manifest goes out of date, someone
-# edited (or added/removed) a file they most likely should not have.
+# renderer in ``newton/_src/sensors/sensor_camera_render``. If this manifest goes
+# out of date, someone edited (or added/removed) a file they most likely should not have.
 _FROZEN_MANIFEST = {
-    "__init__.py": "bc125bbc97a010d76aadd5b8e77ac3320b2532827177b633d936b81a10a11bc7",
+    "__init__.py": "2db0e00de28786b0dd6e8b192fea6f9c12cafde351d92f736f3fbd468a534205",
     "camera_utils.py": "1b79ef43498b269aa03ab78f10a392fc82f0e2b263415bcaefc18546f4c779ab",
     "gaussians.py": "5647dac21aa74d329d83bcc0a062b4b75ad9ecf1590450fad123f754e72b8cf7",
     "lighting.py": "c4091ad05a472c210573092435b0162fc092be09afc28029e80fb28e06d3c73a",
@@ -37,9 +37,9 @@ class TestFrozenTiledRenderer(unittest.TestCase):
 
         The ``warp_raytrace`` package is frozen for the duration of the
         SensorTiledCamera deprecation window and must not be edited; new
-        rendering work belongs in ``newton/_src/render``. Any change here
-        (including formatting) fails this test until the pinned manifest is
-        deliberately updated.
+        rendering work belongs in ``newton/_src/sensors/sensor_camera_render``.
+        Any change here (including formatting) fails this test until the pinned
+        manifest is deliberately updated.
         """
 
         # Normalize line endings so a CRLF checkout does not false-trip the guard.
@@ -63,7 +63,7 @@ class TestFrozenTiledRenderer(unittest.TestCase):
             "\n"
             "The frozen SensorTiledCamera renderer (newton/_src/sensors/warp_raytrace) was modified.\n"
             "This code path is deprecated and must not be changed -- put new rendering work in\n"
-            "newton/_src/render instead. If a change here is genuinely required, update\n"
+            "newton/_src/sensors/sensor_camera_render instead. If a change here is genuinely required, update\n"
             "_FROZEN_MANIFEST in this test in the same commit so the edit is explicit and reviewed.\n"
             f"  added:   {added}\n"
             f"  removed: {removed}\n"

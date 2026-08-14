@@ -10,8 +10,8 @@
 # it is intentionally not kept in sync with the active renderer, and a guard
 # test (``newton/tests/test_frozen_tiled_renderer.py``) fails on any edit here.
 #
-# All new rendering work belongs in ``newton/_src/render`` (the renderer behind
-# ``newton.sensors.SensorCamera`` / ``newton.RenderContext``).
+# All new rendering work belongs in ``newton/_src/sensors/sensor_camera_render``
+# (the renderer behind ``newton.sensors.SensorCamera``).
 # =============================================================================
 
 from .render_context import RenderContext

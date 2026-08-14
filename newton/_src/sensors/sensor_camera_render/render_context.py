@@ -9,10 +9,10 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from ..core import Axis
-from ..geometry import GeoType, Mesh
-from ..sim import Model, State
-from ..utils import load_texture, normalize_texture
+from ...core import Axis
+from ...geometry import GeoType, Mesh
+from ...sim import Model, State
+from ...utils import load_texture, normalize_texture
 from .render import create_kernel
 from .types import ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
 
@@ -265,7 +265,7 @@ class RenderContext:
             world_indices: Per-view world selector, shape ``(view_count,)``,
                 dtype ``int32``. A non-negative entry is the model world index
                 rendered for that view; a negative entry disables the view using
-                a :class:`~newton.WorldRenderFlag` sentinel
+                a :class:`~newton.sensors.SensorCamera.WorldRenderFlag` sentinel
                 (``DISABLE_PRESERVE`` / ``DISABLE_CLEAR``). World indices must be
                 in ``[0, world_count)``.
             color_image: Output RGBA color buffer (packed ``uint32``).

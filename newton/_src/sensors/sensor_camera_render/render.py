@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..geometry import Gaussian, GeoType
-from ..utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
+from ...geometry import Gaussian, GeoType
+from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
 from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData, WorldRenderFlag
 

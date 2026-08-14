@@ -3,7 +3,7 @@
 
 import warp as wp
 
-from ..geometry import GeoType
+from ...geometry import GeoType
 from .types import MeshData, RenderConfig, TextureData, TextureProjectionMode
 
 
