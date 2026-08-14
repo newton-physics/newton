@@ -11302,14 +11302,14 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         )
         return builder.finalize()
 
-    def test_mjcf_unauthored_solreflimit_ke_updates_are_not_shadowed(self):
-        """Verify that implicit MJCF defaults preserve custom Newton gains until an edit."""
+    def test_mjcf_configured_default_gains_apply_during_solver_construction(self):
+        """Verify that configured builder gains override an implicit MuJoCo limit default."""
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 model = self._build_mjcf_implicit_default_model(limit_ke=4321.0, limit_kd=76.0)
 
                 np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], [0.0, 0.0], rtol=0.0, atol=0.0)
-                self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
+                self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
                 np.testing.assert_allclose(model.joint_limit_ke.numpy(), [4321.0], rtol=0.0, atol=0.0)
                 np.testing.assert_allclose(model.joint_limit_kd.numpy(), [76.0], rtol=0.0, atol=0.0)
 
@@ -11319,22 +11319,40 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                     disable_contacts=True,
                     use_mujoco_cpu=use_mujoco_cpu,
                 )
-                initial_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
-                np.testing.assert_allclose(initial_solref, [0.02, 1.0], rtol=1e-6, atol=1e-6)
+                dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+                dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
+                factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+                expected_solref = _expected_positive_limit_solref(4321.0, 76.0, factor)
+                actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+
+                np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+
+    def test_mjcf_gain_edit_before_solver_construction_promotes_force_space(self):
+        """Verify that a post-import gain edit is detected when constructing the solver."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model = self._build_mjcf_implicit_default_model()
+                self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
 
                 ke = np.array([5000.0], dtype=np.float32)
                 kd = np.array([50.0], dtype=np.float32)
                 model.joint_limit_ke.assign(ke)
                 model.joint_limit_kd.assign(kd)
-                solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
+                solver = SolverMuJoCo(
+                    model,
+                    iterations=1,
+                    disable_contacts=True,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                )
+
+                self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
                 dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
                 dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
                 factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
                 expected_solref = _expected_positive_limit_solref(ke[0], kd[0], factor)
                 actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
 
-                self.assertFalse(np.allclose(actual_solref, initial_solref))
                 np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
 
     def test_mjcf_implicit_default_mode_promotes_after_gain_edit(self):

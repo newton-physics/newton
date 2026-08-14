@@ -18,6 +18,7 @@ import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
 from newton._src.solvers.mujoco.constants import (
+    SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
@@ -1788,7 +1789,7 @@ f 4 5 8
             )
 
     def test_solreflimit_parsing(self):
-        """Test that joint ``solreflimit`` is preserved without changing Newton limit gains."""
+        """Verify that joint ``solreflimit`` is preserved without changing Newton limit gains."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="solreflimit_test">
     <worldbody>
@@ -1830,7 +1831,7 @@ f 4 5 8
         solreflimit_mode = model.mujoco.solreflimit_mode.numpy()
 
         # Native MuJoCo parameters retain their own provenance while Newton's
-        # generic force-space gains remain at the builder defaults.
+        # configured generic gains remain force-space inputs.
         np.testing.assert_allclose(joint_limit_ke, [4321.0, 4321.0, 4321.0], rtol=0.0, atol=0.0)
         np.testing.assert_allclose(joint_limit_kd, [76.0, 76.0, 76.0], rtol=0.0, atol=0.0)
         np.testing.assert_allclose(solreflimit[0], [0.03, 0.9], rtol=1.0e-6, atol=0.0)
@@ -1838,7 +1839,7 @@ f 4 5 8
         np.testing.assert_allclose(solreflimit[2], [0.0, 0.0], rtol=0.0, atol=0.0)
         np.testing.assert_array_equal(
             solreflimit_mode,
-            [SOLREF_MODE_RAW, SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT],
+            [SOLREF_MODE_RAW, SOLREF_MODE_RAW, SOLREF_MODE_FORCE_SPACE],
         )
 
     def test_single_mujoco_fixed_tendon_parsing(self):

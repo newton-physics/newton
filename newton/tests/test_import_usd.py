@@ -1882,9 +1882,8 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), 88.0, places=2)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_newton_limit_unset_falls_through_to_mjc(self):
-        """When newton:limitStiffness is NOT authored, MuJoCo per-DOF gains
-        from mjc:solreflimit must flow through as the fallback."""
+    def test_mjc_solreflimit_does_not_replace_newton_gains(self):
+        """Keep MuJoCo solref separate from generic Newton limit gains."""
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
@@ -1955,13 +1954,14 @@ def Xform "Articulation" (
         model = builder.finalize()
 
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint")])
-        # No Newton limitStiffness authored -> MuJoCo solreflimit-derived gains must flow.
-        # solreflimit = [0.04, 2] -> ke = 1/(d*d) = 1/0.0016 = 625, kd = 2/(d) = 50
-        # (exact values depend on the MuJoCo gain conversion; just verify NOT builder default)
+        # Native MuJoCo solref remains available to SolverMuJoCo without being
+        # converted into the generic gains used by other Newton solvers.
         limit_ke = float(model.joint_limit_ke.numpy()[dof])
         limit_kd = float(model.joint_limit_kd.numpy()[dof])
-        self.assertNotAlmostEqual(limit_ke, 999.0, places=0)
-        self.assertNotAlmostEqual(limit_kd, 88.0, places=0)
+        self.assertAlmostEqual(limit_ke, 999.0, places=2)
+        self.assertAlmostEqual(limit_kd, 88.0, places=2)
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[dof], [0.04, 2.0], rtol=1.0e-6, atol=0.0)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
@@ -3527,20 +3527,13 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_parsing(self):
-        """Joint mjc:solreflimit on MjcJointAPI must populate joint_limit_ke / joint_limit_kd.
-
-        Uses prismatic joints so the authored solreflimit values flow straight through to
-        joint_limit_ke / joint_limit_kd without the revolute degree->radian rescaling that
-        import_usd.py applies to angular limits.
-        """
+        """Verify that native MuJoCo limit response does not replace generic Newton gains."""
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
 
         # Joint1 authors mjc:solreflimit = [0.08, 1]. Joint2 applies MjcJointAPI but omits
-        # solreflimit, so it should use MuJoCo's schema default [0.02, 1]. Joint3 has no
-        # MjcJointAPI and should preserve the customized ModelBuilder defaults. Joint4
-        # authors [0, 0], which is invalid for gain conversion but must remain raw.
+        # solreflimit. Joint3 has no MjcJointAPI. Joint4 authors the raw [0, 0] sentinel.
         usd_content = """#usda 1.0
 (
     upAxis = "Z"
@@ -3677,17 +3670,17 @@ def Xform "Articulation" (
         raw_solreflimit = model.mujoco.solreflimit.numpy()
         solreflimit_mode = model.mujoco.solreflimit_mode.numpy()
 
-        # Joint1: solreflimit=[0.08, 1] -> ke=1/(0.08^2)=156.25, kd=2/0.08=25.0
+        # Native MuJoCo values stay separate from the configured generic gains.
         dof1 = joint_qd_start[joint1_idx]
-        self.assertAlmostEqual(float(limit_ke[dof1]), 156.25, places=4)
-        self.assertAlmostEqual(float(limit_kd[dof1]), 25.0, places=4)
+        self.assertAlmostEqual(float(limit_ke[dof1]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof1]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(solreflimit_mode[dof1]), SOLREF_MODE_RAW)
 
-        # Joint2: no solreflimit authored -> MuJoCo default [0.02, 1]
+        # Configured builder gains override the implicit MuJoCo default.
         dof2 = joint_qd_start[joint2_idx]
-        self.assertAlmostEqual(float(limit_ke[dof2]), 2500.0, places=4)
-        self.assertAlmostEqual(float(limit_kd[dof2]), 100.0, places=4)
-        self.assertEqual(int(solreflimit_mode[dof2]), SOLREF_MODE_MJCF_DEFAULT)
+        self.assertAlmostEqual(float(limit_ke[dof2]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof2]), builder.default_joint_cfg.limit_kd, places=4)
+        self.assertEqual(int(solreflimit_mode[dof2]), SOLREF_MODE_FORCE_SPACE)
 
         # Joint3: no MjcJointAPI -> customized ModelBuilder defaults
         dof3 = joint_qd_start[joint3_idx]
@@ -3697,12 +3690,14 @@ def Xform "Articulation" (
 
         # Joint4: authored raw [0, 0] remains raw even though it cannot be converted to gains.
         dof4 = joint_qd_start[joint4_idx]
+        self.assertAlmostEqual(float(limit_ke[dof4]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(limit_kd[dof4]), builder.default_joint_cfg.limit_kd, places=4)
         np.testing.assert_array_equal(raw_solreflimit[dof4], [0.0, 0.0])
         self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_solreflimit_mode_respects_resolver_priority(self):
-        """Higher-priority authored gains must not be treated as MuJoCo's implicit default."""
+    def test_solreflimit_keeps_generic_authored_gains(self):
+        """Keep native MuJoCo solref and generic Newton gains independently."""
         from pxr import Sdf, Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
@@ -3752,6 +3747,7 @@ def Xform "Articulation" (
         token physics:axis = "X"
         float physics:lowerLimit = -1
         float physics:upperLimit = 1
+        uniform double[] mjc:solreflimit = [0.08, 1]
     }
 }
 """
@@ -3763,18 +3759,19 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
         model = builder.finalize()
 
         joint_idx = model.joint_label.index("/Articulation/Joint")
         dof = model.joint_qd_start.numpy()[joint_idx]
         self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), 2500.0, places=4)
         self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), 100.0, places=4)
-        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_FORCE_SPACE)
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[dof], [0.08, 1.0], rtol=1.0e-6, atol=0.0)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_mode_declared_on_physics_scene(self):
-        """A PhysicsScene declaration must be available when joint modes are emitted."""
+        """Verify that a PhysicsScene declaration exposes imported joint modes."""
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
@@ -3847,21 +3844,13 @@ def Xform "Articulation" (
 
         joint_idx = model.joint_label.index("/Articulation/Joint")
         dof = model.joint_qd_start.numpy()[joint_idx]
-        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), 2500.0, places=4)
-        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), 100.0, places=4)
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), builder.default_joint_cfg.limit_ke, places=4)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), builder.default_joint_cfg.limit_kd, places=4)
         self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[dof]), SOLREF_MODE_MJCF_DEFAULT)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_parsing_revolute(self):
-        """Joint mjc:solreflimit on a revolute joint must produce per-radian limit_ke/_kd.
-
-        mjModel always stores stiffness per-radian for hinge joints regardless of
-        ``mjc:compiler:angle``. The USD importer divides revolute and D6-angular
-        ``limit_ke``/``limit_kd`` by ``DegreesToRadian`` on the assumption that
-        UsdPhysics-authored gains are per-degree. The MJC angular schema entries
-        compensate by pre-multiplying so the per-radian value survives. Regression
-        for #2536.
-        """
+        """Verify that revolute MuJoCo solref stays separate from generic Newton gains."""
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
@@ -3961,15 +3950,12 @@ def Xform "Articulation" (
         dof2 = joint_qd_start[joint2_idx]
         solreflimit_mode = model.mujoco.solreflimit_mode.numpy()
 
-        # solreflimit=[0.08, 1] -> per-radian ke = 1/0.08^2 = 156.25, kd = 2/0.08 = 25.0.
-        # Without the MJC angular compensation, the importer would over-scale by
-        # 1/(pi/180) ~= 57.3x giving ke ~= 8952 and kd ~= 1432.
-        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof1]), 156.25, places=3)
-        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof1]), 25.0, places=3)
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof1]), builder.default_joint_cfg.limit_ke, places=3)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof1]), builder.default_joint_cfg.limit_kd, places=3)
+        self.assertEqual(int(solreflimit_mode[dof1]), SOLREF_MODE_RAW)
 
-        # Missing solreflimit uses MuJoCo's [0.02, 1] default in per-radian units.
-        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof2]), 2500.0, places=3)
-        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof2]), 100.0, places=3)
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof2]), builder.default_joint_cfg.limit_ke, places=3)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof2]), builder.default_joint_cfg.limit_kd, places=3)
         self.assertEqual(int(solreflimit_mode[dof2]), SOLREF_MODE_MJCF_DEFAULT)
 
     def test_limit_margin_parsing(self):
