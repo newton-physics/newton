@@ -3229,6 +3229,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             target_idx = int(actuator_trnid[mujoco_act_idx, 0])
             target_idx_alt = int(actuator_trnid[mujoco_act_idx, 1])
+            refsite_name = None
 
             # Determine target type from trntype enum (JOINT, TENDON, SITE, BODY, ...).
             trntype = int(trntype_arr[mujoco_act_idx]) if trntype_arr is not None else 0
@@ -3311,6 +3312,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         )
                     continue
                 target_name = site_name
+                if target_idx_alt >= 0:
+                    refsite_name = site_mapping.get(target_idx_alt)
+                    if refsite_name is None:
+                        if wp.config.log_level <= wp.LOG_DEBUG:
+                            print(
+                                f"Warning: MuJoCo actuator {mujoco_act_idx} references site {target_idx_alt} "
+                                "as refsite, but it is not present in the MuJoCo export."
+                            )
+                        continue
             else:
                 # TODO: Support slidercrank and jointinparent transmission types
                 if wp.config.log_level <= wp.LOG_DEBUG:
@@ -3403,6 +3413,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 int(SolverMuJoCo.TrnType.SLIDERCRANK): mujoco.mjtTrn.mjTRN_SLIDERCRANK,
             }.get(trntype, mujoco.mjtTrn.mjTRN_JOINT)
             general_args["trntype"] = trntype_enum
+            if refsite_name is not None:
+                general_args["refsite"] = refsite_name
             act = spec.add_actuator(target=target_name, **general_args)
             if shortcut == "position":
                 act.set_to_position(**shortcut_args)
@@ -5964,6 +5976,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 site_trntype_mask = template_mask & (act_trntype_np == int(SolverMuJoCo.TrnType.SITE))
                 trnid_targets = act_trnid_np[site_trntype_mask, 0]
                 actuator_required_shapes.update(trnid_targets[trnid_targets >= 0].tolist())
+                refsite_targets = act_trnid_np[site_trntype_mask, 1]
+                actuator_required_shapes.update(refsite_targets[refsite_targets >= 0].tolist())
                 # Vectorized: USD-deferred actuators reference sites by label.
                 # Intersect template-world target labels with the site label
                 # dict instead of iterating over every actuator.

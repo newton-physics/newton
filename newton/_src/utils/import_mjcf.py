@@ -3101,6 +3101,7 @@ def parse_mjcf(
             body_name = merged_attrib.get("body")
             tendon_name = merged_attrib.get("tendon")
             site_name = merged_attrib.get("site")
+            refsite_name = merged_attrib.get("refsite")
 
             # Sanitize names to match how they were stored in the builder
             if joint_name:
@@ -3111,10 +3112,13 @@ def parse_mjcf(
                 tendon_name = sanitize_name(tendon_name)
             if site_name:
                 site_name = sanitize_name(site_name)
+            if refsite_name:
+                refsite_name = sanitize_name(refsite_name)
 
             # Determine transmission type and target
             trntype = 0  # Default: joint
             target_name_for_log = ""
+            target_idx_alt = 0
             qd_start = -1
             total_dofs = 0
 
@@ -3168,6 +3172,14 @@ def parse_mjcf(
                         print(f"Warning: {actuator_type} actuator references unknown site '{site_name}'")
                     continue
                 target_idx = site_idx
+                target_idx_alt = -1
+                if refsite_name:
+                    refsite_idx = site_name_to_idx.get(refsite_name)
+                    if refsite_idx is None:
+                        if verbose:
+                            print(f"Warning: {actuator_type} actuator references unknown refsite '{refsite_name}'")
+                        continue
+                    target_idx_alt = refsite_idx
                 target_name_for_log = site_name
                 trntype = 3  # TrnType.SITE
             else:
@@ -3309,7 +3321,7 @@ def parse_mjcf(
             actuator_values["mujoco:ctrl_type"] = ctrl_type_val
             actuator_values["mujoco:actuator_gainprm"] = gainprm
             actuator_values["mujoco:actuator_biasprm"] = biasprm
-            actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, 0)
+            actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, target_idx_alt)
             actuator_values["mujoco:actuator_trntype"] = trntype
             actuator_values["mujoco:actuator_world"] = builder.current_world
 
