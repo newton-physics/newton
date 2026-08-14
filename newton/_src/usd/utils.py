@@ -2947,10 +2947,14 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
 
 
 def _display_color_for_prim(prim: Usd.Prim) -> tuple[float, float, float] | None:
-    """Read ``primvars:displayColor`` off a prim, in Newton's display color space."""
+    """Read ``primvars:displayColor`` off a prim, in Newton's display color space.
+
+    Resolved with inheritance: a ``constant`` primvar applies to every descendant, so an
+    ancestor is a legitimate place to author the color for a whole subtree.
+    """
     if UsdGeom is None or not prim or not prim.IsValid():
         return None
-    display_color = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayColor")
+    display_color = UsdGeom.PrimvarsAPI(prim).FindPrimvarWithInheritance("displayColor")
     if not display_color:
         return None
     color = _coerce_color(display_color.Get())
