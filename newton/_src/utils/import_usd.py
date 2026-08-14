@@ -4374,6 +4374,7 @@ def parse_usd(
             linear_unit=linear_unit,
             ignore_paths=ignore_paths,
             verbose=verbose,
+            enable_self_collisions=enable_self_collisions,
             path_body_map=path_body_map,
             path_shape_map=path_shape_map,
             path_cable_map=path_cable_map,

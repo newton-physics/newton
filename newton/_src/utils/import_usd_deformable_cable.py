@@ -12,12 +12,15 @@ curves. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import itertools
 import math
 import warnings
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 import warp as wp
 
+from ..usd.schema_resolver import PrimType
 from .import_usd_deformable_utils import (
     _DEFAULT_CABLE_RADIUS,
     _apply_cable_masses,
@@ -39,6 +42,22 @@ from .import_usd_deformable_utils import (
     _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
 )
+
+if TYPE_CHECKING:
+    from ..sim.builder import ModelBuilder
+
+
+def _filter_cable_self_collisions(builder: ModelBuilder, bodies: list[int]) -> None:
+    """Filter every shape pair among a cable articulation's bodies to disable self-collision.
+
+    Like the rigid importer's self-collision filtering, this emits every body pair, including
+    the adjacent ones the CABLE joints already filter (``collision_filter_parent``); the
+    duplicates are deduplicated when the filter pairs are consumed.
+    """
+    for b1, b2 in itertools.combinations(bodies, 2):
+        for s1 in builder.body_shapes[b1]:
+            for s2 in builder.body_shapes[b2]:
+                builder.add_shape_collision_filter_pair(s1, s2)
 
 
 def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
@@ -418,6 +437,40 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             body_frame_origin="com",
         )
 
+        # get_value records only the winning resolver and runs only when the graph collides; collect
+        # every member from all resolvers here so schema_attrs stays complete for non-colliding graphs.
+        if ctx.collect_schema_attrs:
+            for key in comp_paths:
+                ctx.resolver.collect_prim_attrs(curve_recs[key].prim)
+
+        # Resolve self-collision only for a colliding graph; for the welded-graph policy see
+        # docs/concepts/usd_parsing.rst. get_value_with_resolver returns resolver=None for an
+        # unauthored curve (it stays neutral); the default= below does not feed the result, it
+        # only suppresses the unresolved-value diagnostic, so do not drop it as dead code.
+        if collision_enabled:
+            authored_self_collisions: list[bool] = []
+            for key in comp_paths:
+                value, resolver = ctx.resolver.get_value_with_resolver(
+                    curve_recs[key].prim,
+                    prim_type=PrimType.ARTICULATION,
+                    key="self_collision_enabled",
+                    default=ctx.enable_self_collisions,
+                    verbose=verbose,
+                )
+                if resolver is not None:
+                    authored_self_collisions.append(bool(value))
+            graph_self_collision = (
+                all(authored_self_collisions) if authored_self_collisions else ctx.enable_self_collisions
+            )
+            if len(set(authored_self_collisions)) > 1:
+                warnings.warn(
+                    f"cable graph '{cid}': welded cables mix self-collision-enabled and "
+                    f"self-collision-disabled curves; the whole graph disables self-collision.",
+                    stacklevel=2,
+                )
+            if not graph_self_collision:
+                _filter_cable_self_collisions(builder, body_ids)
+
         # Partition graph bodies back to their owning curve, and rebuild the per-prim anchor
         # maps the curve-to-xform attachment pass reads (point index / segment index -> body).
         per_prim_segments: dict[str, dict[int, tuple[int, float]]] = {}
@@ -627,6 +680,20 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
+        # Collect all resolvers here; get_value below records only the winning one.
+        if ctx.collect_schema_attrs:
+            ctx.resolver.collect_prim_attrs(prim)
+        # Each curve in this prim becomes its own articulation via add_rod below, so resolve the
+        # prim's self-collision flag once and apply the filter per curve (not across sibling curves).
+        self_collision_enabled = bool(
+            ctx.resolver.get_value(
+                prim,
+                prim_type=PrimType.ARTICULATION,
+                key="self_collision_enabled",
+                default=ctx.enable_self_collisions,
+                verbose=verbose,
+            )
+        )
 
         cable_bodies: list[int] = []
         cable_joints: list[int] = []
@@ -719,6 +786,8 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 wrap_in_articulation=True,
                 body_frame_origin="com",
             )
+            if collision_enabled and not self_collision_enabled:
+                _filter_cable_self_collisions(builder, bodies)
             cable_bodies.extend(bodies)
             cable_joints.extend(joints)
             cable_point_runs.append((start, n, bodies))
