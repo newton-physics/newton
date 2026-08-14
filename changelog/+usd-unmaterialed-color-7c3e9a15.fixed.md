@@ -1,1 +1,0 @@
-Honor `primvars:displayColor` on imported prims that bind no material, and give those that carry neither a material nor a display color the `UsdPreviewSurface` default instead of a shape-index color from `ModelBuilder`'s debug palette, so a stage renders in the colors it authored rather than colors it never did.
