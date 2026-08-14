@@ -212,6 +212,41 @@ def test_add_joint_ball_sets_passive_damping(test: TestJointDamping, device):
     np.testing.assert_allclose(model.joint_damping.numpy()[0:3], [2.5, 2.5, 2.5])
 
 
+def test_mjcf_ball_joint_damping_overrides_default(test: TestJointDamping, device):
+    # Regression test for gh #3703: an MJCF <joint type="ball" damping="..."> must
+    # forward its authored damping into joint_damping instead of silently falling
+    # back to default_joint_cfg.damping. Before the fix, importing with a non-zero
+    # default_joint_cfg.damping raised a ValueError at finalize() because the parsed
+    # damping (recorded in the deprecated dof_passive_damping alias) disagreed with
+    # the default that add_joint_ball wrote into joint_damping.
+    xml = """
+    <mujoco><worldbody><body name="base"><geom type="sphere" size="0.05" mass="1"/>
+      <body name="link" pos="0.1 0 0"><joint name="ball" type="ball" damping="7"/>
+      <geom type="sphere" size="0.04" mass="0.5"/></body></body></worldbody></mujoco>
+    """
+    for default_damping in (0.0, 99.0):
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = default_damping
+        builder.add_mjcf(xml)
+        model = builder.finalize(device=device)
+        np.testing.assert_allclose(model.joint_damping.numpy()[0:3], [7.0, 7.0, 7.0])
+
+
+def test_mjcf_ball_joint_damping_falls_back_to_default(test: TestJointDamping, device):
+    # Companion to test_mjcf_ball_joint_damping_overrides_default: when the MJCF ball
+    # joint does not author a damping, the builder default must still apply.
+    xml = """
+    <mujoco><worldbody><body name="base"><geom type="sphere" size="0.05" mass="1"/>
+      <body name="link" pos="0.1 0 0"><joint name="ball" type="ball"/>
+      <geom type="sphere" size="0.04" mass="0.5"/></body></body></worldbody></mujoco>
+    """
+    builder = newton.ModelBuilder()
+    builder.default_joint_cfg.damping = 3.5
+    builder.add_mjcf(xml)
+    model = builder.finalize(device=device)
+    np.testing.assert_allclose(model.joint_damping.numpy()[0:3], [3.5, 3.5, 3.5])
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": (lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0), False),
@@ -247,6 +282,18 @@ for device in devices:
         TestJointDamping,
         "test_add_joint_ball_sets_passive_damping",
         test_add_joint_ball_sets_passive_damping,
+        devices=[device],
+    )
+    add_function_test(
+        TestJointDamping,
+        "test_mjcf_ball_joint_damping_overrides_default",
+        test_mjcf_ball_joint_damping_overrides_default,
+        devices=[device],
+    )
+    add_function_test(
+        TestJointDamping,
+        "test_mjcf_ball_joint_damping_falls_back_to_default",
+        test_mjcf_ball_joint_damping_falls_back_to_default,
         devices=[device],
     )
 

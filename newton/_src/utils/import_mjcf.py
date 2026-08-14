@@ -1890,6 +1890,11 @@ def parse_mjcf(
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
+            # Passive damping for a native <joint type="ball"/>; captured in the ball
+            # branch and forwarded to the add_joint_ball call. Falls back to the
+            # builder's default damping when the joint does not author one, matching
+            # the generic joint path (see the add_joint call below).
+            ball_damping = default_joint_damping
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_attrib = resolve_element_attrib(joint, "joint", defaults)
@@ -1938,6 +1943,9 @@ def parse_mjcf(
                     # Lift frictionloss into the builder's per-DOF friction array so it
                     # reaches the MuJoCo spec (joint_friction[qd_start]) on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
+                    # Forward the authored passive damping so it lands in joint_damping
+                    # rather than silently being replaced by default_joint_cfg.damping.
+                    ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
                     mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
                     current_dof_index += 3
                     break
@@ -2181,6 +2189,7 @@ def parse_mjcf(
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
                     armature=joint_armature[-1] if joint_armature else None,
                     friction=ball_friction,
+                    damping=ball_damping,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
