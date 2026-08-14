@@ -1108,6 +1108,7 @@ class ModelBuilder:
         self,
         up_axis: AxisType = Axis.Z,
         gravity: float | Vec3 | None = None,
+        sdf_texture_paired_samples: bool = True,
     ):
         """
         Initializes a new ModelBuilder instance for constructing simulation models.
@@ -1118,9 +1119,18 @@ class ModelBuilder:
             gravity: Default gravity vector [m/s^2]. The deprecated scalar form
                 applies acceleration along ``up_axis``. If omitted, gravity
                 defaults to -9.81 along ``up_axis``.
+            sdf_texture_paired_samples: Store adjacent X samples together in
+                SDF textures for faster software interpolation. Disable to
+                halve SDF texture memory at the cost of slower hydroelastic
+                sampling. Every prebuilt mesh SDF added to this builder must
+                use the same layout, selected by the ``paired_samples``
+                argument to :meth:`Mesh.build_sdf`.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
+
+        self.sdf_texture_paired_samples = bool(sdf_texture_paired_samples)
+        """Whether generated SDF textures store adjacent X samples together."""
 
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
@@ -11050,6 +11060,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m._sdf_texture_paired_samples = self.sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
@@ -11513,6 +11524,7 @@ class ModelBuilder:
                         sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
+                        sdf_kwargs["paired_samples"] = self.sdf_texture_paired_samples
                         deferred_key = (
                             id(shape_src),
                             tuple(shape_scale),
@@ -11533,6 +11545,16 @@ class ModelBuilder:
                         if deferred_key in deferred_collision_edges_cache:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
+                        coarse_texture = getattr(mesh_sdf, "_coarse_texture", None)
+                        if coarse_texture is not None and (
+                            (coarse_texture.num_channels == 2) != self.sdf_texture_paired_samples
+                        ):
+                            mode = "paired" if self.sdf_texture_paired_samples else "scalar"
+                            raise ValueError(
+                                f"ModelBuilder requires {mode} SDF textures, but shape {i} uses a prebuilt SDF "
+                                "with a different layout. Rebuild it with mesh.build_sdf(paired_samples="
+                                f"{self.sdf_texture_paired_samples})."
+                            )
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                 elif has_shape_collision and (
                     is_hydroelastic
@@ -11586,6 +11608,7 @@ class ModelBuilder:
                                     target_voxel_size=sdf_target_voxel_size,
                                     quantization_mode=_tex_fmt_map[sdf_tex_fmt],
                                     scale_baked=True,
+                                    paired_samples=self.sdf_texture_paired_samples,
                                     device=device,
                                 )
                             except NotImplementedError:
@@ -11672,6 +11695,7 @@ class ModelBuilder:
                             quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
                             scale_baked=False,
                             device=device,
+                            paired_samples=self.sdf_texture_paired_samples,
                         )
                     except Exception as e:
                         warnings.warn(
