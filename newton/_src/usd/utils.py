@@ -2600,6 +2600,10 @@ def _coerce_color(value: Any) -> tuple[float, float, float] | None:
     """Coerce a value to an RGB color tuple, or None if not possible."""
     if value is None:
         return None
+    # A per-vertex or per-face primvar holds one entry per element and only the leading one
+    # is used, so take it before the numpy conversion rather than flattening the whole array.
+    if hasattr(value, "__len__") and len(value) > 0 and hasattr(value[0], "__len__"):
+        value = value[0]
     color_np = np.array(value, dtype=np.float32).reshape(-1)
     if color_np.size >= 3:
         return (float(color_np[0]), float(color_np[1]), float(color_np[2]))

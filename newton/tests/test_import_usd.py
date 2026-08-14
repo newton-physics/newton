@@ -7398,9 +7398,13 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage)
 
-        src = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh"]]
+        shape = result["path_shape_map"]["/Body/VisualMesh"]
+        src = builder.shape_source[shape]
         self.assertIsNotNone(src.texture)
         np.testing.assert_allclose(np.array(src.color), np.array([1.0, 1.0, 1.0]))
+        # The viewer reads shape_color, and ModelBuilder prefers it over src.color, so the
+        # white has to survive there too or the shader multiplies it into every texel.
+        np.testing.assert_allclose(np.array(builder.shape_color[shape]), np.array([1.0, 1.0, 1.0]))
 
     @staticmethod
     def _build_uvless_textured_visual_mesh_stage(*, material_subset: bool):
