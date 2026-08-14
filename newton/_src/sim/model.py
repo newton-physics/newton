@@ -956,6 +956,8 @@ class Model:
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""
 
         # Texture SDF storage
+        self._sdf_texture_paired_samples: bool = True
+        """Whether every texture SDF stores adjacent X samples together."""
         self._texture_sdf_data = None
         """Compact array of TextureSDFData structs, shape [num_sdfs]."""
         self._texture_sdf_coarse_textures: list = []
