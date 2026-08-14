@@ -2907,15 +2907,13 @@ class TestImportUsdPhysics(unittest.TestCase):
             "/World/Cylinder_dynamic/cylinder_reverse/mesh_0": {"mu": 0.2, "restitution": 0.3},
             "/World/Cube_static/cube2/mesh_0": {"mu": 0.75, "restitution": 0.3},
         }
-        # Reverse mapping: shape index -> USD path. Visual copies are not in the map.
-        shape_idx_to_usd_path = {v: k for k, v in usd_path_to_shape.items()}
-        for shape_idx in range(builder.shape_count):
-            usd_path = shape_idx_to_usd_path.get(shape_idx)
-            if usd_path in expected:
-                self.assertAlmostEqual(builder.shape_material_mu[shape_idx], expected[usd_path]["mu"], places=5)
-                self.assertAlmostEqual(
-                    builder.shape_material_restitution[shape_idx], expected[usd_path]["restitution"], places=5
-                )
+        self.assertTrue(set(expected).issubset(usd_path_to_shape))
+        for usd_path, expected_values in expected.items():
+            shape_idx = usd_path_to_shape[usd_path]
+            self.assertAlmostEqual(builder.shape_material_mu[shape_idx], expected_values["mu"], places=5)
+            self.assertAlmostEqual(
+                builder.shape_material_restitution[shape_idx], expected_values["restitution"], places=5
+            )
 
     def test_mesh_approximation(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

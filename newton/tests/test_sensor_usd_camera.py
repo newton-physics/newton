@@ -10,6 +10,13 @@ import warp as wp
 
 import newton
 from newton.sensors import SensorTiledCamera
+from newton.tests.unittest_utils import ignore_sensor_tiled_camera_deprecation
+
+
+def setUpModule():
+    # SensorTiledCamera is deprecated; these tests exercise it intentionally.
+    ignore_sensor_tiled_camera_deprecation()
+
 
 try:
     from pxr import Gf, Usd, UsdGeom

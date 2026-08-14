@@ -121,9 +121,47 @@ __all__ += [
 ]
 
 # ==================================================================================
+# render
+# ==================================================================================
+from ._src.render import (  # noqa: E402
+    ClearData,
+    GaussianRenderMode,
+    LightType,
+    RenderConfig,
+    RenderOrder,
+    TextureProjectionMode,
+    WorldRenderFlag,
+)
+from ._src.render.render_context import RenderContext  # noqa: E402
+
+__all__ += [
+    "ClearData",
+    "GaussianRenderMode",
+    "LightType",
+    "RenderConfig",
+    "RenderContext",
+    "RenderOrder",
+    "TextureProjectionMode",
+    "WorldRenderFlag",
+]
+
+# ==================================================================================
 # submodule APIs
 # ==================================================================================
-from . import actuators, controllers, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer  # noqa: E402
+from . import (  # noqa: E402
+    actuators,
+    controllers,
+    geometry,
+    ik,
+    math,
+    render,
+    selection,
+    sensors,
+    solvers,
+    usd,
+    utils,
+    viewer,
+)
 
 __all__ += [
     "actuators",
@@ -131,6 +169,7 @@ __all__ += [
     "geometry",
     "ik",
     "math",
+    "render",
     "selection",
     "sensors",
     "solvers",

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -43,6 +44,20 @@ strict_warnings = False
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []
+
+
+def ignore_sensor_tiled_camera_deprecation() -> None:
+    """Silence the whole-class ``SensorTiledCamera`` deprecation warning.
+
+    ``SensorTiledCamera`` is deprecated in favor of ``newton.sensors.SensorCamera``.
+    The tests that still exercise it call this from ``setUpModule`` so its
+    construction warning does not escalate to an error under ``--strict-warnings``.
+    """
+    warnings.filterwarnings(
+        "ignore",
+        message="SensorTiledCamera is deprecated",
+        category=DeprecationWarning,
+    )
 
 
 @contextlib.contextmanager

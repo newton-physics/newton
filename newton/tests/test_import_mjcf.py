@@ -3879,13 +3879,21 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         # Test 1: parse_visuals=False (don't load)
         builder_no_load = newton.ModelBuilder()
         builder_no_load.add_mjcf(
-            mjcf_filename, parse_visuals=False, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z"
+            mjcf_filename,
+            parse_visuals=False,
+            parse_sites=False,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
         )
 
         # Test 2: hide_visuals=True (load but hide)
         builder_hidden = newton.ModelBuilder()
         builder_hidden.add_mjcf(
-            mjcf_filename, hide_visuals=True, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z"
+            mjcf_filename,
+            hide_visuals=True,
+            parse_sites=False,
+            ignore_names=["floor", "ground"],
+            up_axis="Z",
         )
 
         # Note: nv_humanoid.xml doesn't have separate visual-only geometries
