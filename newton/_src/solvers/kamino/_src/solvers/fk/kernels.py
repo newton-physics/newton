@@ -516,6 +516,7 @@ def _eval_fk_actuated_dofs_multi_rhs(
     actuated_dofs_map: wp.array[wp.int32],
     fk_actuated_dofs: wp.array2d[wp.float32],
 ):
+    """Map ``(rhs, world/actuator)`` inputs to ``(rhs, FK actuator)`` velocities."""
     rhs_id, fk_dof_id = wp.tid()
     if rhs_id < fk_actuated_dofs.shape[0] and fk_dof_id < fk_actuated_dofs.shape[1]:
         model_dof_id = actuated_dofs_map[fk_dof_id]
@@ -2211,6 +2212,7 @@ def _eval_target_constraint_velocities_multi_rhs(
     world_mask: wp.array[wp.bool],
     target_cts_u: wp.array3d[wp.float32],
 ):
+    """Map ``(rhs, actuator)`` velocities to ``(world, constraint, rhs)`` targets."""
     rhs_id, wd_id, jt_id_loc = wp.tid()
     if wd_id >= world_mask.shape[0] or not world_mask[wd_id] or jt_id_loc >= num_joints[wd_id]:
         return
@@ -2357,6 +2359,7 @@ def _correct_universal_constraint_velocities_multi_rhs(
     world_mask: wp.array[wp.bool],
     target_cts_u: wp.array3d[wp.float32],
 ):
+    """Correct universal-joint targets stored as ``(world, constraint, rhs)``."""
     rhs_id, wd_id, jt_id_loc = wp.tid()
     if wd_id >= world_mask.shape[0] or not world_mask[wd_id] or jt_id_loc >= num_joints[wd_id]:
         return
@@ -2400,6 +2403,7 @@ def _eval_jacobian_T_constraints_multi_rhs(
     world_mask: wp.array[wp.bool],
     jacobian_T_constraints: wp.array3d[wp.float32],
 ):
+    """Multiply constraint columns ``(world, constraint, rhs)`` into ``(world, state, rhs)``."""
     wd_id, state_id, rhs_id = wp.tid()
     if not world_mask[wd_id] or state_id >= num_states[wd_id]:
         return
@@ -2467,6 +2471,7 @@ def _eval_body_velocities_multi_rhs(
     world_mask: wp.array[wp.bool],
     bodies_u: wp.array2d[wp.spatial_vectorf],
 ):
+    """Convert pose derivatives ``(world, state, rhs)`` to body twists ``(rhs, body)``."""
     rhs_id, wd_id, rb_id_loc = wp.tid()
     if not world_mask[wd_id] or rb_id_loc >= num_bodies[wd_id]:
         return

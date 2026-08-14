@@ -66,6 +66,22 @@ class TestSemiSparseBlockCholeskySolverBatched(unittest.TestCase):
 
         np.testing.assert_allclose(result_wp.numpy(), expected, rtol=2.0e-4, atol=2.0e-4)
 
+    def test_solve_multi_rhs_rejects_insufficient_rows(self):
+        """Reject right-hand sides that cannot hold every matrix row."""
+        solver = SemiSparseBlockCholeskySolverBatched(
+            num_batches=2,
+            max_num_equations=9,
+            block_size=4,
+            device=self.device,
+            enable_reordering=True,
+        )
+        rhs = wp.zeros((2, 8, 3), dtype=wp.float32, device=self.device)
+        result = wp.zeros_like(rhs)
+        mask = wp.ones(2, dtype=wp.bool, device=self.device)
+
+        with self.assertRaisesRegex(ValueError, "at least 9 rows"):
+            solver.solve_multi_rhs(rhs, result, mask)
+
 
 if __name__ == "__main__":
     setup_tests()

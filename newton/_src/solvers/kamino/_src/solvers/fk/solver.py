@@ -2118,8 +2118,8 @@ class ForwardKinematicsSolver:
             raise ValueError(f"bodies_u must have shape ({rhs_count}, {self.model.size.sum_of_num_bodies})")
 
         world_mask = self.all_worlds_mask if world_mask is None else world_mask
+        self._eval_actuator_coords(bodies_q, self.actuators_q_next)
         if target_rel_transforms is None:
-            self._eval_actuator_coords(bodies_q, self.actuators_q_next)
             self._eval_target_relative_transformations(self.actuators_q_next, self.target_rel_transforms)
             target_rel_transforms = self.target_rel_transforms
 

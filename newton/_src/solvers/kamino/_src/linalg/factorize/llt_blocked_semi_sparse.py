@@ -708,6 +708,8 @@ class SemiSparseBlockCholeskySolverBatched:
             raise ValueError("rhs and result must have identical shapes")
         if rhs.ndim != 3 or rhs.shape[0] != self.num_batches:
             raise ValueError("rhs must have shape (batch_count, n, rhs_count)")
+        if rhs.shape[1] < self.max_num_equations:
+            raise ValueError(f"rhs must have at least {self.max_num_equations} rows")
 
         rhs_count = rhs.shape[2]
         workspace = self._multi_rhs_workspaces.get(rhs_count)

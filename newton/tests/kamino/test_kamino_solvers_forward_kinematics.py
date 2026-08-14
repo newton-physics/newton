@@ -1022,6 +1022,55 @@ class MultiRhsVelocityForwardKinematics(unittest.TestCase):
 
         np.testing.assert_allclose(bodies_u.numpy(), np.asarray(expected), rtol=2.0e-4, atol=2.0e-4)
 
+    def test_multi_rhs_refreshes_gimbal_coords_with_explicit_transforms(self):
+        """Evaluate gimbal velocity axes from the current body pose."""
+        builder = ModelBuilderKamino(default_world=True)
+        body_id = builder.add_rigid_body(
+            name="gimbal_body",
+            m_i=1.0,
+            i_I_i=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            q_i_0=wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0)),
+        )
+        builder.add_joint(
+            act_type=JointActuationType.POSITION,
+            dof_type=JointDoFType.GIMBAL,
+            bid_B=-1,
+            bid_F=body_id,
+            B_r_Bj=wp.vec3f(0.0),
+            F_r_Fj=wp.vec3f(0.0),
+            X_Bj=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            k_p_j=1.0,
+        )
+        model = builder.finalize(device=self.default_device)
+        solver = ForwardKinematicsSolver(model=model)
+        actuator_q = wp.array([0.4, -0.3, 0.2], dtype=wp.float32, device=self.default_device)
+        bodies_q = wp.clone(model.bodies.q_i_0)
+        solver.solve_fk(actuator_q, bodies_q, use_graph=False)
+        target_transforms = solver.eval_position_control_transformations(actuator_q)
+
+        actuator_u = wp.array([0.3, -0.4, 0.5], dtype=wp.float32, device=self.default_device)
+        base_u = wp.zeros(1, dtype=wp.spatial_vectorf, device=self.default_device)
+        expected = wp.zeros(model.size.sum_of_num_bodies, dtype=wp.spatial_vectorf, device=self.default_device)
+        solver.solve_for_body_velocities(
+            actuator_u,
+            bodies_q,
+            expected,
+            base_u=base_u,
+            target_rel_transforms=target_transforms,
+        )
+
+        solver.actuators_q_next.assign([1.1, 0.7, -0.8])
+        actual = wp.zeros((1, model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf, device=self.default_device)
+        solver.solve_for_body_velocities_multi_rhs(
+            actuator_u.reshape((1, 3)),
+            bodies_q,
+            actual,
+            base_u=base_u.reshape((1, 1)),
+            target_rel_transforms=target_transforms,
+        )
+
+        np.testing.assert_allclose(actual.numpy()[0], expected.numpy(), rtol=2.0e-4, atol=2.0e-4)
+
 
 ###
 # Test execution
