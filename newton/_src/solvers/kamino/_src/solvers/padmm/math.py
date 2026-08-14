@@ -45,14 +45,13 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
-def project_to_coulomb_cone(x: wp.vec3f, mu: wp.float32, epsilon: wp.float32 = 0.0) -> wp.vec3f:
+def project_to_coulomb_cone(x: wp.vec3f, mu: wp.float32) -> wp.vec3f:
     """
     Projects a 3D vector `x` onto an isotropic Coulomb friction cone defined by the friction coefficient `mu`.
 
     Args:
         x: The input vector to be projected.
         mu: The friction coefficient defining the aperture of the cone.
-        epsilon: A numerical tolerance applied to the cone boundary. Defaults to 0.0.
 
     Returns:
         The vector projected onto the Coulomb cone.
@@ -60,8 +59,11 @@ def project_to_coulomb_cone(x: wp.vec3f, mu: wp.float32, epsilon: wp.float32 = 0
     xn = x[2]
     xt_norm = wp.sqrt(x[0] * x[0] + x[1] * x[1])
     y = wp.vec3f(0.0)
-    if mu * xt_norm > -xn + epsilon:
-        if xt_norm <= mu * xn + epsilon:
+    # The polar-cone test must precede the membership test: at mu = 0 the primal
+    # cone degenerates to the ray { xt = 0, xn >= 0 }, testing xt_norm <= mu * xn
+    # first would leave the infeasible point (0, 0, -xn) unchanged.
+    if mu * xt_norm > -xn:
+        if xt_norm <= mu * xn:
             y = x
         else:
             ys = (mu * xt_norm + xn) / (mu * mu + 1.0)
@@ -73,7 +75,7 @@ def project_to_coulomb_cone(x: wp.vec3f, mu: wp.float32, epsilon: wp.float32 = 0
 
 
 @wp.func
-def project_to_coulomb_dual_cone(x: wp.vec3f, mu: wp.float32, epsilon: wp.float32 = 0.0) -> wp.vec3f:
+def project_to_coulomb_dual_cone(x: wp.vec3f, mu: wp.float32) -> wp.vec3f:
     """
     Projects a 3D vector `x` onto the dual of an isotropic Coulomb
     friction cone defined by the friction coefficient `mu`.
@@ -81,7 +83,6 @@ def project_to_coulomb_dual_cone(x: wp.vec3f, mu: wp.float32, epsilon: wp.float3
     Args:
         x: The input vector to be projected.
         mu: The friction coefficient defining the aperture of the cone.
-        epsilon: A numerical tolerance applied to the cone boundary. Defaults to 0.0.
 
     Returns:
         The vector projected onto the dual Coulomb cone.
@@ -89,15 +90,17 @@ def project_to_coulomb_dual_cone(x: wp.vec3f, mu: wp.float32, epsilon: wp.float3
     xn = x[2]
     xt_norm = wp.sqrt(x[0] * x[0] + x[1] * x[1])
     y = wp.vec3f(0.0)
-    if xt_norm > -mu * xn + epsilon:
-        if mu * xt_norm <= xn + epsilon:
-            y = x
-        else:
-            ys = (xt_norm + mu * xn) / (mu * mu + 1.0)
-            yts = ys / xt_norm
-            y[0] = yts * x[0]
-            y[1] = yts * x[1]
-            y[2] = mu * ys
+    # The membership test must precede the polar-cone test: at mu = 0 the dual
+    # cone degenerates to the half-space xn >= 0, testing xt_norm > -mu * xn first
+    # would map the feasible point (0, 0, +xn) to zero.
+    if mu * xt_norm <= xn:
+        y = x
+    elif xt_norm > -mu * xn:
+        ys = (xt_norm + mu * xn) / (mu * mu + 1.0)
+        yts = ys / xt_norm
+        y[0] = yts * x[0]
+        y[1] = yts * x[1]
+        y[2] = mu * ys
     return y
 
 
@@ -586,6 +589,7 @@ def compute_ncp_complementarity_residual(
 
 @wp.func
 def compute_ncp_natural_map_residual(
+    njc: wp.int32,
     nl: wp.int32,
     nc: wp.int32,
     vio: wp.int32,
@@ -599,7 +603,13 @@ def compute_ncp_natural_map_residual(
     """
     Computes the natural-map residuals as: `r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf`
 
+    Notes:
+    - For joint constraints, the cone is all of `R^njc`, so the natural-map residual is `abs(v_aug)`.
+    - For limit constraints, the cone is defined as `K_l := { lambda | lambda >= 0 }`.
+    - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`.
+
     Args:
+        njc: The number of joint constraints.
         nl: The number of active limit constraints.
         nc: The number of active contact constraints.
         vio: The vector index offset (i.e. start index) for the constraints.
@@ -618,6 +628,14 @@ def compute_ncp_natural_map_residual(
     # Initialize the natural-map residual
     r_ncp_natmap = float(0.0)
     r_ncp_natmap_argmax = wp.int32(-1)
+
+    for jid in range(njc):
+        jcio_j = vio + jid
+        v_j = v_aug[jcio_j]
+        r_j = wp.abs(v_j)
+        r_ncp_natmap = wp.max(r_ncp_natmap, r_j)
+        if r_ncp_natmap == r_j:
+            r_ncp_natmap_argmax = jid
 
     for lid in range(nl):
         # Compute the limit constraint index offset
@@ -655,7 +673,7 @@ def compute_preconditioned_iterate_residual(
     ncts: wp.int32, vio: wp.int32, P: wp.array[wp.float32], x: wp.array[wp.float32], x_p: wp.array[wp.float32]
 ) -> wp.float32:
     """
-    Computes the iterate residual as: `r_dx := || P @ (x - x_p) ||_inf`
+    Computes the iterate residual as: `r_dx := || P @ (x - x_p) ||_2`
 
     Args:
         ncts: The number of active constraints in the world.
@@ -664,17 +682,18 @@ def compute_preconditioned_iterate_residual(
         x_p: The previous solution vector.
 
     Returns:
-        The maximum iterate residual across all active constraints, computed as the infinity norm.
+        The iterate residual across all active constraints, computed as the L2 norm.
     """
     # Initialize the iterate residual
-    r_dx = float(0.0)
+    r_dx_squared = float(0.0)
     for i in range(ncts):
         # Compute the index offset of the vector block of the world
         v_i = vio + i
         # Update the iterate and proximal-point residuals
-        r_dx = wp.max(r_dx, P[v_i] * wp.abs(x[v_i] - x_p[v_i]))
-    # Return the maximum iterate residual
-    return r_dx
+        delta = P[v_i] * (x[v_i] - x_p[v_i])
+        r_dx_squared += delta * delta
+    # Return the iterate residual
+    return wp.sqrt(r_dx_squared)
 
 
 @wp.func
@@ -682,7 +701,7 @@ def compute_inverse_preconditioned_iterate_residual(
     ncts: wp.int32, vio: wp.int32, P: wp.array[wp.float32], x: wp.array[wp.float32], x_p: wp.array[wp.float32]
 ) -> wp.float32:
     """
-    Computes the iterate residual as: `r_dx := || P^{-1} @ (x - x_p) ||_inf`
+    Computes the iterate residual as: `r_dx := || P^{-1} @ (x - x_p) ||_2`
 
     Args:
         ncts: The number of active constraints in the world.
@@ -691,14 +710,15 @@ def compute_inverse_preconditioned_iterate_residual(
         x_p: The previous solution vector.
 
     Returns:
-        The maximum iterate residual across all active constraints, computed as the infinity norm.
+        The iterate residual across all active constraints, computed as the L2 norm.
     """
     # Initialize the iterate residual
-    r_dx = float(0.0)
+    r_dx_squared = float(0.0)
     for i in range(ncts):
         # Compute the index offset of the vector block of the world
         v_i = vio + i
         # Update the iterate and proximal-point residuals
-        r_dx = wp.max(r_dx, (1.0 / P[v_i]) * wp.abs(x[v_i] - x_p[v_i]))
-    # Return the maximum iterate residual
-    return r_dx
+        delta = (1.0 / P[v_i]) * (x[v_i] - x_p[v_i])
+        r_dx_squared += delta * delta
+    # Return the iterate residual
+    return wp.sqrt(r_dx_squared)

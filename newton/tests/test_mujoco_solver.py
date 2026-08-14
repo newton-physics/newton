@@ -2428,22 +2428,25 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
 
         self.assertTrue(result.skipped)
 
-    def test_sparse_filters_map_without_pair_enumeration(self):
-        """Map sparse filters into a selected collision graph directly."""
+    def test_sparse_filters_query_only_selected_pairs(self):
+        """Query filters only for pairs in the selected collision graph."""
 
         class ShapeGroups:
             def numpy(self):
                 return np.ones(5, dtype=np.int32)
 
         class ModelStub:
-            shape_count = 5
             shape_collision_group = ShapeGroups()
 
             def shape_collision_filter_pairs_array(self):
-                return np.array([[0, 4], [1, 3]], dtype=np.int32)
+                raise AssertionError("selected graphs must not materialize every sparse filter")
 
-            def shape_collision_filter_mask(self, _pairs):
-                raise AssertionError("sparse filters must not require candidate-pair enumeration")
+            def shape_collision_filter_mask(self, pairs):
+                np.testing.assert_array_equal(
+                    pairs,
+                    np.array([[1, 3], [1, 4], [3, 4]], dtype=np.int32),
+                )
+                return np.array([True, False, False])
 
         result = SolverMuJoCo._compile_newton_collision_masks(
             ModelStub(),
@@ -5839,6 +5842,20 @@ class TestMuJoCoValidation(unittest.TestCase):
 
 
 class TestMuJoCoConversion(unittest.TestCase):
+    def test_setup_preserves_shape_scale(self):
+        """Preserve model shape scales while converting MuJoCo geometry sizes."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_cylinder(body, radius=0.1, half_height=0.5)
+        joint = builder.add_joint_free(body)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        expected_shape_scale = model.shape_scale.numpy().copy()
+
+        SolverMuJoCo(model, use_mujoco_cpu=True)
+
+        np.testing.assert_array_equal(model.shape_scale.numpy(), expected_shape_scale)
+
     def test_no_shapes_separate_worlds_false(self):
         """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=False."""
         builder = newton.ModelBuilder()

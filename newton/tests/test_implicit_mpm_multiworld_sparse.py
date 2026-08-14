@@ -453,12 +453,12 @@ def test_sparse_status_is_sticky_until_explicitly_cleared(test, device):
     test.assertEqual(int(solver._grid_status.numpy()[0]), wp.Volume.REBUILD_SUCCESS)
     test.assertTrue(int(solver._grid_accumulated_status.numpy()[0]) & wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
     with test.assertRaisesRegex(RuntimeError, "sparse grid rebuild capacity"):
-        solver.check_status()
+        solver.check_sparse_grid_rebuild_status()
 
     solver._clear_sparse_grid_rebuild_status()
     test.assertEqual(int(solver._grid_status.numpy()[0]), wp.Volume.REBUILD_SUCCESS)
     test.assertEqual(int(solver._grid_accumulated_status.numpy()[0]), wp.Volume.REBUILD_SUCCESS)
-    solver.check_status()
+    solver.check_sparse_grid_rebuild_status()
 
     with wp.ScopedCapture(device=device, force_module_load=False):
         with test.assertRaisesRegex(RuntimeError, "clear sparse grid rebuild status.*graph capture"):
@@ -722,10 +722,10 @@ def test_coupled_mpm_non_in_place_capture_replays_after_reset(test, device):
 
     for _ in range(2):
         wp.capture_launch(capture.graph)
-        mpm_solver.check_status()
+        mpm_solver.check_sparse_grid_rebuild_status()
     coupled.reset(state_1, world_mask=wp.array((True, False, False), dtype=wp.bool, device=device))
     wp.capture_launch(capture.graph)
-    mpm_solver.check_status()
+    mpm_solver.check_sparse_grid_rebuild_status()
 
     test.assertTrue(np.isfinite(state_0.particle_q.numpy()).all())
     test.assertTrue(np.isfinite(state_1.particle_q.numpy()).all())
@@ -824,7 +824,7 @@ def test_sparse_multiworld_capture_rebuilds_isolated_topology(test, device):
         solver.step(state_1, state_0, control=None, contacts=None, dt=dt)
 
     wp.capture_launch(capture.graph)
-    solver.check_status()
+    solver.check_sparse_grid_rebuild_status()
     rebuilt = _sparse_grid_snapshot(grid)
 
     test.assertEqual(int(solver._grid_status.numpy()[0]), wp.Volume.REBUILD_SUCCESS)
@@ -874,7 +874,7 @@ def test_sparse_multiworld_outer_capture_matches_eager(test, device):
         eager_solver.step(eager_state_0, eager_state_1, control=None, contacts=None, dt=dt)
         eager_solver.step(eager_state_1, eager_state_0, control=None, contacts=None, dt=dt)
         wp.capture_launch(capture.graph)
-        captured_solver.check_status()
+        captured_solver.check_sparse_grid_rebuild_status()
 
         test.assertEqual(int(captured_solver._grid_status.numpy()[0]), wp.Volume.REBUILD_SUCCESS)
         eager_arrays = _sparse_case_state_arrays(eager_state_0)

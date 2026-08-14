@@ -201,6 +201,111 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
 
 
 class TestModelMesh(unittest.TestCase):
+    def test_mesh_rejects_invalid_triangle_indices(self):
+        """Reject malformed and out-of-range mesh triangle indices."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+        for indices, message in (
+            ([0, 1], "multiple of 3"),
+            ([-1, 1, 2], "negative index -1"),
+            ([0, 1, 3], "exceeds vertex count 3"),
+        ):
+            with self.subTest(indices=indices):
+                with self.assertRaisesRegex(ValueError, message):
+                    newton.Mesh(vertices, indices)
+
+    def test_mesh_rejects_lossy_triangle_indices(self):
+        """Reject triangle indices that cannot be represented losslessly."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+        for indices in ([0, 1, 2.9], np.array([0, 1, 4294967298], dtype=np.int64)):
+            with self.subTest(indices=indices):
+                with self.assertRaisesRegex(ValueError, "integer indices"):
+                    newton.Mesh(vertices, indices, compute_inertia=False)
+
+    def test_mesh_accepts_empty_triangle_indices(self):
+        """Accept an empty mesh without evaluating index bounds."""
+        mesh = newton.Mesh(np.empty((0, 3), dtype=np.float32), [], compute_inertia=False)
+
+        self.assertEqual(mesh.vertices.shape, (0, 3))
+        self.assertEqual(mesh.indices.shape, (0,))
+
+    def test_mesh_setters_preserve_valid_triangle_indices(self):
+        """Preserve valid mesh connectivity when replacing vertices or indices."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        mesh = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False)
+
+        with self.assertRaisesRegex(ValueError, "negative index -1"):
+            mesh.indices = [0, 1, -1]
+        np.testing.assert_array_equal(mesh.indices, [0, 1, 2])
+
+        with self.assertRaisesRegex(ValueError, "exceeds vertex count 2"):
+            mesh.vertices = vertices[:2]
+        np.testing.assert_array_equal(mesh.vertices, vertices)
+
+    def test_mesh_finalize_rejects_in_place_invalid_indices(self):
+        """Reject in-place index corruption before native mesh creation."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        mesh = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False)
+        mesh.indices[2] = len(vertices)
+        mesh.invalidate_cache()
+
+        with self.assertRaisesRegex(ValueError, "exceeds vertex count 3"):
+            mesh.finalize(device="cpu")
+
+    def test_compute_convex_hull_replaces_geometry_atomically(self):
+        """Replace hull vertices and indices as one validated geometry update."""
+        vertices = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        mesh = newton.Mesh(vertices, [0, 1, 3], compute_inertia=False)
+        hull_vertices = vertices[:3].copy()
+        hull_indices = np.array([0, 1, 2], dtype=np.int32)
+
+        with mock.patch(
+            "newton._src.geometry.utils.remesh_convex_hull",
+            return_value=(hull_vertices, hull_indices),
+        ):
+            result = mesh.compute_convex_hull(replace=True)
+
+        self.assertIs(result, mesh)
+        np.testing.assert_array_equal(mesh.vertices, hull_vertices)
+        np.testing.assert_array_equal(mesh.indices, hull_indices)
+
     def test_empty_numeric_custom_attribute_uses_wp_full_default(self):
         attr = ModelBuilder.CustomAttribute(
             name="default_shape_attr",
@@ -409,6 +514,54 @@ class TestModelMesh(unittest.TestCase):
         assert_np_equal(np.array(builder1.tri_poses), np.array(builder2.tri_poses), tol=1.0e-6)
         assert_np_equal(np.array(builder1.tri_activations), np.array(builder2.tri_activations))
         assert_np_equal(np.array(builder1.tri_materials), np.array(builder2.tri_materials))
+
+    def test_add_triangles_filters_degenerate_metadata(self):
+        builder = ModelBuilder()
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="triangle_id",
+                frequency=newton.Model.AttributeFrequency.TRIANGLE,
+                dtype=wp.int32,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="triangle_group",
+                frequency=newton.Model.AttributeFrequency.TRIANGLE,
+                dtype=wp.int32,
+            )
+        )
+        for pos in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (2, 0, 0), (0, 2, 0)):
+            builder.add_particle(pos, (0, 0, 0), 1.0)
+
+        with self.assertRaisesRegex(ValueError, "Expected 3 values, got 2"):
+            builder.add_triangles(
+                [0, 0, 0],
+                [1, 1, 3],
+                [2, 1, 4],
+                custom_attributes={"triangle_id": [10, 20]},
+            )
+        self.assertEqual(builder.tri_indices, [])
+        self.assertEqual(builder.tri_areas, [])
+
+        areas = builder.add_triangles(
+            [0, 0, 0],
+            [1, 1, 3],
+            [2, 1, 4],
+            custom_attributes={"triangle_id": [10, 20, 30], "triangle_group": 7},
+        )
+
+        np.testing.assert_allclose(areas, [0.5, 0.0, 2.0])
+        self.assertEqual(builder.tri_indices, [[0, 1, 2], [0, 3, 4]])
+        np.testing.assert_allclose(builder.tri_areas, [0.5, 2.0])
+        self.assertEqual(len(builder.tri_poses), 2)
+        self.assertEqual(len(builder.tri_materials), 2)
+        self.assertEqual(builder.custom_attributes["triangle_id"].values, {0: 10, 1: 30})
+        self.assertEqual(builder.custom_attributes["triangle_group"].values, {0: 7, 1: 7})
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.tri_count, 2)
+        self.assertEqual(model.tri_areas.shape, (2,))
 
     def test_add_edges(self):
         rng = np.random.default_rng(123)
@@ -1746,6 +1899,99 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn("shape_body", error_msg)
         self.assertIn("test_shape", error_msg)
         self.assertIn("999", error_msg)
+
+    def test_validate_structure_rejects_invalid_particle_topology(self):
+        """Reject out-of-range particle references in every topology array."""
+
+        def add_particles(builder, count):
+            for i in range(count):
+                builder.add_particle(
+                    wp.vec3(float(i == 1), float(i == 2), float(i == 3)),
+                    wp.vec3(),
+                    mass=1.0,
+                )
+
+        cases = []
+
+        spring_builder = ModelBuilder()
+        add_particles(spring_builder, 2)
+        spring_builder.add_spring(0, 1, ke=1.0, kd=0.0, control=0.0)
+        spring_builder.spring_indices[1] = 2
+        cases.append(("spring_indices", spring_builder))
+
+        tri_builder = ModelBuilder()
+        add_particles(tri_builder, 3)
+        tri_builder.add_triangle(0, 1, 2)
+        tri_builder.tri_indices[0] = (0, 1, 3)
+        cases.append(("tri_indices", tri_builder))
+
+        edge_builder = ModelBuilder()
+        add_particles(edge_builder, 2)
+        edge_builder.add_edge(-1, -1, 0, 1, rest=0.0)
+        edge_builder.edge_indices[0] = (-1, -1, 0, 2)
+        cases.append(("edge_indices", edge_builder))
+
+        tet_builder = ModelBuilder()
+        add_particles(tet_builder, 4)
+        tet_builder.add_tetrahedron(0, 1, 2, 3)
+        tet_builder.tet_indices[0] = (0, 1, 2, 4)
+        cases.append(("tet_indices", tet_builder))
+
+        for name, builder in cases:
+            with self.subTest(topology=name):
+                with self.assertRaisesRegex(ValueError, rf"{name}.*particle count"):
+                    builder.finalize(device="cpu")
+
+    def test_validate_structure_rejects_lossy_particle_topology(self):
+        """Reject particle references that cannot be represented losslessly."""
+        for index in (2.9, 4294967298):
+            with self.subTest(index=index):
+                builder = ModelBuilder()
+                for i in range(3):
+                    builder.add_particle(wp.vec3(float(i == 1), float(i == 2), 0.0), wp.vec3(), mass=1.0)
+                builder.add_triangle(0, 1, 2)
+                builder.tri_indices[0] = (0, 1, index)
+
+                with self.assertRaisesRegex(ValueError, "tri_indices.*integer indices"):
+                    builder.finalize(device="cpu")
+
+    def test_validate_structure_accepts_edge_boundary_sentinels(self):
+        """Accept minus-one boundary sentinels for edge opposite vertices."""
+        builder = ModelBuilder()
+        builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_edge(-1, -1, 0, 1, rest=0.0)
+
+        model = builder.finalize(device="cpu")
+
+        np.testing.assert_array_equal(model.edge_indices.numpy(), [[-1, -1, 0, 1]])
+
+    def test_validate_structure_rejects_invalid_edge_sentinel(self):
+        """Reject edge opposite-vertex sentinels less than minus one."""
+        builder = ModelBuilder()
+        builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_edge(-1, -1, 0, 1, rest=0.0)
+        builder.edge_indices[0] = (-2, -1, 0, 1)
+
+        with self.assertRaisesRegex(ValueError, "edge_indices.*opposite vertex"):
+            builder.finalize(device="cpu")
+
+    def test_validate_structure_rejects_missing_topology_indices(self):
+        """Reject empty connectivity when its element data is nonempty."""
+        builder = ModelBuilder()
+        builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(), mass=1.0)
+        builder.add_spring(0, 1, ke=1.0, kd=0.0, control=0.0)
+        builder.spring_indices.clear()
+
+        def zero_array(shape, dtype):
+            return np.zeros(shape, dtype=dtype)
+
+        # Make the former uninitialized path look valid to ensure shape is checked before bounds.
+        with mock.patch("newton._src.sim.builder.np.empty", side_effect=zero_array):
+            with self.assertRaisesRegex(ValueError, "Invalid spring_indices shape"):
+                builder._validate_structure()
 
 
 class TestShapeConfigValidation(unittest.TestCase):
