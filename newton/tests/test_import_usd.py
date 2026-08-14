@@ -15092,7 +15092,7 @@ def Xform "Root" (
         if USD_AVAILABLE:
             from pxr import Sdf
 
-            layer = Sdf.Layer.CreateAnonymous()
+            layer = Sdf.Layer.CreateAnonymous("rewritten.usda")
             self.assertTrue(layer.ImportFromString(rewritten_layer))
 
     def test_rejected_reference_with_prim_path_is_neutralized(self):
@@ -15117,7 +15117,7 @@ def Xform "Root" (
         if USD_AVAILABLE:
             from pxr import Sdf
 
-            layer = Sdf.Layer.CreateAnonymous()
+            layer = Sdf.Layer.CreateAnonymous("rewritten.usda")
             self.assertTrue(layer.ImportFromString(rewritten_layer))
 
     def test_windows_reference_escapes_are_rejected(self):
