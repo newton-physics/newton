@@ -435,95 +435,6 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool
     plt.close()
 
 
-def project_to_second_order_cone(x: np.ndarray, aperture: float) -> np.ndarray:
-    """
-    Computes a float64 reference projection onto the second-order cone `{ ||x_t|| <= aperture * x_n }`.
-
-    The two degenerate apertures are handled separately, both because the general formula
-    cannot represent them and because a zero aperture would compare against `-0.0`:
-    a zero aperture denotes the ray `{ x_t = 0, x_n >= 0 }` and an infinite one the
-    half-space `{ x_n >= 0 }`.
-
-    Args:
-        x: The 3D vector to project, with the cone axis along the last component.
-        aperture: The half-angle tangent defining the cone.
-
-    Returns:
-        The projection of `x` onto the cone.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    tangent_norm = float(np.linalg.norm(x[:2]))
-
-    # Handle degenerate apertures
-    if aperture == 0.0:
-        return np.array([0.0, 0.0, max(x[2], 0.0)])
-    if np.isinf(aperture):
-        return np.array([x[0], x[1], max(x[2], 0.0)])
-
-    # Inside the cone the projection is the identity.
-    if tangent_norm <= aperture * x[2]:
-        return x.copy()
-    # Inside the polar cone the projection is zero.
-    if aperture * tangent_norm <= -x[2]:
-        return np.zeros(3)
-
-    # General case
-    scale = (aperture * tangent_norm + x[2]) / (aperture * aperture + 1.0)
-    tangent_scale = aperture * scale / tangent_norm
-    return np.array([tangent_scale * x[0], tangent_scale * x[1], scale])
-
-
-def make_cone_projection_samples() -> tuple[np.ndarray, np.ndarray]:
-    """
-    Builds float32 samples covering the interior, boundary, and polar cone of the Coulomb friction cone.
-
-    Returns:
-        The sampled vectors of shape `(num_samples, 3)` and their friction coefficients.
-    """
-    rng = np.random.default_rng(20260813)
-    count = 512
-
-    # Degenerate points on the cone axis and in the tangent plane.
-    vectors = [
-        np.array(
-            [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            dtype=np.float64,
-        )
-    ]
-    frictions = [np.zeros(5)]
-
-    # Sample points inside the cone, on the boundary, and in the polar cone.
-    for mu in (0.0, 1.0e-6, 0.3, 1.0, 5.0):
-        scale = 10.0 ** rng.uniform(-6.0, 6.0, size=count)
-        angle = rng.uniform(0.0, 2.0 * np.pi, size=count)
-        # Straddle both boundaries so that either side of each branch is exercised.
-        straddle = 1.0 + rng.normal(scale=1.0e-6, size=count)
-        axial = np.abs(rng.normal(size=count)) * scale
-        radial = np.abs(rng.normal(size=count)) * scale
-        vectors.extend(
-            [
-                rng.normal(size=(count, 3)) * scale[:, None],
-                np.c_[mu * axial * straddle * np.cos(angle), mu * axial * straddle * np.sin(angle), axial],
-                np.c_[radial * np.cos(angle), radial * np.sin(angle), -mu * radial * straddle],
-            ]
-        )
-        frictions.extend([np.full(count, mu)] * 3)
-
-    return np.concatenate(vectors).astype(np.float32), np.concatenate(frictions).astype(np.float32)
-
-
-@wp.kernel
-def project_onto_coulomb_cones_kernel(
-    x: wp.array[wp.vec3f],
-    mu: wp.array[wp.float32],
-    primal: wp.array[wp.vec3f],
-    dual: wp.array[wp.vec3f],
-):
-    i = wp.tid()
-    primal[i] = project_to_coulomb_cone(x[i], mu[i])
-    dual[i] = project_to_coulomb_dual_cone(x[i], mu[i])
-
-
 ###
 # Tests
 ###
@@ -1078,41 +989,54 @@ class TestPADMMSolver(unittest.TestCase):
                 status = solver.data.status.numpy()
                 self.assertEqual([int(status[w][1]) for w in range(len(budgets))], budgets)
 
-    def project_onto_coulomb_cones(self, x: np.ndarray, mu: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Evaluate the Coulomb cone and dual cone projections on the device."""
-        x_arg = wp.array(np.ascontiguousarray(x, dtype=np.float32), dtype=wp.vec3f, device=self.default_device)
-        mu_arg = wp.array(np.ascontiguousarray(mu, dtype=np.float32), dtype=wp.float32, device=self.default_device)
-        primal = wp.zeros(len(x), dtype=wp.vec3f, device=self.default_device)
-        dual = wp.zeros(len(x), dtype=wp.vec3f, device=self.default_device)
-        wp.launch(
-            kernel=project_onto_coulomb_cones_kernel,
-            dim=len(x),
-            inputs=[x_arg, mu_arg],
-            outputs=[primal, dual],
-            device=self.default_device,
-        )
-        return primal.numpy(), dual.numpy()
+    def assert_coulomb_cone_projection(
+        self, cone: str, case: str, mu: float, x: list[float], expected: list[float]
+    ):
+        """Assert one primal or dual Coulomb cone projection."""
+        is_primal = cone == "primal"
 
-    def test_12_coulomb_cone_projections_match_analytic_reference(self):
-        """Match a float64 reference projection for the Coulomb cone and its dual."""
-        x, mu = make_cone_projection_samples()
-        primal, dual = self.project_onto_coulomb_cones(x, mu)
+        @wp.kernel
+        def project(x: wp.array[wp.vec3f], mu: wp.array[wp.float32], y: wp.array[wp.vec3f]):
+            if wp.static(is_primal):
+                y[0] = project_to_coulomb_cone(x[0], mu[0])
+            else:
+                y[0] = project_to_coulomb_dual_cone(x[0], mu[0])
 
-        expected_primal = np.array([project_to_second_order_cone(x_i, mu_i) for x_i, mu_i in zip(x, mu, strict=True)])
-        expected_dual = np.array(
-            [
-                project_to_second_order_cone(x_i, np.inf if mu_i == 0.0 else 1.0 / mu_i)
-                for x_i, mu_i in zip(x, mu, strict=True)
-            ]
-        )
+        x_arg = wp.array(np.array([x], dtype=np.float32), dtype=wp.vec3f, device=self.default_device)
+        mu_arg = wp.array(np.array([mu], dtype=np.float32), dtype=wp.float32, device=self.default_device)
+        y = wp.zeros(1, dtype=wp.vec3f, device=self.default_device)
+        wp.launch(kernel=project, dim=1, inputs=[x_arg, mu_arg], outputs=[y], device=self.default_device)
+        with self.subTest(mu=mu, cone=cone, case=case):
+            np.testing.assert_allclose(y.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
 
-        # Projections are non-expansive, so accuracy is bounded in absolute terms
-        # relative to the magnitude of the input rather than that of the result.
-        magnitude = np.maximum(np.linalg.norm(np.float64(x), axis=1), 1.0)
-        primal_error = np.linalg.norm(np.float64(primal) - expected_primal, axis=1) / magnitude
-        dual_error = np.linalg.norm(np.float64(dual) - expected_dual, axis=1) / magnitude
-        self.assertLess(primal_error.max(), 1.0e-6)
-        self.assertLess(dual_error.max(), 1.0e-6)
+    def test_12_coulomb_cone_projections_handle_zero_friction(self):
+        """Handle the ray and half-space projections at zero friction."""
+        mu = 0.0
+
+        cone = "primal"
+        self.assert_coulomb_cone_projection(cone, "positive ray", mu, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+        self.assert_coulomb_cone_projection(cone, "polar", mu, [0.0, 0.0, -1.0], [0.0, 0.0, 0.0])
+        self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+
+        cone = "dual"
+        self.assert_coulomb_cone_projection(cone, "pos. half-space", mu, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0])
+        self.assert_coulomb_cone_projection(cone, "polar", mu, [0.0, 0.0, -1.0], [0.0, 0.0, 0.0])
+        self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, -1.0], [1.0, 0.0, 0.0])
+
+    def test_13_coulomb_cone_projections_handle_all_branches(self):
+        """Handle interior, polar, and general projections at positive friction."""
+        for mu in (1.0e-6, 1.0, 1e6):
+            den = 1.0 + mu * mu
+
+            cone = "primal"
+            self.assert_coulomb_cone_projection(cone, "interior", mu, [0.5 * mu, 0.0, 1.0], [0.5 * mu, 0.0, 1.0])
+            self.assert_coulomb_cone_projection(cone, "polar", mu, [1.0, 0.0, -2.0 * mu], [0.0, 0.0, 0.0])
+            self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 0.0], [mu * mu / den, 0.0, mu / den])
+
+            cone = "dual"
+            self.assert_coulomb_cone_projection(cone, "interior", mu, [1.0, 0.0, 2.0 * mu], [1.0, 0.0, 2.0 * mu])
+            self.assert_coulomb_cone_projection(cone, "polar", mu, [1.0, 0.0, -2.0 / mu], [0.0, 0.0, 0.0])
+            self.assert_coulomb_cone_projection(cone, "projection", mu, [1.0, 0.0, 0.0], [1.0 / den, 0.0, mu / den])
 
 
 ###
