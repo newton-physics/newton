@@ -99,9 +99,9 @@ class TestModelBuilderReplicate(unittest.TestCase):
         # Uneven group sizes exercise the balancing in the merge combine.
         builder.set_coloring([[0], [1, 2, 3]])
 
-        builder._record_cable_group("cable", (root, child + 1), (root_joint, child_joint + 1))
-        builder._record_cloth_group("cloth", (0, 3), (0, 1), (0, 1))
-        builder._record_soft_group("soft", (0, 4), (0, 1))
+        builder._record_curve_group("cable", (root, child + 1), (root_joint, child_joint + 1))
+        builder._record_surface_group("cloth", (0, 3), (0, 1), (0, 1))
+        builder._record_volume_group("soft", (0, 4), (0, 1))
         return builder
 
     @staticmethod
