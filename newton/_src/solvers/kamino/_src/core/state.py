@@ -66,10 +66,13 @@ def compute_body_acceleration(
     """Compute discrete step-average body accelerations.
 
     Args:
-        body_qd_in: Input body twists in the world frame at the center of mass.
-        body_qd_out: Output body twists in the world frame at the center of mass.
-        body_qdd: Output body accelerations in the world frame at the center of mass.
-        dt: Simulation step duration.
+        body_qd_in: Input body twists in the world frame at the center of mass
+            [m/s, rad/s].
+        body_qd_out: Output body twists in the world frame at the center of mass
+            [m/s, rad/s].
+        body_qdd: Output body accelerations in the world frame at the center of
+            mass [m/s², rad/s²].
+        dt: Simulation step duration [s].
     """
     wp.launch(
         _compute_body_acceleration,
@@ -88,7 +91,7 @@ def reset_body_acceleration(
 
     Args:
         body_wid: Body-to-world index mapping.
-        body_qdd: Body accelerations to clear.
+        body_qdd: Body accelerations to clear [m/s², rad/s²].
         world_mask: Optional per-world mask selecting which accelerations to clear.
     """
     wp.launch(

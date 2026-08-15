@@ -119,9 +119,10 @@ class SolverKamino(SolverBase, CouplingInterface):
     bilateral block solve.
 
     When requested, the solver populates :attr:`~newton.State.body_qdd` with the
-    discrete step-average center-of-mass acceleration in the world frame. The
-    value is computed from the input and output body twists over each step, so
-    impacts include their velocity impulse divided by the step duration.
+    discrete step-average center-of-mass acceleration in the world frame
+    [m/s², rad/s²]. The value is computed from the input and output body twists
+    over each step, so impacts include their velocity impulse divided by the
+    step duration.
 
     This solver is currently in Beta.
 
