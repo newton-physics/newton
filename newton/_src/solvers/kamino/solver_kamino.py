@@ -743,6 +743,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Validate that the model does not contain unsupported components
         self._validate_model_compatibility(model)
+        self._validate_initial_joint_friction(model)
 
         # Cache configurations; either from the user-provided config or from the model's custom attributes
         # NOTE: `Config.from_model` will default-initialize if no relevant custom attributes were
@@ -1318,6 +1319,20 @@ class SolverKamino(SolverBase, CouplingInterface):
             for feature in unsupported_features:
                 error_msg += "\n  - " + feature
             raise ValueError(error_msg)
+
+    @staticmethod
+    def _validate_initial_joint_friction(model: Model) -> None:
+        """Reject invalid joint friction before constructing aliased Kamino data."""
+        if model.joint_dof_count == 0:
+            return
+
+        friction = model.joint_friction.numpy()
+        invalid = ~np.isfinite(friction) | (friction < 0.0)
+        if np.any(invalid):
+            dof = int(np.flatnonzero(invalid)[0])
+            raise ValueError(
+                f"model.joint_friction values must be finite and non-negative; got {friction[dof]} at DoF {dof}."
+            )
 
     @staticmethod
     def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:

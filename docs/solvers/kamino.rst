@@ -92,3 +92,10 @@ This continuous regularization is suitable for deterministic sliding friction
 but does not model true static stiction at zero velocity. Keep viscous effects
 in :attr:`~newton.Model.joint_damping`; Kamino treats damping and Coulomb
 friction as separate properties.
+
+Joint friction must be finite and non-negative when constructing
+:class:`~newton.solvers.SolverKamino`. The solver aliases the Newton friction
+array so runtime edits remain graph-capturable without requiring solver-side
+host synchronization. If an aliased runtime value is negative or non-finite,
+Kamino ignores that DoF's friction for the step instead of allowing invalid
+effort into PADMM or DVI.

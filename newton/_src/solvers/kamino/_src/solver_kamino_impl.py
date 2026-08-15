@@ -83,7 +83,9 @@ def _prepare_joint_effort(
 ):
     dof = wp.tid()
     velocity = joint_velocity[dof]
-    joint_effort[dof] -= joint_friction[dof] * velocity / wp.max(wp.abs(velocity), velocity_threshold)
+    friction = joint_friction[dof]
+    if wp.isfinite(friction) and friction >= 0.0:
+        joint_effort[dof] -= friction * velocity / wp.max(wp.abs(velocity), velocity_threshold)
 
 
 ###

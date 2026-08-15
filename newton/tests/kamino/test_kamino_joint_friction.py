@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.kamino._src.core.joints import JointDescriptor, JointDoFType
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
@@ -99,6 +100,27 @@ class TestKaminoJointFriction(unittest.TestCase):
             np.zeros(model.size.sum_of_num_joint_dofs, dtype=np.float32),
         )
 
+    def test_descriptor_rejects_invalid_initial_friction(self):
+        """Reject negative and non-finite low-level joint friction."""
+        for friction in (-1.0, math.nan, math.inf, -math.inf):
+            with self.subTest(friction=friction):
+                with self.assertRaisesRegex(ValueError, "joint friction.*finite and non-negative"):
+                    JointDescriptor(
+                        name="invalid_friction",
+                        dof_type=JointDoFType.REVOLUTE,
+                        friction_j=friction,
+                    )
+
+    def test_solver_rejects_invalid_initial_friction(self):
+        """Reject negative and non-finite Newton friction during solver construction."""
+        for friction in (-1.0, math.nan, math.inf, -math.inf):
+            with self.subTest(friction=friction):
+                model = _build_revolute_model(self.device, friction=0.0)
+                model.joint_friction.assign([friction])
+
+                with self.assertRaisesRegex(ValueError, "model.joint_friction.*finite and non-negative"):
+                    SolverKamino(model)
+
     def test_effective_effort_is_signed_bounded_and_does_not_mutate_control(self):
         """Apply friction once across heterogeneous worlds while preserving raw control."""
         model = _build_heterogeneous_model(self.device)
@@ -140,6 +162,67 @@ class TestKaminoJointFriction(unittest.TestCase):
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in, state_out, control, contacts=None, dt=1.0e-3)
         self.assertAlmostEqual(float(solver._solver_kamino._data.joints.tau_j.numpy()[0]), -0.25, places=6)
+
+    def test_invalid_runtime_friction_is_ignored(self):
+        """Ignore invalid aliased runtime friction for both dynamics backends."""
+        for dynamics_solver in ("padmm", "dvi"):
+            for friction in (-1.0, math.nan, math.inf, -math.inf):
+                with self.subTest(dynamics_solver=dynamics_solver, friction=friction):
+                    model = _build_revolute_model(self.device, friction=0.5)
+                    state_in = _make_consistent_state(model)
+                    state_out = model.state()
+                    control = model.control()
+                    control.joint_f.assign([0.25])
+                    solver = SolverKamino(
+                        model,
+                        config=SolverKamino.Config(
+                            dynamics_solver=dynamics_solver,
+                            joint_friction_velocity_threshold=0.1,
+                        ),
+                    )
+
+                    model.joint_friction.assign([friction])
+                    solver.step(state_in, state_out, control, contacts=None, dt=1.0e-3)
+
+                    np.testing.assert_allclose(
+                        solver._solver_kamino._data.joints.tau_j.numpy(),
+                        [0.25],
+                        rtol=0.0,
+                        atol=1.0e-6,
+                    )
+                    self.assertTrue(np.isfinite(state_out.body_qd.numpy()).all())
+                    self.assertTrue(np.isfinite(state_out.joint_qd.numpy()).all())
+
+    def test_cuda_graph_replays_effort_copy_and_friction(self):
+        """Replay control effort copying and friction application in a CUDA graph."""
+        if not self.device.is_cuda:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+        if not wp.is_mempool_enabled(self.device):
+            self.skipTest("CUDA graph capture requires the memory pool")
+
+        model = _build_revolute_model(self.device, friction=0.5)
+        state_in = _make_consistent_state(model)
+        control = model.control()
+        control.joint_f.assign([0.25])
+        solver = SolverKamino(model, config=SolverKamino.Config(joint_friction_velocity_threshold=0.1))
+        state_in_kamino = solver._kamino.StateKamino.from_newton(solver._model_kamino.size, model, state_in)
+        solver._control_kamino.from_newton(control, solver._model_kamino)
+
+        solver._solver_kamino._read_step_inputs(state_in_kamino, solver._control_kamino)
+        with wp.ScopedCapture(self.device) as capture:
+            solver._solver_kamino._read_step_inputs(state_in_kamino, solver._control_kamino)
+
+        model.joint_friction.assign([0.125])
+        control.joint_f.assign([0.5])
+        wp.capture_launch(capture.graph)
+
+        np.testing.assert_allclose(
+            solver._solver_kamino._data.joints.tau_j.numpy(),
+            [0.375],
+            rtol=0.0,
+            atol=1.0e-6,
+        )
+        np.testing.assert_array_equal(control.joint_f.numpy(), [0.5])
 
     def test_backend_and_layout_paths_share_effective_effort(self):
         """Prepare identical friction effort for PADMM/DVI and dense/sparse Jacobians."""

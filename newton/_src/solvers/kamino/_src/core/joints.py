@@ -1257,7 +1257,8 @@ class JointDescriptor(Descriptor):
     """
     Coulomb friction effort magnitude along each joint DoF [N or N·m].
 
-    Defaults to `[0.0] * num_dofs` if not specified.
+    Values must be finite and non-negative. Defaults to
+    `[0.0] * num_dofs` if not specified.
     """
 
     k_p_j: ArrayLike | float | None = None
@@ -1696,7 +1697,7 @@ class JointDescriptor(Descriptor):
                 - tau_j_max <= 0 for any DoF
                 - a_j < 0 for any DoF
                 - b_j < 0 for any DoF
-                - friction_j < 0 for any DoF
+                - friction_j is non-finite or negative for any DoF
                 - k_p_j < 0 for any DoF
                 - k_d_j < 0 for any DoF
         """
@@ -1715,8 +1716,11 @@ class JointDescriptor(Descriptor):
                 raise ValueError(f"Invalid joint armature: a_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
             if self.b_j[i] < 0:
                 raise ValueError(f"Invalid joint damping: b_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
-            if self.friction_j[i] < 0:
-                raise ValueError(f"Invalid joint friction: friction_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
+            if not np.isfinite(self.friction_j[i]) or self.friction_j[i] < 0:
+                raise ValueError(
+                    f"Invalid joint friction: friction_j[{i}] must be finite and non-negative "
+                    f"(name={self.name}, uid={self.uid})."
+                )
             if self.k_p_j[i] < 0:
                 raise ValueError(f"Invalid joint proportional gain: k_p_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
             if self.k_d_j[i] < 0:
