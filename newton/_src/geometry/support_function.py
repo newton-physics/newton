@@ -101,6 +101,7 @@ class GenericShapeData:
     shape_type: int
     scale: wp.vec3
     auxiliary: wp.vec3
+    center: wp.vec3  # Precomputed local AABB center for convex seed initialization.
 
 
 @wp.func
@@ -409,6 +410,7 @@ def extract_shape_data(
     result.shape_type = shape_types[shape_idx]
     result.scale = scale
     result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+    result.center = wp.vec3(0.0, 0.0, 0.0)
 
     # For CONVEX_MESH, pack the mesh pointer into auxiliary
     if shape_types[shape_idx] == GeoType.CONVEX_MESH:

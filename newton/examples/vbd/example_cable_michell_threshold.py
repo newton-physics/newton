@@ -131,7 +131,7 @@ class Example:
 
         builder.color()
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
