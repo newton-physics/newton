@@ -23,6 +23,7 @@ from .core.conversions import (
 from .core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType
 from .core.model import ModelKamino
 from .core.state import StateKamino
+from .dynamics.body_inertia import eval_body_inertia_projection
 from .geometry.contacts import (
     ContactsKamino,
     convert_contacts_kamino_to_newton,
@@ -57,6 +58,7 @@ __all__ = [
     "convert_model_joint_actuation",
     "convert_model_joint_transforms",
     "convert_model_materials",
+    "eval_body_inertia_projection",
     "msg",
     "validate_model_structural_updates",
 ]

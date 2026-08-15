@@ -838,6 +838,86 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._control_kamino = self._kamino.ControlKamino()
         self._control_kamino.finalize(self._model_kamino)
 
+    def eval_body_inertia_projection(
+        self,
+        state: State,
+        body_velocity_basis: wp.array2d[wp.spatial_vectorf],
+        projection: wp.array3d[wp.float32],
+        world_mask: wp.array[wp.bool] | None = None,
+    ) -> None:
+        """Project body inertias through a user-defined body-twist basis.
+
+        For every world, this method computes ``T.T @ M_body @ T``, where
+        ``T`` contains COM-referenced body twists in world coordinates and
+        ``M_body`` is the block-diagonal rigid-body inertia. The result contains
+        body-inertia contributions only; joint armature is not included.
+
+        This operation does not require the Kamino forward-kinematics solver.
+        All arrays are caller-owned and the operation does not allocate device
+        memory, making it suitable for CUDA graph capture.
+
+        Args:
+            state: Newton state providing body orientations at the projection
+                point.
+            body_velocity_basis: Body spatial-velocity basis [m/s, rad/s],
+                shape ``(basis_count, body_count)``.
+            projection: Per-world symmetric body-inertia projection, shape
+                ``(world_count, basis_count, basis_count)``. Entry units depend
+                on the corresponding basis vectors.
+            world_mask: Optional per-world mask, shape ``(world_count,)``.
+                Matrices for unselected worlds are cleared to zero.
+
+        Raises:
+            TypeError: If an array has an incompatible dtype.
+            ValueError: If the state or an array has an incompatible shape or
+                device, or if the basis is empty.
+        """
+        if state.body_q is None:
+            raise ValueError("state must contain body poses")
+
+        arrays = (
+            ("state body poses", state.body_q, wp.transformf),
+            ("body_velocity_basis", body_velocity_basis, wp.spatial_vectorf),
+            ("projection", projection, wp.float32),
+        )
+        for name, array, dtype in arrays:
+            if not isinstance(array, wp.array) or array.dtype != dtype:
+                raise TypeError(f"{name} must have dtype {dtype}")
+            if array.device != self.model.device:
+                raise ValueError(f"{name} must use the solver device")
+
+        if state.body_q.shape != (self.model.body_count,):
+            raise ValueError(f"state body poses must have shape ({self.model.body_count},)")
+        if body_velocity_basis.ndim != 2 or body_velocity_basis.shape[1] != self.model.body_count:
+            raise ValueError(
+                "body_velocity_basis must have shape "
+                f"(basis_count, {self.model.body_count}), got {body_velocity_basis.shape}"
+            )
+        basis_count = body_velocity_basis.shape[0]
+        if basis_count == 0:
+            raise ValueError("body_velocity_basis must contain at least one basis vector")
+        expected_projection_shape = (self.model.world_count, basis_count, basis_count)
+        if projection.shape != expected_projection_shape:
+            raise ValueError(f"projection must have shape {expected_projection_shape}, got {projection.shape}")
+
+        if world_mask is not None:
+            if not isinstance(world_mask, wp.array) or world_mask.dtype != wp.bool:
+                raise TypeError("world_mask must have dtype bool")
+            if world_mask.device != self.model.device:
+                raise ValueError("world_mask must use the solver device")
+            if world_mask.shape != (self.model.world_count,):
+                raise ValueError(f"world_mask must have shape ({self.model.world_count},)")
+
+        self._kamino.eval_body_inertia_projection(
+            body_world_start=self._model_kamino.info.bodies_offset,
+            body_mass=self._model_kamino.bodies.m_i,
+            body_inertia=self._model_kamino.bodies.i_I_i,
+            body_q=state.body_q,
+            body_velocity_basis=body_velocity_basis,
+            projection=projection,
+            world_mask=world_mask,
+        )
+
     @override
     def reset(
         self,
