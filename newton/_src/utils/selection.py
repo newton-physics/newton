@@ -399,16 +399,17 @@ def find_matching_ids(
     labels: list[str],
     world_ids,
     world_count: int,
+    entity_name: str = "Articulation",
 ) -> tuple[list[list[int]], list[int]]:
     matching_ids = match_labels(labels, pattern)
 
     if isinstance(pattern, list) and pattern and isinstance(pattern[0], int):
-        # ArticulationView derives its layouts from model order. String patterns already produce this order.
+        # Views derive layouts from model order. String patterns already produce this order.
         for idx in range(1, len(matching_ids)):
             if matching_ids[idx] <= matching_ids[idx - 1]:
-                raise ValueError("Articulation indices must be unique and in ascending order")
+                raise ValueError(f"{entity_name} indices must be unique and in ascending order")
         if matching_ids[0] < 0 or matching_ids[-1] >= len(labels):
-            raise ValueError(f"Articulation indices must be in range [0, {len(labels)})")
+            raise ValueError(f"{entity_name} indices must be in range [0, {len(labels)})")
 
     grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
@@ -2085,24 +2086,13 @@ def _resolve_entity_groups(
     world_ids,
     entity_name: str,
 ) -> tuple[list[list[int]], int]:
-    matching_ids = match_labels(labels, pattern)
-    if isinstance(pattern, list) and pattern and isinstance(pattern[0], int):
-        for index in matching_ids:
-            if index < 0 or index >= len(labels):
-                raise ValueError(f"{entity_name.title()} indices must be in range [0, {len(labels)}), got {index}")
-        if any(matching_ids[i] <= matching_ids[i - 1] for i in range(1, len(matching_ids))):
-            raise ValueError(f"{entity_name.title()} indices must be unique and in ascending order")
-
-    grouped_ids = [[] for _ in range(model.world_count)]
-    global_ids = []
-    for index in matching_ids:
-        world = int(world_ids[index])
-        if world == -1:
-            global_ids.append(index)
-        elif 0 <= world < model.world_count:
-            grouped_ids[world].append(index)
-        else:
-            raise ValueError(f"World index out of range: {world}")
+    grouped_ids, global_ids = find_matching_ids(
+        pattern,
+        labels,
+        world_ids,
+        model.world_count,
+        entity_name=entity_name.title(),
+    )
 
     per_world_count = sum(len(ids) for ids in grouped_ids)
     if per_world_count and global_ids:
@@ -2117,6 +2107,45 @@ def _resolve_entity_groups(
     return grouped_ids, len(grouped_ids)
 
 
+def _canonical_group_labels(labels: list[str], grouped_ids: list[list[int]]) -> list[list[str]]:
+    label_parts = [
+        [[part for part in labels[selected_id].split("/") if part] for selected_id in selected_ids]
+        for selected_ids in grouped_ids
+    ]
+    raw_groups = [["/".join(parts) for parts in group] for group in label_parts]
+    if len(label_parts) < 2 or not label_parts[0]:
+        return raw_groups
+
+    differing_components = set()
+    for column, template_parts in enumerate(label_parts[0]):
+        column_parts = [group[column] for group in label_parts]
+        if any(len(parts) != len(template_parts) for parts in column_parts[1:]):
+            return raw_groups
+        for component in range(len(template_parts)):
+            if any(parts[component] != template_parts[component] for parts in column_parts[1:]):
+                differing_components.add(component)
+
+    # add_world() prepends one world namespace. Normalize only one uniformly
+    # varying non-leaf component so semantic path differences remain visible.
+    if len(differing_components) != 1:
+        return raw_groups
+    prefix_component = differing_components.pop()
+    if any(prefix_component >= len(parts) - 1 for group in label_parts for parts in group):
+        return raw_groups
+    if any(len({parts[prefix_component] for parts in group}) != 1 for group in label_parts):
+        return raw_groups
+
+    canonical_groups = []
+    for group in label_parts:
+        canonical_group = []
+        for parts in group:
+            canonical_parts = parts.copy()
+            canonical_parts[prefix_component] = "<world>"
+            canonical_group.append("/".join(canonical_parts))
+        canonical_groups.append(canonical_group)
+    return canonical_groups
+
+
 def _require_uniform_groups(grouped_ids: list[list[int]], entity_name: str) -> None:
     counts = [len(ids) for ids in grouped_ids]
     if not all_equal(counts):
@@ -2128,31 +2157,31 @@ def _require_uniform_groups(grouped_ids: list[list[int]], entity_name: str) -> N
 
 def _make_entity_frequency_layout(
     grouped_indices: list[list[int]],
-    entity_name: str,
+    view_name: str,
+    frequency_name: str,
     device,
 ) -> FrequencyLayout:
     if not grouped_indices[0]:
         return FrequencyLayout(0, 0, 0, 0, [], device)
 
-    starts = [indices[0] for indices in grouped_indices]
+    starts = [min(indices) for indices in grouped_indices]
     relative_indices = [
         [index - start for index in indices] for indices, start in zip(grouped_indices, starts, strict=True)
     ]
     if not all_equal(relative_indices):
         raise ValueError(
-            f"{entity_name.title()}View requires a uniform {entity_name} layout across worlds; "
+            f"{view_name} requires a uniform {frequency_name} layout across worlds; "
             "selected indices have different relative layouts"
         )
 
     outer_strides = [starts[i] - starts[i - 1] for i in range(1, len(starts))]
     if outer_strides and not all_equal(outer_strides):
         raise ValueError(
-            f"{entity_name.title()}View requires a uniform {entity_name} layout across worlds; "
-            f"world strides are {outer_strides}"
+            f"{view_name} requires a uniform {frequency_name} layout across worlds; world strides are {outer_strides}"
         )
 
     local_indices = relative_indices[0]
-    value_count = local_indices[-1] + 1
+    value_count = max(local_indices) + 1
     outer_stride = outer_strides[0] if outer_strides else value_count
     return FrequencyLayout(
         starts[0],
@@ -2165,15 +2194,23 @@ def _make_entity_frequency_layout(
 
 
 class _EntityView:
-    """Share ArticulationView's frequency-driven attribute access without its topology."""
+    """Provide frequency-driven attribute access for entity selections."""
 
     _get_attribute_array = ArticulationView._get_attribute_array
     _get_attribute_values = ArticulationView._get_attribute_values
     _set_attribute_values = ArticulationView._set_attribute_values
     _resolve_mask = ArticulationView._resolve_mask
 
-    def get_attribute(self, name: str, source: Model | State | Control):
-        """Get a selected attribute from a model, state, or control."""
+    def get_attribute(self, name: str, source: Model | State | Control) -> wp.array[Any]:
+        """Get selected attribute values.
+
+        Args:
+            name: Attribute name.
+            source: Model, state, or control containing the attribute.
+
+        Returns:
+            Attribute values in ``(world, instance, value, ...)`` layout.
+        """
         return self._get_attribute_values(name, source)
 
     def set_attribute(
@@ -2191,6 +2228,11 @@ class _EntityView:
             values: Values in ``(world, instance, value)`` layout.
             mask: Boolean mask with shape ``(world_count,)`` or
                 ``(world_count, count_per_world)``.
+
+        .. note::
+            After setting model attributes, call
+            :meth:`newton.solvers.SolverBase.notify_model_changed` when required
+            by the active solver.
         """
         self._set_attribute_values(name, target, values, mask=mask)
 
@@ -2199,9 +2241,10 @@ class JointView(_EntityView):
     """Select joints by full label and world, independently of articulation topology.
 
     The selected joints form one instance per world. Joint, coordinate, and DOF
-    attributes use the ``(world, instance, value)`` layout shared with
-    :class:`ArticulationView`. Every world must have the same selected joint types
-    and coordinate/DOF dimensions.
+    attributes use ``(world, instance, value)`` layout. Every world must have the
+    same ordered canonical joint labels, joint types, and coordinate/DOF
+    dimensions. A selection containing only global entities is represented as one
+    synthetic world. Matching both global and per-world entities is rejected.
 
     Args:
         model: Model containing the joints.
@@ -2247,6 +2290,13 @@ class JointView(_EntityView):
         if not any(joint_ids):
             raise KeyError(f"No joints matching pattern '{pattern}' after applying joint type filters")
         _require_uniform_groups(joint_ids, "joint")
+
+        canonical_joint_labels = _canonical_group_labels(model.joint_label, joint_ids)
+        if not all_equal(canonical_joint_labels):
+            raise ValueError(
+                "JointView requires a uniform joint layout across worlds; canonical joint labels differ: "
+                f"{canonical_joint_labels}"
+            )
 
         signatures = [
             [
@@ -2302,9 +2352,13 @@ class JointView(_EntityView):
         self.joint_coord_count = len(joint_coord_ids[0])
         self.joint_dof_count = len(joint_dof_ids[0])
         self.frequency_layouts = {
-            AttributeFrequency.JOINT: _make_entity_frequency_layout(joint_ids, "joint", self.device),
-            AttributeFrequency.JOINT_COORD: _make_entity_frequency_layout(joint_coord_ids, "joint", self.device),
-            AttributeFrequency.JOINT_DOF: _make_entity_frequency_layout(joint_dof_ids, "joint", self.device),
+            AttributeFrequency.JOINT: _make_entity_frequency_layout(joint_ids, "JointView", "joint", self.device),
+            AttributeFrequency.JOINT_COORD: _make_entity_frequency_layout(
+                joint_coord_ids, "JointView", "joint coordinate", self.device
+            ),
+            AttributeFrequency.JOINT_DOF: _make_entity_frequency_layout(
+                joint_dof_ids, "JointView", "joint DOF", self.device
+            ),
         }
         self.joints_contiguous = self.frequency_layouts[AttributeFrequency.JOINT].is_contiguous
         self.joint_coords_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_COORD].is_contiguous
@@ -2318,21 +2372,93 @@ class JointView(_EntityView):
             print(f"  Coordinate count: {self.joint_coord_count}")
             print(f"  DOF count: {self.joint_dof_count}")
 
-    get_dof_positions = ArticulationView.get_dof_positions
-    set_dof_positions = ArticulationView.set_dof_positions
-    get_dof_velocities = ArticulationView.get_dof_velocities
-    set_dof_velocities = ArticulationView.set_dof_velocities
-    get_dof_forces = ArticulationView.get_dof_forces
-    set_dof_forces = ArticulationView.set_dof_forces
+    def get_dof_positions(self, source: Model | State) -> wp.array[float]:
+        """Get selected joint coordinate positions [m or rad].
+
+        Args:
+            source: Model or state containing the positions.
+
+        Returns:
+            Positions in ``(world, instance, joint_coord)`` layout.
+        """
+        return self._get_attribute_values("joint_q", source)
+
+    def set_dof_positions(
+        self,
+        target: Model | State,
+        values: wp.array[float],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Set selected joint coordinate positions [m or rad].
+
+        Args:
+            target: Model or state containing the positions.
+            values: Positions in ``(world, instance, joint_coord)`` layout.
+            mask: Boolean mask selecting worlds or individual instances.
+        """
+        self._set_attribute_values("joint_q", target, values, mask=mask)
+
+    def get_dof_velocities(self, source: Model | State) -> wp.array[float]:
+        """Get selected joint coordinate velocities [m/s or rad/s].
+
+        Args:
+            source: Model or state containing the velocities.
+
+        Returns:
+            Velocities in ``(world, instance, joint_dof)`` layout.
+        """
+        return self._get_attribute_values("joint_qd", source)
+
+    def set_dof_velocities(
+        self,
+        target: Model | State,
+        values: wp.array[float],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Set selected joint coordinate velocities [m/s or rad/s].
+
+        Args:
+            target: Model or state containing the velocities.
+            values: Velocities in ``(world, instance, joint_dof)`` layout.
+            mask: Boolean mask selecting worlds or individual instances.
+        """
+        self._set_attribute_values("joint_qd", target, values, mask=mask)
+
+    def get_dof_forces(self, source: Control) -> wp.array[float]:
+        """Get selected joint forces [N or N·m].
+
+        Args:
+            source: Control containing the forces.
+
+        Returns:
+            Forces in ``(world, instance, joint_dof)`` layout.
+        """
+        return self._get_attribute_values("joint_f", source)
+
+    def set_dof_forces(
+        self,
+        target: Control,
+        values: wp.array[float],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Set selected joint forces [N or N·m].
+
+        Args:
+            target: Control containing the forces.
+            values: Forces in ``(world, instance, joint_dof)`` layout.
+            mask: Boolean mask selecting worlds or individual instances.
+        """
+        self._set_attribute_values("joint_f", target, values, mask=mask)
 
 
 class BodyView(_EntityView):
     """Select bodies and their shapes by full label and world.
 
-    The selected bodies form one instance per world. Body and shape attributes
-    use the ``(world, instance, value)`` layout shared with
-    :class:`ArticulationView`. Every world must have the same number of selected
-    bodies and the same number of shapes per selected body.
+    The selected bodies form one instance per world. Body and shape attributes use
+    ``(world, instance, value)`` layout. Every world must have the same ordered
+    canonical body labels and the same ordered canonical shapes per selected body.
+    A selection containing only global entities is represented as one synthetic
+    world. Matching both global and per-world entities is rejected.
 
     Args:
         model: Model containing the bodies.
@@ -2360,15 +2486,37 @@ class BodyView(_EntityView):
         )
         _require_uniform_groups(body_ids, "body")
 
+        canonical_body_labels = _canonical_group_labels(model.body_label, body_ids)
+        if not all_equal(canonical_body_labels):
+            raise ValueError(
+                "BodyView requires a uniform body layout across worlds; canonical body labels differ: "
+                f"{canonical_body_labels}"
+            )
+
         shape_counts = [[len(model.body_shapes[body_id]) for body_id in world_body_ids] for world_body_ids in body_ids]
         if not all_equal(shape_counts):
             raise ValueError(
-                "BodyView requires a uniform body layout across worlds; selected bodies have different shape counts"
+                "BodyView requires a uniform shape layout across worlds; selected bodies have different shape counts"
             )
         shape_ids = [
-            sorted(shape_id for body_id in world_body_ids for shape_id in model.body_shapes[body_id])
+            [shape_id for body_id in world_body_ids for shape_id in model.body_shapes[body_id]]
             for world_body_ids in body_ids
         ]
+        canonical_shape_labels = _canonical_group_labels(model.shape_label, shape_ids)
+        canonical_shape_ownership = []
+        for world, world_body_ids in enumerate(body_ids):
+            offset = 0
+            world_ownership = []
+            for body_id in world_body_ids:
+                shape_count = len(model.body_shapes[body_id])
+                world_ownership.append(tuple(canonical_shape_labels[world][offset : offset + shape_count]))
+                offset += shape_count
+            canonical_shape_ownership.append(world_ownership)
+        if not all_equal(canonical_shape_ownership):
+            raise ValueError(
+                "BodyView requires a uniform shape layout across worlds; canonical shape ownership differs: "
+                f"{canonical_shape_ownership}"
+            )
 
         template_body_ids = body_ids[0]
         template_shape_ids = shape_ids[0]
@@ -2387,8 +2535,8 @@ class BodyView(_EntityView):
         self.body_count = len(template_body_ids)
         self.shape_count = len(template_shape_ids)
         self.frequency_layouts = {
-            AttributeFrequency.BODY: _make_entity_frequency_layout(body_ids, "body", self.device),
-            AttributeFrequency.SHAPE: _make_entity_frequency_layout(shape_ids, "body", self.device),
+            AttributeFrequency.BODY: _make_entity_frequency_layout(body_ids, "BodyView", "body", self.device),
+            AttributeFrequency.SHAPE: _make_entity_frequency_layout(shape_ids, "BodyView", "shape", self.device),
         }
         self.bodies_contiguous = self.frequency_layouts[AttributeFrequency.BODY].is_contiguous
         self.shapes_contiguous = self.frequency_layouts[AttributeFrequency.SHAPE].is_contiguous
@@ -2401,8 +2549,15 @@ class BodyView(_EntityView):
             print(f"  Body count: {self.body_count}")
             print(f"  Shape count: {self.shape_count}")
 
-    def get_body_transforms(self, source: Model | State):
-        """Get selected body transforms [m, unitless quaternion]."""
+    def get_body_transforms(self, source: Model | State) -> wp.array[wp.transform]:
+        """Get selected body transforms [m, unitless quaternion].
+
+        Args:
+            source: Model or state containing the transforms.
+
+        Returns:
+            Transforms in ``(world, instance, body)`` layout.
+        """
         return self._get_attribute_values("body_q", source)
 
     def set_body_transforms(
@@ -2411,11 +2566,24 @@ class BodyView(_EntityView):
         values: wp.array[wp.transform],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
-        """Set selected body transforms [m, unitless quaternion]."""
+        """Set selected body transforms [m, unitless quaternion].
+
+        Args:
+            target: Model or state containing the transforms.
+            values: Transforms in ``(world, instance, body)`` layout.
+            mask: Boolean mask selecting worlds or individual instances.
+        """
         self._set_attribute_values("body_q", target, values, mask=mask)
 
-    def get_body_velocities(self, source: Model | State):
-        """Get selected body spatial velocities [m/s, rad/s]."""
+    def get_body_velocities(self, source: Model | State) -> wp.array[wp.spatial_vector]:
+        """Get selected body spatial velocities [m/s, rad/s].
+
+        Args:
+            source: Model or state containing the velocities.
+
+        Returns:
+            Velocities in ``(world, instance, body)`` layout.
+        """
         return self._get_attribute_values("body_qd", source)
 
     def set_body_velocities(
@@ -2424,5 +2592,11 @@ class BodyView(_EntityView):
         values: wp.array[wp.spatial_vector],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
-        """Set selected body spatial velocities [m/s, rad/s]."""
+        """Set selected body spatial velocities [m/s, rad/s].
+
+        Args:
+            target: Model or state containing the velocities.
+            values: Velocities in ``(world, instance, body)`` layout.
+            mask: Boolean mask selecting worlds or individual instances.
+        """
         self._set_attribute_values("body_qd", target, values, mask=mask)

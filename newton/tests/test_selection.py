@@ -140,6 +140,75 @@ class TestEntityViews(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "uniform body layout across worlds"):
             newton.selection.BodyView(model, "robot/*")
 
+    def test_joint_view_rejects_equal_count_label_order_mismatch(self):
+        """Reject equal-size joint columns with different canonical labels."""
+        expected = make_closed_loop_selection_world()
+        mismatched = make_closed_loop_selection_world()
+        mismatched.joint_label[0], mismatched.joint_label[3] = (
+            mismatched.joint_label[3],
+            mismatched.joint_label[0],
+        )
+
+        scene = newton.ModelBuilder()
+        scene.add_world(expected, label_prefix="env_0")
+        scene.add_world(mismatched, label_prefix="env_1")
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+
+        with self.assertRaisesRegex(ValueError, "canonical joint labels differ"):
+            newton.selection.JointView(model, "env_*/robot/*")
+
+    def test_joint_view_rejects_same_leaf_under_different_paths(self):
+        """Reject semantic path mismatches hidden by equal joint leaf names."""
+        expected = newton.ModelBuilder()
+        expected_body = expected.add_link(label="robot_a/body")
+        expected.add_joint_revolute(-1, expected_body, label="robot_a/shared")
+
+        mismatched = newton.ModelBuilder()
+        mismatched_body = mismatched.add_link(label="robot_b/body")
+        mismatched.add_joint_revolute(-1, mismatched_body, label="robot_b/shared")
+
+        scene = newton.ModelBuilder()
+        scene.add_world(expected, label_prefix="env_0")
+        scene.add_world(mismatched, label_prefix="env_1")
+        model = scene.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "canonical joint labels differ"):
+            newton.selection.JointView(model, "env_*/*/shared")
+
+    def test_body_view_rejects_equal_count_body_order_mismatch(self):
+        """Reject equal-size body columns with different canonical labels."""
+        expected = make_closed_loop_selection_world()
+        mismatched = make_closed_loop_selection_world()
+        mismatched.body_label[0], mismatched.body_label[2] = (
+            mismatched.body_label[2],
+            mismatched.body_label[0],
+        )
+
+        scene = newton.ModelBuilder()
+        scene.add_world(expected, label_prefix="env_0")
+        scene.add_world(mismatched, label_prefix="env_1")
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+
+        with self.assertRaisesRegex(ValueError, "canonical body labels differ"):
+            newton.selection.BodyView(model, "env_*/robot/*")
+
+    def test_body_view_rejects_equal_count_shape_ownership_mismatch(self):
+        """Reject equal-size shape columns assigned to different canonical bodies."""
+        expected = make_closed_loop_selection_world()
+        mismatched = make_closed_loop_selection_world()
+        mismatched.shape_label[0], mismatched.shape_label[2] = (
+            mismatched.shape_label[2],
+            mismatched.shape_label[0],
+        )
+
+        scene = newton.ModelBuilder()
+        scene.add_world(expected, label_prefix="env_0")
+        scene.add_world(mismatched, label_prefix="env_1")
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+
+        with self.assertRaisesRegex(ValueError, "canonical shape ownership differs"):
+            newton.selection.BodyView(model, "env_*/robot/*")
+
     def test_body_view_selects_shapes_and_mask_scatters_attributes(self):
         """Select body and shape values and scatter masked non-contiguous attributes."""
         scene = newton.ModelBuilder()
@@ -165,6 +234,41 @@ class TestEntityViews(unittest.TestCase):
         assert_np_equal(view.get_attribute("body_mass", model).numpy()[1], masses[1])
         assert_np_equal(model.body_mass.numpy()[:4], np.zeros(4))
         assert_np_equal(model.body_mass.numpy()[4:], [4.0, 0.0, 5.0, 6.0])
+
+    def test_body_view_preserves_per_body_shape_order(self):
+        """Preserve body traversal order when shape IDs are not monotonic."""
+        world = newton.ModelBuilder()
+        first = world.add_link(label="robot/first")
+        second = world.add_link(label="robot/second")
+        world.add_shape_box(
+            second,
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
+            cfg=newton.ModelBuilder.ShapeConfig(margin=0.2),
+            label="robot/second/shape",
+        )
+        world.add_shape_box(
+            first,
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
+            cfg=newton.ModelBuilder.ShapeConfig(margin=0.1),
+            label="robot/first/shape",
+        )
+
+        scene = newton.ModelBuilder()
+        scene.add_world(world, label_prefix="env_0")
+        scene.add_world(world, label_prefix="env_1")
+        model = scene.finalize(device="cpu")
+        view = newton.selection.BodyView(model, "env_*/robot/*")
+
+        self.assertEqual(view.body_shapes, [[0], [1]])
+        assert_np_equal(view.shape_ids.numpy(), [[[1, 0]], [[3, 2]]])
+        assert_np_equal(
+            view.get_attribute("shape_margin", model).numpy(),
+            np.array([[[0.1, 0.2]], [[0.1, 0.2]]], dtype=np.float32),
+        )
 
     def test_entity_views_match_articulation_view_on_trees(self):
         """Match ArticulationView attribute layouts for an equivalent tree selection."""
