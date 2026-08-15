@@ -268,7 +268,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |yes|
-     - |no|
+     - 🟨 :sup:`2`
    * - CABLE
      - |no|
      - |no|
@@ -278,6 +278,10 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
 
 | :sup:`1` DISTANCE joints are treated as FREE (no distance constraint enforcement).
+| :sup:`2` Kamino supports only D6 configurations that map to fixed, prismatic (one linear),
+  revolute (one angular), universal (two angular), cylindrical (one linear and one angular),
+  cartesian (three linear), gimbal (three angular, including handedness), or spherical representations;
+  arbitrary D6 combinations are unsupported.
 
 **Joint properties**
 
