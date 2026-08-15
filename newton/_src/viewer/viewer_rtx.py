@@ -1429,6 +1429,7 @@ void main() {
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ) -> None:
         """Log a mesh for rendering.
 
@@ -1447,6 +1448,10 @@ void main() {
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            colors: Optional per-vertex RGB colors. Takes precedence over
+                ``color``. Valid textures with ``uvs`` take precedence over
+                ``colors``; handling of invalid or unsupported texture inputs
+                is backend-specific.
         """
         name = self._qualify(name)
 
@@ -1463,6 +1468,7 @@ void main() {
                 color=color,
                 roughness=roughness,
                 metallic=metallic,
+                colors=colors,
             )
             self._mesh_prim_paths[name] = self._get_path(name)
         elif name in self._mesh_prim_paths:

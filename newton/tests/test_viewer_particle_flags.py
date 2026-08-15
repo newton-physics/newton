@@ -4,6 +4,7 @@
 import unittest
 
 import numpy as np
+import warp as wp
 
 import newton
 from newton.viewer import ViewerNull
@@ -16,6 +17,7 @@ class _LogPointsProbe(ViewerNull):
         super().__init__(num_frames=1)
         self.logged_points = None
         self.logged_radii = None
+        self.logged_colors = None
         self.logged_hidden = None
         self.log_points_called = False
 
@@ -23,6 +25,7 @@ class _LogPointsProbe(ViewerNull):
         self.log_points_called = True
         self.logged_points = points
         self.logged_radii = radii
+        self.logged_colors = colors
         self.logged_hidden = hidden
 
 
@@ -71,6 +74,33 @@ class TestViewerParticleFlags(unittest.TestCase):
         self.assertEqual(len(viewer.logged_points), 3)
         points_np = viewer.logged_points.numpy()
         np.testing.assert_allclose(points_np[:, 0], [0.0, 2.0, 4.0], atol=1e-6)
+
+    def test_mixed_active_inactive_filters_display_colors(self):
+        """Compact authored display colors with the active particle mask."""
+        active = int(newton.ParticleFlags.ACTIVE)
+        model = self._build_model([active, 0, active, 0, active])
+        model.particle_display_color = wp.array(
+            [
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+                (1.0, 1.0, 0.0),
+                (1.0, 0.0, 1.0),
+            ],
+            dtype=wp.vec3,
+        )
+        state = model.state()
+
+        viewer = _LogPointsProbe()
+        viewer.set_model(model)
+        viewer._log_particles(state)
+
+        self.assertIsNotNone(viewer.logged_colors)
+        np.testing.assert_allclose(
+            viewer.logged_colors.numpy(),
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0]],
+            atol=1e-6,
+        )
 
     def test_all_inactive_clears_particles(self):
         """Clear particles when none are active."""

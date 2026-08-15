@@ -6,6 +6,7 @@ import warnings
 from unittest.mock import Mock, patch
 
 import numpy as np
+import warp as wp
 
 # ruff: noqa: PLC0415
 
@@ -67,6 +68,36 @@ class TestViewerRerunHidden(unittest.TestCase):
 
         self.assertIn("hidden_mesh", viewer._meshes)
         self.mock_rr.log.assert_not_called()
+
+    def test_log_mesh_forwards_vertex_colors(self):
+        """Forward mesh colors to Rerun as uint8 vertex colors."""
+        viewer = self._create_viewer()
+        captured = {}
+
+        def mesh_3d(vertex_positions=None, triangle_indices=None, vertex_normals=None, vertex_colors=None):
+            captured["vertex_colors"] = vertex_colors
+            return Mock()
+
+        self.mock_rr.Mesh3D = mesh_3d
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3)
+        colors = wp.array([[1.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh(
+                "colored_mesh",
+                points,
+                indices,
+                normals=normals,
+                color=(1.0, 1.0, 0.0),
+                colors=colors,
+            )
+
+        np.testing.assert_array_equal(
+            captured["vertex_colors"],
+            np.array([[255, 0, 0], [0, 128, 0], [0, 0, 255]], dtype=np.uint8),
+        )
 
     def test_log_mesh_hidden_uses_layer_namespace(self):
         """Layer-qualified hidden mesh templates should not collide across layers."""

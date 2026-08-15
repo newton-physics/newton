@@ -97,6 +97,26 @@ class ViewerViser(ViewerBase):
 
         return mesh
 
+    @staticmethod
+    def _build_color_trimesh_mesh(points: np.ndarray, indices: np.ndarray, colors: np.ndarray):
+        """Create a trimesh object with per-vertex display colors."""
+        try:
+            import trimesh
+        except Exception:
+            return None
+
+        color_rgb = np.clip(np.rint(colors * 255.0), 0, 255).astype(np.uint8)
+        color_rgba = np.concatenate(
+            [color_rgb, np.full((len(color_rgb), 1), 255, dtype=np.uint8)],
+            axis=1,
+        )
+        return trimesh.Trimesh(
+            vertices=points,
+            faces=indices.astype(np.int64),
+            vertex_colors=color_rgba,
+            process=False,
+        )
+
     def __init__(
         self,
         *,
@@ -606,6 +626,7 @@ class ViewerViser(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh to viser for visualization.
@@ -625,17 +646,26 @@ class ViewerViser(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            colors: Optional per-vertex RGB colors. Takes precedence over
+                ``color``. Valid textures with ``uvs`` take precedence over
+                ``colors``; handling of invalid or unsupported texture inputs
+                is backend-specific.
         """
         name = self._qualify(name)
 
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
+        assert colors is None or isinstance(colors, wp.array)
 
         # Convert to numpy arrays
         points_np = self._to_numpy(points).astype(np.float32)
         indices_np = self._to_numpy(indices).astype(np.uint32)
         uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        colors_np = self._to_numpy(colors).astype(np.float32) if colors is not None else None
         texture_image = self._prepare_texture(texture)
+
+        if colors_np is not None and len(colors_np) != len(points_np):
+            raise ValueError("Number of colors must match number of points")
 
         if texture_image is not None and uvs_np is None:
             warnings.warn(f"Mesh {name} has a texture but no UVs; texture will be ignored.", stacklevel=2)
@@ -659,6 +689,13 @@ class ViewerViser(ViewerBase):
                     "Viser textured meshes require trimesh; falling back to untextured rendering.",
                     stacklevel=2,
                 )
+        if trimesh_mesh is None and colors_np is not None:
+            trimesh_mesh = self._build_color_trimesh_mesh(points_np, indices_np, colors_np)
+            if trimesh_mesh is None:
+                warnings.warn(
+                    "Viser colored meshes require trimesh; falling back to the uniform mesh color.",
+                    stacklevel=2,
+                )
 
         # Store mesh data for instancing
         self._meshes[name] = {
@@ -666,6 +703,7 @@ class ViewerViser(ViewerBase):
             "indices": indices_np,
             "uvs": uvs_np,
             "texture": texture_image,
+            "vertex_colors": colors_np,
             "trimesh": trimesh_mesh,
         }
 
@@ -837,8 +875,6 @@ class ViewerViser(ViewerBase):
         mesh_data = self._meshes[mesh]
         base_points = mesh_data["points"]
         base_indices = mesh_data["indices"]
-        base_uvs = mesh_data.get("uvs")
-        texture_image = self._prepare_texture(mesh_data.get("texture"))
         trimesh_mesh = mesh_data.get("trimesh")
 
         if hidden:
@@ -882,7 +918,7 @@ class ViewerViser(ViewerBase):
             batched_colors = None  # Will use cached colors or default gray
 
         # Check if we already have a batched mesh handle for this name
-        use_trimesh = trimesh_mesh is not None and texture_image is not None and base_uvs is not None
+        use_trimesh = trimesh_mesh is not None
         if name in self._instances and name in self._scene_handles:
             # Update existing batched mesh in-place (much faster)
             handle = self._scene_handles[name]

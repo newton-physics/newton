@@ -81,6 +81,31 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.vertex)
         np.testing.assert_allclose(display_color, colors.numpy(), atol=1e-6)
 
+    def test_log_mesh_authors_vertex_display_colors(self):
+        """Author mesh display colors with vertex interpolation."""
+        viewer = self._make_viewer()
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        colors = wp.array(
+            [[1.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]],
+            dtype=wp.vec3,
+        )
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/colored_mesh", points, indices, color=(1.0, 1.0, 0.0), colors=colors)
+
+        mesh = UsdGeom.Mesh.Get(viewer.stage, "/root/colored_mesh")
+        display_color = UsdGeom.PrimvarsAPI(mesh).GetPrimvar("displayColor")
+        self.assertEqual(display_color.GetInterpolation(), UsdGeom.Tokens.vertex)
+        np.testing.assert_allclose(
+            np.asarray(display_color.Get(viewer._frame_index)),
+            colors.numpy(),
+            atol=1e-6,
+        )
+
     def test_reuses_existing_layer_for_same_output_path(self):
         temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
         temp_file.close()

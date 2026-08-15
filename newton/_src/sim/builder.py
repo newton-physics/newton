@@ -363,7 +363,7 @@ class ModelBuilder:
         return (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
 
     @staticmethod
-    def _coerce_shape_color(color: Vec3 | None) -> tuple[float, float, float] | None:
+    def _coerce_display_color(color: Vec3 | None) -> tuple[float, float, float] | None:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
@@ -1229,6 +1229,8 @@ class ModelBuilder:
         """Particle radii [m] accumulated for :attr:`Model.particle_radius`."""
         self.particle_flags: list[int | ParticleFlags] = []
         """Particle flags accumulated for :attr:`Model.particle_flags`."""
+        self.particle_display_color: list[Vec3 | None] = []
+        """Optional display RGB colors accumulated for :attr:`Model.particle_display_color`."""
         self.particle_max_velocity: float = 1e5
         """Maximum particle velocity [m/s] propagated to :attr:`Model.particle_max_velocity`."""
         self.particle_color_groups: list[Any] = []
@@ -6529,9 +6531,9 @@ class ModelBuilder:
                 ~ShapeFlags.HYDROELASTIC
             )  # Falling back to mesh/primitive collisions for plane and hfield shapes
 
-        resolved_color = ModelBuilder._coerce_shape_color(color)
+        resolved_color = ModelBuilder._coerce_display_color(color)
         if resolved_color is None and src is not None:
-            resolved_color = ModelBuilder._coerce_shape_color(getattr(src, "color", None))
+            resolved_color = ModelBuilder._coerce_display_color(getattr(src, "color", None))
         if resolved_color is None:
             resolved_color = ModelBuilder._shape_palette_color(shape)
 
@@ -8333,6 +8335,8 @@ class ModelBuilder:
         radius: float | None = None,
         flags: int = ParticleFlags.ACTIVE,
         custom_attributes: dict[str, Any] | None = None,
+        *,
+        color: Vec3 | None = None,
     ) -> int:
         """Adds a single particle to the model.
 
@@ -8343,6 +8347,7 @@ class ModelBuilder:
             radius: The radius of the particle used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
             flags: The flags that control the dynamical behavior of the particle, see :class:`newton.ParticleFlags`.
             custom_attributes: Dictionary of custom attribute names to values.
+            color: Optional display RGB color with values in [0, 1].
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
@@ -8350,6 +8355,8 @@ class ModelBuilder:
         Returns:
             The index of the particle in the system.
         """
+        display_color = self._coerce_display_color(color)
+
         self.particle_q.append(pos)
         self.particle_qd.append(vel)
         self.particle_mass.append(mass)
@@ -8357,6 +8364,7 @@ class ModelBuilder:
             radius = self.default_particle_radius
         self.particle_radius.append(radius)
         self.particle_flags.append(flags)
+        self.particle_display_color.append(display_color)
         self.particle_world.append(self.current_world)
 
         particle_id = self.particle_count - 1
@@ -8379,6 +8387,8 @@ class ModelBuilder:
         radius: list[float] | None = None,
         flags: list[int] | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        *,
+        colors: list[Vec3 | None] | None = None,
     ):
         """Adds a group of particles to the model.
 
@@ -8389,6 +8399,7 @@ class ModelBuilder:
             radius: The radius of the particles used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
             flags: The flags that control the dynamical behavior of the particles, see :class:`newton.ParticleFlags`.
             custom_attributes: Dictionary of custom attribute names to lists of values (one value for each particle).
+            colors: Optional display RGB colors with values in [0, 1], one per particle.
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
@@ -8404,6 +8415,7 @@ class ModelBuilder:
         optional_inputs = (
             ("radius", radius),
             ("flags", flags),
+            ("colors", colors),
         )
         for name, values in required_inputs:
             if values is None or len(values) != particle_count:
@@ -8417,6 +8429,10 @@ class ModelBuilder:
                     f"{name} length mismatch: expected {particle_count} values to match pos, got {len(values)}"
                 )
 
+        display_colors = (
+            [None] * particle_count if colors is None else [self._coerce_display_color(color) for color in colors]
+        )
+
         particle_start = self.particle_count
 
         self.particle_q.extend(pos)
@@ -8428,6 +8444,7 @@ class ModelBuilder:
             flags = [ParticleFlags.ACTIVE] * particle_count
         self.particle_radius.extend(radius)
         self.particle_flags.extend(flags)
+        self.particle_display_color.extend(display_colors)
         # Maintain world assignment for bulk particle creation
         self.particle_world.extend([self.current_world] * particle_count)
 
@@ -9014,6 +9031,7 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        color: Vec3 | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
@@ -9038,6 +9056,7 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
+            color: Optional display RGB color with values in [0, 1] for every cloth particle.
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
                 via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
                 this cloth.
@@ -9088,6 +9107,7 @@ class ModelBuilder:
             spring_ke=spring_ke,
             spring_kd=spring_kd,
             particle_radius=particle_radius,
+            color=color,
             custom_attributes_particles=custom_attributes_particles,
             custom_attributes_triangles=custom_attributes_triangles,
             custom_attributes_edges=custom_attributes_edges,
@@ -9135,6 +9155,7 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        color: Vec3 | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
@@ -9155,6 +9176,7 @@ class ModelBuilder:
             indices: A list of triangle indices, 3 entries per-face
             density: The density per-area of the mesh
             particle_radius: The particle_radius which controls particle based collisions.
+            color: Optional display RGB color with values in [0, 1] for every cloth particle.
             custom_attributes_particles: Dictionary of custom attribute names to values for the particles.
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
@@ -9213,6 +9235,7 @@ class ModelBuilder:
             mass=[0.0] * num_verts,
             radius=[particle_radius] * num_verts,
             custom_attributes=custom_attributes_particles,
+            colors=None if color is None else [color] * num_verts,
         )
 
         # triangles
@@ -9281,6 +9304,7 @@ class ModelBuilder:
         radius_mean: float | None = None,
         radius_std: float = 0.0,
         flags: list[int] | int | None = None,
+        color: Vec3 | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ):
         """
@@ -9305,6 +9329,7 @@ class ModelBuilder:
             radius_mean: Mean radius for particles. If None, uses the builder's default.
             radius_std: Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
             flags: Flags to assign to each particle. If None, uses the builder's default.
+            color: Optional display RGB color with values in [0, 1] for every particle.
             custom_attributes: Dictionary of custom attribute names to values for the particles.
 
         Returns:
@@ -9365,6 +9390,7 @@ class ModelBuilder:
             radius=radii.tolist(),
             flags=flags,
             custom_attributes=broadcast_custom_attrs,
+            colors=None if color is None else [color] * num_particles,
         )
 
     @deprecate_nonkeyword_arguments
@@ -9397,6 +9423,7 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        color: Vec3 | None = None,
         label: str | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
@@ -9433,6 +9460,7 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+            color: Optional display RGB color with values in [0, 1] for every soft-body particle.
             label: Optional name reserved for forwarding to mesh-quality
                 diagnostics. Currently unused by ``add_soft_grid`` (the
                 generated grid is degenerate-free by construction); kept
@@ -9469,7 +9497,7 @@ class ModelBuilder:
 
                     p = wp.quat_rotate(rot, v) + pos
 
-                    self.add_particle(p, vel, m, particle_radius)
+                    self.add_particle(p, vel, m, particle_radius, color=color)
 
         # dict of open faces
         faces = {}
@@ -9563,6 +9591,7 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        color: Vec3 | None = None,
         validate_mesh: bool = False,
         label: str | None = None,
     ) -> None:
@@ -9603,6 +9632,7 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
+            color: Optional display RGB color with values in [0, 1] for every soft-body particle.
             validate_mesh: If True, check for inverted or small-volume
                 tetrahedra, sliver tetrahedra, and non-manifold faces, and
                 emit warnings. See :func:`newton.utils.validate_tet_mesh`.
@@ -9700,7 +9730,7 @@ class ModelBuilder:
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
 
             p_custom = {k: arr[vi] for k, arr in particle_custom.items()} if particle_custom else None
-            self.add_particle(p, vel, 0.0, particle_radius, custom_attributes=p_custom)
+            self.add_particle(p, vel, 0.0, particle_radius, custom_attributes=p_custom, color=color)
 
         # add tetrahedra
         for t in range(num_tets):
@@ -11163,6 +11193,9 @@ class ModelBuilder:
             m.particle_radius = wp.array(self.particle_radius, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_flags = wp.array([flag_to_int(f) for f in self.particle_flags], dtype=wp.int32)
             m.particle_world = wp.array(self.particle_world, dtype=wp.int32)
+            if any(color is not None for color in self.particle_display_color):
+                display_colors = [(1.0, 1.0, 1.0) if color is None else color for color in self.particle_display_color]
+                m.particle_display_color = wp.array(display_colors, dtype=wp.vec3)
             m.particle_max_radius = np.max(self.particle_radius) if len(self.particle_radius) > 0 else 0.0
             m.particle_max_velocity = self.particle_max_velocity
 

@@ -260,6 +260,334 @@ class TestSensorTiledCamera(unittest.TestCase):
             np.testing.assert_array_equal(packed[:3], expected_rgb)
             self.assertEqual(packed[3], 255)
 
+    def test_standalone_particle_albedo_uses_particle_display_color(self) -> None:
+        """Retain the standalone-particle index used to fetch its display color."""
+        color = (0.25, 0.5, 0.75)
+        builder = newton.ModelBuilder()
+        builder.add_particle(
+            pos=wp.vec3(2.0, 0.0, -2.0),
+            vel=wp.vec3(0.0),
+            mass=1.0,
+            radius=0.25,
+            color=(1.0, 0.0, 0.0),
+        )
+        builder.add_particle(
+            pos=wp.vec3(0.0, 0.0, -2.0),
+            vel=wp.vec3(0.0),
+            mass=1.0,
+            radius=0.75,
+            color=color,
+        )
+        builder.add_particle(
+            pos=wp.vec3(-2.0, 0.0, -2.0),
+            vel=wp.vec3(0.0),
+            mass=1.0,
+            radius=0.25,
+            color=(0.0, 1.0, 0.0),
+        )
+        model = builder.finalize(device="cpu")
+        sensor = SensorTiledCamera(model=model)
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+
+        for render_normal in (False, True):
+            with self.subTest(render_normal=render_normal):
+                albedo_image = sensor.utils.create_albedo_image_output(1, 1)
+                shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
+                normal_image = sensor.utils.create_normal_image_output(1, 1) if render_normal else None
+
+                sensor.update(
+                    model.state(),
+                    camera_transforms,
+                    camera_rays,
+                    albedo_image=albedo_image,
+                    shape_index_image=shape_index_image,
+                    normal_image=normal_image,
+                )
+
+                packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
+                np.testing.assert_allclose(packed[:3], np.asarray(color) * 255.0, rtol=0.0, atol=1.0)
+                self.assertEqual(packed[3], 255)
+                self.assertEqual(int(shape_index_image.numpy()[0, 0, 0, 0]), int(PARTICLES_SHAPE_ID))
+
+    def test_triangle_albedo_interpolates_particle_display_color(self) -> None:
+        """Interpolate triangle display values before converting the result to linear color."""
+        builder = newton.ModelBuilder()
+        builder.add_particles(
+            pos=[wp.vec3(-1.0, -1.0, -2.0), wp.vec3(1.0, -1.0, -2.0), wp.vec3(0.0, 1.0, -2.0)],
+            vel=[wp.vec3(0.0)] * 3,
+            mass=[1.0] * 3,
+            radius=[0.01] * 3,
+            colors=[wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)],
+        )
+        builder.add_triangle(0, 1, 2)
+        model = builder.finalize(device="cpu")
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        display_mix = np.asarray((0.25, 0.25, 0.5), dtype=np.float32)
+
+        for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
+            with self.subTest(output_color_space=output_color_space):
+                sensor = SensorTiledCamera(
+                    model=model,
+                    default_render_config=SensorTiledCamera.RenderConfig(
+                        enable_backface_culling=False,
+                        enable_particles=False,
+                        output_color_space=output_color_space,
+                    ),
+                )
+                camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+                expected = (
+                    display_mix
+                    if output_color_space == newton.utils.ColorSpace.SRGB
+                    else np.asarray(newton.utils.color_srgb_to_linear(display_mix))
+                )
+
+                for render_normal in (False, True):
+                    with self.subTest(output_color_space=output_color_space, render_normal=render_normal):
+                        albedo_image = sensor.utils.create_albedo_image_output(1, 1)
+                        shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
+                        normal_image = sensor.utils.create_normal_image_output(1, 1) if render_normal else None
+
+                        sensor.update(
+                            model.state(),
+                            camera_transforms,
+                            camera_rays,
+                            albedo_image=albedo_image,
+                            shape_index_image=shape_index_image,
+                            normal_image=normal_image,
+                        )
+
+                        packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
+                        np.testing.assert_allclose(packed[:3], expected * 255.0, rtol=0.0, atol=1.0)
+                        self.assertEqual(packed[3], 255)
+                        self.assertEqual(int(shape_index_image.numpy()[0, 0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
+
+    def test_uncolored_deformables_keep_white_albedo_fallback(self) -> None:
+        """Preserve the existing white fallback for uncolored particles and deformable triangles."""
+        particle_builder = newton.ModelBuilder()
+        particle_builder.add_particle(
+            pos=wp.vec3(0.0, 0.0, -2.0),
+            vel=wp.vec3(0.0),
+            mass=1.0,
+            radius=0.5,
+        )
+
+        triangle_builder = newton.ModelBuilder()
+        triangle_builder.add_particles(
+            pos=[wp.vec3(-1.0, -1.0, -2.0), wp.vec3(1.0, -1.0, -2.0), wp.vec3(0.0, 1.0, -2.0)],
+            vel=[wp.vec3(0.0)] * 3,
+            mass=[1.0] * 3,
+            radius=[0.01] * 3,
+        )
+        triangle_builder.add_triangle(0, 1, 2)
+
+        cases = (
+            ("particle", particle_builder.finalize(device="cpu"), PARTICLES_SHAPE_ID, True),
+            ("triangle", triangle_builder.finalize(device="cpu"), TRIANGLE_MESH_SHAPE_ID, False),
+        )
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+
+        for name, model, expected_shape_id, enable_particles in cases:
+            with self.subTest(name=name):
+                self.assertIsNone(model.particle_display_color)
+                sensor = SensorTiledCamera(
+                    model=model,
+                    default_render_config=SensorTiledCamera.RenderConfig(
+                        enable_backface_culling=False,
+                        enable_particles=enable_particles,
+                    ),
+                )
+                render_context = sensor._SensorTiledCamera__render_context
+                self.assertFalse(render_context.state.has_particle_display_color)
+                self.assertIsNone(render_context.particle_display_color)
+
+                camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+                albedo_image = sensor.utils.create_albedo_image_output(1, 1)
+                shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
+                sensor.update(
+                    model.state(),
+                    camera_transforms,
+                    camera_rays,
+                    albedo_image=albedo_image,
+                    shape_index_image=shape_index_image,
+                )
+
+                packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
+                np.testing.assert_allclose(packed[:3], np.full(3, 255), rtol=0.0, atol=1.0)
+                self.assertEqual(packed[3], 255)
+                self.assertEqual(int(shape_index_image.numpy()[0, 0, 0, 0]), int(expected_shape_id))
+
+    def test_triangle_display_colors_remain_distinct_across_worlds(self) -> None:
+        """Keep triangle display colors isolated when one blueprint spans multiple worlds."""
+        world_colors = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        spacing = 10.0
+        builder = newton.ModelBuilder()
+
+        for world_index, color in enumerate(world_colors):
+            blueprint = newton.ModelBuilder()
+            blueprint.add_particles(
+                pos=[
+                    wp.vec3(-1.0, -1.0, -2.0),
+                    wp.vec3(1.0, -1.0, -2.0),
+                    wp.vec3(0.0, 1.0, -2.0),
+                ],
+                vel=[wp.vec3(0.0)] * 3,
+                mass=[1.0] * 3,
+                radius=[0.01] * 3,
+                colors=[color] * 3,
+            )
+            blueprint.add_triangle(0, 1, 2)
+            builder.add_world(
+                blueprint,
+                xform=wp.transform(wp.vec3(float(world_index) * spacing, 0.0, 0.0), wp.quat_identity()),
+            )
+
+        model = builder.finalize(device="cpu")
+        sensor = SensorTiledCamera(
+            model=model,
+            default_render_config=SensorTiledCamera.RenderConfig(
+                enable_backface_culling=False,
+                enable_particles=False,
+                max_distance=5.0,
+            ),
+        )
+        camera_transforms = wp.array(
+            [
+                [
+                    wp.transformf(
+                        wp.vec3f(float(world_index) * spacing, 0.0, 0.0),
+                        wp.quatf(0.0, 0.0, 0.0, 1.0),
+                    )
+                    for world_index in range(len(world_colors))
+                ]
+            ],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+        albedo_image = sensor.utils.create_albedo_image_output(1, 1)
+        shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
+        sensor.update(
+            model.state(),
+            camera_transforms,
+            camera_rays,
+            albedo_image=albedo_image,
+            shape_index_image=shape_index_image,
+        )
+
+        albedos = np.stack(
+            [self._unpack_rgba(value) for value in albedo_image.numpy()[:, 0, 0, 0]],
+            axis=0,
+        )
+        np.testing.assert_allclose(albedos[:, :3], np.asarray(world_colors) * 255.0, rtol=0.0, atol=1.0)
+        np.testing.assert_array_equal(albedos[:, 3], np.full(len(world_colors), 255, dtype=np.uint8))
+        np.testing.assert_array_equal(
+            shape_index_image.numpy()[:, 0, 0, 0],
+            np.full(len(world_colors), int(TRIANGLE_MESH_SHAPE_ID), dtype=np.uint32),
+        )
+
+    def test_multiple_triangle_display_colors_remain_distinct_in_one_world(self) -> None:
+        """Use global face indices to select distinct triangle colors in one world."""
+        centers_and_colors = (
+            (-2.0, (1.0, 0.0, 0.0)),
+            (2.0, (0.0, 1.0, 0.0)),
+        )
+        builder = newton.ModelBuilder()
+
+        for center_x, color in centers_and_colors:
+            start = builder.particle_count
+            builder.add_particles(
+                pos=[
+                    wp.vec3(center_x - 1.0, -1.0, -2.0),
+                    wp.vec3(center_x + 1.0, -1.0, -2.0),
+                    wp.vec3(center_x, 1.0, -2.0),
+                ],
+                vel=[wp.vec3(0.0)] * 3,
+                mass=[1.0] * 3,
+                radius=[0.01] * 3,
+                colors=[color] * 3,
+            )
+            builder.add_triangle(start, start + 1, start + 2)
+
+        model = builder.finalize(device="cpu")
+        sensor = SensorTiledCamera(
+            model=model,
+            default_render_config=SensorTiledCamera.RenderConfig(
+                enable_backface_culling=False,
+                enable_particles=False,
+                max_distance=5.0,
+            ),
+        )
+        camera_transforms = wp.array(
+            [
+                [wp.transformf(wp.vec3f(center_x, 0.0, 0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]
+                for center_x, _color in centers_and_colors
+            ],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(
+            1,
+            1,
+            camera_fovs=[math.radians(30.0)] * len(centers_and_colors),
+        )
+        albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=len(centers_and_colors))
+        shape_index_image = sensor.utils.create_shape_index_image_output(1, 1, camera_count=len(centers_and_colors))
+        normal_image = sensor.utils.create_normal_image_output(1, 1, camera_count=len(centers_and_colors))
+        sensor.update(
+            model.state(),
+            camera_transforms,
+            camera_rays,
+            albedo_image=albedo_image,
+            shape_index_image=shape_index_image,
+            normal_image=normal_image,
+        )
+
+        albedos = np.stack(
+            [self._unpack_rgba(value) for value in albedo_image.numpy()[0, :, 0, 0]],
+            axis=0,
+        )
+        expected_colors = np.asarray([color for _center_x, color in centers_and_colors])
+        np.testing.assert_allclose(albedos[:, :3], expected_colors * 255.0, rtol=0.0, atol=1.0)
+        np.testing.assert_array_equal(albedos[:, 3], np.full(len(centers_and_colors), 255, dtype=np.uint8))
+        np.testing.assert_array_equal(
+            shape_index_image.numpy()[0, :, 0, 0],
+            np.full(len(centers_and_colors), int(TRIANGLE_MESH_SHAPE_ID), dtype=np.uint32),
+        )
+        np.testing.assert_allclose(
+            normal_image.numpy()[0, :, 0, 0],
+            np.tile(np.asarray((0.0, 0.0, 1.0)), (len(centers_and_colors), 1)),
+            rtol=0.0,
+            atol=1.0e-6,
+        )
+
+    def test_particle_display_color_length_must_match_particles(self) -> None:
+        """Reject a display-color array whose length does not match the particle count."""
+        builder = newton.ModelBuilder()
+        builder.add_particle(
+            pos=wp.vec3(0.0, 0.0, -2.0),
+            vel=wp.vec3(0.0),
+            mass=1.0,
+            color=(0.25, 0.5, 0.75),
+        )
+        model = builder.finalize(device="cpu")
+        model.particle_display_color = wp.empty(0, dtype=wp.vec3, device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "particle_display_color length must match"):
+            SensorTiledCamera(model=model)
+
     def test_render_context_none_config_uses_default(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
         sensor = SensorTiledCamera(model=model)
