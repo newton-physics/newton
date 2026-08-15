@@ -3918,7 +3918,8 @@ def test_unprovisioned_mesh_raises(test, device):
 
     Mirrors SolverVBD raising on an uncolored model: provisioning an SDF (e.g. via
     ShapeConfig.configure_sdf(force_sdf=True)) is a required build step, and skipping it is an error
-    rather than a silent degrade to the per-particle path.
+    rather than a silent degrade to the per-particle path. The opt-in 'bvh' back-end needs no SDF
+    and must construct cleanly on the same model.
     """
     box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
     builder = newton.ModelBuilder()
@@ -3939,6 +3940,14 @@ def test_unprovisioned_mesh_raises(test, device):
         newton.CollisionPipeline(
             model, broad_phase="nxn", soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=True
         )
+    # The BVH back-end (opt-in) handles the SDF-less mesh instead of raising.
+    newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_gap=0.1,
+        enable_rigid_soft_full_surface_contact=True,
+        full_surface_mesh_backend="bvh",
+    )
 
 
 add_function_test(

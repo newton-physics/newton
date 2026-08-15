@@ -32,6 +32,7 @@ from .kernels import (
     sdf_sphere_grad,
 )
 from .sdf_texture import TextureSDFData, texture_sample_sdf_grad
+from .soft_contacts_common import _shape_frames, _write_soft_contact
 from .types import Axis, GeoType
 
 # Fixed iteration counts -> data-independent loops -> CUDA-graph-capturable. Passed as kernel args
@@ -220,67 +221,6 @@ def optimize_face_sdf(
     return bary, x, phi, grad
 
 
-@wp.func
-def _shape_frames(
-    shape_body: wp.array[wp.int32],
-    body_q: wp.array[wp.transform],
-    shape_transform: wp.array[wp.transform],
-    shape_index: wp.int32,
-):
-    """Return (X_bs, X_ws, X_sw): shape-local->body, shape-local->world, world->shape-local."""
-    rigid_body = shape_body[shape_index]
-    X_wb = wp.transform_identity()
-    if rigid_body >= 0:
-        X_wb = body_q[rigid_body]
-    X_bs = shape_transform[shape_index]
-    X_ws = wp.transform_multiply(X_wb, X_bs)
-    X_sw = wp.transform_inverse(X_ws)
-    return X_bs, X_ws, X_sw
-
-
-@wp.func
-def _emit_soft_ef_contact(
-    tid: wp.int32,
-    tid_base: wp.int32,
-    soft_contact_max: wp.int32,
-    soft_contact_count: wp.array[wp.int32],
-    soft_contact_tids: wp.array[wp.int32],
-    soft_contact_particle: wp.array[wp.int32],
-    soft_contact_indices: wp.array[wp.vec3i],
-    soft_contact_barycentric: wp.array[wp.vec3],
-    soft_contact_shape: wp.array[wp.int32],
-    soft_contact_body_pos: wp.array[wp.vec3],
-    soft_contact_body_vel: wp.array[wp.vec3],
-    soft_contact_normal: wp.array[wp.vec3],
-    corners: wp.vec3i,
-    bary: wp.vec3,
-    shape_index: wp.int32,
-    body_pos: wp.vec3,
-    body_vel: wp.vec3,
-    normal: wp.vec3,
-):
-    """Append one edge/face record into the single unified soft-contact stream.
-
-    Uses :func:`counter_increment` on the shared soft counter so the chosen index is recorded per
-    thread (in ``soft_contact_tids``) for differentiable backward replay, matching the legacy
-    particle pass. ``tid_base`` offsets this pass's thread ids into the shared tids array so the
-    three passes (particle / edge / face) never alias the same tids slot: particle uses ``[0, ...)``,
-    edge ``[n_particle_pairs, ...)``, face ``[n_particle_pairs + n_edge_pairs, ...)``. The offsets
-    are static (pair counts fixed at pipeline init), so this stays CUDA-graph-capturable.
-
-    The counter is incremented even when the record overflows ``soft_contact_max`` (the write is
-    guarded); ``counter_increment`` returns -1 in that case."""
-    idx = counter_increment(soft_contact_count, 0, soft_contact_tids, tid + tid_base, soft_contact_max)
-    if idx >= 0:
-        soft_contact_particle[idx] = -1  # edge/face record: no single particle id
-        soft_contact_indices[idx] = corners
-        soft_contact_barycentric[idx] = bary
-        soft_contact_shape[idx] = shape_index
-        soft_contact_body_pos[idx] = body_pos
-        soft_contact_body_vel[idx] = body_vel
-        soft_contact_normal[idx] = normal
-
-
 @wp.kernel
 def create_soft_face_contacts(
     face_pairs: wp.array[wp.vec2i],
@@ -358,12 +298,11 @@ def create_soft_face_contacts(
     )
     if phi < threshold:
         y = x - phi * grad
-        _emit_soft_ef_contact(
-            tid,
-            tid_base,
-            soft_contact_max,
-            soft_contact_count,
-            soft_contact_tids,
+        # counter_increment must be called from the kernel body (not a nested wp.func) for the
+        # differentiable replay substitution to apply; see _write_soft_contact.
+        idx = counter_increment(soft_contact_count, 0, soft_contact_tids, tid + tid_base, soft_contact_max)
+        _write_soft_contact(
+            idx,
             soft_contact_particle,
             soft_contact_indices,
             soft_contact_barycentric,
@@ -371,6 +310,7 @@ def create_soft_face_contacts(
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
+            -1,
             wp.vec3i(a_idx, b_idx, c_idx),
             bary,
             shape_index,
@@ -449,12 +389,11 @@ def create_soft_edge_contacts(
     if phi < threshold:
         y = x - phi * grad
         # optimize_edge_sdf parameterizes x = (1 - u) * p_s + u * q_s, so v0 carries weight 1 - u.
-        _emit_soft_ef_contact(
-            tid,
-            tid_base,
-            soft_contact_max,
-            soft_contact_count,
-            soft_contact_tids,
+        # counter_increment must be called from the kernel body (not a nested wp.func) for the
+        # differentiable replay substitution to apply; see _write_soft_contact.
+        idx = counter_increment(soft_contact_count, 0, soft_contact_tids, tid + tid_base, soft_contact_max)
+        _write_soft_contact(
+            idx,
             soft_contact_particle,
             soft_contact_indices,
             soft_contact_barycentric,
@@ -462,6 +401,7 @@ def create_soft_edge_contacts(
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
+            -1,
             wp.vec3i(v0, v1, -1),
             wp.vec3(1.0 - u, u, 0.0),
             shape_index,

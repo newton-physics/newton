@@ -1,0 +1,1 @@
+Deprecate `CollisionPipeline.refit_soft_self_contact_bvh` in favor of the new `refit_soft_contact_bvh` / `rebuild_soft_contact_bvh`: the soft-contact BVHs now serve both cloth self-contact and the BVH full-surface rigid-soft back-end.
