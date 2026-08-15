@@ -540,6 +540,62 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         solver.step(state_in, state_out, None, None, dt=1.0 / 60.0)
 
 
+class TestSolverKaminoStatus(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def _make_three_world_model(self) -> newton.Model:
+        source_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(source_builder)
+        basics.build_sphere_on_plane(builder=source_builder, z_offset=0.5)
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverKamino.register_custom_attributes(builder)
+        builder.replicate(source_builder, world_count=3)
+        return builder.finalize(device=self.default_device, skip_validation_joints=True)
+
+    def _assert_status_contract(self, solver: newton.solvers.SolverKamino) -> None:
+        status = solver.status
+
+        self.assertIsInstance(status, wp.array)
+        self.assertIs(status, solver.status)
+        self.assertEqual(status.shape, (3,))
+        self.assertEqual(status.device, self.default_device)
+        self.assertTrue({"converged", "iterations", "r_p", "r_d", "r_c"}.issubset(status.dtype.vars))
+
+    def test_padmm_status_is_always_available(self):
+        """Verify PADMM terminal status is available regardless of detailed collection."""
+        model = self._make_three_world_model()
+
+        for collect_solver_info in (False, True):
+            with self.subTest(collect_solver_info=collect_solver_info):
+                solver = newton.solvers.SolverKamino(
+                    model,
+                    config=newton.solvers.SolverKamino.Config(
+                        dynamics_solver="padmm",
+                        collect_solver_info=collect_solver_info,
+                    ),
+                )
+                self._assert_status_contract(solver)
+
+    def test_dvi_status_is_always_available(self):
+        """Verify DVI terminal status is available regardless of detailed collection."""
+        model = self._make_three_world_model()
+
+        for collect_solver_info in (False, True):
+            with self.subTest(collect_solver_info=collect_solver_info):
+                solver = newton.solvers.SolverKamino(
+                    model,
+                    config=newton.solvers.SolverKamino.Config(
+                        dynamics_solver="dvi",
+                        collect_solver_info=collect_solver_info,
+                    ),
+                )
+                self._assert_status_contract(solver)
+
+
 class TestSolverKaminoImpl(unittest.TestCase):
     def setUp(self):
         if not test_context.setup_done:

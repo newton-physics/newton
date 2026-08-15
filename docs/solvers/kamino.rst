@@ -53,9 +53,7 @@ DVI is best suited to performance-sensitive rigid mechanisms with relatively
 few active contacts; PADMM remains the safer and more broadly validated choice.
 Set ``sparse_jacobian=False`` for fully dense DVI, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
-solver. With
-``collect_solver_info=True``, DVI stores terminal residual status that should
-not be interpreted as PADMM ADMM residuals.
+solver.
 
 For large bilateral systems, opt into RCM-reordered factorization explicitly:
 
@@ -71,3 +69,26 @@ For large bilateral systems, opt into RCM-reordered factorization explicitly:
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
 changes. Keep the default ``"LLTB"`` solver for small systems.
+
+Inspecting terminal status
+--------------------------
+
+After each step, :attr:`~newton.solvers.SolverKamino.status` provides one
+device-resident terminal status record per world. PADMM and DVI both provide
+``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c`` fields, although
+the backend-specific residual definitions differ. Additional fields are not
+portable between backends.
+
+.. code-block:: python
+
+   status = solver.status
+   assert status.device == model.device
+   assert status.shape == (model.world_count,)
+
+   # Host inspection is explicit and synchronizes the device-to-host copy.
+   status_host = status.numpy()
+   unconverged_worlds = (~status_host["converged"].astype(bool)).nonzero()[0]
+
+Terminal status is always maintained. ``collect_solver_info=True`` enables
+additional solver diagnostics and adds runtime and memory overhead; it is not
+required to access ``status``.

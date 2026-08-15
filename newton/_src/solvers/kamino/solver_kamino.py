@@ -272,8 +272,10 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         collect_solver_info: bool = False
         """
-        Enables/disables collection of solver convergence and performance info at each simulation step.\n
-        Enabling this option as it will significantly increase the runtime of the solver.\n
+        Enables additional collection of solver convergence and performance information.\n
+        Per-world terminal status remains available through :attr:`SolverKamino.status`
+        when this option is disabled. Enabling detailed collection adds runtime and memory
+        overhead.\n
         Defaults to `False`.
         """
 
@@ -837,6 +839,20 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
         self._control_kamino.finalize(self._model_kamino)
+
+    @property
+    def status(self) -> wp.array[Any]:
+        """Per-world terminal solver status on the simulation device.
+
+        The active backend defines the array's Warp struct type. Both PADMM and
+        DVI provide ``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c``
+        fields. Backend-specific fields may also be present.
+
+        The returned array aliases the solver's device-resident storage; reading
+        it does not synchronize or copy data to the host. Terminal status is
+        available regardless of :attr:`Config.collect_solver_info`.
+        """
+        return self._solver_kamino.solver_status
 
     @override
     def reset(
