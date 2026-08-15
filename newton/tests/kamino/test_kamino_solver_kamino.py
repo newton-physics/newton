@@ -556,14 +556,29 @@ class TestSolverKaminoStatus(unittest.TestCase):
         builder.replicate(source_builder, world_count=3)
         return builder.finalize(device=self.default_device, skip_validation_joints=True)
 
-    def _assert_status_contract(self, solver: newton.solvers.SolverKamino) -> None:
+    def _step_and_assert_status_contract(
+        self,
+        solver: newton.solvers.SolverKamino,
+        model: newton.Model,
+    ) -> None:
+        solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT)
         status = solver.status
+        common_fields = ("converged", "iterations", "r_p", "r_d", "r_c")
 
         self.assertIsInstance(status, wp.array)
-        self.assertIs(status, solver.status)
+        self.assertIs(status, solver._solver_kamino.solver_fd.data.status)
         self.assertEqual(status.shape, (3,))
         self.assertEqual(status.device, self.default_device)
-        self.assertTrue({"converged", "iterations", "r_p", "r_d", "r_c"}.issubset(status.dtype.vars))
+        self.assertTrue(set(common_fields).issubset(status.dtype.vars))
+
+        status_host = status.numpy()
+        for field in common_fields:
+            self.assertEqual(status_host[field].shape, (3,))
+        self.assertTrue(np.all((status_host["converged"] == 0) | (status_host["converged"] == 1)))
+        self.assertTrue(np.all(status_host["iterations"] > 0))
+        for field in ("r_p", "r_d", "r_c"):
+            self.assertTrue(np.all(np.isfinite(status_host[field])))
+            self.assertTrue(np.all(status_host[field] >= 0.0))
 
     def test_padmm_status_is_always_available(self):
         """Verify PADMM terminal status is available regardless of detailed collection."""
@@ -578,7 +593,7 @@ class TestSolverKaminoStatus(unittest.TestCase):
                         collect_solver_info=collect_solver_info,
                     ),
                 )
-                self._assert_status_contract(solver)
+                self._step_and_assert_status_contract(solver, model)
 
     def test_dvi_status_is_always_available(self):
         """Verify DVI terminal status is available regardless of detailed collection."""
@@ -593,7 +608,7 @@ class TestSolverKaminoStatus(unittest.TestCase):
                         collect_solver_info=collect_solver_info,
                     ),
                 )
-                self._assert_status_contract(solver)
+                self._step_and_assert_status_contract(solver, model)
 
 
 class TestSolverKaminoImpl(unittest.TestCase):
