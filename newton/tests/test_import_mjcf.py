@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import warnings
 import zlib
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -4132,78 +4133,39 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 
-    def test_joint_damping_deprecated_mujoco_alias(self):
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="joint_damping_alias_test">
-    <worldbody>
-        <body name="body" pos="0 0 1">
-            <joint name="hinge" type="hinge" axis="0 0 1" damping="0.75"/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content)
-        model = builder.finalize()
-
-        self.assertAlmostEqual(float(model.joint_damping.numpy()[0]), 0.75, places=6)
-
-        with self.assertWarnsRegex(DeprecationWarning, "dof_passive_damping"):
-            deprecated_damping = model.mujoco.dof_passive_damping
-        self.assertIs(deprecated_damping, model.joint_damping)
-
-        updated_damping = np.array([1.25], dtype=np.float32)
-        with self.assertWarnsRegex(DeprecationWarning, "dof_passive_damping"):
-            model.mujoco.dof_passive_damping = updated_damping
-        self.assertAlmostEqual(float(model.joint_damping.numpy()[0]), 1.25, places=6)
-
-    def test_joint_damping_deprecated_mujoco_alias_rejects_canonical_conflict(self):
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        parent = builder.add_body()
-        child = builder.add_body()
-        builder.add_joint_revolute(
-            parent,
-            child,
-            damping=2.0,
-            custom_attributes={"mujoco:dof_passive_damping": 3.0},
+    def test_ball_joint_damping_uses_authored_value_or_default(self):
+        """Verify MJCF ball-joint damping overrides or falls back to the builder default."""
+        cases = (
+            ("authored", 'damping="7"', 99.0, 7.0),
+            ("default", "", 3.5, 3.5),
         )
+        for name, damping_attribute, default_damping, expected_damping in cases:
+            with self.subTest(name=name):
+                mjcf_content = f"""
+                <mujoco>
+                    <worldbody>
+                        <body name="base">
+                            <geom type="sphere" size="0.05" mass="1"/>
+                            <body name="link" pos="0.1 0 0">
+                                <joint name="ball" type="ball" {damping_attribute}/>
+                                <geom type="sphere" size="0.04" mass="0.5"/>
+                            </body>
+                        </body>
+                    </worldbody>
+                </mujoco>
+                """
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = default_damping
+                builder.add_mjcf(mjcf_content)
+                joint_index = builder.joint_type.index(newton.JointType.BALL)
+                with mock.patch("newton.use_coord_layout_targets", True):
+                    model = builder.finalize()
 
-        with self.assertRaisesRegex(ValueError, "dof_passive_damping.*joint_damping"):
-            builder.finalize()
-
-    def test_joint_damping_deprecated_mujoco_alias_skips_copy_when_canonical_matches(self):
-        class JointDampingNoCopySentinel:
-            def __init__(self):
-                self.numpy_called = False
-                self.assign_called = False
-
-            def numpy(self):
-                self.numpy_called = True
-                raise AssertionError("joint_damping.numpy() should not be called for matching alias values")
-
-            def assign(self, _value):
-                self.assign_called = True
-                raise AssertionError("joint_damping.assign() should not be called for matching alias values")
-
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.joint_damping = [0.75, 0.0]
-        custom_attr = builder.custom_attributes["mujoco:dof_passive_damping"]
-        custom_attr.values = {0: np.float32(0.75), 1: np.float32(0.0)}
-
-        model = newton.Model()
-        sentinel = JointDampingNoCopySentinel()
-        model.joint_damping = sentinel
-
-        finalizer = builder._custom_attribute_model_finalizers["mujoco:dof_passive_damping"]
-        finalizer(builder, model, custom_attr)
-
-        self.assertFalse(sentinel.numpy_called)
-        self.assertFalse(sentinel.assign_called)
-        with self.assertWarnsRegex(DeprecationWarning, "dof_passive_damping"):
-            self.assertIs(model.mujoco.dof_passive_damping, sentinel)
+                dof_start = int(model.joint_qd_start.numpy()[joint_index])
+                np.testing.assert_allclose(
+                    model.joint_damping.numpy()[dof_start : dof_start + 3],
+                    [expected_damping] * 3,
+                )
 
     def test_jnt_actgravcomp_parsing(self):
         """Test parsing of actuatorgravcomp from MJCF"""

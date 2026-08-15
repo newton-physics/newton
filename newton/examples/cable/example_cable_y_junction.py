@@ -44,7 +44,7 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 20
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -55,7 +55,7 @@ class Example:
         segment_length = 0.03
 
         stretch_stiffness = 1.0e7
-        bend_stiffness = 1.0e4
+        bend_stiffness = 5.0e3
         bend_damping = 1.0e3
 
         builder = newton.ModelBuilder()
@@ -119,6 +119,7 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
+            rigid_compliant_alm=True,
         )
 
         self.state_0 = self.model.state()
@@ -135,8 +136,8 @@ class Example:
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:
             pick_state = picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = 2.0
-            pick_state[0]["pick_damping"] = 0.0
+            pick_state[0]["pick_stiffness"] = 0.1
+            pick_state[0]["pick_damping"] = 0.01
             picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(

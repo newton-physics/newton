@@ -130,61 +130,6 @@ else:
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
-_DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
-    "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
-    "Use Model.joint_damping instead."
-)
-
-
-def _finalize_deprecated_dof_passive_damping(
-    builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
-) -> None:
-    if custom_attr.values:
-        updated_joint_damping = None
-        if isinstance(custom_attr.values, dict):
-            damping_items = custom_attr.values.items()
-        else:
-            damping_items = enumerate(custom_attr.values)
-
-        for index, value in damping_items:
-            if value is None:
-                continue
-            damping_index = int(index)
-            canonical_value = builder.joint_damping[damping_index]
-            if canonical_value == value:
-                continue
-
-            alias_value = float(value)
-            canonical_value = float(canonical_value)
-            if canonical_value != 0.0 and not math.isclose(canonical_value, alias_value, rel_tol=1e-05, abs_tol=1e-08):
-                raise ValueError(
-                    "Model.mujoco.dof_passive_damping conflicts with Model.joint_damping "
-                    f"at DOF {damping_index}: {alias_value} != {canonical_value}."
-                )
-            if updated_joint_damping is None:
-                updated_joint_damping = list(builder.joint_damping)
-            updated_joint_damping[damping_index] = alias_value
-
-        if updated_joint_damping is not None:
-            model.joint_damping.assign(np.asarray(updated_joint_damping, dtype=np.float32))
-
-    if custom_attr.namespace is None:
-        raise ValueError(f"Deprecated attribute alias '{custom_attr.name}' requires a namespace")
-
-    if not hasattr(model, custom_attr.namespace):
-        setattr(model, custom_attr.namespace, Model.AttributeNamespace(custom_attr.namespace))
-
-    ns_obj = getattr(model, custom_attr.namespace)
-    ns_obj.add_deprecated_alias(
-        custom_attr.name,
-        lambda model=model: model.joint_damping,
-        _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE,
-    )
-    model._set_attribute_spec(
-        custom_attr.key,
-        Model.AttributeSpec(custom_attr.frequency, assignment=custom_attr.assignment),
-    )
-
 
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
     pattern = re.compile(rf"^{re.escape(package)}(?=[<>=!~])([^;]+)")
@@ -1116,24 +1061,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 usd_attribute_name="mjc:stiffness",
                 mjcf_attribute_name="stiffness",
             )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                # Deprecated alias for Model.joint_damping. Kept registered so
-                # legacy MJCF/USD parsing and model access continue to work.
-                name="dof_passive_damping",
-                frequency=AttributeFrequency.JOINT_DOF,
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.float32,
-                default=0.0,
-                namespace="mujoco",
-                usd_attribute_name="mjc:damping",
-                mjcf_attribute_name="damping",
-            )
-        )
-        builder._add_custom_attribute_model_finalizer(
-            "mujoco:dof_passive_damping",
-            _finalize_deprecated_dof_passive_damping,
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -3229,6 +3156,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             target_idx = int(actuator_trnid[mujoco_act_idx, 0])
             target_idx_alt = int(actuator_trnid[mujoco_act_idx, 1])
+            slider_site_name = None
+            refsite_name = None
 
             # Determine target type from trntype enum (JOINT, TENDON, SITE, BODY, ...).
             trntype = int(trntype_arr[mujoco_act_idx]) if trntype_arr is not None else 0
@@ -3311,13 +3240,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         )
                     continue
                 target_name = site_name
+                if target_idx_alt >= 0:
+                    refsite_name = site_mapping.get(target_idx_alt)
+                    if refsite_name is None:
+                        if wp.config.log_level <= wp.LOG_DEBUG:
+                            print(
+                                f"Warning: MuJoCo actuator {mujoco_act_idx} references site {target_idx_alt} "
+                                "as refsite, but it is not present in the MuJoCo export."
+                            )
+                        continue
+            elif trntype == int(SolverMuJoCo.TrnType.SLIDERCRANK):
+                target_name = site_mapping.get(target_idx)
+                slider_site_name = site_mapping.get(target_idx_alt)
+                if target_name is None or slider_site_name is None:
+                    if wp.config.log_level <= wp.LOG_DEBUG:
+                        print(
+                            f"Warning: MuJoCo slider-crank actuator {mujoco_act_idx} references "
+                            f"unavailable sites {target_idx}, {target_idx_alt}"
+                        )
+                    continue
             else:
-                # TODO: Support slidercrank and jointinparent transmission types
+                # TODO: Support jointinparent transmission types
                 if wp.config.log_level <= wp.LOG_DEBUG:
                     print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
                 continue
 
             general_args = dict(actuator_args)
+            if slider_site_name is not None:
+                general_args["slidersite"] = slider_site_name
 
             # Get custom attributes for this MuJoCo actuator
             if hasattr(mujoco_attrs, "actuator_gainprm"):
@@ -3403,6 +3353,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 int(SolverMuJoCo.TrnType.SLIDERCRANK): mujoco.mjtTrn.mjTRN_SLIDERCRANK,
             }.get(trntype, mujoco.mjtTrn.mjTRN_JOINT)
             general_args["trntype"] = trntype_enum
+            if refsite_name is not None:
+                general_args["refsite"] = refsite_name
             act = spec.add_actuator(target=target_name, **general_args)
             if shortcut == "position":
                 act.set_to_position(**shortcut_args)
@@ -5964,6 +5916,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 site_trntype_mask = template_mask & (act_trntype_np == int(SolverMuJoCo.TrnType.SITE))
                 trnid_targets = act_trnid_np[site_trntype_mask, 0]
                 actuator_required_shapes.update(trnid_targets[trnid_targets >= 0].tolist())
+                refsite_targets = act_trnid_np[site_trntype_mask, 1]
+                actuator_required_shapes.update(refsite_targets[refsite_targets >= 0].tolist())
+                slidercrank_mask = template_mask & (act_trntype_np == int(SolverMuJoCo.TrnType.SLIDERCRANK))
+                trnid_targets = act_trnid_np[slidercrank_mask]
+                actuator_required_shapes.update(trnid_targets[trnid_targets >= 0].tolist())
                 # Vectorized: USD-deferred actuators reference sites by label.
                 # Intersect template-world target labels with the site label
                 # dict instead of iterating over every actuator.
@@ -7175,7 +7132,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # MuJoCo Warp consumes only the compiled runtime policy. Keep
                 # the authoring policy on the CPU model for inspection and MJCF export.
                 self.mj_model.tree_sleep_policy[:] = sleep_policies
-            self.mjw_model.block_dim.linesearch_iterative = 32
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
