@@ -157,7 +157,12 @@ Some sensors depend on extended attributes that are not allocated by default:
 
 - ``SensorIMU`` requires ``State.body_qdd`` (rigid-body accelerations). By
   default it requests this from the model at construction, so subsequent
-  ``model.state()`` calls allocate it automatically.
+  ``model.state()`` calls allocate it automatically. Both
+  :class:`~newton.solvers.SolverKamino` and
+  :class:`~newton.solvers.SolverMuJoCo` populate this attribute. Kamino reports
+  the discrete step-average center-of-mass acceleration in the world frame;
+  impact steps therefore include the velocity impulse divided by the step
+  duration.
 - ``SensorContact`` requires ``Contacts.force`` (per-contact spatial force
   wrenches). By default it requests this from the model at construction, so
   subsequent :meth:`CollisionPipeline.contacts <newton.CollisionPipeline.contacts>` calls allocate it automatically. The solver

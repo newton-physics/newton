@@ -19,7 +19,84 @@ from .size import SizeKamino
 
 __all__ = [
     "StateKamino",
+    "compute_body_acceleration",
+    "reset_body_acceleration",
 ]
+
+
+###
+# Kernels
+###
+
+
+@wp.kernel
+def _compute_body_acceleration(
+    body_qd_in: wp.array[wp.spatial_vectorf],
+    body_qd_out: wp.array[wp.spatial_vectorf],
+    inv_dt: float,
+    body_qdd: wp.array[wp.spatial_vectorf],
+):
+    body_id = wp.tid()
+    body_qdd[body_id] = (body_qd_out[body_id] - body_qd_in[body_id]) * inv_dt
+
+
+@wp.kernel
+def _reset_body_acceleration(
+    body_wid: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],  # None also supported
+    body_qdd: wp.array[wp.spatial_vectorf],
+):
+    body_id = wp.tid()
+    if world_mask and not world_mask[body_wid[body_id]]:
+        return
+    body_qdd[body_id] = wp.spatial_vectorf(0.0)
+
+
+###
+# Launchers
+###
+
+
+def compute_body_acceleration(
+    body_qd_in: wp.array[wp.spatial_vectorf],
+    body_qd_out: wp.array[wp.spatial_vectorf],
+    body_qdd: wp.array[wp.spatial_vectorf],
+    dt: float,
+) -> None:
+    """Compute discrete step-average body accelerations.
+
+    Args:
+        body_qd_in: Input body twists in the world frame at the center of mass.
+        body_qd_out: Output body twists in the world frame at the center of mass.
+        body_qdd: Output body accelerations in the world frame at the center of mass.
+        dt: Simulation step duration.
+    """
+    wp.launch(
+        _compute_body_acceleration,
+        dim=body_qdd.shape[0],
+        inputs=[body_qd_in, body_qd_out, 1.0 / dt, body_qdd],
+        device=body_qdd.device,
+    )
+
+
+def reset_body_acceleration(
+    body_wid: wp.array[wp.int32],
+    body_qdd: wp.array[wp.spatial_vectorf],
+    world_mask: wp.array[wp.bool] | None = None,
+) -> None:
+    """Clear body accelerations in selected worlds.
+
+    Args:
+        body_wid: Body-to-world index mapping.
+        body_qdd: Body accelerations to clear.
+        world_mask: Optional per-world mask selecting which accelerations to clear.
+    """
+    wp.launch(
+        _reset_body_acceleration,
+        dim=body_qdd.shape[0],
+        inputs=[body_wid, world_mask, body_qdd],
+        device=body_qdd.device,
+    )
 
 
 ###

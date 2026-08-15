@@ -80,7 +80,8 @@ class SensorIMU:
     constructing the sensor requests ``body_qdd`` from the model so that
     subsequent ``model.state()`` calls allocate it automatically. The solver
     must also support computing ``body_qdd``
-    (e.g. :class:`~newton.solvers.SolverMuJoCo`).
+    (e.g. :class:`~newton.solvers.SolverKamino` or
+    :class:`~newton.solvers.SolverMuJoCo`).
 
     The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
 
