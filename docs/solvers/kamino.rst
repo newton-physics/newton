@@ -75,9 +75,30 @@ Inspecting terminal status
 
 After each step, :attr:`~newton.solvers.SolverKamino.status` provides one
 device-resident terminal status record per world. PADMM and DVI both provide
-``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c`` fields, although
-the backend-specific residual definitions differ. Additional fields are not
-portable between backends.
+``converged``, ``iterations``, ``r_p``, ``r_d``, and ``r_c`` fields. Their
+residual definitions are backend-specific:
+
+* **PADMM:** Let ``x`` and ``y`` be the current preconditioned impulse iterates,
+  ``x_prev`` and ``y_prev`` their previous values, ``P`` the diagonal dual
+  preconditioner, and ``eta`` and ``rho`` the proximal and penalty parameters.
+  ``r_p = ||P (x - y)||_inf`` is the primal consensus residual
+  [N·s or N·m·s].
+  ``r_d = ||P^-1 (eta (x - x_prev) + rho (y - y_prev))||_inf`` is the ADMM dual
+  residual [m/s or rad/s]. ``r_c`` is the maximum absolute impulse-velocity
+  inner product over unilateral limit and contact blocks [J]. The ``P`` factors
+  convert the first two residuals from solver scaling to physical constraint
+  units.
+* **DVI:** With physical impulse ``lambda`` and augmented constraint velocity
+  ``v``, ``r_p`` is the maximum infinity-norm projection distance of unilateral
+  impulses from the nonnegative limit cone or Coulomb contact cone
+  [N·s or N·m·s]. ``r_d`` is the maximum of the corresponding velocity distance
+  from the dual cone and the bilateral velocity violation [m/s or rad/s].
+  ``r_c = max |lambda_k dot v_k|`` is the maximum unilateral complementarity
+  violation [J].
+
+These are absolute maxima: neither backend divides them by a reference norm,
+constraint count, or tolerance. Additional fields are not portable between
+backends.
 
 .. code-block:: python
 

@@ -542,11 +542,13 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
 class TestSolverKaminoStatus(unittest.TestCase):
     def setUp(self):
+        """Configure the default Warp device for status tests."""
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
 
     def _make_three_world_model(self) -> newton.Model:
+        """Build a three-world model for status contract checks."""
         source_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(source_builder)
         basics.build_sphere_on_plane(builder=source_builder, z_offset=0.5)
@@ -561,6 +563,7 @@ class TestSolverKaminoStatus(unittest.TestCase):
         solver: newton.solvers.SolverKamino,
         model: newton.Model,
     ) -> None:
+        """Advance one step and verify the public terminal-status contract."""
         solver.step(model.state(), model.state(), control=None, contacts=None, dt=SIM_DT)
         status = solver.status
         common_fields = ("converged", "iterations", "r_p", "r_d", "r_c")
