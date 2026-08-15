@@ -12,7 +12,6 @@ import newton
 from newton.sensors import SensorIMU
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-
 DT = 1.0 / 120.0
 INERTIA = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
@@ -113,6 +112,72 @@ def test_body_acceleration_state_ownership(test, device):
         rtol=0.0,
         atol=2.0e-5,
     )
+
+
+def test_heterogeneous_world_step_isolation(test, device):
+    """Keep body acceleration and IMU readings isolated across heterogeneous worlds."""
+    builder = newton.ModelBuilder()
+
+    builder.begin_world(label="two_bodies", gravity=(0.0, 0.0, -2.0))
+    leading_body = _add_free_body(builder, label="leading_body")
+    sensor_body_0 = _add_free_body(builder, label="sensor_body_0")
+    site_0 = builder.add_site(sensor_body_0, label="imu_0")
+    builder.end_world()
+
+    builder.begin_world(label="one_body", gravity=(0.0, 0.0, -7.0))
+    sensor_body_1 = _add_free_body(builder, label="sensor_body_1")
+    site_1 = builder.add_site(sensor_body_1, label="imu_1")
+    builder.end_world()
+
+    model = builder.finalize(device=device)
+    sensor = SensorIMU(model, sites=[site_0, site_1])
+    solver = _make_solver(model)
+    state_in = model.state()
+    state_out = model.state()
+    initial_velocity = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 3.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    state_in.body_qd.assign(initial_velocity)
+    state_in.body_f.assign(
+        [
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 4.0, 0.0, 0.0, 0.0, 0.0],
+        ]
+    )
+
+    solver.step(state_in, state_out, model.control(), None, DT)
+    sensor.update(state_out)
+
+    expected_acceleration = np.array(
+        [
+            [0.0, 0.0, -2.0, 0.0, 0.0, 0.0],
+            [3.0, 0.0, -2.0, 0.0, 0.0, 0.0],
+            [0.0, 4.0, -7.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_array_equal(model.body_world.numpy(), [0, 0, 1])
+    test.assertEqual((leading_body, sensor_body_0, sensor_body_1), (0, 1, 2))
+    np.testing.assert_allclose(state_out.body_qdd.numpy(), expected_acceleration, rtol=0.0, atol=3.0e-4)
+    np.testing.assert_allclose(
+        state_out.body_qd.numpy(),
+        initial_velocity + expected_acceleration * DT,
+        rtol=0.0,
+        atol=3.0e-5,
+    )
+    np.testing.assert_allclose(
+        sensor.accelerometer.numpy(),
+        [[3.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+        rtol=0.0,
+        atol=3.0e-4,
+    )
+    np.testing.assert_allclose(sensor.gyroscope.numpy(), 0.0, rtol=0.0, atol=3.0e-4)
 
 
 def test_rotating_offset_imu(test, device):
@@ -261,6 +326,13 @@ add_function_test(
     TestKaminoSensorIMU,
     "test_body_acceleration_state_ownership",
     test_body_acceleration_state_ownership,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestKaminoSensorIMU,
+    "test_heterogeneous_world_step_isolation",
+    test_heterogeneous_world_step_isolation,
     devices=devices,
     check_output=False,
 )
