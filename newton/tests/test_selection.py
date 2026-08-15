@@ -96,6 +96,33 @@ def make_joint_topology_world(parent_label: str):
 
 
 class TestEntityViews(unittest.TestCase):
+    def _assert_mapped_attribute_read_modify_write(self, device):
+        scene = newton.ModelBuilder()
+        scene.add_world(make_irregular_packing_world(0, 1), label_prefix="env_0")
+        scene.add_world(make_irregular_packing_world(1, 2), label_prefix="env_1")
+        model = scene.finalize(device=device, skip_validation_joints=True)
+        view = _BodyView(
+            model,
+            "env_*/mechanism/*",
+            label_prefixes=["env_0", "env_1"],
+        )
+
+        values = view.get_attribute("body_mass", model)
+        values.assign(values.numpy() + np.array([[[1.0, 2.0]], [[3.0, 4.0]]], dtype=np.float32))
+        view.set_attribute("body_mass", model, values)
+
+        assert_np_equal(view.get_attribute("body_mass", model).numpy(), [[[1.0, 2.0]], [[3.0, 4.0]]])
+        assert_np_equal(model.body_mass.numpy(), [1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 0.0, 4.0])
+
+    def test_mapped_attribute_read_modify_write_cpu(self):
+        """Scatter a mapped CPU attribute when reusing the exact gathered array."""
+        self._assert_mapped_attribute_read_modify_write("cpu")
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_mapped_attribute_read_modify_write_cuda(self):
+        """Scatter a mapped CUDA attribute when reusing the exact gathered array."""
+        self._assert_mapped_attribute_read_modify_write("cuda:0")
+
     def _assert_irregular_packing_access(self, device):
         scene = newton.ModelBuilder()
         scene.add_world(make_irregular_packing_world(0, 1), label_prefix="env_0")

@@ -1517,13 +1517,16 @@ class ArticulationView:
         assert values.shape == attrib.shape
         assert values.dtype == attrib.dtype
 
-        # early out for in-place modifications
-        if isinstance(attrib, wp.array) and isinstance(values, wp.array):
-            if values.ptr == attrib.ptr:
-                return
-        if isinstance(attrib, wp.indexedarray) and isinstance(values, wp.indexedarray):
-            if values.data.ptr == attrib.data.ptr:
-                return
+        is_mapped = hasattr(attrib, "_mapped_source")
+
+        # Only direct views already modify target storage when values alias attrib.
+        if not is_mapped:
+            if isinstance(attrib, wp.array) and isinstance(values, wp.array):
+                if values.ptr == attrib.ptr:
+                    return
+            if isinstance(attrib, wp.indexedarray) and isinstance(values, wp.indexedarray):
+                if values.data.ptr == attrib.data.ptr:
+                    return
 
         # get mask
         if mask is None:
@@ -1531,7 +1534,7 @@ class ArticulationView:
         else:
             mask = self._resolve_mask(mask)
 
-        if hasattr(attrib, "_mapped_source"):
+        if is_mapped:
             if mask.ndim == 1:
                 kernel = (
                     _scatter_mapped_4d_per_world_kernel if attrib.ndim == 4 else _scatter_mapped_3d_per_world_kernel
