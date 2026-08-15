@@ -1250,7 +1250,7 @@ class JointDescriptor(Descriptor):
     DoFs of the joint, i.e. `num_dofs = dof_type.num_dofs`.
 
     Defaults to `[0.0] * num_dofs` if not specified, indicating
-    that the joint has no internal damping and is thus frictionless.
+    that the joint has no viscous damping.
     """
 
     friction_j: ArrayLike | float | None = None

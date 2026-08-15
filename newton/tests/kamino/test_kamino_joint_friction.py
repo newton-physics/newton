@@ -125,18 +125,19 @@ class TestKaminoJointFriction(unittest.TestCase):
         self.assertEqual(solver._model_kamino.joints.friction_j.ptr, model.joint_friction.ptr)
 
     def test_runtime_property_update_changes_friction_effort(self):
-        """Use updated model friction after a joint-property notification."""
+        """Preserve an aliased friction update through a joint-DoF notification."""
         model = _build_revolute_model(self.device, friction=1.0)
         state_in = _make_consistent_state(model)
         state_out = model.state()
         control = model.control()
         solver = SolverKamino(model, config=SolverKamino.Config(joint_friction_velocity_threshold=0.1))
+        self.assertIs(solver._model_kamino.joints.friction_j, model.joint_friction)
 
         solver.step(state_in, state_out, control, contacts=None, dt=1.0e-3)
         self.assertAlmostEqual(float(solver._solver_kamino._data.joints.tau_j.numpy()[0]), -1.0, places=6)
 
         model.joint_friction.assign([0.25])
-        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in, state_out, control, contacts=None, dt=1.0e-3)
         self.assertAlmostEqual(float(solver._solver_kamino._data.joints.tau_j.numpy()[0]), -0.25, places=6)
 
