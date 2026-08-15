@@ -1734,6 +1734,7 @@ def convert_joints(
         tau_j_max=model.joint_effort_limit,
         a_j=model.joint_armature,
         b_j=model.joint_damping,
+        friction_j=model.joint_friction,
         k_p_j=model.joint_target_ke,
         k_d_j=model.joint_target_kd,
         q_j_0=model.joint_q,

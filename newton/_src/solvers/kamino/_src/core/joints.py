@@ -1253,6 +1253,13 @@ class JointDescriptor(Descriptor):
     that the joint has no internal damping and is thus frictionless.
     """
 
+    friction_j: ArrayLike | float | None = None
+    """
+    Coulomb friction effort magnitude along each joint DoF [N or N·m].
+
+    Defaults to `[0.0] * num_dofs` if not specified.
+    """
+
     k_p_j: ArrayLike | float | None = None
     """
     Implicit PD-control proportional gain.
@@ -1519,9 +1526,10 @@ class JointDescriptor(Descriptor):
         self.dq_j_max = self._check_dofs_array(self.dq_j_max, self.num_dofs, float(JOINT_DQMAX))
         self.tau_j_max = self._check_dofs_array(self.tau_j_max, self.num_dofs, float(JOINT_TAUMAX))
 
-        # Set default values for internal inertia, damping, and implicit PD gains if not provided
+        # Set default values for joint dynamics and implicit PD gains if not provided
         self.a_j = self._check_dofs_array(self.a_j, self.num_dofs, 0.0)
         self.b_j = self._check_dofs_array(self.b_j, self.num_dofs, 0.0)
+        self.friction_j = self._check_dofs_array(self.friction_j, self.num_dofs, 0.0)
         self.k_p_j = self._check_dofs_array(self.k_p_j, self.num_dofs, 0.0)
         self.k_d_j = self._check_dofs_array(self.k_d_j, self.num_dofs, 0.0)
 
@@ -1603,6 +1611,7 @@ class JointDescriptor(Descriptor):
             "----------------------------------------------\n"
             f"a_j: {self.a_j},\n"
             f"b_j: {self.b_j},\n"
+            f"friction_j: {self.friction_j},\n"
             f"k_p_j: {self.k_p_j},\n"
             f"k_d_j: {self.k_d_j},\n"
             "----------------------------------------------\n"
@@ -1687,6 +1696,7 @@ class JointDescriptor(Descriptor):
                 - tau_j_max <= 0 for any DoF
                 - a_j < 0 for any DoF
                 - b_j < 0 for any DoF
+                - friction_j < 0 for any DoF
                 - k_p_j < 0 for any DoF
                 - k_d_j < 0 for any DoF
         """
@@ -1705,6 +1715,8 @@ class JointDescriptor(Descriptor):
                 raise ValueError(f"Invalid joint armature: a_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
             if self.b_j[i] < 0:
                 raise ValueError(f"Invalid joint damping: b_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
+            if self.friction_j[i] < 0:
+                raise ValueError(f"Invalid joint friction: friction_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
             if self.k_p_j[i] < 0:
                 raise ValueError(f"Invalid joint proportional gain: k_p_j[{i}] < 0 (name={self.name}, uid={self.uid}).")
             if self.k_d_j[i] < 0:
@@ -1864,6 +1876,12 @@ class JointsModel:
     b_j: wp.array[wp.float32] | None = None
     """
     Internal damping of each joint (as flat array) used for implicit integration of joint dynamics.
+    Shape of ``(sum_of_num_joint_dofs,)``.
+    """
+
+    friction_j: wp.array[wp.float32] | None = None
+    """
+    Coulomb friction effort magnitude of each joint DoF (as flat array) [N or N·m].
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 

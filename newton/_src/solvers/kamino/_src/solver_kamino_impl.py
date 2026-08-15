@@ -74,6 +74,18 @@ __all__ = [
 ]
 
 
+@wp.kernel
+def _prepare_joint_effort(
+    joint_velocity: wp.array[wp.float32],
+    joint_friction: wp.array[wp.float32],
+    velocity_threshold: wp.float32,
+    joint_effort: wp.array[wp.float32],
+):
+    dof = wp.tid()
+    velocity = joint_velocity[dof]
+    joint_effort[dof] -= joint_friction[dof] * velocity / wp.max(wp.abs(velocity), velocity_threshold)
+
+
 ###
 # Interfaces
 ###
@@ -163,6 +175,7 @@ class SolverKaminoImpl(SolverBase):
         self._warmstart_mode = WarmStartMode.from_string(warmstart_mode)
         self._contact_warmstart_method = WarmstarterContacts.Method.from_string(contact_warmstart_method)
         self._rotation_correction: JointCorrectionMode = JointCorrectionMode.from_string(config.rotation_correction)
+        self._joint_friction_velocity_threshold = config.joint_friction_velocity_threshold
 
         # ---------------------------------------------------------------------------
         # TODO: Migrate this entire section into the constructor of `DualProblem`
@@ -837,10 +850,9 @@ class SolverKaminoImpl(SolverBase):
         """
         Updates the internal solver data from the input state and control.
 
-        Control inputs (tau_j, q_j_ref, dq_j_ref, tau_j_ref) are aliased
-        directly to avoid redundant device-to-device copies since they are
-        only read during a step. State arrays must still be copied because
-        the solver modifies them in-place.
+        Reference control inputs are aliased because they are read-only. Raw
+        joint effort is copied into internal scratch before regularized joint
+        friction is applied, preserving the caller's control array.
         """
         # TODO: Remove corresponding data copies
         # by directly using the input containers
@@ -852,8 +864,19 @@ class SolverKaminoImpl(SolverBase):
         wp.copy(self._data.joints.q_j_p, state_in.q_j_p)
         wp.copy(self._data.joints.dq_j, state_in.dq_j)
         wp.copy(self._data.joints.lambda_j, state_in.lambda_j)
-        # Alias read-only control inputs
-        self._data.joints.tau_j = control_in.tau_j
+        wp.copy(self._data.joints.tau_j, control_in.tau_j)
+        wp.launch(
+            _prepare_joint_effort,
+            dim=self._model.size.sum_of_num_joint_dofs,
+            inputs=[
+                self._data.joints.dq_j,
+                self._model.joints.friction_j,
+                self._joint_friction_velocity_threshold,
+                self._data.joints.tau_j,
+            ],
+            device=self.device,
+        )
+        # Alias the remaining read-only control inputs.
         self._data.joints.q_j_ref = control_in.q_j_ref
         self._data.joints.dq_j_ref = control_in.dq_j_ref
         self._data.joints.tau_j_ref = control_in.tau_j_ref

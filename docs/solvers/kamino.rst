@@ -71,3 +71,24 @@ For large bilateral systems, opt into RCM-reordered factorization explicitly:
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
 changes. Keep the default ``"LLTB"`` solver for small systems.
+
+Joint friction
+--------------
+
+Kamino applies :attr:`~newton.Model.joint_friction` as a per-DoF Coulomb
+effort magnitude [N or N·m]. For generalized joint velocity ``dq``, the
+friction effort is
+
+.. math::
+
+   \tau_f = -f \frac{dq}{\max\left(|dq|, v_t\right)},
+
+where ``f`` is the configured joint friction and ``v_t`` is
+:attr:`~newton.solvers.SolverKamino.Config.joint_friction_velocity_threshold`
+[m/s or rad/s]. The effort opposes motion, is bounded by ``f``, and decreases
+linearly to exactly zero within the threshold.
+
+This continuous regularization is suitable for deterministic sliding friction
+but does not model true static stiction at zero velocity. Keep viscous effects
+in :attr:`~newton.Model.joint_damping`; Kamino treats damping and Coulomb
+friction as separate properties.

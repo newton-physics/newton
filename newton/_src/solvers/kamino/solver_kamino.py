@@ -270,6 +270,13 @@ class SolverKamino(SolverBase, CouplingInterface):
         Defaults to `0.0` (i.e. no damping).
         """
 
+        joint_friction_velocity_threshold: float = 1.0e-3
+        """Joint velocity threshold for regularized Coulomb friction [m/s or rad/s].
+
+        Below this magnitude, friction effort decreases linearly to zero. This
+        regularization does not model static stiction. Defaults to ``1.0e-3``.
+        """
+
         collect_solver_info: bool = False
         """
         Enables/disables collection of solver convergence and performance info at each simulation step.\n
@@ -451,6 +458,12 @@ class SolverKamino(SolverBase, CouplingInterface):
                 raise ValueError(
                     f"Invalid angular velocity damping factor: {self.angular_velocity_damping}. "
                     "Must be in the range [0.0, 1.0]."
+                )
+
+            if not np.isfinite(self.joint_friction_velocity_threshold) or self.joint_friction_velocity_threshold <= 0.0:
+                raise ValueError(
+                    "Invalid joint friction velocity threshold: "
+                    f"{self.joint_friction_velocity_threshold}. Must be positive and finite."
                 )
 
         @override

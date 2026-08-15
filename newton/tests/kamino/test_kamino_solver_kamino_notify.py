@@ -234,6 +234,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             ("joint_effort_limit", joints, "tau_j_max"),
             ("joint_armature", joints, "a_j"),
             ("joint_damping", joints, "b_j"),
+            ("joint_friction", joints, "friction_j"),
             ("joint_target_ke", joints, "k_p_j"),
             ("joint_target_kd", joints, "k_d_j"),
             ("shape_scale", geoms, "params"),

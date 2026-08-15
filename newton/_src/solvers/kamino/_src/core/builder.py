@@ -398,6 +398,7 @@ class ModelBuilderKamino:
         tau_j_max: list[float] | float | None = None,
         a_j: list[float] | float | None = None,
         b_j: list[float] | float | None = None,
+        friction_j: list[float] | float | None = None,
         k_p_j: list[float] | float | None = None,
         k_d_j: list[float] | float | None = None,
         name: str | None = None,
@@ -422,6 +423,7 @@ class ModelBuilderKamino:
             tau_j_max: The maximum joint effort limits.
             a_j: The joint armature along each DoF.
             b_j: The joint damping along each DoF.
+            friction_j: The Coulomb friction effort magnitude along each DoF.
             k_p_j: The joint proportional gain along each DoF.
             k_d_j: The joint derivative gain along each DoF.
             name: The name of the joint.
@@ -461,6 +463,7 @@ class ModelBuilderKamino:
             tau_j_max=tau_j_max,
             a_j=a_j,
             b_j=b_j,
+            friction_j=friction_j,
             k_p_j=k_p_j,
             k_d_j=k_d_j,
         )
@@ -1011,6 +1014,7 @@ class ModelBuilderKamino:
         joints_tau_j_max = []
         joints_a_j = []
         joints_b_j = []
+        joints_friction_j = []
         joints_k_p_j = []
         joints_k_d_j = []
         joints_ncoords_j = []
@@ -1149,6 +1153,7 @@ class ModelBuilderKamino:
                 joints_tau_j_max.extend(joint.tau_j_max)
                 joints_a_j.extend(joint.a_j)
                 joints_b_j.extend(joint.b_j)
+                joints_friction_j.extend(joint.friction_j)
                 joints_k_p_j.extend(joint.k_p_j)
                 joints_k_d_j.extend(joint.k_d_j)
                 joints_ncoords_j.append(joint.num_coords)
@@ -1398,6 +1403,7 @@ class ModelBuilderKamino:
                 tau_j_max=wp.array(joints_tau_j_max, dtype=wp.float32, requires_grad=requires_grad),
                 a_j=wp.array(joints_a_j, dtype=wp.float32, requires_grad=requires_grad),
                 b_j=wp.array(joints_b_j, dtype=wp.float32, requires_grad=requires_grad),
+                friction_j=wp.array(joints_friction_j, dtype=wp.float32, requires_grad=requires_grad),
                 k_p_j=wp.array(joints_k_p_j, dtype=wp.float32, requires_grad=requires_grad),
                 k_d_j=wp.array(joints_k_d_j, dtype=wp.float32, requires_grad=requires_grad),
                 q_j_0=wp.array(joints_q_j_0, dtype=wp.float32, requires_grad=requires_grad),
