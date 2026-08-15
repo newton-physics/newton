@@ -1264,7 +1264,7 @@ class ArticulationView:
             else:
                 raise AttributeError(
                     f"Attribute '{name}' has custom frequency '{frequency}' which is not "
-                    f"supported by ArticulationView. Custom frequencies are for custom entity types "
+                    f"supported by {type(self).__name__}. Custom frequencies are for custom entity types "
                     f"that are not part of articulations."
                 )
         else:
@@ -2076,3 +2076,353 @@ class ArticulationView:
             outputs=[dst],
             device=self.device,
         )
+
+
+def _resolve_entity_groups(
+    model: Model,
+    pattern: str | list[str] | re.Pattern[str] | list[int],
+    labels: list[str],
+    world_ids,
+    entity_name: str,
+) -> tuple[list[list[int]], int]:
+    matching_ids = match_labels(labels, pattern)
+    if isinstance(pattern, list) and pattern and isinstance(pattern[0], int):
+        for index in matching_ids:
+            if index < 0 or index >= len(labels):
+                raise ValueError(f"{entity_name.title()} indices must be in range [0, {len(labels)}), got {index}")
+        if any(matching_ids[i] <= matching_ids[i - 1] for i in range(1, len(matching_ids))):
+            raise ValueError(f"{entity_name.title()} indices must be unique and in ascending order")
+
+    grouped_ids = [[] for _ in range(model.world_count)]
+    global_ids = []
+    for index in matching_ids:
+        world = int(world_ids[index])
+        if world == -1:
+            global_ids.append(index)
+        elif 0 <= world < model.world_count:
+            grouped_ids[world].append(index)
+        else:
+            raise ValueError(f"World index out of range: {world}")
+
+    per_world_count = sum(len(ids) for ids in grouped_ids)
+    if per_world_count and global_ids:
+        raise ValueError(
+            f"{entity_name.title()} pattern '{pattern}' matches global and per-world entities, which is not supported"
+        )
+    if not per_world_count and global_ids:
+        grouped_ids = [global_ids]
+    elif not per_world_count:
+        raise KeyError(f"No {entity_name}s matching pattern '{pattern}'")
+
+    return grouped_ids, len(grouped_ids)
+
+
+def _require_uniform_groups(grouped_ids: list[list[int]], entity_name: str) -> None:
+    counts = [len(ids) for ids in grouped_ids]
+    if not all_equal(counts):
+        raise ValueError(
+            f"{entity_name.title()}View requires a uniform {entity_name} layout across worlds; "
+            f"selected counts are {counts}"
+        )
+
+
+def _make_entity_frequency_layout(
+    grouped_indices: list[list[int]],
+    entity_name: str,
+    device,
+) -> FrequencyLayout:
+    if not grouped_indices[0]:
+        return FrequencyLayout(0, 0, 0, 0, [], device)
+
+    starts = [indices[0] for indices in grouped_indices]
+    relative_indices = [
+        [index - start for index in indices] for indices, start in zip(grouped_indices, starts, strict=True)
+    ]
+    if not all_equal(relative_indices):
+        raise ValueError(
+            f"{entity_name.title()}View requires a uniform {entity_name} layout across worlds; "
+            "selected indices have different relative layouts"
+        )
+
+    outer_strides = [starts[i] - starts[i - 1] for i in range(1, len(starts))]
+    if outer_strides and not all_equal(outer_strides):
+        raise ValueError(
+            f"{entity_name.title()}View requires a uniform {entity_name} layout across worlds; "
+            f"world strides are {outer_strides}"
+        )
+
+    local_indices = relative_indices[0]
+    value_count = local_indices[-1] + 1
+    outer_stride = outer_strides[0] if outer_strides else value_count
+    return FrequencyLayout(
+        starts[0],
+        outer_stride,
+        value_count,
+        value_count,
+        local_indices,
+        device,
+    )
+
+
+class _EntityView:
+    """Share ArticulationView's frequency-driven attribute access without its topology."""
+
+    _get_attribute_array = ArticulationView._get_attribute_array
+    _get_attribute_values = ArticulationView._get_attribute_values
+    _set_attribute_values = ArticulationView._set_attribute_values
+    _resolve_mask = ArticulationView._resolve_mask
+
+    def get_attribute(self, name: str, source: Model | State | Control):
+        """Get a selected attribute from a model, state, or control."""
+        return self._get_attribute_values(name, source)
+
+    def set_attribute(
+        self,
+        name: str,
+        target: Model | State | Control,
+        values: wp.array[Any],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Set a selected attribute, optionally restricted by a world or instance mask.
+
+        Args:
+            name: Attribute name.
+            target: Model, state, or control containing the attribute.
+            values: Values in ``(world, instance, value)`` layout.
+            mask: Boolean mask with shape ``(world_count,)`` or
+                ``(world_count, count_per_world)``.
+        """
+        self._set_attribute_values(name, target, values, mask=mask)
+
+
+class JointView(_EntityView):
+    """Select joints by full label and world, independently of articulation topology.
+
+    The selected joints form one instance per world. Joint, coordinate, and DOF
+    attributes use the ``(world, instance, value)`` layout shared with
+    :class:`ArticulationView`. Every world must have the same selected joint types
+    and coordinate/DOF dimensions.
+
+    Args:
+        model: Model containing the joints.
+        pattern: Full-label glob, list of full-label globs, compiled regular
+            expression, or list of absolute joint indices. Regular expressions use
+            full matching. Indices must be unique and in ascending order.
+        include_joint_types: Joint types to include from the pattern matches.
+        exclude_joint_types: Joint types to exclude from the pattern matches.
+        verbose: If True, print a selection summary.
+    """
+
+    @deprecate_nonkeyword_arguments
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str] | list[int],
+        *,
+        include_joint_types: list[int] | None = None,
+        exclude_joint_types: list[int] | None = None,
+        verbose: bool | None = None,
+    ):
+        self.model = model
+        self.device = model.device
+        if verbose is None:
+            verbose = wp.config.log_level <= wp.LOG_DEBUG
+
+        model_joint_world = model.joint_world.numpy()
+        model_joint_type = model.joint_type.numpy()
+        model_joint_q_start = model.joint_q_start.numpy()
+        model_joint_qd_start = model.joint_qd_start.numpy()
+        joint_ids, world_count = _resolve_entity_groups(model, pattern, model.joint_label, model_joint_world, "joint")
+
+        include_types = None if include_joint_types is None else {int(value) for value in include_joint_types}
+        exclude_types = set() if exclude_joint_types is None else {int(value) for value in exclude_joint_types}
+        for world in range(world_count):
+            joint_ids[world] = [
+                joint_id
+                for joint_id in joint_ids[world]
+                if (include_types is None or int(model_joint_type[joint_id]) in include_types)
+                and int(model_joint_type[joint_id]) not in exclude_types
+            ]
+
+        if not any(joint_ids):
+            raise KeyError(f"No joints matching pattern '{pattern}' after applying joint type filters")
+        _require_uniform_groups(joint_ids, "joint")
+
+        signatures = [
+            [
+                (
+                    int(model_joint_type[joint_id]),
+                    int(model_joint_q_start[joint_id + 1] - model_joint_q_start[joint_id]),
+                    int(model_joint_qd_start[joint_id + 1] - model_joint_qd_start[joint_id]),
+                )
+                for joint_id in world_joint_ids
+            ]
+            for world_joint_ids in joint_ids
+        ]
+        if not all_equal(signatures):
+            raise ValueError(
+                "JointView requires a uniform joint layout across worlds; "
+                "selected joint types or coordinate/DOF dimensions differ"
+            )
+
+        joint_coord_ids = [
+            [
+                coord_id
+                for joint_id in world_joint_ids
+                for coord_id in range(model_joint_q_start[joint_id], model_joint_q_start[joint_id + 1])
+            ]
+            for world_joint_ids in joint_ids
+        ]
+        joint_dof_ids = [
+            [
+                dof_id
+                for joint_id in world_joint_ids
+                for dof_id in range(model_joint_qd_start[joint_id], model_joint_qd_start[joint_id + 1])
+            ]
+            for world_joint_ids in joint_ids
+        ]
+
+        template_joint_ids = joint_ids[0]
+        self.joint_labels = [model.joint_label[joint_id] for joint_id in template_joint_ids]
+        self.joint_names = [get_name_from_label(label) for label in self.joint_labels]
+        self.joint_coord_counts = [signature[1] for signature in signatures[0]]
+        self.joint_dof_counts = [signature[2] for signature in signatures[0]]
+        self.joint_coord_names = []
+        self.joint_dof_names = []
+        for name, coord_count, dof_count in zip(
+            self.joint_names, self.joint_coord_counts, self.joint_dof_counts, strict=True
+        ):
+            self.joint_coord_names.extend([name] if coord_count == 1 else [f"{name}:{i}" for i in range(coord_count)])
+            self.joint_dof_names.extend([name] if dof_count == 1 else [f"{name}:{i}" for i in range(dof_count)])
+
+        self.count = world_count
+        self.world_count = world_count
+        self.count_per_world = 1
+        self.joint_count = len(template_joint_ids)
+        self.joint_coord_count = len(joint_coord_ids[0])
+        self.joint_dof_count = len(joint_dof_ids[0])
+        self.frequency_layouts = {
+            AttributeFrequency.JOINT: _make_entity_frequency_layout(joint_ids, "joint", self.device),
+            AttributeFrequency.JOINT_COORD: _make_entity_frequency_layout(joint_coord_ids, "joint", self.device),
+            AttributeFrequency.JOINT_DOF: _make_entity_frequency_layout(joint_dof_ids, "joint", self.device),
+        }
+        self.joints_contiguous = self.frequency_layouts[AttributeFrequency.JOINT].is_contiguous
+        self.joint_coords_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_COORD].is_contiguous
+        self.joint_dofs_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_DOF].is_contiguous
+        self.joint_ids = wp.array([[ids] for ids in joint_ids], dtype=int, device=self.device)
+        self.full_mask = wp.full(world_count, True, dtype=bool, device=self.device)
+
+        if verbose:
+            print(f"Joint '{pattern}': {self.count}")
+            print(f"  Joint count: {self.joint_count}")
+            print(f"  Coordinate count: {self.joint_coord_count}")
+            print(f"  DOF count: {self.joint_dof_count}")
+
+    get_dof_positions = ArticulationView.get_dof_positions
+    set_dof_positions = ArticulationView.set_dof_positions
+    get_dof_velocities = ArticulationView.get_dof_velocities
+    set_dof_velocities = ArticulationView.set_dof_velocities
+    get_dof_forces = ArticulationView.get_dof_forces
+    set_dof_forces = ArticulationView.set_dof_forces
+
+
+class BodyView(_EntityView):
+    """Select bodies and their shapes by full label and world.
+
+    The selected bodies form one instance per world. Body and shape attributes
+    use the ``(world, instance, value)`` layout shared with
+    :class:`ArticulationView`. Every world must have the same number of selected
+    bodies and the same number of shapes per selected body.
+
+    Args:
+        model: Model containing the bodies.
+        pattern: Full-label glob, list of full-label globs, compiled regular
+            expression, or list of absolute body indices. Regular expressions use
+            full matching. Indices must be unique and in ascending order.
+        verbose: If True, print a selection summary.
+    """
+
+    @deprecate_nonkeyword_arguments
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str] | list[int],
+        *,
+        verbose: bool | None = None,
+    ):
+        self.model = model
+        self.device = model.device
+        if verbose is None:
+            verbose = wp.config.log_level <= wp.LOG_DEBUG
+
+        body_ids, world_count = _resolve_entity_groups(
+            model, pattern, model.body_label, model.body_world.numpy(), "body"
+        )
+        _require_uniform_groups(body_ids, "body")
+
+        shape_counts = [[len(model.body_shapes[body_id]) for body_id in world_body_ids] for world_body_ids in body_ids]
+        if not all_equal(shape_counts):
+            raise ValueError(
+                "BodyView requires a uniform body layout across worlds; selected bodies have different shape counts"
+            )
+        shape_ids = [
+            sorted(shape_id for body_id in world_body_ids for shape_id in model.body_shapes[body_id])
+            for world_body_ids in body_ids
+        ]
+
+        template_body_ids = body_ids[0]
+        template_shape_ids = shape_ids[0]
+        self.body_labels = [model.body_label[body_id] for body_id in template_body_ids]
+        self.body_names = [get_name_from_label(label) for label in self.body_labels]
+        self.shape_labels = [model.shape_label[shape_id] for shape_id in template_shape_ids]
+        self.shape_names = [get_name_from_label(label) for label in self.shape_labels]
+        shape_positions = {shape_id: index for index, shape_id in enumerate(template_shape_ids)}
+        self.body_shapes = [
+            [shape_positions[shape_id] for shape_id in model.body_shapes[body_id]] for body_id in template_body_ids
+        ]
+
+        self.count = world_count
+        self.world_count = world_count
+        self.count_per_world = 1
+        self.body_count = len(template_body_ids)
+        self.shape_count = len(template_shape_ids)
+        self.frequency_layouts = {
+            AttributeFrequency.BODY: _make_entity_frequency_layout(body_ids, "body", self.device),
+            AttributeFrequency.SHAPE: _make_entity_frequency_layout(shape_ids, "body", self.device),
+        }
+        self.bodies_contiguous = self.frequency_layouts[AttributeFrequency.BODY].is_contiguous
+        self.shapes_contiguous = self.frequency_layouts[AttributeFrequency.SHAPE].is_contiguous
+        self.body_ids = wp.array([[ids] for ids in body_ids], dtype=int, device=self.device)
+        self.shape_ids = wp.array([[ids] for ids in shape_ids], dtype=int, device=self.device)
+        self.full_mask = wp.full(world_count, True, dtype=bool, device=self.device)
+
+        if verbose:
+            print(f"Body '{pattern}': {self.count}")
+            print(f"  Body count: {self.body_count}")
+            print(f"  Shape count: {self.shape_count}")
+
+    def get_body_transforms(self, source: Model | State):
+        """Get selected body transforms [m, unitless quaternion]."""
+        return self._get_attribute_values("body_q", source)
+
+    def set_body_transforms(
+        self,
+        target: Model | State,
+        values: wp.array[wp.transform],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Set selected body transforms [m, unitless quaternion]."""
+        self._set_attribute_values("body_q", target, values, mask=mask)
+
+    def get_body_velocities(self, source: Model | State):
+        """Get selected body spatial velocities [m/s, rad/s]."""
+        return self._get_attribute_values("body_qd", source)
+
+    def set_body_velocities(
+        self,
+        target: Model | State,
+        values: wp.array[wp.spatial_vector],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Set selected body spatial velocities [m/s, rad/s]."""
+        self._set_attribute_values("body_qd", target, values, mask=mask)

@@ -30,6 +30,173 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
     return body_qd[body_idx, :3] - np.cross(body_qd[body_idx, 3:6], com_world)
 
 
+def make_closed_loop_selection_world():
+    """Build an articulation-free closed loop with interleaved unrelated entities."""
+    builder = newton.ModelBuilder()
+    shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+    base = builder.add_link(label="robot/base")
+    prop = builder.add_link(label="prop/tip")
+    left = builder.add_link(label="robot/left/tip")
+    right = builder.add_link(label="robot/right/tip")
+
+    for body, label in (
+        (base, "robot/base/shape"),
+        (prop, "prop/shape"),
+        (left, "robot/left/shape"),
+        (right, "robot/right/shape"),
+    ):
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg, label=label)
+
+    builder.add_joint_fixed(-1, base, label="robot/base/mount")
+    builder.add_joint_revolute(base, left, label="robot/left/hinge")
+    builder.add_joint_revolute(-1, prop, label="prop/hinge")
+    builder.add_joint_fixed(base, right, label="robot/right/hinge")
+    builder.add_joint_ball(right, left, label="robot/loop/closure")
+    return builder
+
+
+class TestEntityViews(unittest.TestCase):
+    def test_joint_view_selects_articulation_free_closed_loops(self):
+        """Select complete closed-loop joint layouts without articulations."""
+        scene = newton.ModelBuilder()
+        scene.replicate(make_closed_loop_selection_world(), world_count=2)
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+
+        self.assertEqual(model.articulation_count, 0)
+        view = newton.selection.JointView(model, "robot/*")
+
+        self.assertEqual(view.count, 2)
+        self.assertEqual(view.world_count, 2)
+        self.assertEqual(view.count_per_world, 1)
+        self.assertEqual(view.joint_count, 4)
+        self.assertEqual(view.joint_dof_count, 4)
+        self.assertEqual(view.joint_coord_count, 5)
+        self.assertEqual(view.joint_names, ["mount", "hinge", "hinge", "closure"])
+        self.assertEqual(
+            view.joint_labels,
+            ["robot/base/mount", "robot/left/hinge", "robot/right/hinge", "robot/loop/closure"],
+        )
+        assert_np_equal(view.joint_ids.numpy(), [[[0, 1, 3, 4]], [[5, 6, 8, 9]]])
+        self.assertFalse(view.joints_contiguous)
+        self.assertFalse(view.joint_dofs_contiguous)
+        self.assertEqual(view.get_attribute("joint_type", model).shape, (2, 1, 4))
+        self.assertEqual(view.get_dof_positions(model).shape, (2, 1, 5))
+        self.assertEqual(view.get_dof_velocities(model).shape, (2, 1, 4))
+
+    def test_joint_view_gathers_and_mask_scatters_noncontiguous_dofs(self):
+        """Gather selected DOFs and scatter only into worlds enabled by a mask."""
+        scene = newton.ModelBuilder()
+        scene.replicate(make_closed_loop_selection_world(), world_count=2)
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+        state = model.state()
+        view = newton.selection.JointView(model, "robot/*")
+
+        values = np.array([[[10.0, 20.0, 30.0, 40.0]], [[50.0, 60.0, 70.0, 80.0]]], dtype=np.float32)
+        view.set_dof_velocities(state, values, mask=[True, False])
+
+        assert_np_equal(view.get_dof_velocities(state).numpy(), np.array([values[0], np.zeros((1, 4))]))
+        assert_np_equal(state.joint_qd.numpy(), [10.0, 0.0, 20.0, 30.0, 40.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+    def test_joint_view_matches_full_labels_and_filters_types(self):
+        """Match full labels while preserving duplicate leaves and joint-type filters."""
+        scene = newton.ModelBuilder()
+        scene.replicate(make_closed_loop_selection_world(), world_count=2)
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+
+        regex_view = newton.selection.JointView(model, re.compile(r"robot/(left|right)/hinge"))
+        self.assertEqual(regex_view.joint_labels, ["robot/left/hinge", "robot/right/hinge"])
+
+        revolute_view = newton.selection.JointView(
+            model,
+            ["robot/*", "prop/*"],
+            include_joint_types=[newton.JointType.REVOLUTE],
+        )
+        self.assertEqual(revolute_view.joint_labels, ["robot/left/hinge", "prop/hinge"])
+
+        non_fixed_view = newton.selection.JointView(
+            model,
+            "robot/*",
+            exclude_joint_types=[newton.JointType.FIXED],
+        )
+        self.assertEqual(non_fixed_view.joint_labels, ["robot/left/hinge", "robot/loop/closure"])
+
+        with self.assertRaisesRegex(KeyError, "No joints matching pattern"):
+            newton.selection.JointView(model, "missing/*")
+
+    def test_entity_views_reject_unequal_world_layouts(self):
+        """Reject selected entity layouts that differ between worlds."""
+        complete = make_closed_loop_selection_world()
+        incomplete = make_closed_loop_selection_world()
+        incomplete.joint_label[-1] = "other/closure"
+        incomplete.body_label[-1] = "other/tip"
+
+        scene = newton.ModelBuilder()
+        scene.add_world(complete)
+        scene.add_world(incomplete)
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+
+        with self.assertRaisesRegex(ValueError, "uniform joint layout across worlds"):
+            newton.selection.JointView(model, "robot/*")
+        with self.assertRaisesRegex(ValueError, "uniform body layout across worlds"):
+            newton.selection.BodyView(model, "robot/*")
+
+    def test_body_view_selects_shapes_and_mask_scatters_attributes(self):
+        """Select body and shape values and scatter masked non-contiguous attributes."""
+        scene = newton.ModelBuilder()
+        scene.replicate(make_closed_loop_selection_world(), world_count=2)
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+        view = newton.selection.BodyView(model, "robot/*")
+
+        self.assertEqual(view.count, 2)
+        self.assertEqual(view.body_count, 3)
+        self.assertEqual(view.shape_count, 3)
+        self.assertEqual(view.body_names, ["base", "tip", "tip"])
+        self.assertEqual(view.body_labels, ["robot/base", "robot/left/tip", "robot/right/tip"])
+        self.assertEqual(view.body_shapes, [[0], [1], [2]])
+        assert_np_equal(view.body_ids.numpy(), [[[0, 2, 3]], [[4, 6, 7]]])
+        assert_np_equal(view.shape_ids.numpy(), [[[0, 2, 3]], [[4, 6, 7]]])
+        self.assertFalse(view.bodies_contiguous)
+        self.assertFalse(view.shapes_contiguous)
+        self.assertEqual(view.get_body_transforms(model).shape, (2, 1, 3))
+        self.assertEqual(view.get_attribute("shape_margin", model).shape, (2, 1, 3))
+
+        masses = np.array([[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]], dtype=np.float32)
+        view.set_attribute("body_mass", model, masses, mask=[False, True])
+        assert_np_equal(view.get_attribute("body_mass", model).numpy()[1], masses[1])
+        assert_np_equal(model.body_mass.numpy()[:4], np.zeros(4))
+        assert_np_equal(model.body_mass.numpy()[4:], [4.0, 0.0, 5.0, 6.0])
+
+    def test_entity_views_match_articulation_view_on_trees(self):
+        """Match ArticulationView attribute layouts for an equivalent tree selection."""
+        tree = newton.ModelBuilder()
+        root = tree.add_link(label="tree/root")
+        tip = tree.add_link(label="tree/tip")
+        j_root = tree.add_joint_fixed(-1, root, label="tree/root_joint")
+        j_tip = tree.add_joint_revolute(root, tip, label="tree/tip_joint")
+        tree.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1, label="tree/root_shape")
+        tree.add_shape_box(tip, hx=0.1, hy=0.1, hz=0.1, label="tree/tip_shape")
+        tree.add_articulation([j_root, j_tip], label="tree")
+
+        scene = newton.ModelBuilder()
+        scene.replicate(tree, world_count=2)
+        model = scene.finalize(device="cpu")
+        articulation_view = ArticulationView(model, "tree")
+        joint_view = newton.selection.JointView(model, "tree/*_joint")
+        body_view = newton.selection.BodyView(model, ["tree/root", "tree/tip"])
+
+        assert_np_equal(joint_view.get_dof_positions(model).numpy(), articulation_view.get_dof_positions(model).numpy())
+        assert_np_equal(
+            joint_view.get_dof_velocities(model).numpy(), articulation_view.get_dof_velocities(model).numpy()
+        )
+        assert_np_equal(
+            body_view.get_body_transforms(model).numpy(), articulation_view.get_link_transforms(model).numpy()
+        )
+        assert_np_equal(
+            body_view.get_attribute("shape_margin", model).numpy(),
+            articulation_view.get_attribute("shape_margin", model).numpy(),
+        )
+
+
 class TestSelection(unittest.TestCase):
     def test_compiled_regex_selectors(self):
         builder = newton.ModelBuilder()
