@@ -159,6 +159,36 @@ class TestViewerGLFrameBudget(unittest.TestCase):
         ViewerGL.end_frame(v)
         self.assertEqual(v._frame_count, 1)
 
+    def test_zero_num_frames_stops_before_the_first_frame(self):
+        """Verify a zero budget renders nothing at all."""
+        v = _make_gl_running_state(headless=True, num_frames=0)
+        self.assertFalse(ViewerGL.is_running(v))
+
+
+class TestViewerGLNumFramesValidation(unittest.TestCase):
+    """ViewerGL rejects num_frames values that would otherwise fail silently.
+
+    The budget is applied as ``_frame_count < num_frames``, so a non-integer
+    or negative value produces a surprising frame count rather than an error.
+    These inputs are rejected before any GL context is created, so the tests
+    need no display.
+    """
+
+    def test_rejects_non_integer_num_frames(self):
+        """Verify a float num_frames raises TypeError rather than rendering a fractional budget."""
+        with self.assertRaises(TypeError):
+            ViewerGL(num_frames=1.5)  # type: ignore[arg-type]
+
+    def test_rejects_bool_num_frames(self):
+        """Verify a bool num_frames raises TypeError rather than being treated as 0 or 1."""
+        with self.assertRaises(TypeError):
+            ViewerGL(num_frames=True)
+
+    def test_rejects_negative_num_frames(self):
+        """Verify a negative num_frames raises ValueError rather than silently rendering nothing."""
+        with self.assertRaises(ValueError):
+            ViewerGL(num_frames=-1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

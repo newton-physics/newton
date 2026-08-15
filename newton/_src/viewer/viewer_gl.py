@@ -217,12 +217,18 @@ class ViewerGL(ViewerBase):
                 :meth:`log_scalar` signal for the live time-series plots.
             num_frames: Number of frames to render in headless mode before
                 :meth:`is_running` returns False. If None, headless rendering
-                is unbounded. Ignored in windowed mode.
+                is unbounded; if 0, no frames are rendered. Ignored in
+                windowed mode.
         """
         if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
             raise TypeError("plot_history_size must be an integer")
         if plot_history_size <= 0:
             raise ValueError("plot_history_size must be > 0")
+        if num_frames is not None:
+            if not isinstance(num_frames, int) or isinstance(num_frames, bool):
+                raise TypeError("num_frames must be an integer or None")
+            if num_frames < 0:
+                raise ValueError("num_frames must be >= 0")
 
         # Rolling buffers for log_scalar() time-series plots.
         self._scalar_buffers: dict[str, collections.deque] = {}
