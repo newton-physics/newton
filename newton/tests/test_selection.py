@@ -10,6 +10,8 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.utils.selection import BodyView as _BodyView
+from newton._src.utils.selection import JointView as _JointView
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import assert_np_equal
 
@@ -55,7 +57,125 @@ def make_closed_loop_selection_world():
     return builder
 
 
+def make_irregular_packing_world(noise_before: int, noise_between: int, noise_after: int = 0):
+    """Build equivalent selected entities with configurable unrelated packing."""
+    builder = newton.ModelBuilder()
+    shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+
+    before = [builder.add_link(label=f"noise/before_{i}") for i in range(noise_before)]
+    first = builder.add_link(label="mechanism/first")
+    between = [builder.add_link(label=f"noise/between_{i}") for i in range(noise_between)]
+    second = builder.add_link(label="mechanism/second")
+
+    for body in before:
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg, label=f"noise/shape_{body}")
+        builder.add_joint_revolute(-1, body, label=f"noise/joint_{body}")
+    builder.add_shape_box(first, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg, label="mechanism/first/shape")
+    builder.add_joint_revolute(-1, first, label="mechanism/first/joint")
+    for body in between:
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg, label=f"noise/shape_{body}")
+        builder.add_joint_revolute(-1, body, label=f"noise/joint_{body}")
+    builder.add_shape_box(second, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg, label="mechanism/second/shape")
+    builder.add_joint_revolute(first, second, label="mechanism/second/joint")
+    for i in range(noise_after):
+        body = builder.add_link(label=f"noise/after_{i}")
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg, label=f"noise/after_shape_{i}")
+        builder.add_joint_revolute(-1, body, label=f"noise/after_joint_{i}")
+    return builder
+
+
+def make_joint_topology_world(parent_label: str):
+    """Build a labeled joint whose parent can vary without changing its signature."""
+    builder = newton.ModelBuilder()
+    base = builder.add_link(label="mechanism/base")
+    alternate = builder.add_link(label="mechanism/alternate")
+    tip = builder.add_link(label="mechanism/tip")
+    parents = {"base": base, "alternate": alternate}
+    builder.add_joint_revolute(parents[parent_label], tip, label="mechanism/hinge")
+    return builder
+
+
 class TestEntityViews(unittest.TestCase):
+    def _assert_irregular_packing_access(self, device):
+        scene = newton.ModelBuilder()
+        scene.add_world(make_irregular_packing_world(0, 1), label_prefix="env_0")
+        scene.add_world(make_irregular_packing_world(1, 2), label_prefix="env_1")
+        model = scene.finalize(device=device, skip_validation_joints=True)
+        state = model.state()
+        prefixes = ["env_0", "env_1"]
+        joint_view = _JointView(model, "env_*/mechanism/*/joint", label_prefixes=prefixes)
+        body_view = _BodyView(model, "env_*/mechanism/*", label_prefixes=prefixes)
+
+        assert_np_equal(joint_view.joint_ids.numpy(), [[[0, 2]], [[4, 7]]])
+        assert_np_equal(
+            joint_view.get_attribute("joint_type", model).numpy(),
+            np.full((2, 1, 2), int(newton.JointType.REVOLUTE), dtype=np.int32),
+        )
+        assert_np_equal(body_view.body_ids.numpy(), [[[0, 2]], [[4, 7]]])
+        assert_np_equal(body_view.shape_ids.numpy(), [[[0, 2]], [[4, 7]]])
+
+        velocities = np.array([[[11.0, 21.0]], [[31.0, 41.0]]], dtype=np.float32)
+        joint_view.set_dof_velocities(state, velocities)
+        assert_np_equal(joint_view.get_dof_velocities(state).numpy(), velocities)
+        assert_np_equal(state.joint_qd.numpy(), [11.0, 0.0, 21.0, 0.0, 31.0, 0.0, 0.0, 41.0])
+
+        masses = np.array([[[1.0, 2.0]], [[3.0, 4.0]]], dtype=np.float32)
+        body_view.set_attribute("body_mass", model, masses, mask=[False, True])
+        assert_np_equal(body_view.get_attribute("body_mass", model).numpy()[1], masses[1])
+        assert_np_equal(model.body_mass.numpy(), [0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 4.0])
+
+        margins = np.array([[[0.11, 0.21]], [[0.31, 0.41]]], dtype=np.float32)
+        body_view.set_attribute("shape_margin", model, margins)
+        assert_np_equal(body_view.get_attribute("shape_margin", model).numpy(), margins)
+
+    def test_entity_views_support_irregular_world_packing_cpu(self):
+        """Gather and scatter explicit entity IDs across irregular CPU packing."""
+        self._assert_irregular_packing_access("cpu")
+
+    def test_entity_views_support_nonconstant_world_strides(self):
+        """Use explicit IDs when equivalent worlds have nonconstant global spacing."""
+        scene = newton.ModelBuilder()
+        scene.add_world(make_irregular_packing_world(0, 1), label_prefix="env_0")
+        scene.add_world(make_irregular_packing_world(0, 1, 2), label_prefix="env_1")
+        scene.add_world(make_irregular_packing_world(0, 1), label_prefix="env_2")
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+        state = model.state()
+        view = _JointView(
+            model,
+            "env_*/mechanism/*/joint",
+            label_prefixes=["env_0", "env_1", "env_2"],
+        )
+
+        assert_np_equal(view.joint_ids.numpy(), [[[0, 2]], [[3, 5]], [[8, 10]]])
+        values = np.array([[[1.0, 2.0]], [[3.0, 4.0]], [[5.0, 6.0]]], dtype=np.float32)
+        view.set_dof_velocities(state, values)
+        assert_np_equal(view.get_dof_velocities(state).numpy(), values)
+        assert_np_equal(state.joint_qd.numpy(), [1.0, 0.0, 2.0, 3.0, 0.0, 4.0, 0.0, 0.0, 5.0, 0.0, 6.0])
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_entity_views_support_irregular_world_packing_cuda(self):
+        """Gather and scatter explicit entity IDs directly on CUDA."""
+        self._assert_irregular_packing_access("cuda:0")
+
+    def test_joint_view_rejects_parent_child_topology_mismatch(self):
+        """Reject matching joint signatures attached to different relative bodies."""
+        scene = newton.ModelBuilder()
+        scene.add_world(make_joint_topology_world("base"), label_prefix="env_0")
+        scene.add_world(make_joint_topology_world("alternate"), label_prefix="env_1")
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+
+        with self.assertRaisesRegex(ValueError, "parent/child body labels differ"):
+            _JointView(
+                model,
+                "env_*/mechanism/hinge",
+                label_prefixes=["env_0", "env_1"],
+            )
+
+    def test_entity_views_remain_internal_until_api_ownership_is_approved(self):
+        """Keep provisional entity view names out of the public selection module."""
+        self.assertFalse(hasattr(newton.selection, "JointView"))
+        self.assertFalse(hasattr(newton.selection, "BodyView"))
+
     def test_joint_view_selects_articulation_free_closed_loops(self):
         """Select complete closed-loop joint layouts without articulations."""
         scene = newton.ModelBuilder()
@@ -66,7 +186,7 @@ class TestEntityViews(unittest.TestCase):
         with self.assertRaisesRegex(KeyError, "No articulations matching pattern"):
             ArticulationView(model, "robot/*")
 
-        view = newton.selection.JointView(model, "robot/*")
+        view = _JointView(model, "robot/*")
 
         self.assertEqual(view.count, 2)
         self.assertEqual(view.world_count, 2)
@@ -92,7 +212,7 @@ class TestEntityViews(unittest.TestCase):
         scene.replicate(make_closed_loop_selection_world(), world_count=2)
         model = scene.finalize(device="cpu", skip_validation_joints=True)
         state = model.state()
-        view = newton.selection.JointView(model, "robot/*")
+        view = _JointView(model, "robot/*")
 
         values = np.array([[[10.0, 20.0, 30.0, 40.0]], [[50.0, 60.0, 70.0, 80.0]]], dtype=np.float32)
         view.set_dof_velocities(state, values, mask=[True, False])
@@ -106,17 +226,17 @@ class TestEntityViews(unittest.TestCase):
         scene.replicate(make_closed_loop_selection_world(), world_count=2)
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
-        regex_view = newton.selection.JointView(model, re.compile(r"robot/(left|right)/hinge"))
+        regex_view = _JointView(model, re.compile(r"robot/(left|right)/hinge"))
         self.assertEqual(regex_view.joint_labels, ["robot/left/hinge", "robot/right/hinge"])
 
-        revolute_view = newton.selection.JointView(
+        revolute_view = _JointView(
             model,
             ["robot/*", "prop/*"],
             include_joint_types=[newton.JointType.REVOLUTE],
         )
         self.assertEqual(revolute_view.joint_labels, ["robot/left/hinge", "prop/hinge"])
 
-        non_fixed_view = newton.selection.JointView(
+        non_fixed_view = _JointView(
             model,
             "robot/*",
             exclude_joint_types=[newton.JointType.FIXED],
@@ -124,7 +244,7 @@ class TestEntityViews(unittest.TestCase):
         self.assertEqual(non_fixed_view.joint_labels, ["robot/left/hinge", "robot/loop/closure"])
 
         with self.assertRaisesRegex(KeyError, "No joints matching pattern"):
-            newton.selection.JointView(model, "missing/*")
+            _JointView(model, "missing/*")
 
     def test_entity_views_reject_unequal_world_layouts(self):
         """Reject selected entity layouts that differ between worlds."""
@@ -139,9 +259,9 @@ class TestEntityViews(unittest.TestCase):
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
         with self.assertRaisesRegex(ValueError, "uniform joint layout across worlds"):
-            newton.selection.JointView(model, "robot/*")
+            _JointView(model, "robot/*")
         with self.assertRaisesRegex(ValueError, "uniform body layout across worlds"):
-            newton.selection.BodyView(model, "robot/*")
+            _BodyView(model, "robot/*")
 
     def test_joint_view_rejects_equal_count_label_order_mismatch(self):
         """Reject equal-size joint columns with different normalized labels."""
@@ -158,7 +278,7 @@ class TestEntityViews(unittest.TestCase):
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
         with self.assertRaisesRegex(ValueError, "joint labels differ"):
-            newton.selection.JointView(
+            _JointView(
                 model,
                 "env_*/robot/*",
                 label_prefixes=["env_0", "env_1"],
@@ -180,9 +300,9 @@ class TestEntityViews(unittest.TestCase):
         model = scene.finalize(device="cpu")
 
         with self.assertRaisesRegex(ValueError, "joint labels differ"):
-            newton.selection.JointView(model, "robot_*/shared")
+            _JointView(model, "robot_*/shared")
         with self.assertRaisesRegex(ValueError, "body labels differ"):
-            newton.selection.BodyView(model, "robot_*/body")
+            _BodyView(model, "robot_*/body")
 
     def test_body_view_rejects_equal_count_body_order_mismatch(self):
         """Reject equal-size body columns with different normalized labels."""
@@ -199,7 +319,7 @@ class TestEntityViews(unittest.TestCase):
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
         with self.assertRaisesRegex(ValueError, "body labels differ"):
-            newton.selection.BodyView(
+            _BodyView(
                 model,
                 "env_*/robot/*",
                 label_prefixes=["env_0", "env_1"],
@@ -220,7 +340,7 @@ class TestEntityViews(unittest.TestCase):
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
         with self.assertRaisesRegex(ValueError, "shape ownership differs"):
-            newton.selection.BodyView(
+            _BodyView(
                 model,
                 "env_*/robot/*",
                 label_prefixes=["env_0", "env_1"],
@@ -233,12 +353,12 @@ class TestEntityViews(unittest.TestCase):
         scene.add_world(make_closed_loop_selection_world(), label_prefix="env_1")
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
-        joint_view = newton.selection.JointView(
+        joint_view = _JointView(
             model,
             "env_*/robot/*",
             label_prefixes=("env_0", "env_1"),
         )
-        body_view = newton.selection.BodyView(
+        body_view = _BodyView(
             model,
             "env_*/robot/*",
             label_prefixes=["env_0", "env_1"],
@@ -255,11 +375,11 @@ class TestEntityViews(unittest.TestCase):
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
         with self.assertRaisesRegex(ValueError, "joint labels differ"):
-            newton.selection.JointView(model, "env_*/robot/*")
+            _JointView(model, "env_*/robot/*")
         with self.assertRaisesRegex(ValueError, "body labels differ"):
-            newton.selection.BodyView(model, "env_*/robot/*")
+            _BodyView(model, "env_*/robot/*")
 
-        for view_type in (newton.selection.JointView, newton.selection.BodyView):
+        for view_type in (_JointView, _BodyView):
             with self.subTest(view_type=view_type.__name__, error="length"):
                 with self.assertRaisesRegex(ValueError, "label_prefixes length"):
                     view_type(model, "env_*/robot/*", label_prefixes=["env_0"])
@@ -280,10 +400,10 @@ class TestEntityViews(unittest.TestCase):
         """Reject world prefixes for a synthetic global-only world."""
         model = make_closed_loop_selection_world().finalize(device="cpu", skip_validation_joints=True)
 
-        self.assertEqual(newton.selection.JointView(model, "robot/*").world_count, 1)
-        self.assertEqual(newton.selection.BodyView(model, "robot/*").world_count, 1)
+        self.assertEqual(_JointView(model, "robot/*").world_count, 1)
+        self.assertEqual(_BodyView(model, "robot/*").world_count, 1)
 
-        for view_type in (newton.selection.JointView, newton.selection.BodyView):
+        for view_type in (_JointView, _BodyView):
             with self.subTest(view_type=view_type.__name__):
                 with self.assertRaisesRegex(ValueError, "global-only selection"):
                     view_type(model, "robot/*", label_prefixes=["env_0"])
@@ -293,7 +413,7 @@ class TestEntityViews(unittest.TestCase):
         scene = newton.ModelBuilder()
         scene.replicate(make_closed_loop_selection_world(), world_count=2)
         model = scene.finalize(device="cpu", skip_validation_joints=True)
-        view = newton.selection.BodyView(model, "robot/*")
+        view = _BodyView(model, "robot/*")
 
         self.assertEqual(view.count, 2)
         self.assertEqual(view.body_count, 3)
@@ -340,7 +460,7 @@ class TestEntityViews(unittest.TestCase):
         scene.add_world(world, label_prefix="env_0")
         scene.add_world(world, label_prefix="env_1")
         model = scene.finalize(device="cpu")
-        view = newton.selection.BodyView(
+        view = _BodyView(
             model,
             "env_*/robot/*",
             label_prefixes=["env_0", "env_1"],
@@ -368,8 +488,8 @@ class TestEntityViews(unittest.TestCase):
         scene.replicate(tree, world_count=2)
         model = scene.finalize(device="cpu")
         articulation_view = ArticulationView(model, "tree")
-        joint_view = newton.selection.JointView(model, "tree/*_joint")
-        body_view = newton.selection.BodyView(model, ["tree/root", "tree/tip"])
+        joint_view = _JointView(model, "tree/*_joint")
+        body_view = _BodyView(model, ["tree/root", "tree/tip"])
 
         assert_np_equal(joint_view.get_dof_positions(model).numpy(), articulation_view.get_dof_positions(model).numpy())
         assert_np_equal(

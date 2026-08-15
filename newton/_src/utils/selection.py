@@ -214,6 +214,105 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 
 # ========================================================================================
+# Differentiable gather/scatter kernels for explicit per-world entity mappings
+
+
+@wp.kernel
+def _gather_mapped_3d_kernel(
+    src: Any,  # 1d source attribute
+    mapping: wp.array2d[int],
+    dst: Any,  # (world, instance, value)
+):
+    world, instance, value = wp.tid()
+    dst[world, instance, value] = src[mapping[world, value]]
+
+
+@wp.kernel
+def _gather_mapped_4d_kernel(
+    src: Any,  # 2d source attribute
+    mapping: wp.array2d[int],
+    dst: Any,  # (world, instance, value, component)
+):
+    world, instance, value, component = wp.tid()
+    dst[world, instance, value, component] = src[mapping[world, value], component]
+
+
+@wp.kernel
+def _scatter_mapped_3d_per_world_kernel(
+    mask: wp.array[bool],
+    values: Any,
+    mapping: wp.array2d[int],
+    dst: Any,
+):
+    world, instance, value = wp.tid()
+    if mask[world]:
+        dst[mapping[world, value]] = values[world, instance, value]
+
+
+@wp.kernel
+def _scatter_mapped_4d_per_world_kernel(
+    mask: wp.array[bool],
+    values: Any,
+    mapping: wp.array2d[int],
+    dst: Any,
+):
+    world, instance, value, component = wp.tid()
+    if mask[world]:
+        dst[mapping[world, value], component] = values[world, instance, value, component]
+
+
+@wp.kernel
+def _scatter_mapped_3d_kernel(
+    mask: wp.array2d[bool],
+    values: Any,
+    mapping: wp.array2d[int],
+    dst: Any,
+):
+    world, instance, value = wp.tid()
+    if mask[world, instance]:
+        dst[mapping[world, value]] = values[world, instance, value]
+
+
+@wp.kernel
+def _scatter_mapped_4d_kernel(
+    mask: wp.array2d[bool],
+    values: Any,
+    mapping: wp.array2d[int],
+    dst: Any,
+):
+    world, instance, value, component = wp.tid()
+    if mask[world, instance]:
+        dst[mapping[world, value], component] = values[world, instance, value, component]
+
+
+for _dtype in [float, int, wp.transform, wp.spatial_vector]:
+    wp.overload(
+        _gather_mapped_3d_kernel,
+        {"src": wp.array[_dtype], "dst": wp.array3d[_dtype]},
+    )
+    wp.overload(
+        _gather_mapped_4d_kernel,
+        {"src": wp.array2d[_dtype], "dst": wp.array4d[_dtype]},
+    )
+    wp.overload(
+        _scatter_mapped_3d_per_world_kernel,
+        {"values": wp.array3d[_dtype], "dst": wp.array[_dtype]},
+    )
+    wp.overload(
+        _scatter_mapped_4d_per_world_kernel,
+        {"values": wp.array4d[_dtype], "dst": wp.array2d[_dtype]},
+    )
+    wp.overload(
+        _scatter_mapped_3d_kernel,
+        {"values": wp.array3d[_dtype], "dst": wp.array[_dtype]},
+    )
+    wp.overload(
+        _scatter_mapped_4d_kernel,
+        {"values": wp.array4d[_dtype], "dst": wp.array2d[_dtype]},
+    )
+
+
+# ========================================================================================
 # Actuator scatter/gather kernels
 
 
@@ -352,6 +451,7 @@ class FrequencyLayout:
         value_count: int,
         indices: list[int],
         device,
+        mapping: list[list[int]] | None = None,
     ):
         self.offset = offset  # number of values to skip at the beginning of attribute array
         self.stride_between_worlds = stride_between_worlds
@@ -359,7 +459,10 @@ class FrequencyLayout:
         self.value_count = value_count
         self.slice = None
         self.indices = None
-        if len(indices) == 0:
+        self.mapping = None
+        if mapping is not None:
+            self.mapping = wp.array2d(mapping, dtype=int, device=device)
+        elif len(indices) == 0:
             self.slice = slice(0, 0)
         elif is_contiguous_slice(indices):
             self.slice = slice(indices[0], indices[-1] + 1)
@@ -368,17 +471,19 @@ class FrequencyLayout:
 
     @property
     def is_contiguous(self):
-        return self.slice is not None
+        return self.mapping is None and self.slice is not None
 
     @property
     def selected_value_count(self):
-        if self.slice is not None:
+        if self.mapping is not None:
+            return self.mapping.shape[1]
+        elif self.slice is not None:
             return self.slice.stop - self.slice.start
         else:
             return len(self.indices)
 
     def __str__(self):
-        indices = self.indices if self.indices is not None else self.slice
+        indices = self.mapping if self.mapping is not None else self.indices if self.indices is not None else self.slice
         return f"FrequencyLayout(\n    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n)"
 
 
@@ -1284,6 +1389,20 @@ class ArticulationView:
         elif not isinstance(_slice, (NoneType, int, slice)):
             raise ValueError(f"Invalid slice type: expected slice or int, got {type(_slice)}")
 
+        if layout.mapping is not None:
+            if _slice is not None:
+                raise NotImplementedError("Explicit entity mappings do not support custom attribute slices")
+            shape = (self.world_count, self.count_per_world, layout.value_count, *attrib.shape[1:])
+            result = wp.empty(
+                shape,
+                dtype=attrib.dtype,
+                device=attrib.device,
+                requires_grad=attrib.requires_grad,
+            )
+            result._mapped_source = attrib
+            result._mapped_indices = layout.mapping
+            return result
+
         if _slice is None:
             value_slice = layout.indices if is_indexed else layout.slice
             value_count = layout.value_count
@@ -1359,6 +1478,16 @@ class ArticulationView:
 
     def _get_attribute_values(self, name: str, source: Model | State | Control, _slice: slice | None = None):
         attrib = self._get_attribute_array(name, source, _slice=_slice)
+        if hasattr(attrib, "_mapped_source"):
+            kernel = _gather_mapped_4d_kernel if attrib.ndim == 4 else _gather_mapped_3d_kernel
+            wp.launch(
+                kernel,
+                dim=attrib.shape,
+                inputs=[attrib._mapped_source, attrib._mapped_indices],
+                outputs=[attrib],
+                device=self.device,
+            )
+            return attrib
         if hasattr(attrib, "_staging_array"):
             if hasattr(attrib, "_gather_src"):
                 kernel = _gather_indexed_4d_kernel if attrib.ndim == 4 else _gather_indexed_3d_kernel
@@ -1401,6 +1530,22 @@ class ArticulationView:
             mask = self.full_mask
         else:
             mask = self._resolve_mask(mask)
+
+        if hasattr(attrib, "_mapped_source"):
+            if mask.ndim == 1:
+                kernel = (
+                    _scatter_mapped_4d_per_world_kernel if attrib.ndim == 4 else _scatter_mapped_3d_per_world_kernel
+                )
+            else:
+                kernel = _scatter_mapped_4d_kernel if attrib.ndim == 4 else _scatter_mapped_3d_kernel
+            wp.launch(
+                kernel,
+                dim=attrib.shape,
+                inputs=[mask, values, attrib._mapped_indices],
+                outputs=[attrib._mapped_source],
+                device=self.device,
+            )
+            return
 
         # launch appropriate kernel based on attribute dimensionality
         # TODO: cache concrete overload per attribute?
@@ -2119,16 +2264,26 @@ def _get_group_labels(
     entity_name: str,
 ) -> list[list[str]]:
     grouped_labels = [[labels[selected_id] for selected_id in selected_ids] for selected_ids in grouped_ids]
+    return _normalize_group_labels(grouped_labels, label_prefixes, global_only, view_name, entity_name)
+
+
+def _normalize_group_labels(
+    grouped_labels: list[list[str | None]],
+    label_prefixes: list[str] | tuple[str, ...] | None,
+    global_only: bool,
+    view_name: str,
+    entity_name: str,
+) -> list[list[str | None]]:
     if label_prefixes is None:
         return grouped_labels
     if global_only:
         raise ValueError(f"{view_name} label_prefixes cannot be used with a global-only selection")
     if not isinstance(label_prefixes, (list, tuple)):
         raise TypeError(f"{view_name} label_prefixes must be a list or tuple of strings")
-    if len(label_prefixes) != len(grouped_ids):
+    if len(label_prefixes) != len(grouped_labels):
         raise ValueError(
             f"{view_name} label_prefixes length {len(label_prefixes)} must match selected model world count "
-            f"{len(grouped_ids)}"
+            f"{len(grouped_labels)}"
         )
 
     normalized_groups = []
@@ -2140,6 +2295,9 @@ def _get_group_labels(
         prefix_with_separator = f"{prefix}/"
         normalized_labels = []
         for label in world_labels:
+            if label is None:
+                normalized_labels.append(None)
+                continue
             if not label.startswith(prefix_with_separator):
                 raise ValueError(
                     f"{view_name} {entity_name} label '{label}' in world {world} does not start with "
@@ -2172,16 +2330,16 @@ def _make_entity_frequency_layout(
     relative_indices = [
         [index - start for index in indices] for indices, start in zip(grouped_indices, starts, strict=True)
     ]
-    if not all_equal(relative_indices):
-        raise ValueError(
-            f"{view_name} requires a uniform {frequency_name} layout across worlds; "
-            "selected indices have different relative layouts"
-        )
-
     outer_strides = [starts[i] - starts[i - 1] for i in range(1, len(starts))]
-    if outer_strides and not all_equal(outer_strides):
-        raise ValueError(
-            f"{view_name} requires a uniform {frequency_name} layout across worlds; world strides are {outer_strides}"
+    if not all_equal(relative_indices) or (outer_strides and not all_equal(outer_strides)):
+        return FrequencyLayout(
+            0,
+            0,
+            0,
+            len(grouped_indices[0]),
+            [],
+            device,
+            mapping=grouped_indices,
         )
 
     local_indices = relative_indices[0]
@@ -2350,6 +2508,38 @@ class JointView(_EntityView):
             raise ValueError(
                 "JointView requires a uniform joint layout across worlds; "
                 "selected joint types or coordinate/DOF dimensions differ"
+            )
+
+        model_joint_parent = model.joint_parent.numpy()
+        model_joint_child = model.joint_child.numpy()
+        parent_labels = _normalize_group_labels(
+            [
+                [
+                    None if model_joint_parent[joint_id] < 0 else model.body_label[model_joint_parent[joint_id]]
+                    for joint_id in ids
+                ]
+                for ids in joint_ids
+            ],
+            label_prefixes,
+            global_only,
+            "JointView",
+            "joint parent body",
+        )
+        child_labels = _normalize_group_labels(
+            [[model.body_label[model_joint_child[joint_id]] for joint_id in ids] for ids in joint_ids],
+            label_prefixes,
+            global_only,
+            "JointView",
+            "joint child body",
+        )
+        topology = [
+            list(zip(parents, children, strict=True))
+            for parents, children in zip(parent_labels, child_labels, strict=True)
+        ]
+        if not all_equal(topology):
+            raise ValueError(
+                "JointView requires a uniform joint topology across worlds; "
+                f"parent/child body labels differ: {topology}"
             )
 
         joint_coord_ids = [
