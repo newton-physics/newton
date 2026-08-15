@@ -10702,6 +10702,7 @@ class ModelBuilder:
         particle_count = self.particle_count
         particle_arrays = (
             ("particle_qd", self.particle_qd),
+            ("particle_display_color", self.particle_display_color),
             ("particle_mass", self.particle_mass),
             ("particle_radius", self.particle_radius),
             ("particle_flags", self.particle_flags),
