@@ -4,11 +4,6 @@
 newton.solvers.style3d
 ======================
 
-Style3D solver module.
-
-This module provides helper functions for setting up Style3D cloth assets.
-Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver class.
-
 .. note::
 
    This page documents helper functions exposed through the ``newton.solvers.style3d`` attribute.
@@ -16,6 +11,11 @@ Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver class.
    ``from newton.solvers import style3d`` instead of ``import newton.solvers.style3d``.
 
 .. currentmodule:: newton._src.solvers.style3d
+
+Style3D solver module.
+
+This module provides helper functions for setting up Style3D cloth assets.
+Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver class.
 
 .. rubric:: Functions
 

@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.utils import selection as _selection_utils
 from newton._src.utils.selection import BodyView as _BodyView
 from newton._src.utils.selection import JointView as _JointView
 from newton.selection import ArticulationView
@@ -96,6 +97,125 @@ def make_joint_topology_world(parent_label: str):
 
 
 class TestEntityViews(unittest.TestCase):
+    def test_mapped_kernels_declare_core_dtype_overloads(self):
+        """Declare mapped gather and scatter overloads for every core attribute dtype."""
+        dtypes = (
+            float,
+            int,
+            wp.bool,
+            wp.uint64,
+            wp.vec2i,
+            wp.vec3i,
+            wp.vec3,
+            wp.mat33,
+            wp.transform,
+            wp.spatial_vector,
+        )
+        overloads = (
+            (
+                _selection_utils._gather_mapped_3d_kernel,
+                lambda dtype: [wp.array[dtype], wp.array2d[int], wp.array3d[dtype]],
+            ),
+            (
+                _selection_utils._gather_mapped_4d_kernel,
+                lambda dtype: [wp.array2d[dtype], wp.array2d[int], wp.array4d[dtype]],
+            ),
+            (
+                _selection_utils._scatter_mapped_3d_per_world_kernel,
+                lambda dtype: [wp.array[bool], wp.array3d[dtype], wp.array2d[int], wp.array[dtype]],
+            ),
+            (
+                _selection_utils._scatter_mapped_4d_per_world_kernel,
+                lambda dtype: [wp.array[bool], wp.array4d[dtype], wp.array2d[int], wp.array2d[dtype]],
+            ),
+            (
+                _selection_utils._scatter_mapped_3d_kernel,
+                lambda dtype: [wp.array2d[bool], wp.array3d[dtype], wp.array2d[int], wp.array[dtype]],
+            ),
+            (
+                _selection_utils._scatter_mapped_4d_kernel,
+                lambda dtype: [wp.array2d[bool], wp.array4d[dtype], wp.array2d[int], wp.array2d[dtype]],
+            ),
+        )
+
+        for kernel, signature in overloads:
+            for dtype in dtypes:
+                with self.subTest(kernel=kernel.key, dtype=dtype):
+                    self.assertIsNotNone(kernel.get_overload(signature(dtype)))
+
+    def _assert_mapped_core_attribute_dtypes(self, device):
+        scene = newton.ModelBuilder()
+        scene.add_world(make_irregular_packing_world(0, 1), label_prefix="env_0")
+        scene.add_world(make_irregular_packing_world(1, 2), label_prefix="env_1")
+        model = scene.finalize(device=device, skip_validation_joints=True)
+        prefixes = ["env_0", "env_1"]
+        body_view = _BodyView(model, "env_*/mechanism/*", label_prefixes=prefixes)
+        joint_view = _JointView(model, "env_*/mechanism/*/joint", label_prefixes=prefixes)
+
+        cases = (
+            (
+                body_view,
+                "body_com",
+                np.arange(12, dtype=np.float32).reshape(2, 1, 2, 3),
+            ),
+            (
+                body_view,
+                "body_inertia",
+                np.arange(36, dtype=np.float32).reshape(2, 1, 2, 3, 3),
+            ),
+            (
+                body_view,
+                "shape_is_solid",
+                np.array([[[True, False]], [[False, True]]], dtype=np.bool_),
+            ),
+            (
+                body_view,
+                "shape_source_ptr",
+                np.array([[[101, 102]], [[103, 104]]], dtype=np.uint64),
+            ),
+            (
+                body_view,
+                "shape_edge_range",
+                np.arange(8, dtype=np.int32).reshape(2, 1, 2, 2),
+            ),
+            (
+                body_view,
+                "_shape_voxel_resolution",
+                np.arange(12, dtype=np.int32).reshape(2, 1, 2, 3),
+            ),
+            (
+                joint_view,
+                "joint_enabled",
+                np.array([[[True, False]], [[False, True]]], dtype=np.bool_),
+            ),
+            (
+                joint_view,
+                "joint_axis",
+                np.arange(12, dtype=np.float32).reshape(2, 1, 2, 3),
+            ),
+            (
+                joint_view,
+                "joint_dof_dim",
+                np.arange(8, dtype=np.int32).reshape(2, 1, 2, 2),
+            ),
+        )
+
+        for view, attribute, expected in cases:
+            with self.subTest(attribute=attribute, device=device):
+                values = view.get_attribute(attribute, model)
+                values.assign(expected)
+                view.set_attribute(attribute, model, values)
+                assert_np_equal(view.get_attribute(attribute, model).numpy(), expected)
+
+    def test_mapped_core_attribute_dtypes_cpu(self):
+        """Round-trip mapped core attribute dtypes on CPU."""
+        self._assert_mapped_core_attribute_dtypes("cpu")
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_mapped_core_attribute_dtypes_cuda(self):
+        """Round-trip mapped core attribute dtypes directly on CUDA."""
+        self._assert_mapped_core_attribute_dtypes("cuda:0")
+
     def _assert_mapped_attribute_read_modify_write(self, device):
         scene = newton.ModelBuilder()
         scene.add_world(make_irregular_packing_world(0, 1), label_prefix="env_0")

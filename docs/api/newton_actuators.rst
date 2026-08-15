@@ -4,6 +4,9 @@
 newton.actuators
 ================
 
+.. py:module:: newton.actuators
+.. currentmodule:: newton.actuators
+
 GPU-accelerated actuator models for physics simulations.
 
 This module provides a modular library of actuator components — controllers,
@@ -16,9 +19,6 @@ construction.
 
     The actuator API may change without prior notice. Feedback is welcome —
     please file issues or discussion threads.
-
-.. py:module:: newton.actuators
-.. currentmodule:: newton.actuators
 
 .. rubric:: Classes
 

@@ -263,10 +263,7 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
         "",
     ]
 
-    # Module docstring if available
     doc = (module.__doc__ or "").strip()
-    if doc:
-        lines.extend([doc, ""])
 
     if uses_internal_solver_module:
         lines.extend(
@@ -283,6 +280,10 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
         )
     else:
         lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
+
+    # Resolve short cross-references in module prose against its public module.
+    if doc:
+        lines.extend([doc, ""])
 
     # Render submodules as direct document links instead of autosummary stubs.
     # Child module pages still need hidden toctree edges to satisfy Sphinx.

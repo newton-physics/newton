@@ -4,6 +4,9 @@
 newton.controllers
 ==================
 
+.. py:module:: newton.controllers
+.. currentmodule:: newton.controllers
+
 GPU-accelerated, vectorized control laws.
 
 This module provides standalone controllers that compute signals
@@ -11,9 +14,6 @@ for the robot to track. Each controller is a concrete
 subclass of :class:`ControllerBase`.
 
 .. experimental::
-
-.. py:module:: newton.controllers
-.. currentmodule:: newton.controllers
 
 .. rubric:: Classes
 

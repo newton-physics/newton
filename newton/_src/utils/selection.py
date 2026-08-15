@@ -285,7 +285,18 @@ def _scatter_mapped_4d_kernel(
         dst[mapping[world, value], component] = values[world, instance, value, component]
 
 
-for _dtype in [float, int, wp.transform, wp.spatial_vector]:
+for _dtype in (
+    float,
+    int,
+    wp.bool,
+    wp.uint64,
+    wp.vec2i,
+    wp.vec3i,
+    wp.vec3,
+    wp.mat33,
+    wp.transform,
+    wp.spatial_vector,
+):
     wp.overload(
         _gather_mapped_3d_kernel,
         {"src": wp.array[_dtype], "dst": wp.array3d[_dtype]},

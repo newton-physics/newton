@@ -4,12 +4,12 @@
 newton.solvers.experimental
 ===========================
 
+.. py:module:: newton.solvers.experimental
+.. currentmodule:: newton.solvers.experimental
+
 Experimental solver namespaces.
 
 .. experimental::
-
-.. py:module:: newton.solvers.experimental
-.. currentmodule:: newton.solvers.experimental
 
 .. toctree::
    :hidden:

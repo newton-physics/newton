@@ -4,6 +4,9 @@
 newton.solvers
 ==============
 
+.. py:module:: newton.solvers
+.. currentmodule:: newton.solvers
+
 Solvers integrate the dynamics of a :class:`~newton.Model` through the common
 :class:`~newton.solvers.SolverBase` interface. Newton provides backends for
 rigid articulated systems, maximal-coordinate constraints, particles, and
@@ -13,9 +16,6 @@ For solver-selection guidance and the feature, contact-material, joint-support,
 and differentiability comparisons, see the :doc:`Solvers guide </solvers/index>`.
 Installed-wheel users can use the stable hosted guide at
 https://newton-physics.github.io/newton/stable/solvers/index.html.
-
-.. py:module:: newton.solvers
-.. currentmodule:: newton.solvers
 
 .. toctree::
    :hidden:
