@@ -4,6 +4,12 @@
 newton.selection
 ================
 
+Structured selection views for model entities.
+
+Use :class:`ArticulationView` for tree-specific roots and reduced-coordinate
+operators. Use :class:`JointView` or :class:`BodyView` for topology-independent
+attribute access and masks, including closed-loop mechanisms without articulations.
+
 .. py:module:: newton.selection
 .. currentmodule:: newton.selection
 
@@ -14,3 +20,5 @@ newton.selection
    :nosignatures:
 
    ArticulationView
+   BodyView
+   JointView

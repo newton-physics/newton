@@ -198,10 +198,10 @@ class TestEntityViews(unittest.TestCase):
                 label_prefixes=["env_0", "env_1"],
             )
 
-    def test_entity_views_remain_internal_until_api_ownership_is_approved(self):
-        """Keep provisional entity view names out of the public selection module."""
-        self.assertFalse(hasattr(newton.selection, "JointView"))
-        self.assertFalse(hasattr(newton.selection, "BodyView"))
+    def test_entity_views_are_exported_from_selection(self):
+        """Export the validated entity views from the public selection module."""
+        self.assertIs(newton.selection.JointView, _JointView)
+        self.assertIs(newton.selection.BodyView, _BodyView)
 
     def test_joint_view_selects_articulation_free_closed_loops(self):
         """Select complete closed-loop joint layouts without articulations."""
