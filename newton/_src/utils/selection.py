@@ -2085,7 +2085,7 @@ def _resolve_entity_groups(
     labels: list[str],
     world_ids,
     entity_name: str,
-) -> tuple[list[list[int]], int]:
+) -> tuple[list[list[int]], int, bool]:
     grouped_ids, global_ids = find_matching_ids(
         pattern,
         labels,
@@ -2101,49 +2101,53 @@ def _resolve_entity_groups(
         )
     if not per_world_count and global_ids:
         grouped_ids = [global_ids]
+        global_only = True
     elif not per_world_count:
         raise KeyError(f"No {entity_name}s matching pattern '{pattern}'")
+    else:
+        global_only = False
 
-    return grouped_ids, len(grouped_ids)
+    return grouped_ids, len(grouped_ids), global_only
 
 
-def _canonical_group_labels(labels: list[str], grouped_ids: list[list[int]]) -> list[list[str]]:
-    label_parts = [
-        [[part for part in labels[selected_id].split("/") if part] for selected_id in selected_ids]
-        for selected_ids in grouped_ids
-    ]
-    raw_groups = [["/".join(parts) for parts in group] for group in label_parts]
-    if len(label_parts) < 2 or not label_parts[0]:
-        return raw_groups
+def _get_group_labels(
+    labels: list[str],
+    grouped_ids: list[list[int]],
+    label_prefixes: list[str] | tuple[str, ...] | None,
+    global_only: bool,
+    view_name: str,
+    entity_name: str,
+) -> list[list[str]]:
+    grouped_labels = [[labels[selected_id] for selected_id in selected_ids] for selected_ids in grouped_ids]
+    if label_prefixes is None:
+        return grouped_labels
+    if global_only:
+        raise ValueError(f"{view_name} label_prefixes cannot be used with a global-only selection")
+    if not isinstance(label_prefixes, (list, tuple)):
+        raise TypeError(f"{view_name} label_prefixes must be a list or tuple of strings")
+    if len(label_prefixes) != len(grouped_ids):
+        raise ValueError(
+            f"{view_name} label_prefixes length {len(label_prefixes)} must match selected model world count "
+            f"{len(grouped_ids)}"
+        )
 
-    differing_components = set()
-    for column, template_parts in enumerate(label_parts[0]):
-        column_parts = [group[column] for group in label_parts]
-        if any(len(parts) != len(template_parts) for parts in column_parts[1:]):
-            return raw_groups
-        for component in range(len(template_parts)):
-            if any(parts[component] != template_parts[component] for parts in column_parts[1:]):
-                differing_components.add(component)
-
-    # add_world() prepends one world namespace. Normalize only one uniformly
-    # varying non-leaf component so semantic path differences remain visible.
-    if len(differing_components) != 1:
-        return raw_groups
-    prefix_component = differing_components.pop()
-    if any(prefix_component >= len(parts) - 1 for group in label_parts for parts in group):
-        return raw_groups
-    if any(len({parts[prefix_component] for parts in group}) != 1 for group in label_parts):
-        return raw_groups
-
-    canonical_groups = []
-    for group in label_parts:
-        canonical_group = []
-        for parts in group:
-            canonical_parts = parts.copy()
-            canonical_parts[prefix_component] = "<world>"
-            canonical_group.append("/".join(canonical_parts))
-        canonical_groups.append(canonical_group)
-    return canonical_groups
+    normalized_groups = []
+    for world, (prefix, world_labels) in enumerate(zip(label_prefixes, grouped_labels, strict=True)):
+        if not isinstance(prefix, str):
+            raise TypeError(f"{view_name} label prefix for world {world} must be a string")
+        if not prefix:
+            raise ValueError(f"{view_name} label prefix for world {world} must not be empty")
+        prefix_with_separator = f"{prefix}/"
+        normalized_labels = []
+        for label in world_labels:
+            if not label.startswith(prefix_with_separator):
+                raise ValueError(
+                    f"{view_name} {entity_name} label '{label}' in world {world} does not start with "
+                    f"label prefix '{prefix_with_separator}'"
+                )
+            normalized_labels.append(label[len(prefix_with_separator) :])
+        normalized_groups.append(normalized_labels)
+    return normalized_groups
 
 
 def _require_uniform_groups(grouped_ids: list[list[int]], entity_name: str) -> None:
@@ -2242,18 +2246,41 @@ class JointView(_EntityView):
 
     The selected joints form one instance per world. Joint, coordinate, and DOF
     attributes use ``(world, instance, value)`` layout. Every world must have the
-    same ordered canonical joint labels, joint types, and coordinate/DOF
-    dimensions. A selection containing only global entities is represented as one
-    synthetic world. Matching both global and per-world entities is rejected.
+    same ordered full joint labels, joint types, and coordinate/DOF dimensions.
+    Exact per-world label prefixes can be removed explicitly before comparing
+    labels. A selection containing only global entities is represented as one
+    synthetic world; ``label_prefixes`` is rejected for such a selection. Matching
+    both global and per-world entities is also rejected.
 
     Args:
         model: Model containing the joints.
         pattern: Full-label glob, list of full-label globs, compiled regular
             expression, or list of absolute joint indices. Regular expressions use
             full matching. Indices must be unique and in ascending order.
+        label_prefixes: Exact label prefix for each selected model world, in
+            world-index order. For example, ``["env_0", "env_1"]`` strips
+            ``"env_0/"`` and ``"env_1/"`` respectively before full-label column
+            comparison. Prefixes are not inferred or treated as patterns. The
+            length must equal the selected model world count. Must be None for a
+            global-only selection.
         include_joint_types: Joint types to include from the pattern matches.
         exclude_joint_types: Joint types to exclude from the pattern matches.
         verbose: If True, print a selection summary.
+
+    Raises:
+        TypeError: If ``label_prefixes`` is not a list or tuple of strings.
+        ValueError: If world layouts or full labels differ, a prefix count or
+            boundary is invalid, prefixes are provided for global-only entities,
+            or the pattern mixes global and per-world entities.
+
+    Example:
+        Select matching joint columns from explicitly prefixed worlds::
+
+            view = JointView(
+                model,
+                "env_*/robot/*",
+                label_prefixes=["env_0", "env_1"],
+            )
     """
 
     @deprecate_nonkeyword_arguments
@@ -2262,6 +2289,7 @@ class JointView(_EntityView):
         model: Model,
         pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
+        label_prefixes: list[str] | tuple[str, ...] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         verbose: bool | None = None,
@@ -2275,7 +2303,9 @@ class JointView(_EntityView):
         model_joint_type = model.joint_type.numpy()
         model_joint_q_start = model.joint_q_start.numpy()
         model_joint_qd_start = model.joint_qd_start.numpy()
-        joint_ids, world_count = _resolve_entity_groups(model, pattern, model.joint_label, model_joint_world, "joint")
+        joint_ids, world_count, global_only = _resolve_entity_groups(
+            model, pattern, model.joint_label, model_joint_world, "joint"
+        )
 
         include_types = None if include_joint_types is None else {int(value) for value in include_joint_types}
         exclude_types = set() if exclude_joint_types is None else {int(value) for value in exclude_joint_types}
@@ -2291,11 +2321,18 @@ class JointView(_EntityView):
             raise KeyError(f"No joints matching pattern '{pattern}' after applying joint type filters")
         _require_uniform_groups(joint_ids, "joint")
 
-        canonical_joint_labels = _canonical_group_labels(model.joint_label, joint_ids)
-        if not all_equal(canonical_joint_labels):
+        normalized_joint_labels = _get_group_labels(
+            model.joint_label,
+            joint_ids,
+            label_prefixes,
+            global_only,
+            "JointView",
+            "joint",
+        )
+        if not all_equal(normalized_joint_labels):
             raise ValueError(
-                "JointView requires a uniform joint layout across worlds; canonical joint labels differ: "
-                f"{canonical_joint_labels}"
+                "JointView requires a uniform joint layout across worlds; selected joint labels differ: "
+                f"{normalized_joint_labels}"
             )
 
         signatures = [
@@ -2456,16 +2493,40 @@ class BodyView(_EntityView):
 
     The selected bodies form one instance per world. Body and shape attributes use
     ``(world, instance, value)`` layout. Every world must have the same ordered
-    canonical body labels and the same ordered canonical shapes per selected body.
-    A selection containing only global entities is represented as one synthetic
-    world. Matching both global and per-world entities is rejected.
+    full body labels and the same ordered full shape labels per selected body.
+    Exact per-world label prefixes can be removed explicitly before comparing
+    labels. A selection containing only global entities is represented as one
+    synthetic world; ``label_prefixes`` is rejected for such a selection. Matching
+    both global and per-world entities is also rejected.
 
     Args:
         model: Model containing the bodies.
         pattern: Full-label glob, list of full-label globs, compiled regular
             expression, or list of absolute body indices. Regular expressions use
             full matching. Indices must be unique and in ascending order.
+        label_prefixes: Exact label prefix for each selected model world, in
+            world-index order. For example, ``["env_0", "env_1"]`` strips
+            ``"env_0/"`` and ``"env_1/"`` respectively before full-label column
+            comparison. Prefixes are not inferred or treated as patterns. The
+            length must equal the selected model world count. Must be None for a
+            global-only selection.
         verbose: If True, print a selection summary.
+
+    Raises:
+        TypeError: If ``label_prefixes`` is not a list or tuple of strings.
+        ValueError: If world layouts, full labels, or per-body shape ownership
+            differ; a prefix count or boundary is invalid; prefixes are provided
+            for global-only entities; or the pattern mixes global and per-world
+            entities.
+
+    Example:
+        Select matching body columns from explicitly prefixed worlds::
+
+            view = BodyView(
+                model,
+                "env_*/robot/*",
+                label_prefixes=["env_0", "env_1"],
+            )
     """
 
     @deprecate_nonkeyword_arguments
@@ -2474,6 +2535,7 @@ class BodyView(_EntityView):
         model: Model,
         pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
+        label_prefixes: list[str] | tuple[str, ...] | None = None,
         verbose: bool | None = None,
     ):
         self.model = model
@@ -2481,16 +2543,23 @@ class BodyView(_EntityView):
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
 
-        body_ids, world_count = _resolve_entity_groups(
+        body_ids, world_count, global_only = _resolve_entity_groups(
             model, pattern, model.body_label, model.body_world.numpy(), "body"
         )
         _require_uniform_groups(body_ids, "body")
 
-        canonical_body_labels = _canonical_group_labels(model.body_label, body_ids)
-        if not all_equal(canonical_body_labels):
+        normalized_body_labels = _get_group_labels(
+            model.body_label,
+            body_ids,
+            label_prefixes,
+            global_only,
+            "BodyView",
+            "body",
+        )
+        if not all_equal(normalized_body_labels):
             raise ValueError(
-                "BodyView requires a uniform body layout across worlds; canonical body labels differ: "
-                f"{canonical_body_labels}"
+                "BodyView requires a uniform body layout across worlds; selected body labels differ: "
+                f"{normalized_body_labels}"
             )
 
         shape_counts = [[len(model.body_shapes[body_id]) for body_id in world_body_ids] for world_body_ids in body_ids]
@@ -2502,20 +2571,27 @@ class BodyView(_EntityView):
             [shape_id for body_id in world_body_ids for shape_id in model.body_shapes[body_id]]
             for world_body_ids in body_ids
         ]
-        canonical_shape_labels = _canonical_group_labels(model.shape_label, shape_ids)
-        canonical_shape_ownership = []
+        normalized_shape_labels = _get_group_labels(
+            model.shape_label,
+            shape_ids,
+            label_prefixes,
+            global_only,
+            "BodyView",
+            "shape",
+        )
+        normalized_shape_ownership = []
         for world, world_body_ids in enumerate(body_ids):
             offset = 0
             world_ownership = []
             for body_id in world_body_ids:
                 shape_count = len(model.body_shapes[body_id])
-                world_ownership.append(tuple(canonical_shape_labels[world][offset : offset + shape_count]))
+                world_ownership.append(tuple(normalized_shape_labels[world][offset : offset + shape_count]))
                 offset += shape_count
-            canonical_shape_ownership.append(world_ownership)
-        if not all_equal(canonical_shape_ownership):
+            normalized_shape_ownership.append(world_ownership)
+        if not all_equal(normalized_shape_ownership):
             raise ValueError(
-                "BodyView requires a uniform shape layout across worlds; canonical shape ownership differs: "
-                f"{canonical_shape_ownership}"
+                "BodyView requires a uniform shape layout across worlds; selected shape ownership differs: "
+                f"{normalized_shape_ownership}"
             )
 
         template_body_ids = body_ids[0]

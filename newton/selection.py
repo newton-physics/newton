@@ -3,9 +3,9 @@
 
 """Structured selection views for model entities.
 
-Use :class:`ArticulationView` for tree-specific roots, masks, and reduced-coordinate
+Use :class:`ArticulationView` for tree-specific roots and reduced-coordinate
 operators. Use :class:`JointView` or :class:`BodyView` for topology-independent
-attribute access, including closed-loop mechanisms without articulations.
+attribute access and masks, including closed-loop mechanisms without articulations.
 """
 
 from ._src.utils.selection import ArticulationView, BodyView, JointView

@@ -63,6 +63,9 @@ class TestEntityViews(unittest.TestCase):
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
         self.assertEqual(model.articulation_count, 0)
+        with self.assertRaisesRegex(KeyError, "No articulations matching pattern"):
+            ArticulationView(model, "robot/*")
+
         view = newton.selection.JointView(model, "robot/*")
 
         self.assertEqual(view.count, 2)
@@ -141,7 +144,7 @@ class TestEntityViews(unittest.TestCase):
             newton.selection.BodyView(model, "robot/*")
 
     def test_joint_view_rejects_equal_count_label_order_mismatch(self):
-        """Reject equal-size joint columns with different canonical labels."""
+        """Reject equal-size joint columns with different normalized labels."""
         expected = make_closed_loop_selection_world()
         mismatched = make_closed_loop_selection_world()
         mismatched.joint_label[0], mismatched.joint_label[3] = (
@@ -154,11 +157,15 @@ class TestEntityViews(unittest.TestCase):
         scene.add_world(mismatched, label_prefix="env_1")
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
-        with self.assertRaisesRegex(ValueError, "canonical joint labels differ"):
-            newton.selection.JointView(model, "env_*/robot/*")
+        with self.assertRaisesRegex(ValueError, "joint labels differ"):
+            newton.selection.JointView(
+                model,
+                "env_*/robot/*",
+                label_prefixes=["env_0", "env_1"],
+            )
 
-    def test_joint_view_rejects_same_leaf_under_different_paths(self):
-        """Reject semantic path mismatches hidden by equal joint leaf names."""
+    def test_entity_views_reject_same_leaf_under_different_paths(self):
+        """Reject semantic path mismatches hidden by equal entity leaf names."""
         expected = newton.ModelBuilder()
         expected_body = expected.add_link(label="robot_a/body")
         expected.add_joint_revolute(-1, expected_body, label="robot_a/shared")
@@ -168,15 +175,17 @@ class TestEntityViews(unittest.TestCase):
         mismatched.add_joint_revolute(-1, mismatched_body, label="robot_b/shared")
 
         scene = newton.ModelBuilder()
-        scene.add_world(expected, label_prefix="env_0")
-        scene.add_world(mismatched, label_prefix="env_1")
+        scene.add_world(expected)
+        scene.add_world(mismatched)
         model = scene.finalize(device="cpu")
 
-        with self.assertRaisesRegex(ValueError, "canonical joint labels differ"):
-            newton.selection.JointView(model, "env_*/*/shared")
+        with self.assertRaisesRegex(ValueError, "joint labels differ"):
+            newton.selection.JointView(model, "robot_*/shared")
+        with self.assertRaisesRegex(ValueError, "body labels differ"):
+            newton.selection.BodyView(model, "robot_*/body")
 
     def test_body_view_rejects_equal_count_body_order_mismatch(self):
-        """Reject equal-size body columns with different canonical labels."""
+        """Reject equal-size body columns with different normalized labels."""
         expected = make_closed_loop_selection_world()
         mismatched = make_closed_loop_selection_world()
         mismatched.body_label[0], mismatched.body_label[2] = (
@@ -189,11 +198,15 @@ class TestEntityViews(unittest.TestCase):
         scene.add_world(mismatched, label_prefix="env_1")
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
-        with self.assertRaisesRegex(ValueError, "canonical body labels differ"):
-            newton.selection.BodyView(model, "env_*/robot/*")
+        with self.assertRaisesRegex(ValueError, "body labels differ"):
+            newton.selection.BodyView(
+                model,
+                "env_*/robot/*",
+                label_prefixes=["env_0", "env_1"],
+            )
 
     def test_body_view_rejects_equal_count_shape_ownership_mismatch(self):
-        """Reject equal-size shape columns assigned to different canonical bodies."""
+        """Reject equal-size shape columns assigned to different normalized bodies."""
         expected = make_closed_loop_selection_world()
         mismatched = make_closed_loop_selection_world()
         mismatched.shape_label[0], mismatched.shape_label[2] = (
@@ -206,8 +219,74 @@ class TestEntityViews(unittest.TestCase):
         scene.add_world(mismatched, label_prefix="env_1")
         model = scene.finalize(device="cpu", skip_validation_joints=True)
 
-        with self.assertRaisesRegex(ValueError, "canonical shape ownership differs"):
+        with self.assertRaisesRegex(ValueError, "shape ownership differs"):
+            newton.selection.BodyView(
+                model,
+                "env_*/robot/*",
+                label_prefixes=["env_0", "env_1"],
+            )
+
+    def test_entity_views_accept_explicit_world_label_prefixes(self):
+        """Strip exact world prefixes before validating entity columns."""
+        scene = newton.ModelBuilder()
+        scene.add_world(make_closed_loop_selection_world(), label_prefix="env_0")
+        scene.add_world(make_closed_loop_selection_world(), label_prefix="env_1")
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+
+        joint_view = newton.selection.JointView(
+            model,
+            "env_*/robot/*",
+            label_prefixes=("env_0", "env_1"),
+        )
+        body_view = newton.selection.BodyView(
+            model,
+            "env_*/robot/*",
+            label_prefixes=["env_0", "env_1"],
+        )
+
+        self.assertEqual(joint_view.joint_count, 4)
+        self.assertEqual(body_view.body_count, 3)
+
+    def test_entity_views_require_explicit_valid_world_label_prefixes(self):
+        """Reject missing, incomplete, or non-matching world prefixes."""
+        scene = newton.ModelBuilder()
+        scene.add_world(make_closed_loop_selection_world(), label_prefix="env_0")
+        scene.add_world(make_closed_loop_selection_world(), label_prefix="env_1")
+        model = scene.finalize(device="cpu", skip_validation_joints=True)
+
+        with self.assertRaisesRegex(ValueError, "joint labels differ"):
+            newton.selection.JointView(model, "env_*/robot/*")
+        with self.assertRaisesRegex(ValueError, "body labels differ"):
             newton.selection.BodyView(model, "env_*/robot/*")
+
+        for view_type in (newton.selection.JointView, newton.selection.BodyView):
+            with self.subTest(view_type=view_type.__name__, error="length"):
+                with self.assertRaisesRegex(ValueError, "label_prefixes length"):
+                    view_type(model, "env_*/robot/*", label_prefixes=["env_0"])
+            with self.subTest(view_type=view_type.__name__, error="boundary"):
+                with self.assertRaisesRegex(ValueError, "does not start with label prefix"):
+                    view_type(model, "env_*/robot/*", label_prefixes=["env", "env_1"])
+            with self.subTest(view_type=view_type.__name__, error="world"):
+                with self.assertRaisesRegex(ValueError, "does not start with label prefix"):
+                    view_type(model, "env_*/robot/*", label_prefixes=["env_0", "env_0"])
+            with self.subTest(view_type=view_type.__name__, error="empty"):
+                with self.assertRaisesRegex(ValueError, "must not be empty"):
+                    view_type(model, "env_*/robot/*", label_prefixes=["env_0", ""])
+            with self.subTest(view_type=view_type.__name__, error="type"):
+                with self.assertRaisesRegex(TypeError, "must be a string"):
+                    view_type(model, "env_*/robot/*", label_prefixes=["env_0", 1])
+
+    def test_entity_views_reject_label_prefixes_for_global_entities(self):
+        """Reject world prefixes for a synthetic global-only world."""
+        model = make_closed_loop_selection_world().finalize(device="cpu", skip_validation_joints=True)
+
+        self.assertEqual(newton.selection.JointView(model, "robot/*").world_count, 1)
+        self.assertEqual(newton.selection.BodyView(model, "robot/*").world_count, 1)
+
+        for view_type in (newton.selection.JointView, newton.selection.BodyView):
+            with self.subTest(view_type=view_type.__name__):
+                with self.assertRaisesRegex(ValueError, "global-only selection"):
+                    view_type(model, "robot/*", label_prefixes=["env_0"])
 
     def test_body_view_selects_shapes_and_mask_scatters_attributes(self):
         """Select body and shape values and scatter masked non-contiguous attributes."""
@@ -261,7 +340,11 @@ class TestEntityViews(unittest.TestCase):
         scene.add_world(world, label_prefix="env_0")
         scene.add_world(world, label_prefix="env_1")
         model = scene.finalize(device="cpu")
-        view = newton.selection.BodyView(model, "env_*/robot/*")
+        view = newton.selection.BodyView(
+            model,
+            "env_*/robot/*",
+            label_prefixes=["env_0", "env_1"],
+        )
 
         self.assertEqual(view.body_shapes, [[0], [1]])
         assert_np_equal(view.shape_ids.numpy(), [[[1, 0]], [[3, 2]]])
