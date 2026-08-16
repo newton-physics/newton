@@ -78,6 +78,8 @@ class Example:
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, GRAVITY))
         builder.rigid_gap = 0.001
         builder.default_shape_cfg.ke = 1.0e4
+        if self.solver_name == "vbd":
+            builder.default_shape_cfg.ke = 1.0e5
         builder.default_shape_cfg.kd = 0.0
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 1.0
@@ -118,7 +120,11 @@ class Example:
         if self.solver_name == "xpbd":
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=20, enable_restitution=True)
         elif self.solver_name == "vbd":
-            self.solver = newton.solvers.SolverVBD(self.model, iterations=10, rigid_contact_hard=False)
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=10,
+                rigid_compliant_alm=True,
+            )
         elif self.solver_name == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=2048, nconmax=1024, cone="elliptic")
         elif self.solver_name == "featherstone":

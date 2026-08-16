@@ -17,11 +17,6 @@
 # calibration and verifies the discrete cable path behaves like a linear bend
 # spring with the correct stiffness ratios.
 #
-# A reference Euler-Bernoulli deflection (delta = F * L^3 / (3 * E*I)) is also
-# rendered using E*I = bend_stiffness * segment_length. The discrete rod has a
-# slightly different effective continuum stiffness, so that overlay is a guide
-# rather than the pass/fail gate.
-#
 # Other assertions:
 #   - Deflection decreases monotonically as bend stiffness increases.
 #   - Tip stays close to its original Y, so the bend load does not leak sideways.
@@ -51,7 +46,6 @@ class Example:
     CABLE_RADIUS = 0.01
     TIP_FORCE_MAX = 0.5  # N, applied in -Z at the tip body
     BEND_STIFFNESS_VALUES = (100.0, 300.0, 900.0)  # 3x ratio between consecutive cables
-    HOOKE_REFERENCE_DELTA_TIMES_K = 41.0
     Y_SEPARATION = 0.40
 
     # Slow ramp + long hold reaches a quiet steady state without oscillating.
@@ -66,7 +60,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 10
+        self.sim_iterations = 20
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.cable_length = self.NUM_ELEMENTS * self.SEGMENT_LENGTH
@@ -118,7 +112,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -193,60 +187,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self._log_hooke_reference()
         self.viewer.end_frame()
-
-    @staticmethod
-    def _log_polyline(viewer, name: str, points: np.ndarray, color: tuple[float, float, float], width: float) -> None:
-        viewer.log_lines(
-            name,
-            wp.array(points[:-1].astype(np.float32), dtype=wp.vec3),
-            wp.array(points[1:].astype(np.float32), dtype=wp.vec3),
-            color,
-            width=width,
-        )
-
-    def _log_point_markers(
-        self,
-        name: str,
-        points: np.ndarray,
-        color: tuple[float, float, float],
-        radius: float,
-    ) -> None:
-        self.viewer.log_points(
-            name,
-            wp.array(points.astype(np.float32), dtype=wp.vec3),
-            wp.array(np.full(len(points), radius, dtype=np.float32), dtype=wp.float32),
-            wp.array(np.tile(np.asarray(color, dtype=np.float32), (len(points), 1)), dtype=wp.vec3),
-        )
-
-    def _log_hooke_reference(self) -> None:
-        curve_color = (0.0, 0.85, 0.35)
-        marker_color = (0.0, 1.0, 0.45)
-        markers = []
-        for i, bend_stiffness in enumerate(self.BEND_STIFFNESS_VALUES):
-            x_tip = self._tip_rest_x[i]
-            y = self._tip_rest_y[i]
-            z0 = self.tip_rest_z[i]
-            delta = self.HOOKE_REFERENCE_DELTA_TIMES_K / bend_stiffness
-            xs = np.linspace(0.0, x_tip, 32, dtype=np.float64)
-            s = xs / max(x_tip, 1.0e-12)
-            zs = z0 - delta * (s * s * (3.0 - s) * 0.5)
-            points = np.column_stack((xs, np.full_like(xs, y), zs))
-            self._log_polyline(self.viewer, f"/bend_reference/hooke_curve_{i}", points, curve_color, 0.014)
-
-            tip = np.array([x_tip, y, z0 - delta], dtype=np.float64)
-            markers.append(tip)
-            bar = np.array(
-                [
-                    [x_tip - 0.055, y, z0 - delta],
-                    [x_tip + 0.055, y, z0 - delta],
-                ],
-                dtype=np.float64,
-            )
-            self._log_polyline(self.viewer, f"/bend_reference/tip_bar_{i}", bar, marker_color, 0.022)
-
-        self._log_point_markers("/bend_reference/tip_markers", np.asarray(markers), marker_color, 0.018)
 
     def _measured_tip_state(self) -> list[tuple[float, float, float]]:
         """Return per-cable (deflection_z, displacement_x, displacement_y) at the tip."""
@@ -259,11 +200,6 @@ class Example:
             dy = float(tip_pos[1] - self._tip_rest_y[i])
             out.append((dz, dx, dy))
         return out
-
-    def _eb_reference_deflection(self, bend_stiffness: float) -> float:
-        L = self.cable_length
-        EI = bend_stiffness * self.SEGMENT_LENGTH
-        return self.TIP_FORCE_MAX * L**3 / (3.0 * EI)
 
     def test_final(self):
         states = self._measured_tip_state()

@@ -1992,6 +1992,7 @@ class NarrowPhase:
         mesh_edge_centers: wp.array[wp.vec4] | None = None,
         mesh_edge_halves: wp.array[wp.vec4] | None = None,
         shape_edge_range: wp.array[wp.vec2i] | None = None,
+        hydroelastic_shape_sdf_data_prepared: bool = False,
         shape_linear_velocity: wp.array[wp.vec3] | None = None,
         shape_angular_velocity: wp.array[wp.vec3] | None = None,
         collision_update_dt: float = 0.0,
@@ -2027,6 +2028,7 @@ class NarrowPhase:
             mesh_edge_centers: Packed precomputed mesh edge centers [m].
             mesh_edge_halves: Packed precomputed mesh edge half-vectors [m].
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
+            hydroelastic_shape_sdf_data_prepared: Whether finalized hydroelastic SDF descriptors were cached upstream.
             shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.
             shape_angular_velocity: Shape angular velocities [rad/s]. Required in speculative mode.
             collision_update_dt: Collision prediction horizon [s].
@@ -2470,6 +2472,7 @@ class NarrowPhase:
                 self.shape_pairs_sdf_sdf,
                 self.shape_pairs_sdf_sdf_count,
                 writer_data,
+                hydroelastic_shape_sdf_data_prepared,
             )
 
         # Verify no collision pipeline buffers overflowed

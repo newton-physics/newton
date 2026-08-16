@@ -46,8 +46,8 @@ FRANKA_Q = [
 # Cable: 19 capsule segments spaced 0.02 m (20 nodes), radius 0.005 m, per IsaacLab.
 CABLE_CENTER = wp.vec3(0.5, 0.0, 0.256)
 CABLE_LENGTH = 0.38
-CABLE_CONTACT_KE = 1.0e4
-CABLE_CONTACT_KD = 1.0e-5 * CABLE_CONTACT_KE
+CABLE_CONTACT_KE = 1.0e3
+CABLE_CONTACT_KD = 1.0e-1
 
 # Top-down gripper orientation: 180 deg about world x flips the hand z-axis to -z.
 GRIPPER_DOWN = (1.0, 0.0, 0.0, 0.0)  # (qx, qy, qz, qw)
@@ -170,6 +170,15 @@ class Example:
         builder.replicate(template, world_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
 
+        # Match the gripper side to the cable material without overwriting
+        # unrelated Franka shapes imported from URDF.
+        gripper_bodies = set(self.gripper_bodies)
+        for shape, body in enumerate(builder.shape_body):
+            if body in gripper_bodies:
+                builder.shape_material_ke[shape] = CABLE_CONTACT_KE
+                builder.shape_material_kd[shape] = CABLE_CONTACT_KD
+                builder.shape_material_mu[shape] = 1.0
+
         # Working surface (cable rests on it).
         plane_cfg = newton.ModelBuilder.ShapeConfig(
             ke=CABLE_CONTACT_KE, kd=CABLE_CONTACT_KD, mu=1.0, margin=0.0, gap=0.01
@@ -185,11 +194,6 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         self.device = self.model.device
-
-        # Uniform rigid contact material across all shapes (IsaacLab NewtonModelCfg).
-        self.model.shape_material_ke.fill_(CABLE_CONTACT_KE)
-        self.model.shape_material_kd.fill_(CABLE_CONTACT_KD)
-        self.model.shape_material_mu.fill_(1.0)
 
         # Build keyframe sequence now that the cable pose is known.
         self._build_keyframes()
@@ -243,13 +247,13 @@ class Example:
             num_segments=self.payload_segments,
             twist_total=0.0,
         )
-        stretch_stiffness = 1.0e6
-        bend_stiffness = 5.0e-4
+        stretch_stiffness = 1.0e2
+        bend_stiffness = 4.0e-4
         builder.add_rod(
             positions=points,
             quaternions=quats,
             radius=self.payload_radius,
-            body_frame_origin="start",
+            body_frame_origin="com",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=1.0e-1,
@@ -313,8 +317,7 @@ class Example:
                     solver=lambda v: SolverVBD(
                         model=v,
                         iterations=int(args.vbd_iterations),
-                        rigid_avbd_beta=float(args.vbd_rigid_avbd_beta),
-                        rigid_contact_k_start=float(args.vbd_rigid_contact_k_start),
+                        rigid_compliant_alm=True,
                         rigid_contact_history=False,
                     ),
                     bodies=self.payload_bodies,
@@ -544,18 +547,6 @@ class Example:
         parser.add_argument("--payload-segments", type=int, default=19, help="Number of cable segments.")
         parser.add_argument("--payload-radius", type=float, default=0.005, help="Cable radius [m].")
         parser.add_argument("--vbd-iterations", type=int, default=20, help="VBD iterations per coupled substep.")
-        parser.add_argument(
-            "--vbd-rigid-avbd-beta",
-            type=float,
-            default=1.0e2,
-            help="VBD AVBD penalty ramp rate per iteration (0 disables ramping).",
-        )
-        parser.add_argument(
-            "--vbd-rigid-contact-k-start",
-            type=float,
-            default=1.0e3,
-            help="VBD body-particle contact penalty seed when AVBD ramping is enabled.",
-        )
         parser.add_argument("--mujoco-iterations", type=int, default=100, help="MuJoCo solver iterations.")
         parser.add_argument("--mujoco-ls-iterations", type=int, default=20, help="MuJoCo line-search iterations.")
         parser.add_argument(
@@ -570,7 +561,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = Example.create_parser()
-    parser.set_defaults(num_frames=400)
+    parser.set_defaults(num_frames=330)
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
