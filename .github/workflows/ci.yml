@@ -42,15 +42,15 @@ jobs:
       - name: Test CI tooling
         run: uv run --no-project -m unittest discover -s scripts/ci/tests
       - name: Test minimal import (Python 3.10)
-        run: uv run --python 3.10 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+        run: uv run --python 3.10 python -c "import newton; newton.ModelBuilder(); print(f'Newton {newton.__version__} imported successfully')"
       - name: Test minimal import (Python 3.11)
-        run: uv run --python 3.11 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+        run: uv run --python 3.11 python -c "import newton; newton.ModelBuilder(); print(f'Newton {newton.__version__} imported successfully')"
       - name: Test minimal import (Python 3.12)
-        run: uv run --python 3.12 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+        run: uv run --python 3.12 python -c "import newton; newton.ModelBuilder(); print(f'Newton {newton.__version__} imported successfully')"
       - name: Test minimal import (Python 3.13)
-        run: uv run --python 3.13 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+        run: uv run --python 3.13 python -c "import newton; newton.ModelBuilder(); print(f'Newton {newton.__version__} imported successfully')"
       - name: Test minimal import (Python 3.14)
-        run: uv run --python 3.14 python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+        run: uv run --python 3.14 python -c "import newton; newton.ModelBuilder(); print(f'Newton {newton.__version__} imported successfully')"
 
   dependency-install-test:
     needs: minimal-import-test
