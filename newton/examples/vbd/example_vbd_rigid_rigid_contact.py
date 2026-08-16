@@ -26,6 +26,7 @@ PARAMS = {
     "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
     "shape_size": 0.042,
     "shape_margin": 0.005,
+    "rigid_gap": 0.01,
     "box_width_scale": 10.0,
     "box_depth_scale": 10.0,
     "box_height_scale": 5.0,
@@ -68,6 +69,7 @@ def _load_bear_mesh(target_size):
 
 def build_model(builder, params, seed=42):
     rng = np.random.default_rng(seed)
+    builder.rigid_gap = params["rigid_gap"]
 
     r = params["shape_size"]
     hx = r * params["box_width_scale"] / 2
@@ -196,8 +198,8 @@ def setup_sim(builder, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
+        rigid_compliant_alm=True,
         rigid_body_contact_buffer_size=params["rigid_body_contact_buffer_size"],
-        # rigid_contact_hard=False,
     )
 
     return model, solver

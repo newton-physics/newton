@@ -289,23 +289,29 @@ class USDImporter:
         return wp.quat_from_matrix(R_g)
 
     @staticmethod
-    def _make_faces_from_counts(indices: np.ndarray, counts: Iterable[int], prim_path: str) -> np.ndarray:
-        faces = []
-        face_id = 0
-        for count in counts:
-            if count == 3:
-                faces.append(indices[face_id : face_id + 3])
-            elif count == 4:
-                faces.append(indices[face_id : face_id + 3])
-                faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-            else:
-                msg.error(
-                    f"Error while parsing USD mesh {prim_path}: "
-                    f"encountered polygon with {count} vertices, but only triangles and quads are supported."
-                )
-                continue
-            face_id += count
-        return np.array(faces, dtype=np.int32).flatten()
+    def _read_mesh(geom_prim) -> dict[str, np.ndarray | None]:
+        """Read mesh data from a USD prim via Newton's shared USD reader.
+
+        Delegating keeps this importer's handling of ``primvars:normals``, indexed
+        primvars, face-varying interpolation and n-gon triangulation consistent with
+        :func:`newton.usd.get_mesh`.
+
+        Stage units are deliberately not applied: unlike the primitive shapes above,
+        mesh vertices are consumed in stage-authored units here.
+
+        Args:
+            geom_prim: The ``UsdGeom.Mesh`` prim to read.
+
+        Returns:
+            Keyword arguments for :class:`MeshShape`.
+        """
+        mesh = usd_utils.get_mesh(
+            prim=geom_prim,
+            load_normals=True,
+            compute_inertia=False,
+            apply_stage_units=False,
+        )
+        return {"vertices": mesh.vertices, "indices": mesh.indices, "normals": mesh.normals}
 
     def _get_attribute(self, prim, name) -> Any:
         return prim.GetAttribute(name)
@@ -1457,28 +1463,8 @@ class USDImporter:
                 shape = EllipsoidShape(rx=rx, ry=ry, rz=rz)
 
         elif geom_type == self.UsdGeom.Mesh:
-            # Retrieve the mesh data from the USD mesh prim
-            usd_mesh = self.UsdGeom.Mesh(geom_prim)
-            usd_mesh_path = usd_mesh.GetPath()
-
-            # Extract mandatory mesh attributes
-            points = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float32)
-            indices = np.array(usd_mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-            counts = usd_mesh.GetFaceVertexCountsAttr().Get()
-
-            # Extract optional normals attribute if defined
-            normals = (
-                np.array(usd_mesh.GetNormalsAttr().Get(), dtype=np.float32)
-                if usd_mesh.GetNormalsAttr().IsDefined()
-                else None
-            )
-
-            # Extract triangle face indices from the mesh data
-            # NOTE: This handles both triangle and quad meshes
-            faces = self._make_faces_from_counts(indices, counts, usd_mesh_path)
-
             # Create the mesh shape (i.e. wrapper around newton.geometry.Mesh)
-            shape = MeshShape(vertices=points, indices=faces, normals=normals)
+            shape = MeshShape(**self._read_mesh(geom_prim))
         else:
             raise ValueError(
                 f"Unsupported UsdGeom type: {geom_type}. Supported types: {self.supported_usd_geom_types}."
@@ -1632,28 +1618,8 @@ class USDImporter:
                 shape = EllipsoidShape(rx=rx, ry=ry, rz=rz)
 
         elif geom_type == self.UsdPhysics.ObjectType.MeshShape:
-            # Retrieve the mesh data from the USD mesh prim
-            usd_mesh = self.UsdGeom.Mesh(geom_prim)
-            usd_mesh_path = usd_mesh.GetPath()
-
-            # Extract mandatory mesh attributes
-            points = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float32)
-            indices = np.array(usd_mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-            counts = usd_mesh.GetFaceVertexCountsAttr().Get()
-
-            # Extract optional normals attribute if defined
-            normals = (
-                np.array(usd_mesh.GetNormalsAttr().Get(), dtype=np.float32)
-                if usd_mesh.GetNormalsAttr().IsDefined()
-                else None
-            )
-
-            # Extract triangle face indices from the mesh data
-            # NOTE: This handles both triangle and quad meshes
-            faces = self._make_faces_from_counts(indices, counts, usd_mesh_path)
-
             # Create the mesh shape (i.e. wrapper around newton.geometry.Mesh)
-            shape = MeshShape(vertices=points, indices=faces, normals=normals)
+            shape = MeshShape(**self._read_mesh(geom_prim))
             is_mesh_shape = True
         else:
             raise ValueError(
