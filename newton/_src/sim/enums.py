@@ -174,7 +174,7 @@ class JointType(IntEnum):
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
     CABLE = 7
-    """Cable joint: 7-coordinate relative pose and 6-DoF relative twist."""
+    """Experimental cable joint: 7-coordinate relative pose and 6-DoF relative twist."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """
@@ -220,7 +220,8 @@ class JointType(IntEnum):
 
         Notes:
             - For PRISMATIC and REVOLUTE joints, this equals 5 (single DoF axis).
-            - For FREE, DISTANCE, and CABLE joints, `cts_count = 0` since they yield no constraints.
+            - For FREE, DISTANCE, and CABLE joints, `cts_count = 0` since they yield no generic
+              kinematic constraints.
             - For FIXED joints, `cts_count = 6` since it fully constrains the associated bodies.
         """
         cts_count = 6 - num_axes

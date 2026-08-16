@@ -444,7 +444,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
                             model.joint_dof_dim,
                             model.joint_axis,
                             control.joint_f,
-                            False,  # apply_cable_forces
                             dt,
                         ],
                         outputs=[body_f_tmp, joint_impulse],

@@ -59,6 +59,7 @@ class Example:
     HOLD_TIME = 6.0  # seconds: hold at TIP_FORCE_MAX before measuring
 
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.args = args
 

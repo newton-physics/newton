@@ -956,24 +956,15 @@ def apply_joint_forces(
     joint_dof_dim: wp.array2d[int],
     joint_axis: wp.array[wp.vec3],
     joint_f: wp.array[float],
-    apply_cable_forces: bool,
     dt: float,
     body_f: wp.array[wp.spatial_vector],
     joint_impulse: wp.array[wp.spatial_vector],
 ):
-    """Accumulate ``Control.joint_f`` into body wrenches.
-
-    Args:
-        apply_cable_forces: Whether to apply CABLE wrenches. CABLE shares the
-            free-layout wrench convention, so the handling is identical; a solver
-            that does not simulate cable joints passes ``False`` so that it makes
-            no partial-support claim.
-    """
     tid = wp.tid()
     type = joint_type[tid]
     if not joint_enabled[tid]:
         return
-    if type == JointType.FIXED or (type == JointType.CABLE and not apply_cable_forces):
+    if type == JointType.FIXED:
         return
 
     # rigid body indices of the child and parent
@@ -1015,15 +1006,14 @@ def apply_joint_forces(
     if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
         f_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
         t_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
-        # These types share the 6-DoF free layout, so joint_f is a spatial wrench at
-        # the COM (same as body_f). Avoid adding a moment arm that would introduce
-        # torque for pure forces.
+        # Interpret six-DoF joint forces as a spatial wrench at the COM (same as body_f).
+        # Avoid adding a moment arm that would introduce torque for pure forces.
         wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total))
         if id_p >= 0:
             wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
         # Record the contribution to the inbound joint wrench (used to populate
-        # ``State.body_parent_f``).  For FREE joints this is a diagnostic only;
-        # for DISTANCE joints the constraint solver adds its own contribution.
+        # ``State.body_parent_f``). For FREE and CABLE joints this is diagnostic
+        # only; for DISTANCE joints the constraint solver adds its contribution.
         # Convention: positive = wrench transmitted parent->child at child COM.
         if joint_impulse:
             wp.atomic_add(joint_impulse, tid, wp.spatial_vector(f_total, t_total) * dt)

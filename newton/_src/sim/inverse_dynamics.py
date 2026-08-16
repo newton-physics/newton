@@ -429,7 +429,7 @@ def eval_inverse_dynamics_passive(
             joint, no outputs are requested, or an output or mask has an
             unexpected shape.
     """
-    if model.joint_count > 0 and JointType.CABLE in model.joint_type.numpy():
+    if model._has_cable_joints and JointType.CABLE in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
         raise ValueError("eval_inverse_dynamics_passive() does not support JointType.CABLE joints.")
 
     if mass_matrix is None and gravity_force is None and coriolis_force is None:

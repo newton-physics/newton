@@ -161,7 +161,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             ValueError: If ``model`` contains a :attr:`~newton.JointType.CABLE`
                 joint, which is not supported by this solver.
         """
-        if model.joint_count > 0 and JointType.CABLE in model.joint_type.numpy():
+        if model._has_cable_joints and JointType.CABLE in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
             raise ValueError("SolverFeatherstone does not support JointType.CABLE joints.")
 
         super().__init__(model)

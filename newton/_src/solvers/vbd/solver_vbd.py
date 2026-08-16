@@ -64,7 +64,7 @@ from .rigid_vbd_kernels import (
     init_body_body_contact_materials,
     init_body_body_contacts_avbd,
     init_body_particle_contacts,
-    init_cable_rest_bend_twist,
+    init_cable_rest,
     reset_rigid_state,
     snapshot_body_body_contact_history,
     solve_rigid_body,
@@ -169,8 +169,12 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         VBD uses ``model.body_q`` as the structural rest pose and reads
         ``model.joint_q`` for drive/limit rest-angle offsets. The body
-        transforms must match the joint angles at solver creation time
+        transforms must match the joint angles at solver construction time
         (see example below).
+
+        Cable structural rest is instead captured from the full
+        ``model.joint_target_q`` relative pose when the solver is constructed.
+        Construct a new solver after changing cable rest.
 
         For CUDA graph capture, the recommended construction order is
         ``CollisionPipeline`` -> ``Contacts`` -> ``SolverVBD``, all before capture.
@@ -804,13 +808,15 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.enable_dahl_friction = False
 
-            # Per-joint DER rest invariants, refreshed at init and on model change
-            # (see _refresh_cable_rest_bend_twist_cache): the parent-local rest
-            # curvature binormal (bend) and the rest transported-material twist.
+            # Per-joint cable rest invariants captured from the Model target at construction:
+            # parent-local stretch/shear, curvature binormal, and transported twist.
             # Split cables use local +Z as the material tangent (a SolverVBD convention).
+            self.joint_cable_rest_offset_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_cable_rest_uses_material_arm = wp.zeros(model.joint_count, dtype=bool, device=self.device)
             self.joint_cable_rest_kb_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_cable_rest_twist = wp.zeros(model.joint_count, dtype=float, device=self.device)
-            self._refresh_cable_rest_bend_twist_cache()
+            if model._has_cable_joints:  # pyright: ignore[reportPrivateUsage]
+                self._init_cable_rest_cache()
 
         # -------------------------------------------------------------
         # Body-particle interaction shared state.
@@ -862,8 +868,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
-        if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
-            self._refresh_cable_rest_bend_twist_cache()
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
@@ -1184,35 +1188,29 @@ class SolverVBD(SolverBase, CouplingInterface):
                 "which publishes model.rigid_contact_max; there is no equivalent for body-particle contacts."
             )
 
-    def _refresh_cable_rest_bend_twist_cache(self) -> None:
-        """(Re)compute cable rest bend/twist invariants from the current rest pose.
-
-        Called once at init and again from ``notify_model_changed`` whenever joint
-        frames or the rest pose change.
-        """
+    def _init_cable_rest_cache(self) -> None:
+        """Compute static cable rest invariants from Model target poses."""
         # The cache is only allocated when SolverVBD integrates the rigid system
         # (see _init_rigid_system); skip when bodies are handled externally.
         if self.integrate_with_external_rigid_solver:
             return
-        if self.model.joint_count == 0 or self.model.body_count == 0:
-            return
-
-        joint_type_np = self._to_numpy(self.model.joint_type, dtype=np.int32)
-        if not np.any(joint_type_np == int(JointType.CABLE)):
+        if self.model.joint_count == 0:
             return
 
         wp.launch(
-            kernel=init_cable_rest_bend_twist,
+            kernel=init_cable_rest,
             dim=self.model.joint_count,
             inputs=[
                 self.model.joint_type,
-                self.model.joint_parent,
-                self.model.joint_child,
+                self.model.joint_target_q_start,
+                self.model.joint_target_q,
                 self.model.joint_X_p,
                 self.model.joint_X_c,
-                self.model.body_q,
+                self.model.use_coord_layout_targets,
             ],
             outputs=[
+                self.joint_cable_rest_offset_local,
+                self.joint_cable_rest_uses_material_arm,
                 self.joint_cable_rest_kb_local,
                 self.joint_cable_rest_twist,
             ],
@@ -2409,7 +2407,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.joint_dof_dim,
                         model.joint_axis,
                         control.joint_f,
-                        True,  # apply_cable_forces
                         dt,
                     ],
                     outputs=[
@@ -2456,6 +2453,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.joint_child,
                         model.joint_X_p,
                         model.joint_X_c,
+                        self.joint_cable_rest_offset_local,
                         self.joint_cable_rest_kb_local,
                         self.joint_cable_rest_twist,
                         self.body_q_prev,
@@ -2949,6 +2947,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
+                    self.joint_cable_rest_offset_local,
+                    self.joint_cable_rest_uses_material_arm,
                     self.joint_cable_rest_kb_local,
                     self.joint_cable_rest_twist,
                     model.joint_qd_start,
@@ -3054,6 +3054,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
+                    self.joint_cable_rest_offset_local,
                     self.joint_cable_rest_kb_local,
                     self.joint_cable_rest_twist,
                     model.joint_qd_start,

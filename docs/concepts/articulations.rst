@@ -45,8 +45,15 @@ use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 use maximal coordinates.
 Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
+.. _Cable joints:
+
 Cable joints
 ^^^^^^^^^^^^
+
+.. experimental::
+
+   :attr:`newton.JointType.CABLE`, :meth:`newton.ModelBuilder.add_joint_cable`,
+   and their state and material conventions may change without prior notice.
 
 :attr:`newton.JointType.CABLE` uses the same kinematic state layout as a
 :attr:`~newton.JointType.FREE` joint: ``joint_q`` stores a 7-coordinate relative
@@ -54,15 +61,25 @@ pose (3D translation and a quaternion), while ``joint_qd`` stores the 6-DoF
 relative twist. :func:`newton.eval_fk` and
 :func:`newton.eval_ik` convert between this joint state and body state.
 
-:class:`newton.solvers.SolverVBD` separately maps the six per-axis entries of
-:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd` to
-its stretch, shear, bend, and twist response. Each anchor's local ``+Z`` is the
-material tangent, so those entries are ordered
-``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``. The transverse X/Y
-shear entries must match, as must the X/Y bend entries, because these responses
-are isotropic about that tangent. They are material coefficients rather than
-drive gains, so every cable axis uses actuator mode
-:attr:`~newton.JointTargetMode.NONE`.
+The cable's :attr:`newton.Model.joint_target_q` entry stores its structural-rest
+relative transform. Translation [m] defines rest shear X/Y and stretch Z;
+rotation defines rest bend and twist. Rotation uses a unitless quaternion in
+coordinate layout or extrinsic ZYX angles [rad] in legacy layout. If
+:meth:`newton.ModelBuilder.add_joint_cable` omits ``rest_xform``, the builder
+copies the initial joint transform. :class:`newton.solvers.SolverVBD` captures
+the Model target when constructed; changing an independent
+:attr:`newton.Control.joint_target_q` has no effect. Construct a new solver
+after changing cable rest.
+
+SolverVBD interprets the six per-axis :attr:`newton.Model.joint_target_ke` and
+:attr:`newton.Model.joint_target_kd` entries in canonical XYZ linear/angular
+order: ``[shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z]``. Each anchor's
+local ``+Z`` is the material tangent. X/Y shear must match, as must X/Y bend,
+because the transverse responses are isotropic; every axis uses
+:attr:`~newton.JointTargetMode.NONE`. Generic
+:meth:`newton.ModelBuilder.add_joint` construction uses its six ``target_pos``
+values as structural rest. :meth:`newton.ModelBuilder.add_joint_cable` creates
+this layout automatically.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
@@ -330,8 +347,6 @@ Joint types
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
-For ``JointType.CABLE``, both counts represent allocated material slots, not
-generalized coordinates or velocity DOFs; see `Cable joints`_.
 
 Definition of ``joint_q``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -516,12 +531,13 @@ A robust pattern is:
         # Start index for this joint in generalized coordinates q
         q_begin = joint_q_start[joint_id]
 
-        # Skip free/ball joints because their q entries include quaternion coordinates.
+        # Skip joints whose q entries include quaternion coordinates.
         jt = joint_type[joint_id]
         if (
             jt == newton.JointType.FREE
             or jt == newton.JointType.BALL
             or jt == newton.JointType.DISTANCE
+            or jt == newton.JointType.CABLE
         ):
             return
 

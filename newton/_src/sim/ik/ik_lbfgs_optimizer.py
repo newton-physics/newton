@@ -145,7 +145,7 @@ class IKOptimizerLBFGS:
         *a: Any,
         **kw: Any,
     ) -> IKOptimizerLBFGS:
-        if model.joint_count > 0 and JointType.CABLE in model.joint_type.numpy():
+        if model._has_cable_joints and JointType.CABLE in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
             raise ValueError("IKOptimizerLBFGS does not support JointType.CABLE joints.")
 
         n_dofs = model.joint_dof_count

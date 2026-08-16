@@ -759,7 +759,7 @@ class ArticulationView:
         self.is_fixed_base = root_joint_dof_count == 0
         # floating base means that all linear and angular degrees of freedom are unlocked at the root
         # (though there might be constraints like distance)
-        self.is_floating_base = self.root_joint_type in (JointType.FREE, JointType.DISTANCE, JointType.CABLE)
+        self.is_floating_base = self.root_joint_type in (JointType.FREE, JointType.DISTANCE)
 
         joint_offset = joint_starts[0][0]
         joint_dof_offset = joint_dof_starts[0][0]

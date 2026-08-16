@@ -999,16 +999,9 @@ def jcalc_motion_subspace(
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
 
-        CABLE joints share the FREE/DISTANCE subspace because they share the FK
-        map: they impose no kinematic constraint, so their six columns are the
-        derivative of the same parent-anchor pose recurrence. The stretch/shear/
-        bend/twist behavior is a material force law layered on that unconstrained
-        motion (see :class:`newton.solvers.SolverVBD`), not a narrower subspace.
-
-        The Featherstone counterpart ``jcalc_motion`` deliberately does not
-        dispatch CABLE: the inverse-dynamics entry points reject cable models
-        outright, so it can never observe one. Only this Jacobian path is reachable
-        with a cable, which is why the dispatch is asymmetric.
+        CABLE shares the FREE/DISTANCE subspace because its material response
+        does not impose a kinematic constraint. The Featherstone path remains
+        unchanged because inverse dynamics rejects CABLE models.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1541,7 +1534,7 @@ def eval_inverse_dynamics_force(
         ValueError: If the model contains a :attr:`~newton.JointType.CABLE`
             joint or an input, output, or mask has an unexpected shape.
     """
-    if model.joint_count > 0 and JointType.CABLE in model.joint_type.numpy():
+    if model._has_cable_joints and JointType.CABLE in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
         raise ValueError("eval_inverse_dynamics_force() does not support JointType.CABLE joints.")
 
     if model.articulation_count == 0:

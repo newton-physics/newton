@@ -1101,6 +1101,10 @@ class Model:
         is shaped ``(joint_dof_count,)`` (legacy layout). Index via
         :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
         :attr:`joint_qd_start` to match the active layout.
+
+        For CABLE joints, this array stores structural-rest translation [m] and
+        rotation: a unitless quaternion in coordinate layout or extrinsic ZYX
+        angles [rad] in legacy layout. See :ref:`Cable joints`.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type] used to initialize :attr:`newton.Control.joint_target_qd`, shape [joint_dof_count], float.
@@ -1111,6 +1115,7 @@ class Model:
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
         self.joint_type: wp.array[wp.int32] | None = None
         """Joint type, shape [joint_count], int."""
+        self._has_cable_joints: bool = False
         self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
         self.joint_parent: wp.array[wp.int32] | None = None

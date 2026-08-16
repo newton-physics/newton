@@ -521,7 +521,7 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(parent_flags[1] & kinematic, 0)
 
     def test_disable_joints_rewrites_cable_type_in_view(self):
-        """disable_joints should preserve the cable pose layout as FREE in the view."""
+        """Preserve the Cable pose layout as FREE when disabling joints in a view."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         child = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))

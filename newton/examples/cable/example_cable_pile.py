@@ -37,6 +37,7 @@ class Example:
         layers: int = 10,
         lanes_per_layer: int = 10,
     ):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.args = args
 
