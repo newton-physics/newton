@@ -1564,7 +1564,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     if dof0 < 0 or (dof0 + 3) >= len(jtarget_ke) or (dof0 + 3) >= len(jtarget_kd):
                         raise RuntimeError(
                             "SolverVBD _init_joint_penalty_k: JointType.ROD requires "
-                            "4 DOF entries in "
+                            "four material-slot entries in "
                             "model.joint_target_ke/kd starting at joint_qd_start[j]. "
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
                             f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
@@ -1697,7 +1697,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Initialize the per-body structural stiffness summary from joint state.
 
         ``body_structural_k[b]`` is the max enabled linear-joint stiffness
-        anchored on body ``b`` (cables use ``max(stretch, shear)``). Contact
+        anchored on body ``b`` (rod joints use ``max(stretch, shear)``). Contact
         conditioning augments each dynamic endpoint's inertial scale with its
         own summary before combining endpoints.
         Direction- and chain-blind by design: it bounds neighborhood stiffness to

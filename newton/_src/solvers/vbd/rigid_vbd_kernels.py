@@ -3795,7 +3795,7 @@ def refresh_body_structural_k(
 ):
     """Accumulate enabled linear-joint stiffness into a caller-zeroed output.
 
-    Uses the first constraint slot for ordinary joints. Cables take
+    Uses the first constraint slot for ordinary joints. Rod joints take
     ``max(stretch, shear)`` so independently authored shear is not ignored.
     """
     joint_id = wp.tid()
