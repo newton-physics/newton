@@ -1014,6 +1014,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                     convert_forces=False,
                     friction_mix_mode=self._config.materials.friction_mix_mode,
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
+                    cull_speculative_contacts=self._config.dynamics.cull_speculative_contacts,
                 )
         else:
             self._detector = None
