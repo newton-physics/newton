@@ -195,13 +195,16 @@ state objects — simply omit them:
 
    m2.actuators[0].step(m2.state(), m2.control())
 
+.. _neural-network-checkpoints:
+
 Neural-Network Checkpoints
 --------------------------
 
 Neural-network controllers (:class:`ControllerNeuralMLP`,
-:class:`ControllerNeuralLSTM`) support two checkpoint backends: ONNX
-checkpoints (``.onnx``) run on Warp-NN's Warp-backed runtime, while Torch
-checkpoints use the Torch backend and require PyTorch.
+:class:`ControllerNeuralLSTM`) support two checkpoint backends. `ONNX
+<https://onnx.ai/>`__ (``.onnx``) is an open format for trained networks, which
+Warp-NN runs with its own Warp kernels. Torch checkpoints use the Torch backend
+and require PyTorch.
 
 Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
@@ -230,10 +233,12 @@ evaluated at the current state and held constant over the step (zero-order
 hold). At stiff gains and large timesteps this can overshoot or go unstable.
 
 The **implicit** effort mode instead solves the control law against the
-predicted end-of-step state (a Stable-PD style solve), which stays stable at
-much higher gains. It needs the joint-space effective inverse mass, supplied by
-a :class:`~newton.actuators.ResponseOracle` and refreshed once per step at the
-current pose:
+predicted end-of-step state (a Stable-PD style solve). A key advantage of this
+formulation over the explicit effort mode is that it stays stable at higher
+gains. The implicit effort mode necessarily requires the joint-space effective
+inverse mass. This is supplied by a
+:class:`~newton.actuators.ResponseOracle`, which is refreshed once per step at
+the current pose:
 
 .. code-block:: python
 
@@ -243,18 +248,32 @@ current pose:
    actuator.set_effort_mode_implicit(response=oracle)
 
    # Simulation loop
-   oracle.refresh(state)
+   oracle.refresh(sim_state)
+   sim_control.joint_f.zero_()
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
+   solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
 
-The solve couples the DOFs of each articulation, so the response is the full
-per-articulation inverse mass rather than a per-DOF scalar.
+In this mode :meth:`~newton.actuators.Actuator.step` solves for the joint
+impulse of each actuated DOF. An impulse on one DOF changes the velocity of
+every DOF in its articulation, so an articulation's actuated DOFs are solved
+together as one coupled system.
 
-:meth:`~newton.actuators.ResponseOracle.refresh` assembles its own mass matrix.
-It omits joint damping, contacts and constraint regularization, so the response
-is too large and the actuator under-drives the joint. Reuse the solver's own
-inertia instead. MuJoCo keeps it factorized, so
-:meth:`~newton.actuators.ResponseOracle.refresh_from_solve` recovers the
-response by back-substituting unit vectors:
+The effective inverse mass, called *the response* below, is computed for a whole
+articulation. The actuator then reads only the entries for the DOFs it drives.
+
+:meth:`~newton.actuators.ResponseOracle.refresh` builds the mass matrix itself,
+from :func:`~newton.eval_mass_matrix` and joint armature. Joint damping, joint
+limits, friction, contacts and constraint regularization are absent. All of
+those resist motion, so the response comes out too large. A larger response
+divides the control law harder and so yields a smaller effort, which errs
+toward stability.
+
+A solver that can apply its own inertia removes that approximation.
+:meth:`~newton.actuators.ResponseOracle.refresh_from_solve` takes a callable
+that computes ``x = M^-1 y``, so it works with any solver that provides one.
+MuJoCo is currently the only Newton solver that does: it keeps its inertia
+factorized rather than dense, and ``solve_m`` back-substitutes unit vectors
+through that factorization to recover the response.
 
 .. code-block:: python
 
@@ -262,20 +281,29 @@ response by back-substituting unit vectors:
        # x = M^-1 y, using the factorization the solver already built
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
-   # Simulation loop, in place of oracle.refresh(state)
+   # Simulation loop, in place of oracle.refresh(sim_state)
    oracle.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
 
-Both refresh paths only launch kernels, so the actuator, the solver step and the
+Both refresh paths launch only kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.
 
-Call :meth:`~newton.actuators.Actuator.set_effort_mode_explicit` to switch back.
+:meth:`~newton.actuators.Actuator.set_effort_mode_explicit` switches back, and
+:class:`~newton.actuators.Actuator.ImplicitOptions` sets the solve's iteration
+count and convergence tolerances.
 
-Solver tuning lives in :class:`~newton.actuators.Actuator.ImplicitOptions`.
+All controllers support the implicit mode:
+:class:`~newton.actuators.ControllerPD`,
+:class:`~newton.actuators.ControllerPID`,
+:class:`~newton.actuators.ControllerNeuralMLP` and
+:class:`~newton.actuators.ControllerNeuralLSTM`.
 
-All controllers support the implicit mode. The neural controllers enter the
-solve as a per-step linearization of the network, so they need an ONNX
-checkpoint; :class:`~newton.actuators.ControllerNeuralMLP` also needs a
-single-step input history (``input_idx == [0]``).
+The neural controllers enter the solve as a per-step linearization of the
+network. Its slopes come from a Warp autodiff pass over the loaded network, so
+only the ONNX backend supports them (see :ref:`neural-network-checkpoints`);
+with a Torch checkpoint
+:meth:`~newton.actuators.Actuator.set_effort_mode_implicit` raises
+``NotImplementedError``. :class:`~newton.actuators.ControllerNeuralMLP` also
+needs a single-step input history (``input_idx == [0]``).
 
 The solve is not differentiable: building the actuator with
 ``requires_grad=True`` raises ``NotImplementedError``.
