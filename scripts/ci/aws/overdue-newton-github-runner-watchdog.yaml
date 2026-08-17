@@ -1,0 +1,242 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Alert when tagged Newton GitHub runners remain active too long.
+
+Parameters:
+  AlertTopicArn:
+    Type: String
+    Description: Existing SNS topic ARN for watchdog alarm transitions.
+
+Resources:
+  WatchdogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: overdue-newton-github-runner-watchdog-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: overdue-newton-github-runner-watchdog-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DiscoverInstances
+                Effect: Allow
+                Action:
+                  - ec2:DescribeRegions
+                  - ec2:DescribeInstances
+                Resource: "*"
+              - Sid: PublishWatchdogMetrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: Newton/GitHubRunnerWatchdog
+      Tags:
+        - Key: Project
+          Value: Newton
+        - Key: Purpose
+          Value: RunnerCostGuard
+
+  WatchdogFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: overdue-newton-github-runner-watchdog
+      Description: Report tagged Newton runners active for at least 60 minutes.
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role:
+        Fn::GetAtt:
+          - WatchdogRole
+          - Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          MAX_AGE_MINUTES: "60"
+      Code:
+        ZipFile: |
+          """Report overdue Newton GitHub runner instances across AWS regions."""
+
+          from __future__ import annotations
+
+          import json
+          import os
+          from datetime import datetime, timezone
+
+
+          CREATED_BY = "github-actions-newton-role"
+          METRIC_NAMESPACE = "Newton/GitHubRunnerWatchdog"
+
+
+          def find_overdue_instances(region_names, ec2_factory, now, max_age_minutes):
+              """Return matching running instances at least the maximum age."""
+              filters = [
+                  {"Name": "tag:created-by", "Values": [CREATED_BY]},
+                  {"Name": "instance-state-name", "Values": ["running"]},
+              ]
+              overdue = []
+
+              for region in region_names:
+                  try:
+                      paginator = ec2_factory(region).get_paginator("describe_instances")
+                      for page in paginator.paginate(Filters=filters):
+                          for reservation in page.get("Reservations", []):
+                              for instance in reservation.get("Instances", []):
+                                  launch_time = instance["LaunchTime"]
+                                  age_minutes = int((now - launch_time).total_seconds() // 60)
+                                  if age_minutes < max_age_minutes:
+                                      continue
+                                  tags = {tag["Key"]: tag["Value"] for tag in instance.get("Tags", [])}
+                                  overdue.append(
+                                      {
+                                          "instance_id": instance["InstanceId"],
+                                          "instance_type": instance["InstanceType"],
+                                          "region": region,
+                                          "launch_time": launch_time.isoformat(),
+                                          "age_minutes": age_minutes,
+                                          "repository": tags.get("GitHub-Repository", "unknown"),
+                                          "trigger": tags.get("Newton-Trigger", "unknown"),
+                                          "workload": tags.get("Newton-Workload", "unknown"),
+                                          "run_id": tags.get("GitHub-Run-ID", "unknown"),
+                                          "run_attempt": tags.get("GitHub-Run-Attempt", "unknown"),
+                                      }
+                                  )
+                  except Exception as error:
+                      raise RuntimeError(f"Failed to scan region {region}") from error
+
+              overdue.sort(key=lambda item: (-item["age_minutes"], item["region"], item["instance_id"]))
+              return overdue
+
+
+          def publish_metrics(cloudwatch, overdue_instances):
+              """Publish aggregate overdue-runner metrics."""
+              oldest_age = max(
+                  (instance["age_minutes"] for instance in overdue_instances),
+                  default=0,
+              )
+              cloudwatch.put_metric_data(
+                  Namespace=METRIC_NAMESPACE,
+                  MetricData=[
+                      {
+                          "MetricName": "OverdueRunnerCount",
+                          "Value": float(len(overdue_instances)),
+                          "Unit": "Count",
+                      },
+                      {
+                          "MetricName": "OldestRunnerAgeMinutes",
+                          "Value": float(oldest_age),
+                          "Unit": "Count",
+                      },
+                  ],
+              )
+
+
+          def lambda_handler(event, context):
+              """Scan enabled regions and publish global overdue-runner metrics."""
+              import boto3
+
+              home_region = os.environ.get("AWS_REGION", "us-east-1")
+              max_age_minutes = int(os.environ.get("MAX_AGE_MINUTES", "60"))
+              home_ec2 = boto3.client("ec2", region_name=home_region)
+              region_names = sorted(
+                  region["RegionName"]
+                  for region in home_ec2.describe_regions(AllRegions=False)["Regions"]
+              )
+              now = datetime.now(timezone.utc)
+              overdue = find_overdue_instances(
+                  region_names,
+                  lambda region: boto3.client("ec2", region_name=region),
+                  now,
+                  max_age_minutes,
+              )
+              publish_metrics(
+                  boto3.client("cloudwatch", region_name=home_region),
+                  overdue,
+              )
+
+              summary = {
+                  "scan_time": now.isoformat(),
+                  "scanned_region_count": len(region_names),
+                  "max_age_minutes": max_age_minutes,
+                  "overdue_count": len(overdue),
+                  "overdue_instances": overdue,
+              }
+              print(json.dumps(summary, sort_keys=True))
+              return summary
+      Tags:
+        - Key: Project
+          Value: Newton
+        - Key: Purpose
+          Value: RunnerCostGuard
+
+  WatchdogSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: overdue-newton-github-runner-watchdog-schedule
+      Description: Scan for overdue Newton GitHub runners every four hours.
+      ScheduleExpression: rate(4 hours)
+      State: ENABLED
+      Targets:
+        - Arn:
+            Fn::GetAtt:
+              - WatchdogFunction
+              - Arn
+          Id: WatchdogLambda
+      Tags:
+        - Key: Project
+          Value: Newton
+        - Key: Purpose
+          Value: RunnerCostGuard
+
+  WatchdogInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Ref: WatchdogFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt:
+          - WatchdogSchedule
+          - Arn
+
+  WatchdogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: overdue-newton-github-runner-watchdog
+      AlarmDescription: A tagged Newton GitHub runner is at least 60 minutes old, or the watchdog has stopped reporting.
+      Namespace: Newton/GitHubRunnerWatchdog
+      MetricName: OverdueRunnerCount
+      Statistic: Maximum
+      Period: 21600
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - Ref: AlertTopicArn
+      OKActions:
+        - Ref: AlertTopicArn
+      Tags:
+        - Key: Project
+          Value: Newton
+        - Key: Purpose
+          Value: RunnerCostGuard
+
+Outputs:
+  FunctionName:
+    Value:
+      Ref: WatchdogFunction
+  AlarmName:
+    Value:
+      Ref: WatchdogAlarm

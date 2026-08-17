@@ -790,8 +790,17 @@ goes through :class:`~newton.usd.SchemaResolverMjc`
 (:github:`newton/_src/usd/schemas.py`).
 
 MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
-The old ``model.mujoco.dof_passive_damping`` custom attribute remains
-a deprecated alias and emits a ``DeprecationWarning`` when accessed.
+When importing MuJoCo-authored USD, opt into that mapping explicitly::
+
+    from newton.usd import SchemaResolverMjc, SchemaResolverNewton
+
+    builder.add_usd(
+        stage,
+        schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+    )
+
+Registering MuJoCo custom attributes alone enables the ``model.mujoco``
+namespace but does not map ``mjc:damping`` to the built-in property.
 
 
 Unsupported MuJoCo features
@@ -820,11 +829,9 @@ imported when loading an MJCF or USD asset into Newton, and that
 - **User data and arbitrary custom elements** (``<custom>``, ``<numeric>``,
   ``<text>``) — not imported. Newton-specific user data should use the
   Newton custom-attribute system instead.
-- **Actuator transmissions** — only ``joint``, ``tendon``, ``site``, and
-  ``body`` transmissions are supported (see
-  :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum). MuJoCo's
-  ``jointinparent`` and ``slidercrank`` transmissions are not converted;
-  actuators using them are skipped at construction with a warning.
+- **Actuator transmissions** — ``joint``, ``jointinparent``, ``tendon``,
+  ``site``, ``body``, and ``slidercrank`` transmissions are supported (see
+  :class:`~newton.solvers.SolverMuJoCo.TrnType` for the enum).
 
 Smaller limitations are documented inline where they are most relevant —
 see `Caveats`_ below for collision-radius, convex-hull fallback, and

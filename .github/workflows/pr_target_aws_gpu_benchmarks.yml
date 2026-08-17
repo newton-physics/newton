@@ -111,6 +111,7 @@ jobs:
     with:
       ref: ${{ github.event.pull_request.head.sha }}
       base_ref: ${{ github.event.pull_request.base.sha }}
+      trigger-category: pull-request
     secrets: inherit
     permissions:
       id-token: write   # Required for AWS OIDC authentication in start-runner/stop-runner

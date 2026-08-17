@@ -70,7 +70,14 @@ def vectors_equal(v1, v2, tolerance=1e-6) -> bool:
 ###
 
 
-def assert_scalar_attributes_equal(test: unittest.TestCase, obj0: Any, obj1: Any, attributes: list[str]) -> None:
+def assert_scalar_attributes_equal(
+    test: unittest.TestCase,
+    obj0: Any,
+    obj1: Any,
+    attributes: list[str],
+    mapping: list[int] | None = None,
+) -> None:
+    """Compare scalar attributes on two objects, optionally permuting list-valued fields through `mapping`."""
     for attr in attributes:
         # Check if attribute exists in both objects
         obj_name = obj0.__class__.__name__
@@ -87,13 +94,32 @@ def assert_scalar_attributes_equal(test: unittest.TestCase, obj0: Any, obj1: Any
         # Retrieve attributes for logging
         attr0 = getattr(obj0, attr)
         attr1 = getattr(obj1, attr)
-        # Test scalar attribute values
-        msg.debug("Comparing %s.%s: actual=%s, desired=%s", obj_name, attr, attr0, attr1)
-        test.assertEqual(
-            first=attr0,
-            second=attr1,
-            msg=f"{obj0.__class__.__name__}.{attr} are not equal.",
-        )
+        if mapping is not None:
+            test.assertIsInstance(attr0, list, f"{obj_name}.{attr} must be list-valued to use mapping.")
+            test.assertIsInstance(attr1, list, f"{obj_name}.{attr} must be list-valued to use mapping.")
+            test.assertEqual(len(attr0), len(attr1), f"{obj_name}.{attr} lengths are not equal.")
+            for i, other_idx in enumerate(mapping):
+                msg.debug(
+                    "Comparing %s.%s[%d]: actual=%s, desired=%s",
+                    obj_name,
+                    attr,
+                    i,
+                    attr0[i],
+                    attr1[other_idx],
+                )
+                test.assertEqual(
+                    first=attr0[i],
+                    second=attr1[other_idx],
+                    msg=f"{obj_name}.{attr}[{i}] are not equal.",
+                )
+        else:
+            # Test scalar attribute values
+            msg.debug("Comparing %s.%s: actual=%s, desired=%s", obj_name, attr, attr0, attr1)
+            test.assertEqual(
+                first=attr0,
+                second=attr1,
+                msg=f"{obj_name}.{attr} are not equal.",
+            )
 
 
 def assert_array_attributes_equal(
@@ -103,7 +129,16 @@ def assert_array_attributes_equal(
     attributes: list[str],
     rtol: dict[str, float] | None = None,
     atol: dict[str, float] | None = None,
+    mapping: list[int] | None = None,
+    index_remaps: dict[str, list[int]] | None = None,
 ) -> None:
+    """Compare array attributes, permuting rows and remapping referenced indices when requested.
+
+    `mapping` permutes rows of `obj1` to align with `obj0` (e.g. after reordering entities by
+    label). `index_remaps` separately translates *values* held by an attribute that reference
+    another entity's row in `obj1`'s index space (e.g. a body index) into `obj0`'s index space,
+    and applies independently of whether row permutation is active.
+    """
     for attr in attributes:
         # Check if attribute exists in both objects
         obj_name = obj0.__class__.__name__
@@ -140,11 +175,25 @@ def assert_array_attributes_equal(
         shape1 = attr1.shape
         test.assertEqual(shape0, shape1, f"{obj_name}.{attr} shapes are not equal.")
         # Test array attribute values
-        diff = attr0 - attr1
-        msg.debug("Comparing %s:\nactual:\n%s\ndesired:\n%s\ndiff:\n%s", f"{obj_name}.{attr}", attr0, attr1, diff)
+        actual = attr0.numpy()
+        desired = attr1.numpy()
+        if mapping is not None and len(mapping) == desired.shape[0]:
+            desired = desired[mapping]
+        if index_remaps is not None and attr in index_remaps:
+            desired = np.asarray(desired).copy()
+            remap = index_remaps[attr]
+            for i, value in enumerate(desired):
+                if value >= 0:
+                    desired[i] = remap[value]
+        # Unbounded limits are stored as inf (e.g. JointsModel.tau_j_max), so this purely
+        # informational diff hits inf - inf. Left unguarded it raises a RuntimeWarning, which
+        # CI turns into a test error via --strict-warnings.
+        with np.errstate(invalid="ignore"):
+            diff = actual - desired
+        msg.debug("Comparing %s:\nactual:\n%s\ndesired:\n%s\ndiff:\n%s", f"{obj_name}.{attr}", actual, desired, diff)
         np.testing.assert_allclose(
-            actual=attr0.numpy(),
-            desired=attr1.numpy(),
+            actual=actual,
+            desired=desired,
             err_msg=f"{obj_name}.{attr} are not equal.",
             rtol=rtol.get(attr, 1e-6) if rtol else 1e-6,
             atol=atol.get(attr, 1e-6) if atol else 1e-6,
@@ -364,7 +413,12 @@ def assert_model_size_equal(
 
 
 def assert_model_info_equal(
-    test: unittest.TestCase, info0: ModelKaminoInfo, info1: ModelKaminoInfo, excluded: list[str] | None = None
+    test: unittest.TestCase,
+    info0: ModelKaminoInfo,
+    info1: ModelKaminoInfo,
+    excluded: list[str] | None = None,
+    body_index_remap: list[int] | None = None,
+    joint_index_remap: list[int] | None = None,
 ) -> None:
     assert_scalar_attributes_equal(test, info0, info1, ["num_worlds"])
     array_attributes = [
@@ -408,7 +462,101 @@ def assert_model_info_equal(
     ]
     if excluded:
         array_attributes = [attr for attr in array_attributes if attr not in excluded]
-    assert_array_attributes_equal(test, info0, info1, array_attributes)
+    index_remaps = {}
+    if body_index_remap is not None and "base_body_index" in array_attributes:
+        index_remaps["base_body_index"] = body_index_remap
+    if joint_index_remap is not None and "base_joint_index" in array_attributes:
+        index_remaps["base_joint_index"] = joint_index_remap
+    assert_array_attributes_equal(test, info0, info1, array_attributes, index_remaps=index_remaps or None)
+
+
+def _assert_world_local_ids(test: unittest.TestCase, obj: Any, id_attr: str, wid_attr: str = "wid") -> None:
+    """Assert a world-local id array (e.g. ``bid``/``jid``/``gid``) is a valid sequential position
+    within each world, i.e. ``ids[row] == row - world_offset``.
+
+    Used in place of a direct cross-model comparison of these ids when rows have been permuted:
+    once reordered, there is no meaningful pairwise comparison left to make between the two
+    models' own world-local ids, only the per-model invariant.
+    """
+    ids = getattr(obj, id_attr).numpy()
+    if ids.size == 0:
+        return
+    wids = getattr(obj, wid_attr).numpy()
+    unique_wids, first_index = np.unique(wids, return_index=True)
+    offsets = first_index[np.searchsorted(unique_wids, wids)]
+    expected = np.arange(ids.size) - offsets
+    np.testing.assert_array_equal(
+        ids,
+        expected,
+        err_msg=f"{obj.__class__.__name__}.{id_attr} is not a valid sequential world-local id.",
+    )
+
+
+def _assert_geom_pairs_equal(
+    test: unittest.TestCase,
+    geoms0: GeometriesModel,
+    geoms1: GeometriesModel,
+    attr: str,
+    geom_index_remap: list[int] | None,
+) -> None:
+    """Compare a geometry-pair array (``collidable_pairs``/``excluded_pairs``).
+
+    These hold geom indices that are absolute w.r.t. the model rather than per-entity rows, so
+    they cannot be row-permuted or index-remapped by the generic array-attribute comparison:
+    remapping the referenced geom indices can change both a pair's internal (min, max) order and
+    the array's sort order, so rows are canonicalized before comparing.
+    """
+    obj_name = geoms0.__class__.__name__
+    pairs0 = getattr(geoms0, attr).numpy()
+    pairs1 = getattr(geoms1, attr).numpy()
+    test.assertEqual(pairs0.shape, pairs1.shape, f"{obj_name}.{attr} shapes are not equal.")
+    if pairs0.size == 0:
+        return
+    if geom_index_remap is not None:
+        remap = np.asarray(geom_index_remap)
+        pairs1 = remap[pairs1]
+    canonical0 = sorted(tuple(sorted(pair)) for pair in pairs0.tolist())
+    canonical1 = sorted(tuple(sorted(pair)) for pair in pairs1.tolist())
+    test.assertEqual(canonical0, canonical1, f"{obj_name}.{attr} are not equal.")
+
+
+def _assert_joint_packed_arrays_equal(
+    test: unittest.TestCase,
+    joints0: JointsModel,
+    joints1: JointsModel,
+    attributes: list[str],
+    offset_attr: str,
+    perm: list[int],
+    rtol: dict[str, float] | None = None,
+    atol: dict[str, float] | None = None,
+) -> None:
+    offsets0 = getattr(joints0, offset_attr).numpy()
+    offsets1 = getattr(joints1, offset_attr).numpy()
+    for attr in attributes:
+        if not hasattr(joints0, attr) or not hasattr(joints1, attr):
+            continue
+        arr0 = getattr(joints0, attr)
+        arr1 = getattr(joints1, attr)
+        if arr0 is None or arr1 is None:
+            continue
+        values0 = arr0.numpy()
+        values1 = arr1.numpy()
+        for ref_idx in range(joints0.num_joints):
+            other_idx = perm[ref_idx]
+            start0, end0 = offsets0[ref_idx], offsets0[ref_idx + 1]
+            start1, end1 = offsets1[other_idx], offsets1[other_idx + 1]
+            test.assertEqual(
+                end0 - start0,
+                end1 - start1,
+                msg=f"{joints0.__class__.__name__}.{attr} slice size mismatch for joint {ref_idx}.",
+            )
+            np.testing.assert_allclose(
+                actual=values0[start0:end0],
+                desired=values1[start1:end1],
+                err_msg=f"{joints0.__class__.__name__}.{attr} are not equal for joint {ref_idx}.",
+                rtol=rtol.get(attr, 1e-6) if rtol else 1e-6,
+                atol=atol.get(attr, 1e-6) if atol else 1e-6,
+            )
 
 
 def assert_model_bodies_equal(
@@ -416,10 +564,14 @@ def assert_model_bodies_equal(
     bodies0: RigidBodiesModel,
     bodies1: RigidBodiesModel,
     excluded: list[str] | None = None,
+    mapping: list[int] | None = None,
     rtol: dict[str, float] | None = None,
     atol: dict[str, float] | None = None,
 ) -> None:
-    assert_scalar_attributes_equal(test, bodies0, bodies1, ["num_bodies", "label"])
+    """Compare two rigid-body models, optionally matching rows by label permutation."""
+    assert_scalar_attributes_equal(test, bodies0, bodies1, ["num_bodies"])
+    if excluded is None or "label" not in excluded:
+        assert_scalar_attributes_equal(test, bodies0, bodies1, ["label"], mapping=mapping)
     array_attributes = [
         "wid",
         "bid",
@@ -433,23 +585,38 @@ def assert_model_bodies_equal(
     ]
     if excluded:
         array_attributes = [attr for attr in array_attributes if attr not in excluded]
-    assert_array_attributes_equal(test, bodies0, bodies1, array_attributes, rtol=rtol, atol=atol)
+    if mapping is not None and "bid" in array_attributes:
+        # `bid` is world-local and positional: once rows are reordered there is no cross-model
+        # value left to compare, only the per-model invariant that it is still a valid ordering.
+        array_attributes = [attr for attr in array_attributes if attr != "bid"]
+        _assert_world_local_ids(test, bodies0, "bid")
+        _assert_world_local_ids(test, bodies1, "bid")
+    assert_array_attributes_equal(
+        test,
+        bodies0,
+        bodies1,
+        array_attributes,
+        rtol=rtol,
+        atol=atol,
+        mapping=mapping,
+    )
 
 
 def assert_model_joints_equal(
-    test: unittest.TestCase, joints0: JointsModel, joints1: JointsModel, excluded: list[str] | None = None
+    test: unittest.TestCase,
+    joints0: JointsModel,
+    joints1: JointsModel,
+    excluded: list[str] | None = None,
+    mapping: list[int] | None = None,
+    body_index_remap: list[int] | None = None,
+    rtol: dict[str, float] | None = None,
+    atol: dict[str, float] | None = None,
 ) -> None:
-    assert_scalar_attributes_equal(test, joints0, joints1, ["num_joints", "label"])
-    array_attributes = [
-        "wid",
-        "jid",
-        "dof_type",
-        "act_type",
-        "bid_B",
-        "bid_F",
-        "B_r_Bj",
-        "F_r_Fj",
-        "X_j",
+    """Compare two joint models, optionally matching rows and remapping body references."""
+    assert_scalar_attributes_equal(test, joints0, joints1, ["num_joints"])
+    if excluded is None or "label" not in excluded:
+        assert_scalar_attributes_equal(test, joints0, joints1, ["label"], mapping=mapping)
+    dof_flat_attributes = [
         "q_j_min",
         "q_j_max",
         "dq_j_max",
@@ -458,26 +625,75 @@ def assert_model_joints_equal(
         "b_j",
         "k_p_j",
         "k_d_j",
-        "q_j_0",
         "dq_j_0",
+    ]
+    coord_flat_attributes = ["q_j_0"]
+    per_joint_attributes = [
+        "wid",
+        "jid",
+        "dof_type",
+        "act_type",
+        "bid_B",
+        "bid_F",
+        "B_r_Bj",
+        "F_r_Fj",
+        "X_Bj",
+        "X_Fj",
         "num_coords",
         "num_dofs",
         "num_cts",
         "num_dynamic_cts",
         "num_kinematic_cts",
-        "coords_offset",
-        "dofs_offset",
-        "passive_coords_offset",
-        "passive_dofs_offset",
-        "actuated_coords_offset",
-        "actuated_dofs_offset",
-        "cts_offset",
-        "dynamic_cts_offset",
-        "kinematic_cts_offset",
     ]
+    if mapping is None:
+        per_joint_attributes.extend(dof_flat_attributes)
+        per_joint_attributes.extend(coord_flat_attributes)
+        per_joint_attributes.extend(
+            [
+                "coords_offset",
+                "dofs_offset",
+                "passive_coords_offset",
+                "passive_dofs_offset",
+                "actuated_coords_offset",
+                "actuated_dofs_offset",
+                "cts_offset",
+                "dynamic_cts_offset",
+                "kinematic_cts_offset",
+            ]
+        )
     if excluded:
-        array_attributes = [attr for attr in array_attributes if attr not in excluded]
-    assert_array_attributes_equal(test, joints0, joints1, array_attributes)
+        per_joint_attributes = [attr for attr in per_joint_attributes if attr not in excluded]
+        dof_flat_attributes = [attr for attr in dof_flat_attributes if attr not in excluded]
+        coord_flat_attributes = [attr for attr in coord_flat_attributes if attr not in excluded]
+    if mapping is not None and "jid" in per_joint_attributes:
+        # See the matching comment on `bid` in assert_model_bodies_equal: `jid` is world-local
+        # and positional, so once rows are reordered only the per-model invariant is meaningful.
+        per_joint_attributes = [attr for attr in per_joint_attributes if attr != "jid"]
+        _assert_world_local_ids(test, joints0, "jid")
+        _assert_world_local_ids(test, joints1, "jid")
+    index_remaps = None
+    if body_index_remap is not None:
+        index_remaps = {
+            "bid_B": body_index_remap,
+            "bid_F": body_index_remap,
+        }
+    assert_array_attributes_equal(
+        test,
+        joints0,
+        joints1,
+        per_joint_attributes,
+        mapping=mapping,
+        index_remaps=index_remaps,
+        rtol=rtol,
+        atol=atol,
+    )
+    if mapping is not None:
+        _assert_joint_packed_arrays_equal(
+            test, joints0, joints1, dof_flat_attributes, "dofs_offset", mapping, rtol=rtol, atol=atol
+        )
+        _assert_joint_packed_arrays_equal(
+            test, joints0, joints1, coord_flat_attributes, "coords_offset", mapping, rtol=rtol, atol=atol
+        )
 
 
 def assert_model_geoms_equal(
@@ -485,7 +701,13 @@ def assert_model_geoms_equal(
     geoms0: GeometriesModel,
     geoms1: GeometriesModel,
     excluded: list[str] | None = None,
+    mapping: list[int] | None = None,
+    body_index_remap: list[int] | None = None,
+    geom_index_remap: list[int] | None = None,
+    rtol: dict[str, float] | None = None,
+    atol: dict[str, float] | None = None,
 ) -> None:
+    """Compare two geometry models, optionally matching rows and remapping body/geometry references."""
     scalar_attributes = [
         "num_geoms",
         "num_collidable",
@@ -493,7 +715,6 @@ def assert_model_geoms_equal(
         "num_excluded_pairs",
         "model_minimum_contacts",
         "world_minimum_contacts",
-        "label",
     ]
     array_attributes = [
         "wid",
@@ -508,14 +729,34 @@ def assert_model_geoms_equal(
         "group",
         "gap",
         "margin",
-        "collidable_pairs",
-        "excluded_pairs",
     ]
+    pair_attributes = ["collidable_pairs", "excluded_pairs"]
     if excluded:
         scalar_attributes = [attr for attr in scalar_attributes if attr not in excluded]
         array_attributes = [attr for attr in array_attributes if attr not in excluded]
+        pair_attributes = [attr for attr in pair_attributes if attr not in excluded]
     assert_scalar_attributes_equal(test, geoms0, geoms1, scalar_attributes)
-    assert_array_attributes_equal(test, geoms0, geoms1, array_attributes)
+    if excluded is None or "label" not in excluded:
+        assert_scalar_attributes_equal(test, geoms0, geoms1, ["label"], mapping=mapping)
+    if mapping is not None and "gid" in array_attributes:
+        # See the matching comment on `bid` in assert_model_bodies_equal: `gid` is world-local
+        # and positional, so once rows are reordered only the per-model invariant is meaningful.
+        array_attributes = [attr for attr in array_attributes if attr != "gid"]
+        _assert_world_local_ids(test, geoms0, "gid")
+        _assert_world_local_ids(test, geoms1, "gid")
+    index_remaps = {"bid": body_index_remap} if body_index_remap is not None else None
+    assert_array_attributes_equal(
+        test,
+        geoms0,
+        geoms1,
+        array_attributes,
+        rtol=rtol,
+        atol=atol,
+        mapping=mapping,
+        index_remaps=index_remaps,
+    )
+    for attr in pair_attributes:
+        _assert_geom_pairs_equal(test, geoms0, geoms1, attr, geom_index_remap)
 
 
 def assert_model_materials_equal(
@@ -559,11 +800,130 @@ def assert_model_equal(
     excluded: list[str] | None = None,
     rtol: dict[str, float] | None = None,
     atol: dict[str, float] | None = None,
+    allow_reordering: bool = False,
 ) -> None:
+    """Compare two Kamino models, allowing for reordering of entities by label within each world.
+
+    Args:
+        skip_geom_source_ptr: If True, excludes the geometry source ``ptr`` attribute.
+        skip_geom_group_and_collides: If True, excludes the geometry ``group``/``collides``
+            attributes.
+        skip_geom_margin_and_gap: If True, excludes the geometry ``margin``/``gap`` attributes.
+        excluded: Attribute names to exclude from all comparisons.
+        rtol: Per-attribute relative tolerance overrides for floating-point array comparisons.
+        atol: Per-attribute absolute tolerance overrides for floating-point array comparisons.
+        allow_reordering: If True, bodies/joints/geoms are matched by label within each world
+            instead of by row order, so ``model0`` and ``model1`` may store entities of the same
+            world in a different order. Defaults to ``False``.
+    """
     assert_model_size_equal(test, model0.size, model1.size, excluded)
-    assert_model_info_equal(test, model0.info, model1.info, excluded)
-    assert_model_bodies_equal(test, model0.bodies, model1.bodies, excluded, rtol=rtol, atol=atol)
-    assert_model_joints_equal(test, model0.joints, model1.joints, excluded)
+
+    body_mapping = None
+    joint_mapping = None
+    geom_mapping = None
+    body_index_remap = None
+    joint_index_remap = None
+    geom_index_remap = None
+    if allow_reordering:
+        num_worlds = model0.info.num_worlds
+
+        def _label_mapping(
+            labels_0: list[str] | None,
+            labels_1: list[str] | None,
+            ranges: list[tuple[int, int]],
+        ) -> list[int]:
+            """Return indices into ``labels_1`` that align with ``labels_0`` within each world."""
+            if labels_0 is None or labels_1 is None:
+                test.fail(
+                    "Cannot compare with allow_reordering=True because label is unset on one of "
+                    f"the models (model0 label is None: {labels_0 is None}, "
+                    f"model1 label is None: {labels_1 is None})."
+                )
+            test.assertEqual(len(labels_0), len(labels_1))
+            mapping = list(range(len(labels_0)))
+            for world_id, (range_start, range_end) in enumerate(ranges):
+                labels_0_world = labels_0[range_start:range_end]
+                labels_1_world = labels_1[range_start:range_end]
+                test.assertEqual(
+                    sorted(labels_0_world),
+                    sorted(labels_1_world),
+                    f"Label sets differ in world {world_id}.",
+                )
+                index_1 = {label: i for i, label in enumerate(labels_1_world)}
+                test.assertEqual(
+                    len(index_1),
+                    len(labels_1_world),
+                    f"Duplicate labels found in world {world_id}.",
+                )
+                for local_idx, label in enumerate(labels_0_world):
+                    mapping[range_start + local_idx] = range_start + index_1[label]
+            return mapping
+
+        def _entity_index_remap(mapping: list[int]) -> list[int]:
+            """Map global entity indices in the other model to indices in the reference model."""
+            remap = [0] * len(mapping)
+            for ref_idx, other_idx in enumerate(mapping):
+                remap[other_idx] = ref_idx
+            return remap
+
+        def _none_if_identity(mapping: list[int]) -> list[int] | None:
+            """Collapse an identity permutation back to `None`.
+
+            Preserves the strict comparison path (which validates more, e.g. per-joint offset
+            attributes,) for worlds where entities are already in matching order, and only pays
+            for the permutation-aware comparison where reordering actually occurred.
+            """
+            return None if mapping == list(range(len(mapping))) else mapping
+
+        # Ranges are already validated to match through the check on the model
+        # info, so the same ranges can be used for both models
+        bodies_offset = model0.info.bodies_offset.numpy().tolist()
+        body_ranges = [(bodies_offset[w], bodies_offset[w + 1]) for w in range(num_worlds)]
+        joints_offset = model0.info.joints_offset.numpy().tolist()
+        num_joints = model0.info.num_joints.numpy().tolist()
+        joint_ranges = [(joints_offset[w], joints_offset[w] + num_joints[w]) for w in range(num_worlds)]
+        geoms_offset = model0.info.geoms_offset.numpy().tolist()
+        num_geoms = model0.info.num_geoms.numpy().tolist()
+        geom_ranges = [(geoms_offset[w], geoms_offset[w] + num_geoms[w]) for w in range(num_worlds)]
+
+        body_mapping = _none_if_identity(_label_mapping(model0.bodies.label, model1.bodies.label, body_ranges))
+        joint_mapping = _none_if_identity(_label_mapping(model0.joints.label, model1.joints.label, joint_ranges))
+        geom_mapping = _none_if_identity(_label_mapping(model0.geoms.label, model1.geoms.label, geom_ranges))
+
+        if body_mapping is not None:
+            body_index_remap = _entity_index_remap(body_mapping)
+        if joint_mapping is not None:
+            joint_index_remap = _entity_index_remap(joint_mapping)
+        if geom_mapping is not None:
+            geom_index_remap = _entity_index_remap(geom_mapping)
+
+    assert_model_info_equal(
+        test,
+        model0.info,
+        model1.info,
+        excluded,
+        body_index_remap=body_index_remap,
+        joint_index_remap=joint_index_remap,
+    )
+    assert_model_bodies_equal(
+        test,
+        model0.bodies,
+        model1.bodies,
+        excluded,
+        mapping=body_mapping,
+        rtol=rtol,
+        atol=atol,
+    )
+    assert_model_joints_equal(
+        test,
+        model0.joints,
+        model1.joints,
+        excluded,
+        mapping=joint_mapping,
+        body_index_remap=body_index_remap,
+        rtol=rtol,
+        atol=atol,
+    )
     geom_excluded = excluded
     if skip_geom_source_ptr or skip_geom_group_and_collides or skip_geom_margin_and_gap:
         geom_excluded = [] if excluded is None else list(excluded)
@@ -578,6 +938,11 @@ def assert_model_equal(
         model0.geoms,
         model1.geoms,
         excluded=geom_excluded,
+        mapping=geom_mapping,
+        body_index_remap=body_index_remap,
+        geom_index_remap=geom_index_remap,
+        rtol=rtol,
+        atol=atol,
     )
     assert_model_materials_equal(test, model0.materials, model1.materials, excluded)
     assert_model_material_pairs_equal(test, model0.material_pairs, model1.material_pairs, excluded)
