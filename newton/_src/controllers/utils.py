@@ -18,57 +18,42 @@ def _validate_array(
     shape: tuple[int, ...],
     device: wp.DeviceLike,
     required: bool = True,
+    allow_indexed: bool = False,
 ) -> None:
-    """Validate a ``wp.array`` argument's dtype, shape, and device.
+    """Validate a Warp array's dtype, shape, and device.
+
+    ``shape`` is exact and carries no wildcards, so its length states the
+    expected dimensionality. For an array whose own length defines a count
+    rather than having to match one, pass ``shape=(array.size,)``: that
+    equality holds only for a 1-D array, so a multi-dimensional argument is
+    still rejected.
 
     Args:
         array: Value to validate, or ``None`` for an omitted optional argument.
-        name: Argument name, used in error messages.
+        name: Argument or port name, used in error messages.
         dtype: Warp dtype the array must have.
-        shape: Shape the array must have. A ``-1`` entry accepts any size in
-            that dimension, so ``(-1,)`` means "1-D, any length".
+        shape: Exact shape the array must have.
         device: Device the array must live on.
         required: Whether ``None`` is rejected.
+        allow_indexed: Whether a :class:`wp.indexedarray` view is accepted.
+            Set for caller-bound ports, which may be bound to a view of a
+            simulation-sized array rather than to a compact array.
     """
     if array is None:
         if required:
             raise ValueError(f"{name} is required, cannot be `None`.")
         return
-    if not isinstance(array, wp.array):
-        raise TypeError(f"{name} must be a wp.array, got {type(array).__name__}.")
+    accepted = wp.array | wp.indexedarray if allow_indexed else wp.array
+    if not isinstance(array, accepted):
+        expected = "a wp.array or wp.indexedarray" if allow_indexed else "a wp.array"
+        raise TypeError(f"{name} must be {expected}, got {type(array).__name__}.")
     if array.dtype != dtype:
         raise TypeError(f"{name} must have dtype {dtype}, got {array.dtype}.")
-    actual = tuple(array.shape)
-    if len(actual) != len(shape) or any(want not in (-1, got) for got, want in zip(actual, shape, strict=True)):
-        expected = "(" + ", ".join("*" if d == -1 else str(d) for d in shape) + ")"
-        raise ValueError(f"{name} must have shape {expected}, got {actual}.")
     if array.device != device:
         raise ValueError(f"{name} must be on device {device}, got {array.device}.")
-
-
-def _validate_flat_port(
-    *,
-    array: Any,
-    name: str,
-    min_length: int,
-    device: wp.DeviceLike,
-) -> None:
-    """Validate a caller-bound flat float32 array before any kernel reads it.
-
-    Unlike :func:`_validate_array`, the length is a lower bound: a port may be
-    bound to a larger simulation array that the controller indexes into.
-
-    Args:
-        array: Array bound to the port by the caller.
-        name: Port name, used in error messages.
-        min_length: Smallest length the port's indices can be read from safely.
-        device: Device the array must live on.
-    """
-    if not isinstance(array, wp.array):
-        raise TypeError(f"{name} must be a wp.array, got {type(array).__name__}.")
-    if array.dtype != wp.float32:
-        raise TypeError(f"{name} must have dtype {wp.float32}, got {array.dtype}.")
-    if array.device != device:
-        raise ValueError(f"{name} must be on device {device}, got {array.device}.")
-    if array.size < min_length:
-        raise ValueError(f"{name} must have length at least {min_length}, got {array.size}.")
+    if tuple(array.shape) != shape:
+        hint = ""
+        if allow_indexed:
+            # Only ports can be bound to a view, so only they get the hint.
+            hint = " To bind a simulation-sized array, pass a view: sim_array[selection.qd_idx]."
+        raise ValueError(f"{name} must have shape {shape}, got {tuple(array.shape)}.{hint}")

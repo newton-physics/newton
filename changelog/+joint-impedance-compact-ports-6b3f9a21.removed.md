@@ -1,0 +1,6 @@
+Remove the `default_dof_indices` constructor argument and the per-port index
+overrides (`joint_q_des_idx`, `joint_qd_des_idx`, `joint_qdd_idx`,
+`gravity_force_idx`, `coriolis_force_idx`, `joint_f_idx`) from the joint
+impedance controllers. Bind an indexed view to the port instead —
+`inputs.joint_q_des = sim_q_des[selection.q_idx]` replaces a gather override, and
+`outputs.joint_f = control.joint_f[selection.qd_idx]` replaces `joint_f_idx`.

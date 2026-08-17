@@ -30,6 +30,6 @@ subclass of :class:`ControllerBase`.
 
 .. autosummary::
    :toctree: _generated
-   :nosignatures:
+   :signatures: long
 
    select_joints
