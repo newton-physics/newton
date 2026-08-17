@@ -51,10 +51,12 @@ class ControllerJointImpedance(ControllerBase):
     base transform to compute the right gravity compensation.
 
     One robot is derived per articulation in ``model``. Within each
-    articulation, every Revolute or Prismatic joint is controlled and every
-    other joint (Fixed, or any multi-DOF type) is read but not actuated,
-    since the PD error term ``q_des - q`` is only a well-defined scalar
-    subtraction for a single-coordinate joint.
+    articulation, only Revolute or Prismatic joints can be controlled, since
+    the PD error term ``q_des - q`` is only a well-defined scalar subtraction
+    for a single-coordinate joint; every other joint (Fixed, or any multi-DOF
+    type) can be read but not actuated. If ``default_dof_indices`` (or a
+    ``joint_q_idx``/``joint_qd_idx`` override) addresses a joint that is not
+    Revolute or Prismatic, construction raises ``ValueError``.
 
     Supports heterogeneous robot fleets — robots in the batch may have
     different controlled-DOF counts. The controller pads internal buffers to
@@ -180,20 +182,29 @@ class ControllerJointImpedance(ControllerBase):
         self._coord_count = int(model.joint_coord_count)
         self._dof_count = int(model.joint_dof_count)
 
-        # Every Revolute/Prismatic joint in an articulation is controlled; every
-        # other joint (Fixed, or any multi-DOF type) is read for FK/dynamics but
-        # not actuated, since only a single-coordinate joint has a well-defined
-        # scalar PD error.
-        joint_type_np = model.joint_type.numpy()
+        # Which articulation each controlled DOF belongs to is defined by
+        # default_dof_indices' own per-robot grouping ("robot 0's indices
+        # first, then robot 1's, ..."), not by rescanning the model for every
+        # Revolute/Prismatic joint — a caller may control any subset of a
+        # model's scalar joints.
+        if default_dof_indices is None:
+            raise ValueError("default_dof_indices is required.")
+        q_start = model.joint_q_start.numpy()
         art_start = model.articulation_start.numpy()
-        art_end = model.articulation_end.numpy()
-        is_scalar_joint = (joint_type_np == JointType.REVOLUTE) | (joint_type_np == JointType.PRISMATIC)
-        dofs_per_robot_np = np.array(
-            [int(is_scalar_joint[art_start[i] : art_end[i]].sum()) for i in range(robot_count)],
-            dtype=np.int32,
-        )
+        default_idx_np = default_dof_indices.numpy()
+        if default_idx_np.size and int(default_idx_np.max()) >= self._coord_count:
+            raise ValueError(
+                f"default_dof_indices contains coordinate index {int(default_idx_np.max())}, "
+                f"but model has {self._coord_count} coordinates."
+            )
+        owning_joint = np.searchsorted(q_start, default_idx_np, side="right") - 1
+        owning_articulation = np.searchsorted(art_start, owning_joint, side="right") - 1
+
+        dofs_per_robot_np = np.zeros(robot_count, dtype=np.int32)
+        unique_arts, counts = np.unique(owning_articulation, return_counts=True)
+        dofs_per_robot_np[unique_arts] = counts
         dofs_per_robot = wp.array(dofs_per_robot_np, dtype=wp.int32, device=self._device)
-        total_dofs = int(dofs_per_robot_np.sum())
+        total_dofs = int(default_idx_np.size)
 
         max_dofs = int(dofs_per_robot_np.max()) if dofs_per_robot_np.size else 0
 
@@ -214,7 +225,14 @@ class ControllerJointImpedance(ControllerBase):
             ("joint_qdd_idx", joint_qdd_idx, wp.uint32, idx_shape, False),
             ("joint_f_idx", joint_f_idx, wp.uint32, idx_shape, False),
         ):
-            _validate_array(array=array, name=name, dtype=expected_dtype, shape=expected_shape, device=self._device, required=required)
+            _validate_array(
+                array=array,
+                name=name,
+                dtype=expected_dtype,
+                shape=expected_shape,
+                device=self._device,
+                required=required,
+            )
         # ------------------------------------------------------------------
 
         self._robot_count = robot_count
