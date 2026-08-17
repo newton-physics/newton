@@ -13386,7 +13386,7 @@ class TestActuatorTypes(unittest.TestCase):
 
     def test_unsupported_type_warns(self):
         """Warn on an unsupported gaintype, naming the attribute, the value and the MJCF actuator."""
-        for gaintype in ("dcmotor", "so3", "pid", "bogus"):
+        for gaintype in ("so3", "pid", "bogus"):
             with self.subTest(gaintype=gaintype):
                 builder = newton.ModelBuilder()
                 with self.assertWarnsRegex(RuntimeWarning, rf"gaintype '{gaintype}' on actuator 'a'"):

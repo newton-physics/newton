@@ -169,6 +169,9 @@
 - Limit the `usd-exchange` dependency to versions below 3 for aarch64 systems. (#3996)
 - Keep ViewerGL depth, shading, and shadows stable for very large meshes when the camera moves. ([#3977](https://github.com/newton-physics/newton/issues/3977))
 - Resolve deep heightfield contacts against the cell's physical surface instead of the volume the cell is extruded into, which reported about a metre of penetration with a normal pointing into the terrain once a collider's center passed below the surface.
+### Added
+
+- Import MuJoCo DC-motor actuators from MJCF and compiled `MjcActuator` USD for `SolverMuJoCo`. (#3950)
 
 ## [1.5.0] - 2026-08-11
 
