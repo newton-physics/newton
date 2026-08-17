@@ -4,9 +4,10 @@
 """ControllerJointImpedance — joint-space impedance control with
 Newton model-internal dynamics.
 
-Internally calls :func:`newton.eval_fk` and :func:`newton.eval_mass_matrix`
-each step to obtain the mass matrix, then delegates all gather/compute/scatter
-work to an inner :class:`ControllerJointImpedanceModelFree` instance.
+Calls :func:`newton.eval_fk` and :func:`newton.eval_mass_matrix` on the
+supplied model each step to obtain the mass matrix, then delegates all
+gather/compute/scatter work to an inner
+:class:`ControllerJointImpedanceModelFree` instance.
 
 Gravity and Coriolis compensation use :func:`newton.eval_inverse_dynamics_passive`.
 """
@@ -20,40 +21,49 @@ import warp as wp
 
 from newton import JointType
 from newton._src.sim.articulation import eval_fk, eval_mass_matrix
-from newton._src.sim.builder import ModelBuilder
 from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
+from newton._src.sim.model import Model
 
 from ...controller import ControllerBase
 from ...utils import _normalize_indices, _validate_array, _validate_flat_port
-from ._common import _gather_dof_flat_kernel, _idx_max
+from ._common import _gather_mass_matrix_blocks_kernel, _idx_max
 from .model_free import ControllerJointImpedanceModelFree
+
+# Joints whose position error ``q_des - q`` is a well-defined scalar subtraction.
+_SCALAR_JOINT_TYPES = {int(JointType.REVOLUTE), int(JointType.PRISMATIC)}
 
 
 class ControllerJointImpedance(ControllerBase):
     """Joint-space impedance controller with internally computed dynamics.
 
     Implements the joint-space impedance control law. This model-based variant
-    computes the mass matrix, gravity, and Coriolis terms itself: it holds a
-    private :class:`~newton.Model` built from ``builder`` and evaluates forward
-    kinematics and the enabled dynamics terms on every :meth:`step`, so the
-    caller supplies only joint positions and velocities.
+    computes the mass matrix, gravity, and Coriolis terms itself: it evaluates
+    forward kinematics and the enabled dynamics terms from ``model`` on every
+    :meth:`step`, so the caller supplies only joint positions and velocities.
 
-    ``builder`` is not modified at construction — and the internal :class:`newton.Model` cannot be rebuilt after construction. Later changes to ``builder`` or
-    to the simulated model do not propagate, so a mismatched topology computes
-    dynamics for a different robot with no diagnostic.
+    ``model`` is borrowed, not owned — it is never written to, and changes to
+    it are visible to the controller immediately.
+
+    Every coordinate of ``model`` contributes to ``inputs.joint_q`` and
+    ``inputs.joint_qd``, since gravity, Coriolis, and mass-matrix terms depend
+    on the state of the whole model, not only the controlled joints: a
+    revolute joint mounted on an unactuated floating base still needs the
+    base transform to compute the right gravity compensation.
+
+    One robot is derived per articulation in ``model``. Within each
+    articulation, every Revolute or Prismatic joint is controlled and every
+    other joint (Fixed, or any multi-DOF type) is read but not actuated,
+    since the PD error term ``q_des - q`` is only a well-defined scalar
+    subtraction for a single-coordinate joint.
 
     Supports heterogeneous robot fleets — robots in the batch may have
-    different DOF counts. The ``builder`` articulations define the
-    per-robot topology; the controller pads internal buffers to
-    ``model.max_dofs_per_articulation`` and skips padding slots in all kernels.
-
-    Only 1-DOF joints (Revolute, Prismatic) and zero-DOF Fixed joints are
-    supported. The PD error term ``q_des - q`` is only valid for scalar
-    joint coordinates.
+    different controlled-DOF counts. The controller pads internal buffers to
+    the largest per-robot controlled-DOF count and skips padding slots in all
+    kernels.
 
     See also :class:`ControllerJointImpedanceModelFree`, which takes the mass
     matrix, gravity, and Coriolis terms as inputs instead of computing them
-    from a :class:`newton.Model`.
+    from a :class:`~newton.Model`.
 
     Impedance law (terms enabled at construction):
 
@@ -62,12 +72,13 @@ class ControllerJointImpedance(ControllerBase):
             + [g(q)      if use_gravity_compensation  else 0]
 
     Args:
-        builder: :class:`~newton.ModelBuilder` with N articulations (one
-            per robot). Articulations may have different DOF counts.
+        model: :class:`~newton.Model` with N articulations (one per robot).
+            Articulations may mix controlled 1-DOF joints with uncontrolled
+            joints of any type.
         default_dof_indices: Concatenated per-robot index arrays of length
-            ``sum(dofs per articulation)`` mapping controller DOF slots to
-            positions in the flat simulation arrays (robot 0's indices first,
-            then robot 1's, etc.).
+            ``sum(controlled dofs per articulation)`` mapping controller DOF
+            slots to positions in the flat simulation arrays (robot 0's
+            indices first, then robot 1's, etc.).
         stiffness: Position-error gain Kp, shape ``(N, max_dofs)``. Units
             depend on ``use_inertia_decoupling``: [1/s²] when enabled, since
             the PD term is then an acceleration premultiplied by M(q);
@@ -83,7 +94,9 @@ class ControllerJointImpedance(ControllerBase):
             ``inputs.joint_qdd``.
         joint_q_idx: Optional index array (same length as
             ``default_dof_indices``) overriding it for the position read.
-        joint_qd_idx: Optional index array for velocity read.
+            Each entry must be the coordinate index of a controlled joint.
+        joint_qd_idx: Optional index array for velocity read. Each entry must
+            be the DOF index of a controlled joint.
         joint_q_des_idx: Optional index array for desired position read.
         joint_qd_des_idx: Optional index array for desired velocity read.
         joint_qdd_idx: Optional index array for feedforward read.
@@ -101,9 +114,9 @@ class ControllerJointImpedance(ControllerBase):
         """
 
         joint_q: wp.array[wp.float32]
-        """Current joint positions [m or rad], flat sim-level array."""
+        """Current joint positions [m or rad], shape ``(model.joint_coord_count,)``."""
         joint_qd: wp.array[wp.float32]
-        """Current joint velocities [m/s or rad/s], flat sim-level array."""
+        """Current joint velocities [m/s or rad/s], shape ``(model.joint_dof_count,)``."""
         joint_q_des: wp.array[wp.float32]
         """Desired joint positions [m or rad], flat sim-level array."""
         joint_qd_des: wp.array[wp.float32]
@@ -123,7 +136,7 @@ class ControllerJointImpedance(ControllerBase):
 
     def __init__(
         self,
-        builder: ModelBuilder,
+        model: Model,
         *,
         default_dof_indices: wp.array[wp.uint32],
         stiffness: wp.array2d[wp.float32] | None,
@@ -141,24 +154,11 @@ class ControllerJointImpedance(ControllerBase):
         device: Any = None,
         requires_grad: bool = False,
     ):
-        if not isinstance(builder, ModelBuilder):
-            raise TypeError(f"builder must be a newton.ModelBuilder, got {type(builder).__name__}.")
-        robot_count = builder.articulation_count
+        if not isinstance(model, Model):
+            raise TypeError(f"model must be a newton.Model, got {type(model).__name__}.")
+        robot_count = model.articulation_count
         if robot_count < 1:
-            raise ValueError("builder has no articulations.")
-
-        # Fixed joints contribute zero DOFs and are invisible to the PD error term.
-        allowed_joint_types = {int(JointType.REVOLUTE), int(JointType.PRISMATIC), int(JointType.FIXED)}
-        unsupported_joints = [
-            (joint_index, JointType(joint_type).name)
-            for joint_index, joint_type in enumerate(builder.joint_type)
-            if joint_type not in allowed_joint_types
-        ]
-        if unsupported_joints:
-            raise ValueError(
-                f"ControllerJointImpedance only supports 1-DOF joints (Revolute/Prismatic) and "
-                f"zero-DOF fixed joints; found unsupported joint types: {unsupported_joints}"
-            )
+            raise ValueError("model has no articulations.")
 
         self._device = wp.get_device(device)
         self._requires_grad = requires_grad
@@ -170,26 +170,34 @@ class ControllerJointImpedance(ControllerBase):
         self._stiffness_is_live = stiffness is None
         self._damping_is_live = damping is None
 
-        self._model = builder.finalize(device=self._device, requires_grad=requires_grad)
-        self._model_state = self._model.state()
+        self._model = model
+        self._model_state = model.state(requires_grad=requires_grad)
+        self._coord_count = int(model.joint_coord_count)
+        self._dof_count = int(model.joint_dof_count)
 
-        max_dofs = self._model.max_dofs_per_articulation
-
-        # Derive per-articulation DOF counts from the finalized model.
-        art_start = self._model.articulation_start.numpy()
-        art_end = self._model.articulation_end.numpy()
-        joint_q_start = self._model.joint_q_start.numpy()
+        # Every Revolute/Prismatic joint in an articulation is controlled; every
+        # other joint (Fixed, or any multi-DOF type) is read for FK/dynamics but
+        # not actuated, since only a single-coordinate joint has a well-defined
+        # scalar PD error.
+        joint_type_np = model.joint_type.numpy()
+        art_start = model.articulation_start.numpy()
+        art_end = model.articulation_end.numpy()
         dofs_per_robot_np = np.array(
-            [joint_q_start[art_end[i]] - joint_q_start[art_start[i]] for i in range(robot_count)],
+            [
+                int(np.count_nonzero(np.isin(joint_type_np[art_start[i] : art_end[i]], list(_SCALAR_JOINT_TYPES))))
+                for i in range(robot_count)
+            ],
             dtype=np.int32,
         )
         dofs_per_robot = wp.array(dofs_per_robot_np, dtype=wp.int32, device=self._device)
         total_dofs = int(dofs_per_robot_np.sum())
 
+        max_dofs = int(dofs_per_robot_np.max()) if dofs_per_robot_np.size else 0
+
         # ------------------------------------------------------------------
         # Validation: every wp.array argument is checked here, and nowhere
-        # else. This runs after finalize() because the expected shapes derive
-        # from the finalized model.
+        # else. This runs after the per-robot DOF counts above are derived,
+        # since the expected shapes depend on them.
         # ------------------------------------------------------------------
         gain_shape, idx_shape = (robot_count, max_dofs), (total_dofs,)
         for name, array, dtype, shape, required in (
@@ -209,6 +217,7 @@ class ControllerJointImpedance(ControllerBase):
         self._robot_count = robot_count
         self._max_dofs = max_dofs
         self._total_dofs = total_dofs
+        self._dofs_per_robot = dofs_per_robot
 
         self._q_idx = _normalize_indices(idx=joint_q_idx, default_idx=default_dof_indices)
         self._qd_idx = _normalize_indices(idx=joint_qd_idx, default_idx=default_dof_indices)
@@ -216,33 +225,49 @@ class ControllerJointImpedance(ControllerBase):
         self._qd_des_idx = _normalize_indices(idx=joint_qd_des_idx, default_idx=default_dof_indices)
         self._qdd_idx = _normalize_indices(idx=joint_qdd_idx, default_idx=default_dof_indices)
 
-        # joint_q and joint_qd are gathered by this class before it delegates,
-        # so their ports are checked here rather than by the inner controller.
-        self._min_len_q = _idx_max(self._q_idx)
-        self._min_len_qd = _idx_max(self._qd_idx)
+        # Only *controlled* joints are restricted to 1-DOF revolute/prismatic —
+        # an uncontrolled joint elsewhere in the model may be of any type. This
+        # checks the joints actually addressed by the resolved read indices,
+        # which catches a caller pointing an override at the wrong coordinate.
+        self._validate_controlled_joints_are_scalar(joint_q_idx=self._q_idx, joint_qd_idx=self._qd_idx)
 
+        self._mass_matrix_full: wp.array3d[wp.float32] | None = None
         self._mass_matrix: wp.array3d[wp.float32] | None = None
+        self._local_dof_idx: wp.array2d[wp.int32] | None = None
         self._gravity_flat: wp.array[wp.float32] | None = None
         self._coriolis_flat: wp.array[wp.float32] | None = None
 
         if self._use_inertia:
+            # eval_mass_matrix writes H sized to each articulation's true DOF count
+            # (which may exceed its controlled-DOF count, since uncontrolled joints
+            # still occupy rows/columns), so the controlled block is extracted each
+            # step into a separate (robot_count, max_dofs, max_dofs) buffer.
+            model_max_dofs = model.max_dofs_per_articulation
+            self._mass_matrix_full = wp.zeros(
+                (robot_count, model_max_dofs, model_max_dofs),
+                dtype=wp.float32,
+                device=self._device,
+                requires_grad=requires_grad,
+            )
             self._mass_matrix = wp.zeros(
                 (robot_count, max_dofs, max_dofs),
                 dtype=wp.float32,
                 device=self._device,
                 requires_grad=requires_grad,
             )
+            self._local_dof_idx = wp.array(
+                self._compute_local_dof_idx(qd_idx_np=self._qd_idx.numpy(), dofs_per_robot_np=dofs_per_robot_np),
+                dtype=wp.int32,
+                device=self._device,
+            )
         if self._use_gravity:
             self._gravity_flat = wp.zeros(
-                total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+                self._dof_count, dtype=wp.float32, device=self._device, requires_grad=requires_grad
             )
         if self._use_coriolis:
             self._coriolis_flat = wp.zeros(
-                total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+                self._dof_count, dtype=wp.float32, device=self._device, requires_grad=requires_grad
             )
-
-        # Newton fills dynamics in the same DOF order as model.joint_q — use identity indices.
-        identity_idx = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self._device)
 
         self._model_free = ControllerJointImpedanceModelFree(
             dofs_per_robot=dofs_per_robot,
@@ -258,8 +283,11 @@ class ControllerJointImpedance(ControllerBase):
             joint_q_des_idx=joint_q_des_idx,
             joint_qd_des_idx=joint_qd_des_idx,
             joint_qdd_idx=joint_qdd_idx,
-            gravity_force_idx=identity_idx,
-            coriolis_force_idx=identity_idx,
+            # gravity_flat/coriolis_flat are filled by eval_inverse_dynamics_passive over
+            # the whole model, so they are read through the same DOF-space index as
+            # inputs.joint_qd rather than through default_dof_indices.
+            gravity_force_idx=self._qd_idx,
+            coriolis_force_idx=self._qd_idx,
             joint_f_idx=joint_f_idx,
             device=device,
             requires_grad=requires_grad,
@@ -267,12 +295,61 @@ class ControllerJointImpedance(ControllerBase):
 
         # Pre-wired dynamics fields forwarded to ModelFree each step.
         self._mf_input = ControllerJointImpedanceModelFree.Inputs()
+        self._mf_input.joint_q = self._model_state.joint_q
+        self._mf_input.joint_qd = self._model_state.joint_qd
         if self._use_inertia:
             self._mf_input.mass_matrix = self._mass_matrix
         if self._use_gravity:
             self._mf_input.gravity_force = self._gravity_flat
         if self._use_coriolis:
             self._mf_input.coriolis_force = self._coriolis_flat
+
+    def _validate_controlled_joints_are_scalar(
+        self,
+        *,
+        joint_q_idx: wp.array[wp.uint32],
+        joint_qd_idx: wp.array[wp.uint32],
+    ) -> None:
+        """Raise if a read index addresses a joint that is not 1-DOF revolute/prismatic."""
+        joint_type_np = self._model.joint_type.numpy()
+        q_start = self._model.joint_q_start.numpy()
+        qd_start = self._model.joint_qd_start.numpy()
+
+        unsupported: list[tuple[int, str]] = []
+        for idx_np, start in ((joint_q_idx.numpy(), q_start), (joint_qd_idx.numpy(), qd_start)):
+            owning_joint = np.searchsorted(start, idx_np, side="right") - 1
+            unsupported.extend(
+                (int(j), JointType(joint_type_np[j]).name)
+                for j in owning_joint
+                if joint_type_np[j] not in _SCALAR_JOINT_TYPES
+            )
+        if unsupported:
+            unique_unsupported = sorted(set(unsupported))
+            raise ValueError(
+                f"ControllerJointImpedance only supports controlling 1-DOF joints "
+                f"(Revolute/Prismatic); the read indices address unsupported joints: "
+                f"{unique_unsupported}"
+            )
+
+    def _compute_local_dof_idx(self, *, qd_idx_np: np.ndarray, dofs_per_robot_np: np.ndarray) -> np.ndarray:
+        """Return, for each (robot, padded slot), the controlled DOF's index within its articulation.
+
+        Used to gather the controlled-DOF block out of the per-articulation mass
+        matrix, which :func:`~newton.eval_mass_matrix` sizes to each
+        articulation's true DOF count rather than its controlled-DOF count.
+        """
+        art_start = self._model.articulation_start.numpy()
+        articulation_dof_start = self._model.joint_qd_start.numpy()[art_start[: self._robot_count]]
+
+        offsets = np.zeros(self._robot_count, dtype=np.int64)
+        offsets[1:] = np.cumsum(dofs_per_robot_np[:-1])
+
+        local_dof_idx = np.zeros((self._robot_count, self._max_dofs), dtype=np.int32)
+        for robot in range(self._robot_count):
+            n = int(dofs_per_robot_np[robot])
+            chunk = qd_idx_np[offsets[robot] : offsets[robot] + n]
+            local_dof_idx[robot, :n] = chunk - articulation_dof_start[robot]
+        return local_dof_idx
 
     @property
     def robot_count(self) -> int:
@@ -297,8 +374,8 @@ class ControllerJointImpedance(ControllerBase):
         """Return a pre-allocated :class:`Inputs` without dynamics fields."""
         d, rg = self._device, self._requires_grad
         inputs = ControllerJointImpedance.Inputs()
-        inputs.joint_q = wp.zeros(_idx_max(self._q_idx), dtype=wp.float32, device=d, requires_grad=rg)
-        inputs.joint_qd = wp.zeros(_idx_max(self._qd_idx), dtype=wp.float32, device=d, requires_grad=rg)
+        inputs.joint_q = wp.zeros(self._coord_count, dtype=wp.float32, device=d, requires_grad=rg)
+        inputs.joint_qd = wp.zeros(self._dof_count, dtype=wp.float32, device=d, requires_grad=rg)
         inputs.joint_q_des = wp.zeros(_idx_max(self._q_des_idx), dtype=wp.float32, device=d, requires_grad=rg)
         inputs.joint_qd_des = wp.zeros(_idx_max(self._qd_des_idx), dtype=wp.float32, device=d, requires_grad=rg)
         inputs.joint_qdd = (
@@ -334,34 +411,32 @@ class ControllerJointImpedance(ControllerBase):
             outputs: :class:`Outputs` struct to write torques into.
             dt: Unused. Accepted for API compatibility.
         """
-        # Checked here because the gathers below read these two ports before
+        # Checked here because the copies below consume these two ports before
         # the inner controller — which validates the rest — ever sees them.
         _validate_flat_port(
-            array=inputs.joint_q, name="inputs.joint_q", min_length=self._min_len_q, device=self._device
+            array=inputs.joint_q, name="inputs.joint_q", min_length=self._coord_count, device=self._device
         )
         _validate_flat_port(
-            array=inputs.joint_qd, name="inputs.joint_qd", min_length=self._min_len_qd, device=self._device
+            array=inputs.joint_qd, name="inputs.joint_qd", min_length=self._dof_count, device=self._device
         )
 
-        wp.launch(
-            _gather_dof_flat_kernel,
-            dim=self._total_dofs,
-            inputs=[inputs.joint_q, self._q_idx],
-            outputs=[self._model_state.joint_q],
-            device=self._device,
-        )
-        wp.launch(
-            _gather_dof_flat_kernel,
-            dim=self._total_dofs,
-            inputs=[inputs.joint_qd, self._qd_idx],
-            outputs=[self._model_state.joint_qd],
-            device=self._device,
-        )
+        # Whole-model copies, not a gather of the controlled DOFs: an
+        # uncontrolled joint still sets its own body transform, and hence the
+        # gravity/Coriolis/mass-matrix terms of every joint downstream of it.
+        wp.copy(self._model_state.joint_q, inputs.joint_q)
+        wp.copy(self._model_state.joint_qd, inputs.joint_qd)
 
         if self._needs_fk:
             eval_fk(self._model, self._model_state.joint_q, self._model_state.joint_qd, self._model_state)
         if self._use_inertia:
-            eval_mass_matrix(self._model, self._model_state, H=self._mass_matrix)
+            eval_mass_matrix(self._model, self._model_state, H=self._mass_matrix_full)
+            wp.launch(
+                _gather_mass_matrix_blocks_kernel,
+                dim=(self._robot_count, self._max_dofs, self._max_dofs),
+                inputs=[self._mass_matrix_full, self._local_dof_idx, self._dofs_per_robot],
+                outputs=[self._mass_matrix],
+                device=self._device,
+            )
         if self._use_gravity or self._use_coriolis:
             eval_inverse_dynamics_passive(
                 self._model,
@@ -370,8 +445,6 @@ class ControllerJointImpedance(ControllerBase):
                 coriolis_force=self._coriolis_flat,
             )
 
-        self._mf_input.joint_q = inputs.joint_q
-        self._mf_input.joint_qd = inputs.joint_qd
         self._mf_input.joint_q_des = inputs.joint_q_des
         self._mf_input.joint_qd_des = inputs.joint_qd_des
         if self._has_qdd:
