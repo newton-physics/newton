@@ -260,6 +260,9 @@ together as one coupled system.
 
 The effective inverse mass, called *the response* below, is computed for a whole
 articulation. The actuator then reads only the entries for the DOFs it drives.
+:class:`~newton.actuators.ResponseOracle` is responsible for providing that
+matrix, and there are two ways to obtain it: compute it from scratch, or reuse
+what the solver already has.
 
 :meth:`~newton.actuators.ResponseOracle.refresh` builds the mass matrix itself,
 from :func:`~newton.eval_mass_matrix` and joint armature. Joint damping, joint
