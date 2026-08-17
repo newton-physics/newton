@@ -16,6 +16,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
@@ -31,6 +32,19 @@ class Example:
         self.world_count = args.world_count if args else 1
         self.viewer = viewer
         self.device = wp.get_device()
+
+        self.record_video = args.record_video
+        if self.record_video:
+            enable_recording(self.viewer)
+            if hasattr(self.viewer, "start_clip"):
+                output_filename = getattr(args, "video_path", None)
+                self.viewer.start_clip(
+                    output_path=output_filename if output_filename is not None else "recording.mp4",
+                    max_frames=1000,
+                    fps=self.fps,
+                )
+            else:
+                self.record_video = False
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -170,6 +184,18 @@ class Example:
             default=True,
             help="Load the basic boxes nunchaku from USD.",
         )
+        parser.add_argument(
+            "--record-video",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Record a video of the viewer, up to 1000 frames.",
+        )
+        parser.add_argument(
+            "--video-path",
+            type=str,
+            default=None,
+            help="Output video path (defaults to 'recording.mp4').",
+        )
         return parser
 
 
@@ -178,3 +204,5 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
+    if hasattr(viewer, "finish_clip"):
+        viewer.finish_clip()
