@@ -600,7 +600,7 @@ def eval_fk(
             kernel = create_eval_articulation_fk_tile(
                 model._fk_level_capacity,
                 body_flag_filter == BodyFlags.ALL,
-                model._fk_has_cable,
+                model._has_rod_joints,
             )
             inputs = [
                 model._fk_articulation_level_start,

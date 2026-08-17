@@ -16,10 +16,10 @@ FK_TILE_MAX_LEVEL_WIDTH = 512
 
 
 @functools.cache
-def create_eval_articulation_fk_tile(level_capacity: int, write_all: bool, has_cable: bool):
+def create_eval_articulation_fk_tile(level_capacity: int, write_all: bool, has_rod: bool):
     buffer_capacity = wp.constant(2 * level_capacity)
     level_capacity = wp.constant(level_capacity)
-    preserve_body_q = not write_all or has_cable
+    preserve_body_q = not write_all or has_rod
 
     @wp.kernel(enable_backward=False, module="unique")
     def eval_articulation_fk_tile(
@@ -86,8 +86,8 @@ def create_eval_articulation_fk_tile(level_capacity: int, write_all: bool, has_c
                     type = joint_type[joint]
                     child = joint_child[joint]
                     evaluate_joint = bool(True)
-                    if wp.static(has_cable):
-                        evaluate_joint = type != JointType.CABLE
+                    if wp.static(has_rod):
+                        evaluate_joint = type != JointType.ROD
 
                     write_child = bool(False)
                     if evaluate_joint:
