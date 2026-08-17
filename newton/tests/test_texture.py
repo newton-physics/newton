@@ -40,8 +40,8 @@ class TestLinearTextureToSrgb(unittest.TestCase):
         np.testing.assert_array_equal(converted, expected)
         np.testing.assert_array_equal(image, original)
         self.assertTrue(converted.flags.c_contiguous)
-        # The shared LUT is read-only; the returned image must not inherit that flag.
-        self.assertTrue(converted.flags.writable)
+        # The shared LUT is read-only; the result must not inherit that. "W" is NumPy's short key for the write flag.
+        self.assertTrue(converted.flags["W"])
 
 
 def _write_png(path: Path, color: tuple[int, int, int]) -> None:
