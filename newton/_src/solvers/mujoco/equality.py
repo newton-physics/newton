@@ -6,14 +6,14 @@
 attributes.
 
 Equality constraints are MuJoCo-specific concepts that live on the model under
-the ``mujoco`` namespace. The public lower-level path for users is
-:meth:`ModelBuilder.add_custom_values` with ``mujoco:equality_constraint_*``
-keys; this module provides convenience used internally by the MJCF/USD
-importers and by tests.
+the ``mujoco`` namespace. Public typed helpers append complete constraint rows;
+the lower-level :meth:`ModelBuilder.add_custom_values` path remains available
+for custom schemas.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -324,3 +324,191 @@ def _add_equality_constraint(
         )
 
     return constraint_idx
+
+
+def _validate_body(builder: ModelBuilder, body: int, name: str) -> None:
+    if body < -1 or body >= len(builder.body_mass):
+        raise IndexError(f"{name} index {body} is outside [-1, {len(builder.body_mass)}).")
+
+
+def _validate_joint(builder: ModelBuilder, joint: int, name: str) -> None:
+    if joint < 0 or joint >= len(builder.joint_type):
+        raise IndexError(f"{name} index {joint} is outside [0, {len(builder.joint_type)}).")
+    linear_dofs, angular_dofs = builder.joint_dof_dim[joint]
+    if linear_dofs + angular_dofs != 1:
+        raise ValueError(f"{name} index {joint} must identify a scalar joint.")
+
+
+def _ensure_equality_attributes(builder: ModelBuilder) -> None:
+    if not builder.has_custom_attribute("mujoco:equality_constraint_type"):
+        _register_equality_constraint_attributes(builder)
+
+
+def _equality_custom_attributes(
+    custom_attributes: dict[str, Any] | None,
+    solref: Sequence[float] | None,
+    solimp: Sequence[float] | None,
+) -> dict[str, Any] | None:
+    attributes = dict(custom_attributes or {})
+    if solref is not None:
+        if "mujoco:eq_solref" in attributes:
+            raise ValueError("solref and custom_attributes['mujoco:eq_solref'] cannot both be specified.")
+        values = [float(value) for value in solref]
+        if len(values) != 2:
+            raise ValueError(f"solref requires exactly 2 values, got {len(values)}.")
+        attributes["mujoco:eq_solref"] = wp.vec2(*values)
+    if solimp is not None:
+        if "mujoco:eq_solimp" in attributes:
+            raise ValueError("solimp and custom_attributes['mujoco:eq_solimp'] cannot both be specified.")
+        values = [float(value) for value in solimp]
+        if len(values) != 5:
+            raise ValueError(f"solimp requires exactly 5 values, got {len(values)}.")
+        attributes["mujoco:eq_solimp"] = vec5(*values)
+    return attributes or None
+
+
+def add_equality_connect(
+    builder: ModelBuilder,
+    body1: int,
+    body2: int = -1,
+    *,
+    anchor: Vec3 | None = None,
+    label: str | None = None,
+    enabled: bool = True,
+    solref: Sequence[float] | None = None,
+    solimp: Sequence[float] | None = None,
+    custom_attributes: dict[str, Any] | None = None,
+) -> int:
+    """Add a MuJoCo connect equality between two bodies.
+
+    Args:
+        builder: Model builder receiving the constraint.
+        body1: First body index, or ``-1`` for the world.
+        body2: Second body index, or ``-1`` for the world.
+        anchor: Anchor point in the first body's frame [m].
+        label: Optional constraint label.
+        enabled: Whether the constraint is active.
+        solref: Optional MuJoCo constraint reference parameters.
+        solimp: Optional MuJoCo constraint impedance parameters.
+        custom_attributes: Additional registered equality-frequency attributes.
+
+    Returns:
+        The ``mujoco:equality_constraint`` row index.
+    """
+    _ensure_equality_attributes(builder)
+    _validate_body(builder, body1, "body1")
+    _validate_body(builder, body2, "body2")
+    if body1 < 0 and body2 < 0:
+        raise ValueError("A connect equality must reference at least one body.")
+    return _add_equality_constraint(
+        builder,
+        EqType.CONNECT,
+        body1=body1,
+        body2=body2,
+        anchor=anchor,
+        label=label,
+        enabled=enabled,
+        custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),
+    )
+
+
+def add_equality_weld(
+    builder: ModelBuilder,
+    body1: int,
+    body2: int = -1,
+    *,
+    relpose: Transform | None = None,
+    torquescale: float = 1.0,
+    label: str | None = None,
+    enabled: bool = True,
+    solref: Sequence[float] | None = None,
+    solimp: Sequence[float] | None = None,
+    custom_attributes: dict[str, Any] | None = None,
+) -> int:
+    """Add a MuJoCo weld equality between two bodies.
+
+    Args:
+        builder: Model builder receiving the constraint.
+        body1: First body index, or ``-1`` for the world.
+        body2: Second body index, or ``-1`` for the world.
+        relpose: Relative pose of the second body in the first body's frame.
+        torquescale: Angular residual length scale [m].
+        label: Optional constraint label.
+        enabled: Whether the constraint is active.
+        solref: Optional MuJoCo constraint reference parameters.
+        solimp: Optional MuJoCo constraint impedance parameters.
+        custom_attributes: Additional registered equality-frequency attributes.
+
+    Returns:
+        The ``mujoco:equality_constraint`` row index.
+    """
+    _ensure_equality_attributes(builder)
+    _validate_body(builder, body1, "body1")
+    _validate_body(builder, body2, "body2")
+    if body1 < 0 and body2 < 0:
+        raise ValueError("A weld equality must reference at least one body.")
+    return _add_equality_constraint(
+        builder,
+        EqType.WELD,
+        body1=body1,
+        body2=body2,
+        relpose=relpose,
+        torquescale=torquescale,
+        label=label,
+        enabled=enabled,
+        custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),
+    )
+
+
+def add_equality_joint(
+    builder: ModelBuilder,
+    joint1: int,
+    joint2: int,
+    *,
+    polycoef: Sequence[float] = (0.0, 1.0),
+    label: str | None = None,
+    enabled: bool = True,
+    solref: Sequence[float] | None = None,
+    solimp: Sequence[float] | None = None,
+    custom_attributes: dict[str, Any] | None = None,
+) -> int:
+    """Add a MuJoCo polynomial equality between two scalar joints.
+
+    Args:
+        builder: Model builder receiving the constraint.
+        joint1: Dependent Newton joint index.
+        joint2: Reference Newton joint index.
+        polycoef: Up to five polynomial coefficients.
+        label: Optional constraint label.
+        enabled: Whether the constraint is active.
+        solref: Optional MuJoCo constraint reference parameters.
+        solimp: Optional MuJoCo constraint impedance parameters.
+        custom_attributes: Additional registered equality-frequency attributes.
+
+    Returns:
+        The ``mujoco:equality_constraint`` row index.
+    """
+    _ensure_equality_attributes(builder)
+    _validate_joint(builder, joint1, "joint1")
+    _validate_joint(builder, joint2, "joint2")
+    coefficients = [float(value) for value in polycoef]
+    if len(coefficients) > 5:
+        raise ValueError(f"polycoef accepts at most 5 values, got {len(coefficients)}.")
+    coefficients.extend([0.0] * (5 - len(coefficients)))
+    return _add_equality_constraint(
+        builder,
+        EqType.JOINT,
+        joint1=joint1,
+        joint2=joint2,
+        polycoef=coefficients,
+        label=label,
+        enabled=enabled,
+        custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),
+    )
+
+
+__all__ = [
+    "add_equality_connect",
+    "add_equality_joint",
+    "add_equality_weld",
+]
