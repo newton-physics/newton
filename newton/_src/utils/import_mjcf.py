@@ -3307,6 +3307,13 @@ def parse_mjcf(
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
+            elif actuator_type == "dcmotor":
+                # SolverMuJoCo applies MuJoCo's native DC-motor shortcut from
+                # the high-level parameters preserved by custom attributes.
+                gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+
             elif actuator_type == "general":
                 gainprm_str = merged_attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
                 biasprm_str = merged_attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
@@ -3347,6 +3354,8 @@ def parse_mjcf(
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.POSITION)
             elif actuator_type == "velocity":
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.VELOCITY)
+            elif actuator_type == "dcmotor":
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.DCMOTOR)
             else:
                 ctrl_type_val = int(SolverMuJoCo.CtrlType.GENERAL)
 

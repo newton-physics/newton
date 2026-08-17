@@ -465,11 +465,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
           :attr:`~newton.JointTargetMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
         - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_qd`, syncs gains from :attr:`~newton.Model.joint_target_kd`
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
+        - :attr:`DCMOTOR`: Recreates the MuJoCo ``dcmotor`` shortcut from its high-level MJCF parameters
         """
 
         POSITION = 0
         VELOCITY = 1
         GENERAL = 2
+        DCMOTOR = 3
 
     class TrnType(IntEnum):
         """Transmission type values for MuJoCo actuators."""
@@ -1478,18 +1480,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "filter": _ActuatorDynamicsType.FILTER,
             "filterexact": _ActuatorDynamicsType.FILTER_EXACT,
             "muscle": _ActuatorDynamicsType.MUSCLE,
+            "dcmotor": _ActuatorDynamicsType.DCMOTOR,
             "user": _ActuatorDynamicsType.USER,
         }
         actuator_gain_types = {
             "fixed": _ActuatorGainType.FIXED,
             "affine": _ActuatorGainType.AFFINE,
             "muscle": _ActuatorGainType.MUSCLE,
+            "dcmotor": _ActuatorGainType.DCMOTOR,
+            "so3": _ActuatorGainType.SO3,
             "user": _ActuatorGainType.USER,
         }
         actuator_bias_types = {
             "none": _ActuatorBiasType.NONE,
             "affine": _ActuatorBiasType.AFFINE,
             "muscle": _ActuatorBiasType.MUSCLE,
+            "dcmotor": _ActuatorBiasType.DCMOTOR,
+            "so3": _ActuatorBiasType.SO3,
             "user": _ActuatorBiasType.USER,
         }
 
@@ -1504,6 +1511,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
             return parse_actuator_enum(s, actuator_bias_types)
+
+        def parse_dcmotor_input(s: str, _context: dict[str, Any] | None = None) -> int:
+            return parse_actuator_enum(s, {"voltage": 0, "position": 1, "velocity": 2})
 
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
@@ -2009,6 +2019,145 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 mjcf_attribute_name="gear",
                 usd_attribute_name="mjc:gear",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_damping",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="damping",
+                usd_attribute_name="mjc:damping",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_armature",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="armature",
+                usd_attribute_name="mjc:armature",
+            )
+        )
+
+        # Preserve high-level MJCF DC-motor parameters so MjSpec can apply the
+        # native shortcut when SolverMuJoCo rebuilds its MuJoCo model.
+        dcmotor_vec6 = wp.types.vector(length=6, dtype=wp.float32)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_motorconst",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="motorconst",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_resistance",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="resistance",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_nominal",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="nominal",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_saturation",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="saturation",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_inductance",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="inductance",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_cogging",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="cogging",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_controller",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=dcmotor_vec6,
+                default=dcmotor_vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="controller",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_thermal",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=dcmotor_vec6,
+                default=dcmotor_vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="thermal",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_lugre",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=vec5,
+                default=vec5(0.0, 0.0, 0.0, 0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="lugre",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_dcmotor_input",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                mjcf_attribute_name="input",
+                mjcf_value_transformer=parse_dcmotor_input,
             )
         )
         builder.add_custom_attribute(
@@ -3087,6 +3236,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         actuator_trnid = mujoco_attrs.actuator_trnid.numpy()
         trntype_arr = mujoco_attrs.actuator_trntype.numpy() if hasattr(mujoco_attrs, "actuator_trntype") else None
         ctrl_source_arr = mujoco_attrs.ctrl_source.numpy() if hasattr(mujoco_attrs, "ctrl_source") else None
+        ctrl_type_arr = mujoco_attrs.ctrl_type.numpy() if hasattr(mujoco_attrs, "ctrl_type") else None
         actuator_world_arr = mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
         actuator_target_label_arr = getattr(mujoco_attrs, "actuator_target_label", None)
         joint_dof_label_arr = getattr(mujoco_attrs, "joint_dof_label", None)
@@ -3140,6 +3290,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         actrange_arr = mujoco_attrs.actuator_actrange.numpy() if hasattr(mujoco_attrs, "actuator_actrange") else None
         actlimited_arr = (
             mujoco_attrs.actuator_actlimited.numpy() if hasattr(mujoco_attrs, "actuator_actlimited") else None
+        )
+        damping_arr = mujoco_attrs.actuator_damping.numpy() if hasattr(mujoco_attrs, "actuator_damping") else None
+        armature_arr = mujoco_attrs.actuator_armature.numpy() if hasattr(mujoco_attrs, "actuator_armature") else None
+        dcmotor_parameter_names = (
+            "actuator_dcmotor_motorconst",
+            "actuator_dcmotor_resistance",
+            "actuator_dcmotor_nominal",
+            "actuator_dcmotor_saturation",
+            "actuator_dcmotor_inductance",
+            "actuator_dcmotor_cogging",
+            "actuator_dcmotor_controller",
+            "actuator_dcmotor_thermal",
+            "actuator_dcmotor_lugre",
+            "actuator_dcmotor_input",
+        )
+        has_dcmotor_shortcut = ctrl_type_arr is not None and np.any(ctrl_type_arr == int(SolverMuJoCo.CtrlType.DCMOTOR))
+        dcmotor_parameter_arrays = (
+            {
+                name: getattr(mujoco_attrs, name).numpy()
+                for name in dcmotor_parameter_names
+                if hasattr(mujoco_attrs, name)
+            }
+            if has_dcmotor_shortcut
+            else {}
         )
         for mujoco_act_idx in range(mujoco_actuator_count):
             # Skip JOINT_TARGET actuators - they're already added via joint_target_mode path
@@ -3285,6 +3459,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if hasattr(mujoco_attrs, "actuator_cranklength"):
                 cranklength = float(mujoco_attrs.actuator_cranklength.numpy()[mujoco_act_idx])
                 general_args["cranklength"] = cranklength
+            if damping_arr is not None:
+                general_args["damping"] = float(damping_arr[mujoco_act_idx])
+            if armature_arr is not None:
+                general_args["armature"] = float(armature_arr[mujoco_act_idx])
             # Only pass range to MuJoCo when explicitly set in MJCF (has_*range flags),
             # so MuJoCo can correctly resolve auto-limited flags via spec.compiler.autolimits.
             if has_ctrlrange_arr is not None and has_ctrlrange_arr[mujoco_act_idx]:
@@ -3315,12 +3493,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if hasattr(mujoco_attrs, "actuator_biastype"):
                 biastype = int(mujoco_attrs.actuator_biastype.numpy()[mujoco_act_idx])
                 general_args["biastype"] = biastype
-            # Detect position/velocity actuator shortcuts. Use set_to_position/
-            # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
-            # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
-            shortcut = None  # "position" or "velocity" if detected
-            shortcut_args: dict[str, float] = {}
-            if general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0:
+            # Apply shortcut helpers after add_actuator so MuJoCo derives all
+            # compiled parameters exactly as it does for native MJCF.
+            shortcut = None
+            shortcut_args: dict[str, Any] = {}
+            ctrl_type = int(ctrl_type_arr[mujoco_act_idx]) if ctrl_type_arr is not None else -1
+            if ctrl_type == int(SolverMuJoCo.CtrlType.DCMOTOR):
+                shortcut = "dcmotor"
+                shortcut_args = {
+                    "motorconst": list(dcmotor_parameter_arrays["actuator_dcmotor_motorconst"][mujoco_act_idx]),
+                    "resistance": float(dcmotor_parameter_arrays["actuator_dcmotor_resistance"][mujoco_act_idx]),
+                    "nominal": list(dcmotor_parameter_arrays["actuator_dcmotor_nominal"][mujoco_act_idx]),
+                    "saturation": list(dcmotor_parameter_arrays["actuator_dcmotor_saturation"][mujoco_act_idx]),
+                    "inductance": list(dcmotor_parameter_arrays["actuator_dcmotor_inductance"][mujoco_act_idx]),
+                    "cogging": list(dcmotor_parameter_arrays["actuator_dcmotor_cogging"][mujoco_act_idx]),
+                    "controller": list(dcmotor_parameter_arrays["actuator_dcmotor_controller"][mujoco_act_idx]),
+                    "thermal": list(dcmotor_parameter_arrays["actuator_dcmotor_thermal"][mujoco_act_idx]),
+                    "lugre": list(dcmotor_parameter_arrays["actuator_dcmotor_lugre"][mujoco_act_idx]),
+                    "input_mode": int(dcmotor_parameter_arrays["actuator_dcmotor_input"][mujoco_act_idx]),
+                }
+                for key in ("dynprm", "gainprm", "biasprm", "dyntype", "gaintype", "biastype", "actdim"):
+                    general_args.pop(key, None)
+            elif (
+                general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0
+            ):
                 kp = general_args["gainprm"][0]
                 bp = general_args.get("biasprm", [0, 0, 0])
                 # Position shortcut: biasprm = [0, -kp, -kv]
@@ -3360,6 +3556,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 act.set_to_position(**shortcut_args)
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
+            elif shortcut == "dcmotor":
+                act.set_to_dcmotor(**shortcut_args)
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
@@ -8939,6 +9137,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         actuator_gainprm = getattr(mujoco_attrs, "actuator_gainprm", None)
         actuator_biasprm = getattr(mujoco_attrs, "actuator_biasprm", None)
         actuator_dynprm = getattr(mujoco_attrs, "actuator_dynprm", None)
+        actuator_ctrl_type = getattr(mujoco_attrs, "ctrl_type", None)
         actuator_ctrlrange = getattr(mujoco_attrs, "actuator_ctrlrange", None)
         actuator_forcerange = getattr(mujoco_attrs, "actuator_forcerange", None)
         actuator_actrange = getattr(mujoco_attrs, "actuator_actrange", None)
@@ -8948,6 +9147,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             actuator_gainprm is None
             or actuator_biasprm is None
             or actuator_dynprm is None
+            or actuator_ctrl_type is None
             or actuator_ctrlrange is None
             or actuator_forcerange is None
             or actuator_actrange is None
@@ -8965,6 +9165,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.mjc_actuator_ctrl_source,
                 self.mjc_actuator_to_newton_idx,
+                actuator_ctrl_type,
                 actuator_gainprm,
                 actuator_biasprm,
                 actuator_dynprm,

@@ -4,6 +4,10 @@
 
 <!-- towncrier release notes start -->
 
+### Added
+
+- Import MuJoCo DC-motor actuators from MJCF and compiled `MjcActuator` USD for `SolverMuJoCo`. (#3950)
+
 ## [1.5.0] - 2026-08-11
 
 ### Added

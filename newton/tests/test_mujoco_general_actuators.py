@@ -65,6 +65,26 @@ MJCF_ACTUATORS = """<?xml version="1.0" encoding="utf-8"?>
 </mujoco>
 """
 
+MJCF_DCMOTOR_ACTUATOR = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_dcmotor_actuator">
+    <option gravity="0 0 0"/>
+    <worldbody>
+        <body name="link">
+            <joint name="hinge" axis="0 0 1" type="hinge"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <dcmotor name="dc" joint="hinge" gear="3"
+                 resistance="2" motorconst="0.05 0.06" nominal="24 0.2 100"
+                 inductance="0.01 20" thermal="0.004 10 30 0.001 0.4 90"
+                 saturation="2 4 7" cogging="0.1 6 0.2"
+                 lugre="0.3 0.4 0.5 12 0.02" input="position"
+                 controller="5 1 0.2 10 2 3" damping="0.7" armature="0.02"/>
+    </actuator>
+</mujoco>
+"""
+
 USD_MJC_ACTUATOR_TEMPLATE = """#usda 1.0
 (
     defaultPrim = "Root"
@@ -150,6 +170,26 @@ USD_MJC_DIRECT_ACTUATOR = """        def MjcActuator "HingeMotor"
         {
             uniform double[] mjc:gainPrm = [7, 0, 0, 0, 0, 0, 0, 0, 0, 0]
             uniform double[] mjc:biasPrm = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            rel mjc:target = </Root/Hinge>
+        }
+"""
+
+USD_MJC_DCMOTOR_ACTUATOR = """        def MjcActuator "HingeDCMotor"
+        {
+            uniform token mjc:dynType = "dcmotor"
+            uniform token mjc:gainType = "dcmotor"
+            uniform token mjc:biasType = "dcmotor"
+            uniform int mjc:actDim = 5
+            uniform bool mjc:actEarly = true
+            uniform double[] mjc:dynPrm = [0.005, 7, 0.004, 10, 90, 0.3, 0.4, 10, 2, 0]
+            uniform double[] mjc:gainPrm = [2, 0.0547722558, 0.001, 0.4, 5, 1, 0.2, 3, 1, 0]
+            uniform double[] mjc:biasPrm = [0.1, 6, 0.2, 0.5, 12, 0.02, 0, 0, 0, 0]
+            uniform double[] mjc:gear = [3, 0, 0, 0, 0, 0]
+            uniform double mjc:forceRange:min = -2
+            uniform double mjc:forceRange:max = 2
+            uniform token mjc:forceLimited = "true"
+            uniform double mjc:damping = 0.7
+            uniform double mjc:armature = 0.02
             rel mjc:target = </Root/Hinge>
         }
 """
@@ -284,6 +324,100 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertEqual(solver.mj_model.nu, 1)
         np.testing.assert_array_equal(solver.mjc_actuator_ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
         np.testing.assert_array_equal(solver.mjc_actuator_to_newton_idx.numpy(), [0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_mjc_dcmotor_actuator_preserves_compiled_parameters(self):
+        """Preserve a compiled USD DC-motor actuator through SolverMuJoCo."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        builder = load_usd_mjc_actuator_builder(USD_MJC_DCMOTOR_ACTUATOR)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        mj_model = solver.mj_model
+        self.assertEqual(mj_model.nu, 1)
+        self.assertEqual(mj_model.na, 5)
+        self.assertEqual(mj_model.actuator_dyntype[0], mujoco.mjtDyn.mjDYN_DCMOTOR)
+        self.assertEqual(mj_model.actuator_gaintype[0], mujoco.mjtGain.mjGAIN_DCMOTOR)
+        self.assertEqual(mj_model.actuator_biastype[0], mujoco.mjtBias.mjBIAS_DCMOTOR)
+        np.testing.assert_allclose(mj_model.actuator_dynprm[0], [0.005, 7, 0.004, 10, 90, 0.3, 0.4, 10, 2, 0])
+        np.testing.assert_allclose(
+            mj_model.actuator_gainprm[0],
+            [2, 0.0547722558, 0.001, 0.4, 5, 1, 0.2, 3, 1, 0],
+        )
+        np.testing.assert_allclose(mj_model.actuator_biasprm[0], [0.1, 6, 0.2, 0.5, 12, 0.02, 0, 0, 0, 0])
+        np.testing.assert_allclose(mj_model.actuator_forcerange[0], [-2, 2])
+        np.testing.assert_allclose(mj_model.actuator_gear[0], [3, 0, 0, 0, 0, 0])
+        np.testing.assert_allclose(mj_model.actuator_damping[0], 0.7)
+        np.testing.assert_allclose(mj_model.actuator_armature[0], 0.02)
+        for attribute in (
+            "actuator_dynprm",
+            "actuator_gainprm",
+            "actuator_biasprm",
+            "actuator_forcerange",
+            "actuator_gear",
+        ):
+            np.testing.assert_allclose(
+                getattr(solver.mjw_model, attribute).numpy()[0],
+                getattr(mj_model, attribute),
+            )
+
+    def test_mjcf_dcmotor_actuator_matches_native_mujoco(self):
+        """Recreate a stateful MJCF DC-motor actuator with native parameters."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        native_model = mujoco.MjModel.from_xml_string(MJCF_DCMOTOR_ACTUATOR)
+
+        builder = ModelBuilder()
+        builder.add_mjcf(MJCF_DCMOTOR_ACTUATOR)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+        np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.CTRL_DIRECT])
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        generated_model = solver.mj_model
+        self.assertEqual(generated_model.nu, native_model.nu)
+        self.assertEqual(generated_model.na, native_model.na)
+        for attribute in (
+            "actuator_dyntype",
+            "actuator_gaintype",
+            "actuator_biastype",
+            "actuator_actearly",
+            "actuator_actnum",
+            "actuator_dynprm",
+            "actuator_gainprm",
+            "actuator_biasprm",
+            "actuator_forcerange",
+            "actuator_gear",
+            "actuator_damping",
+            "actuator_armature",
+        ):
+            np.testing.assert_allclose(getattr(generated_model, attribute), getattr(native_model, attribute))
+
+        self.assertEqual(solver.mjw_model.actuator_dyntype.numpy()[0], mujoco.mjtDyn.mjDYN_DCMOTOR)
+        self.assertEqual(solver.mjw_model.actuator_gaintype.numpy()[0], mujoco.mjtGain.mjGAIN_DCMOTOR)
+        self.assertEqual(solver.mjw_model.actuator_biastype.numpy()[0], mujoco.mjtBias.mjBIAS_DCMOTOR)
+        for attribute in (
+            "actuator_dynprm",
+            "actuator_gainprm",
+            "actuator_biasprm",
+            "actuator_forcerange",
+            "actuator_gear",
+        ):
+            np.testing.assert_allclose(
+                getattr(solver.mjw_model, attribute).numpy()[0],
+                getattr(native_model, attribute),
+            )
+
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        control.mujoco.ctrl.assign([0.25])
+        solver.step(state_0, state_1, control, None, dt=0.001)
+        activation = solver.mjw_data.act.numpy()
+        self.assertTrue(np.all(np.isfinite(activation)))
+        self.assertGreater(float(np.max(np.abs(activation))), 0.0)
 
     def test_parsing_ctrl_direct_false(self):
         """Test parsing with ctrl_direct=False."""
