@@ -3542,9 +3542,9 @@ class ModelBuilder:
             Unbound Points use Newton's registered material defaults and
             ``ModelBuilder.default_shape_cfg`` density. All Points imported by one
             call must resolve to the same MPM scene; unrelated PhysicsScenes
-            and particle systems are ignored. ``particle_scene_prim`` contains
-            the governing ``UsdPhysics.Scene`` prim, or ``None`` when no
-            particles are imported.
+            and particle systems are ignored. ``particle_scene_prim`` contains the
+            governing ``UsdPhysics.Scene`` prim, or ``None`` when no particles are
+            imported.
 
             Particle widths are diameters. Newton converts each radius as
             ``width / 2`` after applying stage units and the prim's uniform world
