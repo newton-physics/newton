@@ -2101,11 +2101,13 @@ def _read_deformable_material(
     single-source namespace read, see :meth:`SchemaResolverManager.read_deformable_attr`) when the
     bound material declares ``api_schema``.
 
-    Returns a dict of the authored, finite values among ``attr_names``, or ``None`` if the bound
-    material does not declare ``api_schema``. Stiffness fields keep an authored zero (the proposal's
-    range is ``[0, inf)``); ``thickness`` and ``density`` must be positive. The schema's ``-inf``
-    "simulator default" sentinel (and any out-of-range value) is dropped so the caller falls back to
-    its defaults.
+    Returns a dict of the authored, in-range values among ``attr_names``, or ``None`` if the bound
+    material does not declare ``api_schema``; an applied API with no valid authored values returns
+    an empty dict. Stiffness and Young's modulus accept zero; thickness must be positive; density
+    must be positive to be returned, while zero is its ignored sentinel; and Poisson's ratio must
+    lie in ``(-1, 0.5]``. The ``-inf`` simulator-default sentinel used by stiffness, Young's modulus,
+    and thickness is silently dropped. Other out-of-range or non-finite values are dropped with a
+    warning.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None or not has_applied_api_schema(material_prim, api_schema):
@@ -2116,25 +2118,51 @@ def _read_deformable_material(
         if val is None:
             continue
         val = float(val)
+        has_negative_infinity_sentinel = name not in ("density", "poissonsRatio")
+        if val == -math.inf and has_negative_infinity_sentinel:
+            continue  # schema "simulator default" sentinel
         if not math.isfinite(val):
-            continue  # drops the -inf "simulator default" sentinel
-        # Stiffness accepts [0, inf), so an authored zero is preserved. Thickness and
-        # density must be strictly positive.
-        if name in ("thickness", "density"):
+            expected = "a finite value or the -inf sentinel" if has_negative_infinity_sentinel else "a finite value"
+            warnings.warn(
+                f"{material_prim.GetPath()}: invalid physics:{name} {val:g} (expected {expected}); "
+                f"treating it as unauthored.",
+                stacklevel=2,
+            )
+            continue
+        # Stiffness and Young's modulus accept [0, inf), so an authored zero is preserved.
+        # Thickness and density must be strictly positive.
+        if name in ("thickness", "curvesThickness", "density"):
             if val > 0.0:
                 out[name] = val
-            elif name == "thickness" or val < 0.0:
+            elif name == "density" and val == 0.0:
+                # The AOUSD deformables proposal defines zero density as an ignored sentinel.
+                continue
+            else:
                 # A finite non-positive thickness (or negative density) is malformed, not the
                 # unauthored sentinel (-inf); say it is dropped so users can tell it apart
-                # from an unauthored value. An authored density of exactly 0 stays silent:
-                # that is the proposal's "ignored" sentinel.
+                # from an unauthored value.
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid physics:{name} {val:g} (expected > 0); "
                     f"treating it as unauthored.",
                     stacklevel=2,
                 )
+        elif name == "poissonsRatio":
+            if -1.0 < val <= 0.5:
+                out[name] = val
+            else:
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid physics:{name} {val:g} "
+                    f"(expected -1 < value <= 0.5); treating it as unauthored.",
+                    stacklevel=2,
+                )
         elif val >= 0.0:
             out[name] = val
+        else:
+            warnings.warn(
+                f"{material_prim.GetPath()}: invalid physics:{name} {val:g} "
+                f"(expected >= 0); treating it as unauthored.",
+                stacklevel=2,
+            )
     return out
 
 
@@ -2143,16 +2171,31 @@ def _get_curve_deformable_material(
 ) -> dict[str, float] | None:
     """Read curve-deformable (cable) ``PhysicsCurvesDeformableMaterialAPI`` parameters bound to a prim.
 
-    Returns a dict of authored, finite values among ``thickness``, ``stretchStiffness``,
-    ``shearStiffness``, ``bendStiffness``, ``twistStiffness`` and ``density``; or ``None`` if the
-    bound material does not declare ``PhysicsCurvesDeformableMaterialAPI``. See
-    :func:`_read_deformable_material` for the value-validation rules.
+    Returns a dict of authored, in-range values from the current AOUSD curve material proposal,
+    plus the earlier unprefixed material attributes during their deprecation window; or ``None``
+    if the bound material does not declare ``PhysicsCurvesDeformableMaterialAPI``. See
+    :func:`_read_deformable_material` for value-validation rules.
     """
     return _read_deformable_material(
         prim,
         read_attr,
         "PhysicsCurvesDeformableMaterialAPI",
-        ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "twistStiffness", "density"),
+        (
+            "curvesThickness",
+            "youngsModulus",
+            "poissonsRatio",
+            "curvesStretchStiffness",
+            "curvesShearStiffness",
+            "curvesBendStiffness",
+            "curvesTwistStiffness",
+            "density",
+            # Compatibility with the proposal revision imported by Newton 1.4.
+            "thickness",
+            "stretchStiffness",
+            "shearStiffness",
+            "bendStiffness",
+            "twistStiffness",
+        ),
     )
 
 
@@ -2161,7 +2204,7 @@ def _get_surface_deformable_material(
 ) -> dict[str, float] | None:
     """Read surface-deformable (cloth) ``PhysicsSurfaceDeformableMaterialAPI`` parameters bound to a prim.
 
-    Returns a dict of authored, finite values among ``thickness``, ``stretchStiffness``,
+    Returns a dict of authored, in-range values among ``thickness``, ``stretchStiffness``,
     ``shearStiffness``, ``bendStiffness`` and ``density``; or ``None`` if the bound material does not
     declare ``PhysicsSurfaceDeformableMaterialAPI``. See :func:`_read_deformable_material` for the
     value-validation rules.
