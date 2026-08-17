@@ -308,9 +308,6 @@ with a Torch checkpoint
 ``NotImplementedError``. :class:`~newton.actuators.ControllerNeuralMLP` also
 needs a single-step input history (``input_idx == [0]``).
 
-The solve is not differentiable: building the actuator with
-``requires_grad=True`` raises ``NotImplementedError``.
-
 Differentiability and Graph Capture
 -----------------------------------
 
