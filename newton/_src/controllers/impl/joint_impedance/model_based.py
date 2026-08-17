@@ -25,7 +25,7 @@ from newton._src.sim.inverse_dynamics import eval_inverse_dynamics_passive
 from newton._src.sim.model import Model
 
 from ...controller import ControllerBase
-from ...utils import _normalize_indices, _validate_array, _validate_flat_port
+from ...utils import _validate_array, _validate_flat_port
 from ._common import _gather_mass_matrix_blocks_kernel, _idx_max
 from .model_free import ControllerJointImpedanceModelFree
 
@@ -160,6 +160,11 @@ class ControllerJointImpedance(ControllerBase):
         if robot_count < 1:
             raise ValueError("model has no articulations.")
 
+        if model.device != device:
+            raise ValueError(f"model.device is {model.device}, and device is {device}")
+        if model.requires_grad != requires_grad:
+            raise ValueError(f"model.requires_grad is {model.requires_grad}, and requires_grad is {requires_grad}")
+
         self._device = wp.get_device(device)
         self._requires_grad = requires_grad
         self._use_gravity = bool(use_gravity_compensation)
@@ -182,11 +187,9 @@ class ControllerJointImpedance(ControllerBase):
         joint_type_np = model.joint_type.numpy()
         art_start = model.articulation_start.numpy()
         art_end = model.articulation_end.numpy()
+        is_scalar_joint = (joint_type_np == JointType.REVOLUTE) | (joint_type_np == JointType.PRISMATIC)
         dofs_per_robot_np = np.array(
-            [
-                int(np.count_nonzero(np.isin(joint_type_np[art_start[i] : art_end[i]], list(_SCALAR_JOINT_TYPES))))
-                for i in range(robot_count)
-            ],
+            [int(is_scalar_joint[art_start[i] : art_end[i]].sum()) for i in range(robot_count)],
             dtype=np.int32,
         )
         dofs_per_robot = wp.array(dofs_per_robot_np, dtype=wp.int32, device=self._device)
@@ -200,7 +203,7 @@ class ControllerJointImpedance(ControllerBase):
         # since the expected shapes depend on them.
         # ------------------------------------------------------------------
         gain_shape, idx_shape = (robot_count, max_dofs), (total_dofs,)
-        for name, array, dtype, shape, required in (
+        for name, array, expected_dtype, expected_shape, required in (
             ("default_dof_indices", default_dof_indices, wp.uint32, idx_shape, True),
             ("stiffness", stiffness, wp.float32, gain_shape, False),
             ("damping", damping, wp.float32, gain_shape, False),
@@ -211,7 +214,7 @@ class ControllerJointImpedance(ControllerBase):
             ("joint_qdd_idx", joint_qdd_idx, wp.uint32, idx_shape, False),
             ("joint_f_idx", joint_f_idx, wp.uint32, idx_shape, False),
         ):
-            _validate_array(array=array, name=name, dtype=dtype, shape=shape, device=self._device, required=required)
+            _validate_array(array=array, name=name, dtype=expected_dtype, shape=expected_shape, device=self._device, required=required)
         # ------------------------------------------------------------------
 
         self._robot_count = robot_count
@@ -219,11 +222,11 @@ class ControllerJointImpedance(ControllerBase):
         self._total_dofs = total_dofs
         self._dofs_per_robot = dofs_per_robot
 
-        self._q_idx = _normalize_indices(idx=joint_q_idx, default_idx=default_dof_indices)
-        self._qd_idx = _normalize_indices(idx=joint_qd_idx, default_idx=default_dof_indices)
-        self._q_des_idx = _normalize_indices(idx=joint_q_des_idx, default_idx=default_dof_indices)
-        self._qd_des_idx = _normalize_indices(idx=joint_qd_des_idx, default_idx=default_dof_indices)
-        self._qdd_idx = _normalize_indices(idx=joint_qdd_idx, default_idx=default_dof_indices)
+        self._q_idx = default_dof_indices if joint_q_idx is None else joint_q_idx
+        self._qd_idx = default_dof_indices if joint_qd_idx is None else joint_qd_idx
+        self._q_des_idx = default_dof_indices if joint_q_des_idx is None else joint_q_des_idx
+        self._qd_des_idx = default_dof_indices if joint_qd_des_idx is None else joint_qd_des_idx
+        self._qdd_idx = default_dof_indices if joint_qdd_idx is None else joint_qdd_idx
 
         # Only *controlled* joints are restricted to 1-DOF revolute/prismatic —
         # an uncontrolled joint elsewhere in the model may be of any type. This

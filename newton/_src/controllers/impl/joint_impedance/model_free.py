@@ -29,7 +29,7 @@ import numpy as np
 import warp as wp
 
 from ...controller import ControllerBase
-from ...utils import _normalize_indices, _validate_array, _validate_flat_port
+from ...utils import _validate_array, _validate_flat_port
 from ._common import (
     _add_term_kernel,
     _gather_dof_kernel,
@@ -205,14 +205,14 @@ class ControllerJointImpedanceModelFree(ControllerBase):
         offsets_np[1:] = np.cumsum(dofs_per_robot_np[:-1])
         self._dof_offsets = wp.array(offsets_np, dtype=wp.int32, device=self._device)
 
-        self._q_idx = _normalize_indices(idx=joint_q_idx, default_idx=default_dof_indices)
-        self._qd_idx = _normalize_indices(idx=joint_qd_idx, default_idx=default_dof_indices)
-        self._q_des_idx = _normalize_indices(idx=joint_q_des_idx, default_idx=default_dof_indices)
-        self._qd_des_idx = _normalize_indices(idx=joint_qd_des_idx, default_idx=default_dof_indices)
-        self._qdd_idx = _normalize_indices(idx=joint_qdd_idx, default_idx=default_dof_indices)
-        self._gravity_idx = _normalize_indices(idx=gravity_force_idx, default_idx=default_dof_indices)
-        self._coriolis_idx = _normalize_indices(idx=coriolis_force_idx, default_idx=default_dof_indices)
-        self._f_idx = _normalize_indices(idx=joint_f_idx, default_idx=default_dof_indices)
+        self._q_idx = default_dof_indices if joint_q_idx is None else joint_q_idx
+        self._qd_idx = default_dof_indices if joint_qd_idx is None else joint_qd_idx
+        self._q_des_idx = default_dof_indices if joint_q_des_idx is None else joint_q_des_idx
+        self._qd_des_idx = default_dof_indices if joint_qd_des_idx is None else joint_qd_des_idx
+        self._qdd_idx = default_dof_indices if joint_qdd_idx is None else joint_qdd_idx
+        self._gravity_idx = default_dof_indices if gravity_force_idx is None else gravity_force_idx
+        self._coriolis_idx = default_dof_indices if coriolis_force_idx is None else coriolis_force_idx
+        self._f_idx = default_dof_indices if joint_f_idx is None else joint_f_idx
 
         f_idx_np = self._f_idx.numpy()
         if len(f_idx_np) != len(np.unique(f_idx_np)):

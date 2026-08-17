@@ -45,32 +45,33 @@ class JointSelection:
     qd_idx: wp.array[wp.uint32]
     """Model DOF index of each controlled DOF, shape [controlled_dof_count]."""
 
-    dofs_per_robot: wp.array[wp.int32]
-    """Controlled DOF count of each robot, shape [robot_count]."""
-
-    robot_count: int
-    """Number of articulations contributing at least one controlled DOF."""
-
-    max_dofs: int
-    """Largest controlled DOF count of any single robot."""
-
 
 def select_joints(
     model: Model,
     *,
-    articulations: list[int] | None = None,
-    joints: list[int] | None = None,
+    articulations: list[int] | list[str] | None = None,
+    joints: list[int] | list[str] | None = None,
 ) -> JointSelection:
     """Resolve a set of joints to control into the index arrays a controller needs.
 
+    Integers match exactly. Labels (:attr:`~newton.Model.articulation_label`,
+    :attr:`~newton.Model.joint_label`) match by string equality and select
+    every match, so a label shared by several robots selects one joint on
+    each of them. Every entry must match at least one thing, or the call
+    raises; for ``joints``, a label only needs to match in one selected
+    articulation, so it is safe to use a label that exists on some robots of
+    a heterogeneous fleet but not others.
+
     Args:
         model: Model to select from.
-        articulations: Articulation indices to control. ``None`` selects all.
-        joints: Model joint indices to control within the selected
+        articulations: Articulation indices or labels to control. ``None``
+            selects all.
+        joints: Model joint indices or labels to control within the selected
             articulations. ``None`` selects every Revolute/Prismatic joint of
             each selected articulation; every other joint (Fixed, or any
             multi-DOF type) is skipped rather than controlled. Passed
-            explicitly, every joint must be Revolute or Prismatic.
+            explicitly, joints are taken as-is; whether each one is
+            controllable is checked by the controller, not here.
 
     Returns:
         Index tables addressing the selected DOFs, in the layout
@@ -78,14 +79,14 @@ def select_joints(
         ``default_dof_indices`` and its ``*_idx`` overrides.
 
     Raises:
-        ValueError: If the model has no articulations, an articulation index
-            is out of range, or an explicitly listed joint is not 1-DOF
-            revolute or prismatic.
+        ValueError: If the model has no articulations, an entry of
+            ``articulations`` or ``joints`` matches nothing, or the selection
+            resolves to zero joints.
 
     Example:
         .. code-block:: python
 
-            selection = select_joints(model, joints=[shoulder, elbow, wrist])
+            selection = select_joints(model, joints=["shoulder", "elbow", "wrist"])
             controller = ControllerJointImpedance(
                 model,
                 default_dof_indices=selection.q_idx,
@@ -100,47 +101,64 @@ def select_joints(
     art_start = model.articulation_start.numpy()
     art_end = model.articulation_end.numpy()
     joint_type = model.joint_type.numpy()
+    joint_label = model.joint_label
     q_start = model.joint_q_start.numpy()
     qd_start = model.joint_qd_start.numpy()
 
-    selected_arts = range(model.articulation_count) if articulations is None else articulations
-    for art in selected_arts:
-        if not 0 <= art < model.articulation_count:
-            raise ValueError(
-                f"articulation index {art} is out of range for a model with {model.articulation_count} articulations."
-            )
+    if articulations is None:
+        selected_arts = list(range(model.articulation_count))
+    else:
+        selected_arts = []
+        for entry in articulations:
+            if isinstance(entry, str):
+                matches = [i for i, label in enumerate(model.articulation_label) if label == entry]
+                if not matches:
+                    raise ValueError(f"articulation label {entry!r} matches no articulation in the model.")
+                selected_arts.extend(matches)
+            else:
+                if not 0 <= entry < model.articulation_count:
+                    raise ValueError(
+                        f"articulation index {entry} is out of range for a model with "
+                        f"{model.articulation_count} articulations."
+                    )
+                selected_arts.append(entry)
+
+    robot_joints_by_art: dict[int, list[int]] = {art: [] for art in selected_arts}
+    if joints is None:
+        for art in selected_arts:
+            art_joints = np.arange(art_start[art], art_end[art])
+            robot_joints_by_art[art] = art_joints[np.isin(joint_type[art_joints], _SCALAR_JOINT_TYPES)].tolist()
+    else:
+        for entry in joints:
+            if isinstance(entry, str):
+                matched_any = False
+                for art in selected_arts:
+                    matches = [j for j in range(art_start[art], art_end[art]) if joint_label[j] == entry]
+                    if matches:
+                        matched_any = True
+                        robot_joints_by_art[art].extend(matches)
+                if not matched_any:
+                    raise ValueError(f"joint label {entry!r} matches no joint in the selected articulations.")
+            else:
+                owning_art = next((art for art in selected_arts if art_start[art] <= entry < art_end[art]), None)
+                if owning_art is None:
+                    raise ValueError(f"joint index {entry} is not a joint of any selected articulation.")
+                robot_joints_by_art[owning_art].append(entry)
 
     q_idx_chunks: list[np.ndarray] = []
     qd_idx_chunks: list[np.ndarray] = []
-    dofs_per_robot: list[int] = []
-
     for art in selected_arts:
-        art_joints = np.arange(art_start[art], art_end[art])
-        if joints is None:
-            robot_joints = art_joints[np.isin(joint_type[art_joints], _SCALAR_JOINT_TYPES)]
-        else:
-            robot_joints = np.asarray([j for j in joints if art_start[art] <= j < art_end[art]], dtype=np.int64)
-            unsupported = [
-                (int(j), JointType(joint_type[j]).name)
-                for j in robot_joints
-                if joint_type[j] not in _SCALAR_JOINT_TYPES
-            ]
-            if unsupported:
-                raise ValueError(f"select_joints only supports 1-DOF revolute or prismatic joints; got {unsupported}.")
+        robot_joints = np.asarray(robot_joints_by_art[art], dtype=np.int64)
         if robot_joints.size == 0:
             continue
         q_idx_chunks.append(q_start[robot_joints])
         qd_idx_chunks.append(qd_start[robot_joints])
-        dofs_per_robot.append(int(robot_joints.size))
 
-    if not dofs_per_robot:
+    if not q_idx_chunks:
         raise ValueError("selection resolved to zero controlled joints.")
 
     device = model.device
     return JointSelection(
         q_idx=wp.array(np.concatenate(q_idx_chunks), dtype=wp.uint32, device=device),
         qd_idx=wp.array(np.concatenate(qd_idx_chunks), dtype=wp.uint32, device=device),
-        dofs_per_robot=wp.array(np.array(dofs_per_robot, dtype=np.int32), dtype=wp.int32, device=device),
-        robot_count=len(dofs_per_robot),
-        max_dofs=max(dofs_per_robot),
     )

@@ -72,16 +72,3 @@ def _validate_flat_port(
         raise ValueError(f"{name} must be on device {device}, got {array.device}.")
     if array.size < min_length:
         raise ValueError(f"{name} must have length at least {min_length}, got {array.size}.")
-
-
-def _normalize_indices(
-    *,
-    idx: wp.array[wp.uint32] | None,
-    default_idx: wp.array[wp.uint32],
-) -> wp.array[wp.uint32]:
-    """Return ``idx`` if supplied, otherwise ``default_idx``.
-
-    Both are validated by :func:`_validate_array` at construction, so this only
-    selects between them.
-    """
-    return default_idx if idx is None else idx

@@ -942,19 +942,16 @@ class TestSelectJoints(unittest.TestCase):
         device = wp.get_device()
         model = _build_single_prismatic().finalize(device=device)
         selection = select_joints(model)
-        self.assertEqual(selection.robot_count, 1)
-        self.assertEqual(selection.max_dofs, 1)
         np.testing.assert_array_equal(selection.q_idx.numpy(), [0])
         np.testing.assert_array_equal(selection.qd_idx.numpy(), [0])
 
     def test_heterogeneous_two_robots(self):
-        """Verify select_joints groups controlled DOFs per articulation for a mixed fleet."""
+        """Verify select_joints concatenates controlled DOFs per articulation for a mixed fleet."""
         device = wp.get_device()
         model = _build_two_robot_mixed().finalize(device=device)
         selection = select_joints(model)
-        self.assertEqual(selection.robot_count, 2)
-        self.assertEqual(selection.max_dofs, 2)
-        np.testing.assert_array_equal(selection.dofs_per_robot.numpy(), [2, 1])
+        self.assertEqual(selection.q_idx.numpy().size, 3)
+        self.assertEqual(selection.qd_idx.numpy().size, 3)
 
     def test_uncontrolled_joint_excluded_by_default(self):
         """Verify select_joints skips a non-scalar joint rather than raising."""
@@ -978,10 +975,10 @@ class TestSelectJoints(unittest.TestCase):
         builder.add_articulation([j_ball, j_rev], label="robot")
         model = builder.finalize(device=device)
         selection = select_joints(model)
-        self.assertEqual(selection.max_dofs, 1)
+        self.assertEqual(selection.q_idx.numpy().size, 1)
 
-    def test_explicit_non_scalar_joint_raises(self):
-        """Verify select_joints raises when a caller explicitly names a non-scalar joint."""
+    def test_explicit_non_scalar_joint_passed_through(self):
+        """Verify select_joints does not itself validate joint type, deferring to the controller."""
         device = wp.get_device()
         builder = newton.ModelBuilder()
         link = builder.add_link()
@@ -993,8 +990,90 @@ class TestSelectJoints(unittest.TestCase):
         )
         builder.add_articulation([j_ball], label="robot")
         model = builder.finalize(device=device)
+        selection = select_joints(model, joints=[j_ball])
+        np.testing.assert_array_equal(selection.q_idx.numpy(), [0])
+
+    def test_articulation_selected_by_label(self):
+        """Verify select_joints resolves an articulation label to its indices."""
+        device = wp.get_device()
+        model = _build_two_robot_mixed().finalize(device=device)
+        selection = select_joints(model, articulations=["robot1"])
+        self.assertEqual(selection.q_idx.numpy().size, 1)
+
+    def test_joint_selected_by_label(self):
+        """Verify select_joints resolves a joint label to its index within the selected articulation."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link = builder.add_link()
+        arm = builder.add_link()
+        j_shoulder = builder.add_joint_revolute(
+            parent=-1,
+            child=link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            label="shoulder",
+        )
+        j_elbow = builder.add_joint_revolute(
+            parent=link,
+            child=arm,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            label="elbow",
+        )
+        builder.add_articulation([j_shoulder, j_elbow], label="robot")
+        model = builder.finalize(device=device)
+        selection = select_joints(model, joints=["shoulder"])
+        np.testing.assert_array_equal(selection.q_idx.numpy(), [0])
+
+    def test_joint_label_selects_every_match(self):
+        """Verify a joint label matching two joints in one articulation selects both."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        link = builder.add_link()
+        arm = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            label="finger",
+        )
+        j1 = builder.add_joint_revolute(
+            parent=link,
+            child=arm,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            label="finger",
+        )
+        builder.add_articulation([j0, j1], label="robot")
+        model = builder.finalize(device=device)
+        selection = select_joints(model, joints=["finger"])
+        self.assertEqual(selection.q_idx.numpy().size, 2)
+
+    def test_articulation_label_matches_nothing_raises(self):
+        """Verify select_joints raises when an articulation label matches nothing."""
+        device = wp.get_device()
+        model = _build_single_prismatic().finalize(device=device)
         with self.assertRaises(ValueError):
-            select_joints(model, joints=[j_ball])
+            select_joints(model, articulations=["nonexistent"])
+
+    def test_joint_label_matches_nothing_raises(self):
+        """Verify select_joints raises when a joint label matches nothing in the selected articulations."""
+        device = wp.get_device()
+        model = _build_single_prismatic().finalize(device=device)
+        with self.assertRaises(ValueError):
+            select_joints(model, joints=["nonexistent"])
+
+    def test_joint_index_matches_nothing_raises(self):
+        """Verify select_joints raises when an explicit joint index is outside every selected articulation."""
+        device = wp.get_device()
+        model = _build_single_prismatic().finalize(device=device)
+        with self.assertRaises(ValueError):
+            select_joints(model, joints=[99])
 
 
 if __name__ == "__main__":
