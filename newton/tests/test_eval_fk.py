@@ -148,7 +148,7 @@ def _eval_fk_parallel(model, state, mask=None, indices=None, body_flag_filter=ne
     kernel = create_eval_articulation_fk_tile(
         model._fk_level_capacity,
         body_flag_filter == newton.BodyFlags.ALL,
-        model._fk_has_cable,
+        model._has_rod_joints,
     )
     wp.launch_tiled(
         kernel,
@@ -302,15 +302,15 @@ def test_body_flag_filter(test, device):
 
 def test_cable_pose_preserved(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    cable_body = builder.add_link(
+    rod_body = builder.add_link(
         xform=wp.transform(wp.vec3(0.4, -0.3, 0.2), wp.quat_identity()),
         mass=1.0,
         inertia=wp.mat33(np.eye(3)),
     )
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-    cable_joint = builder.add_joint_cable(parent=-1, child=cable_body)
-    child_joint = builder.add_joint_revolute(parent=cable_body, child=child, axis=newton.Axis.Z)
-    builder.add_articulation([cable_joint, child_joint])
+    rod_joint = builder.add_joint_rod(parent=-1, child=rod_body)
+    child_joint = builder.add_joint_revolute(parent=rod_body, child=child, axis=newton.Axis.Z)
+    builder.add_articulation([rod_joint, child_joint])
     model = builder.finalize(device=device)
     model.joint_q.assign(np.array([0.6], dtype=np.float32))
     model.joint_qd.assign(np.array([0.0, 0.0, -0.2], dtype=np.float32))
