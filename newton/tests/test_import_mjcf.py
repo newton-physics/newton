@@ -10455,5 +10455,144 @@ class TestMjcfPrimitiveColors(unittest.TestCase):
         np.testing.assert_allclose(builder.shape_color[0], [0.0, 1.0, 0.0], atol=1.0e-6)
 
 
+def _mjcf_settotalmass(compiler: str, bodies: str) -> str:
+    return f"<mujoco>{compiler}<worldbody>{bodies}</worldbody></mujoco>"
+
+
+_ONE_DYNAMIC_BODY = """
+    <body name="body">
+        <freejoint/>
+        <geom type="sphere" size="0.1" mass="2"/>
+    </body>
+"""
+
+
+class TestImportMjcfSetTotalMass(unittest.TestCase):
+    """Cover MJCF ``<compiler settotalmass>`` rescaling of imported body masses.
+
+    Expected values are those produced by native MuJoCo 3.11 for the same XML,
+    obtained by compiling each model with ``mujoco.MjModel.from_xml_string`` and
+    reading ``body_mass`` / ``body_inertia``.
+    """
+
+    def test_settotalmass_rescales_body_mass(self):
+        """Rescale a single imported body to the requested total."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
+
+        self.assertAlmostEqual(builder.body_mass[0], 10.0, places=5)
+
+    def test_settotalmass_absent_preserves_authored_mass(self):
+        """Leave authored masses untouched when no settotalmass is given."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_mjcf_settotalmass("", _ONE_DYNAMIC_BODY))
+
+        self.assertAlmostEqual(builder.body_mass[0], 2.0, places=5)
+
+    def test_nonpositive_settotalmass_is_a_no_op(self):
+        """Treat a zero or negative settotalmass as "no rescale", as MuJoCo does."""
+        for value in ("0", "-1"):
+            with self.subTest(settotalmass=value):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(_mjcf_settotalmass(f'<compiler settotalmass="{value}"/>', _ONE_DYNAMIC_BODY))
+
+                self.assertAlmostEqual(builder.body_mass[0], 2.0, places=5)
+
+    def test_mass_and_inertia_take_the_same_linear_factor(self):
+        """Scale inertia by the mass factor itself, not its square.
+
+        A sphere of mass 2 and radius 0.1 has diagonal inertia 0.008. Rescaling
+        the model to a total of 10 multiplies both by 5, giving 0.04 — squaring
+        the factor instead would yield 0.2 and pass any mass-only assertion.
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
+
+        self.assertAlmostEqual(builder.body_mass[0], 10.0, places=5)
+        np.testing.assert_allclose(np.diag(np.array(builder.body_inertia[0]).reshape(3, 3)), [0.04] * 3, rtol=1e-4)
+
+    def test_inverse_mass_and_inertia_stay_consistent(self):
+        """Keep the cached inverses in step with the rescaled mass and inertia.
+
+        The builder stores ``body_inv_mass`` and ``body_inv_inertia`` alongside the
+        forward quantities. Scaling only the forward ones leaves stale inverses that
+        silently corrupt the dynamics while every mass assertion still passes.
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
+
+        self.assertAlmostEqual(builder.body_inv_mass[0], 1.0 / builder.body_mass[0], places=5)
+
+        inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
+        inv_inertia = np.array(builder.body_inv_inertia[0]).reshape(3, 3)
+        np.testing.assert_allclose(inertia @ inv_inertia, np.eye(3), rtol=1e-4, atol=1e-4)
+
+    def test_static_bodies_count_toward_the_total(self):
+        """Include jointless bodies in both the sum and the rescale.
+
+        MuJoCo scales every non-world body, so a static body of mass 3 beside a
+        dynamic body of mass 1 rescales to 7.5 and 2.5 for a total of 10 — not to
+        10 for the dynamic body alone.
+        """
+        bodies = """
+            <body name="static"><geom type="sphere" size="0.1" mass="3"/></body>
+            <body name="dyn"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', bodies))
+
+        np.testing.assert_allclose(sorted(builder.body_mass), [2.5, 7.5], rtol=1e-4)
+
+    def test_explicit_inertial_masses_are_rescaled_proportionally(self):
+        """Rescale bodies declaring <inertial> mass alongside geom-derived ones."""
+        bodies = """
+            <body name="from_geom"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body>
+            <body name="from_inertial">
+                <freejoint/>
+                <geom type="sphere" size="0.1"/>
+                <inertial pos="0 0 0" mass="3" diaginertia="0.1 0.1 0.1"/>
+            </body>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="8"/>', bodies), ignore_inertial_definitions=False)
+
+        np.testing.assert_allclose(sorted(builder.body_mass), [2.0, 6.0], rtol=1e-4)
+
+    def test_import_into_nonempty_builder_leaves_existing_bodies_alone(self):
+        """Rescale only the bodies this import created.
+
+        settotalmass describes the imported model, so a builder that already holds
+        bodies must keep their masses, and they must not dilute the scale factor.
+        """
+        builder = newton.ModelBuilder()
+        pre_existing = builder.add_body(mass=7.0)
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', _ONE_DYNAMIC_BODY))
+
+        self.assertAlmostEqual(builder.body_mass[pre_existing], 7.0, places=5)
+        self.assertAlmostEqual(builder.body_mass[pre_existing + 1], 10.0, places=5)
+
+    def test_massless_import_is_left_untouched(self):
+        """Skip the rescale when the imported total is zero rather than dividing by it."""
+        bodies = '<body name="static"><geom type="sphere" size="0.1" mass="0"/></body>'
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', bodies))
+
+        self.assertAlmostEqual(builder.body_mass[0], 0.0, places=5)
+
+    def test_total_survives_fixed_joint_collapse(self):
+        """Preserve the requested total when fixed joints merge bodies afterwards."""
+        bodies = """
+            <body name="root">
+                <freejoint/>
+                <geom type="sphere" size="0.1" mass="1"/>
+                <body name="welded"><geom type="sphere" size="0.1" mass="3"/></body>
+            </body>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(_mjcf_settotalmass('<compiler settotalmass="10"/>', bodies), collapse_fixed_joints=True)
+
+        self.assertAlmostEqual(sum(builder.body_mass), 10.0, places=4)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

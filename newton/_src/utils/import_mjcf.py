@@ -441,6 +441,9 @@ def parse_mjcf(
     inertia_group_range = tuple(int(value) for value in compiler_attribs.get("inertiagrouprange", "0 5").split())
     if len(inertia_group_range) != 2:
         raise ValueError("MJCF compiler inertiagrouprange must contain exactly 2 integers.")
+    # Match MuJoCo: any non-positive settotalmass disables rescaling, so an absent
+    # attribute can default to one without needing a separate "unset" state.
+    set_total_mass = float(compiler_attribs.get("settotalmass", "-1"))
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -2646,6 +2649,7 @@ def parse_mjcf(
     visual_shapes = []
     collider_shapes = []
     start_shape_count = len(builder.shape_type)
+    start_body_count = len(builder.body_mass)
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
     # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
@@ -3502,6 +3506,25 @@ def parse_mjcf(
                 parent_body=-1,
                 articulation_label=label,
             )
+
+    # settotalmass describes the imported model, so bodies the destination builder
+    # already held are excluded from both the sum and the scale. Runs before any
+    # fixed-joint collapse, while the imported bodies are still contiguous.
+    if set_total_mass > 0.0:
+        imported_bodies = range(start_body_count, len(builder.body_mass))
+        current_total = sum(builder.body_mass[i] for i in imported_bodies)
+        # MuJoCo leaves a massless model alone rather than failing; a moving body
+        # with zero mass is rejected earlier against mjMINVAL.
+        if current_total > 0.0:
+            mass_scale = set_total_mass / current_total
+            inv_scale = 1.0 / mass_scale
+            for i in imported_bodies:
+                builder.body_mass[i] *= mass_scale
+                builder.body_inertia[i] = builder.body_inertia[i] * mass_scale
+                # 1/(m*k) is exactly inv_mass/k, so scaling avoids inverting a
+                # possibly-singular inertia and keeps the zero placeholders intact.
+                builder.body_inv_mass[i] *= inv_scale
+                builder.body_inv_inertia[i] = builder.body_inv_inertia[i] * inv_scale
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
