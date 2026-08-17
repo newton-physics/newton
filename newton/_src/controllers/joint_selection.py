@@ -2,13 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """:func:`select_joints` and its result type — a helper for computing the
-index arrays :class:`~newton.controllers.ControllerJointImpedance` and
-:class:`~newton.controllers.ControllerJointImpedanceModelFree` take as
-constructor arguments (``default_dof_indices``, ``joint_q_idx``, ``joint_qd_idx``).
+``joint_q_idx`` / ``joint_qd_idx`` pair that
+:class:`~newton.controllers.ControllerJointImpedance` requires.
 
 :func:`select_joints` is a pure helper: it does not construct a controller and
 is never passed to one. It only resolves a set of joints against a
-:class:`~newton.Model` into the flat index arrays those controllers expect.
+:class:`~newton.Model` into the flat index arrays that controller expects.
 """
 
 from __future__ import annotations
@@ -34,15 +33,21 @@ class JointSelection:
     :attr:`newton.State.joint_qd`, since the two spaces differ once any
     uncontrolled joint upstream spans more coordinates than DOFs.
 
-    Controlled DOFs are ordered by articulation, then by model joint index,
-    matching the ``(robot 0's indices first, then robot 1's, ...)`` layout
-    :class:`~newton.controllers.ControllerJointImpedance` expects.
+    Controlled DOFs are grouped by articulation, matching the ``(robot 0's
+    indices first, then robot 1's, ...)`` layout
+    :class:`~newton.controllers.ControllerJointImpedance` requires. Within an
+    articulation the order follows the ``joints`` argument when one is given,
+    and model joint index otherwise.
+
+    Both arrays are ``int32`` so they can be used directly as Warp indexed-view
+    subscripts (``sim_array[selection.qd_idx]``), which is how ports are bound
+    to simulation-sized arrays.
     """
 
-    q_idx: wp.array[wp.uint32]
+    q_idx: wp.array[wp.int32]
     """Model coordinate index of each controlled DOF, shape [controlled_dof_count]."""
 
-    qd_idx: wp.array[wp.uint32]
+    qd_idx: wp.array[wp.int32]
     """Model DOF index of each controlled DOF, shape [controlled_dof_count]."""
 
 
@@ -65,7 +70,9 @@ def select_joints(
     Args:
         model: Model to select from.
         articulations: Articulation indices or labels to control. ``None``
-            selects all.
+            selects all. Duplicates — whether repeated indices or an index and
+            a label that resolve to the same articulation — are collapsed, so
+            no joint is ever selected twice.
         joints: Model joint indices or labels to control within the selected
             articulations. ``None`` selects every Revolute/Prismatic joint of
             each selected articulation; every other joint (Fixed, or any
@@ -74,9 +81,10 @@ def select_joints(
             controllable is checked by the controller, not here.
 
     Returns:
-        Index tables addressing the selected DOFs, in the layout
+        The matched coordinate/DOF index pair addressing the selected DOFs, in
+        the grouped-by-articulation layout
         :class:`~newton.controllers.ControllerJointImpedance` expects for
-        ``default_dof_indices`` and its ``*_idx`` overrides.
+        ``joint_q_idx`` and ``joint_qd_idx``.
 
     Raises:
         ValueError: If the model has no articulations, an entry of
@@ -89,11 +97,14 @@ def select_joints(
             selection = select_joints(model, joints=["shoulder", "elbow", "wrist"])
             controller = ControllerJointImpedance(
                 model,
-                default_dof_indices=selection.q_idx,
+                joint_q_idx=selection.q_idx,
                 joint_qd_idx=selection.qd_idx,
                 stiffness=kp,
                 damping=kd,
             )
+            outputs = controller.output()
+            # Scatter the compact torque command straight into the simulation.
+            outputs.joint_f = control.joint_f[selection.qd_idx]
     """
     if model.articulation_count == 0:
         raise ValueError("model contains no articulations; nothing can be controlled.")
@@ -108,20 +119,23 @@ def select_joints(
     if articulations is None:
         selected_arts = list(range(model.articulation_count))
     else:
-        selected_arts = []
+        matched_arts: list[int] = []
         for entry in articulations:
             if isinstance(entry, str):
                 matches = [i for i, label in enumerate(model.articulation_label) if label == entry]
                 if not matches:
                     raise ValueError(f"articulation label {entry!r} matches no articulation in the model.")
-                selected_arts.extend(matches)
+                matched_arts.extend(matches)
             else:
                 if not 0 <= entry < model.articulation_count:
                     raise ValueError(
                         f"articulation index {entry} is out of range for a model with "
                         f"{model.articulation_count} articulations."
                     )
-                selected_arts.append(entry)
+                matched_arts.append(entry)
+        # An index and a label can name the same articulation; selecting it
+        # twice would duplicate every one of its joints in the output.
+        selected_arts = sorted(dict.fromkeys(matched_arts))
 
     robot_joints_by_art: dict[int, list[int]] = {art: [] for art in selected_arts}
     if joints is None:
@@ -159,6 +173,6 @@ def select_joints(
 
     device = model.device
     return JointSelection(
-        q_idx=wp.array(np.concatenate(q_idx_chunks), dtype=wp.uint32, device=device),
-        qd_idx=wp.array(np.concatenate(qd_idx_chunks), dtype=wp.uint32, device=device),
+        q_idx=wp.array(np.concatenate(q_idx_chunks), dtype=wp.int32, device=device),
+        qd_idx=wp.array(np.concatenate(qd_idx_chunks), dtype=wp.int32, device=device),
     )
